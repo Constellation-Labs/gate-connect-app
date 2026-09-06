@@ -47,6 +47,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
 /// Where the stable relay port is persisted. CLI tool configs bake
@@ -160,8 +161,8 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
 // injection rule live in the parent module so the relay and the MITM engine
 // can't drift; this module just references them.
 use super::{
-    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_KEY_HEADER, GATE_ORG_HEADER,
-    UPSTREAM_URL_HEADER,
+    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_CLIENT_HEADER, GATE_INSTALL_ID_HEADER,
+    GATE_KEY_HEADER, GATE_MODEL_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
 };
 
 /// Everything a relay connection needs, shared across all requests.
@@ -179,6 +180,11 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live billing mode. `Payg` drops the upstream hint and the tool's own
+    /// credential on a rewrite, so the gateway bills the org's balance; `Byok`
+    /// is today's shape. Resolved per domain - see
+    /// [`effective_billing_mode`](super::effective_billing_mode).
+    mode: watch::Receiver<BillingMode>,
     /// The built-in domain catalog. Used to (a) resolve the leading path segment
     /// of a request to a known upstream - so a local process can't aim the relay
     /// at an arbitrary host - and (b) classify the remaining path the way the
@@ -203,6 +209,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        mode: watch::Receiver<BillingMode>,
         intercept: watch::Receiver<bool>,
         owner_uid: Option<u32>,
     ) -> Self {
@@ -236,6 +243,7 @@ impl RelayState {
             api_key,
             token,
             org,
+            mode,
             domains,
             intercept,
             owner_uid,
@@ -260,19 +268,24 @@ impl RelayState {
 /// Adopt a pre-bound loopback listener and start serving on the current tokio
 /// runtime. The accept loop lives until the runtime is dropped (engine stop),
 /// mirroring the PAC responder's lifetime.
+// The engine's live channels passed straight through to [`RelayState`]; bundling
+// them into a struct would just restate that struct's fields at the one call
+// site. Same reasoning as `helper_client::set_intercept`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn(
     std_listener: std::net::TcpListener,
     gateway: Uri,
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    mode: watch::Receiver<BillingMode>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
-        &gateway, api_key, token, org, intercept, owner_uid,
+        &gateway, api_key, token, org, mode, intercept, owner_uid,
     ));
     Ok(tokio::spawn(accept_loop(listener, state)))
 }
@@ -367,6 +380,11 @@ pub fn serve() -> Result<()> {
         ));
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+        // Refreshed in the same loop as the org below: a headless host is
+        // long-lived, and `gate-connect billing-mode` writes the account file
+        // from a different process, so re-reading is the only way this host
+        // learns of a switch.
+        let (mode_tx, mode_rx) = watch::channel(account.billing_mode);
         // The standalone host always intercepts - routing through Gate is the
         // whole point of `proxy relay`, and its own loop below keeps the token
         // fresh. The sender lives for the whole (never-ending) block.
@@ -386,6 +404,7 @@ pub fn serve() -> Result<()> {
             key_rx,
             token_rx,
             org_rx,
+            mode_rx,
             intercept_rx,
             owner_uid,
         ));
@@ -418,6 +437,7 @@ pub fn serve() -> Result<()> {
                 crate::oauth::access_token_for_injection().as_str(),
             ));
             let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
+            let _ = mode_tx.send(crate::account::billing_mode_for_injection());
         }
     })
 }
@@ -480,6 +500,17 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
+    // Answered by the relay itself, ahead of catalog resolution: this is the
+    // liveness check `routing_health` probes, so it must not need a catalog
+    // entry, must not reach the gateway, and must not spend a token. Under the
+    // reserved `/__gate/` prefix, which no catalog domain can claim, so it can
+    // never shadow a real upstream path. GET only - a stray POST to this path
+    // is a tool misconfigured, not a health check, and should fall through to
+    // the resolver and get the usual error.
+    if method == hyper::Method::GET && path_and_query == HEALTH_PATH {
+        return Ok(health_response());
+    }
+
     // Which upstream this request belongs to comes from the leading path
     // segment the tool's base URL carries, so no tool config has to hold a
     // header. Inference paths rewrite to the gateway under the Gate credential;
@@ -503,22 +534,89 @@ async fn proxy(
     headers.remove(HOST);
     let target = match route {
         Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
+            let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
+            inject_credential(&mut headers, state, mode).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
-            format!("{}{}", state.gateway_base, routed.path_and_query)
+            // Forwarded: we set the upstream hint, overwriting anything the
+            // caller sent. The value comes from the catalog entry we resolved,
+            // so a local process can't aim the gateway at a host of its
+            // choosing.
+            //
+            // Served: the hint's ABSENCE is the whole switch, so it is removed
+            // instead - including anything the caller sent, which would
+            // otherwise be a way for a local process to force a forward and
+            // spend the tool's own credential.
+            //
+            // Two independent things ask Gate to serve, and either is enough.
+            // The org routes this domain pay-as-you-go, so the gateway resolves
+            // a provider and debits its balance. Or the user put this tool on a
+            // Gate model, which is why a chosen model had no effect until this
+            // branch existed: with the hint present the gateway forwards to the
+            // tool's own provider and never reaches the override. That half is
+            // read back from the header `inject_credential` has just stamped
+            // rather than derived a second time - two computations of "is this
+            // served?" could disagree, and the disagreement would be a request
+            // billed one way and routed the other.
+            //
+            // The Gate-model half also turns on the PATH: Gate can only answer
+            // on a route it implements, and withholding the hint on any other
+            // leaves the gateway with nothing to do and the caller waiting. PAYG
+            // is not gated that way - the org routes that domain and its
+            // forwarded path is already a shape the gateway serves. See
+            // `serve_path`.
+            let (req_path, req_query) = routed
+                .path_and_query
+                .split_once('?')
+                .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
+                    (p, Some(q))
+                });
+            let model_serve_path = if super::serves_gate_model(&headers) {
+                super::serve_path(req_path)
+            } else {
+                None
+            };
+            if mode == BillingMode::Byok && model_serve_path.is_none() {
+                set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+                    )
+                })?;
+                // The model header goes too. It is not a label: its own contract says it
+                // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+                // this tool on a Gate model. Leaving it on a forwarded request states
+                // both "Gate serves this, bill the org" and "send this to my own
+                // provider under my own key" at once, and the body's model would be
+                // rewritten to a Gate id the tool's own provider has never heard of.
+                // Unreachable before the serve rewrite existed, because the request hung
+                // instead of falling back; reachable now on any path Gate does not
+                // serve, such as `count_tokens`.
+                headers.remove(GATE_MODEL_HEADER);
+                format!("{}{}", state.gateway_base, routed.path_and_query)
+            } else {
+                headers.remove(UPSTREAM_URL_HEADER);
+                // The tool's own key goes with it - on a served request the
+                // model, the provider and the bill are all Gate's.
+                // `inject_credential` has already done this for PAYG; this
+                // covers the Gate-model case, where the org is still BYOK.
+                super::strip_client_auth(&mut headers);
+                // Onto the path that can answer, which is not always the one the
+                // tool asked on: Codex's `/codex/responses` is served at
+                // `/v1/responses`, the same wire format under a route the
+                // gateway implements. A PAYG request with no model override
+                // keeps the path it arrived on.
+                match model_serve_path {
+                    Some(gateway_path) => match req_query {
+                        Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
+                        None => format!("{}{gateway_path}", state.gateway_base),
+                    },
+                    None => format!("{}{}", state.gateway_base, routed.path_and_query),
+                }
+            }
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
@@ -579,8 +677,9 @@ async fn proxy(
 
 /// Inject the live Gate credential, via the rule shared with the MITM engine
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
+/// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
+/// same helper also strips the tool's own upstream credential.
+fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingMode) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
@@ -589,7 +688,7 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> 
     let org_id = (!org.is_empty()).then(|| org.as_ref());
     // The relay has no response hook to feed, so what was injected is not
     // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id).map(|_| ())
+    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode).map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -608,9 +707,12 @@ enum Route {
 /// whether that path rewrites to the gateway.
 #[derive(Debug)]
 struct Routed {
-    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting,
-    /// and used as the base of the direct hop when passing through.
+    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting
+    /// under BYOK, and used as the base of the direct hop when passing through.
     upstream_url: String,
+    /// Catalog slug that owns the request, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`](super::effective_billing_mode)).
+    slug: String,
     /// Path + query **relative to `upstream_url`** - our own slug segment
     /// removed. Both the gateway and the direct upstream append this to their
     /// own base, so it must not carry anything Gate-internal.
@@ -665,6 +767,7 @@ fn resolve_route(
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
                 route: classify(d, &inner),
                 path_and_query: inner,
             });
@@ -693,6 +796,7 @@ fn resolve_route(
         })?;
     Ok(Routed {
         upstream_url: d.upstream_url.clone(),
+        slug: d.slug.clone(),
         route: classify(d, path_and_query),
         path_and_query: path_and_query.to_string(),
     })
@@ -736,6 +840,11 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_KEY_HEADER);
     headers.remove(GATE_ORG_HEADER);
+    // Attribution is for Gate's own activity view. A provider has no business
+    // learning which machine or which tool this was, so it goes no further even
+    // though the passthrough path never stamps it itself.
+    headers.remove(GATE_INSTALL_ID_HEADER);
+    headers.remove(GATE_CLIENT_HEADER);
 }
 
 /// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).
@@ -763,6 +872,24 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in names {
         headers.remove(&name);
     }
+}
+
+/// Liveness path, served by the relay itself. Under a reserved prefix that the
+/// domain catalog cannot name, so adding a real upstream can never collide with
+/// it. Public so the prober and its tests spell it once.
+pub const HEALTH_PATH: &str = "/__gate/health";
+
+/// 204, no body. The prober only cares that something Gate-shaped answered on
+/// the port; a body would invite callers to parse it into a richer contract than
+/// this endpoint is willing to keep.
+fn health_response() -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::new())
+        .map_err(|never| match never {})
+        .boxed();
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(body)
+        .expect("building relay health response")
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {

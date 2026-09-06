@@ -31,6 +31,17 @@ export interface GatewayServer {
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
   { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+  // A gateway running on this machine, for development only (AG-572)
+  // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
+  //
+  // `import.meta.env.DEV` is false in every `vite build`, so this entry cannot
+  // reach a shipped bundle - the same belt-and-braces as the `debug_assertions`
+  // guard on the http://localhost exception in `account.rs`. Without both, there
+  // is no way to point the app at a local gateway: FirstRun does not ask for a
+  // URL, it uses DEFAULT_GATEWAY_BASE_URL and offers only this list afterwards.
+  ...(import.meta.env.DEV
+    ? [{ label: "Local (dev)", url: "http://localhost:3000" }]
+    : []),
 ];
 
 /** The Gate dashboard.
@@ -47,6 +58,19 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
  * how two of them ended up with the unslashed form. */
 export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
 export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
+
+/** Where Overview's two "Manage" links go (AG-572).
+ *
+ * Same trailing-slash discipline as above: these carry a path segment, so the
+ * ACL's literal separator is satisfied and `glob::Pattern` matches.
+ *
+ * Not org-scoped in the URL. AG-572 asks these to open settings "for the
+ * selected organization", but the dashboard resolves the active org from its own
+ * session, and a client-supplied org id in the path would either be ignored or
+ * disagree with what the user is signed into there. If the dashboard ever grows
+ * an explicit `?org=` selector these become builders. */
+export const GATE_POLICIES_URL = "https://app.constellationgate.ai/policies";
+export const GATE_SAVINGS_URL = "https://app.constellationgate.ai/token-savings";
 /** Product documentation. Trailing slash for the same opener-allowlist reason
  *  as the dashboard link above; `docs.constellationgate.ai` matches the
  *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.
@@ -56,3 +80,27 @@ export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
  *  documentation at all, and a Help section whose two items were "Replay tour"
  *  and "Dev mode". */
 export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";
+
+/** Where "Contact support" in the topnav menu goes.
+ *
+ *  The only outbound link on `constellationnetwork.io` rather than
+ *  `constellationgate.ai`, so it needed its own entry in the opener ACL in
+ *  `src-tauri/capabilities/default.json`. Without it the menu item looks wired
+ *  and does nothing, which is the state it shipped in until now.
+ *
+ *  That entry lists this exact URL, not the site: the ACL is what a compromised
+ *  renderer is held to, and nothing here needs to open the rest of the domain.
+ *  Changing this constant means changing the ACL too.
+ *
+ *  **This address 404s, and nothing references this constant.** Verified
+ *  2026-08-26: `constellationnetwork.io/support` returns 404, and
+ *  `docs.constellationgate.ai/support` returns 200 only because that site serves
+ *  a shell for every path - an obvious nonsense path returns the same page. So
+ *  the surfaces that would open it (Settings, and the topnav's Contact support
+ *  entry) are deliberately still unwired, and wiring them would ship a button
+ *  that opens a broken page.
+ *
+ *  Do not wire this up on the strength of the constant existing. AG-598 needs a
+ *  real destination first; when there is one, replace this value, update the ACL
+ *  entry, and the two call sites are then a small change. */
+export const GATE_SUPPORT_URL = "https://constellationnetwork.io/support";

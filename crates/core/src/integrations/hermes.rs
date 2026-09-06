@@ -66,9 +66,13 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::integrations::dotenv;
+use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
+/// The row label. Hermes is its own family on the ledger, so the heading
+/// says "Hermes" and this says which of its surfaces the row is.
+const ROW_LABEL: &str = "CLI";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
@@ -114,12 +118,31 @@ impl Integration for Hermes {
         DISPLAY_NAME
     }
 
+    fn row_label(&self) -> &'static str {
+        ROW_LABEL
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
 
     fn default_upstream_url(&self) -> &'static str {
         DEFAULT_UPSTREAM_URL
+    }
+
+    fn config_location(&self) -> Option<String> {
+        env_file_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // `launcher_on_path` has no path to watch - a `$PATH` entry is not a
+        // location - so a Hermes somewhere unusual is the one install this
+        // cannot report. The window's read on focus is what covers it.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(launcher_paths().unwrap_or_default());
+        paths.extend(crate::env::hermes_config_dir());
+        paths.extend(crate::env::hermes_config_path());
+        paths
     }
 
     fn detect(&self) -> Result<bool> {
@@ -154,6 +177,7 @@ impl Integration for Hermes {
             configured_proxy()?.as_deref().unwrap_or(""),
             crate::proxy::persisted_engine_proxy_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
+            crate::proxy::exported_proxy_url().as_deref(),
         ))
     }
 
@@ -257,7 +281,12 @@ impl Integration for Hermes {
 /// engine is actually up. They are separate because "pointed at us but the
 /// engine is down" is a broken tool, not a cosmetic mismatch, and it is reported
 /// as drift rather than Connected so the master-off sweep still disconnects it.
-fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> Status {
+fn compute_status(
+    configured: &str,
+    expected: Option<&str>,
+    running: bool,
+    exported: Option<&str>,
+) -> Status {
     let Some(expected) = expected else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
@@ -275,7 +304,40 @@ fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> St
              is a dead address) -- turn the proxy on, or disconnect Hermes to restore it"
         ));
     }
-    Status::Connected
+    match environment_override(configured, exported) {
+        Some(o) => o.into_status(),
+        None => Status::Connected,
+    }
+}
+
+/// The login environment, when it holds a different `HTTPS_PROXY` than the one
+/// we wrote into `~/.hermes/.env`.
+///
+/// Hermes loads that file with python-dotenv, which does not replace a variable
+/// the process already has: `load_dotenv()` defaults to `override=False`. So a
+/// shell that already exports `HTTPS_PROXY` - a corporate egress proxy, another
+/// tool's setup - wins, our line is inert, and Hermes' traffic goes to whatever
+/// that names. The file says one thing and the wire does another, which is the
+/// whole of AG-674.
+///
+/// Read from the OS rather than from what we last wrote
+/// ([`crate::proxy::exported_proxy_url`] asks `launchctl` / the registry / the
+/// drop-in), because a record of our own write cannot contradict us and this
+/// check exists precisely to be contradicted. The usual case is agreement:
+/// Gate's own environment export puts the same address there, and the same
+/// address is not a conflict.
+fn environment_override(configured: &str, exported: Option<&str>) -> Option<Override> {
+    let exported = exported?;
+    if exported == configured {
+        return None;
+    }
+    Some(Override::new(
+        "the HTTPS_PROXY exported into your login environment",
+        format!(
+            "is {exported:?}, and Hermes keeps an already-set variable over the {configured:?} in \
+             its .env"
+        ),
+    ))
 }
 
 /// The proxy Hermes is currently pointed at, per its own `.env`.
@@ -678,11 +740,19 @@ mod tests {
     fn compute_status_covers_the_four_states() {
         let ours = "http://127.0.0.1:9977";
 
-        assert_eq!(compute_status(ours, Some(ours), true), Status::Connected);
+        assert_eq!(
+            compute_status(ours, Some(ours), true, Some(ours)),
+            Status::Connected
+        );
+        // Nothing exported at all is the other agreeing shape.
+        assert_eq!(
+            compute_status(ours, Some(ours), true, None),
+            Status::Connected
+        );
 
         // Pointed at us but the engine is down: Hermes' requests go nowhere, so
         // this must never read as Connected.
-        match compute_status(ours, Some(ours), false) {
+        match compute_status(ours, Some(ours), false, None) {
             Status::Drifted(m) => {
                 assert!(m.contains("not running"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -691,14 +761,35 @@ mod tests {
         }
 
         // A corporate proxy the user set by hand is not ours.
-        match compute_status("http://proxy.corp.example:3128", Some(ours), true) {
+        match compute_status("http://proxy.corp.example:3128", Some(ours), true, None) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
-        match compute_status(ours, None, false) {
+        match compute_status(ours, None, false, None) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
+        }
+    }
+
+    /// AG-674's disagreement case for Hermes. Our four variables are in
+    /// `~/.hermes/.env` and correct, the engine is up - and the shell Hermes
+    /// starts from already exports a different proxy, which python-dotenv will
+    /// not replace. The `.env` is right and the wire is somebody else's.
+    #[test]
+    fn an_exported_proxy_beats_the_env_file_we_wrote() {
+        let ours = "http://127.0.0.1:9977";
+        match compute_status(
+            ours,
+            Some(ours),
+            true,
+            Some("http://proxy.corp.example:3128"),
+        ) {
+            Status::Overridden(m) => {
+                assert!(m.contains("proxy.corp.example:3128"), "unexpected: {m}");
+                assert!(m.contains("HTTPS_PROXY"), "must name the variable: {m}");
+            }
+            other => panic!("expected an override, got {other:?}"),
         }
     }
 

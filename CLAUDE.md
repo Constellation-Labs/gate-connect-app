@@ -9,14 +9,15 @@ see `gate/CLAUDE.md` (if present).
 
 Open developer public - anyone with a Constellation Gate gateway URL who
 wants to point their AI dev tools (Cowork/Claude Desktop, Codex, OpenCode)
-at it once and stop thinking about credentials. They open the macOS
-menubar popover at the moment they're already mid-task: setting up a new
-machine, swapping keys, debugging why a tool isn't connecting. Context
-is low-attention, high-stakes (their actual API traffic is about to flow
-through this thing).
+at it once and stop thinking about credentials. They open the app at the
+moment they're already mid-task: setting up a new machine, swapping keys,
+debugging why a tool isn't connecting. Context is low-attention,
+high-stakes (their actual API traffic is about to flow through this thing).
 
 Job to be done: "Tell my dev tools to use this gateway, and reassure me
 that the credential isn't sitting in a config file somewhere."
+
+macOS, Windows and Linux. Not a menubar popover: see Surface below.
 
 ### Brand Personality
 
@@ -27,45 +28,218 @@ edges, serious in the middle. Not stiff, not playful, not techbro
 brutalist.
 
 Emotional goal: **reassuring gatekeeper**. The user should leave the
-popover thinking "good, that's handled" - not "I hope I configured that
+window thinking "good, that's handled" - not "I hope I configured that
 right."
+
+### Surface
+
+**A 1280x800 desktop window**, not a 360px popover. Chrome is a 48px
+topbar; navigation is a persistent 256px sidebar; content is a pane that
+scrolls independently. The size is measured, not chosen: `overview-dimensions`
+(`864:3466`) is a 1280x800 frame, and it decomposes exactly - 256 sidebar plus a
+1024 content column, itself 24px of padding around a 976px pane, itself 16px of
+card padding around a 944px chart. That last number is the reason for the width:
+944 is what 24 hourly buckets need at the drawn 32px bar on an 8px gap
+(24x32 + 23x8 = 944). The old 1024x720 left the pane 768px, which is 24 labels
+touching edge to edge with nothing between them.
+The floor is 1024x**800**: height cannot go below the drawn 800, width can, and
+a window narrower than 1280 crowds the chart's axis by exactly the arithmetic
+above. `MAIN_MIN_SIZE` in `src-tauri/src/lib.rs` duplicates the floor because it
+is the only thing a Wayland session enforces; the two move together.
+
+Window controls belong to the operating system, so
+the topbar only reserves space for them. Secondary flows are centred
+dialogs, not stacked panels; their width is per dialog - the file draws
+480, 512, 544 and 600, and `Modal`'s `width` prop is typed to those four.
+**There is no 536**, though the quit-confirmation frames (`694:33002`,
+`694:33340`) draw one. The measurement that found it is right and worth keeping:
+they are the one pair that is not centred, sitting where a 512 centred in 1024
+would start and ending ~24px past its mirror. Asked whether that was chosen or
+dragged, design answered on 2026-09-04 that "dialogs should all be centered" -
+so they are off-centre 512s, and the width was an artefact of the drag. This
+supersedes the entry that used to warn against exactly this conclusion; the
+warning was sound about the frame and wrong about the intent.
+
+Theme: **light only**. Dark mode is not on the roadmap for the first
+release.
 
 ### Aesthetic Direction
 
-Light surface, ink-on-paper. The `cg/` design system
-(`gate/packages/frontend-ui/src/cg/tokens.css`) is already locked and
-this app aligns to it:
+**The Figma is the source of truth**, not this file and not the older
+`cg/` ink system. Where the file and a local judgement disagree, the file
+wins, including on copy - standing instruction, 2026-08-26. Where the file
+disagrees with *itself*, **match what the frame renders** for the surface
+you are building - that is what "looks like the design" means, and it is
+what a designer checks against. Reach for the component set only where no
+frame draws the thing. Buttons are the worked example: the `Button`
+component says radius 8 on a `base.input` line, and every pane instance
+draws radius 4 on a `base.border` one, so panes get 4. Dialogs draw 8, and
+get 8. Say which you took and why. This one is still only settled by the
+frames: asked on 2026-09-04 for the `Button` component's own value, design
+answered about *card* radius instead (8 outer, 4 inner - see Radii below),
+so the pane-4 / dialog-8 reading above stands unchanged.
 
-- **Primary is ink-900, never blue.** Inline links use ink + ink-200
-  decoration. Brand indigo is reserved for the logo glyph only.
-- **Shadow-as-border** on all elevated surfaces. No 1px solid borders
-  on cards or popovers.
-- **OKLCH neutral ink ramp** (chroma 0) - never gray-on-blue, never
-  pure black/white.
-- **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
-  status pill labels, tabular numerics), never for body copy.
-- **12px modal radius LOCKED**, 4px grid, asymmetric spacing where
-  the rhythm calls for it.
-- **Canvas #ecece7** is the brand background - but this app lives on
-  white (popover surface) because it's a small floating window, not
-  a page on canvas.
-- **Tauri transparent window** with 12px-rounded NSWindow corners (via
-  CALayer.cornerRadius on the content view's layer in
-  `src-tauri/src/lib.rs`). The white card fills the window edge-to-edge.
+**The component library lives in three canvases, not the old page.**
+`113:16762` really is empty, and concluding from that the library was deleted
+is wrong: it moved to **Banners** (`744:37738` - `nav/topbar`, the update and
+routing banners, the alert rows), **Menus** (`744:37691` - `topnav/menu`,
+`chart/tooltip`) and **Sidenav** (`408:15625` - the rail, `Switch`,
+`sidebar-menu-item`, `status-label`, the logo). Look there before deciding a
+thing is undrawn. The `Button` set (`685:20855`) is still on a page MCP
+refuses to open, which is why the button questions below are settled from
+instances.
 
-References (positive): 1Password 8, Tailscale macOS app, Linear's
-desktop polish, Raycast's restraint.
+**Where the file contradicts itself in ways no rule settles**, the open
+questions are collected in `docs/figma-questions-for-design.md` rather than
+decided here. Do not resolve one of those by eye; the evidence for each is in
+`docs/review-figma-*.md`.
+
+Two copy exceptions are decided and stay decided. Do not "fix" either back
+to match its frame:
+
+- **Replace API key** labels its field `New API key`. **This is not a
+  deviation - it is what the file draws**, and the entry used to say
+  otherwise. The dialog is drawn twice, as one dialog in two states: the
+  EMPTY state (`177:74332`) labels the field `New API key`, which is exactly
+  what ships, and only the FILLED state (`177:74640`) says `New device
+  name` - with `sk-gw-216c63…`, a key, typed into it. The section label above
+  the pair (`191:80083`, "Settings / Update device name") carries the same
+  slip: the designer duplicated the rename-device section and relabelled part
+  of it.
+  **The "newest node wins" tiebreak points the wrong way here** - `177:74640`
+  is the newer id and it is the one with the slip - so an agent applying that
+  rule mechanically would "correct" the code into calling an API key field a
+  device name. That is why this stays written down.
+- **Disconnect Gate?** says the session ends and configs are kept, not the
+  drawn sentence about the keychain, which describes Reset. Verified: the
+  frame (`164:73502`) really does say "your API key is removed from the
+  keychain", and step 3 of the Reset dialog (`177:73975`) says nearly the
+  same words, which is the evidence it was pasted from there. This one IS a
+  deviation from the drawn copy, and it stays.
+  The dialog also carries a hidden alternate subtitle (`143:70624`, "Your
+  next requests will use Constellation Gate PAYG credits") - deliberately
+  off, and about billing rather than the keychain. Worth knowing before
+  anyone rewrites this copy; not a third exception.
+
+If you find a third of these, raise it rather than deciding it.
+
+`https://www.figma.com/design/9FrccCojXy0f8QD8Wm5Lln/Gate-Connect`
+
+It is shadcn-flavoured on Tailwind's default palette. Tokens live in
+`tailwind.config.ts` under `base.*`, named to mirror the Figma variables
+one-to-one so any value can be traced back without guessing.
+
+- **Primary is blue-ribbon `#203de2`** (`base.primary`). It backs switches,
+  active nav, links and filled primary buttons. The "Gate" half of the
+  wordmark is `blue-ribbon-800`.
+- **Borders are real 1px lines.** `base.border #e5e7eb` on cards and
+  dividers, `base.input #d1d5db` on controls. Cards additionally carry
+  `shadow-base-sm`.
+- **Ink is `base.foreground #030712`**, not `neutral-900`. The three
+  foreground tokens the Figma variables name are the only ones to use:
+  `base.foreground` on body and headings, `base.primary-foreground
+  #f9fafb` on a filled primary button, `base.destructive-foreground
+  #fef2f2` on a filled destructive one. Never `text-white` on a button.
+- **The `Button` set has at least four sizes, not two.** `default` (h36,
+  10/12), `sm` (h32, 8/12), **`xs`** (h24, 4/10) and **`icon`** (square).
+  All carry a moulded elevation - `shadow-base-btn`, `-btn-sm`,
+  `-btn-primary`, `-btn-destructive` - never a flat `shadow-base-2xs`, and a
+  filled primary also takes the white/black 8% vertical gradient over
+  `base.primary`.
+  This file said "exactly two" for months. The set node (`685:20855`) will
+  not resolve over MCP, which is why: but **Figma reports each instance's
+  variant NAME**, so `744:37756` comes back as `Variant=Outline,
+  State=Default, Size=xs` (`685:20937`) and the set publishes
+  `height/h-6: 24`. That is how to identify a variant when the set itself is
+  unreachable. `xs` is drawn on `banner/update`'s dismiss and the table View
+  buttons; `banners.tsx` already matched it exactly on every property.
+  **Radius follows the VARIANT, not the surface** - which is why one shared
+  component kept being wrong for somebody. Measured: `icon` is 4px
+  (`127:46660`, the topbar), `sm` is 8px (`694:34124`, the tray footer), `xs`
+  is 4px, all three on a `base.input` line, and both icon glyphs export
+  `#203DE2` `base.primary`. So `OutlineIconButton` takes its radius from the
+  call site. The older pane/dialog phrasing - panes 4px on `base.border`,
+  dialogs 8px on `base.input` - still describes most instances and is
+  confirmed on the Overview dialogs (`694:32469/70`, `694:33509/18`) and the
+  Gate-model confirmation (`130:48311/2`); it is contradicted by the Settings
+  dialogs (4px on all six) and the picker footer (4px on `base.border`).
+  Those two are raised with design rather than chased.
+- **Row icons are `base.foreground` on the app rows**, not a grey. A 20px
+  glyph at `neutral-500` beside a `#030712` label reads as disabled, and
+  `AppPane`'s row frames resolve `base/card` + `base/border` + `base/foreground`
+  (`683:20439`) at 36px around a 20px glyph.
+  **It is a per-surface rule, not a global one.** The Overview policy and
+  savings tables draw their row glyphs at `base/muted-foreground` #6b7280
+  (`116:26721`), deliberately quieter than the label beside them. Resolve the
+  node before applying either half of this.
+- **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's,
+  which redefines Tailwind's own `sm` (2px -> **6px**), `lg` and `xl`. So
+  `rounded-sm` is 6px, and reaching for it because you want 2px is a mistake
+  this repo has made repeatedly.
+  `rounded-md` (8px) on cards and rows, `rounded-2xl` (**16px**) on dialogs.
+  The 16px is measured - every dialog frame in Settings, Overview and App
+  carries it - and it replaces the 12px this file used to call locked.
+  **Controls measure 4px, not 6px**, wherever the file actually draws one:
+  menu rows (`744:37693`), the topbar icon button (`127:46660`), the picker's
+  selected row and its "Unselect all". Measured exceptions worth knowing:
+  the picker checkbox is **1.667px** (`665:19094`) so it takes `rounded-xs`;
+  the Overview action pills are 2px while the feed badges are 4px, which is
+  two components, not a drift; and the tray's footer icon button is 8px where
+  the topbar's identical-looking one is 4px, so `OutlineIconButton` takes its
+  radius from the call site.
+- **A card nested in a card drops to 4px.** Outer cards are 8px everywhere in
+  the file, without exception - design counted them on 2026-09-04: Overview 67,
+  Settings 65, App 41, Sandbox 51, all 8. The only 4px cards are *inner* ones,
+  and the worked example is the model picker: the list is an 8px card and the
+  model rows inside it are `rounded-control`, as are the three rows in the App
+  pane's model stack. **There is no 10px card**; `rounded-lg` is not a card
+  radius, and the picker's unchosen rows drawing it is the frame contradicting
+  this rule rather than an exception to it.
+- **Ground is `base.background #f9fafb`**, cards and chrome are white. Not
+  `gray-100`: the window frames fill `#F9FAFB`, and the darker grey read as
+  the single most obviously wrong thing on screen.
+- **Geist + Geist Mono.** Mono is reserved for **eyebrows and pill labels**,
+  and nothing else.
+  **This was contested and is now settled**, design 2026-09-04: identifier
+  *values* are sans. The frames had already said so - the model picker draws
+  its ids in Geist Medium sans (`665:18400`, `665:19064`) and Settings draws
+  four more sans, six drawn sans and none mono - and the entry above used to
+  say "keep mono until it comes back". It came back: sans. So URLs, hosts,
+  keys, model ids, install ids, versions, config paths and activity references
+  are sans.
+  Machine output is not an identifier and keeps mono: the diagnostics report's
+  `<pre>`, for which the file names its own `mono/body-14` style, and a raw
+  backend error string under a Details disclosure. The sidebar and tray
+  **eyebrow counters** keep it too - they are sampled off the frame at Geist
+  Mono Regular, they sit on the eyebrow's own line, and the answer was about
+  identifier values. That last one is worth confirming.
+- **Always use tabular nums on numbers.** Design's standing instruction, given
+  because Figma cannot express it: a column of counts, percentages and currency
+  has to line up and Geist's proportional digits do not. Set once as
+  `tabular-nums` on each new-UI root (`AppShell`, `Tray`, `Onboarding`) rather
+  than per figure, so a number added later cannot miss it.
+- **Type carries its own tracking.** `label/copy-12` and `-14` are -1%,
+  `label/copy-16` is -2%, and those values live in the `fontSize` tuples for
+  `text-base-xs`, `text-sm` and `text-base`: size and tracking are one text
+  style, and splitting them is what let `label/14` render at both 0% and -1%.
+  The named `tracking-label-12` / `-14` tokens are the same values and stay.
+  **`heading/16` is a different style at -1%**, so card and section headings
+  keep `tracking-heading-16` and the -2% default is for `copy/16`. The lockup
+  is neither, and keeps its measured literal.
+- Destructive actions are filled `red-600`. There are only ever a couple
+  per screen; if a third appears, question it.
+
+References (positive): shadcn/ui, 1Password 8, Tailscale macOS app,
+Linear's desktop polish, Raycast's restraint.
 
 Anti-references (locked):
 - **No generic AI aesthetic** - no purple/blue gradients, no neon
   accents on dark, no sparkles, no chatbot UIs.
-- **No enterprise SaaS dashboard look** - no heavy cards, no bright
-  blue CTAs, no Material/Bootstrap defaults.
 - **No dev-tool brutalism** - no all-mono UI, no ASCII chrome, no
   all-caps everything, no terminal cosplay.
 
-Theme: **light only**. Dark mode is not on the roadmap for the first
-release.
+The Overview pane is a dashboard and may look like one. That is a
+deliberate reversal of an earlier "no dashboard" rule.
 
 ### Design Principles
 
@@ -74,26 +248,140 @@ release.
    files), and what's being sent over the wire. Reassurance comes from
    transparency, not from hiding the mechanism.
 
-2. **Tools are nouns, status is a verb.** The list of integrations is
-   the home view. Each row is one tool; its status pill is the single
-   most important pixel on the screen. Mono lowercase status labels
-   read as system-state, not as marketing copy.
+2. **Observed state and intent are two different things.** A row's status
+   line says what is *happening*; its switch says what the user *asked
+   for*. They diverge legitimately: a tool can be switched on and not
+   routing because the master is off, the certificate is untrusted, or its
+   config drifted. `lib/groups.ts` documents the bug that comes from
+   conflating them - the switch renders off, and clicking it turns off the
+   setting the user was trying to turn on. Never drive a switch from
+   observed state.
 
-3. **Mono earns its place.** Use Geist Mono only where identity or
-   precision matters - URLs, hosts, API key placeholders, status pills,
-   tabular counts. Body copy and labels are sans. Mono is a signal,
-   not a vibe.
+3. **Apps are nouns, routing is a verb.** The sidebar lists apps; each row
+   pairs a status line with a switch. Status vocabulary is
+   Protected / Not protected / Config drifted / Not routed, coloured green
+   or amber, with any qualifier ("2m ago", "Off") in grey after a dash.
 
-4. **Shadow-as-border, ink-on-paper.** Cards, inputs, and popovers
-   carry weight through layered inset shadows (the cg `--shadow-border`
-   stack), not through solid 1px lines. Surfaces are white sitting on
-   white-with-shadow - paper, not sheet metal.
+4. **Mono earns its place.** Geist Mono marks an eyebrow or a pill label,
+   and that is all. Identifiers, numbers, body copy and labels are sans -
+   numbers with tabular figures. Mono is a signal, not a vibe.
 
-5. **The popover is one room.** It's 360px wide and ~520px tall on a
-   typical screen. Every screen must work inside that frame without
-   scrolling chrome - content scrolls within the body, header and
-   footer never. No modals stacked on modals; secondary surfaces (tool
-   detail, account form, migrate form) slide as full-popover panels and
-   animate in/out, not as nested dialogs.
+5. **Destructive things get a dialog, and the dialog defaults to safe.**
+   Config replacement, disconnecting, closing running apps and resetting
+   all go through a confirmation. When the primary action is destructive,
+   initial focus goes to the *secondary* button - `useFocusTrap` takes an
+   `initialFocus` ref for exactly this.
+
+6. **A figure is a measurement, or the card says it isn't.** A number on
+   screen is something Gate actually measured. A counter with no reading
+   behind it reads `N/A`; a section that was never read says so in words
+   ("Policies couldn't be read"); a value still in flight draws a
+   `Skeleton`. Never a `0` for an answer nobody gave - it is a claim about
+   the user's traffic, made on the one screen they would check it on, and
+   a number outranks any sentence beside it. The Figma draws only the
+   no-traffic case (`228:89333`: `0` / `0` / `N/A` for an org that sent
+   nothing); the failure and loading states are inferred from this rule
+   rather than from a frame. `lib/activity.ts` keeps the distinction in
+   the model - `null` is no reading, `0` is a reading - so a surface that
+   flattens the two is doing it on purpose and had better be right.
+
+## Implementation notes that bite
+
+- **Figma `letterSpacing` is a PERCENTAGE, not pixels.** `heading/20` at -1%
+  is -0.2px, `heading/16` at -1% is -0.16px, `mono/eyebrow` at 8% is 0.96px
+  at 12px and 1.12px at 14px. Convert before comparing, and add the step to
+  `letterSpacing` under the Figma variable's own name rather than reusing a
+  numerically equal one - `label-12` and `button-xs` are both -0.12px and are
+  deliberately separate. Note the file uses `label/14` at BOTH 0% and -1%.
+- **A text node's HEIGHT tells you its size**, which is faster than resolving
+  every node: 36px tall is 32px type, 28 is 24, 24 is 16, 20 is 14, 16 is 12.
+- **There are two layers of colour variable, so a `text-neutral-*` is not
+  automatically wrong.** The file exposes the raw `tailwind colors/*` ramps
+  (`neutral/500` #737373, `neutral/600` #525252, `green/600`, `red/400` …)
+  *and* the `base/*` semantics. Some nodes genuinely use the raw ramp:
+  `116:30213`, the app header's status line, really does resolve
+  `neutral/500` for the qualifier after the dash. Others do not:
+  `116:30215`, the On label beside it, resolves `base/foreground`, so its
+  `neutral-600` was wrong. **Resolve the node before changing an ink**, and
+  where the variable set is ambiguous - two neutrals on one node - render it
+  and sample the pixels. That settled the wordmark ("Connect" is
+  `neutral/600`, sampled (82,82,82)) and the feed badge radius.
+- **The window minimum is enforced twice, and has to be.** `minWidth`/
+  `minHeight` in `tauri.conf.json` is what macOS, Windows and X11 honour.
+  Wayland ignores it: tao asks with `gtk_window_set_geometry_hints` and
+  `GDK_HINT_MIN_SIZE`, which is the X11 `WM_NORMAL_HINTS` mechanism, and GTK
+  never translates it into `xdg_toplevel.set_min_size`. So `lib.rs` clamps on
+  `Resized` as well, Linux only. Change `MAIN_MIN_SIZE` and the config
+  together.
+- **Never use `bg-blue-*` or `text-blue-*`.** `tailwind.config.ts`
+  redefines Tailwind's `blue` as an OKLCH ramp for the old ink system, so
+  those classes render the wrong colour. Use `base.primary`,
+  `blue-ribbon-*`, or the semantic `chart.*` group.
+- **Font sizes go in rem, never px.** `useTextScale` scales the whole ramp
+  from the root, and a px literal opts that call site out of it entirely.
+  Use the `base-*` / `gc-*` `fontSize` tokens.
+- **The design names shadows on Tailwind v4's scale; this repo is on
+  v3.4.** Figma `shadow/sm` is v3's default `shadow`, not `shadow-sm`.
+  The `base-*` shadow tokens absorb the mapping; shift any new value one
+  step before use.
+- **Figma draws borders inside the frame; CSS adds them outside the
+  padding box.** Expect measured heights to run ~2px over the Figma
+  number on bordered cards. Not worth contorting the markup for.
+- **The `gc.*` palette and `gc/ui.tsx` are still live**, backing the
+  popover screens until they are retired. Don't delete them, and don't
+  reach for them in new UI either.
+
+## Running the app locally
+
+Use **`pnpm app:local`**, not `pnpm app`.
+
+`tauri dev` rebuilds the Rust binary on every change, and macOS scopes a
+keychain item's ACL to the binary that created it. So each rebuild is an
+executable the login keychain has never seen, and the OS re-prompts for
+permission to read the stored Gate key. "Always Allow" fixes exactly one
+build; the next `cargo run` invalidates it, and answering needs the login
+password.
+
+Dismissing the prompt is worse than answering it. An unreadable key reads
+as an unusable account, and the app then falls back to the built-in
+default gateway and **rewrites `account.json`** on the way. A developer
+pointed at staging who denies the prompt is silently moved back to the
+production URL, with nothing on screen saying so.
+
+`pnpm app:local` sets `GATE_CONNECT_TEST_SECRETS`, the seam in
+`crates/core/src/keychain.rs` that backs secrets with files instead of the
+OS store, so the keychain is never touched and the prompt cannot appear.
+It also pins `VITE_GATE_DEFAULT_BASE_URL`, so the fallback above lands on
+staging rather than production. It defaults to staging; pass a URL to
+point somewhere else:
+
+```
+pnpm app:local                       # staging
+pnpm app:local http://localhost:3000 # a gateway you are running yourself
+```
+
+The key is entered once and persists across rebuilds. It is a plaintext
+file under `~/.gate-connect-dev/secrets`, outside the repo so no `git add`
+can reach it, which is a real reduction in protection and the reason this
+is a dev script rather than the default. **Use a staging key here, never a
+production one.** `GATE_CONNECT_TEST_SECRETS` is unset in shipped builds,
+so released copies always use the real keychain.
+
+## Migration status
+
+`plans/new-app-ui-figma.md` is the working plan: what is built, what is
+still open, and the values sampled from Figma. Read it before starting UI
+work.
+
+Both shells exist in one build, and **the new window UI is the default**.
+`gcNewUi(false)` in devtools returns to the popover, or `VITE_NEW_UI=0` at
+build time; see `src/lib/newUi.ts`, which is the authority. This file said
+the popover was still the shipping default until 2026-09-01, which was
+wrong and is the kind of error that decides whether a change is treated as
+user-facing: anything landing in the new shell ships to production users.
+
+The new shell's routing actions are still inert until they are wired
+through drift review and certificate trust, which is why the popover
+remains reachable at all.
 
 NOTE: never use "—"

@@ -1,0 +1,664 @@
+//! Small preferences the user sets in Settings and expects to survive a
+//! restart. Non-secret, so a plain JSON file next to `account.json` rather than
+//! the keychain.
+//!
+//! Deliberately separate from [`crate::account`]: an account is a credential and
+//! an identity, and these are choices about how the app behaves. Wedging them
+//! into `AccountFile` would mean a preference change rewrites the file that holds
+//! the key prefix and the selected org, and `clear()`-ing the account on reset
+//! would silently take the preferences with it.
+//!
+//! **Every preference defaults to on**, and the default is the value a missing
+//! field loads as. That is what lets Settings show a switch as On before anything
+//! has ever been written, which is what the product asks for: the switch reads
+//! its stored value, and the stored value of an untouched preference is its
+//! default.
+//!
+//! Scope note. Only the preferences that currently gate something live here.
+//! The per-category security-event switches (blocked / flagged) and the sound
+//! toggle arrived with the live event feed they gate (AG-578) and not before,
+//! for the reason that kept them out until then: a switch that gates nothing is
+//! worse than a missing switch, because it tells the user they have turned
+//! something off.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::RwLock;
+
+use crate::env;
+use crate::primitives;
+
+fn default_true() -> bool {
+    true
+}
+
+/// The stored preferences. Every field is `#[serde(default)]`-backed so a file
+/// written by an older build - or no file at all - loads as "everything on".
+///
+/// No longer `Copy`: `device_name` is a `String`, and the alternative - a fixed
+/// buffer, or a separate file for one label - buys nothing. Callers clone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preferences {
+    /// Native notifications about routing itself: a session that expired, a
+    /// quit that could not put a tool back. These are the two the app actually
+    /// fires today.
+    #[serde(default = "default_true")]
+    pub routing_health_notifications: bool,
+    /// Whether Gate Connect may send diagnostic data. The onboarding step records
+    /// the first answer; Settings changes it afterwards. Storing it here rather
+    /// than deriving it means an install that never saw the step still reads as
+    /// the documented default rather than as "unset".
+    #[serde(default = "default_true")]
+    pub share_diagnostics: bool,
+    /// Whether the person has ever *answered* the diagnostic-data question, as
+    /// opposed to having the default applied for them.
+    ///
+    /// Defaults to false, including for installs that predate this field, which is
+    /// deliberate: consent nobody was asked for is not consent, so those installs
+    /// see the onboarding step once. It is the whole reason this is a separate
+    /// field rather than inferring an answer from `share_diagnostics` - the
+    /// default and a deliberate "yes" are the same value and must not be the same
+    /// fact.
+    #[serde(default)]
+    pub share_diagnostics_recorded: bool,
+    /// What the person calls this machine, when they have renamed it.
+    ///
+    /// `None` is the normal state and is **not** a blank name: [`device_name`]
+    /// resolves it to the machine's own hostname, which is what Settings shows.
+    /// Storing the override rather than the resolved value is what lets a
+    /// renamed-then-cleared device go back to following the hostname, and keeps
+    /// "the user chose this" distinguishable from "this is what the OS reports" -
+    /// the same argument `share_diagnostics_recorded` makes one field up.
+    ///
+    /// Read two ways, and the difference is the point. [`device_name`] resolves
+    /// it for the window, falling back to the hostname so the Settings row
+    /// always has something to show. [`device_label`] resolves it for the wire
+    /// and does **not** fall back: `None` sends no `x-gate-device-name` at all,
+    /// so a user who skipped naming does not have their hostname stamped on
+    /// every request - see `proxy`'s attribution injection.
+    #[serde(default)]
+    pub device_name: Option<String>,
+    /// Notify when a request is **blocked**.
+    ///
+    /// Split from the flagged switch rather than shipped as one security toggle
+    /// because the two differ in weight: a block stopped something the user was
+    /// trying to do, a flag only noted it. Someone who wants to hear about the
+    /// first and not the second is asking for something reasonable.
+    #[serde(default = "default_true")]
+    pub blocked_event_notifications: bool,
+    /// Notify when a request is **flagged**.
+    #[serde(default = "default_true")]
+    pub flagged_event_notifications: bool,
+    /// Whether those notifications make a sound.
+    #[serde(default = "default_true")]
+    pub security_notification_sound: bool,
+    /// Which model each tool should run on, keyed by tool slug (AG-588).
+    ///
+    /// **Local by decision, not by omission.** An earlier revision stored this on
+    /// the gateway, per organization. Keeping it here trades two things away and
+    /// buys one back, and all three are worth stating:
+    ///
+    /// - Lost: agreement between a person's machines. Two laptops can now differ
+    ///   about which model a tool uses.
+    /// - Lost: an organization-level record of the paid-use acknowledgement. See
+    ///   `gate_model_paid_ack_unix`.
+    /// - Gained: the choice belongs to the machine whose traffic it governs. The
+    ///   app pane is already scoped to this machine, and a per-org setting meant
+    ///   one developer's click changed what their colleagues' requests were
+    ///   answered with.
+    ///
+    /// Keyed on OUR tool slug rather than the gateway's platform id, which is the
+    /// simplification that follows: the gateway no longer has to identify the
+    /// tool, because the app already knows which tool it is configuring.
+    ///
+    /// A `BTreeMap` rather than a `HashMap` so the file's key order is stable and
+    /// a diff of `preferences.json` shows what changed rather than a reshuffle.
+    #[serde(default)]
+    pub tool_models: BTreeMap<String, ToolModelChoice>,
+    /// When this install first accepted paid Gate model use, unix seconds, or
+    /// `None` if it never has.
+    ///
+    /// Per install, which is a real departure from AG-588 - the ticket words the
+    /// confirmation as once per *organization*. Storing it locally is the honest
+    /// consequence of storing the choice locally: there is no org-level record to
+    /// consult, so a second machine asks again. Being asked twice is a smaller
+    /// harm than being billed without having been asked on the machine doing the
+    /// spending, which is what a purely local "already accepted" flag inherited
+    /// from nowhere would risk.
+    ///
+    /// `None` and "accepted long ago" are different facts, which is why this is a
+    /// timestamp rather than a bool - the same argument
+    /// `share_diagnostics_recorded` makes above. Unix seconds rather than a
+    /// formatted string, matching `restore_journal`'s `at_unix` and the OAuth
+    /// token store; the `time` crate is pulled in without its formatting feature.
+    #[serde(default)]
+    pub gate_model_paid_ack_unix: Option<i64>,
+}
+
+/// What Gate should serve for one tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    /// The tool picks its own model and Gate does not intervene. The default for
+    /// every tool, and what a missing entry means.
+    Tool,
+    /// Gate serves the chosen model, overriding what the tool asked for.
+    Gate,
+}
+
+/// One tool's stored choice.
+///
+/// `source` and `model_ids` are separate because a chosen model is not
+/// necessarily an active one: the pane keeps "Current Gate model" visible while
+/// the tool is on its own default, so the user can see what they would be
+/// switching to. `source` alone decides what would be served.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolModelChoice {
+    pub source: ModelSource,
+    /// Canonical ids, e.g. `anthropic/claude-opus-5`. Empty is legal with either
+    /// source; it means no model has been chosen yet.
+    ///
+    /// A list from the start because AG-590 selects a set, and widening a scalar
+    /// later would mean rewriting every stored file.
+    #[serde(default)]
+    pub model_ids: Vec<String>,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            routing_health_notifications: true,
+            share_diagnostics: true,
+            share_diagnostics_recorded: false,
+            device_name: None,
+            blocked_event_notifications: true,
+            flagged_event_notifications: true,
+            security_notification_sound: true,
+            tool_models: BTreeMap::new(),
+            gate_model_paid_ack_unix: None,
+        }
+    }
+}
+
+fn config_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("preferences.json"))
+}
+
+/// Hot-path cache for [`gate_models_for`] and [`device_label`], stamped with the
+/// file it was read from.
+///
+/// The model choice is consulted on **every proxied request**, and a parse per
+/// request is not a cost the user's actual work should pay. Unlike
+/// [`crate::primitives::install_id_cached`] this cannot be a `OnceLock`: the
+/// value changes whenever someone picks a model, and a choice that only took
+/// effect after a restart would be its own bug report.
+///
+/// **The stamp is why this is not just a memo.** On Linux the engine does not
+/// run in the window's process at all - it is the detached helper daemon
+/// (`proxy::helper`, Linux only), spawned once and outliving the GUI. A cache
+/// that only [`save`] could refresh would be refreshed in the wrong process
+/// there:
+/// the daemon would answer every request from whatever the file held when its
+/// first request arrived, and every later pick would change what the pane shows
+/// and nothing about what is served, until logout. The same applies to a write
+/// from the CLI on any platform.
+///
+/// So the entry carries the file's modified time and length, and a `stat` per
+/// request decides whether the parse can be skipped. A `stat` is what the
+/// Windows domain watcher already spends once a second for the same reason; it
+/// is far cheaper than the read-and-parse it replaces, and unlike a memo it
+/// cannot be wrong.
+static CACHE: RwLock<Option<(Stamp, Preferences)>> = RwLock::new(None);
+
+/// What the preferences file looked like when the cached copy was parsed.
+///
+/// `None` is a legitimate stamp - the file does not exist yet, which is the
+/// normal first-run state and a perfectly cacheable answer (the defaults). It
+/// still differs from any `Some`, so the first write is picked up.
+///
+/// Length as well as modified time because mtime granularity is a filesystem's
+/// choice, not ours: two saves inside one tick are unlikely but they are exactly
+/// the case where being wrong means serving a model the user just switched away
+/// from.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp() -> Stamp {
+    let meta = config_path().ok().and_then(|p| std::fs::metadata(p).ok())?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// The models Gate should serve for one tool, or `None` to leave the request
+/// alone.
+///
+/// `None` covers every case where the tool's own model must win: no entry, an
+/// entry whose source is [`ModelSource::Tool`], or an empty set. That last one
+/// matters - a `Gate` source with nothing chosen is not "serve anything", it is
+/// a state the UI prevents and the request path must not invent a meaning for.
+///
+/// Infallible by construction, for the reason `install_id_cached` gives: this is
+/// called while forwarding the user's real work, and a preferences file that
+/// cannot be read must degrade to "the tool picks", never to a failed request.
+pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
+    let current = stamp();
+    {
+        let cache = CACHE.read().ok()?;
+        if let Some((cached, prefs)) = cache.as_ref() {
+            if *cached == current {
+                return servable(prefs, slug);
+            }
+        }
+    }
+    let prefs = load();
+    let answer = servable(&prefs, slug);
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some((current, prefs));
+    }
+    answer
+}
+
+fn servable(prefs: &Preferences, slug: &str) -> Option<Vec<String>> {
+    let choice = prefs.tool_models.get(slug)?;
+    if choice.source != ModelSource::Gate || choice.model_ids.is_empty() {
+        return None;
+    }
+    Some(choice.model_ids.clone())
+}
+
+/// Read the preferences, falling back to the defaults.
+///
+/// A missing file is the normal first-run state, and an unparseable one is
+/// treated the same way on purpose: these are non-critical toggles, and refusing
+/// to open Settings because a preferences file was hand-edited would be a worse
+/// failure than quietly showing the documented defaults. Nothing here is a
+/// credential, so there is no security consequence to the fallback.
+pub fn load() -> Preferences {
+    let Ok(path) = config_path() else {
+        return Preferences::default();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Write the preferences. 0644 - non-secret, and the CLI reads the same file.
+pub fn save(prefs: &Preferences) -> Result<()> {
+    let path = config_path()?;
+    let body = serde_json::to_vec_pretty(prefs).context("serializing preferences")?;
+    primitives::write_file(&path, &body, 0o644)
+        .with_context(|| format!("writing {}", path.display()))?;
+    // Refresh rather than clear: the next reader is on the request path, and
+    // handing it a miss would put the parse back where this cache exists to keep
+    // it out of. Written after the file, and re-stamped from what actually
+    // landed, so a failed write leaves the cache agreeing with what is on disk.
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some((stamp(), prefs.clone()));
+    }
+    Ok(())
+}
+
+/// Drop the cached copy. Tests only - each one points the app-support dir
+/// somewhere new, and a value cached from the previous directory would outlive
+/// it.
+#[doc(hidden)]
+pub fn reset_cache_for_tests() {
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = None;
+    }
+}
+
+/// Turn routing-health notifications on or off, leaving the other preferences
+/// alone. Read-modify-write rather than taking a whole `Preferences`, so a caller
+/// that only knows about one switch cannot clobber a field it has never heard of.
+pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.routing_health_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn blocked-request notifications on or off. Read-modify-write, as above.
+pub fn set_blocked_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.blocked_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn flagged-request notifications on or off.
+pub fn set_flagged_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.flagged_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn the sound on those notifications on or off.
+pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.security_notification_sound = enabled;
+    save(&prefs)
+}
+
+/// Record the diagnostic-data choice, and that it *was* a choice.
+///
+/// Both callers - the onboarding step's Continue and the Settings switch - are the
+/// person answering, so both mark it answered. That is what dismisses the
+/// onboarding step, and it is why Continue records the displayed value even when
+/// the person changed nothing: leaving the default in place is still an answer,
+/// and treating it as unanswered would ask again on the next launch.
+pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.share_diagnostics = enabled;
+    prefs.share_diagnostics_recorded = true;
+    save(&prefs)
+}
+
+/// Set one tool's model choice, leaving every other tool alone.
+///
+/// Read-modify-write on the whole file, like the switches above, so a caller
+/// that knows about one tool cannot clobber another's entry.
+///
+/// **The acknowledgement is recorded here rather than by a separate call.** It is
+/// only ever true *because* someone accepted a specific switch to a Gate model,
+/// and a second entry point would let the two drift - an install that had
+/// acknowledged but never chosen, or the reverse. `acknowledge_paid_use` is
+/// honoured only when moving to [`ModelSource::Gate`]: nothing is billed for
+/// remembering a model under the tool's own default, so nothing there should
+/// record consent to be billed.
+///
+/// The stamp is written once and never moved, for the reason the gateway's
+/// version used `COALESCE`: the record of *when* someone agreed to be billed is
+/// worthless if a later save can advance it.
+pub fn set_tool_model(
+    slug: &str,
+    source: ModelSource,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+) -> Result<()> {
+    let mut prefs = load();
+    if source == ModelSource::Gate
+        && acknowledge_paid_use
+        && prefs.gate_model_paid_ack_unix.is_none()
+    {
+        prefs.gate_model_paid_ack_unix = Some(time::OffsetDateTime::now_utc().unix_timestamp());
+    }
+    prefs
+        .tool_models
+        .insert(slug.to_string(), ToolModelChoice { source, model_ids });
+    save(&prefs)
+}
+
+/// Rename this device, or clear the override and go back to the hostname.
+///
+/// A blank or whitespace-only name clears rather than storing an empty label: a
+/// device row with nothing in it is worse than one showing what the OS calls the
+/// machine, and it is the state a user reaches by deleting the text.
+pub fn set_device_name(name: &str) -> Result<()> {
+    let mut prefs = load();
+    prefs.device_name = device_name_override(name);
+    save(&prefs)
+}
+
+/// What to call this machine on the wire, or `None` to send no label at all.
+///
+/// `None` is the user who never named this device, and it is deliberately *not*
+/// the hostname. Onboarding's naming step offers "Skip naming", and a hostname
+/// commonly carries a person's legal name ("gabriels-macbook-pro"); sending it
+/// anyway would make the skip mean nothing. An unnamed device is attributed by
+/// [`crate::primitives::install_id_cached`] alone, exactly as it was before this
+/// header existed. Naming the device is what opts its traffic into a human
+/// label, and the Settings row says so.
+///
+/// Separate from [`device_name`] because the two questions differ: the window
+/// always has something to *show*, and the wire only ever sends something the
+/// user chose.
+///
+/// Consulted on every proxied request, hence the same stamped [`CACHE`] read as
+/// [`gate_models_for`] and for the same reasons: a parse per request is a cost
+/// the user's work should not pay, and a rename must reach the Linux helper
+/// daemon's requests without a restart.
+pub fn device_label() -> Option<String> {
+    let current = stamp();
+    let cached = CACHE.read().ok().and_then(|cache| {
+        cache
+            .as_ref()
+            .filter(|(stamped, _)| *stamped == current)
+            .map(|(_, prefs)| prefs.device_name.clone())
+    });
+    let named = cached.unwrap_or_else(|| {
+        let prefs = load();
+        let name = prefs.device_name.clone();
+        if let Ok(mut cache) = CACHE.write() {
+            *cache = Some((current, prefs));
+        }
+        name
+    });
+    // Capped on the way out as well as on the way in, so a hand-edited
+    // preferences file cannot put an oversized value on the wire. Same helper
+    // both times: two truncations that could disagree would show one name in
+    // Settings and send another.
+    named.map(|name| capped(&name))
+}
+
+/// What to call this machine in the window: the person's own name for it, or the
+/// hostname.
+///
+/// The hostname fallback is a *display* answer and stops here - see
+/// [`device_label`] for why it is not what the proxy sends. The stored value
+/// stays an `Option` (see [`Preferences::device_name`]), so clearing the name
+/// goes back to following the hostname instead of freezing today's.
+///
+/// Not itself on the request path, so the hostname read is not cached: this runs
+/// when Settings asks, and a machine renamed at the OS level should show its new
+/// name without restarting the app.
+pub fn device_name() -> String {
+    device_label().unwrap_or_else(host_name)
+}
+
+/// The machine's own name, or a neutral stand-in.
+///
+/// "This device" rather than "Unknown": the string is a label in a row, not a
+/// diagnostic, and a machine whose hostname is unreadable is still the machine
+/// the user is looking at.
+///
+/// A blank answer counts as unreadable. `sysinfo` reports an unset hostname as
+/// `Some("")` rather than `None` on Linux - `gethostname` succeeds into a zeroed
+/// buffer, which truncates to the empty string - and an empty Device row is the
+/// thing the stand-in exists to prevent.
+fn host_name() -> String {
+    sysinfo::System::host_name()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "This device".to_string())
+}
+
+/// How much device name may ride on a request.
+///
+/// A name is free text with no other bound: both inputs that write one accept a
+/// paste, and the value is stamped on **every** proxied request. Header blocks
+/// are not free - the engine's own h2 server had to be raised to 64 KiB because
+/// the `h2` default of 16 KiB was refusing browser traffic (`proxy_e2e.rs`), and
+/// the gateway advertises a limit of its own that we do not control. An
+/// oversized name would fail every request the user makes, with nothing to
+/// connect the failure to the rename that caused it.
+///
+/// 128 bytes is far above any name a person types and far below any limit worth
+/// worrying about. Truncated rather than rejected: a rename that silently does
+/// nothing is worse than one that keeps the first hundred-odd characters, and
+/// the label is a display string, not an identifier.
+const DEVICE_NAME_MAX_BYTES: usize = 128;
+
+/// The name, cut to [`DEVICE_NAME_MAX_BYTES`] on a character boundary.
+///
+/// Bytes rather than characters because it is the header block that is bounded,
+/// and the cut lands on a `char` boundary because a `String` cannot hold half of
+/// one. Trailing whitespace exposed by the cut goes too, so a truncated name
+/// does not end in a space.
+fn capped(name: &str) -> String {
+    if name.len() <= DEVICE_NAME_MAX_BYTES {
+        return name.to_string();
+    }
+    let end = (0..=DEVICE_NAME_MAX_BYTES)
+        .rev()
+        .find(|&i| name.is_char_boundary(i))
+        .unwrap_or(0);
+    name[..end].trim_end().to_string()
+}
+
+/// What a typed name means, with the file left out of it: a real name trimmed and
+/// capped, or `None` for anything blank. Separated so the decision is testable
+/// without a process-global directory override - the rest of this module's tests
+/// stay off the filesystem for the same reason.
+fn device_name_override(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| capped(trimmed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_everything_on() {
+        let prefs = Preferences::default();
+        assert!(prefs.routing_health_notifications);
+        assert!(prefs.share_diagnostics);
+    }
+
+    /// The distinction the onboarding step turns on: sharing is on by default, and
+    /// that default is *not* an answer. An install that predates the field must
+    /// read as unanswered so the person is actually asked.
+    #[test]
+    fn the_default_is_not_an_answer() {
+        assert!(!Preferences::default().share_diagnostics_recorded);
+        let old_file: Preferences =
+            serde_json::from_str(r#"{"share_diagnostics":true}"#).expect("parses");
+        assert!(old_file.share_diagnostics);
+        assert!(
+            !old_file.share_diagnostics_recorded,
+            "a file written before this field existed was never an answer"
+        );
+    }
+
+    /// Leaving the default in place is still an answer - otherwise Continue would
+    /// dismiss the step and the next launch would ask again.
+    #[test]
+    fn an_unchanged_choice_still_counts_as_answered() {
+        let raw = serde_json::to_string(&Preferences {
+            share_diagnostics: true,
+            share_diagnostics_recorded: true,
+            routing_health_notifications: true,
+            device_name: None,
+            ..Preferences::default()
+        })
+        .expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert!(back.share_diagnostics_recorded);
+    }
+
+    /// The property Settings depends on: a file from a build that predates a
+    /// field must load that field as on, not as false.
+    #[test]
+    fn a_missing_field_loads_as_on() {
+        let prefs: Preferences = serde_json::from_str("{}").expect("empty object should parse");
+        assert_eq!(prefs, Preferences::default());
+
+        let partial: Preferences = serde_json::from_str(r#"{"share_diagnostics":false}"#)
+            .expect("partial object should parse");
+        assert!(
+            partial.routing_health_notifications,
+            "an absent field must not read as off"
+        );
+        assert!(!partial.share_diagnostics);
+    }
+
+    #[test]
+    fn an_explicit_false_survives_a_round_trip() {
+        let prefs = Preferences {
+            routing_health_notifications: false,
+            share_diagnostics: true,
+            share_diagnostics_recorded: true,
+            device_name: None,
+            ..Preferences::default()
+        };
+        let raw = serde_json::to_string(&prefs).expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back, prefs);
+    }
+
+    /// A device with no name is not a device called "": the row would render
+    /// blank, where `None` means "follow the hostname", which is what the user
+    /// gets by clearing the field.
+    #[test]
+    fn a_blank_device_name_clears_the_override() {
+        assert_eq!(device_name_override(""), None);
+        assert_eq!(device_name_override("   "), None);
+        assert_eq!(device_name_override("\t\n"), None);
+    }
+
+    /// Surrounding whitespace is a typo, not part of the name - it would show up
+    /// in the row and in every comparison against it.
+    #[test]
+    fn a_device_name_is_stored_trimmed() {
+        assert_eq!(
+            device_name_override("  Studio Mac  ").as_deref(),
+            Some("Studio Mac")
+        );
+        // Only the edges: a name can legitimately have spaces in it.
+        assert_eq!(
+            device_name_override("Gabriel's MacBook Pro").as_deref(),
+            Some("Gabriel's MacBook Pro")
+        );
+    }
+
+    /// A pasted name is cut, not refused. The bound exists because the value
+    /// rides every proxied request; see `DEVICE_NAME_MAX_BYTES`.
+    #[test]
+    fn an_oversized_device_name_is_capped() {
+        let long = "M".repeat(1000);
+        let stored = device_name_override(&long).expect("a long name is still a name");
+        assert_eq!(stored.len(), DEVICE_NAME_MAX_BYTES);
+        assert!(long.starts_with(&stored));
+        // A name that fits is untouched, including at the boundary itself.
+        let exact = "M".repeat(DEVICE_NAME_MAX_BYTES);
+        assert_eq!(
+            device_name_override(&exact).as_deref(),
+            Some(exact.as_str())
+        );
+    }
+
+    /// The cut lands on a character boundary, and does not leave a trailing
+    /// space where it landed mid-word.
+    #[test]
+    fn capping_does_not_split_a_character() {
+        // Four bytes each, so the limit falls inside the 32nd emoji.
+        let emoji = "\u{1f5a5}".repeat(40);
+        let stored = device_name_override(&emoji).expect("still a name");
+        assert!(stored.len() <= DEVICE_NAME_MAX_BYTES);
+        assert_eq!(stored.chars().count(), DEVICE_NAME_MAX_BYTES / 4);
+        // Whitespace exposed by the cut goes with it.
+        let spaced = format!("{} tail", "M".repeat(DEVICE_NAME_MAX_BYTES - 1));
+        assert_eq!(capped(&spaced), "M".repeat(DEVICE_NAME_MAX_BYTES - 1));
+    }
+
+    /// An absent name must survive a round trip as absent. Written as `null` and
+    /// read back as `None`, not as `Some("")`.
+    #[test]
+    fn an_absent_device_name_round_trips() {
+        let prefs = Preferences::default();
+        let raw = serde_json::to_string(&prefs).expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.device_name, None);
+        // And a file from a build that predates the field loads the same way.
+        let old: Preferences = serde_json::from_str(r#"{"share_diagnostics":true}"#)
+            .expect("older object should parse");
+        assert_eq!(old.device_name, None);
+    }
+
+    /// A hand-mangled file must not stop Settings opening. `load` is infallible
+    /// by design; this pins that it stays that way.
+    #[test]
+    fn unparseable_json_falls_back_to_defaults() {
+        let prefs: Preferences = serde_json::from_str("not json").unwrap_or_default();
+        assert_eq!(prefs, Preferences::default());
+    }
+}

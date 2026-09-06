@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolId {
@@ -54,6 +55,12 @@ impl fmt::Display for ToolId {
 pub struct ConnectInput {
     pub gateway_base_url: String,
     pub upstream_url: String,
+    /// Who pays the upstream provider, from the account
+    /// ([`crate::account::BillingMode`]). Most integrations ignore it: they
+    /// write a relay base URL and no credential, so the relay applies the mode
+    /// per request. Codex is the exception - its provider block has to say
+    /// whether Codex authenticates at all (see `integrations::codex`).
+    pub billing_mode: crate::account::BillingMode,
     /// Loopback base URL of the reverse-proxy relay
     /// ([`crate::proxy::relay_base_url`]). Relay-routed integrations point
     /// their tool config here and inject no credential (the relay injects the
@@ -74,6 +81,21 @@ pub enum Status {
     Detected,
     Connected,
     Drifted(String),
+    /// Gate's values are in the file Gate writes, and a configuration layer the
+    /// tool ranks *higher* decides where its traffic goes anyway. The payload
+    /// names the layer.
+    ///
+    /// Its own state rather than a shade of [`Status::Drifted`], because the two
+    /// ask for opposite things. Drift is our own file changed underneath us and
+    /// the repair is to write it again; an override leaves our file exactly as
+    /// we left it, and writing it a second time moves nothing. Telling a user
+    /// to "apply Gate configuration" against an override sends them to fix the
+    /// one thing that is already correct.
+    ///
+    /// And emphatically not [`Status::Connected`]: reporting a route we do not
+    /// own is the failure AG-674 exists to remove - the operator believes their
+    /// traffic is governed while it goes somewhere else.
+    Overridden(String),
 }
 
 impl fmt::Display for Status {
@@ -83,13 +105,35 @@ impl fmt::Display for Status {
             Status::Detected => f.write_str("detected"),
             Status::Connected => f.write_str("connected"),
             Status::Drifted(reason) => write!(f, "drifted: {reason}"),
+            Status::Overridden(source) => write!(f, "overridden: {source}"),
         }
     }
 }
 
 pub trait Integration: Send + Sync {
     fn id(&self) -> ToolId;
+
+    /// What this tool is called where nothing else names it: the CLI's output,
+    /// log lines, error contexts, the quit takeover's list of what still routes.
+    /// The product - "Claude Code", not "CLI".
+    ///
+    /// Distinct from [`Integration::row_label`] on purpose. This one was doing
+    /// both jobs and the surfaces above have no heading to lean on, so a row
+    /// label reaching them collides: two connected terminal tools rendered a
+    /// takeover reading "CLI and CLI still route", and `gate-connect list`
+    /// printed three rows a reader cannot tell apart.
     fn display_name(&self) -> &'static str;
+
+    /// The ledger row's label, under a family heading that already names the
+    /// vendor - which is what lets it be one word ("CLI", "App", "Web").
+    ///
+    /// Defaults to the product name, and the default is the point: a surface
+    /// kind is only legible inside the rail's grouping, so an integration that
+    /// has not thought about this gets the name that is right everywhere. Only
+    /// `list_tools` reads it; everything else wants `display_name`.
+    fn row_label(&self) -> &'static str {
+        self.display_name()
+    }
 
     /// Human-readable name of the upstream model provider this tool talks
     /// to natively (e.g. "Anthropic" for Claude Code, "OpenAI" for Codex).
@@ -123,6 +167,49 @@ pub trait Integration: Send + Sync {
     fn config_is_managed(&self) -> Result<bool> {
         Ok(false)
     }
+
+    /// The file this integration rewrites, for the copy that tells the user what
+    /// is about to change - "Gate will update ~/.codex/config.toml".
+    ///
+    /// A display string rather than a `PathBuf`: the only caller is UI copy, and
+    /// resolving it can fail (no home directory), which is not worth propagating
+    /// into a sentence. `None` when the integration edits nothing a single path
+    /// names - the environment channel writes machine-wide settings, not a file
+    /// of its own - and callers then name the tool without a location rather than
+    /// inventing one.
+    ///
+    /// Not a secret: it is a path in the user's own home directory, and the point
+    /// of showing it is that they can go and read it.
+    fn config_location(&self) -> Option<String> {
+        None
+    }
+
+    /// Filesystem paths whose appearance, change or removal could change what
+    /// [`detect`](Integration::detect) or [`status`](Integration::status)
+    /// answers: the binaries that prove the tool is installed, and the config
+    /// file that says whether Gate wrote it.
+    ///
+    /// Read by [`crate::tool_watch`], which arms the deepest directory that
+    /// exists at or above each one and re-arms as the rest appear. **Paths that
+    /// do not exist yet are the point** - a tool being installed is precisely
+    /// the change nothing else in the app can report.
+    ///
+    /// Required rather than defaulted, deliberately. An integration that
+    /// answered `vec![]` by inheritance would go unwatched, and the symptom -
+    /// a tool that stays "Not installed" until the user happens to focus the
+    /// window - looks like a detection bug rather than a missing declaration.
+    /// Returning an empty vec is still a real answer: the environment channel's
+    /// status comes from the engine, which emits its own event.
+    ///
+    /// Two things belong out of the list. Anything Gate itself writes and then
+    /// re-reads - the app-support sidecars - because those change on an action
+    /// the window already refreshes after, so watching them would run a second
+    /// pass over every connect. And `$PATH` lookups, which are not paths.
+    ///
+    /// A path that cannot be resolved is dropped rather than propagated: a
+    /// machine with no home directory has nothing to watch, and the caller wants
+    /// whatever can be had.
+    fn watch_paths(&self) -> Vec<PathBuf>;
 
     /// Is the underlying tool installed on this machine?
     fn detect(&self) -> Result<bool>;
@@ -209,7 +296,9 @@ pub fn disconnect_all_managed() -> Result<()> {
     let mut failures = Vec::new();
     for integ in registry() {
         let managed = match integ.status() {
-            Ok(Status::Connected) | Ok(Status::Drifted(_)) => true,
+            // Overridden counts: our values are on disk whatever else outranks
+            // them, so sign-out still has to take them out.
+            Ok(Status::Connected) | Ok(Status::Drifted(_)) | Ok(Status::Overridden(_)) => true,
             Ok(_) => false,
             // status() failing (e.g. unparsable config) doesn't prove the
             // tool is clean - attempt the disconnect so a config that still
@@ -280,18 +369,53 @@ mod tests {
         }
     }
 
-    /// The environment channel is registered like anything else, so sign-out and
-    /// the master-off sweep reach it. It is hidden for a different reason than
-    /// the harnesses: not "unvalidated", but "no correct home in a ledger that
-    /// groups by model family" - it is a mechanism, not a tool.
+    /// Display names are what a flat list is read by, so no two may match.
+    ///
+    /// The regression this pins: `display_name` was made the ledger's row label
+    /// ("CLI"), which is legible under a heading naming the vendor and nowhere
+    /// else. Four integrations then answered "CLI", and the surfaces with no
+    /// heading rendered them identically - the quit takeover said "CLI and CLI
+    /// still route", naming two tools the user cannot tell apart at the moment
+    /// they decide whether to close them, and `gate-connect list` printed three
+    /// such rows. Row labels collide by design and live on `row_label`.
     #[test]
-    fn the_environment_channel_is_registered_and_hidden() {
+    fn display_names_are_distinct_across_the_registry() {
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for integ in registry() {
+            let name = integ.display_name();
+            if let Some((other, _)) = seen.iter().find(|(_, n)| *n == name) {
+                panic!(
+                    "{} and {} both call themselves {name:?}; a flat list - the quit \
+                     takeover, `gate-connect list` - cannot tell them apart. A one-word \
+                     surface label belongs on `row_label`.",
+                    other,
+                    integ.id().slug()
+                );
+            }
+            seen.push((integ.id().slug(), name));
+        }
+    }
+
+    /// The environment channel is registered like anything else, so sign-out and
+    /// the master-off sweep reach it - and it is listed now.
+    ///
+    /// It was hidden because a ledger grouped by model family had no honest row
+    /// for a mechanism spanning every family. Experimental is that row: the
+    /// channel sits beside OpenCode, which cannot route without it, and turning
+    /// OpenCode on turns this on. A switch that flips something invisible is the
+    /// thing being fixed, so the listing is pinned rather than left to drift.
+    #[test]
+    fn the_environment_channel_is_registered_and_listed() {
         let slugs: Vec<&str> = registry().iter().map(|i| i.id().slug()).collect();
         assert!(
             slugs.contains(&"env-proxy"),
             "env-proxy must be registered so cleanup reaches it, got {slugs:?}"
         );
-        assert!(hidden_in_ui_slugs().contains(&"env-proxy"));
+        assert!(
+            !hidden_in_ui_slugs().contains(&"env-proxy"),
+            "env-proxy is the Terminal tools row; hiding it makes the OpenCode \
+             prompt promise something the user cannot see"
+        );
         assert_eq!(ToolId::from_slug("env-proxy"), Some(ToolId::EnvProxy));
     }
 }

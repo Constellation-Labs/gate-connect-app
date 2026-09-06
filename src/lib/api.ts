@@ -1,21 +1,46 @@
 import { invoke } from "@tauri-apps/api/core";
+import { slowCacheRead, slowNetworkRead } from "./slowActivity";
 
 export type Status =
   | { kind: "not_installed" }
   | { kind: "detected" }
   | { kind: "connected" }
   | { kind: "drifted"; reason: string }
+  /** Gate's values are in the file Gate writes, and a configuration layer the
+   *  tool ranks higher decides where its traffic goes anyway. `source` names
+   *  that layer - a path, or the environment variable holding it.
+   *
+   *  Not a shade of `drifted`: nothing touched our file, so re-applying it moves
+   *  nothing, and emphatically not `connected`, which is the claim AG-674 exists
+   *  to stop making. */
+  | { kind: "overridden"; source: string }
   | { kind: "error"; message: string };
 
 export interface Tool {
   slug: string;
+  /** The ledger row's label, under a heading that already names the vendor:
+   *  one word ("CLI", "App"), and two tools can share it. */
   name: string;
+  /** The product name ("Claude Code"), for a reader that is a flat list rather
+   *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
+   *  Distinct across the registry, which {@link Tool.name} is not. */
+  product_name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
+  /** The file Gate rewrites for this tool, so the confirmation can say what is
+   * about to change. Null where no single file names it (the environment
+   * channel). Not a secret - it is a path in the user's own home directory, and
+   * showing it is the point. */
+  config_location: string | null;
   status: Status;
 }
 
 export type AuthMode = "api_key" | "oauth";
+
+/** Who pays the upstream provider. `byok` forwards each tool's own provider
+ * credential; `payg` sends none, so Gate routes through the workspace's
+ * provider accounts and debits its prepaid balance. */
+export type BillingMode = "byok" | "payg";
 
 export interface Account {
   gateway_base_url: string;
@@ -23,6 +48,9 @@ export interface Account {
   /** Which credential the account authenticates with. Drives sign-in routing
    * and whether the legacy key controls show in Settings. */
   auth_mode: AuthMode;
+  /** Who pays the upstream provider. No UI surfaces this yet - the backend
+   * mechanism landed first (see docs/payg-implementation-plan.md §3). */
+  billing_mode: BillingMode;
   /** Selected org (OAuth mode). Both null until the user picks one; an OAuth
    * account with no org routes to the picker. */
   org_id: string | null;
@@ -96,8 +124,128 @@ export const oauthSignOut = () => invoke<void>("oauth_sign_out");
  * from the sign-in screen; OAuth sign-in sets it implicitly. */
 export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
 
+/** Switch who pays the upstream provider. The relay and the MITM engine read
+ * the mode per request, so routing follows immediately; a connected Codex is
+ * re-applied on the Rust side, since its provider block encodes the mode. */
+export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
+
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
+
+/** The 24-hour activity overview, as raw JSON text.
+ *
+ * Raw rather than typed on purpose, and not scaffolding: the gateway contract is
+ * still moving, and a DTO written before the fields are agreed drifts silently
+ * from the endpoint. `lib/activity.ts` is the only place that knows the shape, so
+ * tightening this to a generated type once it is signed off is a change to one
+ * file.
+ *
+ * `installId` scopes the reading to one installation (AC 1). Omitted, it is
+ * org-wide: attribution only starts with the gateway migration that added it,
+ * so scoping by default would hide every earlier request. */
+export const activityOverview = (installId?: string, tool?: string) =>
+  // The dev delay is a no-op in a real build; see `slowActivity`.
+  slowNetworkRead().then(() => invoke<string>("activity_overview", { installId, tool }));
+
+/** The last overview that landed for this scope, or `null`.
+ *
+ * A disk read. The pane asks for this and for {@link activityOverview} together
+ * so it can open on the previous reading rather than on empty tiles, which is
+ * what AG-576 means by never showing a figure that is not a real one: the
+ * numbers on screen are always something that actually happened, and the
+ * network answer replaces them when it lands. */
+export const activityCachedOverview = (installId?: string, tool?: string) =>
+  slowCacheRead().then(() =>
+    invoke<string | null>("activity_cached_overview", { installId, tool }),
+  );
+
+/** Every held per-tool activity reading for this installation scope, as raw JSON
+ *  text keyed by tool slug.
+ *
+ * One disk read for a surface that draws a figure on every row - the tray's quick
+ * status. `/v1/me/activity` answers for one tool at a time, so a read per row per
+ * open is the fan-out its throttle bucket cannot take; the popover opens on this
+ * and refreshes only what has gone stale.
+ *
+ * Empty covers no cache, an unreadable one and a scope that holds nothing. All
+ * three mean the same thing: wait for the network. */
+export const activityCachedToolOverviews = (installId?: string) =>
+  invoke<Record<string, string>>("activity_cached_tool_overviews", { installId });
+
+/** The installations this account has sent traffic from, as raw JSON text.
+ * Derived from traffic, so it is empty until something has been attributed. */
+export const activityInstallations = () => invoke<string>("activity_installations");
+
+/** One page of a tool's recent requests, as raw JSON text (AG-574).
+ *
+ * `tool` is required: the feed is always about one tool, and the gateway refuses a
+ * request that names none. `cursor` is the previous page's `nextCursor`, passed
+ * back unchanged - it is opaque, and the gateway owns its shape.
+ *
+ * Deliberately not paired with a cached read the way the overview is. The held
+ * reading is a single slot and belongs to the Overview; see `activity_cache.rs`. */
+export const activityToolEvents = (tool: string, installId?: string, cursor?: string) =>
+  slowNetworkRead().then(() =>
+    invoke<string>("activity_tool_events", { installId, tool, cursor }),
+  );
+
+/** One tool's stored model choice, as this install holds it. */
+export interface ToolModelChoice {
+  /** Only this decides what would be served. `"tool"` means Gate does not
+   *  intervene. */
+  source: "tool" | "gate";
+  /** Chosen models. May be non-empty while `source` is `"tool"` - that is a
+   *  remembered choice, not an active one. */
+  model_ids: string[];
+}
+
+export interface ToolModels {
+  /** Keyed by tool slug. A tool with no entry is on its own default; an absent
+   *  key is the answer, not a gap. */
+  tools: Record<string, ToolModelChoice>;
+  /** Unix seconds when this install first accepted paid Gate model use, or null
+   *  if it never has. */
+  paid_ack_unix: number | null;
+}
+
+/** This install's per-tool model choices (AG-588).
+ *
+ * A local file read, not a network call - the choice lives in `preferences.json`
+ * beside the other user choices. It was briefly a gateway endpoint scoped to the
+ * organization; keeping it local means the machine whose traffic it governs is
+ * the machine that holds it. */
+export const toolModelPreferences = () => invoke<ToolModels>("tool_model_preferences");
+
+/** Choose the model one tool runs on.
+ *
+ * `modelIds` may be non-empty with either source: with `"gate"` it is what Gate
+ * would serve, with `"tool"` it is remembered so the pane can show what the user
+ * would be switching to.
+ *
+ * `acknowledgePaidUse` is honoured only when moving to `"gate"` - remembering a
+ * model under the tool's own default spends nothing, so it must not record
+ * consent to spend. */
+export const setToolModel = (
+  tool: string,
+  source: "tool" | "gate",
+  modelIds: string[],
+  acknowledgePaidUse = false,
+) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
+
+/** This organization's Gate credit balance and plan, as raw JSON text
+ * (AG-588/590/592).
+ *
+ * Its own read rather than a field on the catalogue: the balance is small and
+ * changes as requests are served, the catalogue is large and does not. */
+export const gateCredits = () => invoke<string>("gate_credits");
+
+/** The models this gateway offers, as raw JSON text (Vercel AI Gateway shape).
+ *
+ * An empty `data` array is a real answer, not a failed read: the catalogue is
+ * built from platform provider accounts, and a deployment with none has nothing
+ * to offer. */
+export const gateModelCatalogue = () =>
+  slowNetworkRead().then(() => invoke<string>("gate_model_catalogue"));
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */
@@ -153,6 +301,11 @@ export interface ProxyState {
    * environment variables *are* the system proxy and cannot be declined
    * without turning routing off - so the switch must not render there. */
   env_export_separable: boolean;
+  /** Loopback base URL config-routed tools are pointed at; null before a relay
+   * port has ever been bound. Non-secret - it is already written verbatim into
+   * each tool's own config file. The drift review shows it, because approving an
+   * overwrite means seeing what it writes. */
+  relay_base_url: string | null;
   domains: ProxyDomain[];
 }
 
@@ -259,13 +412,73 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
  * healthy restored session (agents launched after routing) stays quiet. */
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
+/** Why a tool is not verifiably routing. Closed set, mirroring
+ * `routing_health::Reason` - a seventh value would need a next action and a
+ * recovery path to go with it. */
+export type VerdictReason =
+  | "configuration_changed"
+  | "configuration_overridden"
+  | "reopen_required"
+  | "connection_problem"
+  | "access_problem"
+  | "verification_failed";
+
+/** The one action offered for a reason. One-to-one with {@link VerdictReason};
+ * the backend derives it so the pair cannot drift apart. */
+export type VerdictNextAction =
+  | "apply_gate_configuration"
+  | "show_conflicting_config"
+  | "reopen_tool"
+  | "reconnect"
+  | "sign_in"
+  | "retry_check";
+
+/** What one tool is *doing*, as opposed to what its config says
+ * ({@link Tool.status}) or what the user asked for. `reason` and `next_action`
+ * are set only when `state` is `needs_attention`. */
+export interface Verdict {
+  slug: string;
+  state: "not_installed" | "on" | "off" | "needs_attention";
+  reason: VerdictReason | null;
+  next_action: VerdictNextAction | null;
+  /** Where the traffic is going now, and where the config on disk asks it to go.
+   *  Both set only when `reason` is `reopen_required` - the one verdict where a
+   *  running process and its own config file disagree, which is exactly what
+   *  makes the pair worth printing. Which way round they are depends on which
+   *  change the process missed, so neither is a fixed "Gate" slot. */
+  route_in_use: string | null;
+  requested_route: string | null;
+}
+
+/** What every config-routed tool is actually doing: config state, plus a
+ * loopback check that the relay answers, plus whether the tool's process
+ * predates the last routing change.
+ *
+ * Separate from {@link listTools} because this does network I/O and walks the
+ * process table, so it must not sit on a render path. It does **not** prove the
+ * tool sent traffic - nothing attributes requests to a tool today. */
+export const routingVerdicts = () => invoke<Verdict[]>("routing_verdicts");
+
 /** One running AI tool. No command line by design: argv on these routinely
  * holds prompts, paths and occasionally a key, and this list is built to be
  * pasted into a support thread. */
 export interface RunningAgent {
+  /** The tool this process belongs to. A process name is not a key - `claude`
+   * and `Claude` are one slug and two programs - so anything tracking a tool
+   * through close and reopen keys on this. Empty only for a process no slug
+   * claims, which the scan cannot produce. */
+  slug: string;
   /** Process name as the OS spells it, original case. "Claude" is the desktop
    * app, "claude" the CLI. */
   name: string;
+  /** Can Gate Connect launch this tool again itself once it is closed?
+   *
+   * **False for every tool today**, and it is reported rather than assumed
+   * because the flow that reads it has to tell the user which tools it will
+   * reopen and which they must. Every tool in the registry is a terminal
+   * program whose shell session, working directory and conversation this
+   * process cannot see; a GUI tool is where it turns true. */
+  can_reopen: boolean;
   pid: number;
   /** Process start, Unix seconds. 0 when the platform wouldn't say. */
   started_at_unix: number;
@@ -286,19 +499,45 @@ export interface RunningAgents {
 
 /** The running agents themselves rather than a count: name, pid, start time,
  * and whether each predates routing. Same process set and staleness rule as
- * the two count probes above. */
-export const runningAgents = () => invoke<RunningAgents>("running_agents");
+ * the two count probes above.
+ *
+ * `only` narrows the scan to the tools whose configs were just rewritten - a
+ * per-app switch passes its own slug, a family cascade the slugs it touched.
+ * Omitting it asks about every tool, which is what diagnostics and the master
+ * toggle mean. Narrowing matters because offering to close Claude when someone
+ * switched Codex names processes the change never touched. Slugs with no process
+ * name of their own (`hermes`, `openclaw`, `env-proxy`, a proxy domain key)
+ * match nothing rather than everything. */
+export const runningAgents = (only?: string[]) =>
+  invoke<RunningAgents>("running_agents", { only: only ?? null });
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
- * none were running. */
-export const closeRunningAgents = () => invoke<number>("close_running_agents");
+ * none were running.
+ *
+ * `only` is the same filter {@link runningAgents} takes, and the caller is
+ * expected to pass back exactly what it offered: this signals processes, so the
+ * set it kills has to be the set the user was shown and agreed to. */
+export const closeRunningAgents = (only?: string[]) =>
+  invoke<number>("close_running_agents", { only: only ?? null });
 
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting
  * when config-routed tools would be left pointing at the dead relay. */
 export const quitApp = () => invoke<void>("quit_app");
+
+/** Ask to quit the way the tray menu's Quit does: exit outright unless
+ * config-routed tools are still managed, in which case the backend reveals the
+ * main window and defers the decision there via `quit-requested`. The tray
+ * popover's own Quit entry goes through this so both entrances raise the same
+ * three-way dialog. */
+export const requestQuit = () => invoke<void>("request_app_quit");
+
+/** Reveal (or refocus) the main window, wherever the user left it. The tray
+ * popover's "Expand app" is the caller; the command is the same one the
+ * onboarding window's close handler uses. */
+export const revealMainWindow = () => invoke<void>("reveal_popover");
 
 /** Hand over (and clear) the buffered quit request: the connected tool names
  * to show in the quit takeover, or null when no quit is pending. Swept once
@@ -309,8 +548,310 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent
  * untouched so the next startup restore reapplies them. Fires the "restart
- * your CLI agents" system notification. */
-export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
+ * your CLI agents" system notification.
+ *
+ * Returns the display names of any tools it could **not** return to their own
+ * settings; empty means the teardown was clean. A non-empty list is not a
+ * rejection - the rest of the sweep ran - but the caller must not quit while
+ * claiming the cleanup finished. */
+export const disconnectToolsForQuit = () => invoke<string[]>("disconnect_tools_for_quit");
+
+/** One thing a routing restore recorded and has not finished. `name` falls back to
+ * the slug when the provider or tool has left the registry since - naming it beats
+ * dropping it from a list the user is being asked to act on. */
+export interface PendingEntry {
+  slug: string;
+  name: string;
+}
+
+/** Routing work that was written down and did not complete. Empty in the normal
+ * case. The snapshots have always recorded unfinished work - `restore_all` keeps
+ * failures in the file and clears it only once everything is back - but nothing
+ * read them for display, so a half-finished restore left some tools routing, some
+ * not, and no statement anywhere that Gate knew. */
+export interface PendingRestore {
+  providers: PendingEntry[];
+  tools: PendingEntry[];
+}
+
+/** What a restore still owes. Read-only and cheap: opens no config, starts
+ * nothing, safe on a status refresh. */
+export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
+
+/** Finish an interrupted restore, and report what is still outstanding.
+ * `restore_all`'s existing retry semantics mean this repeats no completed write.
+ * Returns the remaining state rather than void, because a partial success is the
+ * interesting case and must not read as done. */
+export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
+/** What the live security-event feed says about its *own* connection (AG-578).
+ *
+ * Deliberately separate from anything routing reports, and read from its own
+ * backend channel. A tool can be routing perfectly while the feed is offline, and
+ * the reverse: the events come from the gateway, not from local traffic. Driving
+ * one indicator from the other is the observed-state-versus-intent mistake
+ * `lib/groups.ts` documents, in a new place. */
+export type FeedState = "live" | "reconnecting" | "offline";
+
+/** What the guardrails did to a request. Only these two reach the live feed:
+ *  `redact` is high-volume and low-signal, and `allow` is not a verdict. The
+ *  Overview counters and the per-tool table still carry all four. */
+export type SecurityAction = "block" | "flag";
+
+/** One blocked or flagged event.
+ *
+ * **What is absent is the point.** No prompt text, no response text, no matched
+ * credential, no evidence blob, no conversation title, no session reference. The
+ * gateway omits them from the payload rather than the client hiding them, so a
+ * field that never crosses the wire cannot leak through a log or a crash report.
+ * If a field appears here that names content, the contract was widened upstream
+ * and that is worth stopping over. */
+export interface SecurityEvent {
+  /** Stream position and dedupe key (a ULID). Not `requestId`: one request
+   *  records a decision per phase, so two events can share a request id. */
+  id: string;
+  /** What the dashboard deep link is keyed on. */
+  requestId: string;
+  at: string;
+  action: SecurityAction;
+  /** `credential | phi | pii | injection | other`, derived gateway-side. Null
+   *  when nothing fired under a name its rules recognise. */
+  category: string | null;
+  /** Null is ordinary, not exceptional: an agent whose User-Agent is not on the
+   *  gateway's allowlist is recorded unattributed rather than guessed at. */
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
+}
+
+/** What the feed is doing right now. Read on mount; afterwards follow the
+ *  `security-feed-state` event. */
+export const securityFeedState = () => invoke<FeedState>("security_feed_state");
+
+/** The events the feed has buffered, oldest first.
+ *
+ * A window only receives Tauri events while it is listening, and the tray window
+ * is created and destroyed on demand - so a popover opened after ten blocked
+ * requests would otherwise show an empty list and call it "No security events",
+ * which is a different claim entirely. */
+export const securityFeedRecent = () => invoke<SecurityEvent[]>("security_feed_recent");
+
+/** The "Try again" behind an Unavailable feed. Wakes the connection out of its
+ *  backoff so the click does something visible rather than waiting out a sleep. */
+export const securityFeedRetry = () => invoke<void>("security_feed_retry");
+
+/** Non-secret Settings choices. Every field defaults to `true`, and an absent
+ * field in the stored file loads as `true` - so a switch reads On before anything
+ * has ever been written, which is what lets Settings show a truthful default.
+ *
+ * Only the preferences that currently gate something are here. The per-category
+ * security-event switches gate the notifications the live feed (AG-578) fires;
+ * they arrived with it, because a switch that gates nothing would tell the user
+ * they had turned something off. */
+export interface Preferences {
+  /** Native notifications about routing itself - an expired session, a quit that
+   * could not put a tool back. The two the app actually fires. */
+  routing_health_notifications: boolean;
+  /** Whether Gate Connect may send diagnostic data. Onboarding records the first
+   * answer; Settings changes it after. Nothing is uploaded by setting it. */
+  share_diagnostics: boolean;
+  /** Whether the person has ever *answered* the question, rather than having the
+   * default applied for them. False on installs that predate the field, which is
+   * why they see the onboarding step once - consent nobody was asked for is not
+   * consent. `setShareDiagnostics` sets it from either caller. */
+  share_diagnostics_recorded: boolean;
+  /** The person's own name for this machine, or null when it follows the
+   * hostname. Read {@link deviceName} to display it - this is the override, not
+   * the resolved value.
+   *
+   * Also decides whether this device's traffic is labelled at all: only a name
+   * the user chose is sent as `x-gate-device-name`. Null means the hostname is a
+   * display fallback and goes no further, so skipping the naming step really
+   * does skip it. */
+  device_name: string | null;
+  /** Notify when a request is blocked. Gated per category rather than as one
+   *  switch because the two differ in weight: a block stopped something, a flag
+   *  only noted it. */
+  blocked_event_notifications: boolean;
+  /** Notify when a request is flagged. */
+  flagged_event_notifications: boolean;
+  /** Whether those notifications make a sound. */
+  security_notification_sound: boolean;
+}
+
+export const getPreferences = () => invoke<Preferences>("get_preferences");
+
+/** This install's stable id, cached on disk at first read.
+ *
+ * Not the analytics distinct id: that one is absent in a build with no PostHog
+ * key and absent again once diagnostics are switched off, which blanked the
+ * Settings row for reasons that had nothing to do with the install. */
+export const installId = () => invoke<string>("install_id");
+
+/** What to call this machine: the stored name, or the hostname when there is
+ *  none. Resolved by the backend so there is one answer, not two.
+ *
+ *  A display answer. What goes on the wire is the stored name only - see
+ *  {@link Preferences.device_name}. */
+export const deviceName = () => invoke<string>("device_name");
+
+/** Rename this device. An empty or blank name clears the override, which puts
+ *  the row back to following the hostname. */
+export const setDeviceName = (name: string) => invoke<void>("set_device_name", { name });
+
+/** How long a device name may be, matching `preferences::DEVICE_NAME_MAX_BYTES`.
+ *
+ *  The backend truncates anyway - the name is stamped on every proxied request,
+ *  and an unbounded header block is a request the gateway refuses. This caps the
+ *  inputs so the user sees the limit while typing instead of discovering it
+ *  after saving. ASCII in practice, so a `maxLength` in UTF-16 units is the same
+ *  number; a name of 128 multi-byte characters is cut server-side, which is the
+ *  correct place for the byte count to be decided. */
+export const DEVICE_NAME_MAX_LENGTH = 128;
+
+export const setRoutingHealthNotifications = (enabled: boolean) =>
+  invoke<void>("set_routing_health_notifications", { enabled });
+
+export const setShareDiagnostics = (enabled: boolean) =>
+  invoke<void>("set_share_diagnostics", { enabled });
+
+export const setBlockedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_blocked_event_notifications", { enabled });
+
+export const setFlaggedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_flagged_event_notifications", { enabled });
+
+export const setSecurityNotificationSound = (enabled: boolean) =>
+  invoke<void>("set_security_notification_sound", { enabled });
+
+/** What a restore did to one entry on its last attempt - the *stage* a
+ * {@link RecoveryTool} reports. Closed set, mirroring `recovery::Outcome`, and
+ * every member comes from the restore's own control flow rather than from
+ * matching an error message. */
+export type RestoreOutcome =
+  | "pending"
+  | "restored"
+  | "write_failed"
+  | "not_installed"
+  | "unknown"
+  | "deferred_signed_out";
+
+
+/** What one interrupted entry still needs. Mirrors `recovery::NextStep`, and is
+ *  deliberately not {@link VerdictNextAction}: that set answers "this tool is not
+ *  routing, what now" and assumes the write that configured it finished. These
+ *  answer "this restore did not finish, what now", and `retry` is the difference -
+ *  nothing in the verdict layer knows a write was interrupted. */
+export type RecoveryNextStep = "none" | "retry" | "sign_in" | "reopen_tool";
+
+/** One tool in the recovery summary.
+ *
+ *  Four readings, kept apart because they legitimately disagree and each
+ *  disagreement means something different: the stage is what the *write*
+ *  reached, `last_verified_*` is the last route a check actually established,
+ *  `check_*` is the most recent check whatever it concluded, and
+ *  `running`/`reopen_pending` is the process, which no file can answer.
+ *
+ *  Flattening them would be the bug: a tool whose write finished, whose last
+ *  check said `on`, and whose process predates the write is not routing, and
+ *  only the four together say so. */
+export interface RecoveryTool {
+  slug: string;
+  name: string;
+  kind: "provider" | "tool";
+  /** The journal's outcome, or `pending` for an entry the journal never reached. */
+  stage: RestoreOutcome;
+  /** Whether the write is done with, so a count of stages needs no re-derivation
+   *  of which outcomes are settled. */
+  stage_complete: boolean;
+  /** What kind of failure the stage was, when it was one. `none` for a stage
+   *  that has not failed - including `pending`, where nothing was attempted. */
+  error_category: "none" | "write" | "not_installed" | "unknown" | "account";
+  stage_at_unix: number;
+  /** The last check that established a route, which survives a later failed
+   *  verification - so it can be older than `check_at_unix`. Null when no check
+   *  has ever concluded for this tool. */
+  last_verified_state: "on" | "off" | null;
+  last_verified_unix: number;
+  check_state: "not_installed" | "on" | "off" | "needs_attention" | null;
+  check_reason: VerdictReason | null;
+  check_at_unix: number;
+  running: boolean;
+  /** A process is running that predates the last routing change. */
+  reopen_pending: boolean;
+  next_step: RecoveryNextStep;
+}
+
+/** The interrupted operation, and every tool it touched. */
+export interface RecoverySummary {
+  /** Which operation this describes. One value today, carried rather than
+   *  assumed so a later operation's summary cannot be read as this one. */
+  operation: "restore";
+  /** When the journal was last written. 0 when there is none, which the UI
+   *  renders as unknown rather than as 1970. */
+  updated_unix: number;
+  requested_routing_on: boolean;
+  tools: RecoveryTool[];
+}
+
+/** The whole state of an interrupted routing operation, per tool: the journal,
+ *  the snapshots, the persisted verdict log and the process table, joined.
+ *
+ *  Null when there is nothing to recover, which is the normal case. Read-only -
+ *  it writes nothing and reopens nothing, so the review it feeds cannot change
+ *  what it is reviewing. */
+export const recoverySummary = () =>
+  invoke<RecoverySummary | null>("recovery_summary");
+
+/** What one per-tool retry did, plus what is still outstanding. */
+export interface RetryRestore {
+  /** The retry's own failure, or null. In the payload rather than thrown so the
+   *  caller still gets `pending`: a retry changes what is outstanding for the
+   *  other entries too, and a caller left holding a stale list redraws wrong. */
+  error: string | null;
+  pending: PendingRestore;
+}
+
+/** Retry one recorded entry, leaving every other entry's recorded work alone.
+ *
+ *  The per-tool half of the recovery: {@link resumeRestore} re-attempts
+ *  everything, this re-attempts one slug. It is also what makes per-tool
+ *  progress possible - a caller driving the entries one at a time can say which
+ *  one it is working on. */
+export const retryRestoreEntry = (slug: string) =>
+  invoke<RetryRestore>("retry_restore_entry", { slug });
+
+/** One tool in a teardown report. */
+export interface TeardownTool {
+  slug: string;
+  name: string;
+  next_action: "none" | "retry_disconnect" | "reopen_tool" | "retry_check";
+}
+
+/** Where every installed tool stands after a teardown - routing off, disconnect,
+ *  sign-out or reset.
+ *
+ *  **Read back, not recorded.** The buckets come from re-reading each tool's own
+ *  config, never from what the teardown believed it wrote: a sweep that returns
+ *  success having written nothing is the failure this report exists to catch. So
+ *  a tool the sweep named as failed can appear under `defaults` if its config
+ *  reads clean now, and that is right - the question is where the tools point. */
+export interface TeardownReport {
+  /** Back on their own settings, verified by reading the config. */
+  defaults: TeardownTool[];
+  /** Still carrying Gate's values: the teardown did not put these back. */
+  still_gate: TeardownTool[];
+  /** Clean on disk, but running a process that predates the change - so still
+   *  routing through Gate until it is reopened. */
+  awaiting_reopen: TeardownTool[];
+  /** Could not be read, so nothing about them is known. Not `defaults`: an
+   *  unreadable config is ignorance, not a clean result. */
+  failed: TeardownTool[];
+}
+
+/** Where the tools stand after a teardown, so an operation that could not put
+ *  every tool back can say which ones. Read-only and cheap enough to call when
+ *  the dialog opens: one status read per integration plus one process walk. */
+export const teardownReport = () => invoke<TeardownReport>("teardown_report");
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);

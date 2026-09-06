@@ -129,6 +129,85 @@ export default {
           950: "oklch(0.258 0.092 26.042)",
         },
 
+        // ── New app UI (Figma "Gate Connect", file 9FrccCojXy0f8QD8Wm5Lln). ──
+        // Names mirror the Figma variables 1:1 (`--base/card` -> `base.card`)
+        // so a token can be traced back to the design without guessing. The
+        // design is shadcn-flavoured on the default Tailwind palette, so
+        // neutral/amber/green/gray come from Tailwind itself (this config uses
+        // `extend`, so those ramps are untouched and already exact matches:
+        // neutral-900 #171717, neutral-500 #737373, amber-600 #d97706,
+        // green-600 #16a34a, gray-100 #f3f4f6).
+        //
+        // This supersedes the `gc` group below and the ink-primary rule in the
+        // header note: the design makes blue-ribbon the primary. `gc` stays
+        // until the popover screens are migrated off it.
+        base: {
+          card: "#ffffff",
+          background: "#f9fafb",
+          border: "#e5e7eb",
+          input: "#d1d5db",
+          primary: "#203de2",
+          // `base/foreground`, read off the Figma variables on 2026-08-26. Body
+          // and heading ink across the new UI, which had been `neutral-900`
+          // (#171717) on a shell-wide convention of ours. The design names this
+          // one, so it wins: it is gray-950, a touch darker and bluer.
+          foreground: "#030712",
+          // `base/destructive` and its label. The fill is red-600 to the hex, so
+          // nothing moves; the *label* does - it was white, and the design has
+          // always named a tinted red-50 for it.
+          destructive: "#dc2626",
+          "destructive-foreground": "#fef2f2",
+          // From the token export (`docs/new_ui_design/tokens.json`), which
+          // names it but had no call site until the update banner's dismiss
+          // glyph. Same hex as `background` and as `gray-50`; kept under the
+          // export's own name so the value stays traceable.
+          "primary-foreground": "#f9fafb",
+          "muted-foreground": "#6b7280",
+        },
+
+        // Primary ramp, all eleven stops as exported from the Figma variables
+        // (`docs/new_ui_design/tailwind.tokens.js`). 700 backs switches, active
+        // nav and links; 800 is the "Gate" wordmark and the update banner's
+        // gradient start; 900 is its gradient end. The export reproduced those
+        // three exactly, which is what makes the other eight trustworthy: they
+        // are design's own values rather than interpolations.
+        "blue-ribbon": {
+          50: "#ebf6ff",
+          100: "#dbecff",
+          200: "#bedcff",
+          300: "#97c3ff",
+          400: "#6e9dff",
+          500: "#4c79ff",
+          600: "#294dff",
+          700: "#203de2",
+          800: "#1d37b6",
+          900: "#172563",
+          950: "#101738",
+        },
+
+        // Messages chart series (Figma legend swatches, sampled individually).
+        // Named for the series rather than the hue for two reasons: the meaning
+        // is what call sites care about, and three of the four are Tailwind
+        // defaults while `blue` is REDEFINED as an OKLCH ramp further up this
+        // file - so `bg-blue-400` would silently render the wrong colour.
+        // Levels are the design's own and are not uniform: 400, 500, 400, 500.
+        chart: {
+          messages: "#60a5fa", // tailwind blue/400
+          blocked: "#f87171", // tailwind red/400
+          // Two independent nodes agree on red/400: the legend swatch
+          // (706:10090) and the tooltip component (744:37718). This was
+          // red/500, one step too saturated.
+          flagged: "#fbbf24", // tailwind amber/400
+          redacted: "#8b5cf6", // tailwind violet/500
+          // The file disagrees with itself here and this stays put until a
+          // person says otherwise: the legend swatch (706:10096) draws
+          // violet/500, which is this value, while the newer tooltip
+          // component (744:37728) draws purple/500 #a855f7. The note above
+          // about violet-not-purple is about the REDACT pill (violet/200) and
+          // warns against flipping this by eye, so it is raised with design
+          // instead. See `docs/figma-questions-for-design.md`.
+        },
+
         // ── Gate Connect popover palette (Claude Design handoff). ──
         // Indigo-forward; scoped to the Connect popover only. See header note.
         gc: {
@@ -194,14 +273,136 @@ export default {
           "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 12px 32px -8px color-mix(in oklch, oklch(0.165 0 0) 22%, transparent), 0 4px 12px -2px color-mix(in oklch, oklch(0.165 0 0) 10%, transparent)",
         // Gate Connect popover card drop (prototype --shadow-md).
         "gc-md": "0 2px 4px rgba(10,10,10,0.04), 0 8px 24px rgba(10,10,10,0.06)",
+
+        // New app UI (Figma `shadow/2xs`, `shadow/xs`, `shadow/lg`). Namespaced
+        // rather than overriding Tailwind's `shadow-lg`, which the popover
+        // screens still use.
+        // The design names these on Tailwind v4's scale, where everything
+        // shifted one step down (v4 `shadow-xs` is v3 `shadow-sm`). This repo is
+        // on v3.4, so Figma `shadow/sm` is v3's DEFAULT `shadow`, not `shadow-sm`.
+        // Spelled out here so the mapping does not have to be re-derived.
+        // The `Button` component set's own treatment (685:20855), which the new
+        // UI had been drawing as a flat fill under `base-2xs`. Each is a drop
+        // shadow plus an inset pair - a dark bottom lip and a light top edge -
+        // and that pair is what gives the control its moulding. Sizes differ:
+        // `sm` presses its highlight harder than `default` does.
+        "base-btn": [
+          "0 1px 2px 0 rgba(0,0,0,0.05)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.02)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.24)",
+        ].join(", "),
+        "base-btn-sm": [
+          "0 1px 2px 0 rgba(0,0,0,0.05)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.04)",
+          "inset 0 4px 6px 0 rgba(255,255,255,0.4)",
+        ].join(", "),
+        "base-btn-primary": [
+          "0 1px 2px -1px rgba(0,0,0,0.08)",
+          "0 1px 3px 0 rgba(0,0,0,0.08)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.08)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.1)",
+        ].join(", "),
+        // The destructive lip is `red-700` at 50%, not black: a dark neutral
+        // over `red-600` reads muddy where the design reads lit.
+        "base-btn-destructive": [
+          "0 1px 2px -1px rgba(0,0,0,0.08)",
+          "0 1px 3px 0 rgba(0,0,0,0.08)",
+          "inset 0 -4px 4px 0 rgba(185,28,28,0.5)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.2)",
+        ].join(", "),
+        "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
+        "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
+        // Figma `shadow/sm`. The design's alpha is 8%, not v3's default 10%;
+        // corrected from the token export, which is where `base-md` below got
+        // its 8% too. Cards carry this one, so 10% read heavy on all of them.
+        "base-sm": "0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.08)",
+        // Figma `shadow/md`, on the chart tooltip. Same one-step shift as the
+        // rest of this group: v4 `shadow-md` is v3's `shadow-md` offsets at the
+        // design's 8% alpha.
+        "base-md": "0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.08)",
+        "base-lg":
+          "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
       borderRadius: {
-        // Map default to cg-sm (6px) since most surfaces want the cg
-        // everyday radius. Modal sits on 12px (`rounded-xl`).
+        // The popover's own radii. `DEFAULT` is cg-sm (6px); it is what a bare
+        // `rounded` renders, and the popover screens still rely on it.
         DEFAULT: "0.375rem",
         // Gate Connect popover radii (prototype --r-lg / --r-pill).
         "gc-lg": "12px",
         "gc-pill": "48px",
+
+        // New app UI, from the token export (`docs/new_ui_design`). This is a
+        // shadcn scale derived from `--radius: 10px`, hence sm/md/lg/xl at
+        // radius-4 / radius-2 / radius / radius+4. It REDEFINES Tailwind's own
+        // sm (2px), lg (8px) and xl (12px), which is why adopting it had to be
+        // all-at-once rather than per component.
+        //
+        // Assignments, decided with design where the export was silent: pills
+        // and legend swatches `xs`, controls and nav items `sm`, cards and rows
+        // `md`, dialogs `xl`. The export names no 4px or 12px stop, so the old
+        // 4px control radius became 6px and the 12px dialog became 14px.
+        none: "0px",
+        xs: "2px",
+        // The drawn control radius. The token export names no 4px stop, which is
+        // why this became `sm` (6px) when the scale was adopted; the frames draw
+        // 4 on every pane-level button and the difference is visible at size, so
+        // the stop exists now rather than being rounded away.
+        control: "4px",
+        sm: "6px",
+        md: "8px",
+        lg: "10px",
+        xl: "14px",
+        "2xl": "16px",
+        "3xl": "24px",
+        "4xl": "32px",
+        full: "9999px",
+      },
+      letterSpacing: {
+        // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 8% tracking.
+        //
+        // 8%, not the 10% this said until 2026-08-30: the `sidebar` component's
+        // own variables (437:161) resolve `mono/eyebrow` to `letterSpacing: 8`.
+        // `Sidebar.tsx` had been carrying a hardcoded `tracking-[0.96px]` to get
+        // the drawn value, so one Figma variable was rendering two ways - 0.96px
+        // in the rail and 1.2px everywhere else that names the token.
+        eyebrow: "0.96px",
+        // The same 8% at 14px, which is the size `mono/eyebrow` takes on the
+        // chart tooltip's bucket heading. Tracking is absolute in Figma, so the
+        // 12px value would read as 6.9% here.
+        "eyebrow-14": "1.12px",
+        // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
+        label: "0.72px",
+        // `heading/32`: Geist Medium 32/36 at -4% - the intro's welcome title,
+        // the only place the design uses this step. Absolute in Figma, so it
+        // is spelled in px like the rest of this group.
+        "heading-32": "-1.28px",
+        // The Button component's two label styles, both absolute like the rest of
+        // this group: `text-sm/leading-normal/medium` is -2% at 14px and
+        // `text-xs/leading-normal/medium` is -1% at 12px.
+        "button-sm": "-0.28px",
+        "button-xs": "-0.12px",
+        // `heading/20`: Geist Medium 20/**24** at -1% - pane titles and captions.
+        // This said 20/28, and the variable itself says lineHeight 24: every
+        // drawn pane title is a 24px-tall text node ("Overview" 116:26488,
+        // "Claude Desktop" 116:30212). The old note told call sites NOT to
+        // override the 28, which is how three of the four panes drifted to it -
+        // they need `leading-6`, and `SettingsPane` always had it.
+        heading: "-0.2px",
+        // `heading/24`: Geist Medium 24/28 at -1% - the stat-tile figure
+        // (116:26516), the only step that uses it.
+        "heading-24": "-0.24px",
+        // `label/12` and `label/14`, both at -1%. Numerically `label-12` is the
+        // same -0.12px as `button-xs` above; kept apart because this group is
+        // named to mirror the Figma variables one-to-one, and a rail label is
+        // not a button label. Note the file uses `label/14` at BOTH 0% and -1%:
+        // the tray master-card title (744:38097) draws it untracked, the footer
+        // and CLI card (744:38190, 735:37344) at -1%.
+        "label-12": "-0.12px",
+        "label-14": "-0.14px",
+        // `heading/16`: Geist Medium 16/24 at -1% - the Overview card headings
+        // (`card/policies` 116:26707 and its siblings draw their titles 24px
+        // tall). Absolute in Figma like the rest of this group, so -1% of 16px.
+        "heading-16": "-0.16px",
       },
       fontSize: {
         // The popover's type ramp, in rem against a 16px root.
@@ -238,6 +439,50 @@ export default {
         "gc-title": "0.90625rem", // 14.5px - panel titles, wordmark
         "gc-panel-title": "1.0625rem", // 17px   - takeover headings
         "gc-display": "1.6875rem", // 27px   - onboarding window only
+
+        // New app UI. In rem for the same reason as the ramp above: px would
+        // opt these out of `useTextScale` entirely.
+        //
+        // These three carry their tracking in the tuple, because the design's
+        // `label/N` and `copy/N` are *text styles*: size and tracking are one
+        // thing, and splitting them is what produced the slip design reported
+        // on 2026-09-04 (`label/14` drawn at both 0% and -1% - a call site had
+        // simply forgotten the second half). Bound to the size it cannot be
+        // forgotten. Values are design's own: 12 and 14 at -1%, 16 at -2%,
+        // absolute in px like every entry in `letterSpacing` above.
+        //
+        // The named `tracking-label-12` / `-14` tokens up there are the same
+        // two values and stay: they mirror the Figma variables one-to-one,
+        // which is this file's convention, and a call site that says which
+        // style it is drawing is not worse for saying so. These tuples are the
+        // floor under them, not a replacement.
+        //
+        // A call site that needs *different* tracking still overrides, because
+        // Tailwind emits `letterSpacing` utilities after `fontSize` ones
+        // (checked against built CSS, not assumed). That is what keeps
+        // `tracking-eyebrow` and `tracking-label` winning on the eyebrows and
+        // pills that also draw at 12px, and `tracking-heading-16` winning on
+        // the card and section headings: `heading/16` is -1%, a different style
+        // from the `copy/16` this `base` default is set for.
+        "base-2xs": "0.625rem", // 10px - app row status line
+        "base-xs": ["0.75rem", { letterSpacing: "-0.12px" }], // 12px - label/copy-12
+        // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
+        // (30px) and 4xl (36px), so it needs a stop of its own.
+        "base-3xl": "2rem", // 32px - heading/32
+
+        // `label/copy-14` and `label/copy-16`, which are Tailwind's own `sm` and
+        // `base` steps - so the tracking has to be attached by redefining them
+        // rather than by adding a stop. Both keep Tailwind's default
+        // line-height, so nothing about existing leading moves; the only new
+        // declaration is `letter-spacing`.
+        //
+        // Safe to redefine because neither class reaches the popover: the
+        // popover screens (`App.tsx`, `screens/Home.tsx`, `gc/ui.tsx`) size
+        // themselves entirely off the `gc-*` ramp above, and `text-sm` /
+        // `text-base` appear only in the new window UI, the new tray and
+        // onboarding. Verified by grep on 2026-09-04.
+        sm: ["0.875rem", { lineHeight: "1.25rem", letterSpacing: "-0.14px" }],
+        base: ["1rem", { lineHeight: "1.5rem", letterSpacing: "-0.32px" }],
       },
     },
   },

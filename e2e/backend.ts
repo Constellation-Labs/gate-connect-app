@@ -25,14 +25,44 @@ export type ToolStatus =
   | { kind: "detected" }
   | { kind: "connected" }
   | { kind: "drifted"; reason: string }
+  | { kind: "overridden"; source: string }
   | { kind: "error"; message: string };
 
 export interface ToolFixture {
   slug: string;
+  /** The row label - "CLI", "App", "Web" - which is what `list_tools` sends,
+      because every row sits under a family heading that already names the
+      vendor. Not the product name; see `displayName`. */
   name: string;
+  /** The product name, for the one reader that wants it: `teardown_report`,
+      whose dialog has no family heading to lean on, so "CLI" alone would say
+      nothing there. Mirrors the split in `lib.rs` - `list_tools` sends
+      `row_label()`, `teardown_report` sends `display_name()`. Defaults to
+      `name` where the two are the same word. */
+  displayName?: string;
   upstream_provider_name: string;
   default_upstream_url: string;
+  /** The file Gate rewrites for this tool. Optional: absent and null both mean
+      "no single file names it", which is what the real backend reports for the
+      environment channel. A spec that cares about the drift review's copy sets
+      it; `list_tools` fills the default so nothing else has to. */
+  config_location?: string | null;
   status: ToolStatus;
+}
+
+/** One event as the gateway sends it. Mirrors `SecurityEvent` in `lib/api.ts`,
+    and carries no content for the same reason: the fields AC3 forbids are absent
+    from the payload, so a fixture that had them would be testing a wire shape
+    that does not exist. */
+export interface SecurityEventFixture {
+  id: string;
+  requestId: string;
+  at: string;
+  action: "block" | "flag";
+  category: string | null;
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
 }
 
 export interface ProviderFixture {
@@ -65,6 +95,10 @@ export interface ProxyFixture {
   port: number | null;
   pac_port: number | null;
   ca_trusted: boolean;
+  /** Loopback base URL config-routed tools point at. Null before a relay port
+      has been bound, which is what the drift dialog omits its Gate-route row
+      for. */
+  relay_base_url: string | null;
   env_export_opted_in: boolean;
   env_export_separable: boolean;
   domains: DomainFixture[];
@@ -104,10 +138,132 @@ export interface BackendState {
   tools: ToolFixture[];
   providers: ProviderFixture[];
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
+  /** Settings preferences, as `preferences.json` holds them. Both default on,
+      which is what lets a switch read On before anything has been written. */
+  /** What the live security-event feed (AG-578) has when the window mounts.
+      A spec pushes further events with `app.emit("security-event", ...)`, which
+      is what the real backend does once connected. */
+  securityFeed: {
+    state: "live" | "reconnecting" | "offline";
+    events: SecurityEventFixture[];
+  };
+  preferences: {
+    routing_health_notifications: boolean;
+    /** AG-578's per-category switches, and the sound they make. Default on, like
+        every other preference. */
+    blocked_event_notifications: boolean;
+    flagged_event_notifications: boolean;
+    security_notification_sound: boolean;
+    share_diagnostics: boolean;
+    /** Whether the diagnostic-data question has been ANSWERED, as opposed to
+        defaulted. False sends first run through the diagnostics step; the
+        default here is true so the existing specs reach the app shell. */
+    share_diagnostics_recorded: boolean;
+    /** The user's own name for this device, or null when it follows the
+        hostname. The override, exactly as `preferences.json` stores it. */
+    device_name: string | null;
+  };
   routedClientsStale: boolean;
   runningAgents: number;
+  /** Process names the agent scan reports as running. `runningAgents` is the
+      count the older probes return; this is what `running_agents` lists, and a
+      spec that cares about the close-apps sequence sets it. */
+  runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
+  /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
+      Empty = a clean teardown. A spec that cares about the partial-teardown
+      result sets it; the teardown itself still succeeds, which is the point. */
+  quitLeftBehind: string[];
+  /** Failures the Rust side has buffered for the frontend to drain. Emptied by
+      `drain_backend_errors`, like the real buffer. A spec sets this to check that
+      a failure predating the webview - the startup auto-enable runs before either
+      shell mounts - reaches the screen. */
+  backendErrors: { context: string; message: string }[];
+  /** Routing work a restore recorded and did not finish, as the provider snapshots
+      hold it. A spec sets this to produce the recovery notice; `resume_restore`
+      empties it, or leaves `pendingResumeKeeps` behind to model a partial retry. */
+  pendingRestore: {
+    providers: { slug: string; name: string }[];
+    tools: { slug: string; name: string }[];
+  };
+  /** Slugs `resume_restore` and `retry_restore_entry` should FAIL to finish, so
+      they stay outstanding. */
+  pendingResumeKeeps: string[];
+  /** The clock the recovery summary dates its readings against, Unix seconds.
+      Fixed rather than `Date.now()` so a spec asserting on "4m ago" is not
+      racing the wall clock; a spec that wants a specific age sets the reading's
+      own timestamp relative to this. */
+  nowUnix: number;
+  /** Slugs whose per-entry retry should report an error as well as leaving the
+      entry outstanding. `pendingResumeKeeps` alone models the quieter case - an
+      attempt that did not take, with nothing to say about it - which is what a
+      domain-only provider with no engine up produces. */
+  retryErrors: string[];
+  /** Slugs the per-entry retry has been asked about, oldest first. The order is
+      the assertion: AG-570 requires a resume to work through the entries one at
+      a time so it can report progress, and a single batch call cannot. */
+  retryCalls: string[];
+  /** What the last restore did, entry by entry, or null when nothing recorded an
+      attempt. Read by `recovery_summary`, which joins it with the snapshots
+      above: an entry in a snapshot and not here is one the operation never
+      reached, and reads as `pending`. */
+  restoreJournal: {
+    updated_unix: number;
+    requested_routing_on: boolean;
+    entries: {
+      slug: string;
+      name: string;
+      kind: "provider" | "tool";
+      outcome:
+        | "pending"
+        | "restored"
+        | "write_failed"
+        | "not_installed"
+        | "unknown"
+        | "deferred_signed_out";
+      at_unix: number;
+    }[];
+  } | null;
+  /** Per-tool model choices and the catalogue behind the picker (AG-588).
+   *
+   *  `choices` is keyed on TOOL SLUG and models `preferences.json` on this
+   *  install, not a gateway response - the choice is local. `paidAckUnix` null is
+   *  an install that has never accepted paid use, which is what makes the next
+   *  switch to a Gate model ask. */
+  toolModels: {
+    choices: Record<string, { source: "tool" | "gate"; model_ids: string[] }>;
+    paidAckUnix: number | null;
+    /** The org's Gate credit standing, as `/v1/me/credits` reports it.
+     *
+     *  `balanceCents` null is "could not be read", which the card draws as N/A -
+     *  deliberately not the same as a zero balance, which is a reading and is
+     *  the explanation for a tool that just stopped working. */
+    credits: {
+      plan: string;
+      paygEnabled: boolean;
+      balanceCents: number | null;
+      lowBalanceThresholdCents: number | null;
+      autoTopupArmed: boolean;
+    };
+    /** What `/v1/models` offers. Empty by default: a gateway with no platform
+     *  provider accounts has nothing of its own, and that is the state the
+     *  picker's own empty copy is written for. */
+    catalogue: {
+      id: string;
+      owned_by: string;
+      name: string;
+      tags?: string[];
+      /** AG-729's per-shape verdicts. Absent for a gateway that predates them. */
+      tool_shapes?: Record<string, { verdict: string; checked?: string }>;
+    }[];
+  };
+  /** This install's stable id, as `install_id` reports it. A fixed string rather
+   *  than a generated uuid so a spec can assert on what the row shows. */
+  installId: string;
+  /** The machine's hostname, which `device_name` falls back to when the user has
+   *  not renamed anything - the resolution the real command does in Rust. */
+  hostName: string;
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -117,21 +273,33 @@ export interface BackendState {
    *  onboarding window - the first-launch path, which one spec asks for
    *  explicitly. */
   localStorage: Record<string, string>;
+  /** What `getCurrentWindow().label` reports, picking the surface `main.tsx`
+   *  renders: "main" (the default), "tray" for the tray popover, "onboarding"
+   *  for the intro window. */
+  windowLabel: string;
 }
 
 const CLAUDE_CODE: ToolFixture = {
   slug: "claude-code",
-  name: "Claude Code",
+  // "CLI", not "Claude Code": `list_tools` sends `row_label`, and every row sits
+  // under a family heading that already names the vendor, so the label separates
+  // the surfaces inside it - App / Web / CLI. The product name is `display_name`,
+  // which is what the quit takeover's `pendingQuitTools` carries.
+  name: "CLI",
+  displayName: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
+  config_location: null,
   status: { kind: "detected" },
 };
 
 const CODEX: ToolFixture = {
   slug: "codex",
-  name: "Codex",
+  name: "CLI",
+  displayName: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -140,12 +308,32 @@ const OPENCODE: ToolFixture = {
   name: "OpenCode",
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
+  config_location: null,
+  status: { kind: "detected" },
+};
+
+/** The environment channel, which `list_tools` returns now.
+ *
+ *  `integrations/env_proxy.rs` stopped reporting `hidden_in_ui` on the round
+ *  that gave the leftovers headings of their own: it lands under Experimental
+ *  beside OpenCode, which cannot route without it, and a switch that flips
+ *  something the user cannot see is what the row removes. Present here because
+ *  a fixture that omits it renders an Experimental group the real machine never
+ *  shows - one row instead of two. */
+const ENV_PROXY: ToolFixture = {
+  slug: "env-proxy",
+  name: "Terminal tools",
+  upstream_provider_name: "your existing providers",
+  default_upstream_url: "https://openrouter.ai/api/v1",
+  // "no single file names it", which is what the real backend reports for the
+  // channel: it writes the machine's proxy variables, not a config file.
+  config_location: null,
   status: { kind: "detected" },
 };
 
 const ANTHROPIC_DOMAIN: DomainFixture = {
   slug: "anthropic",
-  display_name: "Claude apps",
+  display_name: "App",
   hosts: ["api.anthropic.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
@@ -171,7 +359,7 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
  *  spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
-  display_name: "Claude Desktop chat",
+  display_name: "Web",
   hosts: ["claude.ai"],
   upstream_url: "https://claude.ai/api",
   rewrite_prefixes: ["/organizations/"],
@@ -182,7 +370,9 @@ export const CLAUDE_WEB_DOMAIN: DomainFixture = {
 
 const OPENAI_DOMAIN: DomainFixture = {
   slug: "openai",
-  display_name: "OpenAI apps",
+  // "OpenAI API": the API host, and the one row whose subject is a host
+  // rather than a product surface, so it keeps a name instead of a surface kind.
+  display_name: "OpenAI API",
   hosts: ["api.openai.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
@@ -197,7 +387,7 @@ const OPENAI_DOMAIN: DomainFixture = {
  *  model calls need, which its `connect` used to flip unasked. */
 export const CHATGPT_DOMAIN: DomainFixture = {
   slug: "chatgpt",
-  display_name: "ChatGPT (Codex subscription)",
+  display_name: "App",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com/backend-api",
   rewrite_prefixes: ["/codex/responses"],
@@ -216,7 +406,7 @@ export const CHATGPT_DOMAIN: DomainFixture = {
  *  pairing on the backend catalog. */
 export const CHATGPT_APPS_DOMAIN: DomainFixture = {
   slug: "chatgpt-apps",
-  display_name: "ChatGPT app chat + Codex tools",
+  display_name: "Web",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com",
   rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
@@ -253,6 +443,7 @@ export function defaultState(): BackendState {
       port: null,
       pac_port: null,
       ca_trusted: false,
+      relay_base_url: "http://127.0.0.1:45981",
       env_export_opted_in: false,
       env_export_separable: true,
       domains: [
@@ -263,12 +454,15 @@ export function defaultState(): BackendState {
         { ...CHATGPT_APPS_DOMAIN },
       ],
     },
-    tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
+    tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }, { ...ENV_PROXY }],
     providers: [
       {
         slug: "anthropic",
-        display_name: "Claude",
-        subtitle: "Claude Code and the Claude apps",
+        // The vendor, not the product: `provider.rs`. With rows named "App" /
+        // "Web" / "CLI" the heading is the only thing left saying whose traffic
+        // this is.
+        display_name: "Anthropic",
+        subtitle: "Claude Code + Claude Desktop",
         enabled: false,
         available: true,
         tool_slugs: ["claude-code"],
@@ -278,21 +472,58 @@ export function defaultState(): BackendState {
       {
         slug: "openai",
         display_name: "OpenAI",
-        subtitle: "Codex and the OpenAI apps",
+        subtitle: "Codex + OpenAI API",
         enabled: false,
         available: true,
         tool_slugs: ["codex"],
-        domain_slugs: ["openai"],
+        // Empty, mirroring `provider.rs`: the `openai` domain is generic
+        // interception of api.openai.com, rides no OpenAI tool Gate configures,
+        // and sits under Experimental with the harnesses that depend on it.
+        domain_slugs: [],
         chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
+    securityFeed: { state: "live", events: [] },
+    preferences: {
+      routing_health_notifications: true,
+      blocked_event_notifications: true,
+      flagged_event_notifications: true,
+      security_notification_sound: true,
+      share_diagnostics: true,
+      share_diagnostics_recorded: true,
+      device_name: null,
+    },
     routedClientsStale: false,
     runningAgents: 0,
+    runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    quitLeftBehind: [],
+    backendErrors: [],
+    pendingRestore: { providers: [], tools: [] },
+    pendingResumeKeeps: [],
+    retryErrors: [],
+    retryCalls: [],
+    nowUnix: 1_772_800_000,
+    restoreJournal: null,
+    toolModels: {
+      choices: {},
+      paidAckUnix: null,
+      catalogue: [],
+      credits: {
+        plan: "free",
+        paygEnabled: false,
+        balanceCents: null,
+        lowBalanceThresholdCents: null,
+        autoTopupArmed: false,
+      },
+    },
+    installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
+    hostName: "e2e-macbook",
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
+    windowLabel: "main",
   };
 }
 

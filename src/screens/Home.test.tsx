@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
 import { Home } from "./Home";
 
@@ -33,8 +33,11 @@ function makeTool(
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
   };
 }
@@ -73,10 +76,38 @@ const CATALOG: ProviderState[] = [
     enabled: false,
     available: true,
     tool_slugs: ["codex"],
-    domain_slugs: ["openai"],
+    // Empty, mirroring the backend: the `openai` domain is generic
+    // interception of api.openai.com, rides no OpenAI tool, and sits under
+    // Experimental now.
+    domain_slugs: [],
     chat_domain_slugs: [],
   },
 ];
+
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
 
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
@@ -92,6 +123,9 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       providers={CATALOG}
       tools={[]}
       domains={[]}
+      // Gated on the same flag for the reason `FamilyPanel.test` states: the
+      // sweep cannot report `on` while the engine it probes is down.
+      verdicts={props.proxyOn === false ? new Map() : sweep(props.tools ?? [])}
       busy={false}
       error={null}
       changeNotice={null}
@@ -234,7 +268,7 @@ describe("Home master toggle", () => {
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
       ],
       // One enabled app row plus one available-but-off row.
-      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI apps", enabled: false })],
+      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
@@ -772,17 +806,31 @@ describe("Home command-line tools switch", () => {
 });
 
 describe("Home family roster", () => {
-  it("names the members of the family named by exclusion", () => {
+  it("names the members of a family named by exclusion", () => {
     renderHome({
       tools: [
         makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+        makeTool("env-proxy", "Terminal tools", { kind: "connected" }, "your existing providers"),
       ],
     });
-    // "Other tools" is the label on a filter; it is the one row a first-timer
-    // cannot map to anything on their own machine.
+    // A heading named by exclusion is the one row a first-timer cannot map to
+    // anything on their own machine, so it is the one that must list what is in
+    // it. "Experimental" says as little as "Other tools" did.
+    expect(screen.getByText("Experimental")).toBeTruthy();
+    expect(screen.getByText("OpenCode · Terminal tools")).toBeTruthy();
+  });
+
+  it("still names a tool no heading claims", () => {
+    // The catch-all survived the split for this row alone: an integration
+    // shipped without a heading is a bug, and it must be visible rather than
+    // dropped off the ledger.
+    renderHome({
+      tools: [
+        makeTool("some-new-harness", "CLI", { kind: "connected" }, "your existing providers"),
+      ],
+    });
     expect(screen.getByText("Other tools")).toBeTruthy();
-    expect(screen.getByText("OpenCode · OpenClaw")).toBeTruthy();
+    expect(screen.getByText("CLI")).toBeTruthy();
   });
 
   it("joins with a middot, because a member name can contain a slash", () => {

@@ -14,8 +14,24 @@
       {
         "label": "main",
         "title": "Gate Connect",
-        "width": 380,
-        "height": 620,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false,
+        "focus": true
+      },
+      {
+        "label": "tray",
+        "title": "Gate Connect",
+        "width": 400,
+        "height": 700,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
@@ -23,7 +39,7 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "focus": true
+        "focus": false
       }
     ],
     "security": {
@@ -32,11 +48,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "nsis", "deb", "appimage"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "deb",
+      "appimage"
+    ],
     "createUpdaterArtifacts": true,
     "category": "DeveloperTool",
     "shortDescription": "Configure AI agent tools to route through Constellation Gate AI.",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "linux": {
       "deb": {
         "depends": ["libnss3-tools"]

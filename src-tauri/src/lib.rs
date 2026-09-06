@@ -1,8 +1,17 @@
 //! Tauri shell. The Rust surface here is small on purpose: every command
 //! delegates to `gate-connect-core` so the CLI and the GUI exercise the
-//! same code path. Beyond commands, this file sets up the menu-bar / tray
-//! presentation: no dock icon, hidden window on launch, click the tray
-//! to toggle a popover-style window anchored under the icon.
+//! same code path. Beyond commands, this file sets up a normal 1280x800 window
+//! plus a tray icon that toggles it, and a close button that hides rather than
+//! quits so the tray always has something to bring back.
+//!
+//! It used to be a menu-bar popover, and three habits of that had to go. The
+//! tray placed the window (under the icon, at the cursor, or under the menu bar
+//! by platform), so it now only toggles visibility and placement is the
+//! window's own: centred on first launch, untouched after. Focus loss dismissed
+//! it, which for a window means vanishing whenever the user clicks another app.
+//! And on macOS it was promoted to a non-activating NSPanel with a hand-rolled
+//! corner radius, its own space behaviour and a click-outside watcher, none of
+//! which a regular window wants. The dock icon is back with them gone.
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
@@ -16,6 +25,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, PhysicalPosition, WindowEvent,
 };
+// For anchoring the tray popover under the clicked tray icon; Linux trays
+// (SNI/AppIndicator) report no icon rect, so it anchors at the cursor there.
 #[cfg(not(target_os = "linux"))]
 use tauri::{Position, Size};
 // Used by the startup auto-enable to nudge the popover to re-read state, and
@@ -45,9 +56,17 @@ fn validate_api_key(key: &str, required_prefix: &str) -> Result<(), String> {
 #[derive(Serialize)]
 struct ToolDto {
     slug: String,
+    /// The ledger row's label, under a heading that already names the vendor -
+    /// one word, and two tools can share it.
     name: String,
+    /// The product name, for a reader that is a flat list rather than a grouped
+    /// ledger. Distinct across the registry, which `name` is not.
+    product_name: String,
     upstream_provider_name: String,
     default_upstream_url: String,
+    /// The file Gate rewrites for this tool, for the copy that says what is
+    /// about to change. `None` where no single file names it.
+    config_location: Option<String>,
     status: StatusDto,
 }
 
@@ -57,8 +76,18 @@ enum StatusDto {
     NotInstalled,
     Detected,
     Connected,
-    Drifted { reason: String },
-    Error { message: String },
+    Drifted {
+        reason: String,
+    },
+    /// Gate's values are on disk and something the tool ranks higher decides
+    /// where its traffic goes. `source` names that layer, because a status line
+    /// saying the route is not ours has to say where to go and look (AG-674).
+    Overridden {
+        source: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 impl From<Status> for StatusDto {
@@ -68,6 +97,7 @@ impl From<Status> for StatusDto {
             Status::Detected => StatusDto::Detected,
             Status::Connected => StatusDto::Connected,
             Status::Drifted(reason) => StatusDto::Drifted { reason },
+            Status::Overridden(source) => StatusDto::Overridden { source },
         }
     }
 }
@@ -93,9 +123,20 @@ fn list_tools() -> Vec<ToolDto> {
         .filter(|integ| !integ.hidden_in_ui())
         .map(|integ| ToolDto {
             slug: integ.id().to_string(),
-            name: integ.display_name().to_string(),
+            // The row label, not the product name: this feeds the ledger, whose
+            // rows sit under a heading that names the vendor. Every other reader
+            // of a tool's name - the CLI, the logs, the quit takeover - wants
+            // `display_name`, which is why the two are separate.
+            name: integ.row_label().to_string(),
+            // And the product name beside it, for the readers that are a flat
+            // list rather than a grouped ledger: the reopen flow's dialogs, its
+            // banner and the tray card. `registry` has a test asserting display
+            // names are distinct precisely because such a list cannot tell two
+            // "CLI"s apart.
+            product_name: integ.display_name().to_string(),
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
+            config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -145,6 +186,7 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
+            billing_mode: account.billing_mode,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
         };
@@ -188,6 +230,10 @@ struct AccountDto {
     /// the legacy key controls only in API-key mode. Serialized snake_case
     /// (`"api_key"` / `"oauth"`).
     auth_mode: gate_connect_core::account::AuthMode,
+    /// Who pays the upstream provider, so a UI can show it once one is
+    /// designed. Read-only here; `set_billing_mode` is the setter. Serialized
+    /// lowercase (`"byok"` / `"payg"`).
+    billing_mode: gate_connect_core::account::BillingMode,
     /// Selected org (OAuth mode), so the UI can show it and route to the picker
     /// when an OAuth session has no org yet. Both `None` until the user picks.
     org_id: Option<String>,
@@ -224,6 +270,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
     let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
+    let billing_mode = account::billing_mode().map_err(|e| format!("{e:#}"))?;
     let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
         Some((id, name)) => (Some(id), Some(name)),
         None => (None, None),
@@ -232,6 +279,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
         gateway_base_url,
         has_api_key,
         auth_mode,
+        billing_mode,
         org_id,
         org_name,
     }))
@@ -255,14 +303,52 @@ fn backfill_account_key_prefix() -> Result<Option<String>, String> {
     account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
+/// Is this gateway base URL's scheme acceptable?
+///
+/// This is the IPC boundary, so the check is deliberately defensive: a
+/// compromised renderer must not be able to repoint the app at a plaintext host
+/// and harvest the key off the wire. Production rule is therefore `https` only,
+/// and `crates/core`'s `account::save` enforces the same rule again underneath.
+///
+/// Debug builds also accept `http://localhost` and `http://127.0.0.1` so the app
+/// can talk to a gateway running on this machine. Host-exact, so
+/// `http://localhost.evil.test` is still refused, and `#[cfg(debug_assertions)]`
+/// compiles it out of `tauri build` (which is `--release`). Mirrors the guard in
+/// `account::is_acceptable_gateway_url`; both must agree or the UI and the core
+/// disagree about what is valid.
+fn base_url_scheme_ok(parsed: &url::Url) -> bool {
+    if parsed.scheme() == "https" {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    if parsed.scheme() == "http" {
+        return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+    }
+    false
+}
+
+/// What [`base_url_scheme_ok`] actually enforces, in the words of the build it is
+/// compiled into.
+///
+/// Beside the check rather than at the two call sites, which both used to say
+/// "must use https" unconditionally. In a debug build that sends a developer who
+/// typoed `http://localhos:3000`, or pointed at a LAN address, off to change the
+/// scheme - which was already right. Mirrors the same fix in `account.rs`.
+fn base_url_scheme_error() -> String {
+    #[cfg(debug_assertions)]
+    return "base url must use https, or http on localhost or 127.0.0.1 exactly".into();
+    #[cfg(not(debug_assertions))]
+    return "base url must use https".into();
+}
+
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("base url must use https".into());
+    if !base_url_scheme_ok(&parsed) {
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
@@ -277,7 +363,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     }
     // Off the main thread: keychain write plus up to three tool-config
     // rewrites, none of which should block the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
         // A rotated key is hot-swapped into the running proxy engine below;
         // the relay injects it live per request, so no tool config embeds it.
@@ -299,13 +385,18 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
         Ok(())
     })
     .await
-    .map_err(|e| format!("save join error: {e}"))?
+    .map_err(|e| format!("save join error: {e}"))?;
+    // What changed: the key, the gateway, or both.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 #[tauri::command]
 async fn clear_account() -> Result<(), String> {
     // Off the main thread: per-tool config I/O that shouldn't freeze the UI.
-    tauri::async_runtime::spawn_blocking(|| {
+    let done = tauri::async_runtime::spawn_blocking(|| {
         // Disconnect managed tools first: clearing the account while their
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
@@ -313,7 +404,12 @@ async fn clear_account() -> Result<(), String> {
         account::clear().map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("sign-out join error: {e}"))?
+    .map_err(|e| format!("sign-out join error: {e}"))?;
+    // What changed: the account is gone.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// Dev-mode gateway switch: repoint the account at another environment and
@@ -333,14 +429,14 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("base url must use https".into());
+    if !base_url_scheme_ok(&parsed) {
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
     }
     // Off the main thread: per-tool config I/O plus keychain delete.
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
         // Before the account moves, so the engine can never be up against an
         // account it wasn't started from. A failure aborts the switch: routing
@@ -353,7 +449,12 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("switch join error: {e}"))?
+    .map_err(|e| format!("switch join error: {e}"))?;
+    // What changed: another gateway, and the key with it.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 // ---- OAuth (Cognito) ----
@@ -448,8 +549,17 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 /// key-entry form; choosing the legacy path is an explicit key save.
 #[tauri::command]
 async fn oauth_sign_out() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    let done = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // The held activity readings belong to the org just signed out of, and
+        // signing out is not a disconnect: `account.json` keeps the gateway and
+        // the org, so `activity_cache`'s scope stays byte-identical and every
+        // reading in it would still match and still be served. `account::clear`
+        // covers the disconnect path; this covers the one that leaves the account
+        // file in place. Best effort and after the credential, on the same
+        // reasoning as there: a cache that will not delete must not be the reason
+        // a sign-out reports failure.
+        let _ = gate_connect_core::activity_cache::clear();
         // Revert a running engine to the legacy header immediately (empty
         // token == fall back to the API key, if one is present).
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -457,14 +567,19 @@ async fn oauth_sign_out() -> Result<(), String> {
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("oauth sign-out join error: {e}"))?
+    .map_err(|e| format!("oauth sign-out join error: {e}"))?;
+    // What changed: the OAuth session is gone, and `account.json` is not.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// Explicitly set the auth mode. Used when a user chooses the legacy pasted-key
 /// path from the sign-in screen; OAuth sign-in sets it implicitly.
 #[tauri::command]
 async fn set_auth_mode(oauth: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         let mode = if oauth {
             gate_connect_core::account::AuthMode::OAuth
         } else {
@@ -473,7 +588,356 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
         gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("set auth mode join error: {e}"))?
+    .map_err(|e| format!("set auth mode join error: {e}"))?;
+    // What changed: which credential the gateway is given.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
+}
+
+/// Switch who pays the upstream provider.
+///
+/// The relay and the MITM engine read the mode per request, so `refresh_mode`
+/// is all that in-flight routing needs. Codex is the exception: its provider
+/// block encodes whether Codex authenticates at all, so a connected Codex is
+/// re-applied here. Every other integration writes a base URL and no
+/// credential, and needs nothing.
+///
+/// Re-applying Codex is best-effort: the mode is already persisted by then, and
+/// failing the whole call would leave the UI unable to say what happened. A
+/// Codex left on the old shape reports `Drifted` on the next status read, which
+/// is the path back.
+#[tauri::command]
+async fn set_billing_mode(payg: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = if payg {
+            gate_connect_core::account::BillingMode::Payg
+        } else {
+            gate_connect_core::account::BillingMode::Byok
+        };
+        gate_connect_core::account::set_billing_mode(mode).map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_mode();
+        reapply_codex_for_mode(mode);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("set billing mode join error: {e}"))?
+}
+
+/// Rewrite Codex's provider block for `mode`, if Codex is currently routed
+/// through Gate. Silent when Codex isn't installed or isn't connected - there
+/// is nothing to rewrite, and a mode switch is not the place to start routing a
+/// tool the user never connected.
+fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
+    let Some(integ) = registry::find(ToolId::Codex) else {
+        return;
+    };
+    if !matches!(integ.status(), Ok(gate_connect_core::Status::Connected)) {
+        return;
+    }
+    let Ok(Some(account)) = account::load() else {
+        return;
+    };
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url,
+        upstream_url: integ.default_upstream_url().to_string(),
+        billing_mode: mode,
+        relay_base_url: gate_connect_core::proxy::relay_base_url(),
+        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
+    };
+    if let Err(e) = integ.connect(&input) {
+        eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
+    }
+}
+
+/// Fetch the 24-hour activity overview for the Overview pane (AG-572).
+///
+/// `install_id` scopes the reading to one installation (AC 1); omitted, it is
+/// org-wide, which stays the default because attribution only starts with the
+/// gateway migration that added it - scoping by default would hide every
+/// earlier request from a total the user could already see.
+///
+/// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
+/// is the only place that models it.
+///
+/// Failures cross as a JSON envelope, `{"code":…,"message":…}`, not as prose.
+/// AG-576 requires the pane to name the cause and offer a matching action, and
+/// the front end cannot pick between Retry and Sign in by reading an English
+/// sentence. See `gate_connect_core::activity::FailureCode`.
+#[tauri::command]
+async fn activity_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<String, String> {
+    let tool = parse_tool(tool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::overview_json(install_id.as_deref(), tool).map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("activity overview join error: {e}"))?
+}
+
+/// Read a tool slug from the front end, or `None` for every tool.
+///
+/// An unrecognised non-empty slug is an error rather than a silent fall back to
+/// org-wide. The two sides of this boundary share one registry, so a slug that
+/// does not parse means they disagree about it - a bug worth surfacing, not a
+/// request to widen the scope. Falling back would quietly relabel every tool's
+/// traffic as the one the user selected.
+fn parse_tool(tool: Option<String>) -> Result<Option<gate_connect_core::registry::ToolId>, String> {
+    match tool.as_deref().filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(slug) => gate_connect_core::registry::ToolId::from_slug(slug)
+            .map(Some)
+            .ok_or_else(|| format!("unknown tool slug {slug:?}")),
+    }
+}
+
+/// The last overview that landed for this scope, or `None`.
+///
+/// A file read, not a network call, so the pane can paint real numbers on the
+/// frame it opens on instead of a skeleton that resolves a round trip later
+/// (AG-576). Never an error: no cache and an unreadable cache mean the same
+/// thing to the caller, which is that it waits for [`activity_overview`].
+#[tauri::command]
+async fn activity_cached_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<Option<String>, String> {
+    let tool = parse_tool(tool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), tool)
+    })
+    .await
+    .map_err(|e| format!("cached activity join error: {e}"))
+}
+
+/// Every held per-tool reading for this installation scope, keyed by slug.
+///
+/// The tray's quick status draws a figure on every app row, and `/v1/me/activity`
+/// answers for one tool at a time - so the popover opens on what is already on
+/// disk and refreshes only what has gone stale. One file read rather than one per
+/// row, because the file holds them all.
+///
+/// Never an error, for the same reason [`activity_cached_overview`] is not: an
+/// empty map covers no cache, an unreadable one, and a scope that holds nothing,
+/// and all three mean the caller waits for the network.
+#[tauri::command]
+async fn activity_cached_tool_overviews(
+    install_id: Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_tool_overviews_json(install_id.as_deref())
+    })
+    .await
+    .map_err(|e| format!("cached tool activity join error: {e}"))
+}
+
+/// One page of a tool's recent requests, for the app pane's feed (AG-574).
+///
+/// `tool` is required here, unlike on the overview: the feed is always about one
+/// tool, and the gateway refuses a request that names none. Not cached - see
+/// `activity::tool_events_json` for why the held reading stays with the overview.
+#[tauri::command]
+async fn activity_tool_events(
+    install_id: Option<String>,
+    tool: String,
+    cursor: Option<String>,
+) -> Result<String, String> {
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to read a tool's events".into());
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::tool_events_json(
+            install_id.as_deref(),
+            tool,
+            cursor.as_deref(),
+        )
+        .map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("activity tool events join error: {e}"))?
+}
+
+/// List the installations this account has sent traffic from, for the Overview's
+/// installation picker. Same envelope and the same failure taxonomy as
+/// [`activity_overview`].
+#[tauri::command]
+async fn activity_installations() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::activity::installations_json)
+        .await
+        .map_err(|e| format!("activity installations join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// This install's per-tool model choices (AG-588).
+///
+/// A local file read, not a network call: the choice lives in
+/// `preferences.json` beside the other user choices. It was briefly a gateway
+/// endpoint scoped to the organization; keeping it local means the machine whose
+/// traffic it governs is the machine that holds it, and one developer's click no
+/// longer changes what a colleague's requests are answered with.
+///
+/// Returns the whole map plus the acknowledgement stamp, so the pane can decide
+/// whether the next switch to a Gate model needs its confirmation before any
+/// choice exists.
+#[tauri::command]
+async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let prefs = gate_connect_core::preferences::load();
+        ToolModelsDto {
+            tools: prefs
+                .tool_models
+                .into_iter()
+                .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
+                .collect(),
+            paid_ack_unix: prefs.gate_model_paid_ack_unix,
+        }
+    })
+    .await
+    .map_err(|e| format!("tool model preferences join error: {e}"))
+}
+
+#[derive(Serialize)]
+struct ToolModelsDto {
+    /// Keyed by tool slug. A tool with no entry is on its own default, which is
+    /// why an absent key is not the same as an error and needs no placeholder.
+    tools: std::collections::BTreeMap<String, ToolModelChoiceDto>,
+    /// Unix seconds, or null when this install has never accepted paid use.
+    paid_ack_unix: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ToolModelChoiceDto {
+    /// `"tool"` or `"gate"`. Only this decides what would be served.
+    source: String,
+    /// Chosen models, which may be non-empty while `source` is `"tool"` - that is
+    /// a remembered choice, not an active one.
+    model_ids: Vec<String>,
+}
+
+impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDto {
+    fn from(c: gate_connect_core::preferences::ToolModelChoice) -> Self {
+        use gate_connect_core::preferences::ModelSource;
+        Self {
+            source: match c.source {
+                ModelSource::Tool => "tool".into(),
+                ModelSource::Gate => "gate".into(),
+            },
+            model_ids: c.model_ids,
+        }
+    }
+}
+
+/// Choose the model one tool runs on.
+///
+/// `source` is `"tool"` (the tool picks) or `"gate"` (Gate serves `model_ids`).
+/// An unrecognised value is an error rather than a default, for the reason
+/// [`parse_tool`] gives: a silent fall back would store the opposite of what the
+/// user clicked.
+///
+/// `acknowledge_paid_use` records that the person accepted billing, and is
+/// honoured only when moving to `"gate"` - remembering a model under the tool's
+/// own default spends nothing and must not record consent to spend.
+#[tauri::command]
+async fn set_tool_model(
+    tool: String,
+    source: String,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+) -> Result<(), String> {
+    // Parsed, not trusted: the slug has to be one this app actually configures,
+    // or the pane would store a choice under a key nothing reads.
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to set a model preference".into());
+    };
+    let source = match source.as_str() {
+        "tool" => gate_connect_core::preferences::ModelSource::Tool,
+        "gate" => gate_connect_core::preferences::ModelSource::Gate,
+        other => return Err(format!("unknown model source {other:?}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::preferences::set_tool_model(
+            tool.slug(),
+            source,
+            model_ids,
+            acknowledge_paid_use,
+        )
+        .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("set tool model join error: {e}"))?
+}
+
+/// The models this gateway offers, for the picker.
+///
+/// An empty catalogue is a successful answer, not a failure: it is built from
+/// platform provider accounts, and a deployment with none has nothing to offer.
+/// The picker says so in words rather than drawing an empty list.
+#[tauri::command]
+async fn gate_model_catalogue() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::catalogue_json)
+        .await
+        .map_err(|e| format!("gate model catalogue join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// This organization's Gate credit balance and plan (AG-588/590/592).
+///
+/// Its own read rather than part of the catalogue: the balance is small and
+/// changes as requests are served, the catalogue is large and does not. Same
+/// envelope and failure taxonomy as [`activity_overview`].
+#[tauri::command]
+async fn gate_credits() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::credits_json)
+        .await
+        .map_err(|e| format!("gate credits join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// Write one line to the diagnostic log from the front end.
+///
+/// The front end is where this app is least observable: its errors go to a
+/// webview console that nobody can read after the fact, which is how a routing
+/// switch that stopped responding stayed undiagnosable. This is the door to the
+/// same file the Rust side writes.
+///
+/// Off in production - `logging::enabled` decides, and a call made when it is off
+/// does nothing rather than failing. Callers must not pass credentials, prompts
+/// or request bodies; see that module's note on what may be written.
+#[tauri::command]
+fn log_message(level: String, message: String) {
+    gate_connect_core::logging::log(
+        gate_connect_core::logging::Level::from_wire(&level),
+        &message,
+    );
+}
+
+/// Where the diagnostic log lives, or `None` when logging is off.
+///
+/// Lets Settings and the diagnostics report name the file to send instead of
+/// asking someone to find it, and returns nothing in a production build so the
+/// UI cannot offer a path to a file that is never written.
+#[tauri::command]
+fn log_file_path() -> Option<String> {
+    gate_connect_core::logging::path_for_report().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Serialize an activity failure for the IPC boundary.
+fn envelope(f: gate_connect_core::activity::Failure) -> String {
+    serde_json::to_string(&f).unwrap_or_else(|_| {
+        // Serializing two owned strings and a unit enum cannot fail, but the
+        // fallback still has to produce *valid* JSON: `f.message` can carry an
+        // upstream error body, quotes and backslashes included, and interpolating
+        // it raw made a string that `toFailure` cannot parse - which discards the
+        // code and reports every failure as generic, exactly what this envelope
+        // exists to prevent. Serialize the message on its own so the escaping is
+        // the library's problem, and only hand-write the part that is a constant.
+        let message = serde_json::to_string(&f.message).unwrap_or_else(|_| "\"\"".into());
+        format!(r#"{{"code":"unknown","message":{message}}}"#)
+    })
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
@@ -513,14 +977,19 @@ async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
 /// `X-Gate-Org-Id` takes effect live (no restart).
 #[tauri::command]
 async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_org(&org_id);
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("set org join error: {e}"))?
+    .map_err(|e| format!("set org join error: {e}"))?;
+    // What changed: another org, so every figure on screen belongs to the previous one.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -892,15 +1361,15 @@ async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, Stri
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 /// When the startup popover was shown. Used to ignore the spurious focus-loss
-/// an Accessory (menu-bar) app can emit before it becomes frontmost, which
-/// would otherwise immediately hide the popover we open on launch.
-/// While true, the popover ignores focus-loss instead of hiding. Set at
-/// macOS launch so the keychain-password dialog (and the first-run screen)
-/// can't make the window vanish before the user has even seen it - a focus
-/// steal by that system dialog would otherwise trip the dismiss-on-blur
-/// handler. Cleared by [`unpin_popover`] once the user interacts, restoring
-/// normal click-away dismissal. Defaults off so non-macOS behavior is
-/// unchanged (only the macOS startup path pins it).
+/// Vestigial. This once suppressed dismiss-on-blur while the keychain dialog or
+/// first-run screen held focus, so a focus steal could not make the popover
+/// vanish before the user had seen it. Nothing dismisses on blur any more - a
+/// window stays put when you click another app - so the flag is written by
+/// [`pin_popover`] / [`unpin_popover`] and read nowhere.
+///
+/// Kept because `App.tsx`, still reachable as the popover fallback, invokes
+/// both commands; removing them would make those calls fail. Delete all three
+/// together when the popover screens go.
 static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the popover is currently shown. Tracks the hidden→visible edge so
@@ -910,6 +1379,230 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// Set true when the window gains focus; cleared at each real hide/minimize
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// Set while a reveal is waiting for the compositor to acknowledge the state
+/// change below, so the restore knows there is work to do.
+#[cfg(target_os = "linux")]
+static DECOR_RESTORE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The state the window should end up in: what it was in before the reveal.
+#[cfg(target_os = "linux")]
+static DECOR_WANT_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+/// The window's own size, captured before the state change so the restore can
+/// put it back without trusting GTK to have remembered it. Physical pixels;
+/// zero means nothing usable was captured. Only written while the window is
+/// un-maximised, since a maximised `inner_size` is the screen.
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Give the window's first map a compositor configure, so its native title-bar
+/// buttons work, then put it back in the state the user left it in.
+///
+/// **A window has to be born with negotiated geometry.** Anything whose first
+/// map comes from `show()` on a hidden window comes up with dead decoration
+/// input regions - close, minimise and maximise all swallow their clicks, while
+/// a double-click on the bar still works because the WM handles that at frame
+/// level. Four cases established it: `visible: false` plus `show()` is broken;
+/// `visible: true` on a normal launch works; `visible: true` hidden before the
+/// map and revealed from the tray is broken again; and the onboarding window,
+/// built visible at runtime, needs none of this. The config flag was never the
+/// variable - whether the first map carries a compositor configure is.
+///
+/// A maximise/un-maximise is how that configure gets forced: the compositor owns
+/// the bounds of a maximised window, so a change either into or out of that
+/// state must be configured. **Which direction depends on where the window
+/// starts**, and that is the part this got wrong twice. Maximising an
+/// already-maximised window is a no-op, so a window closed while maximised was
+/// skipped entirely and reopened with dead buttons. So: apply the *opposite* of
+/// the wanted state before the show, and the wanted state after it.
+///
+/// Mechanisms that do **not** work, recorded so they are not retried: a 1px
+/// `set_size` (a client-side request GTK satisfies with no round trip, and a
+/// delta small enough to coalesce away), and toggling `set_decorations`
+/// (rebuilds the title-bar widgets, renegotiates no geometry).
+///
+/// Runs on every reveal of a hidden window, not once per process: every map of a
+/// hidden window is broken, so a one-shot let the bug back on the second open.
+///
+/// The principled repair is still to build this window at runtime the way
+/// `open_onboarding_window` does, so it is never shown-after-hidden and none of
+/// this exists. That is larger because a `--silent` session keeps the hidden
+/// webview alive on purpose - detection polling, the `quit-requested` listener
+/// and the backend-error drain all live in it - so it cannot simply be created
+/// on demand.
+#[cfg(target_os = "linux")]
+fn map_maximized_for_decorations(window: &tauri::WebviewWindow) {
+    // A reveal of a window that is already up needs nothing, and toggling its
+    // state would be destructive.
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let want_maximized = window.is_maximized().unwrap_or(false);
+    // Only meaningful un-maximised: maximised, `inner_size` is the screen.
+    if !want_maximized {
+        if let Ok(size) = window.inner_size() {
+            if size.width > 0 && size.height > 0 {
+                DECOR_SAVED_W.store(size.width, Ordering::Release);
+                DECOR_SAVED_H.store(size.height, Ordering::Release);
+            }
+        }
+    }
+    DECOR_WANT_MAXIMIZED.store(want_maximized, Ordering::Release);
+    DECOR_RESTORE_PENDING.store(true, Ordering::Release);
+    // The opposite state, so the map itself has to be configured.
+    let asked = if want_maximized {
+        window.unmaximize()
+    } else {
+        window.maximize()
+    };
+    if asked.is_err() {
+        DECOR_RESTORE_PENDING.store(false, Ordering::Release);
+        return;
+    }
+    poll_restore_after_repair(&window.app_handle().clone());
+}
+
+/// Put the window back into the state [`map_maximized_for_decorations`] recorded,
+/// once the opposite state is observably in effect.
+///
+/// **Gated on `is_maximized()`, not on which event arrived.** Three attempts
+/// failed by trusting an event to mean "the configure landed": a queued
+/// event-loop turn, then `Resized`, then `Resized`-or-`Focused(true)`. The last
+/// lost because `Focused(true)` fires during `show()`, *before* the configure
+/// comes back, so the flag was consumed early and the restore raced as before.
+/// Window state cannot be fooled that way: until the pre-state is really in
+/// effect the request stays armed and a later event tries again.
+///
+/// Backed by a short poll too, because if no further event arrives after the
+/// configure there is nothing left to re-trigger this.
+///
+/// Queued rather than called inline so GTK is not re-entered mid dispatch.
+/// Takes `&Window`, not `&WebviewWindow`: that is what `on_window_event` hands
+/// out, and the state calls live on both.
+#[cfg(target_os = "linux")]
+fn restore_after_repair(window: &tauri::Window) {
+    if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    let want_maximized = DECOR_WANT_MAXIMIZED.load(Ordering::Acquire);
+    // Wait until the opposite state is actually in effect.
+    if window.is_maximized().unwrap_or(false) == want_maximized {
+        return;
+    }
+    if !DECOR_RESTORE_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let w = window.clone();
+    let _ = window.app_handle().clone().run_on_main_thread(move || {
+        if want_maximized {
+            let _ = w.maximize();
+            return;
+        }
+        let _ = w.unmaximize();
+        // Then set the size ourselves, on the next turn so the un-maximise has
+        // been applied first. GTK's own restore geometry is not trustworthy: by
+        // the second reveal it has been overwritten with the maximised bounds,
+        // so `unmaximize` alone reopened the window at screen size.
+        let width = DECOR_SAVED_W.load(Ordering::Acquire);
+        let height = DECOR_SAVED_H.load(Ordering::Acquire);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let w2 = w.clone();
+        let _ = w.app_handle().clone().run_on_main_thread(move || {
+            let _ = w2.set_size(tauri::PhysicalSize::new(width, height));
+            let _ = w2.center();
+        });
+    });
+}
+
+/// The main window's floor, in logical pixels.
+///
+/// Duplicated from `tauri.conf.json`'s `minWidth`/`minHeight` on purpose: the
+/// config is what macOS, Windows and X11 enforce, and this is the only thing a
+/// Wayland session enforces. The two have to be changed together.
+#[cfg(target_os = "linux")]
+const MAIN_MIN_SIZE: (f64, f64) = (1024.0, 800.0);
+
+/// Hold the main window at its configured minimum, because on Wayland nothing
+/// else will.
+///
+/// tao asks for a minimum with `gtk_window_set_geometry_hints` and
+/// `GDK_HINT_MIN_SIZE` (`tao-0.35.3/src/platform_impl/linux/util.rs:58`), which
+/// is the X11 `WM_NORMAL_HINTS` mechanism. GTK never translates those hints into
+/// the compositor's `xdg_toplevel.set_min_size`, so under Wayland the config's
+/// floor is advisory and a drag goes straight through it - the window shrinks
+/// until the 256px rail and the content pane are sharing 300px. X11, macOS and
+/// Windows honour the config and never reach this function.
+///
+/// Converges rather than loops: the clamp only fires *below* the floor, and the
+/// resize it asks for is *at* the floor, which does not fire it again. The
+/// snap-back is visible mid-drag on Wayland, and that is the whole trade - the
+/// compositor owns interactive resize, so the choice is a snap or no floor.
+#[cfg(target_os = "linux")]
+fn clamp_to_minimum(window: &tauri::Window) {
+    // The decoration repair drives this window through a maximise deliberately
+    // and restores a size of its own afterwards; clamping mid-repair would be
+    // two things fighting over the same geometry.
+    if DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    // Maximised and fullscreen bounds belong to the compositor, and both are
+    // larger than the floor anyway.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    if scale <= 0.0 {
+        return;
+    }
+    let (width, height) = (size.width as f64 / scale, size.height as f64 / scale);
+    let (min_width, min_height) = MAIN_MIN_SIZE;
+    // A pixel of tolerance, because a logical size that has been through
+    // physical pixels at a fractional scale factor comes back a hair under the
+    // number it went in as, and clamping on that would resize a window nobody
+    // touched.
+    if width >= min_width - 1.0 && height >= min_height - 1.0 {
+        return;
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(
+        width.max(min_width),
+        height.max(min_height),
+    ));
+}
+
+/// Re-check [`restore_after_repair`] on a timer, for the case where the
+/// configure is the last event the window sees.
+///
+/// Off-thread sleeps, main-thread checks: window APIs are only touched inside
+/// `run_on_main_thread`. Bounded, so a window whose state never changes stops
+/// being polled rather than being watched forever.
+#[cfg(target_os = "linux")]
+fn poll_restore_after_repair(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+                return;
+            }
+            let inner = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Some(w) = inner.get_webview_window("main") {
+                    restore_after_repair(&w.as_ref().window_ref().clone());
+                }
+            });
+        }
+    });
+}
 
 /// Whether the coming exit is an updater-driven relaunch rather than a user
 /// quit. The exit handler completes a pending launch-at-login opt-out on a
@@ -974,6 +1667,28 @@ fn report_backend_error(context: &'static str, message: String) {
     }
 }
 
+/// Tell every mounted window that the signed-in session moved.
+///
+/// The account is the scope of nearly everything on screen: the org name, the
+/// activity figures, the security feed's buffer, the installation list. Each
+/// shell keys its readings on a credential string built from the account, and
+/// drops them when it changes - but only the window that *made* the change knew,
+/// because none of the mutating commands emitted anything. So the tray kept the
+/// previous org's counts and header until something unrelated woke it, and a
+/// sign-out left figures on screen for an account that could no longer read them.
+///
+/// Emitted after the change has landed, never before: a window that re-read on
+/// the way in would read the state being replaced.
+///
+/// Not to be confused with [`signal_session_dead`] and its
+/// `session-signin-required`, which says the gateway *refused* a session the user
+/// did not change. This one says the user changed it on purpose.
+fn signal_session_changed() {
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit("session-changed", ());
+    }
+}
+
 /// Hand the buffered backend failures to the frontend and clear the buffer.
 #[tauri::command]
 fn drain_backend_errors() -> Vec<BackendError> {
@@ -983,18 +1698,43 @@ fn drain_backend_errors() -> Vec<BackendError> {
         .unwrap_or_default()
 }
 
-/// Process names of the AI tools we're willing to close - deliberately both
-/// the agent CLIs *and* the desktop apps that share the binary name: on macOS
-/// Claude Desktop / Cowork's main process is literally `Claude`, and it is a
-/// routed tool that resolves the proxy at its own launch, so closing it is
+/// Process names of the AI tools we're willing to close, each paired with the
+/// registry slug whose config rewrite makes that process stale - deliberately
+/// both the agent CLIs *and* the desktop apps that share the binary name: on
+/// macOS Claude Desktop / Cowork's main process is literally `Claude`, and it
+/// is a routed tool that resolves the proxy at its own launch, so closing it is
 /// the point. A subset of the registry tools: `hermes` and `openclaw` are
 /// excluded - their names are too generic / their processes shouldn't be
 /// killed from here. (An unrelated user binary that happens to be named
 /// `claude`/`codex`/`opencode` is accepted collateral; the action sits behind
 /// an explicit in-popover confirm.) Matched against the process name with any
 /// `.exe` suffix stripped, so one list serves all three desktop OSes.
+///
+/// The slug is what makes the per-tool offer honest. Without it a Codex config
+/// write offered to close - and then SIGTERMed - a running `claude`, because
+/// the probe and the kill both walked the whole list. A tool that isn't here
+/// contributes no names, so asking about it finds nothing rather than falling
+/// back to everything.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
+const AGENT_PROCESSES: [(&str, &str); 3] = [
+    ("claude-code", "claude"),
+    ("codex", "codex"),
+    ("opencode", "opencode"),
+];
+
+/// The process names to scan for. `None` means every tool - the master toggle,
+/// the popover's routing takeover and the diagnostics listing all genuinely
+/// mean all of them. `Some(slugs)` narrows to the tools whose configs were
+/// just rewritten; slugs with no process of their own (`hermes`, `openclaw`,
+/// `env-proxy`, a proxy domain key) drop out, and `Some(&[])` scans nothing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
+    AGENT_PROCESSES
+        .iter()
+        .filter(|(slug, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
+        .map(|(_, name)| *name)
+        .collect()
+}
 
 /// Unix seconds of the most recent successful engine enable in this process
 /// (user toggle, startup restore, or a connect_tool auto-enable). 0 = never;
@@ -1013,9 +1753,9 @@ fn mark_routing_enabled() {
     ROUTING_ENABLED_AT_UNIX.store(now, Ordering::Release);
 }
 
-/// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
-/// our own pid. Shared by the close command and the count probe so both match
-/// the exact same process set.
+/// Visit every running agent process whose name is in `names` (see
+/// [`agent_names_for`]), skipping our own pid. Shared by the close command and
+/// the count probes so all of them match the exact same process set.
 ///
 /// Processes only, and only the fields `/proc/<pid>/stat` already carries.
 /// sysinfo counts *threads* as processes and leaves that on by default -
@@ -1028,8 +1768,11 @@ fn mark_routing_enabled() {
 /// were a second copy of the tool. Name, pid and start time - all this needs -
 /// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
+fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    if names.is_empty() {
+        return;
+    }
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -1041,12 +1784,33 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
         if Some(*pid) == own_pid {
             continue;
         }
-        let name = process.name().to_string_lossy().to_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if AGENT_PROCESS_NAMES.contains(&name) {
+        if names.contains(&agent_name_of(process).as_str()) {
             f(process);
         }
     }
+}
+
+/// A process's name as [`AGENT_PROCESSES`] spells it: lowercased, with any
+/// `.exe` stripped, so one list serves all three desktop OSes. Extracted so the
+/// per-tool staleness check below matches on exactly the same normalisation the
+/// walk itself filtered by, rather than a second copy that could drift from it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_name_of(process: &sysinfo::Process) -> String {
+    let name = process.name().to_string_lossy().to_lowercase();
+    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+}
+
+/// Which tool a running process belongs to, by the same normalisation the walk
+/// filtered on ([`agent_name_of`]). `None` for a process no slug claims, which
+/// cannot happen for a process the walk yielded and is handled rather than
+/// asserted: the table is the only thing keeping the two in step.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
+    let name = agent_name_of(process);
+    AGENT_PROCESSES
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map(|(slug, _)| *slug)
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -1061,7 +1825,7 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 #[tauri::command(async)]
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
-    for_each_agent_process(|_| count += 1);
+    for_each_agent_process(&agent_names_for(None), |_| count += 1);
     count
 }
 
@@ -1119,7 +1883,7 @@ fn stale_agents_count() -> u32 {
         return running_agents_count();
     };
     let mut count = 0u32;
-    for_each_agent_process(|process| {
+    for_each_agent_process(&agent_names_for(None), |process| {
         if process.start_time() < bound {
             count += 1;
         }
@@ -1127,13 +1891,768 @@ fn stale_agents_count() -> u32 {
     count
 }
 
+/// The user's Settings choices. Never fails: a missing or mangled file loads as
+/// the documented defaults, because refusing to render Settings over a
+/// preferences file is a worse failure than showing "everything on".
+#[tauri::command]
+fn get_preferences() -> gate_connect_core::preferences::Preferences {
+    gate_connect_core::preferences::load()
+}
+
+/// This install's stable id, for the Settings row and for support threads.
+///
+/// Not the analytics distinct id, which Settings used to show: that one is absent
+/// in a build with no PostHog key and absent again once somebody opts out of
+/// diagnostics, so the row read Unavailable for reasons that had nothing to do
+/// with the install. The diagnostics report still carries the analytics id under
+/// its own name - they are two different facts.
+#[tauri::command]
+fn install_id() -> Result<String, String> {
+    gate_connect_core::primitives::install_id().map_err(|e| format!("{e:#}"))
+}
+
+/// What to call this machine: the person's own name for it, or the hostname.
+///
+/// Resolved in core (`preferences::device_name`) so one place decides what an
+/// absent override means. The stored value stays an `Option` (see
+/// `preferences::device_name`), so clearing the name goes back to following the
+/// hostname instead of freezing today's.
+///
+/// The *display* answer, and the hostname fallback is the reason it is not also
+/// the wire answer: `preferences::device_label` sends nothing at all for a
+/// device the user never named, so a person who skipped the naming step does not
+/// have their hostname on every request. The window and the wire agree wherever
+/// there is a name to agree on, and the Settings row says which case it is in.
+#[tauri::command]
+fn device_name() -> String {
+    gate_connect_core::preferences::device_name()
+}
+
+/// Rename this device, or clear the name and follow the hostname again.
+#[tauri::command]
+fn set_device_name(name: String) -> Result<(), String> {
+    gate_connect_core::preferences::set_device_name(&name).map_err(|e| format!("{e:#}"))
+}
+
+/// Turn routing-health notifications on or off. Gates the two notifications the
+/// app actually fires: an expired session, and a quit that could not put a tool
+/// back on its own settings.
+#[tauri::command]
+fn set_routing_health_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_routing_health_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Turn blocked-request notifications on or off (AG-578).
+///
+/// Separate from the flagged switch because the two differ in weight: a block
+/// stopped something the user was doing, a flag only noted it.
+#[tauri::command]
+fn set_blocked_event_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_blocked_event_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Turn flagged-request notifications on or off (AG-578).
+#[tauri::command]
+fn set_flagged_event_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_flagged_event_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Turn the sound on security notifications on or off (AG-578).
+#[tauri::command]
+fn set_security_notification_sound(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_security_notification_sound(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The live security-event feed (AG-578), one per process.
+///
+/// A singleton because the connection is a shared resource, not a per-window
+/// one: the main window and the tray popover both read it, and two windows
+/// holding two streams would double the org's fan-out and show each of them half
+/// the dedupe state.
+fn security_feed() -> &'static std::sync::Arc<gate_connect_core::security_feed::client::Feed> {
+    static FEED: std::sync::OnceLock<
+        std::sync::Arc<gate_connect_core::security_feed::client::Feed>,
+    > = std::sync::OnceLock::new();
+    FEED.get_or_init(|| std::sync::Arc::new(gate_connect_core::security_feed::client::Feed::new()))
+}
+
+/// How often to retire closed notification-grouping windows.
+///
+/// Ten seconds against the grouper's 60s window: short enough that a trailing
+/// summary reads as part of the same incident, long enough that an idle machine
+/// is doing nothing measurable.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const SECURITY_SWEEP_INTERVAL_SECS: u64 = 10;
+
+/// Fire a desktop notification for one security event, if the user asked for one.
+///
+/// Everything interesting is in `security_feed::notify`: which switch gates this
+/// action, and whether an identical event has already spoken inside the grouping
+/// window. This function's only job is the side effect.
+///
+/// Best-effort throughout. A notification that cannot be shown must not affect the
+/// feed, and the event is already on its way to the window regardless - the
+/// in-app feed is the record, the notification is the interruption.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn notify_for_event(
+    app: &tauri::AppHandle,
+    grouper: &std::sync::Mutex<gate_connect_core::security_feed::notify::Grouper>,
+    event: &gate_connect_core::security_feed::SecurityEvent,
+) {
+    let prefs = gate_connect_core::preferences::load();
+    let due = {
+        let Ok(mut g) = grouper.lock() else {
+            // A poisoned grouper means an earlier panic while holding it. Saying
+            // nothing is the safe direction: the alternative is un-grouped
+            // notifications, which is the failure this exists to prevent.
+            return;
+        };
+        g.admit(event, &prefs, std::time::Instant::now())
+    };
+    for notification in due {
+        fire_notification(app, notification);
+    }
+}
+
+/// Show one notification the grouper decided on.
+///
+/// Split from the decision so the event path and the sweep timer cannot drift on
+/// how a notification is presented.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn fire_notification(
+    app: &tauri::AppHandle,
+    notification: gate_connect_core::security_feed::notify::Notification,
+) {
+    use gate_connect_core::security_feed::notify::Notification;
+    use tauri_plugin_notification::NotificationExt;
+
+    let Notification::Fire { title, body, sound } = notification else {
+        return;
+    };
+    let mut builder = app.notification().builder().title(title).body(body);
+    if sound {
+        // The platform default rather than a bundled asset: a sound the user
+        // already recognises as "your computer wants you" beats one they have to
+        // learn, and it follows their Do Not Disturb settings.
+        //
+        // `sound` is one of the four fields the plugin's desktop path actually
+        // forwards (title, body, icon, sound) - `id`, `group` and `group_summary`
+        // exist on the builder but are mobile-only and are dropped here without
+        // error, which is why the trailing summary is a second notification
+        // rather than an update to the first.
+        builder = builder.sound("default");
+    }
+    let _ = builder.show();
+}
+
+/// What the feed is doing: `live`, `reconnecting` or `offline` (AC4).
+///
+/// Read on mount. Afterwards the window follows the `security-feed-state` event,
+/// but a window that opened mid-session has missed every event so far and needs
+/// somewhere to start.
+#[tauri::command]
+fn security_feed_state() -> gate_connect_core::security_feed::FeedState {
+    security_feed().state()
+}
+
+/// The events the feed has buffered, oldest first.
+///
+/// Tauri events only reach a window that is already listening, and the tray
+/// window is created and destroyed on demand - so without this a popover opened
+/// after ten blocked requests would show an empty feed and call it "no security
+/// events", which is a different claim entirely.
+#[tauri::command]
+fn security_feed_recent() -> Vec<gate_connect_core::security_feed::SecurityEvent> {
+    security_feed().recent()
+}
+
+/// AC6's recovery action: the "Try again" behind an Unavailable feed.
+///
+/// Wakes the connection loop out of whatever backoff it is sitting in, so a user
+/// who clicks Retry sees something happen instead of waiting out a 60s sleep.
+#[tauri::command]
+fn security_feed_retry() {
+    security_feed().retry_now();
+}
+
+/// Record whether Gate Connect may send diagnostic data. Onboarding records the
+/// first answer; this is Settings changing it. Nothing is uploaded here - the
+/// send path is its own story.
+#[tauri::command]
+fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
+}
+
+/// The process name to look for on behalf of one tool.
+///
+/// `None` for the tools Gate has no way to recognise in the process table:
+/// OpenClaw and Hermes ship no fixed process name, and `env-proxy` is not a
+/// process at all. For those, staleness is *unobservable* rather than false -
+/// see [`reopen_pending_for`], which says what that costs.
+///
+/// Reads [`AGENT_PROCESSES`] rather than repeating it: the per-tool verdict and
+/// the per-tool close offer have to name the same process for a slug, or one of
+/// them is talking about a tool the other is not.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_process_name(slug: &str) -> Option<&'static str> {
+    AGENT_PROCESSES
+        .iter()
+        .find(|(s, _)| *s == slug)
+        .map(|(_, name)| *name)
+}
+
+/// Is a process for this one tool running that predates the last routing change,
+/// and is therefore still using whatever settings it loaded then?
+///
+/// This is `stale_agents_count` narrowed to one tool, which is what a per-tool
+/// verdict needs: the count answers "does anything need restarting", and cannot
+/// say *which* row to mark.
+///
+/// Two honest limits, both deliberate:
+///
+/// - **A tool with no known process name returns `false`**, so it can still read
+///   `On`. The alternative - reporting every such tool unverifiable forever -
+///   would bury a real signal (the route probe) under a permanent warning. The
+///   cost is that OpenClaw and Hermes will not be told to reopen.
+/// - **No usable bound degrades to "running means stale"**, matching
+///   `stale_agents_count` rather than claiming freshness we cannot support.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn reopen_pending_for(slug: &str) -> bool {
+    let Some(wanted) = agent_process_name(slug) else {
+        return false;
+    };
+    let bound = routing_bound_unix();
+    let mut pending = false;
+    for_each_agent_process(&[wanted], |process| match bound {
+        Some(bound) => {
+            if process.start_time() < bound {
+                pending = true;
+            }
+        }
+        None => pending = true,
+    });
+    pending
+}
+
+/// One tool's routing verdict, flattened for the frontend.
+///
+/// `state` / `reason` / `next_action` are strings rather than a tagged union
+/// because the pairing is fixed in
+/// [`gate_connect_core::routing_health::Reason::next_action`] and the UI only
+/// ever renders them. `reason` and `next_action` are both `None` unless `state`
+/// is `needs_attention`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct VerdictDto {
+    slug: String,
+    state: &'static str,
+    reason: Option<&'static str>,
+    next_action: Option<&'static str>,
+    /// Where this tool's traffic is going *now*, and where the config on disk
+    /// asks it to go. Both `None` unless the reason is `reopen_required`, which
+    /// is the one verdict where those two answers differ: the process resolved
+    /// its route at launch and the file has changed under it since.
+    ///
+    /// Which way round they are depends on which change the process missed. A
+    /// managed config means Gate wrote the route and the tool has not picked it
+    /// up, so it is still going direct; an absent one means a disconnect landed
+    /// and the tool is still going through Gate. Deriving this from the config
+    /// state rather than from a stored intent is deliberate: intent is what the
+    /// switch says, and this line has to describe the world.
+    route_in_use: Option<String>,
+    requested_route: Option<String>,
+}
+
+/// What every config-routed tool is actually doing.
+///
+/// Deliberately a separate command from `list_tools`: this one does network I/O
+/// (a loopback health check, and one gateway call when the account is OAuth) and
+/// walks the process table, none of which belongs on the path the popover calls
+/// on every render.
+///
+/// The two probes run **once** for the whole sweep, not once per tool. They ask
+/// about shared infrastructure - the relay port and the account's session - so
+/// per-tool calls would be the same answer at N times the cost, and would let
+/// two rows in one refresh disagree about whether the session is alive.
+///
+/// Off the main thread for the reason on [`running_agents_count`] - but as a
+/// real `async fn` handing the work to `spawn_blocking`, not as
+/// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
+/// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
+/// so it runs on a tokio *worker*, with the runtime entered. Both probes below
+/// are blocking HTTP, and reqwest's blocking client asserts against being
+/// called from an entered worker in debug builds - it builds and immediately
+/// drops a throwaway runtime purely to detect the case. The resulting panic
+/// took the task with it, so the webview's `invoke` promise never settled and
+/// the refresh hung.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+async fn routing_verdicts() -> Vec<VerdictDto> {
+    // A join error means the probe itself panicked. An empty sweep is what this
+    // command already returns when it can tell nothing about any tool.
+    tauri::async_runtime::spawn_blocking(routing_verdicts_now)
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn routing_verdicts_now() -> Vec<VerdictDto> {
+    use gate_connect_core::routing_health::{self, ConfigState, Evidence};
+
+    let route = gate_connect_core::proxy::probe_relay_route();
+    let session = probe_session_health();
+    // One read for the whole sweep, like the two probes: every row that needs to
+    // name the Gate route names the same one.
+    let gate_route = gate_connect_core::account::load_base_url()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Constellation Gate".to_string());
+
+    let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
+    let verdicts: Vec<VerdictDto> = registry::registry()
+        .iter()
+        .filter(|integ| !integ.hidden_in_ui())
+        .map(|integ| {
+            let status = integ.status();
+            let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
+            let slug = integ.id().to_string();
+            let config = ConfigState::from_status(&status);
+            let verdict = routing_health::verdict_for(&Evidence {
+                installed,
+                config,
+                route,
+                session,
+                reopen_pending: reopen_pending_for(&slug),
+            });
+            let reason = verdict.reason();
+            recorded.push((slug.clone(), verdict));
+            // The two routes are only ever both present or both absent: a line
+            // that named one without the other would be half a comparison.
+            let (route_in_use, requested_route) =
+                if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
+                    let own = integ.default_upstream_url().to_string();
+                    if config == ConfigState::Managed {
+                        (Some(own), Some(gate_route.clone()))
+                    } else {
+                        (Some(gate_route.clone()), Some(own))
+                    }
+                } else {
+                    (None, None)
+                };
+            VerdictDto {
+                slug,
+                state: verdict.as_str(),
+                reason: reason.map(|r| r.as_str()),
+                next_action: reason.map(|r| r.next_action().as_str()),
+                route_in_use,
+                requested_route,
+            }
+        })
+        .collect();
+    // Persisted after the sweep, not during it: the log is what lets the recovery
+    // summary report a check it did not take, and a half-written sweep would be a
+    // worse record than the previous whole one.
+    gate_connect_core::verdict_log::record_sweep(&recorded);
+    verdicts
+}
+
+/// Ask the gateway whether the stored session still works, mapped onto the
+/// verdict layer's vocabulary.
+///
+/// An API-key account reports `Valid`: there is no session to probe, and the key
+/// is validated when it is saved. Reporting `Unknown` instead would park every
+/// key-based install on "Verification failed" permanently.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
+    use gate_connect_core::org::SessionProbe;
+    use gate_connect_core::routing_health::SessionHealth;
+
+    if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
+        return SessionHealth::Valid;
+    }
+    let Some(tokens) = gate_connect_core::oauth::live_session() else {
+        // No live session in OAuth mode is a definite negative: the refresh loop
+        // either has no tokens or the gateway already rejected them.
+        return SessionHealth::Rejected;
+    };
+    let Ok(Some(gateway)) = account::load_base_url() else {
+        return SessionHealth::Unknown;
+    };
+    match gate_connect_core::org::probe_session(&gateway, &tokens.access_token) {
+        SessionProbe::Accepted(_) => SessionHealth::Valid,
+        SessionProbe::Rejected => SessionHealth::Rejected,
+        // Offline or a non-auth error. Never evidence against the credential -
+        // `SessionProbe::Unavailable`'s own docs are explicit about this, and
+        // the verdict layer turns it into "Verification failed", not "Access
+        // problem".
+        SessionProbe::Unavailable => SessionHealth::Unknown,
+    }
+}
+
+/// What a routing restore still owes, from the snapshots on disk.
+///
+/// Read-only and cheap: it opens no tool config and starts nothing, so the UI can
+/// call it on a status refresh. Empty in the normal case.
+#[tauri::command]
+fn pending_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+}
+
+/// Finish an interrupted restore, and report what is still outstanding.
+///
+/// `restore_all` already has the retry semantics this needs: it re-attempts each
+/// recorded entry, keeps failures in the snapshot, and clears the file only once
+/// everything is back. So resuming repeats no completed write and reopens no
+/// verified tool without any new bookkeeping.
+///
+/// Returns the remaining pending state rather than unit, so a caller does not have
+/// to guess whether the resume finished the job - a partial success is the
+/// interesting case and the one that must not read as done.
+#[tauri::command]
+async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Best-effort, like every other caller of this: a failure leaves its
+        // entries in the snapshot, which is exactly what the return value reports.
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] resuming an interrupted restore failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
+        }
+        gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("resume restore join error: {e}"))?
+}
+
+/// One entry of the recovery summary: what the interrupted operation did to this
+/// tool, what the last check saw, and the one thing left to do about it.
+///
+/// Four readings, deliberately kept apart rather than folded into one status
+/// word, because they can and do disagree and each disagreement means something
+/// different:
+///
+/// - `stage` is what the *write* reached, from the restore journal.
+/// - `last_verified_*` is the last route a check actually established. It
+///   survives a failed verification on purpose - that is the point of recording
+///   it - so it can be older than the check below.
+/// - `check_*` is the most recent check, whatever it concluded.
+/// - `running` / `reopen_pending` is the process, which no file can answer.
+///
+/// Flattening these was the temptation and would have been the bug: a tool whose
+/// write finished, whose last check said `on`, and whose process predates the
+/// write is *not* routing, and only the four together say so.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RecoveryToolDto {
+    slug: String,
+    name: String,
+    kind: &'static str,
+    /// The journal's outcome word, or `pending` for an entry the journal never
+    /// reached - a snapshot written before the operation started, or a journal
+    /// lost with the process that was writing it.
+    stage: &'static str,
+    /// Whether the write is done with, so a summary can count stages without
+    /// re-deriving which outcomes are settled.
+    stage_complete: bool,
+    /// What kind of failure the stage was, when it was one.
+    error_category: &'static str,
+    stage_at_unix: u64,
+    last_verified_state: Option<String>,
+    last_verified_unix: u64,
+    check_state: Option<String>,
+    check_reason: Option<String>,
+    check_at_unix: u64,
+    running: bool,
+    reopen_pending: bool,
+    next_step: &'static str,
+}
+
+/// The interrupted operation, and every tool it touched.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RecoverySummaryDto {
+    /// Which operation this describes. One value today - the restore is the only
+    /// journalled operation - and carried rather than assumed so a summary of
+    /// some later operation cannot be read as this one.
+    operation: &'static str,
+    /// When the journal was last written. 0 when there is no journal, which the
+    /// UI renders as unknown rather than as 1970.
+    updated_unix: u64,
+    /// What the operation was trying to achieve.
+    requested_routing_on: bool,
+    tools: Vec<RecoveryToolDto>,
+}
+
+/// The whole state of an interrupted routing operation, per tool.
+///
+/// Built from four sources, none of which is sufficient alone: the restore
+/// journal (what the write did), the snapshots (what is still owed), the verdict
+/// log (what the last checks saw) and the process table (what is still holding
+/// old settings). `None` when there is nothing to recover - no journal and
+/// nothing pending - which is the normal case.
+///
+/// Read-only. It writes nothing, starts nothing and reopens nothing, so the
+/// review it feeds cannot change what it is reviewing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn recovery_summary() -> Option<RecoverySummaryDto> {
+    use gate_connect_core::recovery::{self, EntryKind, Outcome};
+
+    let journal = recovery::load();
+    let pending = gate_connect_core::provider::pending_restore().unwrap_or_default();
+    if journal.is_none() && pending.is_empty() {
+        return None;
+    }
+    let verdicts = gate_connect_core::verdict_log::load();
+
+    // Journal order first: it is the order the restore attempted, which is the
+    // order the stages make sense in. Pending entries the journal never mentioned
+    // follow, seeded `Pending` - the same thing `JournalWriter::reopen` does, for
+    // the same reason.
+    let mut rows: Vec<(String, String, EntryKind, Outcome, u64)> = journal
+        .as_ref()
+        .map(|j| {
+            j.entries
+                .iter()
+                .map(|e| (e.slug.clone(), e.name.clone(), e.kind, e.outcome, e.at_unix))
+                .collect()
+        })
+        .unwrap_or_default();
+    let seen = |rows: &[(String, String, EntryKind, Outcome, u64)], slug: &str| {
+        rows.iter().any(|(s, ..)| s == slug)
+    };
+    for (entries, kind) in [
+        (&pending.providers, EntryKind::Provider),
+        (&pending.tools, EntryKind::Tool),
+    ] {
+        for entry in entries {
+            if !seen(&rows, &entry.slug) {
+                rows.push((
+                    entry.slug.clone(),
+                    entry.name.clone(),
+                    kind,
+                    Outcome::Pending,
+                    0,
+                ));
+            }
+        }
+    }
+
+    let tools = rows
+        .into_iter()
+        .map(|(slug, name, kind, outcome, at_unix)| {
+            let reopen_pending = reopen_pending_for(&slug);
+            let logged = verdicts.get(&slug);
+            RecoveryToolDto {
+                kind: match kind {
+                    EntryKind::Provider => "provider",
+                    EntryKind::Tool => "tool",
+                },
+                stage: outcome.as_str(),
+                stage_complete: outcome.is_complete(),
+                error_category: outcome.category(),
+                stage_at_unix: at_unix,
+                last_verified_state: logged.and_then(|e| e.verified_state.clone()),
+                last_verified_unix: logged.map(|e| e.verified_unix).unwrap_or(0),
+                check_state: logged.map(|e| e.state.clone()),
+                check_reason: logged.and_then(|e| e.reason.clone()),
+                check_at_unix: logged.map(|e| e.at_unix).unwrap_or(0),
+                running: agent_running_for(&slug),
+                reopen_pending,
+                next_step: recovery::next_step(outcome, reopen_pending).as_str(),
+                slug,
+                name,
+            }
+        })
+        .collect();
+
+    Some(RecoverySummaryDto {
+        operation: "restore",
+        updated_unix: journal.as_ref().map(|j| j.updated_unix).unwrap_or(0),
+        // No journal means nothing recorded an intent, and the only operation
+        // that leaves a pending snapshot behind is one that was turning routing
+        // on. Stated here rather than defaulted silently in the UI.
+        requested_routing_on: journal
+            .as_ref()
+            .map(|j| j.requested_routing_on)
+            .unwrap_or(true),
+        tools,
+    })
+}
+
+/// Is any process for this tool running, whenever it started?
+///
+/// Distinct from [`reopen_pending_for`], which asks the narrower question of
+/// whether one *predates* the last routing change. The summary needs both: "not
+/// running" and "running with current settings" are the same verdict and
+/// different sentences, and a row that cannot tell them apart cannot explain
+/// itself.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_running_for(slug: &str) -> bool {
+    let Some(wanted) = agent_process_name(slug) else {
+        return false;
+    };
+    let mut running = false;
+    for_each_agent_process(&[wanted], |_| running = true);
+    running
+}
+
+/// What one per-tool retry did, plus what is left.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RetryRestoreDto {
+    /// The retry's own failure, or `None` when it did not fail. Carried in the
+    /// payload rather than raised as a command error so the caller still gets the
+    /// pending state below: a failed retry changes what is outstanding for every
+    /// *other* entry too - one may have completed in the same window - and a
+    /// caller left holding a stale list would redraw the summary wrong.
+    error: Option<String>,
+    pending: gate_connect_core::provider::PendingRestore,
+}
+
+/// Retry one recorded entry of an interrupted restore.
+///
+/// The per-tool half of the recovery: `resume_restore` re-attempts everything,
+/// this re-attempts one slug and leaves every other entry's recorded work in
+/// place. `provider::restore_one` carries the semantics; this is the seam that
+/// keeps it off the main thread and reports failures the way the rest of the
+/// routing surface does.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+async fn retry_restore_entry(slug: String) -> Result<RetryRestoreDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let error = match gate_connect_core::provider::restore_one(&slug) {
+            Ok(()) => None,
+            Err(e) => {
+                eprintln!("[gate] retrying the restore of {slug:?} failed: {e}");
+                report_backend_error("provider_restore", format!("{e:#}"));
+                Some(format!("{e:#}"))
+            }
+        };
+        Ok(RetryRestoreDto {
+            error,
+            pending: gate_connect_core::provider::pending_restore().unwrap_or_default(),
+        })
+    })
+    .await
+    .map_err(|e| format!("retry restore join error: {e}"))?
+}
+
+/// One tool in a teardown report, and the one thing left to do about it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct TeardownToolDto {
+    slug: String,
+    name: String,
+    next_action: &'static str,
+}
+
+/// Where every installed tool stands after a teardown - routing off, disconnect,
+/// sign-out or reset.
+///
+/// **Read back, not recorded.** The buckets come from re-reading each tool's own
+/// config, never from what the teardown believed it wrote. That is the O1 rule
+/// `docs/routing-architecture.md` states for the environment channel, applied
+/// here: a sweep that returns success having written nothing is exactly the
+/// failure this report exists to catch, and a report assembled from the sweep's
+/// own return value would repeat its mistake.
+///
+/// A consequence worth stating: a tool the sweep *named* as failed can appear
+/// under `defaults` if its config reads clean now. That is right. The user asked
+/// where their tools point, and the file is the answer.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct TeardownReportDto {
+    /// Back on their own settings, verified by reading the config.
+    defaults: Vec<TeardownToolDto>,
+    /// Still carrying Gate's values. The teardown did not put these back.
+    still_gate: Vec<TeardownToolDto>,
+    /// On their own settings on disk, but running a process that predates the
+    /// change - so still routing through Gate until it is reopened.
+    awaiting_reopen: Vec<TeardownToolDto>,
+    /// Could not be read at all, so nothing about them is known. Not `defaults`:
+    /// an unreadable config is ignorance, not a clean result - the same
+    /// distinction `routing_health::ConfigState::Unreadable` draws.
+    failed: Vec<TeardownToolDto>,
+}
+
+/// Where the tools stand after a teardown, so an operation that could not put
+/// every tool back can say which ones.
+///
+/// Read-only and cheap enough for a dialog to call on open: one status read per
+/// integration plus one process walk, the same work `routing_verdicts` does
+/// without the network probes.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn teardown_report() -> TeardownReportDto {
+    let mut report = TeardownReportDto {
+        defaults: Vec::new(),
+        still_gate: Vec::new(),
+        awaiting_reopen: Vec::new(),
+        failed: Vec::new(),
+    };
+    for integ in registry::registry() {
+        if integ.hidden_in_ui() {
+            continue;
+        }
+        let slug = integ.id().to_string();
+        let status = integ.status();
+        // Not on the machine: it has no configuration to put back, and listing it
+        // would pad a report the user reads as a to-do list.
+        if matches!(status, Ok(gate_connect_core::Status::NotInstalled)) {
+            continue;
+        }
+        let tool = |next_action: &'static str| TeardownToolDto {
+            slug: slug.clone(),
+            name: integ.display_name().to_string(),
+            next_action,
+        };
+        match status {
+            Ok(gate_connect_core::Status::Connected)
+            | Ok(gate_connect_core::Status::Drifted(_))
+            | Ok(gate_connect_core::Status::Overridden(_)) => {
+                report.still_gate.push(tool("retry_disconnect"))
+            }
+            Ok(_) if reopen_pending_for(&slug) => report.awaiting_reopen.push(tool("reopen_tool")),
+            Ok(_) => report.defaults.push(tool("none")),
+            Err(_) => report.failed.push(tool("retry_check")),
+        }
+    }
+    report
+}
+
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
 struct RunningAgent {
+    /// The tool this process belongs to, from [`AGENT_PROCESSES`]. Carried so a
+    /// caller that offered to close a set of tools can tie each process back to
+    /// the row it was offered under - the reopen flow tracks a tool through
+    /// close, reopen and verification, and a process name is not a key: `claude`
+    /// and `Claude` are one slug and two different programs.
+    slug: String,
     /// Process name as the OS spells it, original case - "Claude" is the
     /// desktop app, "claude" the CLI, and which one is running matters.
     name: String,
+    /// Can Gate Connect launch this tool again itself, once it has been closed?
+    ///
+    /// **False for every tool in the registry**, and this is a fact about them
+    /// rather than a feature nobody wrote yet. All six are terminal programs:
+    /// they run inside a shell session Gate does not own, with a working
+    /// directory, arguments and a conversation this process cannot see, and
+    /// nothing that walks the process table can recover them. Spawning a fresh
+    /// terminal would not be reopening the tool - it would be starting a
+    /// different one, somewhere else, and dropping the session the user was
+    /// asked to save.
+    ///
+    /// It is reported rather than assumed because the flow that reads it has to
+    /// say which tools it will reopen and which the user must, and that sentence
+    /// should come from the backend that knows. A GUI tool - one launchable by
+    /// bundle id, shortcut or `.desktop` entry - is where this turns true.
+    can_reopen: bool,
     pid: u32,
     /// Process start, Unix seconds. 0 when the platform wouldn't say.
     started_at_unix: u64,
@@ -1146,10 +2665,12 @@ struct RunningAgent {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
 struct RunningAgentsDto {
-    /// The names this scan looks for ([`AGENT_PROCESS_NAMES`]). Reported so an
-    /// empty list reads as "none of these three were running" rather than "no
-    /// AI tools are running" - the scan does not cover Hermes or OpenClaw, and
-    /// a report that hid that would be read as evidence they were stopped.
+    /// The names this scan looked for (see [`agent_names_for`]). Reported so an
+    /// empty list reads as "none of these were running" rather than "no AI
+    /// tools are running" - the scan does not cover Hermes or OpenClaw, and a
+    /// report that hid that would be read as evidence they were stopped. With
+    /// an `only` filter it also names which tool the question was about, so a
+    /// caller cannot mistake a narrow answer for a whole-machine one.
     scanned_names: Vec<String>,
     agents: Vec<RunningAgent>,
 }
@@ -1159,6 +2680,13 @@ struct RunningAgentsDto {
 /// same staleness rule as the two count probes, so the diagnostics report and
 /// the routing takeover can never disagree about what is running.
 ///
+/// `only` narrows the scan to the tools whose configs were just rewritten - a
+/// per-app switch passes its own slug, a family cascade the slugs it touched.
+/// `None` asks about every tool, which is what diagnostics and the master
+/// toggle mean. Without it, flipping one tool listed the others: the offer
+/// named a `claude` that nothing had reconfigured, and the confirm behind it
+/// would have killed it.
+///
 /// Deliberately carries no command line: argv on these tools routinely holds
 /// prompts, file paths and occasionally a key, and this list is built to be
 /// pasted into a support thread.
@@ -1166,15 +2694,32 @@ struct RunningAgentsDto {
 /// `(async)` for the same reason as [`diagnostics`]: this walks the whole
 /// process table, and a sync command would do that on the main thread - the
 /// GTK loop on Linux - with the popover frozen until it returns.
+/// `only` narrows the scan to the processes belonging to those tool slugs.
+///
+/// Omitted means every agent, which is right for a master toggle: it changed
+/// the route for all of them, and all of them are stale until they restart. It
+/// is wrong for a single tool - offering to close Claude because someone
+/// switched Codex names processes the change did not touch, and asks to kill
+/// work for no reason.
+///
+/// A slug with no process to look for contributes nothing rather than widening
+/// the scan back to everything. `agent_process_name` covers the three tools this
+/// scan knows; OpenClaw and Hermes have none, and a filter that silently fell
+/// back to "all" for them would reintroduce exactly this bug for the tools it
+/// least applies to.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn running_agents() -> RunningAgentsDto {
+fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
+    let names = agent_names_for(only.as_deref());
     let bound = routing_bound_unix();
     let mut agents = Vec::new();
-    for_each_agent_process(|process| {
+    for_each_agent_process(&names, |process| {
         let started_at_unix = process.start_time();
+        let slug = agent_slug_of(process).unwrap_or_default();
         agents.push(RunningAgent {
+            slug: slug.to_string(),
             name: process.name().to_string_lossy().to_string(),
+            can_reopen: false,
             pid: process.pid().as_u32(),
             started_at_unix,
             // No usable bound degrades to "everything predates routing", the
@@ -1187,27 +2732,31 @@ fn running_agents() -> RunningAgentsDto {
     // diffable.
     agents.sort_by_key(|agent| agent.started_at_unix);
     RunningAgentsDto {
-        scanned_names: AGENT_PROCESS_NAMES.iter().map(|n| n.to_string()).collect(),
+        scanned_names: names.iter().map(|n| n.to_string()).collect(),
         agents,
     }
 }
 
 /// Terminate running agent processes (CLIs and desktop apps, see
-/// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
+/// [`AGENT_PROCESSES`]) so their next launch picks up the routing change.
 /// Graceful where the platform allows it (SIGTERM on
 /// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
 /// skipped, not errors.
 ///
+/// `only` carries the same tool-slug filter as [`running_agents`], and callers
+/// are expected to pass back exactly what they offered: this signals processes,
+/// so the set it kills must be the set the user was shown and agreed to.
+///
 /// `(async)` on top of the walk's own reason: this one also blocks on
 /// signalling every match, and it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn close_running_agents() -> u32 {
+fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;
-    for_each_agent_process(|process| {
+    for_each_agent_process(&agent_names_for(only.as_deref()), |process| {
         // kill_with(Term) is None on platforms without signal support
         // (Windows); fall back to the hard kill there.
         let signalled = process
@@ -1256,6 +2805,46 @@ const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 /// poll by design), and posts the same notification the refresh loop would
 /// have, on the same platforms it notifies on - the tray dot alone is out of
 /// the user's eyeline while they sit watching a tool fail.
+/// Re-verify a session the gateway has just refused, and react to the verdict.
+///
+/// Shared by the two triggers, which differ only in how the refusal reaches us:
+/// the in-process engine's observer on macOS/Windows, and the session loop's
+/// poll of the helper daemon's refusal counter on Linux. The response to a
+/// verdict is not platform-specific, so it lives in one place.
+///
+/// Says nothing itself about whether the session is dead - that is
+/// [`gate_connect_core::startup::reverify_session`]'s call, made with our own
+/// token against the gateway. This only carries out what it decided.
+///
+/// Does NOT take the [`gate_connect_core::proxy::GateAuthCheck`] debounce
+/// guard: the engine-side latch belongs to whichever process saw the 401, which
+/// on Linux is the daemon, and the observer path takes it at the top of its own
+/// thread so a panic still releases it.
+fn recheck_gate_session(app: &tauri::AppHandle) {
+    match gate_connect_core::startup::reverify_session() {
+        // The session was alive and the local clock was simply wrong about it.
+        // The forced refresh minted a token that works; push it into the
+        // running engine so in-flight tools recover without a restart, and take
+        // back any dead-session signal.
+        gate_connect_core::startup::Recheck::Recovered(token) => {
+            gate_connect_core::proxy::manager().refresh_token(&token);
+            if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+                let running = gate_connect_core::proxy::manager()
+                    .status()
+                    .map(|s| s.running)
+                    .unwrap_or(false);
+                update_tray_status(app, running);
+            }
+        }
+        gate_connect_core::startup::Recheck::Dead => {
+            signal_session_dead(app);
+        }
+        // No verdict (offline, or the 401 belonged to the client's own upstream
+        // credential rather than to us): change nothing.
+        gate_connect_core::startup::Recheck::Unchanged => {}
+    }
+}
+
 fn signal_session_dead(app: &tauri::AppHandle) {
     if SESSION_NEEDS_SIGNIN.swap(true, Ordering::Relaxed) {
         return;
@@ -1288,10 +2877,18 @@ fn unpin_popover() {
 
 /// Pin the popover open for the duration of a call that raises a system trust
 /// dialog. Without this, `proxy_trust_ca` is the one action in the app that
-/// hides the window it was clicked in: the OS dialog takes focus, the
+/// hides the window it was clicked in: the OS dialog takes focus, a
 /// `Focused(false)` handler hides the popover, and the copy telling the user
-/// what to click goes with it. The frontend pins before the call and unpins
-/// in its `finally`, so a cancelled dialog restores click-away dismissal too.
+/// what to click goes with it.
+///
+/// **That handler does not currently exist**, and neither does the dismissal
+/// this guards against. There is no `Focused(false)` arm anywhere in this
+/// file, so [`POPOVER_PINNED`] is written at four sites and read at none, and
+/// the tray sits over every other window until the icon is clicked again. Kept
+/// rather than deleted because the two commands are still called by the
+/// retiring `src/App.tsx` shell and because the pin is what a blur-dismiss
+/// would need on the day one lands. Whether it should is a product question,
+/// raised in `docs/figma-questions-for-design.md`.
 #[tauri::command]
 fn pin_popover() {
     POPOVER_PINNED.store(true, Ordering::Release);
@@ -1522,20 +3119,27 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
     });
 }
 
-/// Bring the tray popover back on screen, anchored under the tray icon where
-/// the platform can report one. The onboarding flow calls this from its
-/// "locate Gate Connect" button and on close, so the handoff always ends at
-/// the popover.
+/// Bring the main window back on screen, wherever the user left it. The
+/// onboarding flow calls this from its "locate Gate Connect" button and on
+/// close, so the handoff always ends at the app.
+///
+/// Deliberately does not reposition. This is a 1280x800 window, not a tray
+/// popover: moving it out from under the user's cursor on every reveal is
+/// exactly what a window must not do.
+/// Also clears [`POPOVER_VISIBLE`]: handing over to the main window means the
+/// tray is going away, and `TrayApp` hides itself with a frontend
+/// `getCurrentWindow().hide()` that Rust never sees as a window event. Without
+/// this the flag leaked `true` past every Expand-app and every Quit.
 fn reveal_popover_window(app: &tauri::AppHandle) {
+    POPOVER_VISIBLE.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    #[cfg(not(target_os = "linux"))]
-    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
-        anchor_under_tray(&window, rect.position, rect.size);
-    }
     #[cfg(target_os = "linux")]
     let _ = window.unminimize();
+    // Before the show, for the reason in `map_maximized_for_decorations`.
+    #[cfg(target_os = "linux")]
+    map_maximized_for_decorations(&window);
     let _ = window.show();
     let _ = window.set_focus();
     #[cfg(target_os = "macos")]
@@ -1545,6 +3149,157 @@ fn reveal_popover_window(app: &tauri::AppHandle) {
 #[tauri::command]
 fn reveal_popover(app: tauri::AppHandle) {
     reveal_popover_window(&app);
+}
+
+/// Show the tray popover (window label `tray`), anchored to the tray icon
+/// where the platform reports a rect and at the cursor on Linux, where the
+/// SNI/AppIndicator protocol does not. Placement is correct *here*, unlike
+/// the main window's reveal, which deliberately stopped repositioning
+/// (c63e1880): this window is a popover again, and a popover that opens
+/// wherever it was last left reads as detached from the icon that summoned it.
+fn reveal_tray_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("tray") else {
+        return;
+    };
+    #[cfg(not(target_os = "linux"))]
+    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
+        anchor_under_tray(&window, rect.position, rect.size);
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(cursor) = app.cursor_position() {
+        anchor_at_cursor(&window, cursor);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    order_front_regardless(&window);
+}
+
+/// Position the tray popover centered horizontally on the tray icon and just
+/// above or below it, whichever side has room on the icon's monitor - macOS's
+/// menu bar is at the top so the popover lands below, Windows' taskbar is
+/// typically at the bottom so it flips above. X is clamped to the monitor so
+/// an icon near an edge doesn't push the popover past it. Resurrected from
+/// c63e1880, where it served the old popover, scoped to the tray window now.
+#[cfg(not(target_os = "linux"))]
+fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = tray_pos.to_physical::<f64>(scale);
+    let size = tray_size.to_physical::<f64>(scale);
+
+    let window_w_px = window
+        .outer_size()
+        .map(|s| s.width as f64)
+        .unwrap_or(400.0 * scale);
+    let window_h_px = window
+        .outer_size()
+        .map(|s| s.height as f64)
+        .unwrap_or(700.0 * scale);
+
+    let tray_center_x = pos.x + size.width / 2.0;
+    let tray_top_y = pos.y;
+    let tray_bottom_y = pos.y + size.height;
+    let gap = 6.0 * scale;
+
+    // Fall back to the unbounded below-icon placement if we can't read the
+    // monitor - better than refusing to show the window.
+    let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
+        Some(m) => {
+            let p = m.position();
+            let s = m.size();
+            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        }
+        None => {
+            let x = (tray_center_x - window_w_px / 2.0).round() as i32;
+            let y = (tray_bottom_y + gap).round() as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+            return;
+        }
+    };
+
+    let space_below = (mon_y + mon_h) - tray_bottom_y;
+    let y = if space_below >= window_h_px + gap {
+        tray_bottom_y + gap
+    } else {
+        tray_top_y - window_h_px - gap
+    };
+
+    let x = (tray_center_x - window_w_px / 2.0)
+        .max(mon_x + 4.0)
+        .min(mon_x + mon_w - window_w_px - 4.0);
+
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
+/// Pick the monitor whose physical bounds contain point (x, y) - the display
+/// the clicked tray icon is on, not whichever one the window was on last.
+/// Falls back to the window's current monitor, then the primary, so there is
+/// always somewhere to show. Resurrected from c63e1880 with `anchor_under_tray`.
+#[cfg(not(target_os = "linux"))]
+fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Monitor> {
+    let contains = |m: &tauri::Monitor| {
+        let p = m.position();
+        let s = m.size();
+        x >= p.x as f64
+            && x < p.x as f64 + s.width as f64
+            && y >= p.y as f64
+            && y < p.y as f64 + s.height as f64
+    };
+    window
+        .available_monitors()
+        .ok()
+        .and_then(|ms| ms.into_iter().find(contains))
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
+
+/// Position the tray popover above or below the cursor on Linux, where the
+/// tray protocol exposes no usable icon rect - and on GNOME, where the
+/// left-click event often never fires, so the menu's Quick status entry is
+/// how users get here. On Wayland the compositor may ignore `set_position`
+/// outright; on X11 this lands the popover near the click. Resurrected from
+/// c63e1880 with `anchor_under_tray`.
+#[cfg(target_os = "linux")]
+fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let window_w_px = window
+        .outer_size()
+        .map(|s| s.width as f64)
+        .unwrap_or(400.0 * scale);
+    let window_h_px = window
+        .outer_size()
+        .map(|s| s.height as f64)
+        .unwrap_or(700.0 * scale);
+
+    let gap = 6.0 * scale;
+
+    let (mon_x, mon_y, mon_w, mon_h) = match window.current_monitor().ok().flatten() {
+        Some(m) => {
+            let p = m.position();
+            let s = m.size();
+            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        }
+        None => {
+            let x = (cursor.x - window_w_px / 2.0).round() as i32;
+            let y = (cursor.y + gap).round() as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+            return;
+        }
+    };
+
+    let space_below = (mon_y + mon_h) - cursor.y;
+    let y = if space_below >= window_h_px + gap {
+        cursor.y + gap
+    } else {
+        cursor.y - window_h_px - gap
+    };
+
+    let x = (cursor.x - window_w_px / 2.0)
+        .max(mon_x + 4.0)
+        .min(mon_x + mon_w - window_w_px - 4.0);
+
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
 /// Tray "Quit": exit immediately unless config-routed CLI tools are still
@@ -1563,6 +3318,19 @@ fn reveal_popover(app: tauri::AppHandle) {
 /// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
 /// each `quit-requested` nudge (mirrors the backend-error seam).
 fn request_quit(app: &tauri::AppHandle) {
+    // **Linux exits outright, and that is correct.** It looks like the flow
+    // being skipped on one platform, and it is not: there the engine is a
+    // DETACHED helper daemon that outlives this process (see the note at
+    // `LAUNCH_AT_LOGIN`-adjacent code, "on Linux the engine lives in a
+    // detached helper daemon", and "Linux has no exit-time safe point - the
+    // RunEvent::Exit handler is macOS/Windows-only"). Quitting the GUI there
+    // stops nothing: routing continues, no config is left aimed at a dead
+    // relay, and so there is no question to ask. Asking would be worse than
+    // silent - the "disconnect and quit" branch would tear down routing the
+    // user never needed to lose.
+    //
+    // I removed this gate once, reasoning from the docstring above and from
+    // AG-596, and it was a regression. Do not remove it again.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     app.exit(0);
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1573,7 +3341,10 @@ fn request_quit(app: &tauri::AppHandle) {
             let connected: Vec<String> = registry::registry()
                 .iter()
                 .filter(|integ| {
-                    matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)))
+                    matches!(
+                        integ.status(),
+                        Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+                    )
                 })
                 .map(|integ| integ.display_name().to_string())
                 .collect();
@@ -1609,6 +3380,14 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// The tray popover's own Quit entry: the same three-way quit the tray menu's
+/// item runs, so both entrances exit outright or defer to the main window's
+/// dialog when config-routed tools would be left pointing at a dead relay.
+#[tauri::command]
+fn request_app_quit(app: tauri::AppHandle) {
+    request_quit(&app);
+}
+
 /// Quit-time integration teardown (the "turn off integrations" quit choice):
 /// snapshot + disconnect every enabled provider AND the managed standalone
 /// tools no provider maps, so all the CLI tools fall back to their original
@@ -1617,32 +3396,57 @@ fn quit_app(app: tauri::AppHandle) {
 /// app runs with routing intended on. Fires a system notification (the
 /// popover dies with the process) telling the user to restart running CLI
 /// agents, which keep the relay address they resolved at their own launch.
+///
+/// Returns the display names of any tools it could **not** return to their own
+/// settings. Empty means the teardown was clean. A non-empty list is not an
+/// error - the rest of the sweep still ran - but the caller must not report the
+/// quit as tidy, and must not quit without saying so.
 #[tauri::command]
-async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
+async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Off the main thread: disconnect does config-file I/O.
-    tauri::async_runtime::spawn_blocking(|| {
+    let failed: Vec<String> = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
-    {
+    // Gated on the routing-health preference: this is a notification about
+    // routing, and a switch the user turned off has to actually stop something or
+    // it was never a switch. The list is still returned either way - suppressing
+    // the notification must not suppress the *result*.
+    if gate_connect_core::preferences::load().routing_health_notifications {
         use tauri_plugin_notification::NotificationExt;
+        // The clean-teardown wording is only true when the teardown was clean.
+        // With a tool left on Gate's settings, telling the user everything is
+        // back is worse than saying nothing: their next request goes to a relay
+        // that died with this process, and the notification told them it would
+        // not.
+        let body = if failed.is_empty() {
+            // "Your tools", not "Integrations": that word reaches the user
+            // nowhere else in the product, and this notification arrives
+            // seconds after a panel that called them tools. The rest of the
+            // wording is shared with QuitConfirm on purpose.
+            "Your tools are back on their own settings while Gate Connect is \
+             closed. Restart any running CLI agents; everything reconnects \
+             when Gate Connect starts again."
+                .to_string()
+        } else {
+            format!(
+                "Gate Connect closed, but {} could not be put back on {} own \
+                 settings. {} still point at Gate and will not reach a model until \
+                 Gate Connect runs again.",
+                failed.join(", "),
+                if failed.len() == 1 { "its" } else { "their" },
+                if failed.len() == 1 { "It" } else { "They" },
+            )
+        };
         let _ = app
             .notification()
             .builder()
             .title("Gate Connect")
-            .body(
-                // "Your tools", not "Integrations": that word reaches the user
-                // nowhere else in the product, and this notification arrives
-                // seconds after a panel that called them tools. The rest of the
-                // wording is shared with QuitConfirm on purpose.
-                "Your tools are back on their own settings while Gate Connect is \
-                 closed. Restart any running CLI agents; everything reconnects \
-                 when Gate Connect starts again.",
-            )
+            .body(body)
             .show();
     }
-    Ok(())
+    Ok(failed)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1697,7 +3501,19 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
+                    activity_overview,
+                    activity_installations,
+                    activity_cached_overview,
+                    activity_cached_tool_overviews,
+                    activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
+                    gate_credits,
+                    log_message,
+                    log_file_path,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1707,6 +3523,7 @@ pub fn run() {
                     reveal_popover,
                     quit_app,
                     pending_quit_tools,
+                    request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,
                     proxy_status,
@@ -1718,13 +3535,31 @@ pub fn run() {
                     proxy_untrust_ca,
                     launch_at_login_status,
                     set_launch_at_login,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
+                    install_id,
+                    device_name,
+                    set_device_name,
                     set_updater_relaunching,
                     routed_clients_stale,
+                    routing_verdicts,
+                    pending_restore,
+                    resume_restore,
+                    recovery_summary,
+                    retry_restore_entry,
+                    teardown_report,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,
                     close_running_agents,
                     drain_backend_errors,
+                    security_feed_state,
+                    security_feed_recent,
+                    security_feed_retry,
+                    set_blocked_event_notifications,
+                    set_flagged_event_notifications,
+                    set_security_notification_sound,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -1743,7 +3578,19 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
+                    activity_overview,
+                    activity_installations,
+                    activity_cached_overview,
+                    activity_cached_tool_overviews,
+                    activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
+                    gate_credits,
+                    log_message,
+                    log_file_path,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1753,9 +3600,16 @@ pub fn run() {
                     reveal_popover,
                     quit_app,
                     pending_quit_tools,
+                    request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,
                     set_updater_relaunching,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
+                    install_id,
+                    device_name,
+                    set_device_name,
                     drain_backend_errors,
                 ]
             }
@@ -1788,6 +3642,26 @@ pub fn run() {
             if window.label() == CF_CHALLENGE_WINDOW {
                 return;
             }
+            // First post-map event after a maximised map: geometry is settled,
+            // so put the window back to its configured size. Main window only:
+            // the repair's pending flags are the main reveal's, and the tray
+            // popover - undecorated, so never repaired - must not consume them
+            // and get resized to the main window's bounds.
+            #[cfg(target_os = "linux")]
+            if window.label() == "main" {
+                match event {
+                    WindowEvent::Resized(_) => {
+                        restore_after_repair(window);
+                        // After the repair, not before: it is the one thing
+                        // allowed to move this window through odd geometry.
+                        clamp_to_minimum(window);
+                    }
+                    WindowEvent::Focused(true) => {
+                        restore_after_repair(window);
+                    }
+                    _ => {}
+                }
+            }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -1799,11 +3673,19 @@ pub fn run() {
             // after Gate Connect - and wire it up without a relaunch. Guarded by
             // POPOVER_VISIBLE so a refocus of an already-open window doesn't
             // re-run it; the flag is cleared at each hide site below. This is the
-            // config route, so it runs on every platform (unlike the
-            // Focused(false) dismiss below). Off-thread + best-effort so it never
+            // config route, so it runs on every platform. Off-thread + best-effort so it never
             // blocks the event loop; reconcile_enabled is idempotent and only
             // writes when a tool is newly installed.
             if let WindowEvent::Focused(true) = event {
+                // TRAY ONLY. This arm used to run for every window, and the
+                // Linux `main` branch above it does not return, so focusing the
+                // main window consumed the edge and the flag stayed true - after
+                // which every tray open skipped the reconcile below until the
+                // user happened to dismiss the tray with the icon. The flag is
+                // cleared at the tray's hide sites, so it is the tray's flag.
+                if window.label() != "tray" {
+                    return;
+                }
                 if !POPOVER_VISIBLE.swap(true, Ordering::AcqRel) {
                     std::thread::spawn(|| {
                         if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
@@ -1812,25 +3694,6 @@ pub fn run() {
                         }
                     });
                 }
-            }
-            // Click outside the popover → dismiss. Linux is excluded: there the
-            // window is a normal decorated, taskbar-visible window (see setup),
-            // and a dismiss-on-blur reflex fights its own title bar - grabbing
-            // the CSD title bar or close button momentarily blurs the GTK
-            // toplevel, so minimizing here would yank drag/close out from under
-            // the user. Linux dismisses via its native controls instead.
-            #[cfg(not(target_os = "linux"))]
-            if let WindowEvent::Focused(false) = event {
-                // While pinned (first launch, through the keychain-password
-                // dialog and first-run, until the user engages), a focus loss
-                // - the keychain dialog stealing focus, or the spurious blur an
-                // Accessory app emits right after the startup show - must not
-                // hide the popover, or the user never sees the window.
-                if POPOVER_PINNED.load(Ordering::Acquire) {
-                    return;
-                }
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
             }
         })
         .setup(|app| {
@@ -1906,36 +3769,34 @@ pub fn run() {
                 let handle = auth_handle.clone();
                 std::thread::spawn(move || {
                     let _release = gate_connect_core::proxy::GateAuthCheck;
-                    match gate_connect_core::startup::reverify_session() {
-                        // The session was alive and the local clock was
-                        // simply wrong about it. The forced refresh minted
-                        // a token that works; push it into the running
-                        // engine so in-flight tools recover without a
-                        // restart, and take back any dead-session signal.
-                        gate_connect_core::startup::Recheck::Recovered(token) => {
-                            gate_connect_core::proxy::manager().refresh_token(&token);
-                            if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
-                                let running = gate_connect_core::proxy::manager()
-                                    .status()
-                                    .map(|s| s.running)
-                                    .unwrap_or(false);
-                                update_tray_status(&handle, running);
-                            }
-                        }
-                        gate_connect_core::startup::Recheck::Dead => {
-                            signal_session_dead(&handle);
-                        }
-                        // No verdict (offline, or the 401 belonged to the
-                        // client's own upstream credential rather than to
-                        // us): change nothing.
-                        gate_connect_core::startup::Recheck::Unchanged => {}
-                    }
+                    recheck_gate_session(&handle);
                 });
             });
 
-            // Hide the dock icon - Gate Connect lives in the menu bar.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Detection is the one reading a window cannot be told about. A tool
+            // installed while the app is open happens entirely outside it, so
+            // both shells used to poll `list_tools` every five seconds to
+            // notice - twelve config-file walks a minute, forever, for an event
+            // that happens a handful of times in a machine's life. The OS
+            // already knows; `tool_watch` asks it and this emits.
+            //
+            // Registered on every desktop OS and not gated behind a window:
+            // `emit` reaches whichever shells are mounted, and neither the
+            // window nor the tray has to exist yet.
+            //
+            // A watch that cannot start is reported and then left alone. The
+            // shells still re-read on their visibility edge, which is what
+            // covers the paths a watch cannot see anyway - a `$PATH` install of
+            // a launcher has no directory to arm.
+            {
+                let watch_handle = app.handle().clone();
+                if let Err(e) = gate_connect_core::tool_watch::start(move || {
+                    let _ = watch_handle.emit("tools-changed", ());
+                }) {
+                    eprintln!("[gate] tool config watch failed to start: {e:#}");
+                    report_backend_error("tool_watch", format!("{e:#}"));
+                }
+            }
 
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A
@@ -2150,12 +4011,93 @@ pub fn run() {
             // the browser - a failed refresh just lets the token lapse to the
             // "sign in" state the UI derives from oauth_status. Best-effort, off
             // the tray thread.
+            // The live security-event feed (AG-578). Spawned beside the token
+            // refresh loop above because it depends on the same thing: a live
+            // credential. It reads one per connect attempt through
+            // `live_session`, so a token this loop replaces mid-stream is picked
+            // up by the next reconnect with no coordination between the two.
+            //
+            // Deliberately started unconditionally, not gated on routing being
+            // on. The events come from the gateway, not from local traffic, and
+            // AC4 requires the feed's state to be independent of routing's - a
+            // feed that only ran while routing was on would be reporting routing.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                let feed_handle = app.handle().clone();
+                let feed = security_feed().clone();
+                // One grouper for the process, so a burst of identical blocks
+                // collapses into a single notification however many windows are
+                // open. See `security_feed::notify` for why that is required
+                // rather than polite.
+                let grouper = std::sync::Arc::new(std::sync::Mutex::new(
+                    gate_connect_core::security_feed::notify::Grouper::new(),
+                ));
+
+                // A storm ends by events *stopping*, so the moment worth
+                // reporting - "and 29 more" - is precisely the moment nothing
+                // arrives to drive a decision. Without this timer the count is
+                // collected and never spoken, which is where this started: one
+                // notification saying a request was blocked, for thirty.
+                //
+                // Every 10s against a 60s window, so a summary lands within ten
+                // seconds of the window closing. Cheap: it walks a map that is
+                // empty on an ordinary machine.
+                let sweep_handle = app.handle().clone();
+                let sweep_grouper = grouper.clone();
+                // A plain thread, matching the token-refresh loop below rather
+                // than the async runtime: `tokio` is not a direct dependency
+                // here, and this wants a sleep, not a scheduler.
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(
+                            SECURITY_SWEEP_INTERVAL_SECS,
+                        ));
+                        let prefs = gate_connect_core::preferences::load();
+                        let due = {
+                            let Ok(mut g) = sweep_grouper.lock() else {
+                                // Poisoned by a panic elsewhere. Stop sweeping
+                                // rather than spin: the feed itself is unaffected
+                                // and the in-app pane still has every event.
+                                return;
+                            };
+                            g.sweep(&prefs, std::time::Instant::now())
+                        };
+                        for notification in due {
+                            fire_notification(&sweep_handle, notification);
+                        }
+                    }
+                });
+                tauri::async_runtime::spawn(async move {
+                    gate_connect_core::security_feed::client::run(feed, move |update| {
+                        use gate_connect_core::security_feed::Update;
+                        // Failing to emit means no window is listening, which is
+                        // ordinary: the feed keeps its own buffer and a window
+                        // asks for it on mount.
+                        match update {
+                            Update::State(state) => {
+                                let _ = feed_handle.emit("security-feed-state", state);
+                            }
+                            Update::Event(event) => {
+                                let _ = feed_handle.emit("security-event", &*event);
+                                notify_for_event(&feed_handle, &grouper, &event);
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 let refresh_handle = app.handle().clone();
                 // Previous tick's paired clock readings, for the jump check
                 // below. `None` until the first tick has one to compare with.
                 let mut last_tick: Option<(std::time::Instant, std::time::SystemTime)> = None;
+                // Previous reading of the helper daemon's gateway-refusal
+                // counter (Linux only; see the poll at the end of the tick).
+                // `None` until a tick has read one.
+                #[cfg(target_os = "linux")]
+                let mut last_refusals: Option<u64> = None;
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(
                         gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
@@ -2255,7 +4197,10 @@ pub fn run() {
                         // and the menu-bar/tray dot is out of the user's eyeline.
                         // Fired once per death by the edge guard above.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        if dead {
+                        if dead
+                            && gate_connect_core::preferences::load()
+                                .routing_health_notifications
+                        {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = refresh_handle
                                 .notification()
@@ -2265,50 +4210,67 @@ pub fn run() {
                                 .show();
                         }
                     }
+
+                    // Linux's substitute for the in-process 401 observer the
+                    // other platforms register at setup. The engine lives in the
+                    // helper daemon here, so a gateway refusal of our bearer is
+                    // seen in another process; the daemon counts them and this
+                    // asks for the count.
+                    //
+                    // Why this needs to exist at all: everything above is the
+                    // *preventive* half, and it is blind to one case by
+                    // construction. The clock-jump check compares a monotonic
+                    // reading against a wall-clock one, and a guest clock that
+                    // froze together with the machine stalls both, so nothing
+                    // looks wrong locally while the token ages out. The
+                    // gateway's refusal is the only signal that state produces.
+                    //
+                    // Acted on as an EDGE, not a level: the count only rises, so
+                    // a move means at least one new refusal since the last look,
+                    // and a tick that could not read it loses nothing. The first
+                    // reading only seeds the baseline - a daemon can outlive
+                    // several GUI runs, and launch-time `refresh_session` has
+                    // already probed for a session that died while we were gone.
+                    // A restarted daemon counts from zero again, which reads as
+                    // no increase and simply re-seeds.
+                    //
+                    // `None` means nobody answered (routing off, so no control
+                    // connection, or a failed round trip). It is not zero, and
+                    // it must not overwrite the baseline with a value we never
+                    // read.
+                    //
+                    // Runs even when the session is already known dead, matching
+                    // the other platforms: the daemon's own cooldown throttles
+                    // the counter to about one bump a minute, so this becomes a
+                    // once-a-minute check for a session that came back some
+                    // other way.
+                    #[cfg(target_os = "linux")]
+                    if let Some(refusals) = gate_connect_core::proxy::manager().gate_auth_refusals()
+                    {
+                        let refused_since_last_tick =
+                            last_refusals.is_some_and(|seen| refusals > seen);
+                        last_refusals = Some(refusals);
+                        if refused_since_last_tick {
+                            eprintln!(
+                                "[gate] the helper daemon's engine reports the gateway refusing                                  our bearer; re-verifying the session"
+                            );
+                            recheck_gate_session(&refresh_handle);
+                        }
+                    }
                 });
             }
 
-            // Linux dismisses the popover by minimizing (see the Focused(false)
-            // handler), so it needs a taskbar/dock entry to restore from -
-            // override the config's skipTaskbar:true here. macOS hides from the
-            // dock via the Accessory activation policy instead, and Windows
-            // keeps its hide-to-tray behavior, so neither wants this.
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_skip_taskbar(false);
-                // Stay borderless (config `decorations: false`): the native CSD
-                // title-bar buttons don't reliably bind on Wayland/GNOME, so the
-                // frontend draws its own chrome (`LinuxTitleBar`) and calls the
-                // Tauri window APIs directly. A native title bar here would just
-                // compete with that custom strip.
-                //
-                // Drop the config's alwaysOnTop on Linux: with no dismiss-on-blur
-                // here (see the Focused handler), an always-on-top window would
-                // float over everything with no way to recede when the user
-                // switches apps. As a normal window it sinks behind on focus
-                // loss and is re-summoned from the taskbar or tray.
-                let _ = window.set_always_on_top(false);
-            }
 
-            // Round the NSWindow content view's CALayer so the transparent
-            // window itself has rounded corners - without this, CSS-rounded
-            // corners on the popover expose the dark window behind them.
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                promote_to_nonactivating_panel(&window);
-                apply_window_corner_radius(&window, 12.0);
-                apply_popover_space_behavior(&window);
-                install_click_outside_dismiss(app.handle());
-            }
             #[cfg(target_os = "macos")]
             watch_menu_bar_appearance(app.handle());
 
             let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
 
+            let tray_item = MenuItemBuilder::with_id("tray", "Quick status").build(app)?;
             let show_item = MenuItemBuilder::with_id("show", "Open Gate Connect").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Gate Connect").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show_item, &quit_item])
+                .items(&[&tray_item, &show_item, &quit_item])
                 .build()?;
 
             TrayIconBuilder::with_id("main")
@@ -2318,21 +4280,25 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
                 .on_menu_event(|app, event| match event.id().as_ref() {
+                    // The compact popover, for platforms where the left-click
+                    // path never fires: Linux trays (SNI/AppIndicator) only
+                    // raise this menu, so without an entry the tray flow
+                    // would be unreachable there. Onboarding calls the same
+                    // surface "the compact popover for a quick status check".
+                    "tray" => reveal_tray_window(app),
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            // On Linux the SNI/AppIndicator tray doesn't hand us
-                            // a click rect, and on GNOME the left-click path
-                            // often never fires - users reach this code path via
-                            // the right-click menu. Anchor at the current cursor.
-                            #[cfg(target_os = "linux")]
-                            if let Ok(cursor) = app.cursor_position() {
-                                anchor_at_cursor(&window, cursor);
-                            }
-                            #[cfg(target_os = "linux")]
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        // On Linux the SNI/AppIndicator tray hands us no click
+                        // rect and GNOME often never fires the left-click path,
+                        // so the right-click menu is how users reach this.
+                        // Either way it only reveals the window; it does not
+                        // place it.
+                        //
+                        // Goes through `reveal_popover_window` rather than
+                        // repeating show/focus inline. Three copies of this
+                        // existed and only one of them carried the Linux
+                        // decoration repair, so a `--silent` launch revealed
+                        // from the tray came up with dead title-bar buttons.
+                        reveal_popover_window(app);
                     }
                     "quit" => request_quit(app),
                     _ => {}
@@ -2341,43 +4307,25 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        rect,
                         ..
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            // is_focused() is unreliable for a non-activating panel.
-                            // On Linux the popover is dismissed by minimizing, so a
-                            // minimized window counts as "away" and should restore,
-                            // not toggle off.
+                        // The click toggles the compact tray popover (Figma
+                        // `Flows / Tray`), not the main window - the menu's
+                        // "Open Gate Connect" still reveals that one. Plain
+                        // hide() on every platform: the old Linux
+                        // minimize-to-dismiss dance existed to keep window
+                        // decorations alive across hide/show, and this window
+                        // is undecorated.
+                        if let Some(window) = app.get_webview_window("tray") {
                             let is_visible = window.is_visible().unwrap_or(false);
                             let is_minimized = window.is_minimized().unwrap_or(false);
                             if is_visible && !is_minimized {
-                                #[cfg(target_os = "linux")]
-                                let _ = window.minimize();
-                                #[cfg(not(target_os = "linux"))]
                                 let _ = window.hide();
                                 POPOVER_VISIBLE.store(false, Ordering::Release);
                             } else {
-                                // Linux trays don't report a usable rect; fall
-                                // back to the cursor position so the popover lands
-                                // near the user's click.
-                                #[cfg(target_os = "linux")]
-                                {
-                                    let _ = &rect;
-                                    if let Ok(cursor) = app.cursor_position() {
-                                        anchor_at_cursor(&window, cursor);
-                                    }
-                                }
-                                #[cfg(not(target_os = "linux"))]
-                                anchor_under_tray(&window, rect.position, rect.size);
-                                #[cfg(target_os = "linux")]
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                #[cfg(target_os = "macos")]
-                                order_front_regardless(&window);
+                                reveal_tray_window(app);
                             }
                         }
                     }
@@ -2400,29 +4348,24 @@ pub fn run() {
             // Show it here, from Rust: a hidden WKWebView reports visibility
             // "hidden" and WebKit suspends requestAnimationFrame, so revealing
             // from the frontend never fires and the popover never opens on
-            // launch. The blank-window flash that a synchronous show otherwise
-            // causes (the window appears before WKWebView's first paint) is
-            // handled by painting the rounded content layer white up front (see
-            // `apply_window_corner_radius`), so the first frame is the splash's
-            // white card rather than a transparent flash.
+            // launch. A synchronous show can flash an unpainted window before
+            // WKWebView's first frame; the window is opaque now (config
+            // `transparent: false`), so that flash is the window's own
+            // background rather than a see-through hole.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main").filter(|_| !silent_launch) {
                 POPOVER_PINNED.store(true, Ordering::Release);
 
-                // macOS: the tray icon has no laid-out rect yet at setup, and the
-                // stale value it reports lands the popover in the wrong corner -
-                // so place it deterministically under the menu bar instead.
-                #[cfg(target_os = "macos")]
-                position_startup(&window);
-                // Windows: the tray rect is reliable here; anchor under it when
-                // present, otherwise keep the configured default position.
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = app
-                        .tray_by_id("main")
-                        .and_then(|t| t.rect().ok().flatten())
-                        .map(|rect| anchor_under_tray(&window, rect.position, rect.size));
-                }
+                // Centre on the primary display. Window position is not
+                // persisted across launches, so every launch is a first launch
+                // as far as placement goes; centring is the sane default for a
+                // 1280x800 window. Within a session, hide/show keeps whatever
+                // position the user chose.
+                let _ = window.center();
+                // Before the show, not after: the point is for the *first* map
+                // to be the maximised one.
+                #[cfg(target_os = "linux")]
+                map_maximized_for_decorations(&window);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -2480,66 +4423,6 @@ pub fn run() {
             let _ = &event;
             let _ = &app_handle;
         });
-}
-
-/// Position the popover window centered horizontally on the tray icon
-/// and just above or below it, whichever side has room on the current
-/// monitor. macOS's menu bar lives at the top so the popover anchors
-/// below the icon; Windows' taskbar is typically at the bottom and
-/// anchoring below would push the popover off-screen - so we flip it
-/// above the icon. X is clamped to the monitor bounds so a tray icon
-/// near a screen edge doesn't push the popover past it.
-/// Pick the monitor whose physical bounds contain point (x, y) - used to
-/// place the popover on the same display as the tray icon that was clicked,
-/// not whichever monitor the window happened to be on last. Falls back to the
-/// window's current monitor, then the primary, so we always have somewhere to
-/// show. Coordinates are physical pixels in the virtual-desktop space, matching
-/// `Monitor::position()`/`size()`.
-#[cfg(not(target_os = "linux"))]
-fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Monitor> {
-    let contains = |m: &tauri::Monitor| {
-        let p = m.position();
-        let s = m.size();
-        x >= p.x as f64
-            && x < p.x as f64 + s.width as f64
-            && y >= p.y as f64
-            && y < p.y as f64 + s.height as f64
-    };
-    window
-        .available_monitors()
-        .ok()
-        .and_then(|ms| ms.into_iter().find(contains))
-        .or_else(|| window.current_monitor().ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten())
-}
-
-/// On launch, place the popover at the top-right of the main display - just
-/// under the macOS menu bar, where the tray icon lives - so first-time users
-/// who double-click the app from Applications actually see the UI instead of a
-/// seemingly-dead menu-bar icon. Subsequent opens reposition under the clicked
-/// tray icon via `anchor_under_tray`.
-#[cfg(target_os = "macos")]
-fn position_startup(window: &tauri::WebviewWindow) {
-    let Some(m) = window
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())
-    else {
-        return;
-    };
-    let scale = m.scale_factor();
-    let mp = m.position();
-    let ms = m.size();
-    let win_w = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let margin = 8.0 * scale;
-    let menubar = 28.0 * scale; // clear the macOS menu bar
-    let x = (mp.x as f64 + ms.width as f64 - win_w - margin).round() as i32;
-    let y = (mp.y as f64 + menubar).round() as i32;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
@@ -2666,213 +4549,6 @@ fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
             "Gate Connect · routing off"
         };
         let _ = tray.set_tooltip(Some(text.to_string()));
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let pos = tray_pos.to_physical::<f64>(scale);
-    let size = tray_size.to_physical::<f64>(scale);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let tray_center_x = pos.x + size.width / 2.0;
-    let tray_top_y = pos.y;
-    let tray_bottom_y = pos.y + size.height;
-    let gap = 6.0 * scale;
-
-    // Fall back to the unbounded below-icon placement if we can't read
-    // the monitor - better than refusing to show the window.
-    let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (tray_center_x - window_w_px / 2.0).round() as i32;
-            let y = (tray_bottom_y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - tray_bottom_y;
-    let y = if space_below >= window_h_px + gap {
-        tray_bottom_y + gap
-    } else {
-        tray_top_y - window_h_px - gap
-    };
-
-    let x = (tray_center_x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-}
-
-/// Position the popover above or below the cursor on Linux, where
-/// the tray protocol (SNI/AppIndicator) doesn't expose a usable icon
-/// rect - and on GNOME, where the left-click event often never fires
-/// at all. The cursor is the only positioning hint we can trust. On
-/// Wayland the compositor may ignore `set_position` outright; on X11
-/// this lands the popover near where the user clicked.
-#[cfg(target_os = "linux")]
-fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let gap = 6.0 * scale;
-
-    let (mon_x, mon_y, mon_w, mon_h) = match window.current_monitor().ok().flatten() {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (cursor.x - window_w_px / 2.0).round() as i32;
-            let y = (cursor.y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - cursor.y;
-    let y = if space_below >= window_h_px + gap {
-        cursor.y + gap
-    } else {
-        cursor.y - window_h_px - gap
-    };
-
-    let x = (cursor.x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-}
-
-/// Let the popover render over the active Space, including a full-screen app's.
-#[cfg(target_os = "macos")]
-fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-
-    const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
-    const NS_STATUS_WINDOW_LEVEL: i64 = 25;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let behavior: u64 = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let () = msg_send![ns_window, setCollectionBehavior: behavior];
-        let () = msg_send![ns_window, setLevel: NS_STATUS_WINDOW_LEVEL];
-    }
-}
-
-/// NSPanel subclass whose canBecomeKey/MainWindow return YES - a borderless
-/// window can't become key otherwise, which blocks the cursor and keyboard.
-#[cfg(target_os = "macos")]
-fn key_panel_class() -> &'static objc2::runtime::AnyClass {
-    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-    use objc2::{class, sel};
-    use std::ffi::CStr;
-
-    const NAME: &CStr = c"GateConnectKeyPanel";
-
-    if let Some(cls) = AnyClass::get(NAME) {
-        return cls;
-    }
-
-    // Raw-pointer receiver keeps the fn type non-higher-ranked for add_method.
-    extern "C" fn yes(_this: *mut AnyObject, _sel: Sel) -> Bool {
-        Bool::YES
-    }
-
-    let mut builder = ClassBuilder::new(NAME, class!(NSPanel))
-        .expect("GateConnectKeyPanel: class name should be unique in-process");
-    unsafe {
-        builder.add_method(
-            sel!(canBecomeKeyWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-        builder.add_method(
-            sel!(canBecomeMainWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-    }
-    builder.register()
-}
-
-/// Make the popover a non-activating NSPanel: it can take key focus over a
-/// full-screen app without activating us, which would leave that Space.
-#[cfg(target_os = "macos")]
-fn promote_to_nonactivating_panel(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-
-    const NONACTIVATING_PANEL: u64 = 1 << 7;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let panel_cls: &AnyClass = key_panel_class();
-        objc2::ffi::object_setClass(ns_window, panel_cls);
-        let mask: u64 = msg_send![ns_window, styleMask];
-        let () = msg_send![ns_window, setStyleMask: mask | NONACTIVATING_PANEL];
-        let () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: false];
-        let () = msg_send![ns_window, setHidesOnDeactivate: false];
-    }
-}
-
-/// Dismiss the popover on click-outside; a non-activating panel emits no blur
-/// event, so we watch for mouse-downs delivered to other apps instead.
-#[cfg(target_os = "macos")]
-fn install_click_outside_dismiss(app: &tauri::AppHandle) {
-    use block2::RcBlock;
-    use objc2_app_kit::{NSEvent, NSEventMask};
-
-    let handle = app.clone();
-    let block = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| {
-        if let Some(window) = handle.get_webview_window("main") {
-            if window.is_visible().unwrap_or(false) {
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
-            }
-        }
-    });
-    let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown;
-    if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block) {
-        std::mem::forget(token); // dropping the token removes the monitor
     }
 }
 
@@ -3022,65 +4698,5 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
         let () = msg_send![ns_window, makeKeyWindow];
-    }
-}
-
-/// Round the corners of the underlying NSWindow on macOS.
-///
-/// The window is created with `transparent: false`, so it needs no macOS
-/// private API. On its own that yields a square, opaque window. To get a
-/// rounded shape we use only public AppKit/QuartzCore:
-/// 1. make the NSWindow non-opaque with a clear background, so the corner
-///    regions outside the radius render transparent rather than painting
-///    the default window background;
-/// 2. layer-back the content view and mask its CALayer to a corner radius.
-///
-/// The webview body stays opaque (white from CSS), so the corners read as
-/// cleanly rounded against the desktop.
-#[cfg(target_os = "macos")]
-fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    // SAFETY: `ns_window()` hands us a borrowed NSWindow pointer that lives
-    // as long as the Tauri window. We only call documented AppKit/QuartzCore
-    // selectors on the main thread (Tauri's setup callback runs on main).
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        // Drop Tauri's private-API transparency: make the NSWindow
-        // non-opaque with a clear background using only public AppKit, so
-        // the corner regions outside the rounded mask render transparent
-        // instead of painting the default opaque window background.
-        let clear_color: *mut AnyObject = msg_send![class!(NSColor), clearColor];
-        let () = msg_send![ns_window, setOpaque: false];
-        let () = msg_send![ns_window, setBackgroundColor: clear_color];
-        let content_view: *mut AnyObject = msg_send![ns_window, contentView];
-        if content_view.is_null() {
-            return;
-        }
-        // Layer-back the content view so it actually has a CALayer to mask.
-        let () = msg_send![content_view, setWantsLayer: true];
-        let layer: *mut AnyObject = msg_send![content_view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let () = msg_send![layer, setCornerRadius: radius];
-        let () = msg_send![layer, setMasksToBounds: true];
-        // Paint the masked layer white so the window's first on-screen frame is
-        // a white rounded card - matching the splash background - instead of the
-        // transparent/blank flash the clear window background shows before
-        // WKWebView paints. The webview's opaque white body draws over this once
-        // it renders, so the handoff is seamless. Clipped to the corner mask, so
-        // the rounded corners stay transparent.
-        let white: *mut AnyObject = msg_send![class!(NSColor), whiteColor];
-        let white_cg: *mut AnyObject = msg_send![white, CGColor];
-        let () = msg_send![layer, setBackgroundColor: white_cg];
     }
 }

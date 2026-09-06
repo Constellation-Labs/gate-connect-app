@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { buildGroups, type Group } from "../lib/groups";
 import { FamilyPanel } from "./FamilyPanel";
 
@@ -13,8 +13,11 @@ function makeTool(
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
   };
 }
@@ -47,7 +50,7 @@ function makeChatDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Other tools". */
+ * OpenClaw deliberately are not, so they land in the leftover groups. */
 const CATALOG: ProviderState[] = [
   {
     slug: "anthropic",
@@ -66,10 +69,38 @@ const CATALOG: ProviderState[] = [
     enabled: false,
     available: true,
     tool_slugs: ["codex"],
-    domain_slugs: ["openai"],
+    // Empty, mirroring the backend: the `openai` domain is generic
+    // interception of api.openai.com, rides no OpenAI tool, and sits under
+    // Experimental now.
+    domain_slugs: [],
     chat_domain_slugs: [],
   },
 ];
+
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
 
 /** Renders the panel for one family, the way App does: it resolves the group out
  * of the same ledger Home renders and hands over that one. `family` picks which,
@@ -84,7 +115,14 @@ function renderPanel(
   } = {},
   props: Partial<React.ComponentProps<typeof FamilyPanel>> = {},
 ) {
-  const groups = buildGroups(CATALOG, tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(CATALOG, tools, domains, {
+    proxyOn,
+    caTrusted,
+    // With the engine down the sweep never returns `on` - it reports a
+    // connection problem - so a fixture that claimed both would be a machine
+    // that cannot exist.
+    verdicts: proxyOn ? sweep(tools) : new Map(),
+  });
   const group: Group = (family ? groups.find((g) => g.id === family) : groups[0])!;
   render(
     <FamilyPanel
@@ -247,29 +285,49 @@ describe("FamilyPanel is about one family", () => {
   });
 });
 
-describe("FamilyPanel explains the family named by exclusion", () => {
+describe("FamilyPanel explains the families named by exclusion", () => {
   /** Only OpenCode is installed and no provider claims it, so the ledger is the
-   * multi-provider group alone. */
-  const otherTools = {
+   * Experimental group alone. */
+  const experimental = {
     tools: [makeTool("opencode", "OpenCode", { kind: "detected" }, "your existing providers")],
   };
 
+  /** A tool no provider claims and no leftover heading names either - which is
+   * all that reaches "Other tools" now that OpenClaw, Hermes, OpenCode and the
+   * environment channel have headings of their own. The slug is deliberately
+   * one the registry does not ship: this row is what an integration added
+   * without a heading looks like, and it must still be routable. */
+  const unplaced = {
+    tools: [makeTool("some-new-harness", "CLI", { kind: "detected" }, "your existing providers")],
+  };
+
   it("renders the blurb that had never been rendered anywhere", () => {
-    renderPanel(otherTools);
+    renderPanel(experimental);
     // The field existed from the round that retired "Agent harnesses" and moved
     // the definition here; nothing displayed it, so the category's only
     // description in the UI was 18 characters in a truncating slot.
-    expect(screen.getByRole("heading", { level: 1, name: "Other tools" })).toBeTruthy();
-    expect(screen.getByText(/talk to several providers, not one model family/)).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Experimental" })).toBeTruthy();
+    expect(screen.getByText(/Routing here is still being proven out/)).toBeTruthy();
   });
 
   it("names the boundary rather than promising Gate takes everything", () => {
-    renderPanel(otherTools);
+    renderPanel(unplaced);
     // The half a user running a local model needs, and the half the old copy
     // got backwards.
+    expect(screen.getByRole("heading", { level: 1, name: "Other tools" })).toBeTruthy();
     expect(screen.getByText(/Gate routes the ones it covers/)).toBeTruthy();
     expect(screen.getByText(/including a local model, keeps going where it always did/)).toBeTruthy();
     expect(screen.queryByText(/every provider you.+ve set up in them/)).toBeNull();
+  });
+
+  it("gives a single-tool family its own heading instead of a shared one", () => {
+    // The reason the row below it can read "CLI" at all: "OpenClaw" is said
+    // once, by the heading, so the row is free to say which surface it is.
+    renderPanel({
+      tools: [makeTool("openclaw", "CLI", { kind: "detected" }, "your existing providers")],
+    });
+    expect(screen.getByRole("heading", { level: 1, name: "OpenClaw" })).toBeTruthy();
+    expect(screen.queryByText(/talk to several providers/)).toBeNull();
   });
 
   it("stays silent on a family whose name already says what it covers", () => {

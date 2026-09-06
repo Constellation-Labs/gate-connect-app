@@ -141,6 +141,8 @@ export function toolStatusLine(status: Status): string {
       return "routed";
     case "drifted":
       return `drifted: ${status.reason}`;
+    case "overridden":
+      return `overridden: ${status.source}`;
     case "error":
       return `error: ${status.message}`;
   }

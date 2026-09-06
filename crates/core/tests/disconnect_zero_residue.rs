@@ -122,6 +122,7 @@ fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         upstream_url: "https://api.anthropic.com".to_string(),
+        billing_mode: Default::default(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }

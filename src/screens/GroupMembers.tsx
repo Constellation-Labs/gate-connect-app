@@ -63,6 +63,13 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
+  if (member.attention === "unverified") {
+    // Says what is *not* known, not what is wrong. Gate has the configuration it
+    // wants and cannot confirm the traffic is following it, and the honest
+    // sentence for that is the absence of a reading - inventing a cause here
+    // would send the user to fix whichever one we guessed.
+    return `${member.name}’s config points at Gate, but Gate hasn’t been able to confirm its traffic is routing.`;
+  }
   if (member.kind === "proxy") {
     if (member.attention === "needs-trust") {
       return `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`;
@@ -134,6 +141,8 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       return `${member.name}'s own config points at your Gate gateway. Requests carry the key from ${secretStoreName(platform)}; the key itself never lands in the config file.`;
     case "drifted":
       return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
+    case "overridden":
+      return `${member.name} has Gate's configuration, and another configuration it reads first sends its traffic elsewhere. The details below name that file; change it there, then re-check.`;
     case "error":
       return `Gate Connect couldn’t read ${member.name}’s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
     default:
@@ -147,6 +156,9 @@ function rawDetail(member: GroupMember): string | null {
   const status = member.tool?.status;
   if (status?.kind === "error") return status.message;
   if (status?.kind === "drifted") return status.reason || null;
+  // The winning layer, verbatim. It is the only thing on screen that says where
+  // to go and look, so it gets the same treatment as a drift reason.
+  if (status?.kind === "overridden") return status.source || null;
   return null;
 }
 

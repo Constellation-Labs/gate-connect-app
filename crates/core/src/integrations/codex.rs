@@ -45,7 +45,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
+use crate::account::BillingMode;
 use crate::env;
+use crate::integrations::precedence::Override;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
@@ -211,12 +213,33 @@ impl Integration for Codex {
         "Codex"
     }
 
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
+    /// (`src/lib/groups.ts`); it is a description of the surface, not something
+    /// the integration knows.
+    fn row_label(&self) -> &'static str {
+        "CLI"
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
 
     fn default_upstream_url(&self) -> &'static str {
         DEFAULT_UPSTREAM_URL
+    }
+
+    fn config_location(&self) -> Option<String> {
+        config_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::codex_config_dir());
+        paths.extend(config_path());
+        paths
     }
 
     fn detect(&self) -> Result<bool> {
@@ -267,17 +290,36 @@ impl Integration for Codex {
             )));
         }
 
-        // Require `requires_openai_auth = true`. A block without it is the
-        // old `[auth] command` shape that left ChatGPT-mode Codex bypassing
-        // the gateway - report drift so the user reconnects into the fix.
+        // What the block should say about auth depends on who pays, so the two
+        // modes have opposite expectations here and each reads the other's
+        // shape as drift - which is right: a mode switch has to reconnect
+        // Codex, and status is how the app knows to.
+        let billing_mode = crate::account::billing_mode().unwrap_or_default();
         let requires_openai_auth = provider_block
             .get("requires_openai_auth")
             .and_then(|i| i.as_bool())
             .unwrap_or(false);
-        if !requires_openai_auth {
-            return Ok(Status::Drifted(format!(
-                "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
-            )));
+        match billing_mode {
+            // BYOK requires `requires_openai_auth = true`. A block without it
+            // is the old `[auth] command` shape that left ChatGPT-mode Codex
+            // bypassing the gateway - report drift so the user reconnects into
+            // the fix.
+            BillingMode::Byok if !requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
+                )));
+            }
+            // PAYG requires its ABSENCE: with it, Codex attaches its own
+            // credential, the gateway reads that as a passthrough token, and
+            // the request is refused for want of an upstream URL. A block
+            // carrying it is a BYOK config the account has since moved off.
+            BillingMode::Payg if requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] carries requires_openai_auth = true, which \
+                     Codex cannot use while this account bills through Gate"
+                )));
+            }
+            _ => {}
         }
 
         // The provider points at the relay's loopback base; the relay only
@@ -293,8 +335,12 @@ impl Integration for Codex {
         // Accept whichever auth-mode shape is currently written. If auth.json
         // can't be read, fall back to ChatGPT (the only mode where the bug
         // bites - wrong base_url shape causes 404s; API-key mode just needs
-        // an OPENAI_API_KEY to authenticate).
-        let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
+        // an OPENAI_API_KEY to authenticate). In PAYG there is no login to
+        // read and `connect` pinned the apikey shape, so expect that.
+        let mode = match billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode().unwrap_or(AuthMode::Chatgpt),
+        };
         let expected_base = relay_base_url_for(&relay_base, mode)?;
         let base_url = provider_block
             .get("base_url")
@@ -326,6 +372,12 @@ impl Integration for Codex {
             )));
         }
 
+        // Everything Gate writes is in place. The last question is whether Codex
+        // reads it, which the pointer above does not settle on its own (AG-674).
+        if let Some(o) = active_profile_override(&doc, &path.display().to_string()) {
+            return Ok(o.into_status());
+        }
+
         Ok(Status::Connected)
     }
 
@@ -345,7 +397,17 @@ impl Integration for Codex {
         // of trusting whatever value flowed through the UI/Advanced
         // field. This mirrors what Codex itself would have done in its
         // native (non-Gate) routing.
-        let mode = read_auth_mode()?;
+        //
+        // PAYG has no login state to read: the whole point is that Codex sends
+        // no credential of its own, so `auth.json` may not exist at all and
+        // `read_auth_mode` would hard-fail on a user who never ran
+        // `codex login`. The apikey shape is the only one PAYG can use anyway -
+        // the ChatGPT route is a subscription, which is by definition not
+        // pay-as-you-go - so pin it rather than asking.
+        let mode = match input.billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode()?,
+        };
 
         let path = config_path()?;
         let mut doc = if path.exists() {
@@ -406,14 +468,27 @@ impl Integration for Codex {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert("base_url", value(base_url.as_str()));
         provider.insert("wire_api", value("responses"));
-        // Codex sources the upstream bearer from its own `codex login`
+        // BYOK: Codex sources the upstream bearer from its own `codex login`
         // session (ChatGPT OAuth token or API key in ~/.codex/auth.json)
         // and attaches it to this provider. This is the only mechanism
         // that carries a ChatGPT-subscription login through a custom
         // base_url - without it, ChatGPT-mode Codex ignores this provider
         // and hits chatgpt.com directly. Mutually exclusive with `env_key`
         // and `[auth] command` per the Codex docs, so we set neither.
-        provider.insert("requires_openai_auth", value(true));
+        //
+        // PAYG: set NEITHER `requires_openai_auth` nor `env_key`, which the
+        // Codex docs define as the third, unauthenticated provider case -
+        // "Codex assumes the provider doesn't require authentication", offered
+        // for local models, and our `base_url` is a loopback address. Codex
+        // then sends no `Authorization` at all, which is exactly what PAYG
+        // needs: the gateway reads any non-`sk-gw-` token in that slot as a
+        // passthrough credential, which forces BYOK and is then refused for
+        // want of an upstream URL. Sending nothing is the only shape that
+        // cannot be misread, and it keeps us from writing a credential (real
+        // or placeholder) into the user's Codex config.
+        if input.billing_mode == BillingMode::Byok {
+            provider.insert("requires_openai_auth", value(true));
+        }
 
         // No `http_headers` at all: the relay reads the upstream off the slug
         // segment in `base_url` and injects the hint itself, and the Gate
@@ -568,6 +643,45 @@ fn config_path() -> Result<PathBuf> {
     env::codex_config_toml_path()
 }
 
+/// The selected profile, when it points Codex at a provider that is not ours.
+///
+/// Codex resolves `model_provider` from the active profile first and only falls
+/// back to the top-level key Gate writes. So `profile = "work"` plus
+/// `[profiles.work] model_provider = "openai"` sends every request straight to
+/// OpenAI while `model_provider = "gate"` sits above it in the same file,
+/// untouched and inert - and until AG-674 that read as Connected, because we
+/// checked our own key and stopped.
+///
+/// Profiles are the user's, not ours: `connect` writes the top-level pointer and
+/// leaves the rest of the file alone. So this reports the disagreement rather
+/// than resolving it - editing somebody's profile to win an argument with them
+/// is not a repair.
+///
+/// What stays invisible here is `--profile` on the command line, which outranks
+/// the file's own `profile` key. A shell flag is not a thing this process can
+/// see, on the same terms as the project-level layers in
+/// [`crate::integrations::precedence`].
+fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> {
+    let profile = doc.get("profile").and_then(|i| i.as_str())?;
+    let provider = doc
+        .get("profiles")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get(profile))
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("model_provider"))
+        .and_then(|i| i.as_str())?;
+    if provider == PROVIDER_ID {
+        return None;
+    }
+    Some(Override::new(
+        source,
+        format!(
+            "selects profile {profile:?}, whose model_provider is {provider:?} - Codex reads that \
+             before the top-level pointer at {PROVIDER_ID:?}"
+        ),
+    ))
+}
+
 fn read_doc(path: &Path) -> Result<DocumentMut> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     raw.parse::<DocumentMut>()
@@ -634,6 +748,71 @@ fn upgrade_inline_to_table(item: &mut Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AG-674's disagreement case for Codex. Our provider block and pointer are
+    /// exactly as `connect` left them; the selected profile names a different
+    /// provider, and that is the one Codex resolves.
+    #[test]
+    fn a_profile_naming_another_provider_overrides_our_pointer() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        let o = active_profile_override(&doc, "/home/u/.codex/config.toml")
+            .expect("an active profile on another provider is an override");
+        assert!(o.to_string().contains("\"work\""));
+        assert!(o.to_string().contains("\"openai\""));
+    }
+
+    /// A profile that names Gate, or one that names no provider at all and so
+    /// inherits the top-level pointer, is agreement rather than a conflict.
+    #[test]
+    fn a_profile_on_gate_or_silent_about_the_provider_is_not_an_override() {
+        let on_gate: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_provider = "gate"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&on_gate, "config.toml"), None);
+
+        let silent: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_reasoning_effort = "high"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&silent, "config.toml"), None);
+    }
+
+    /// A profile nobody selected decides nothing. Codex reads `profile` to pick
+    /// one, and a file full of unselected profiles is the normal shape.
+    #[test]
+    fn an_unselected_profile_is_not_an_override() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&doc, "config.toml"), None);
+    }
 
     #[test]
     fn chatgpt_mode_base_url_carries_the_chatgpt_slug_and_codex_path() {

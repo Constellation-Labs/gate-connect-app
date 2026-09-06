@@ -21,7 +21,8 @@
       "allow": [
         { "url": "https://github.com/Constellation-Labs/gate-connect-app/releases/*" },
         { "url": "https://*.amazoncognito.com/*" },
-        { "url": "https://*.constellationgate.ai/*" }
+        { "url": "https://*.constellationgate.ai/*" },
+        { "url": "https://constellationnetwork.io/support" }
       ]
     }
   ]

@@ -32,6 +32,7 @@ const account: Account = {
   gateway_base_url: "https://gateway.constellationgate.ai",
   has_api_key: false,
   auth_mode: "oauth",
+  billing_mode: "byok",
   org_id: "2f9c0000-0000-0000-0000-000000000000",
   org_name: "Constellation",
 };
@@ -47,6 +48,7 @@ const proxy: ProxyState = {
   port: 45981,
   pac_port: null,
   ca_trusted: true,
+  relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
   env_export_separable: false,
   domains: [
@@ -100,15 +102,19 @@ const tools: Tool[] = [
   {
     slug: "claude-code",
     name: "Claude Code",
+    product_name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status: { kind: "connected" },
   },
   {
     slug: "codex",
     name: "Codex",
+    product_name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
+    config_location: null,
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];
@@ -121,12 +127,21 @@ const agents: RunningAgents = {
   scanned_names: ["claude", "codex", "opencode"],
   agents: [
     {
+      slug: "claude-code",
       name: "claude",
+      can_reopen: false,
       pid: 12345,
       started_at_unix: NOW_UNIX - (2 * 3600 + 46 * 60),
       predates_routing: true,
     },
-    { name: "codex", pid: 23456, started_at_unix: NOW_UNIX - 60, predates_routing: false },
+    {
+      slug: "codex",
+      name: "codex",
+      can_reopen: false,
+      pid: 23456,
+      started_at_unix: NOW_UNIX - 60,
+      predates_routing: false,
+    },
   ],
 };
 
@@ -268,7 +283,9 @@ describe("agentLine", () => {
   it("switches to days for the process that has been up all weekend", () => {
     const line = agentLine(
       {
+        slug: "claude-code",
         name: "Claude",
+        can_reopen: false,
         pid: 9,
         started_at_unix: NOW_UNIX - (3 * 86400 + 4 * 3600),
         predates_routing: true,
@@ -280,7 +297,14 @@ describe("agentLine", () => {
 
   it("says so rather than printing an epoch when the platform withheld the start time", () => {
     const line = agentLine(
-      { name: "codex", pid: 9, started_at_unix: 0, predates_routing: false },
+      {
+        slug: "codex",
+        name: "codex",
+        can_reopen: false,
+        pid: 9,
+        started_at_unix: 0,
+        predates_routing: false,
+      },
       NOW,
     );
     expect(line).toContain("start time unavailable");

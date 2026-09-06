@@ -217,3 +217,29 @@ describe("classifyError: a proxy-routed tool with routing off", () => {
     expect(classifyError(RAW, "connect").raw).toContain("proxy is not running");
   });
 });
+
+/**
+ * Opening a link is the one failure that used to disappear entirely.
+ *
+ * `openExternal` caught the rejection so it would not become an unhandled
+ * promise, then wrote it to `console.error` - a webview console nobody can read
+ * after the fact. An opener-ACL miss therefore looked exactly like a dead
+ * button, which is how the dashboard link stayed broken.
+ */
+describe("open_external", () => {
+  it("has copy that names what failed without blaming Gate", () => {
+    // The remedy is nothing to do with the app: the address can still be
+    // copied. So the title says the link would not open, not that something
+    // broke.
+    const c = classifyError(new Error("url not allowed by ACL"), "open_external");
+    expect(c.title).toMatch(/open that link/i);
+    expect(c.title.length).toBeGreaterThan(0);
+  });
+
+  it("classifies whatever the opener plugin threw", () => {
+    // Tauri rejects with a plain string, not an Error.
+    const c = classifyError("forbidden path", "open_external");
+    expect(c.title.length).toBeGreaterThan(0);
+    expect(c.raw).toContain("forbidden path");
+  });
+});
