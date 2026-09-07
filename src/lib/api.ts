@@ -687,6 +687,13 @@ export const getPreferences = () => invoke<Preferences>("get_preferences");
  * Settings row for reasons that had nothing to do with the install. */
 export const installId = () => invoke<string>("install_id");
 
+/** OS marketing name and version ("Ubuntu 25.10", "macOS 15.3 (24D60)").
+ *
+ * Its own command rather than a field of {@link diagnostics}: that call is a
+ * fifteen-field sweep whose macOS system-proxy readback shells out per network
+ * service, and the analytics error context wants this one string at startup. */
+export const osName = () => invoke<string>("os_name");
+
 /** What to call this machine: the stored name, or the hostname when there is
  *  none. Resolved by the backend so there is one answer, not two.
  *

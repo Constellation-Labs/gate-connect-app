@@ -1000,6 +1000,19 @@ fn app_platform() -> &'static str {
     std::env::consts::OS
 }
 
+/// OS marketing name AND version ("Ubuntu 25.10", "macOS 15.3 (24D60)").
+///
+/// Separate from [`diagnostics`], which returns this among fifteen other
+/// fields at a cost that module's own doc warns about. The analytics error
+/// context reads this once at startup, where the distro or point release is
+/// often the whole answer - the AppImage's Wayland loader problem is an
+/// Ubuntu-version question, and trust-store behaviour moves between macOS
+/// builds Apple ships under one marketing version.
+#[tauri::command]
+fn os_name() -> String {
+    gate_connect_core::diagnostics::os_name()
+}
+
 /// Backend half of the diagnostics report: the facts about this install the
 /// webview has no other way to see (OS build, data dir, persisted ports, and
 /// the live OS-side readback of both proxy channels). Never fails - an
@@ -3516,6 +3529,7 @@ pub fn run() {
                     log_file_path,
                     set_org,
                     app_platform,
+                    os_name,
                     diagnostics,
                     unpin_popover,
                     pin_popover,
@@ -3593,6 +3607,7 @@ pub fn run() {
                     log_file_path,
                     set_org,
                     app_platform,
+                    os_name,
                     diagnostics,
                     unpin_popover,
                     pin_popover,

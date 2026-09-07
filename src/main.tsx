@@ -8,6 +8,7 @@ import { newUiEnabled } from "./lib/newUi";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
+import { initErrorContext } from "./lib/errorContext";
 import { describe, logError } from "./lib/log";
 import { applyTextScale, readStoredScale } from "./lib/useTextScale";
 import "./index.css";
@@ -25,6 +26,11 @@ applyTextScale(readStoredScale());
 // would trade a visible delay for a few milliseconds of telemetry. The handlers
 // below no-op until the client exists, which is the safe direction.
 void initAnalytics();
+
+// The two error-context fields that never change for the life of the process.
+// Unawaited for the same reason, and not gated on consent: it only fills a
+// local object, and `trackError` is what decides whether any of it may leave.
+void initErrorContext();
 
 // Both sinks, because they answer different questions. PostHog aggregates across
 // installs but needs a build-time key and the user's consent, so on a developer

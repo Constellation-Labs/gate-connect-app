@@ -268,11 +268,22 @@ export function Modal({
         {(secondary || middle || primary) && (
           <div className="mt-6 flex justify-end gap-3">
             {secondary && (
+              // `disabled` is honoured here the same way the other two honour
+              // it. It used to be silently ignored, which made `ModalButton`'s
+              // own type a promise this branch did not keep: the send-report
+              // dialog refuses its Cancel while a request is in flight, and got
+              // a live button that closed the dialog and lost the reference for
+              // a report that had already arrived.
               <button
                 ref={safeRef}
                 type="button"
-                onClick={secondary.onClick}
-                className="flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                onClick={secondary.disabled ? undefined : secondary.onClick}
+                aria-disabled={secondary.disabled || undefined}
+                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                  secondary.disabled
+                    ? "cursor-not-allowed opacity-45"
+                    : "hover:bg-gray-50"
+                }`}
               >
                 {secondary.label}
               </button>

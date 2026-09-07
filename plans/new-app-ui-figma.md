@@ -2229,8 +2229,10 @@ respectively.
   exists, so Documentation is wired; support is omitted rather than pointed at an
   invented address. The topnav's Contact support entry is dead for the same reason
   (AG-598).
-- **Send diagnostics now, and the diagnostic reference.** No upload path exists;
-  that is AG-603.
+- ~~**Send diagnostics now, and the diagnostic reference.**~~ **Built** - see
+  "Sending one report" below. The entry is kept because the reason it gave was
+  right for as long as it held: there was no upload path, and a Send button with
+  nowhere to send is worse than no button.
 
 ### Unavailable rows
 
@@ -2357,9 +2359,109 @@ event-delivery state, notification permission), and describing it would be
 describing something Gate does not do, on the one screen whose job is telling the
 truth about what leaves the machine.
 
-Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
-"Send diagnostics now" and the diagnostic reference (no upload path exists), and
-scoping the choice to the selected organization.
+Still open on the ticket: scoping the choice to the selected organization. The
+onboarding Diagnostic data step landed with AG-554; "Send diagnostics now" and
+the diagnostic reference are below.
+
+
+## Sending one report (AG-603)
+
+`lib/diagnosticsUpload.ts` POSTs one event to PostHog's capture API and hands
+back a reference. Three decisions are load-bearing.
+
+**The destination is PostHog, and the gateway was the other candidate.** The
+gateway would have been the better home on the merits - `gateway_requests`
+already carries this install's id as `machine_id` (migration 169), so a report
+would land next to the traffic it describes, in the same org, scoped by the same
+credential. It has no ingest route, no table, and - the part that decides it - no
+admin surface to read one back from. A reference nobody can resolve is not a
+reference. PostHog is where this install's other events already are, so a report
+filed under the same distinct id lands beside the stream it explains. Revisit
+this if the gateway ever grows the route; the app side is one endpoint builder.
+
+**It does not go through posthog-js, and must not.** The criterion is that Send
+uploads a report whether automatic collection is On or Off, and `opt_out_capturing`
+persists a flag the SDK checks on every `capture` - so the shared client would
+silently drop the report for exactly the users most likely to be asked for one.
+Opting in around the send is worse, because the window that opens is one the
+*automatic* queue can also drain through. A direct `fetch` sends one event and
+leaves the consent flag untouched in both directions, which is also what keeps
+`analytics.ts`'s "`enabled` gates every send" true rather than nearly true.
+
+**The reference is minted client-side.** The capture API answers `{"status": 1}`,
+so there is no server id to be handed. This is not the compromise it looks like:
+the reference's job is to be searchable, and a value we generated and sent as a
+property is exactly as searchable as one we were given. `GC-XXXX-XXXX` over
+Crockford's alphabet minus `I`, `L`, `O` and `U` - the four that come back wrong
+when someone who did not generate it reads it into a support form.
+
+**The disclosure had to change, and this is the part to review first.** The
+report carries the account's email, org name and org id, the data and cert
+paths, and the gateway, relay and system-proxy addresses. `CollectedDataLists`
+promised, verbatim, that "File paths, hostnames, or the contents of any config
+file" are never sent. Sending the report made that false, so the bullet is now
+"The contents of any config file", and a fourth list - "Only in a report you send
+yourself" - says what the manual path adds. The dialog subtitle no longer claims
+"Nothing here identifies you", because for that fourth list it does not.
+Note which way this cuts: it is the ticket's own field list (installation id,
+selected organization id, tool names, routing status) that the *manual* report
+finally makes true, where the automatic channel never sent any of it.
+
+**A 15s ceiling on the send**, matching `gateway_api.rs`. `fetch` has no default
+timeout and the dialog refuses dismissal while a request is in flight, so without
+one an unanswered socket traps the user in a dialog with no way out.
+
+**`Modal`'s secondary button now honours `disabled`.** It was typed as
+`ModalButton` - which advertises the field - and ignored it, so the send dialog's
+refused Cancel rendered live and would have closed the dialog on a report that
+had already arrived, losing its reference.
+
+Undrawn: the Figma has no frame for the row or the dialog, since AG-603 was
+blocked on AG-602's handoff. Raised as question 18 in
+`docs/figma-questions-for-design.md`.
+
+
+## The error context (AG-603)
+
+AC 6's field list is a spec for the **automatic** channel, not for the manual
+report - which is what the entry above got wrong by treating the report as the
+only vehicle. `lib/errorContext.ts` closes the gap the readable way.
+
+**Errors only, and not a super-property.** These fields could ride every event
+and should not: a routing verdict on a `popover_opened` is noise on the volume
+events, and the reason to send any of it is that a *failure* is unreadable
+without the state around it. So `trackError` and `captureException` merge it,
+`track` does not, and a test pins exactly that.
+
+**A cached snapshot, read synchronously**, the `currentPlatform()` pattern. The
+reason is stronger here: `routing_verdicts` does network I/O and walks the
+process table, so resolving any of this at the moment of a failure would put a
+slow call on the error path of an app that is already misbehaving. The shell
+pushes state in from an effect; `errorContext()` only reads memory.
+
+**Six fields, and the two that are missing are the point.** `install_id`,
+`os_version`, `routing_on`, `verdict_states`, `tools_detected`, `feed_state`.
+AC 6 also names the installation **name** and the selected **organization id**,
+and both are deliberately absent: the name is the device name, routinely
+"someone's MacBook", and the org id is an account identifier. Sending either on
+every failure would identify a stream `analytics.ts` is built to keep anonymous
+(`person_profiles: "identified_only"`, and we never `identify`), and would make
+the disclosure's "No name, email, or account identifier" false. A report the
+user sends by hand carries both, once, on purpose. The automatic stream does
+not.
+
+**Two of AC 6's fields cannot be built at all**, and are omitted rather than
+faked. Nothing detects **tool versions** - there is no version field on `Tool`
+and no probe in `registry.rs`. **Notification permission state** cannot be
+reported honestly: `tauri-plugin-notification` hardcodes `PermissionState::
+Granted` on desktop, which is the same reason the Settings row for it was never
+built.
+
+`os_name` is its own Tauri command rather than a field of `diagnostics`: that
+call is a fifteen-field sweep whose macOS system-proxy readback shells out to
+`networksetup` once per active network service, and its own doc says it is for
+an explicit user action and not a poll. `os_name` alone is a file read, a
+registry read, or two `sw_vers` calls.
 
 
 ## The diagnostic-data onboarding step (AG-554 / AG-603)
