@@ -218,6 +218,14 @@ impl Integration for OpenCode {
         "OpenCode"
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["opencode"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }

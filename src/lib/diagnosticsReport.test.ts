@@ -152,6 +152,7 @@ function report(overrides: Partial<Parameters<typeof buildDiagnosticsReport>[0]>
     platform: "linux",
     analyticsId: { kind: "id", value: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" },
     backend,
+    versions: null,
     account,
     oauth,
     proxy,
@@ -319,5 +320,32 @@ describe("toolStatusLine", () => {
     expect(toolStatusLine({ kind: "error", message: "keychain denied" })).toBe(
       "error: keychain denied",
     );
+  });
+});
+
+describe("tool versions", () => {
+  it("prints the version beside the status", () => {
+    const out = report({ versions: { "claude-code": "2.1.263" } });
+    expect(out).toMatch(/claude-code.*\(v2\.1\.263\)/);
+  });
+
+  it("says so when the binary was found and would not answer", () => {
+    // Different from silence: the executable is there, so "not installed" is
+    // the wrong conclusion to draw from a missing version.
+    const out = report({ versions: { "claude-code": null } });
+    expect(out).toContain("(version unreadable)");
+  });
+
+  it("says nothing at all when no executable was found", () => {
+    // A tool detected through its config directory with no binary on disk. The
+    // absence IS the finding, and inventing a phrase for it would bury it.
+    const out = report({ versions: {} });
+    expect(out).not.toContain("version unreadable");
+    expect(out).not.toMatch(/\(v\d/);
+  });
+
+  it("prints nothing when the probe never ran", () => {
+    const out = report({ versions: null });
+    expect(out).not.toContain("version unreadable");
   });
 });

@@ -101,6 +101,14 @@ impl Integration for ClaudeCode {
         "CLI"
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["claude.exe", "claude.cmd", "claude.bat", "claude"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["claude"];
+        (CLAUDE_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
