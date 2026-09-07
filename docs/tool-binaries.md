@@ -118,6 +118,10 @@ On macOS and Windows, Claude Desktop (`Claude`, `Claude.exe`) normalises to
 running, Gate would report a running `claude-code` agent, and the close-affected-
 apps takeover would offer to close the user's desktop app on a routing toggle.
 
-Not fixed here, and not verified on a Mac - the evidence is the doc comment above
-asserting the process name. The fix is a case-sensitive match for the entries
-that need one, which the lowercasing exists to avoid needing (`.exe` on Windows).
+**Confirmed with the product**: `Claude` is the app, `claude` is the CLI. Fixed on
+`fix/claude-app-cli-collision`, not here - it is a user-visible routing bug with
+nothing to do with finding binaries, and burying it in this branch would hide it
+in a review about versions.
+
+The fix keeps the `.exe` strip, which is what the lowercasing was actually for,
+and matches that suffix case-insensitively instead of folding the whole name.
