@@ -2359,9 +2359,32 @@ event-delivery state, notification permission), and describing it would be
 describing something Gate does not do, on the one screen whose job is telling the
 truth about what leaves the machine.
 
-Still open on the ticket: scoping the choice to the selected organization. The
-onboarding Diagnostic data step landed with AG-554; "Send diagnostics now" and
-the diagnostic reference are below.
+**Scoping the choice to the selected organization is DONE, under reading (b)**,
+settled 2026-09-07. AC 12 - "stored for this installation and remains scoped to
+the selected organization" - has two readings, and they mean very different work:
+
+- (a) storage is per (install, org), so switching organizations yields a
+  different stored answer and raises a question nobody had answered: does
+  switching re-prompt someone who already consented under their other org?
+- (b) storage is per install, and "scoped to the organization" describes the
+  *data* rather than the storage.
+
+(b) is the answer. It also keeps this preference consistent with its neighbour:
+AG-588 faced the same question for `tool_models` and deliberately went local,
+"local by decision, not by omission", because a per-org setting meant one
+developer's click changed what their colleagues' requests were answered with. A
+privacy consent is a stronger case for per-machine than a model choice is - it is
+a statement about what *this laptop* sends.
+
+So `preferences.json` staying per-install is the implementation of AC 12, not a
+gap in it.
+
+**The organization id stays inside the report text**, decided at the same time.
+It could be promoted to a sibling event property, which would let support filter
+by organization rather than full-text scanning; it is deliberately not, because
+a filterable organization id is a different privacy fact from one inside a blob
+and the disclosure would have to say so. Revisit only if support actually works
+organization-first.
 
 
 ## Sending one report (AG-603)
