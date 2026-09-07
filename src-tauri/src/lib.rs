@@ -1790,14 +1790,38 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
     }
 }
 
-/// A process's name as [`AGENT_PROCESSES`] spells it: lowercased, with any
-/// `.exe` stripped, so one list serves all three desktop OSes. Extracted so the
-/// per-tool staleness check below matches on exactly the same normalisation the
-/// walk itself filtered by, rather than a second copy that could drift from it.
+/// A process's name as [`AGENT_PROCESSES`] spells it: any `.exe` stripped, so
+/// one list serves all three desktop OSes. Extracted so the per-tool staleness
+/// check below matches on exactly the same normalisation the walk itself
+/// filtered by, rather than a second copy that could drift from it.
+///
+/// **Case is preserved, and that is the whole point.** This used to lowercase,
+/// which folded together the two things [`RunningAgent::name`] says have to stay
+/// apart: `Claude` is the desktop app and `claude` is the CLI. With Claude
+/// Desktop open and no CLI running, the app matched the `claude-code` entry, so
+/// the routing takeover offered to close the user's desktop app and the startup
+/// hint nagged about a CLI that was not running. macOS and Windows both; Linux
+/// has no desktop app to collide with.
+///
+/// The `.exe` strip is what the lowercasing was really for - a Windows suffix,
+/// not a case difference - so it is now matched case-insensitively and the name
+/// itself is left alone.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_name_of(process: &sysinfo::Process) -> String {
-    let name = process.name().to_string_lossy().to_lowercase();
-    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+    normalise_agent_name(&process.name().to_string_lossy())
+}
+
+/// The half of [`agent_name_of`] that is testable without a live process table.
+fn normalise_agent_name(raw: &str) -> String {
+    let cut = raw.len().saturating_sub(4);
+    // `is_char_boundary` guards the slice: a process name is practically always
+    // ASCII, but it comes from the OS and nothing here should be the thing that
+    // panics on a name we did not expect.
+    if raw.is_char_boundary(cut) && raw[cut..].eq_ignore_ascii_case(".exe") {
+        raw[..cut].to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Which tool a running process belongs to, by the same normalisation the walk
@@ -4698,5 +4722,74 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
         let () = msg_send![ns_window, makeKeyWindow];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The collision this normalisation exists to avoid.
+    ///
+    /// `AGENT_PROCESSES` maps a process name to the tool it belongs to, and the
+    /// only Claude entry is the CLI. Folding case made the desktop app match it,
+    /// which put someone's Claude Desktop into the "close these to finish
+    /// routing" list on macOS and Windows.
+    #[test]
+    fn the_desktop_app_is_not_the_cli() {
+        assert_eq!(normalise_agent_name("claude"), "claude");
+        assert_eq!(normalise_agent_name("Claude"), "Claude");
+        assert!(AGENT_PROCESSES
+            .iter()
+            .any(|(slug, name)| *slug == "claude-code" && *name == normalise_agent_name("claude")));
+        assert!(
+            !AGENT_PROCESSES
+                .iter()
+                .any(|(_, name)| *name == normalise_agent_name("Claude")),
+            "the desktop app must not claim a tool slug"
+        );
+    }
+
+    /// Electron's helpers were never at risk - they are a different word - but
+    /// they are what a process table is actually full of, so pin it.
+    #[test]
+    fn electron_helpers_claim_nothing() {
+        for helper in [
+            "Claude Helper",
+            "Claude Helper (Renderer)",
+            "Claude Helper (GPU)",
+        ] {
+            assert!(!AGENT_PROCESSES
+                .iter()
+                .any(|(_, name)| *name == normalise_agent_name(helper)));
+        }
+    }
+
+    /// The `.exe` strip is what the lowercasing was really for, so it has to
+    /// survive - including on a capitalised Windows name, where stripping the
+    /// suffix must not also fold the name it leaves behind.
+    #[test]
+    fn strips_a_windows_suffix_in_any_case() {
+        assert_eq!(normalise_agent_name("claude.exe"), "claude");
+        assert_eq!(normalise_agent_name("codex.EXE"), "codex");
+        assert_eq!(normalise_agent_name("opencode.Exe"), "opencode");
+        assert_eq!(normalise_agent_name("Claude.exe"), "Claude");
+    }
+
+    #[test]
+    fn leaves_everything_else_alone() {
+        assert_eq!(normalise_agent_name("codex"), "codex");
+        assert_eq!(normalise_agent_name("exe"), "exe");
+        assert_eq!(normalise_agent_name(""), "");
+        // Not a suffix, so not stripped.
+        assert_eq!(normalise_agent_name("claude.exec"), "claude.exec");
+    }
+
+    /// The name comes from the OS, so the guard is against a panic, not against
+    /// a case anyone expects to see.
+    #[test]
+    fn survives_a_non_ascii_name() {
+        assert_eq!(normalise_agent_name("клод"), "клод");
+        assert_eq!(normalise_agent_name("日本語.exe"), "日本語");
     }
 }
