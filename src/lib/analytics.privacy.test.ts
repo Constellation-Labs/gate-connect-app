@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import posthog from "posthog-js";
 import { initAnalytics, track, trackError } from "./analytics";
 import { classifyError } from "./errors";
+import { resetErrorContext, setRoutingContext } from "./errorContext";
 
 // These tests pin the privacy promises analytics.ts makes in its header
 // comment, not PostHog plumbing. Separate from `analytics.test.ts`, which pins
@@ -66,7 +67,62 @@ function everythingSent(): string {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  resetErrorContext();
   await initAnalytics();
+});
+
+/** Populate the error context the way the shell does. */
+function seedContext() {
+  setRoutingContext({
+    tools: [],
+    verdicts: new Map(),
+    routingOn: true,
+    feedState: "live",
+  });
+}
+
+describe("the error context rides failures and nothing else", () => {
+  // AG-603. The state around a failure is what makes it readable; the same
+  // state on a `popover_opened` is noise on the volume events, which is why
+  // this is merged in `trackError` rather than registered as a super-property.
+  it("is absent from an ordinary event", () => {
+    seedContext();
+    track("tool_toggled", { tool: "codex", routed: true });
+    const [, props] = vi.mocked(posthog.capture).mock.calls[0];
+    expect(props).toEqual({ tool: "codex", routed: true });
+  });
+
+  it("rides an error event", () => {
+    seedContext();
+    trackError("boom", "proxy_toggle");
+    const [, props] = vi.mocked(posthog.capture).mock.calls[0];
+    expect(props).toMatchObject({ feed_state: "live", routing_on: true });
+  });
+
+  it("rides the paired exception too", () => {
+    seedContext();
+    trackError("boom", "proxy_toggle");
+    const [, extra] = vi.mocked(posthog.captureException).mock.calls[0];
+    expect(extra).toMatchObject({ feed_state: "live", context: "proxy_toggle" });
+  });
+
+  it("loses to the call site on a shared key", () => {
+    // A caller naming the thing it was toggling knows better than the snapshot.
+    seedContext();
+    trackError("boom", "proxy_toggle", { routing_on: false });
+    const [, props] = vi.mocked(posthog.capture).mock.calls[0];
+    expect(props).toMatchObject({ routing_on: false });
+  });
+
+  it("passes through the same allowlist as everything else", () => {
+    seedContext();
+    // `verdict_states` is allowlisted; a key that is not must still be dropped,
+    // and the context is exactly the kind of object that grows one.
+    trackError("boom", "proxy_toggle");
+    const [, props] = vi.mocked(posthog.capture).mock.calls[0];
+    expect(Object.keys(props as object)).not.toContain("device_name");
+    expect(Object.keys(props as object)).not.toContain("org_id");
+  });
 });
 
 describe("track: the event-prop allowlist", () => {

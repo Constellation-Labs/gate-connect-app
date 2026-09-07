@@ -128,6 +128,7 @@ import type { SetupOrganization } from "./components/gc/setup";
 import {
   CollectedDataDialog,
   DiagnosticsDialog,
+  SendDiagnosticsDialog,
   RestoreDetailsDialog,
   TeardownReportDialog,
   DisconnectGateDialog,
@@ -158,6 +159,12 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
+import { setRoutingContext } from "./lib/errorContext";
+import type { SendDiagnosticsState } from "./components/gc/dialogs";
+import {
+  canSendDiagnostics,
+  sendDiagnosticReport,
+} from "./lib/diagnosticsUpload";
 import {
   analyticsId,
   setAnalyticsConsent,
@@ -280,6 +287,9 @@ export function NewUiApp() {
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(
     null,
   );
+  /** The send-one-report flow (AG-603). Null when the dialog is closed; the
+   * four open states are the dialog's own, since none of them outlives it. */
+  const [sendState, setSendState] = useState<SendDiagnosticsState | null>(null);
   /**
    * Leading characters of the stored Gate key, as recorded in the account config.
    *
@@ -401,6 +411,20 @@ export function NewUiApp() {
   // traffic, and AC4 requires the feed's state to be independent of routing's -
   // a feed that only ran while routing was on would be reporting routing.
   const securityFeed = useSecurityFeed(Boolean(credential), credential);
+
+  // Keep the analytics error context tracking the window. Pushed from an effect
+  // on the state it summarises rather than resolved when something fails:
+  // `routing_verdicts` does network I/O and a process-table walk, and the one
+  // moment that must not wait on either is the moment the app is already
+  // misbehaving. Errors only - see `lib/errorContext.ts`.
+  useEffect(() => {
+    setRoutingContext({
+      tools,
+      verdicts,
+      routingOn: proxy?.running ?? null,
+      feedState: securityFeed.state,
+    });
+  }, [tools, verdicts, proxy?.running, securityFeed.state]);
 
   /** The event whose summary is open, or null.
    *
@@ -1579,11 +1603,7 @@ export function NewUiApp() {
    * the same subsystems. A hole in the report is a finding; a report that took
    * thirty seconds is not.
    */
-  const openDiagnostics = useCallback(async () => {
-    // Something on screen while the probes run. A button that sits silent for a
-    // couple of seconds reads as broken, which is the argument the version row's
-    // update note makes.
-    setDiagnosticsReport(COLLECTING_DIAGNOSTICS);
+  const collectReport = useCallback(async (): Promise<string> => {
     const backend = await fetchDiagnostics().catch(() => null);
     const launch = await launchAtLoginStatus().catch(() => null);
     const clientsStale = await routedClientsStale().catch(() => false);
@@ -1601,25 +1621,55 @@ export function NewUiApp() {
       }),
     ]);
     clearTimeout(scanTimer);
-    setDiagnosticsReport(
-      buildDiagnosticsReport({
-        now: new Date(),
-        version,
-        platform,
-        analyticsId: analyticsId(),
-        backend,
-        versions,
-        account,
-        oauth,
-        proxy,
-        providers,
-        tools,
-        launchAtLogin: launch,
-        clientsStale,
-        agents,
-      }),
-    );
+    return buildDiagnosticsReport({
+      now: new Date(),
+      version,
+      platform,
+      analyticsId: analyticsId(),
+      backend,
+      versions,
+      account,
+      oauth,
+      proxy,
+      providers,
+      tools,
+      launchAtLogin: launch,
+      clientsStale,
+      agents,
+    });
   }, [version, platform, account, oauth, proxy, providers, tools]);
+
+  const openDiagnostics = useCallback(async () => {
+    // Something on screen while the probes run. A button that sits silent for a
+    // couple of seconds reads as broken, which is the argument the version row's
+    // update note makes.
+    setDiagnosticsReport(COLLECTING_DIAGNOSTICS);
+    setDiagnosticsReport(await collectReport());
+  }, [collectReport]);
+
+  /**
+   * Sending one report (AG-603).
+   *
+   * Collected fresh on Send rather than reused from whatever `openDiagnostics`
+   * last rendered: the two entrances are minutes apart in the worst case, and a
+   * report describing a machine state the user has since changed is the one kind
+   * of support artefact that costs more than it saves.
+   *
+   * `sending` blocks the dialog's own dismissal, so this cannot resolve into a
+   * closed dialog and lose the reference. Nothing else is touched on either path
+   * - the criterion requires routing and event delivery to continue through a
+   * failure, and they do so by this being one `fetch` that owns no other state.
+   */
+  const sendDiagnostics = useCallback(async () => {
+    setSendState({ kind: "sending" });
+    try {
+      const reference = await sendDiagnosticReport(await collectReport());
+      setSendState({ kind: "sent", reference });
+    } catch (e) {
+      const { title, hint } = classifyError(e, "generic");
+      setSendState({ kind: "failed", title, hint });
+    }
+  }, [collectReport]);
 
   const settingsSections = useMemo(
     () =>
@@ -1762,6 +1812,11 @@ export function NewUiApp() {
         // pressed reads as broken.
         onCheckForUpdates: () => void update.checkNow(true),
         onViewCollectedData: () => setCollectedDataOpen(true),
+        // Omitted, so the row is omitted, where the build has no destination
+        // configured - every dev build, and any release built without a key.
+        onSendDiagnostics: canSendDiagnostics()
+          ? () => setSendState({ kind: "confirm" })
+          : undefined,
         // The rendered report, not a fresh one: Overview's "something is missing"
         // banner open the same `openDiagnostics`, so the two can never disagree
         // about what the machine looked like. It runs the live probes rather than
@@ -2499,6 +2554,18 @@ export function NewUiApp() {
           />
         ) : collectedDataOpen ? (
           <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
+        ) : sendState !== null ? (
+          <SendDiagnosticsDialog
+            state={sendState}
+            copied={settings.copied}
+            onSend={() => void sendDiagnostics()}
+            onCopyReference={() => {
+              if (sendState.kind === "sent") {
+                void settings.copyText(sendState.reference);
+              }
+            }}
+            onClose={() => setSendState(null)}
+          />
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}
