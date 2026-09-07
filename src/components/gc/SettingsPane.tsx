@@ -118,6 +118,7 @@ export function buildSettingsSections({
   onToggleSecurityNotificationSound,
   onToggleShareDiagnostics,
   onViewCollectedData,
+  onSendDiagnostics,
   onRetryPreferences,
   onReplayTutorial,
   onCheckForUpdates,
@@ -206,6 +207,10 @@ export function buildSettingsSections({
    * description. Read-only: AG-603 requires it to open "without changing the
    * setting", which is also why it is a link and not a second switch. */
   onViewCollectedData?: () => void;
+  /** Opens the send-one-report dialog. Optional like the switch above it, so a
+   * build with no diagnostics destination configured omits the row rather than
+   * offering a button that can only fail. */
+  onSendDiagnostics?: () => void;
   onRetryPreferences?: () => void;
   onReplayTutorial: () => void;
   onCheckForUpdates?: () => void;
@@ -465,14 +470,19 @@ export function buildSettingsSections({
       ],
     },
     // Diagnostics gets its own section, out of About: sharing data is a privacy
-    // choice, and the report is the evidence of what would be shared. Sending a
-    // report on demand, and the reference it returns, belong with the collection
-    // work and are not here.
+    // choice, and the report is the evidence of what would be shared.
     //
-    // Two rows, which is what the file draws. AG-603's read-only field list had
-    // a third; it hangs off the share-diagnostics description as a link now, so
-    // the criterion keeps a door without the section growing a row the design
-    // does not have.
+    // The file draws two rows and this now renders three. That is a deliberate
+    // departure, not a drift: the entry this replaces said sending a report on
+    // demand "belongs with the collection work and is not here", which was true
+    // while no upload existed. AG-603 built one, so the action needs a door, and
+    // the Figma has none to copy because AG-603 was blocked on AG-602's handoff
+    // and the frames were never drawn. Raised in
+    // `docs/figma-questions-for-design.md`.
+    //
+    // The read-only field list stays a link on the share-diagnostics
+    // description rather than becoming a fourth row - it changes no setting and
+    // sends nothing, so it is part of that sentence, not an action beside it.
     {
       id: "diagnostics",
       title: "Diagnostics",
@@ -511,6 +521,23 @@ export function buildSettingsSections({
           description: "Everything Gate knows about this install, as shareable text.",
           action: { label: "View report", onClick: onViewDiagnostics },
         },
+        // Below the report, because the report is what this sends: a user who
+        // wants to know what they are about to hand over reads it in the row
+        // above, and the order on screen matches that.
+        ...(onSendDiagnostics
+          ? [
+              {
+                id: "send-diagnostics",
+                // `headset`, the support glyph. This row exists to feed a
+                // support request, and `share2` is already the switch above.
+                icon: "headset" as IconName,
+                label: "Send diagnostics now",
+                description:
+                  "Send one report to Constellation Gate and get a reference for your support request.",
+                action: { label: "Send", onClick: onSendDiagnostics },
+              } as SettingsRow,
+            ]
+          : []),
       ],
     },
     {

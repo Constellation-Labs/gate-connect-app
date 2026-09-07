@@ -1696,28 +1696,51 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       tone="neutral"
       icon="info"
       title="What Gate Connect collects"
-      // The first list is gated on the diagnostics toggle; the second is not, and
-      // saying "only while it is on" over both would understate it.
-      subtitle="Nothing here identifies you. Most of it is sent only while Share diagnostic data is on."
+      // Four lists now, and the subtitle can only generalise over them by
+      // understating one. The first is gated on the diagnostics toggle; the
+      // second rides every routed request whatever it says; the fourth is sent
+      // only on an explicit Send and is the one that is NOT anonymous. So the
+      // subtitle says where the line is rather than claiming one rule.
+      subtitle="Automatic collection is anonymous. A report you send yourself carries more, and is listed last."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
-      <CollectedDataLists Wrapper={ModalNote} />
+      <CollectedDataScroller />
     </Modal>
   );
 }
 
 /**
- * The sent / never-sent lists, shared by the Settings dialog above and the
- * onboarding step in `setup.tsx`.
+ * The lists, in their own scroll region.
+ *
+ * Four blocks do not fit: the window's floor is 800px tall, `Modal` puts no
+ * ceiling on its panel and no scroll behind it, and the full disclosure runs
+ * past both. `DiagnosticsDialog` already solves this the same way for the
+ * report `<pre>` - the long thing scrolls inside itself and the dialog keeps
+ * its buttons on screen. The `gap-4` moves onto this element because the notes
+ * are its children now, not the modal body's.
+ */
+function CollectedDataScroller() {
+  return (
+    <div className="flex max-h-96 flex-col gap-4 overflow-y-auto">
+      <CollectedDataLists Wrapper={ModalNote} />
+    </div>
+  );
+}
+
+/**
+ * The sent / never-sent lists, shared by the two dialogs that disclose them:
+ * "What Gate Connect collects" above, and the send-one-report dialog below.
  *
  * One copy on purpose. Two would drift, and these are the claims the product's
- * reassurance rests on - the moment the onboarding promise and the Settings
- * disclosure disagree, neither can be trusted.
+ * reassurance rests on - the moment the disclosure the user reads before opting
+ * in and the one they read before sending disagree, neither can be trusted.
  *
- * `Wrapper` because the two callers frame it differently: the dialog uses
- * `ModalNote`, the setup pane its own card. The content is what is shared, not the
- * chrome.
+ * `Wrapper` because the callers used to frame it differently - the onboarding
+ * step passed its own card until the redraw moved the lists out of that step,
+ * leaving `ModalNote` the only wrapper in use. Kept rather than inlined because
+ * the next caller is as likely to be a pane as a dialog, and the content is what
+ * is shared, not the chrome.
  */
 export function CollectedDataLists({
   Wrapper,
@@ -1776,11 +1799,171 @@ export function CollectedDataLists({
         <ul className="mt-1 list-disc pl-4">
           <li>Prompts or model responses.</li>
           <li>API keys, credentials, or anything from your keychain.</li>
-          <li>File paths, hostnames, or the contents of any config file.</li>
+          <li>The contents of any config file.</li>
           <li>The text of an error, as opposed to its classification.</li>
         </ul>
       </Wrapper>
+      {/* The fourth list, and the reason the three above could stay short.
+          Automatic collection is anonymous and carries no paths; a report the
+          user sends from Settings carries both, because a support thread that
+          cannot see the gateway address or find the account is a thread that
+          cannot answer the question. Listing it here rather than only in the
+          Send dialog is the point: the disclosure has to be complete on the
+          screen that claims to be the disclosure, not only on the one screen
+          where the extra data is about to leave. */}
+      <Wrapper>
+        <p className="font-medium text-base-foreground">
+          Only in a report you send yourself
+        </p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            Your email, organization name and organization id, so a support
+            thread can find the account it is about.
+          </li>
+          <li>
+            Where Gate keeps its files, and the gateway, proxy and relay
+            addresses this machine is using.
+          </li>
+          <li>
+            Which tools are installed, their routing status, and which agents
+            were running when you sent it.
+          </li>
+        </ul>
+      </Wrapper>
     </>
+  );
+}
+
+/**
+ * A failed send, shown inside the dialog that attempted it.
+ *
+ * Mirrors `setup.tsx`'s `SetupError` rather than reaching for `ModalNote`: a
+ * refusal the user has to act on is not a note, and `role="alert"` is what gets
+ * it read out. Not lifted into a shared component, because the two live on
+ * different surfaces and one six-line div is a smaller cost than a third module
+ * for both to import.
+ */
+function DialogError({ children }: { children: ReactNode }) {
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Where a send has got to. Four states, because each one owns a different pair
+ * of buttons and the dialog is the only place any of them is visible.
+ *
+ * `sending` is its own state rather than a boolean beside `confirm` so the
+ * dialog can refuse to be dismissed while a request is in flight: closing
+ * mid-send would drop the reference on the floor for a report that did arrive,
+ * which is the one outcome the user cannot recover from.
+ */
+export type SendDiagnosticsState =
+  | { kind: "confirm" }
+  | { kind: "sending" }
+  | { kind: "sent"; reference: string }
+  | { kind: "failed"; title: string; hint: string };
+
+/**
+ * Send one diagnostics report (AG-603).
+ *
+ * The field list comes first and the send is second, which is the criterion's
+ * order and also the only order that makes sense: this is the dialog that says
+ * what is about to leave the machine, so it has to say it before the button that
+ * sends it exists.
+ *
+ * **There is no message field, deliberately.** The criterion says the report
+ * does not include the support message, and the way to guarantee that is to
+ * never offer somewhere to type one - a box we promised not to send would be a
+ * box the user fills in and expects to be read. The support message goes in the
+ * support thread, with the reference pasted into it.
+ *
+ * Undrawn: the Figma has no frame for this dialog (AG-603 was blocked on AG-602's
+ * handoff). Geometry follows `DiagnosticsDialog`, which is the neighbouring
+ * 600px report dialog, so the two entrances to the same data match.
+ */
+export function SendDiagnosticsDialog({
+  state,
+  copied,
+  onSend,
+  onCopyReference,
+  onClose,
+}: {
+  state: SendDiagnosticsState;
+  /** Flips the reference's copy button, as `DiagnosticsDialog` does. */
+  copied?: boolean;
+  onSend: () => void;
+  onCopyReference: () => void;
+  onClose: () => void;
+}) {
+  const sent = state.kind === "sent";
+  const sending = state.kind === "sending";
+  return (
+    <Modal
+      icon="share2"
+      tile="lg"
+      title={sent ? "Diagnostics sent" : "Send diagnostics now"}
+      subtitle={
+        sent
+          ? "Paste this reference into your support request so we can find the report."
+          : "One report, sent once. This does not change your Share diagnostic data setting."
+      }
+      secondary={
+        sent
+          ? { label: "Close", onClick: onClose }
+          : { label: "Cancel", onClick: onClose, disabled: sending }
+      }
+      primary={
+        sent
+          ? { label: copied ? "Copied" : "Copy reference", onClick: onCopyReference }
+          : {
+              label: sending
+                ? "Sending"
+                : state.kind === "failed"
+                  ? "Retry"
+                  : "Send",
+              onClick: onSend,
+              disabled: sending,
+            }
+      }
+      // Unskippable while the request is in flight - see `SendDiagnosticsState`.
+      onDismiss={sending ? undefined : onClose}
+    >
+      {sent ? (
+        <>
+          {/* Sans, not mono. A reference is an identifier *value*, and design
+           * settled those as sans on 2026-09-04; mono here would be the
+           * eyebrow-only rule broken for the one string the user has to read
+           * character by character. Medium and 16 carry that job instead.
+           *
+           * No `tracking-heading-16`: that is `heading/16`'s -1%, and this is a
+           * value, not a heading. `text-base` carries `copy/16`'s -2% in its own
+           * fontSize tuple, which is the pair that belongs together. */}
+          <div className="rounded-md border border-base-border bg-gray-50 p-4 text-base font-medium leading-6 text-base-foreground">
+            {state.reference}
+          </div>
+          <ModalNote>
+            The report is on its way to Constellation Gate. Routing and event
+            delivery were not interrupted.
+          </ModalNote>
+        </>
+      ) : (
+        <>
+          {state.kind === "failed" && (
+            <DialogError>
+              <p className="font-medium">{state.title}</p>
+              <p className="mt-1">{state.hint}</p>
+            </DialogError>
+          )}
+          <CollectedDataScroller />
+        </>
+      )}
+    </Modal>
   );
 }
 

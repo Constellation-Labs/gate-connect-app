@@ -138,6 +138,28 @@ describe("buildSettingsSections", () => {
     expect(diagnostics?.rows.map((r) => r.id)).toContain("diagnostics-report");
   });
 
+  it("offers Send diagnostics now, after the report it sends", () => {
+    // AG-603. Ordered below the report deliberately: the row above is how a
+    // user reads what they are about to hand over, so the screen reads in the
+    // order the decision is made.
+    const rows = sections({ onSendDiagnostics: noop }).find(
+      (s) => s.id === "diagnostics",
+    )!.rows;
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain("send-diagnostics");
+    expect(ids.indexOf("send-diagnostics")).toBe(ids.indexOf("diagnostics-report") + 1);
+    expect(rows.find((r) => r.id === "send-diagnostics")?.action?.label).toBe("Send");
+  });
+
+  it("omits Send diagnostics now where the build has no destination", () => {
+    // Withheld the way Replace key is: a build with no PostHog key configured -
+    // every dev build - would offer a button that can only fail.
+    const ids = sections({ onSendDiagnostics: undefined })
+      .find((s) => s.id === "diagnostics")!
+      .rows.map((r) => r.id);
+    expect(ids).not.toContain("send-diagnostics");
+  });
+
   it("marks only the two destructive actions destructive", () => {
     const destructive = sections()
       .flatMap((s) => s.rows)

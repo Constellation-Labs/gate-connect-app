@@ -444,6 +444,34 @@ fixed - worth confirming red/400 is right.
 
 ---
 
+## 18. The Diagnostics section now has three rows, and none of the third is drawn
+
+AG-603's send-a-report flow is built, and the file has nothing to copy for it:
+the ticket was blocked on AG-602's design handoff and the frames were never
+drawn. So we have invented a row and a dialog, and would like both checked.
+
+**The row.** `Settings / Diagnostics` draws two rows - the `Share diagnostic
+data` switch and `Diagnostics report` / View report. We have added a third,
+`Send diagnostics now` / Send, below the report. The ordering is deliberate:
+the row above is how a user reads what they are about to hand over. We used
+`headset`, the support glyph, because `share2` is already the switch two rows
+up and `clipboardList` is the report row.
+
+**The dialog.** 600px, `share2`, geometry copied from `Diagnostics report` so
+the two entrances to the same data match. Four states: the field list with
+Send / Cancel, a sending state that refuses both buttons, the reference with
+Copy reference / Close, and a failure with the error and Retry.
+
+**The reference** renders sans at `text-base` Medium, on the 2026-09-04 answer
+that identifier values are sans. It is the one string in the app a user reads
+character by character to type somewhere else, which is the strongest case mono
+will ever have here, and we still went sans. Worth confirming that is the
+answer you meant.
+
+**What we need.** Frames for the row and the dialog, or a sign-off on these.
+
+---
+
 ## For information: things we found and fixed without asking
 
 So the list above is not mistaken for the whole audit. All of these were
