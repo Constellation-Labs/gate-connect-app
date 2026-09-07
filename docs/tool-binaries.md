@@ -83,12 +83,41 @@ wrong working directory, with none of their conversation - and the one they were
 using is still running on the old route, which is the exact problem the reopen
 flow exists to solve. Gate would have made it worse and reported success.
 
-Where the path *does* make restart real:
+A GUI tool is the case `can_reopen` was written for: it owns its window and its
+state, so relaunching it is what the user would have done by hand. Two caveats
+before anyone plans that work.
 
-- **a GUI tool** - it owns its window and its state, so relaunching it is what a
-  user would have done by hand. This is the case `can_reopen` was written for.
-- **a daemon or background service** - same argument.
+**There is no app integration yet.** All six `ToolId`s - Claude Code, Codex,
+OpenCode, OpenClaw, Hermes, and the environment channel - are terminal programs,
+and every `row_label` is "CLI". `can_reopen: false` is not a stub waiting to be
+filled in; there is currently nothing it could be true for.
 
-For the terminal tools, the honest options are the ones that keep the user in
-their own shell: tell them the command, or offer to copy it. Neither needs a
-spawn, and both need exactly the path this module resolves.
+**And for an app, this module resolves the wrong thing.** `can_reopen`'s doc says
+a GUI tool is one "launchable by bundle id, shortcut or `.desktop` entry" - not
+one launchable by path. Spawning an Electron app's executable directly bypasses
+the single-instance handling that makes a second launch focus the existing
+window, and can leave a second, broken instance. App restart needs a parallel
+resolver for launch *identity* (`open -b <bundle-id>`, the Start Menu shortcut,
+`gtk-launch`), which is a different problem from finding an executable to ask
+its version.
+
+For the terminal tools, the honest options keep the user in their own shell: tell
+them the command, or offer to copy it. Neither needs a spawn, and both need
+exactly the path this module resolves.
+
+## An adjacent bug, found while writing this
+
+`AGENT_PROCESSES` matches processes through `agent_name_of`, which lowercases.
+`RunningAgent.name` documents the distinction that erases:
+
+> Process name as the OS spells it, original case - "Claude" is the desktop app,
+> "claude" the CLI, and which one is running matters.
+
+On macOS and Windows, Claude Desktop (`Claude`, `Claude.exe`) normalises to
+`claude` and matches the `claude-code` entry. With Claude Desktop open and no CLI
+running, Gate would report a running `claude-code` agent, and the close-affected-
+apps takeover would offer to close the user's desktop app on a routing toggle.
+
+Not fixed here, and not verified on a Mac - the evidence is the doc comment above
+asserting the process name. The fix is a case-sensitive match for the entries
+that need one, which the lowercasing exists to avoid needing (`.exe` on Windows).
