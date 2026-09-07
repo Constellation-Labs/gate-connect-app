@@ -15,6 +15,7 @@ import { POSTHOG_KEY_VALUE, POSTHOG_HOST } from "./config";
 import { fetchPlatform } from "./platform";
 import { classifyError, type ErrorContext } from "./errors";
 import { getPreferences } from "./api";
+import { errorContext } from "./errorContext";
 
 /** The only event names we ever emit. */
 export type AnalyticsEvent =
@@ -48,7 +49,7 @@ export type AnalyticsEvent =
   | "launch_at_login_toggled"
   | "error_shown";
 
-type Props = Record<string, string | number | boolean>;
+export type Props = Record<string, string | number | boolean>;
 
 /**
  * Prop keys allowed on the wire. Anything not listed is dropped before send -
@@ -73,6 +74,15 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "step",
   "tool_count",
   "integrations_disabled",
+  // The error context (`lib/errorContext.ts`), which rides `trackError` and
+  // `captureException` and no other event. Listed here rather than waved past
+  // `sanitize` because the allowlist is the backstop, and a context object is
+  // exactly the kind of thing that grows a field nobody reviewed.
+  "install_id",
+  "os_version",
+  "tools_detected",
+  "verdict_states",
+  "feed_state",
 ]);
 
 let enabled = false;
@@ -219,8 +229,16 @@ export function track(event: AnalyticsEvent, props?: Props): void {
 export function trackError(err: unknown, context: ErrorContext, props?: Props): void {
   if (!enabled) return;
   const { title } = classifyError(err, context);
-  track("error_shown", { ...props, context, title });
-  safely("captureException", () => posthog.captureException(new Error(title), { context }));
+  // The state Gate was in, merged UNDER the call site's own props so a caller
+  // naming the tool it was toggling still wins. Errors only: see
+  // `lib/errorContext.ts` for why this is not a super-property.
+  track("error_shown", { ...errorContext(), ...props, context, title });
+  // The paired exception carries the same state. It is a separate record from
+  // the `error_shown` event above, and whoever triages the exception list does
+  // not have that event beside them.
+  safely("captureException", () =>
+    posthog.captureException(new Error(title), { ...sanitize(errorContext()), context }),
+  );
 }
 
 /**
@@ -230,5 +248,10 @@ export function trackError(err: unknown, context: ErrorContext, props?: Props): 
  */
 export function captureException(err: unknown): void {
   if (!enabled) return;
-  safely("captureException", () => posthog.captureException(err));
+  // Sanitised like any other payload: an uncaught exception is our own bug and
+  // its stack is the point, but the context riding beside it goes through the
+  // same allowlist everything else does.
+  safely("captureException", () =>
+    posthog.captureException(err, sanitize(errorContext())),
+  );
 }

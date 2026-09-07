@@ -105,8 +105,15 @@ fn ca_nss_trusted() -> Option<bool> {
     None
 }
 
+/// The OS marketing name and version, on its own.
+///
+/// Public because it is the one field of [`Diagnostics`] worth reading without
+/// the rest: the analytics error context wants it at startup, and [`collect`]
+/// is explicitly not for that - its system-proxy readback shells out to
+/// `networksetup` once per active network service on macOS. This is a file
+/// read, a registry read, or two `sw_vers` calls.
 #[cfg(target_os = "linux")]
-fn os_name() -> String {
+pub fn os_name() -> String {
     // PRETTY_NAME is the one field every distro fills in and the one a bug
     // report wants ("Ubuntu 25.10", "Fedora Linux 41 (Workstation Edition)").
     std::fs::read_to_string("/etc/os-release")
@@ -121,7 +128,7 @@ fn os_name() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn os_name() -> String {
+pub fn os_name() -> String {
     let field = |arg: &str| {
         std::process::Command::new("/usr/bin/sw_vers")
             .arg(arg)
@@ -146,7 +153,7 @@ fn os_name() -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn os_name() -> String {
+pub fn os_name() -> String {
     use winreg::enums::HKEY_LOCAL_MACHINE;
     use winreg::RegKey;
 
@@ -179,7 +186,7 @@ fn os_name() -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn os_name() -> String {
+pub fn os_name() -> String {
     std::env::consts::OS.to_string()
 }
 

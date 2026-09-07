@@ -158,6 +158,7 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
+import { setRoutingContext } from "./lib/errorContext";
 import type { SendDiagnosticsState } from "./components/gc/dialogs";
 import {
   canSendDiagnostics,
@@ -409,6 +410,20 @@ export function NewUiApp() {
   // traffic, and AC4 requires the feed's state to be independent of routing's -
   // a feed that only ran while routing was on would be reporting routing.
   const securityFeed = useSecurityFeed(Boolean(credential), credential);
+
+  // Keep the analytics error context tracking the window. Pushed from an effect
+  // on the state it summarises rather than resolved when something fails:
+  // `routing_verdicts` does network I/O and a process-table walk, and the one
+  // moment that must not wait on either is the moment the app is already
+  // misbehaving. Errors only - see `lib/errorContext.ts`.
+  useEffect(() => {
+    setRoutingContext({
+      tools,
+      verdicts,
+      routingOn: proxy?.running ?? null,
+      feedState: securityFeed.state,
+    });
+  }, [tools, verdicts, proxy?.running, securityFeed.state]);
 
   /** The event whose summary is open, or null.
    *

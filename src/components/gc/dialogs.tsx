@@ -1769,6 +1769,16 @@ export function CollectedDataLists({
             A classified title when something fails, e.g. &ldquo;keychain
             denied&rdquo;. The underlying message stays on this machine.
           </li>
+          {/* Errors only, and it says so: this rides a failure and no other
+              event. Anonymous throughout - the two fields that would not be
+              (the device name, the organization id) are deliberately left out
+              of the error context, which is what lets the bullet above still
+              promise no name and no account identifier. */}
+          <li>
+            When something fails, the state Gate was in: your operating system
+            version, which tools are installed, whether routing was on, and
+            whether the event stream was connected. Not what you were doing.
+          </li>
         </ul>
       </Wrapper>
       {/* A third list, and deliberately not folded into the first. Everything

@@ -2421,6 +2421,49 @@ blocked on AG-602's handoff. Raised as question 18 in
 `docs/figma-questions-for-design.md`.
 
 
+## The error context (AG-603)
+
+AC 6's field list is a spec for the **automatic** channel, not for the manual
+report - which is what the entry above got wrong by treating the report as the
+only vehicle. `lib/errorContext.ts` closes the gap the readable way.
+
+**Errors only, and not a super-property.** These fields could ride every event
+and should not: a routing verdict on a `popover_opened` is noise on the volume
+events, and the reason to send any of it is that a *failure* is unreadable
+without the state around it. So `trackError` and `captureException` merge it,
+`track` does not, and a test pins exactly that.
+
+**A cached snapshot, read synchronously**, the `currentPlatform()` pattern. The
+reason is stronger here: `routing_verdicts` does network I/O and walks the
+process table, so resolving any of this at the moment of a failure would put a
+slow call on the error path of an app that is already misbehaving. The shell
+pushes state in from an effect; `errorContext()` only reads memory.
+
+**Six fields, and the two that are missing are the point.** `install_id`,
+`os_version`, `routing_on`, `verdict_states`, `tools_detected`, `feed_state`.
+AC 6 also names the installation **name** and the selected **organization id**,
+and both are deliberately absent: the name is the device name, routinely
+"someone's MacBook", and the org id is an account identifier. Sending either on
+every failure would identify a stream `analytics.ts` is built to keep anonymous
+(`person_profiles: "identified_only"`, and we never `identify`), and would make
+the disclosure's "No name, email, or account identifier" false. A report the
+user sends by hand carries both, once, on purpose. The automatic stream does
+not.
+
+**Two of AC 6's fields cannot be built at all**, and are omitted rather than
+faked. Nothing detects **tool versions** - there is no version field on `Tool`
+and no probe in `registry.rs`. **Notification permission state** cannot be
+reported honestly: `tauri-plugin-notification` hardcodes `PermissionState::
+Granted` on desktop, which is the same reason the Settings row for it was never
+built.
+
+`os_name` is its own Tauri command rather than a field of `diagnostics`: that
+call is a fifteen-field sweep whose macOS system-proxy readback shells out to
+`networksetup` once per active network service, and its own doc says it is for
+an explicit user action and not a poll. `os_name` alone is a file read, a
+registry read, or two `sw_vers` calls.
+
+
 ## The diagnostic-data onboarding step (AG-554 / AG-603)
 
 Consent before collection: `lib/analytics.ts` starts PostHog at launch, so what
