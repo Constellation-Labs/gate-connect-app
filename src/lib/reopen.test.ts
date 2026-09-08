@@ -238,3 +238,29 @@ describe("what a row offers", () => {
     expect(REOPEN_ACTION_LABEL.retry_verification).toBe("Retry verification");
   });
 });
+
+describe("a gone process, and who is putting it back", () => {
+  const tool = (canReopen: boolean) => ({
+    slug: "anthropic",
+    name: "Claude",
+    canReopen,
+    running: true,
+    routeInUse: null,
+    requestedRoute: null,
+    stage: "closing" as const,
+  });
+
+  it("tells the user to reopen a tool Gate cannot", () => {
+    expect(nextStage(tool(false), undefined, "gone", 0)).toBe("awaiting_reopen");
+  });
+
+  it("says Gate is reopening one it can", () => {
+    // The row must not read "Closed. Open it again" while Gate is mid-relaunch,
+    // or the user starts a second copy of an app that is already starting.
+    expect(nextStage(tool(true), undefined, "gone", 0)).toBe("reopening");
+  });
+
+  it("hands the move back if the relaunch never takes", () => {
+    expect(nextStage(tool(true), undefined, "gone", 99)).toBe("awaiting_reopen");
+  });
+});

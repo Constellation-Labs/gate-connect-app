@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { closeRunningAgents, runningAgents, routingVerdicts } from "./api";
+import {
+  closeRunningAgents,
+  reopenRunningAgents,
+  runningAgents,
+  routingVerdicts,
+} from "./api";
 import type { Verdict } from "./api";
 import { track, trackError } from "./analytics";
 import {
@@ -299,12 +304,26 @@ export function useRunningApps({
       const closed = await closeRunningAgents(tools.map((t) => t.slug));
       track("agents_closed", { count: closed });
       // Not "done": the signal was sent, and whether the process went, came
-      // back and routes is what the watch is for. A tool Gate could relaunch
-      // would go to `reopening` here; none can, so they all wait for the user.
+      // back and routes is what the watch is for. The rows Gate can relaunch go
+      // to `reopening`; the rest wait for the user.
       commitTools((t) => ({
         ...t,
         stage: t.canReopen ? "reopening" : "awaiting_reopen",
       }));
+      // Ask for the reopen only where something said it could be reopened, so a
+      // set of CLIs makes no call at all rather than one that returns 0. The
+      // backend waits for the old instances to exit before launching, which is
+      // why this is awaited and not fired alongside the close.
+      const reopenable = tools.filter((t) => t.canReopen).map((t) => t.slug);
+      if (reopenable.length > 0) {
+        // Failing to put an app back is not a failed close: the close already
+        // happened, the routing change already landed, and the row's own watch
+        // is what decides whether it came back. Reported, not thrown.
+        await reopenRunningAgents(reopenable).catch((err) => {
+          onError?.(err);
+          trackError(err, "close_agents");
+        });
+      }
       await tickRef.current();
     } catch (err) {
       onError?.(err);

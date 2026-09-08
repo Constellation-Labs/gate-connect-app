@@ -522,6 +522,21 @@ export const runningAgents = (only?: string[]) =>
 export const closeRunningAgents = (only?: string[]) =>
   invoke<number>("close_running_agents", { only: only ?? null });
 
+/** Put back the desktop apps {@link closeRunningAgents} just closed. Resolves to
+ * how many were launched.
+ *
+ * **Takes no path, deliberately.** What gets launched was decided in Rust, from
+ * a process Gate itself found running and captured before the kill. If this call
+ * carried a path, "reopen what you just closed" would become "launch whatever
+ * the webview names".
+ *
+ * Only apps are ever queued - a CLI is never relaunched, because spawning its
+ * binary starts a different one, detached from the shell session, working
+ * directory and conversation the user agreed to close. `only` is the same tool
+ * filter the close took. */
+export const reopenRunningAgents = (only?: string[]) =>
+  invoke<number>("reopen_running_agents", { only: only ?? null });
+
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting
  * when config-routed tools would be left pointing at the dead relay. */
