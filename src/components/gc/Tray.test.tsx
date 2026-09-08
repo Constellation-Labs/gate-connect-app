@@ -26,23 +26,29 @@ const GROUPS: SidebarGroup[] = [
   },
 ];
 
+/** Every required prop, so a test can re-render with one of them changed -
+ *  which is how the menu's focus-return is observed. */
+function trayProps(
+  overrides: Partial<Parameters<typeof Tray>[0]> = {},
+): Parameters<typeof Tray>[0] {
+  return {
+    master: { on: true },
+    groups: GROUPS,
+    notInstalled: [],
+    notInstalledOpen: false,
+    onToggleNotInstalled: noop,
+    orgName: "Acme Engineering",
+    onToggleApp: noop,
+    onExpand: noop,
+    menuOpen: false,
+    onMenuToggle: noop,
+    onMenuSelect: noop,
+    ...overrides,
+  };
+}
+
 function renderTray(overrides: Partial<Parameters<typeof Tray>[0]> = {}) {
-  return render(
-    <Tray
-      master={{ on: true }}
-      groups={GROUPS}
-      notInstalled={[]}
-      notInstalledOpen={false}
-      onToggleNotInstalled={noop}
-      orgName="Acme Engineering"
-      onToggleApp={noop}
-      onExpand={noop}
-      menuOpen={false}
-      onMenuToggle={noop}
-      onMenuSelect={noop}
-      {...overrides}
-    />,
-  );
+  return render(<Tray {...trayProps(overrides)} />);
 }
 
 afterEach(cleanup);
@@ -213,6 +219,37 @@ describe("the reopen notice", () => {
     expect(screen.getByRole("button", { name: "Reopen tool" })).toBeTruthy();
   });
 
+  it("does not truncate the address it exists to name", () => {
+    // At this width "Claude Code is still on " leaves roughly 26 characters, and
+    // the relay routes we produce are longer - so `truncate` cut the one thing
+    // the AC asks to be named, which is less use than the vague phrase it
+    // replaced. It wraps instead.
+    const route = "http://127.0.0.1:8123/anthropic";
+    renderTray({ reopen: { names: ["Claude Code"], route, onReopen: vi.fn() } });
+
+    const address = screen.getByText(route);
+    expect(address.className).toContain("break-all");
+    expect(address.closest("p")?.className).not.toContain("truncate");
+  });
+
+  it("keeps the plural phrase even if a caller passes a route for several tools", () => {
+    // The singular is the caller's invariant (`reopenPending.length === 1`), and
+    // this card must not depend on it being kept one file away: testing `many`
+    // first means a later change there reads as the plural phrase rather than
+    // "Claude Code, Codex is still on <one address>".
+    renderTray({
+      reopen: {
+        names: ["Claude Code", "Codex"],
+        route: "http://127.0.0.1:8123/anthropic",
+        onReopen: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByText(/Claude Code, Codex are on the route they started with/),
+    ).toBeTruthy();
+    expect(screen.queryByText("http://127.0.0.1:8123/anthropic")).toBeNull();
+  });
+
   it("keeps the phrase when several tools wait, since their routes can differ", () => {
     // One address under two names would be wrong about at least one of them.
     renderTray({
@@ -281,6 +318,39 @@ describe("the footer", () => {
     expect(document.activeElement?.textContent).toBe("Visit dashboard");
     fireEvent.keyDown(menu, { key: "End" });
     expect(document.activeElement?.textContent).toBe("Quit Gate Connect");
+  });
+
+  it("is a single tab stop, so Tab leaves the menu rather than walking behind it", () => {
+    // `role="menu"` promises one stop with the arrows moving inside it. As four
+    // plain buttons every item was tabbable, so Tab past the last one moved
+    // focus to the app-list switches - visible behind the open menu and
+    // click-blocked by the scrim, so the focus ring went where the pointer
+    // could not follow.
+    renderTray({ menuOpen: true, onMenuSelect: vi.fn() });
+    const items = screen.getAllByRole("menuitem");
+
+    expect(items.map((el) => el.getAttribute("tabindex"))).toEqual(["0", "-1", "-1", "-1"]);
+
+    // The stop moves with the arrows: still exactly one, on the focused item.
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "End" });
+    expect(items.map((el) => el.getAttribute("tabindex"))).toEqual(["-1", "-1", "-1", "0"]);
+  });
+
+  it("gives focus back to the trigger when it closes", () => {
+    // Every exit unmounts the panel, so the focused element goes with it and
+    // `activeElement` falls to `<body>` - the next Tab would restart from the
+    // top of the popover instead of the control the user was just on.
+    const { rerender } = renderTray({ menuOpen: true, onMenuSelect: vi.fn() });
+    expect(document.activeElement?.textContent).toBe("Visit dashboard");
+
+    rerender(<Tray {...trayProps({ menuOpen: false, onMenuSelect: vi.fn() })} />);
+
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("More");
+  });
+
+  it("names the menu, so it does not announce as a bare menu", () => {
+    renderTray({ menuOpen: true, onMenuSelect: vi.fn() });
+    expect(screen.getByRole("menu", { name: "More" })).toBeTruthy();
   });
 
   it("closes on Escape without choosing anything", () => {

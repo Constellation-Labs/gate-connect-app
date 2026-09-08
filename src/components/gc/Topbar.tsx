@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
@@ -128,15 +129,21 @@ export function OutlineIconButton({
   onClick,
   expanded,
   radius = "control",
+  buttonRef,
 }: {
   icon: IconName;
   label: string;
   onClick: () => void;
   expanded?: boolean;
   radius?: keyof typeof ICON_BUTTON_RADIUS;
+  /** For a caller that has to give focus back to this button - a menu trigger
+   *  whose panel unmounts, where `activeElement` would otherwise fall to
+   *  `<body>` and the next Tab restart from the top of the surface. */
+  buttonRef?: RefObject<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       aria-label={label}
