@@ -268,9 +268,21 @@ export function MessagesChart({
           reason: it repeats what the table already says, so exposing it twice
           would be noise. Nothing here is keyboard-reachable, and nothing needs
           to be - the table is the accessible path to the same figures. */}
+      {/* **The bar row and the tick row must be identical in width and gap.**
+          `justify-between` distributes leftover space between items, so two
+          rows of different widths put their items' centres in different places
+          - which is how a 20px bar came to sit off-centre under a 32px label,
+          most visibly on the first and last bucket where one edge is pinned.
+          Same `w-8 gap-2` on both rows, and the centres coincide for any number
+          of buckets.
+          The values are the frame's own: `864:3511` is 31.667 wide and the next
+          bar starts 39.667 along, so 32 on an 8. `plans/new-app-ui-figma.md`
+          recorded this as the deferred half of the window resize - the window
+          was widened to 1280 to fit 24 of these, while the bars stayed at the
+          20px that predated it. */}
       <div
         aria-hidden
-        className="relative mt-5 flex h-28 items-end justify-between gap-1"
+        className="relative mt-5 flex h-28 items-end justify-between gap-2"
         onMouseLeave={() => setHovered(null)}
       >
         {buckets.map((bucket, i) => (
@@ -282,7 +294,7 @@ export function MessagesChart({
           // sliver two pixels tall, and hovering it should not require aim.
           <div
             key={bucket.id}
-            className="flex h-full w-5 flex-col-reverse"
+            className="flex h-full w-8 flex-col-reverse"
             onMouseEnter={() => setHovered(i)}
           >
             {SERIES.map(({ key, className }) => {
@@ -310,7 +322,7 @@ export function MessagesChart({
         )}
       </div>
 
-      <div className="mt-1 flex justify-between gap-1">
+      <div className="mt-1 flex justify-between gap-2">
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
@@ -380,12 +392,16 @@ export function MessagesChart({
 function PendingChart() {
   return (
     <>
-      <div aria-hidden className="mt-5 flex h-28 items-end justify-between gap-1">
+      {/* The loaded chart's geometry, for the reason the tick comment below
+          gives: this placeholder had 20px columns under 32px labels, so the
+          bars moved sideways the moment a reading landed - the one thing a
+          placeholder must not do. */}
+      <div aria-hidden className="mt-5 flex h-28 items-end justify-between gap-2">
         {PENDING_HOURS.map((hour) => (
-          <Skeleton key={hour} className="h-full w-5" />
+          <Skeleton key={hour} className="h-full w-8" />
         ))}
       </div>
-      <div aria-hidden className="mt-1 flex justify-between gap-1">
+      <div aria-hidden className="mt-1 flex justify-between gap-2">
         {PENDING_HOURS.map((hour) => (
           <span
             key={hour}

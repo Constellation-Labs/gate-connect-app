@@ -3284,12 +3284,31 @@ The `onboarding` window is untouched at 1080x720 on a 760x560 floor. It is built
 in Rust rather than configured, it is a different surface, and nothing about the
 24-bucket chart applies to it.
 
-### Not changed: the bars are still 20px
+### The bars were still 20px, and somebody asked (2026-09-08)
 
 The same frame says the bar is **32px** wide on an **8px** gap.
-`metrics.tsx` draws `w-5` (20px) on `gap-1` (4px). The axis labels are already
-`w-8`, so with `justify-between` in a 944px chart the *labels* now land within a
-few tenths of a pixel of the drawn 39.667px step - which is why the width alone
-fixes the reported crowding. The bars themselves stay narrow until someone asks:
-it is a visual change to the chart rather than a window-size one, and this pass
-was about the window.
+`metrics.tsx` drew `w-5` (20px) on `gap-1` (4px). The axis labels were already
+`w-8`, so with `justify-between` in a 944px chart the *labels* land within a
+few tenths of a pixel of the drawn 39.667px step - which is why the window width
+alone fixed the reported crowding. The bars were left narrow on the grounds that
+widening them is a change to the chart rather than to the window.
+
+**What that deferral missed is that the mismatch was visible on its own.**
+`justify-between` distributes leftover space *between* items, so two rows whose
+items are different widths put their centres in different places: a 20px bar
+under a 32px tick sat off-centre, worst on the first and last bucket where one
+edge is pinned and the whole difference lands on the other side. Reported from a
+running build as "the vertical bar is not centre-aligned with the X label",
+which is exactly that.
+
+So both rows are now `w-8 gap-2` - the frame's own 32-on-8 (`864:3511` is
+31.667 wide, the next starts at 39.667) - and the centres coincide for any
+bucket count. `PendingChart` took the same geometry: it had the same 20-under-32
+mismatch, so the bars moved sideways when a reading landed, which its own
+comment calls the one thing a placeholder must not do.
+
+`metrics.test.tsx` pins equal width and gap on the two rows rather than
+computed positions, jsdom having no layout. Its `columns()` helper also stopped
+selecting on `.w-5`; it keys on the stacking direction now, since `.w-8` would
+also match the placeholder's skeletons and quietly break the
+"no columns while loading" assertion.

@@ -11,7 +11,11 @@ const buckets: MessagesBucket[] = [
 
 /** The bars, which are `aria-hidden`, so they are not reachable by role. */
 function columns(container: HTMLElement) {
-  return Array.from(container.querySelectorAll("[aria-hidden] > div.w-5"));
+  // Keyed on the stacking direction, not the width. It used to select `.w-5`,
+  // which broke the moment the bars took the frame's 32px - and `.w-8` would be
+  // worse than brittle: the loading placeholder's skeletons are that width too,
+  // so the "no columns while loading" assertion would start matching them.
+  return Array.from(container.querySelectorAll("[aria-hidden] > div.flex-col-reverse"));
 }
 
 /** The legend and the accessible table both use the tooltip's row labels, so
@@ -60,6 +64,23 @@ describe("MessagesChart tooltip", () => {
       container.querySelectorAll("div.mt-1 > span"),
     ).map((el) => el.textContent);
     expect(ticks).toEqual(["11", "12"]);
+  });
+
+  it("gives the bars and the ticks the same geometry, so a bar sits under its label", () => {
+    // Reported from a running build: with 20px bars under 32px labels,
+    // `justify-between` distributed the leftover space differently in the two
+    // rows, so a bar and its tick had different centres - worst on the first
+    // and last bucket, where one edge is pinned and the whole difference shows.
+    // Asserting the classes rather than layout because jsdom computes no
+    // geometry; equal width and gap is the property that makes the centres
+    // coincide, for any number of buckets.
+    const { container } = render(<MessagesChart buckets={buckets} />);
+    const bar = columns(container)[0] as HTMLElement;
+    const tick = container.querySelector("div.mt-1 > span") as HTMLElement;
+    expect(bar.className).toContain("w-8");
+    expect(tick.className).toContain("w-8");
+    expect((bar.parentElement as HTMLElement).className).toContain("gap-2");
+    expect((tick.parentElement as HTMLElement).className).toContain("gap-2");
   });
 
   it("names the hour in full in the accessible table's row headers", () => {
