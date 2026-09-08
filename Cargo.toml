@@ -27,14 +27,62 @@ toml_edit = "0.22"
 # `dirs` resolves per-OS config / data / home directories so the core crate
 # can stop hand-rolling `$HOME/Library/...` paths. `keyring` wraps the
 # native secret store on each OS (Keychain / Credential Manager / Secret
-# Service). Cross-target builds need each OS's native feature, plus a
-# vendored sync Secret Service client for Linux (avoids a tokio dep).
+# Service). Cross-target builds need each OS's native feature, plus one of
+# keyring's two Secret Service clients for Linux.
+#
+# Dropping `vendored` is the crash fix; the client swap below is hardening.
+# `vendored` expanded to `dbus-secret-service?/vendored`, which turns on
+# `libdbus-sys/vendored` - and because features unify, that vendored C libdbus
+# backed *tao*'s `dbus` as well, not just the keyring path. libdbus-sys compiles
+# it with `cc` and its own define list, whose linux arm enables `HAVE_EPOLL` but
+# never `HAVE_POLL` (`build_vendored.rs`, `generate_config`). So `_dbus_poll`
+# compiles the `select()` fallback rather than the `poll()` branch and `FD_SET`s
+# our descriptors onto a 128-byte stack `fd_set`; past `FD_SETSIZE` that is a
+# stack smash, and the process aborts a few seconds into launch whenever a real
+# Secret Service is reached. Never put `vendored` back.
+#
+# The build therefore links the *system* `libdbus-1.so.3`, built with `poll()`
+# as every distro's is. It is still a direct NEEDED of the desktop binary via
+# `tao` -> `dbus` -> `libdbus-sys`, so this stopped C being *vendored*, not C
+# being linked: Linux builds now need `libdbus-1-dev` + `pkg-config` (libdbus-sys's
+# `build.rs` panics without them) and the `.deb` declares `libdbus-1-3`.
+#
+# `async-secret-service` is the pure-Rust client (`secret-service` + `zbus`), so
+# the credential path itself compiles no C. Three things follow, all checked
+# against keyring 3.6.3 rather than assumed:
+#
+# - The API stays synchronous. keyring's backend wraps
+#   `secret_service::blocking::*`, so `Entry` is still sync and `keychain.rs`
+#   needs no change. "async" names the transport, not our call sites.
+# - `crypto-rust` is a fix of its own, not a build detail. With no crypto
+#   feature keyring selects `EncryptionType::Plain`, which is what the old
+#   feature set got: the API key crossed the session bus in cleartext. This
+#   picks the DH + AES-128-CBC session instead.
+# - `async-io`, not `tokio`, for the runtime. One is required, and the `tokio`
+#   cfg wins if both are on. Under `tokio` zbus routes blocking calls through a
+#   static `Runtime::block_on`, which panics when it is already inside a
+#   runtime; `async-io` parks the thread instead. Every keychain call today
+#   reaches the store from `spawn_blocking`, but `proxy/relay.rs` shows the
+#   in-runtime shape exists in this tree, so this is load-bearing.
+#
+# One thing gets worse, and is narrower than it looks. `dbus-secret-service`
+# derived `ZeroizeOnDrop` on two types and `secret-service` 4.0.0 has none - but
+# neither crate ever zeroed the plaintext it hands back (`get_secret` returns a
+# plain `Vec<u8>`, `get_password` a plain `String`). What the old backend wiped
+# was the transport buffer (`EncryptedSecret`: salt, data, mime) and the DH
+# `shared_key`, and under the old featureless `Plain` session there was no
+# shared key to wipe - so it came to one transient cleartext buffer. The delta
+# is therefore that buffer, plus the DH key this change introduces and does not
+# wipe. Nothing to fix here in any case: `secret-service` 4.0.0 is the last of
+# the 4.x line keyring 3 accepts. The larger gap is ours and predates this
+# change - `keychain.rs` holds secrets in plain `String`s on every OS.
 dirs = "5"
 keyring = { version = "3", features = [
   "apple-native",
   "windows-native",
-  "sync-secret-service",
-  "vendored",
+  "async-secret-service",
+  "crypto-rust",
+  "async-io",
 ] }
 # The built-in MITM proxy . `hudsucker` is a Rust MITM
 # proxy that mints per-host certs from a local CA and lets us rewrite the

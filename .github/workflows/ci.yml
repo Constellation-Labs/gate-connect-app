@@ -30,7 +30,7 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
 
       # rust-toolchain.toml pins channel 1.86.0 with rustfmt + clippy
       # (same as release.yml).
@@ -52,10 +52,33 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
+
+  # Nothing else screens the dependency graph. This change swapped the Linux
+  # secret-store backend and moved the lock by 381 lines - 22 crates in, 7 out -
+  # with no gate that would have noticed an advisory against any of them.
+  #
+  # Advisories only: `cargo audit` fails the job on a RUSTSEC vulnerability and
+  # merely warns on unmaintained/yanked crates, which is the line worth blocking
+  # a merge on. It reads `Cargo.lock` and never builds, so it costs seconds and
+  # does not need the Linux GTK stack.
+  #
+  # The five advisories this found on its first run all predate it and are
+  # ignored in `.cargo/audit.toml`, which says for each one what pulls it, how
+  # reachable it is, and what fixes it. Read that file before adding a sixth:
+  # the point of the job is that a NEW advisory turns it red.
+  audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
 
   # The one path CI could not otherwise see. `proxy trust-ca --system-trust`
   # writes the LocalMachine Root store, and nothing else in CI exercises it:
@@ -87,7 +110,7 @@ jobs:
           key: windows-system-trust
 
       - name: Build the CLI
-        run: cargo build -p gate-connect-cli
+        run: cargo build --locked -p gate-connect-cli
 
       - name: Trust round-trip
         shell: pwsh
