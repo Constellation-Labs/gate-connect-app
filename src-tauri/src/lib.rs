@@ -1740,16 +1740,21 @@ const AGENT_PROCESSES: [(&str, &str, Surface); 6] = [
     // already anticipated being asked about a proxy domain key - it just had
     // nothing to answer with until now.
     //
-    // `anthropic` covers Claude Desktop. Cowork reaches the same host and would
-    // be a second row here under the same slug, which the name lookup supports;
-    // it is absent only because its process name is not confirmed.
+    // `anthropic` is one slug and two process names because Claude's desktop app
+    // is spelled differently per platform: `Claude` on macOS, `Cowork` in
+    // Windows environments. Same product, same host, same routing switch, so a
+    // second slug would mean one switch that only worked on one OS. Two rows
+    // under one slug is supported throughout - see `agent_process_names`, which
+    // returns all of them precisely so this cannot silently cover only the
+    // first.
+    //
+    // Case matters and is not incidental: `Claude` here is the desktop app,
+    // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
+    // them together. Confirmed with the product.
     ("anthropic", "Claude", Surface::App),
-    // Cowork is the Claude desktop app in Windows environments, which is why it
-    // shares the `anthropic` slug rather than getting one of its own: same
-    // product, same host, same routing switch. Two rows under one slug is
-    // supported throughout - see `agent_process_names`, which returns all of
-    // them precisely so this cannot silently cover only the first.
     ("anthropic", "Cowork", Surface::App),
+    // Confirmed as `ChatGPT` on Windows, where `.exe` is stripped before the
+    // match.
     ("chatgpt", "ChatGPT", Surface::App),
 ];
 
