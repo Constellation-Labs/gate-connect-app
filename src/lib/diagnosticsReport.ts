@@ -39,6 +39,25 @@ import type { AnalyticsId } from "./analytics";
  *  that a value still gets room on one line in a 360px popover. */
 const LABEL_WIDTH = 16;
 
+/**
+ * What to print after a tool's status about which build it is.
+ *
+ * Three outcomes, three strings, because they send a support thread to three
+ * different places. A version is the answer. `version unreadable` means the
+ * executable was found and would not say - a broken or unusual install. Silence
+ * means no executable was found at all, which for a tool detected through its
+ * config directory is itself the finding: Gate can see its config and not its
+ * binary.
+ */
+function versionSuffix(
+  slug: string,
+  versions: Record<string, string | null> | null,
+): string {
+  if (!versions || !(slug in versions)) return "";
+  const version = versions[slug];
+  return version ? ` (v${version})` : " (version unreadable)";
+}
+
 export interface DiagnosticsInput {
   /** Stamped into the report. Injected so tests aren't clock-dependent. */
   now: Date;
@@ -52,6 +71,10 @@ export interface DiagnosticsInput {
   /** Null when the backend snapshot failed. The report still renders - a
    *  missing section is itself a finding. */
   backend: Diagnostics | null;
+  /** Each tool's version, or null if the probe was never run. A slug absent
+   *  from the map is a tool whose executable was not found; a slug mapped to
+   *  null is one that would not say. See `versionSuffix`. */
+  versions: Record<string, string | null> | null;
   account: Account | null;
   oauth: OAuthStatus | null;
   proxy: ProxyState | null;
@@ -168,6 +191,7 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     platform,
     analyticsId,
     backend,
+    versions,
     account,
     oauth,
     proxy,
@@ -300,7 +324,9 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   if (tools.length === 0) {
     lines.push("none");
   } else {
-    for (const tool of tools) lines.push(row(tool.slug, toolStatusLine(tool.status)));
+    for (const tool of tools) {
+      lines.push(row(tool.slug, `${toolStatusLine(tool.status)}${versionSuffix(tool.slug, versions)}`));
+    }
   }
 
   if (proxy) {

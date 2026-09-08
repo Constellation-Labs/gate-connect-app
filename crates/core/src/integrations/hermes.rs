@@ -122,6 +122,17 @@ impl Integration for Hermes {
         ROW_LABEL
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        // `launcher_on_path` already walks PATH for these names; this is the
+        // same knowledge, shared so the version probe and the detector cannot
+        // disagree about what the binary is called.
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat", "hermes"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["hermes"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }

@@ -709,6 +709,18 @@ export const installId = () => invoke<string>("install_id");
  * service, and the analytics error context wants this one string at startup. */
 export const osName = () => invoke<string>("os_name");
 
+/** Each visible tool's version, keyed by slug.
+ *
+ * **Never call this on a render path.** It spawns one `--version` per tool on a
+ * cold cache, which is the same rule {@link routingVerdicts} follows.
+ *
+ * A slug missing from the map means no executable was found - the tool may still
+ * be detected through its config directory. A slug present with `null` means the
+ * binary was found and would not say. Those are different findings and the
+ * report prints them differently. */
+export const toolVersions = () =>
+  invoke<Record<string, string | null>>("tool_versions");
+
 /** What to call this machine: the stored name, or the hostname when there is
  *  none. Resolved by the backend so there is one answer, not two.
  *

@@ -143,6 +143,40 @@ fn list_tools() -> Vec<ToolDto> {
         .collect()
 }
 
+/// Every visible tool's version, keyed by slug.
+///
+/// A separate command from [`list_tools`] on purpose, and the separation is the
+/// design: `list_tools` feeds the sidebar and repaints constantly, while this
+/// spawns one process per tool on a cold cache. Wiring versions into the DTO
+/// would put five `--version` calls on every repaint.
+///
+/// Absent from the map where the binary could not be found; present-but-null
+/// where it was found and would not say. The report prints those differently,
+/// because "not installed here" and "installed, version unreadable" send a
+/// support thread to different places.
+#[tauri::command]
+fn tool_versions() -> std::collections::HashMap<String, Option<String>> {
+    registry::registry()
+        .iter()
+        .filter(|integ| !integ.hidden_in_ui())
+        .filter_map(|integ| {
+            let (well_known, names) = integ.binary();
+            if names.is_empty() {
+                return None;
+            }
+            // Resolved here rather than inside the probe so "no binary found"
+            // can drop out of the map entirely, while "found, would not say"
+            // stays as an explicit null.
+            let path =
+                gate_connect_core::integrations::binaries::resolve_binary(well_known, names)?;
+            Some((
+                integ.id().to_string(),
+                gate_connect_core::integrations::binaries::version_at(&path),
+            ))
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn tool_status(slug: String) -> Result<StatusDto, String> {
     let id = ToolId::from_slug(&slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
@@ -3731,6 +3765,7 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     list_tools,
+                    tool_versions,
                     tool_status,
                     connect_tool,
                     disconnect_tool,
@@ -3811,6 +3846,7 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     list_tools,
+                    tool_versions,
                     tool_status,
                     connect_tool,
                     disconnect_tool,

@@ -174,6 +174,14 @@ impl Integration for OpenClaw {
         "CLI"
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["openclaw.exe", "openclaw.cmd", "openclaw.bat", "openclaw"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["openclaw"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }

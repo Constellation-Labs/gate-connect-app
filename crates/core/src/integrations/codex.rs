@@ -223,6 +223,14 @@ impl Integration for Codex {
         "CLI"
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["codex.exe", "codex.cmd", "codex.bat", "codex"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["codex"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
