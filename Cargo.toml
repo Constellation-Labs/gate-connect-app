@@ -27,14 +27,43 @@ toml_edit = "0.22"
 # `dirs` resolves per-OS config / data / home directories so the core crate
 # can stop hand-rolling `$HOME/Library/...` paths. `keyring` wraps the
 # native secret store on each OS (Keychain / Credential Manager / Secret
-# Service). Cross-target builds need each OS's native feature, plus a
-# vendored sync Secret Service client for Linux (avoids a tokio dep).
+# Service). Cross-target builds need each OS's native feature, plus one of
+# keyring's two Secret Service clients for Linux.
+#
+# **`async-secret-service`, not `sync-secret-service`, and this is a crash fix.**
+# The sync client is `dbus-secret-service`, which binds the C libdbus; with
+# `vendored` it compiled its own copy of that C into our binary. That copy
+# smashes its stack inside `_dbus_poll` (`dbus-sysdeps-unix.c:3210`, reached from
+# `socket_do_iteration`) and aborts the process. Measured on Ubuntu 24.04: 3 of 5
+# launches died, at one to seven seconds, whenever the real Secret Service was
+# reached. `GATE_CONNECT_TEST_SECRETS` hid it entirely, which is why
+# `pnpm app:local` never showed it and `pnpm app` did.
+#
+# The entry this replaces chose the sync client to avoid "a tokio dep". That
+# reason was already stale: `hudsucker`, eight lines below, pulls tokio, which
+# its own comment says is why tokio appears here at all.
+#
+# `async-secret-service` is the pure-Rust client (`secret-service` + `zbus`), so
+# no C library is compiled or linked. Three things follow, all checked against
+# keyring 3.6.3 rather than assumed:
+#
+# - **The API stays synchronous.** keyring's backend wraps
+#   `secret_service::blocking::*`, so `Entry` is still sync and `keychain.rs`
+#   needs no change. "async" names the transport, not our call sites.
+# - **`async-io`, not `tokio`, for the runtime.** One is required. `tokio` makes
+#   zbus use tokio, and a blocking call from inside a tokio runtime panics -
+#   which `#[tauri::command(async)]` handlers would do. `async-io` is
+#   self-contained.
+# - **`vendored` is dropped because it becomes inert.** It expands to
+#   `dbus-secret-service?/vendored` + `openssl?/vendored`, and with `crypto-rust`
+#   neither of those crates is in the tree.
 dirs = "5"
 keyring = { version = "3", features = [
   "apple-native",
   "windows-native",
-  "sync-secret-service",
-  "vendored",
+  "async-secret-service",
+  "crypto-rust",
+  "async-io",
 ] }
 # The built-in MITM proxy . `hudsucker` is a Rust MITM
 # proxy that mints per-host certs from a local CA and lets us rewrite the
