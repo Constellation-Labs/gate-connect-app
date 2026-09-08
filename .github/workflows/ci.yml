@@ -32,9 +32,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      # rust-toolchain.toml pins channel 1.86.0 with rustfmt + clippy
+      # rust-toolchain.toml pins channel 1.88.0 with rustfmt + clippy
       # (same as release.yml).
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
 
@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: dtolnay/rust-toolchain@1.88.0
 
       - uses: Swatinem/rust-cache@v2
         with:

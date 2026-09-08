@@ -8,9 +8,13 @@ members = ["crates/core", "crates/cli", "src-tauri"]
 # single source of truth, so this is not bumped per release.
 version = "0.0.0"
 edition = "2021"
-# Pinned to match rust-toolchain.toml (1.86.0). With resolver = "3" this
-# keeps `cargo update` from pulling deps whose MSRV exceeds the toolchain.
-rust-version = "1.86"
+# Pinned to match rust-toolchain.toml (1.88.0). With resolver = "3" this
+# keeps `cargo update` from pulling deps whose MSRV exceeds the toolchain -
+# which is also why this number gates security updates, not just features:
+# at 1.86 the fix for RUSTSEC-2026-0009 (`time` >= 0.3.47) was unreachable,
+# because every published fix wants 1.88. Moving it is the cheapest way to
+# stay patchable, so prefer moving it to holding an advisory open.
+rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Constellation Network"]
 

@@ -689,10 +689,12 @@ impl LoopbackListener {
         loop {
             for listener in &self.listeners {
                 match listener.accept() {
-                    Ok((stream, _)) => match self.handle_callback(stream, expected_state)? {
-                        Some(code) => return Ok(code),
-                        None => {} // not the callback (favicon, etc.); keep polling
-                    },
+                    Ok((stream, _)) => {
+                        // `None` is not the callback (favicon, etc.); keep polling.
+                        if let Some(code) = self.handle_callback(stream, expected_state)? {
+                            return Ok(code);
+                        }
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(e).context("accepting loopback callback"),
                 }
