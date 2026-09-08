@@ -15,6 +15,7 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -1763,11 +1764,59 @@ fn drain_backend_errors() -> Vec<BackendError> {
 /// contributes no names, so asking about it finds nothing rather than falling
 /// back to everything.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str); 3] = [
-    ("claude-code", "claude"),
-    ("codex", "codex"),
-    ("opencode", "opencode"),
+const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
+    ("claude-code", "claude", Surface::Cli),
+    ("codex", "codex", Surface::Cli),
+    ("opencode", "opencode", Surface::Cli),
+    // The desktop apps. Their slugs are proxy-domain keys rather than registry
+    // tool ids, because that is what these are: Gate routes them through the
+    // system proxy, not by rewriting a config file. `agent_names_for`'s doc
+    // already anticipated being asked about a proxy domain key - it just had
+    // nothing to answer with until now.
+    //
+    // Case matters and is not incidental: `Claude` here is the desktop app,
+    // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
+    // them together. Confirmed with the product.
+    ("anthropic", "Claude", Surface::App),
+    // `ChatGPT` on Windows too, where `.exe` is stripped before the match.
+    // Confirmed with the product.
+    //
+    // **There is no Cowork process, and this row is it.** Cowork had a row of
+    // its own here for one commit, under `anthropic`, on the reading that it was
+    // a separate Windows desktop app; it is not. `engine.rs`'s captured Cowork
+    // turn is a request to `chatgpt.com/backend-api/codex/responses` - a path
+    // the `chatgpt` entry claims - so Cowork's traffic and its process are both
+    // this one.
+    //
+    // Worth knowing because the name is used loosely elsewhere in the tree:
+    // `provider.rs` and `GroupMembers.tsx` both label the *anthropic* switch
+    // "Claude Desktop / Cowork". Those are about which switch routes the
+    // traffic, not about a process to close, and at least one of the two
+    // readings is wrong - see the note raised with this change.
+    ("chatgpt", "ChatGPT", Surface::App),
 ];
+
+/// Whether Gate may relaunch a process it closed.
+///
+/// The distinction is not cosmetic and not about how the tool is routed - it is
+/// about what "reopen" can honestly mean.
+///
+/// A [`Surface::Cli`] runs inside a shell session Gate does not own, with a
+/// working directory, arguments and a conversation this process cannot see.
+/// Spawning its binary again would not reopen it; it would start a different
+/// one, somewhere else, detached from the terminal the user was working in - and
+/// the session they agreed to close would be gone with nothing put back.
+///
+/// A [`Surface::App`] owns its own window and its own state. Launching it again
+/// is exactly what the user would have done by hand, which is what makes closing
+/// it defensible in the first place: Gate is not ending their session, it is
+/// restarting an application so it picks up the route.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    Cli,
+    App,
+}
 
 /// The process names to scan for. `None` means every tool - the master toggle,
 /// the popover's routing takeover and the diagnostics listing all genuinely
@@ -1778,8 +1827,8 @@ const AGENT_PROCESSES: [(&str, &str); 3] = [
 fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
     AGENT_PROCESSES
         .iter()
-        .filter(|(slug, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
-        .map(|(_, name)| *name)
+        .filter(|(slug, _, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
+        .map(|(_, name, _)| *name)
         .collect()
 }
 
@@ -1837,27 +1886,62 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
     }
 }
 
-/// A process's name as [`AGENT_PROCESSES`] spells it: lowercased, with any
-/// `.exe` stripped, so one list serves all three desktop OSes. Extracted so the
-/// per-tool staleness check below matches on exactly the same normalisation the
-/// walk itself filtered by, rather than a second copy that could drift from it.
+/// A process's name as [`AGENT_PROCESSES`] spells it: any `.exe` stripped, so
+/// one list serves all three desktop OSes. Extracted so the per-tool staleness
+/// check below matches on exactly the same normalisation the walk itself
+/// filtered by, rather than a second copy that could drift from it.
+///
+/// **Case is preserved, and that is the whole point.** This used to lowercase,
+/// which folded together the two things [`RunningAgent::name`] says have to stay
+/// apart: `Claude` is the desktop app and `claude` is the CLI. With Claude
+/// Desktop open and no CLI running, the app matched the `claude-code` entry, so
+/// the routing takeover offered to close the user's desktop app and the startup
+/// hint nagged about a CLI that was not running. macOS and Windows both; Linux
+/// has no desktop app to collide with.
+///
+/// The `.exe` strip is what the lowercasing was really for - a Windows suffix,
+/// not a case difference - so it is now matched case-insensitively and the name
+/// itself is left alone.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_name_of(process: &sysinfo::Process) -> String {
-    let name = process.name().to_string_lossy().to_lowercase();
-    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+    normalise_agent_name(&process.name().to_string_lossy())
+}
+
+/// The half of [`agent_name_of`] that is testable without a live process table.
+fn normalise_agent_name(raw: &str) -> String {
+    let cut = raw.len().saturating_sub(4);
+    // `is_char_boundary` guards the slice: a process name is practically always
+    // ASCII, but it comes from the OS and nothing here should be the thing that
+    // panics on a name we did not expect.
+    if raw.is_char_boundary(cut) && raw[cut..].eq_ignore_ascii_case(".exe") {
+        raw[..cut].to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Which tool a running process belongs to, by the same normalisation the walk
 /// filtered on ([`agent_name_of`]). `None` for a process no slug claims, which
 /// cannot happen for a process the walk yielded and is handled rather than
 /// asserted: the table is the only thing keeping the two in step.
+/// Which kind of surface a running process is, by the same normalisation the
+/// walk filtered on. `None` for a process no row claims.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn surface_of(process: &sysinfo::Process) -> Option<Surface> {
+    let name = agent_name_of(process);
+    AGENT_PROCESSES
+        .iter()
+        .find(|(_, n, _)| *n == name)
+        .map(|(_, _, surface)| *surface)
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     let name = agent_name_of(process);
     AGENT_PROCESSES
         .iter()
-        .find(|(_, n)| *n == name)
-        .map(|(slug, _)| *slug)
+        .find(|(_, n, _)| *n == name)
+        .map(|(slug, _, _)| *slug)
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -2142,14 +2226,19 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 /// see [`reopen_pending_for`], which says what that costs.
 ///
 /// Reads [`AGENT_PROCESSES`] rather than repeating it: the per-tool verdict and
-/// the per-tool close offer have to name the same process for a slug, or one of
-/// them is talking about a tool the other is not.
+/// the per-tool close offer have to name the same processes for a slug, or one
+/// of them is talking about a tool the other is not.
+///
+/// **All of them, not the first.** A slug can name more than one process -
+/// `anthropic` covers Claude Desktop and Cowork - and a `find` here would have
+/// checked one and quietly reported the other as not running.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn agent_process_name(slug: &str) -> Option<&'static str> {
+fn agent_process_names(slug: &str) -> Vec<&'static str> {
     AGENT_PROCESSES
         .iter()
-        .find(|(s, _)| *s == slug)
-        .map(|(_, name)| *name)
+        .filter(|(s, _, _)| *s == slug)
+        .map(|(_, name, _)| *name)
+        .collect()
 }
 
 /// Is a process for this one tool running that predates the last routing change,
@@ -2169,12 +2258,13 @@ fn agent_process_name(slug: &str) -> Option<&'static str> {
 ///   `stale_agents_count` rather than claiming freshness we cannot support.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
-    let Some(wanted) = agent_process_name(slug) else {
+    let wanted = agent_process_names(slug);
+    if wanted.is_empty() {
         return false;
-    };
+    }
     let bound = routing_bound_unix();
     let mut pending = false;
-    for_each_agent_process(&[wanted], |process| match bound {
+    for_each_agent_process(&wanted, |process| match bound {
         Some(bound) => {
             if process.start_time() < bound {
                 pending = true;
@@ -2539,11 +2629,12 @@ fn recovery_summary() -> Option<RecoverySummaryDto> {
 /// itself.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_running_for(slug: &str) -> bool {
-    let Some(wanted) = agent_process_name(slug) else {
+    let wanted = agent_process_names(slug);
+    if wanted.is_empty() {
         return false;
-    };
+    }
     let mut running = false;
-    for_each_agent_process(&[wanted], |_| running = true);
+    for_each_agent_process(&wanted, |_| running = true);
     running
 }
 
@@ -2766,7 +2857,14 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
         agents.push(RunningAgent {
             slug: slug.to_string(),
             name: process.name().to_string_lossy().to_string(),
-            can_reopen: false,
+            // Derived, not assumed: true exactly when Gate resolved somewhere
+            // to launch this back from. A CLI never resolves one - see
+            // `Surface` - and an app whose executable path the OS would not
+            // give us reports false rather than promising a reopen that would
+            // then not happen.
+            can_reopen: surface_of(process)
+                .and_then(|s| relaunch_target(process, s))
+                .is_some(),
             pid: process.pid().as_u32(),
             started_at_unix,
             // No usable bound degrades to "everything predates routing", the
@@ -2803,7 +2901,12 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;
+    let mut reopen: Vec<(String, PathBuf)> = Vec::new();
     for_each_agent_process(&agent_names_for(only.as_deref()), |process| {
+        // Captured BEFORE the kill, because afterwards there is no process left
+        // to ask where it came from. `None` for a CLI, which is the whole point
+        // of `Surface` - see `relaunch_target`.
+        let target = surface_of(process).and_then(|s| relaunch_target(process, s));
         // kill_with(Term) is None on platforms without signal support
         // (Windows); fall back to the hard kill there.
         let signalled = process
@@ -2811,9 +2914,136 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
             .unwrap_or_else(|| process.kill());
         if signalled {
             closed += 1;
+            if let (Some(slug), Some(path)) = (agent_slug_of(process), target) {
+                reopen.push((slug.to_string(), path));
+            }
         }
     });
+    if !reopen.is_empty() {
+        let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
+        // Replace rather than append for the slugs in hand: a second close of
+        // the same app must not queue a second launch of it.
+        guard.retain(|(slug, _)| !reopen.iter().any(|(s, _)| s == slug));
+        guard.extend(reopen);
+    }
     closed
+}
+
+/// What Gate closed and intends to put back, captured before the kill.
+///
+/// **Held in Rust, deliberately.** The obvious alternative is for
+/// `close_running_agents` to return the paths and the frontend to hand them back
+/// to the reopen call - and that would turn "reopen what you just closed" into
+/// "launch whatever the webview names", which is a code-execution vector with a
+/// friendly signature. The webview only ever says *reopen*; what that means was
+/// decided here, from a process Gate itself found running.
+///
+/// Cleared as it is consumed, so a second reopen cannot launch a second copy.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static PENDING_REOPEN: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
+/// Where an app would be launched from again, or `None` if Gate should not try.
+///
+/// `None` for a CLI even though its executable path is perfectly resolvable -
+/// see [`Surface`]. Being able to spawn something is not the same as being able
+/// to reopen it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn relaunch_target(process: &sysinfo::Process, surface: Surface) -> Option<PathBuf> {
+    if surface != Surface::App {
+        return None;
+    }
+    let exe = process.exe()?;
+    #[cfg(target_os = "macos")]
+    {
+        // `.../Claude.app/Contents/MacOS/Claude` -> `.../Claude.app`. Hand
+        // LaunchServices the bundle rather than exec'ing the inner Mach-O: a
+        // bare exec skips the single-instance handling that makes a second
+        // launch focus the existing window, and an Electron app started that
+        // way can come up without its own environment.
+        if let Some(bundle) = exe
+            .ancestors()
+            .find(|a| a.extension().is_some_and(|e| e == "app"))
+        {
+            return Some(bundle.to_path_buf());
+        }
+    }
+    Some(exe.to_path_buf())
+}
+
+/// Launch one captured target.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn launch(target: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        // `open` asks LaunchServices, which is what makes this a reopen rather
+        // than a second process: it honours the app's own single-instance rules.
+        let mut c = std::process::Command::new("/usr/bin/open");
+        c.arg(target);
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = std::process::Command::new(target);
+
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    // Spawned, never waited on: this is a GUI application that will outlive the
+    // call, and `open` on macOS returns immediately anyway. The child is
+    // deliberately not reaped - see the caller, which does not block a button on
+    // an app's startup time.
+    cmd.spawn().is_ok()
+}
+
+/// Put back the apps [`close_running_agents`] closed.
+///
+/// Separate from the close so the two map onto the stages the frontend already
+/// draws (`closing` -> `reopening`), and so a user who declines the reopen just
+/// never calls this.
+///
+/// Waits for the processes to actually be gone first, bounded. Relaunching an
+/// app whose old instance is still shutting down is how you get the single-
+/// instance logic to focus the dying window and then exit with it, which looks
+/// exactly like "Gate closed my app and did not reopen it".
+///
+/// Returns how many were launched. Best-effort per app: one that will not start
+/// does not stop the others, and the caller learns from the count rather than
+/// from an error, because a partial reopen is a real outcome worth reporting.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
+    let pending: Vec<(String, PathBuf)> = {
+        let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
+        let (take, keep): (Vec<_>, Vec<_>) = guard.drain(..).partition(|(slug, _)| {
+            only.as_deref()
+                .is_none_or(|slugs| slugs.iter().any(|s| s == slug))
+        });
+        *guard = keep;
+        take
+    };
+    if pending.is_empty() {
+        return 0;
+    }
+
+    // Bounded wait for the old instances to go. 5s is long enough for an app
+    // asked to quit gracefully and short enough that a user watching a button
+    // does not conclude it is broken.
+    let names: Vec<&str> = AGENT_PROCESSES
+        .iter()
+        .filter(|(slug, _, _)| pending.iter().any(|(s, _)| s == slug))
+        .map(|(_, name, _)| *name)
+        .collect();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let mut still_running = false;
+        for_each_agent_process(&names, |_| still_running = true);
+        if !still_running || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    pending.iter().filter(|(_, path)| launch(path)).count() as u32
 }
 
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
@@ -3602,6 +3832,7 @@ pub fn run() {
                     stale_agents_count,
                     running_agents,
                     close_running_agents,
+                    reopen_running_agents,
                     drain_backend_errors,
                     security_feed_state,
                     security_feed_recent,
@@ -4749,5 +4980,118 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
         let () = msg_send![ns_window, makeKeyWindow];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The collision this normalisation exists to avoid.
+    ///
+    /// `AGENT_PROCESSES` maps a process name to the tool it belongs to, and the
+    /// only Claude entry is the CLI. Folding case made the desktop app match it,
+    /// which put someone's Claude Desktop into the "close these to finish
+    /// routing" list on macOS and Windows.
+    /// Both are claimed now, and by different rows - which is the point. The
+    /// invariant was never "the app claims nothing"; it is that the app is not
+    /// the CLI. Getting this wrong once put someone's Claude Desktop into the
+    /// set `close_running_agents` SIGTERMs while the dialog said Claude Code.
+    #[test]
+    fn the_desktop_app_is_not_the_cli() {
+        assert_eq!(normalise_agent_name("claude"), "claude");
+        assert_eq!(normalise_agent_name("Claude"), "Claude");
+
+        let slug_for = |raw: &str| {
+            AGENT_PROCESSES
+                .iter()
+                .find(|(_, name, _)| *name == normalise_agent_name(raw))
+                .map(|(slug, _, _)| *slug)
+        };
+        assert_eq!(slug_for("claude"), Some("claude-code"));
+        assert_eq!(slug_for("Claude"), Some("anthropic"));
+        assert_ne!(slug_for("claude"), slug_for("Claude"));
+    }
+
+    /// The lookup returns *every* name a slug claims, not the first.
+    ///
+    /// No slug names two processes today - the one that briefly did, Cowork
+    /// under `anthropic`, turned out not to be a separate app at all. The guard
+    /// is kept anyway because the shape that failed is a `find`, which drops
+    /// extra rows in silence: the dropped process reads as not running, so it is
+    /// never marked stale, never offered for close and never reopened, with
+    /// nothing on screen saying so. A table this cheap to add a row to should
+    /// not have a lookup that punishes it.
+    #[test]
+    fn the_lookup_returns_every_name_a_slug_claims() {
+        for (slug, name, _) in AGENT_PROCESSES {
+            assert!(
+                agent_process_names(slug).contains(&name),
+                "{slug} does not resolve back to {name}"
+            );
+        }
+        assert_eq!(agent_process_names("anthropic"), vec!["Claude"]);
+        assert!(agent_process_names("hermes").is_empty());
+    }
+
+    /// The CLI rows must never become relaunchable. This is the assertion that
+    /// stops someone "fixing" a CLI's `can_reopen` by widening `Surface`:
+    /// spawning a terminal program's binary starts a different one, somewhere
+    /// else, and drops the session the user agreed to close.
+    #[test]
+    fn only_apps_are_relaunchable() {
+        for (slug, _, surface) in AGENT_PROCESSES {
+            let expected = match slug {
+                "claude-code" | "codex" | "opencode" => Surface::Cli,
+                _ => Surface::App,
+            };
+            assert!(
+                surface == expected,
+                "{slug} has the wrong surface, which decides whether Gate relaunches it"
+            );
+        }
+    }
+
+    /// Electron's helpers were never at risk - they are a different word - but
+    /// they are what a process table is actually full of, so pin it.
+    #[test]
+    fn electron_helpers_claim_nothing() {
+        for helper in [
+            "Claude Helper",
+            "Claude Helper (Renderer)",
+            "Claude Helper (GPU)",
+        ] {
+            assert!(!AGENT_PROCESSES
+                .iter()
+                .any(|(_, name, _)| *name == normalise_agent_name(helper)));
+        }
+    }
+
+    /// The `.exe` strip is what the lowercasing was really for, so it has to
+    /// survive - including on a capitalised Windows name, where stripping the
+    /// suffix must not also fold the name it leaves behind.
+    #[test]
+    fn strips_a_windows_suffix_in_any_case() {
+        assert_eq!(normalise_agent_name("claude.exe"), "claude");
+        assert_eq!(normalise_agent_name("codex.EXE"), "codex");
+        assert_eq!(normalise_agent_name("opencode.Exe"), "opencode");
+        assert_eq!(normalise_agent_name("Claude.exe"), "Claude");
+    }
+
+    #[test]
+    fn leaves_everything_else_alone() {
+        assert_eq!(normalise_agent_name("codex"), "codex");
+        assert_eq!(normalise_agent_name("exe"), "exe");
+        assert_eq!(normalise_agent_name(""), "");
+        // Not a suffix, so not stripped.
+        assert_eq!(normalise_agent_name("claude.exec"), "claude.exec");
+    }
+
+    /// The name comes from the OS, so the guard is against a panic, not against
+    /// a case anyone expects to see.
+    #[test]
+    fn survives_a_non_ascii_name() {
+        assert_eq!(normalise_agent_name("клод"), "клод");
+        assert_eq!(normalise_agent_name("日本語.exe"), "日本語");
     }
 }
