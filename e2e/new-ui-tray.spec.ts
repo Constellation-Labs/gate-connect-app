@@ -82,7 +82,11 @@ test.describe("tray popover", () => {
     });
 
     await expect(app.page.getByText("Reopen to finish")).toBeVisible();
-    await expect(app.page.getByText(/Codex is on the route it started with/)).toBeVisible();
+    // AG-584 asks a pending change to name the route in use, not to gesture at
+    // it. `default_upstream_url` is what the fake reports for a tool whose
+    // config is managed and whose process predates it: still going direct.
+    await expect(app.page.getByText(/Codex is still on/)).toBeVisible();
+    await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
 
     await app.page.getByRole("button", { name: "Reopen tool" }).click();
 
@@ -263,6 +267,28 @@ test.describe("tray popover", () => {
     await expect.poll(() => app.lastCall("plugin:opener|open_url")).toMatchObject({
       url: "https://app-staging.constellationgate.ai/overview",
     });
+  });
+
+  test("Escape hides the popover, and closes the menu first when one is open", async ({
+    boot,
+  }) => {
+    // The keyboard half of the click-outside dismissal (AG-584). Before this a
+    // keyboard user could open the popover and had no way to close it: the only
+    // exits were the tray icon and a click elsewhere.
+    //
+    // The window is hidden by Rust, which a browser run cannot observe, so what
+    // this pins is the ordering - Escape with the menu open must close the menu
+    // and leave the popover up, rather than doing both at once.
+    const app = await boot({ windowLabel: "tray" });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await expect(app.page.getByRole("menu")).toBeVisible();
+
+    await app.page.keyboard.press("Escape");
+
+    await expect(app.page.getByRole("menu")).toBeHidden();
+    // Still up: one Escape closed one thing.
+    await expect(app.page.getByRole("button", { name: "Expand app" })).toBeVisible();
   });
 
   test("the organization line hands the selector to the window", async ({ boot }) => {

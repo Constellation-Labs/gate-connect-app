@@ -1,5 +1,6 @@
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { FeedState } from "../../lib/api";
-import type { ReactNode } from "react";
 import { BaseSwitch, Skeleton, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
@@ -84,6 +85,7 @@ export function Tray({
   recovery,
   reopen,
   dialog,
+  rootRef,
 }: {
   /** The engine's observed state. Omit while the first proxy read is in
    * flight, and the card is omitted with it - a status card with no reading
@@ -145,18 +147,42 @@ export function Tray({
    *  Same division as `recovery`: the tray carries the fact and the one action,
    *  and the per-tool routes and stages stay in the window, which has the width
    *  for them. Omitted when nothing needs reopening. */
-  reopen?: { names: string[]; onReopen: () => void };
+  /** The tools waiting to be reopened, and the route they are still on.
+   *
+   *  `route` is the address for a SINGLE waiting tool and must be null for two
+   *  or more: they can be on different routes, so one address under several
+   *  names would be wrong about at least one of them. The card tests the plural
+   *  first rather than trusting this, but the invariant is the caller's. */
+  reopen?: { names: string[]; route?: string | null; onReopen: () => void };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
+  /** The popover's own root, so the shell can move focus into it when the
+   *  window is revealed.
+   *
+   *  A tray window is shown and hidden rather than created and destroyed, so
+   *  nothing moves focus on its own: a keyboard user opened the popover and
+   *  focus was still in whatever they were doing before. Held by the shell
+   *  because the reveal is the shell's event, not this component's. */
+  rootRef?: RefObject<HTMLDivElement>;
 }) {
+  /** The menu's trigger, so the panel can hand focus back to it on close. */
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+
   return (
     // `tabular-nums` on the root, not per figure. "Always use tabular nums on
     // numbers" is design's standing rule (2026-09-04): the point is that a
     // column of counts, percentages and currency lines up, and Geist's
     // proportional digits do not. Set once here so no figure added later can
     // miss it - the same argument the `label/copy` tracking tokens make.
-    <div className="flex h-screen w-full flex-col bg-base-background tabular-nums">
+    <div
+      ref={rootRef}
+      // Focusable only programmatically: the shell focuses this on reveal so the
+      // first Tab lands inside the popover, and -1 keeps it out of the tab order
+      // itself so it is never a stop of its own.
+      tabIndex={-1}
+      className="flex h-screen w-full flex-col bg-base-background tabular-nums outline-none"
+    >
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-base-border bg-base-card px-4">
         <span className="flex items-center gap-2.5">
           <GateAiLogoMark height={27} />
@@ -237,13 +263,20 @@ export function Tray({
           </span>
         )}
         <OutlineIconButton
+          buttonRef={menuTrigger}
           radius="md"
           icon="ellipsis"
           label="More"
           onClick={onMenuToggle}
           expanded={menuOpen}
         />
-        {menuOpen && <TrayMenu onSelect={onMenuSelect} />}
+        {menuOpen && (
+          <TrayMenu
+            onSelect={onMenuSelect}
+            onDismiss={onMenuToggle}
+            triggerRef={menuTrigger}
+          />
+        )}
       </footer>
 
       {dialog}
@@ -521,22 +554,112 @@ function CliCard({
  * the popover surface, and the drawn menu carries it in destructive ink with
  * no external-link glyph (the rendered frame drops the one its metadata
  * carries: quitting does not leave the app). */
-function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) {
+function TrayMenu({
+  onSelect,
+  onDismiss,
+  triggerRef,
+}: {
+  onSelect: (action: TrayMenuAction) => void;
+  /** Close without choosing: Escape, or a click anywhere else. */
+  onDismiss: () => void;
+  /** The button that opened this. Focus returns to it on close - all three
+   *  exits unmount the panel, and with the focused element gone `activeElement`
+   *  falls to `<body>`, so the next Tab restarted from the top of the popover
+   *  rather than from the control the user was just on. */
+  triggerRef?: RefObject<HTMLButtonElement>;
+}) {
   const external: { action: TrayMenuAction; icon: IconName; label: string }[] = [
     { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
     { action: "support", icon: "headset", label: "Contact support" },
     { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
   ];
+  const panel = useRef<HTMLDivElement>(null);
+  /**
+   * Which item is the menu's single tab stop (roving tabindex).
+   *
+   * `role="menu"` is meant to be ONE stop, with the arrows moving inside it. As
+   * four plain buttons every item was in the tab order, so Tab past the last one
+   * walked into the app-list switches - visible behind the open menu, and
+   * click-blocked by the scrim, so the focus ring went somewhere the pointer
+   * could not follow.
+   */
+  const [current, setCurrent] = useState(0);
+
+  /**
+   * Focus the first item when the menu opens.
+   *
+   * Without it the menu was unreachable by keyboard: it opens from a button, so
+   * focus stayed on that button and Tab walked into the list *behind* the menu
+   * rather than into it. `role="menu"` promises arrow-key navigation, so the
+   * roles were describing behaviour that did not exist.
+   */
+  useEffect(() => {
+    panel.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+    // One cleanup covers every exit: Escape, the scrim and selecting an item all
+    // unmount this panel.
+    const trigger = triggerRef;
+    return () => trigger?.current?.focus();
+  }, [triggerRef]);
+
+  /**
+   * Arrow keys move between items, Escape closes, Home/End jump.
+   *
+   * Wrapping at both ends, which is what a menu does and what a listbox does
+   * not. `preventDefault` on the arrows because this popover's content scrolls:
+   * without it Down would move the selection *and* scroll the list behind.
+   */
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      onDismiss();
+      return;
+    }
+    const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+    if (!keys.includes(e.key)) return;
+    const items = Array.from(
+      panel.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [],
+    );
+    if (items.length === 0) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? items.length - 1
+          : e.key === "ArrowDown"
+            ? (at + 1 + items.length) % items.length
+            : (at - 1 + items.length) % items.length;
+    setCurrent(next);
+    items[next]?.focus();
+  };
+
   return (
+    <>
+      {/* An invisible scrim, so a click outside closes the menu *and nothing
+          else happens*. Without it the menu sat over the app list with no
+          dismissal at all: clicking a row still visible beside it toggled that
+          app's routing with the menu open, which is a routing change the user
+          did not ask for while trying to dismiss something. The design draws no
+          scrim, and this one is not a visual change - it paints nothing. */}
+      <div aria-hidden className="fixed inset-0 z-10" onClick={onDismiss} />
     <div
+      ref={panel}
       role="menu"
-      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-md"
+      // Without a name this announces as a bare "menu". Named for the control
+      // that opens it, so it reads "More, menu".
+      aria-label="More"
+      onKeyDown={onKeyDown}
+      className="absolute bottom-12 right-4 z-20 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-md"
     >
-      {external.map(({ action, icon, label }) => (
+      {external.map(({ action, icon, label }, i) => (
         <button
           key={action}
           type="button"
           role="menuitem"
+          // Roving: only the current item is a tab stop, so Tab leaves the menu
+          // as a unit and the arrows move within it.
+          tabIndex={current === i ? 0 : -1}
           onClick={() => onSelect(action)}
           className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
@@ -550,6 +673,7 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
       <button
         type="button"
         role="menuitem"
+        tabIndex={current === external.length ? 0 : -1}
         onClick={() => onSelect("quit")}
         className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
@@ -557,6 +681,7 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
         <span className="text-base-xs font-medium leading-4">Quit Gate Connect</span>
       </button>
     </div>
+    </>
   );
 }
 
@@ -700,7 +825,7 @@ function RecoveryCard({
 function ReopenCard({
   reopen,
 }: {
-  reopen: { names: string[]; onReopen: () => void };
+  reopen: { names: string[]; route?: string | null; onReopen: () => void };
 }) {
   const many = reopen.names.length > 1;
   return (
@@ -711,9 +836,41 @@ function ReopenCard({
           <h2 className="text-sm font-medium leading-5 text-base-foreground">
             Reopen to finish
           </h2>
-          <p className="truncate text-base-xs leading-4 text-amber-900/80">
-            {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
-            {many ? "they" : "it"} started with
+          {/* AG-584 asks the pending change to name **the route in use**, and
+              this sentence used to gesture at it - "the route it started with"
+              describes an address without saying which. `Verdict.route_in_use`
+              is that address, set exactly when the reason is `reopen_required`.
+              Absent for two or more tools, which can be on two different routes:
+              one address under both names would be wrong about at least one of
+              them, and the phrase is true for any number. */}
+          {/* AG-584 asks the pending change to name **the route in use**, and
+              this sentence used to gesture at it - "the route it started with"
+              describes an address without saying which. `Verdict.route_in_use`
+              is that address, set exactly when the reason is `reopen_required`.
+
+              `many` is tested FIRST, so the singular verb and the type agree
+              without depending on a rule kept in another file: the caller only
+              passes a route when one tool is waiting, and if that ever changes
+              this reads "Claude Code, Codex are on the route they started with"
+              rather than "... is still on <one address>".
+
+              Not truncated. The address is the payload of the sentence, and at
+              this width "Claude Code is still on " leaves roughly 26 characters
+              - less than the relay routes we actually produce, so `truncate`
+              cut the one thing the AC asks to be named. It wraps instead, with
+              `break-all` because a URL has no spaces to break at. */}
+          <p className="text-base-xs leading-4 text-amber-900/80">
+            {many || !reopen.route ? (
+              <>
+                {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
+                {many ? "they" : "it"} started with
+              </>
+            ) : (
+              <>
+                {reopen.names[0]} is still on{" "}
+                <span className="break-all font-medium">{reopen.route}</span>
+              </>
+            )}
           </p>
         </div>
       </div>
