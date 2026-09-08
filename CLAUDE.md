@@ -327,6 +327,15 @@ deliberate reversal of an earlier "no dashboard" rule.
 - **Figma draws borders inside the frame; CSS adds them outside the
   padding box.** Expect measured heights to run ~2px over the Figma
   number on bordered cards. Not worth contorting the markup for.
+- **`pnpm app:local` cannot see a keychain bug, by construction.**
+  `GATE_CONNECT_TEST_SECRETS` replaces the OS secret store with files, so every
+  code path that talks to the real Keychain / Credential Manager / Secret
+  Service is skipped. A libdbus stack smash in the Secret Service client
+  aborted `pnpm app` on most Linux launches while `pnpm app:local` stayed clean
+  for weeks. CI cannot see it either: every Rust test uses the in-memory
+  backend or the file seam, and `ci/e2e/run.sh` exports the seam too. Anything
+  touching `keyring` or `keychain.rs` has to be checked with `pnpm app` on each
+  OS, and nothing green proves otherwise.
 - **The `gc.*` palette and `gc/ui.tsx` are still live**, backing the
   popover screens until they are retired. Don't delete them, and don't
   reach for them in new UI either.

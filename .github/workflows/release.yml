@@ -26,7 +26,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -123,6 +123,15 @@ jobs:
       # above already signed the pre-strip file, and its signature won't
       # match the patched bytes.
       #
+      # libdbus-1 is stripped for the same reason and rides along here.
+      # Un-vendoring libdbus-sys (see the `keyring` entry in the root
+      # Cargo.toml) made libdbus-1.so.3 a NEEDED of the binary, so the bundler
+      # can now sweep it into the AppDir - and the host copy is exactly what
+      # that change was for: the vendored build was compiled without
+      # `HAVE_POLL` and aborted the process. Shipping a bundled one would be a
+      # different copy of the same mistake. Harmless if the bundler did not
+      # pick it up: the `rm -f` is a no-op then.
+      #
       # Writing that signature into latest.json does NOT belong here. Every
       # matrix leg's tauri-action uploads its own latest.json, so a leg that
       # finishes later overwrites whatever this one wrote: on v0.2.0 this step
@@ -130,7 +139,7 @@ jobs:
       # 03:01:42, putting the pre-strip signature back with nothing to notice.
       # The re-signed signature leaves here as an artifact instead, and the
       # `manifest` job applies it once every leg has finished.
-      - name: Fix bundled libwayland in AppImage
+      - name: Fix bundled host libraries in AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         env:
@@ -152,6 +161,7 @@ jobs:
 
           (cd "$BUNDLE" && "./$NAME" --appimage-extract >/dev/null)
           rm -f "$BUNDLE"/squashfs-root/usr/lib/libwayland-*.so*
+          rm -f "$BUNDLE"/squashfs-root/usr/lib/libdbus-1.so*
           rm -f "$APPIMAGE"
           ARCH=x86_64 /tmp/squashfs-root/AppRun "$BUNDLE/squashfs-root" "$APPIMAGE"
 

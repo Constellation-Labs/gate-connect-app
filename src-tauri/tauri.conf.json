@@ -67,7 +67,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libnss3-tools"]
+        "depends": ["libnss3-tools", "libdbus-1-3"]
       }
     },
     "macOS": {
