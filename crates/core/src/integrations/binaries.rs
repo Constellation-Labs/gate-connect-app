@@ -284,6 +284,36 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn finds_a_binary_that_is_only_on_path() {
+        // The case the old detection missed entirely: installed, on PATH, and
+        // on none of the packaged absolute paths. Takes `path_env_lock`
+        // because libtest runs these as threads of one process and PATH is
+        // shared ground - see `env::path_env_lock`.
+        let _guard = crate::env::path_env_lock();
+        let tool = fake_tool("onpath", "echo '9.9.9'");
+        let dir = tool.parent().unwrap().to_path_buf();
+
+        let before = std::env::var_os("PATH");
+        let mut dirs: Vec<PathBuf> = before
+            .as_ref()
+            .map(|p| std::env::split_paths(p).collect())
+            .unwrap_or_default();
+        dirs.push(dir.clone());
+        std::env::set_var("PATH", std::env::join_paths(dirs).expect("join"));
+
+        let found = resolve_binary(&[], &["faketool"]);
+
+        match before {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert_eq!(found.as_deref(), Some(tool.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn returns_none_when_nothing_matches() {
         assert!(resolve_binary(&[], &["gate-connect-no-such-binary-xyz"]).is_none());
     }

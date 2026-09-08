@@ -436,4 +436,26 @@ mod tests {
         );
         assert_eq!(ToolId::from_slug("env-proxy"), Some(ToolId::EnvProxy));
     }
+
+    /// Detection now consults [`Integration::binary`], so an integration that
+    /// forgets to declare one loses the PATH and shell-directory search
+    /// silently - it still "works", just less well, which is the kind of
+    /// regression nobody notices until a user says the tool is not detected.
+    ///
+    /// `EnvProxy` is exempt and is the reason the default is empty: it is not a
+    /// program on disk, it is the environment channel itself.
+    #[test]
+    fn every_program_declares_its_binary() {
+        for integ in registry() {
+            if integ.id() == ToolId::EnvProxy {
+                continue;
+            }
+            let (_, names) = integ.binary();
+            assert!(
+                !names.is_empty(),
+                "{} declares no binary, so detection cannot search for it",
+                integ.id().slug()
+            );
+        }
+    }
 }

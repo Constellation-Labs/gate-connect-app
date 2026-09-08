@@ -47,6 +47,7 @@ use toml_edit::{value, DocumentMut, Item, Table, Value};
 
 use crate::account::BillingMode;
 use crate::env;
+use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
@@ -251,7 +252,14 @@ impl Integration for Codex {
     }
 
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         Ok(env::codex_config_dir()?.exists())

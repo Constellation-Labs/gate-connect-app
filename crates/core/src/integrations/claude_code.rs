@@ -36,9 +36,10 @@
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::env;
+use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
@@ -133,7 +134,14 @@ impl Integration for ClaudeCode {
     }
 
     fn detect(&self) -> Result<bool> {
-        if CLAUDE_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         // Fall back to the per-user config dir Claude Code writes on first
