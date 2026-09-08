@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Tray } from "./Tray";
 import type { SidebarGroup } from "./Sidebar";
 
@@ -223,6 +223,63 @@ describe("the footer", () => {
     renderTray();
     expect(screen.getByText("Acme Engineering")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Switch organization/ })).toBeNull();
+  });
+
+  it("focuses the first item when the menu opens, so the keyboard can reach it", () => {
+    // `role="menu"` promises arrow-key navigation, and the menu had none. It
+    // opens from a button, so focus stayed on the button and Tab walked the list
+    // *behind* the menu rather than into it.
+    renderTray({ menuOpen: true, onMenuSelect: vi.fn() });
+    expect(document.activeElement?.textContent).toBe("Visit dashboard");
+  });
+
+  it("moves between items with the arrow keys, wrapping at both ends", () => {
+    renderTray({ menuOpen: true, onMenuSelect: vi.fn() });
+    const menu = screen.getByRole("menu");
+
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(document.activeElement?.textContent).toBe("Contact support");
+    fireEvent.keyDown(menu, { key: "ArrowUp" });
+    expect(document.activeElement?.textContent).toBe("Visit dashboard");
+    // Wrapping is what a menu does, and the last entry is the destructive one,
+    // so arriving there by pressing Up once is deliberate rather than a slip.
+    fireEvent.keyDown(menu, { key: "ArrowUp" });
+    expect(document.activeElement?.textContent).toBe("Quit Gate Connect");
+    fireEvent.keyDown(menu, { key: "Home" });
+    expect(document.activeElement?.textContent).toBe("Visit dashboard");
+    fireEvent.keyDown(menu, { key: "End" });
+    expect(document.activeElement?.textContent).toBe("Quit Gate Connect");
+  });
+
+  it("closes on Escape without choosing anything", () => {
+    const onMenuSelect = vi.fn();
+    const onMenuToggle = vi.fn();
+    renderTray({ menuOpen: true, onMenuSelect, onMenuToggle });
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    expect(onMenuToggle).toHaveBeenCalledTimes(1);
+    expect(onMenuSelect).not.toHaveBeenCalled();
+  });
+
+  it("closes on a click outside, and that click does nothing else", () => {
+    // The bug the scrim fixes: the menu sat over the app list with no dismissal,
+    // so clicking a row still visible beside it toggled that app's routing while
+    // trying to dismiss the menu - a routing change nobody asked for.
+    const onMenuToggle = vi.fn();
+    const onToggleApp = vi.fn();
+    const { container } = renderTray({
+      menuOpen: true,
+      onMenuSelect: vi.fn(),
+      onMenuToggle,
+      onToggleApp,
+    });
+
+    const scrim = container.querySelector("div.fixed.inset-0") as HTMLElement;
+    fireEvent.click(scrim);
+
+    expect(onMenuToggle).toHaveBeenCalledTimes(1);
+    expect(onToggleApp).not.toHaveBeenCalled();
   });
 
   it("menu carries all four drawn entries, in the drawn order", () => {

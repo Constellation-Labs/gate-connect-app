@@ -3175,18 +3175,18 @@ fn unpin_popover() {
 
 /// Pin the popover open for the duration of a call that raises a system trust
 /// dialog. Without this, `proxy_trust_ca` is the one action in the app that
-/// hides the window it was clicked in: the OS dialog takes focus, a
+/// hides the window it was clicked in: the OS dialog takes focus, the
 /// `Focused(false)` handler hides the popover, and the copy telling the user
 /// what to click goes with it.
 ///
-/// **That handler does not currently exist**, and neither does the dismissal
-/// this guards against. There is no `Focused(false)` arm anywhere in this
-/// file, so [`POPOVER_PINNED`] is written at four sites and read at none, and
-/// the tray sits over every other window until the icon is clicked again. Kept
-/// rather than deleted because the two commands are still called by the
-/// retiring `src/App.tsx` shell and because the pin is what a blur-dismiss
-/// would need on the day one lands. Whether it should is a product question,
-/// raised in `docs/figma-questions-for-design.md`.
+/// **The handler exists now**, so this flag is finally read. It was written at
+/// four sites and read at none for as long as blur-dismiss was deferred, and
+/// this docstring said so; the arm in `on_window_event` landed on 2026-09-07
+/// with the tray's click-outside dismissal, and `TrayApp` pins across the first
+/// load, a system dialog it raised, and an in-app decision in progress. Note
+/// what that means for the sequencing: a change here can hide a window
+/// mid-trust-prompt, which is the failure this command was written for before
+/// there was a dismissal to guard against.
 #[tauri::command]
 fn pin_popover() {
     POPOVER_PINNED.store(true, Ordering::Release);

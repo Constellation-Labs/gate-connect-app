@@ -126,6 +126,10 @@ export function TrayApp() {
   const rendered = useRef({ tools: "", proxy: "" });
   const rereading = useRef(false);
 
+  /** The popover's root, focused on every reveal. See the `visibilitychange`
+   *  handler for why the shell owns this rather than `Tray`. */
+  const root = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     rendered.current = {
       tools: detectionSignature(tools),
@@ -250,6 +254,16 @@ export function TrayApp() {
         return;
       }
       void redetect();
+      // Put focus in the popover, for the same reason: the window is shown
+      // rather than created, so nothing moves focus on its own. Without this a
+      // keyboard user opened the popover and their focus was still in whatever
+      // they had been doing, so Tab walked that window's controls and the tray
+      // could be read by assistive technology but not operated.
+      //
+      // The root, not the first control: landing on "Expand app" would announce
+      // a button with no idea what surface it belongs to, and would make Expand
+      // one Return press away from a window swap nobody asked for.
+      root.current?.focus();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -257,6 +271,40 @@ export function TrayApp() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [redetect]);
+
+  /**
+   * Escape dismisses the popover, and closes the menu first if one is open.
+   *
+   * The platform convention for a surface anchored to a tray icon, and the other
+   * half of the click-outside dismissal: a keyboard user could open this window
+   * and had no way to close it, because the only exits were the tray icon and a
+   * click elsewhere.
+   *
+   * **Bubble phase, deliberately.** `useFocusTrap` handles Escape in the capture
+   * phase and calls `stopPropagation`, so a dialog over the popover consumes the
+   * key before it reaches here - which is what should happen. Escape closes the
+   * config-overwrite confirmation, not the window the user was answering it in.
+   * Registering this in capture would race that trap and sometimes hide the
+   * window out from under an unanswered question.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (menuOpen) {
+        // The menu's own handler covers Escape while focus is inside it; this is
+        // the case where focus has since moved elsewhere in the popover.
+        setMenuOpen(false);
+        return;
+      }
+      try {
+        void getCurrentWindow().hide();
+      } catch {
+        /* plain-browser dev */
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
 
   /**
    * The session changed in the other window: an org switch, a replaced key, a
@@ -706,6 +754,7 @@ export function TrayApp() {
             }
           : undefined
       }
+      rootRef={root}
       orgName={account?.org_name ?? "No organization"}
       // Only for an account that HAS orgs to switch between. An API-key account
       // holds no org locally, so the selector it would open has nothing to
