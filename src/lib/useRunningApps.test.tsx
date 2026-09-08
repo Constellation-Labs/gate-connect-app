@@ -6,16 +6,28 @@ import { useRunningApps } from "./useRunningApps";
 vi.mock("./api", () => ({
   runningAgents: vi.fn(),
   closeRunningAgents: vi.fn(),
+  reopenRunningAgents: vi.fn(),
   routingVerdicts: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 
-import { closeRunningAgents, routingVerdicts, runningAgents } from "./api";
+import {
+  closeRunningAgents,
+  reopenRunningAgents,
+  routingVerdicts,
+  runningAgents,
+} from "./api";
 
-const agent = (slug: string, name: string, pid: number, stale = true) => ({
+const agent = (
+  slug: string,
+  name: string,
+  pid: number,
+  stale = true,
+  can_reopen = false,
+) => ({
   slug,
   name,
-  can_reopen: false,
+  can_reopen,
   pid,
   started_at_unix: 1000,
   predates_routing: stale,
@@ -74,6 +86,7 @@ beforeEach(() => {
     agents: [agent("codex", "codex", 10)],
   });
   (closeRunningAgents as Mock).mockResolvedValue(1);
+  (reopenRunningAgents as Mock).mockResolvedValue(1);
   (routingVerdicts as Mock).mockResolvedValue([
     verdict("codex", "needs_attention", "reopen_required"),
   ]);
@@ -234,6 +247,70 @@ describe("useRunningApps: closing takes two answers", () => {
     expect(closeRunningAgents).toHaveBeenCalled();
     expect(api.current!.stage?.kind).toBe("work");
     expect(stagesOf(api)).toEqual(["awaiting_reopen"]);
+  });
+
+  it("does not ask to reopen a CLI", async () => {
+    // Not "asks and gets nothing back": a set of terminal tools makes no reopen
+    // call at all. Spawning a CLI's binary would start a different one,
+    // detached from the shell session the user just agreed to close.
+    (runningAgents as Mock)
+      .mockResolvedValueOnce({
+        scanned_names: ["codex"],
+        agents: [agent("codex", "codex", 10)],
+      })
+      .mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+    const { api } = harness();
+    await toConfirm(api);
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalled();
+    expect(reopenRunningAgents).not.toHaveBeenCalled();
+  });
+
+  it("reopens a desktop app, and says so on the row", async () => {
+    (runningAgents as Mock)
+      .mockResolvedValueOnce({
+        scanned_names: ["Claude"],
+        agents: [agent("anthropic", "Claude", 11, true, true)],
+      })
+      .mockResolvedValue({ scanned_names: ["Claude"], agents: [] });
+    (routingVerdicts as Mock).mockResolvedValue([verdict("anthropic", "on")]);
+    const { api } = harness();
+    await toConfirm(api);
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(reopenRunningAgents).toHaveBeenCalledWith(["anthropic"]);
+    // `reopening`, not `awaiting_reopen`: the row must not tell the user to do
+    // something Gate has already done.
+    expect(stagesOf(api)).toEqual(["reopening"]);
+  });
+
+  it("keeps the close when the reopen fails", async () => {
+    // The close already happened and the routing change already landed. A
+    // failed relaunch is reported, not thrown - throwing would roll the row
+    // back to a failure state that misdescribes what occurred.
+    (runningAgents as Mock)
+      .mockResolvedValueOnce({
+        scanned_names: ["Claude"],
+        agents: [agent("anthropic", "Claude", 11, true, true)],
+      })
+      .mockResolvedValue({ scanned_names: ["Claude"], agents: [] });
+    (routingVerdicts as Mock).mockResolvedValue([verdict("anthropic", "on")]);
+    (reopenRunningAgents as Mock).mockRejectedValue(new Error("no such bundle"));
+    const { api } = harness();
+    await toConfirm(api);
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(stagesOf(api)).toEqual(["reopening"]);
   });
 
   it("cannot close from the offer stage", async () => {
