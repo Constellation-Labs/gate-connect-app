@@ -678,7 +678,8 @@ export function TrayApp() {
   );
 
   /** The tools the sweep says are applied and not picked up. Names for the card,
-   *  slugs for the action, from the one reading so the two cannot disagree. */
+   *  slugs for the action, the route for the sentence - all from the one reading
+   *  so no two of them can disagree. */
   const reopenPending = useMemo(
     () =>
       [...verdicts.values()]
@@ -686,6 +687,7 @@ export function TrayApp() {
         .map((v) => ({
           slug: v.slug,
           name: tools.find((t) => t.slug === v.slug)?.product_name ?? v.slug,
+          route: v.route_in_use,
         })),
     [verdicts, tools],
   );
@@ -802,6 +804,13 @@ export function TrayApp() {
         reopenNames.length > 0
           ? {
               names: reopenNames,
+              // AG-584 asks a pending change to name the route in use, and the
+              // verdict has carried it all along - `route_in_use` is set exactly
+              // when the reason is `reopen_required`, which is this card's whole
+              // population. Only when one tool is waiting: two tools can be on
+              // two different routes, and one address under both their names
+              // would be wrong about at least one of them.
+              route: reopenPending.length === 1 ? reopenPending[0].route : null,
               // One action, on every waiting tool at once: the popover lists
               // names, not rows, and a per-tool control would need the width
               // the window has and this does not.

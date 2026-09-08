@@ -199,6 +199,38 @@ describe("the command-line tools card", () => {
   });
 });
 
+describe("the reopen notice", () => {
+  it("names the route the tool is still on", () => {
+    // AG-584: a pending change shows Needs attention with Reopen required, **the
+    // route in use**, and Reopen tool. The first and last were here; the
+    // sentence used to gesture at the route - "the route it started with" -
+    // without saying which address that is.
+    renderTray({
+      reopen: { names: ["Claude Code"], route: "http://127.0.0.1:8123/anthropic", onReopen: vi.fn() },
+    });
+    expect(screen.getByText(/Claude Code is still on/)).toBeTruthy();
+    expect(screen.getByText("http://127.0.0.1:8123/anthropic")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reopen tool" })).toBeTruthy();
+  });
+
+  it("keeps the phrase when several tools wait, since their routes can differ", () => {
+    // One address under two names would be wrong about at least one of them.
+    renderTray({
+      reopen: { names: ["Claude Code", "Codex"], route: null, onReopen: vi.fn() },
+    });
+    expect(
+      screen.getByText(/Claude Code, Codex are on the route they started with/),
+    ).toBeTruthy();
+  });
+
+  it("reopens on the card's own action", () => {
+    const onReopen = vi.fn();
+    renderTray({ reopen: { names: ["Codex"], route: null, onReopen } });
+    screen.getByRole("button", { name: "Reopen tool" }).click();
+    expect(onReopen).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("the footer", () => {
   it("names the organization", () => {
     renderTray();

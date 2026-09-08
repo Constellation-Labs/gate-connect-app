@@ -147,7 +147,7 @@ export function Tray({
    *  Same division as `recovery`: the tray carries the fact and the one action,
    *  and the per-tool routes and stages stay in the window, which has the width
    *  for them. Omitted when nothing needs reopening. */
-  reopen?: { names: string[]; onReopen: () => void };
+  reopen?: { names: string[]; route?: string | null; onReopen: () => void };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
@@ -781,7 +781,7 @@ function RecoveryCard({
 function ReopenCard({
   reopen,
 }: {
-  reopen: { names: string[]; onReopen: () => void };
+  reopen: { names: string[]; route?: string | null; onReopen: () => void };
 }) {
   const many = reopen.names.length > 1;
   return (
@@ -792,9 +792,25 @@ function ReopenCard({
           <h2 className="text-sm font-medium leading-5 text-base-foreground">
             Reopen to finish
           </h2>
+          {/* AG-584 asks the pending change to name **the route in use**, and
+              this sentence used to gesture at it - "the route it started with"
+              describes an address without saying which. `Verdict.route_in_use`
+              is that address, set exactly when the reason is `reopen_required`.
+              Absent for two or more tools, which can be on two different routes:
+              one address under both names would be wrong about at least one of
+              them, and the phrase is true for any number. */}
           <p className="truncate text-base-xs leading-4 text-amber-900/80">
-            {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
-            {many ? "they" : "it"} started with
+            {reopen.route ? (
+              <>
+                {reopen.names.join(", ")} is still on{" "}
+                <span className="font-medium">{reopen.route}</span>
+              </>
+            ) : (
+              <>
+                {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
+                {many ? "they" : "it"} started with
+              </>
+            )}
           </p>
         </div>
       </div>

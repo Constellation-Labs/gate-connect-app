@@ -82,7 +82,11 @@ test.describe("tray popover", () => {
     });
 
     await expect(app.page.getByText("Reopen to finish")).toBeVisible();
-    await expect(app.page.getByText(/Codex is on the route it started with/)).toBeVisible();
+    // AG-584 asks a pending change to name the route in use, not to gesture at
+    // it. `default_upstream_url` is what the fake reports for a tool whose
+    // config is managed and whose process predates it: still going direct.
+    await expect(app.page.getByText(/Codex is still on/)).toBeVisible();
+    await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
 
     await app.page.getByRole("button", { name: "Reopen tool" }).click();
 
