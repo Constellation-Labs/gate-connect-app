@@ -1730,7 +1730,7 @@ fn drain_backend_errors() -> Vec<BackendError> {
 /// contributes no names, so asking about it finds nothing rather than falling
 /// back to everything.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
+const AGENT_PROCESSES: [(&str, &str, Surface); 6] = [
     ("claude-code", "claude", Surface::Cli),
     ("codex", "codex", Surface::Cli),
     ("opencode", "opencode", Surface::Cli),
@@ -1744,6 +1744,12 @@ const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
     // be a second row here under the same slug, which the name lookup supports;
     // it is absent only because its process name is not confirmed.
     ("anthropic", "Claude", Surface::App),
+    // Cowork is the Claude desktop app in Windows environments, which is why it
+    // shares the `anthropic` slug rather than getting one of its own: same
+    // product, same host, same routing switch. Two rows under one slug is
+    // supported throughout - see `agent_process_names`, which returns all of
+    // them precisely so this cannot silently cover only the first.
+    ("anthropic", "Cowork", Surface::App),
     ("chatgpt", "ChatGPT", Surface::App),
 ];
 
@@ -2177,14 +2183,19 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 /// see [`reopen_pending_for`], which says what that costs.
 ///
 /// Reads [`AGENT_PROCESSES`] rather than repeating it: the per-tool verdict and
-/// the per-tool close offer have to name the same process for a slug, or one of
-/// them is talking about a tool the other is not.
+/// the per-tool close offer have to name the same processes for a slug, or one
+/// of them is talking about a tool the other is not.
+///
+/// **All of them, not the first.** A slug can name more than one process -
+/// `anthropic` covers Claude Desktop and Cowork - and a `find` here would have
+/// checked one and quietly reported the other as not running.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn agent_process_name(slug: &str) -> Option<&'static str> {
+fn agent_process_names(slug: &str) -> Vec<&'static str> {
     AGENT_PROCESSES
         .iter()
-        .find(|(s, _, _)| *s == slug)
+        .filter(|(s, _, _)| *s == slug)
         .map(|(_, name, _)| *name)
+        .collect()
 }
 
 /// Is a process for this one tool running that predates the last routing change,
@@ -2204,12 +2215,13 @@ fn agent_process_name(slug: &str) -> Option<&'static str> {
 ///   `stale_agents_count` rather than claiming freshness we cannot support.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
-    let Some(wanted) = agent_process_name(slug) else {
+    let wanted = agent_process_names(slug);
+    if wanted.is_empty() {
         return false;
-    };
+    }
     let bound = routing_bound_unix();
     let mut pending = false;
-    for_each_agent_process(&[wanted], |process| match bound {
+    for_each_agent_process(&wanted, |process| match bound {
         Some(bound) => {
             if process.start_time() < bound {
                 pending = true;
@@ -2574,11 +2586,12 @@ fn recovery_summary() -> Option<RecoverySummaryDto> {
 /// itself.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_running_for(slug: &str) -> bool {
-    let Some(wanted) = agent_process_name(slug) else {
+    let wanted = agent_process_names(slug);
+    if wanted.is_empty() {
         return false;
-    };
+    }
     let mut running = false;
-    for_each_agent_process(&[wanted], |_| running = true);
+    for_each_agent_process(&wanted, |_| running = true);
     running
 }
 
@@ -4953,6 +4966,18 @@ mod tests {
         assert_eq!(slug_for("claude"), Some("claude-code"));
         assert_eq!(slug_for("Claude"), Some("anthropic"));
         assert_ne!(slug_for("claude"), slug_for("Claude"));
+    }
+
+    /// Two rows, one slug. Claude Desktop and Cowork are the same product on
+    /// different platforms, so they share the routing switch - and every lookup
+    /// that takes a slug has to return both, or the one it drops reads as not
+    /// running and never gets closed or reopened.
+    #[test]
+    fn one_slug_can_name_two_processes() {
+        let names = agent_process_names("anthropic");
+        assert_eq!(names, vec!["Claude", "Cowork"]);
+        assert_eq!(agent_process_names("claude-code"), vec!["claude"]);
+        assert!(agent_process_names("hermes").is_empty());
     }
 
     /// The CLI rows must never become relaunchable. This is the assertion that
