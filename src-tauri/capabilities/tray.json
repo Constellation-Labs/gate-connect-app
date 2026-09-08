@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "tray",
-  "description": "The tray popover's own capability set. It is not on the `default` capability because it needs a handful of permissions and none of the rest: granting a window autostart, updater and process:restart it never calls is a wider surface than the popover has any use for. Kept narrow deliberately, and these are what the popover's code actually calls: `listen` for the live security-event feed (AG-578) and the proxy-state event, its cleanup `unlisten`, `hide` for dismissing itself, `opener:allow-open-url` for the menu's Dashboard and Docs items, and `app:allow-version` because `main.tsx` is one entry shared by every window and runs `initAnalytics` in all of them. A window absent from every capability can still invoke application commands, so the popover rendered data and looked healthy while every push it subscribed to was refused: the feed's events never arrived and dismissal silently failed. The opener scope is the two hosts the popover links to rather than `default`'s any-subdomain wildcard, and carries the trailing `/*` that pattern proved necessary.",
+  "description": "The tray popover's own capability set. It is not on the `default` capability because it needs a handful of permissions and none of the rest: granting a window autostart, updater and process:restart it never calls is a wider surface than the popover has any use for. Kept narrow deliberately, and these are what the popover's code actually calls: `listen` for the live security-event feed (AG-578) and the proxy-state event, its cleanup `unlisten`, `hide` for dismissing itself, `opener:allow-open-url` for the menu's Dashboard and Docs items, and `app:allow-version` because `main.tsx` is one entry shared by every window and runs `initAnalytics` in all of them. A window absent from every capability can still invoke application commands, so the popover rendered data and looked healthy while every push it subscribed to was refused: the feed's events never arrived and dismissal silently failed. The opener scope is the hosts the popover links to rather than `default`'s any-subdomain wildcard, and carries the trailing `/*` that pattern proved necessary. `app-staging` earns its place: dashboard URLs are derived from the active gateway (src/lib/dashboard.ts), so a staging install asks for `app-staging.constellationgate.ai` and the two literal hosts this once listed refused it - a menu item that looked wired and answered 'Not allowed to open url'. Hosts are spelled out rather than wildcarded because `glob`'s `*` crosses `/`, so a leading wildcard is not host-anchored at all: `https://evil.example.com/x.constellationgate.ai/y` satisfies `https://*.constellationgate.ai/*`. Enumerating is safe because config.test.ts derives the expected URLs from GATEWAY_SERVERS, so adding an environment fails a test instead of quietly breaking the popover.",
   "windows": ["tray"],
   "permissions": [
     "core:event:allow-listen",
@@ -12,6 +12,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "https://app.constellationgate.ai/*" },
+        { "url": "https://app-staging.constellationgate.ai/*" },
         { "url": "https://docs.constellationgate.ai/*" }
       ]
     }

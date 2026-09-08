@@ -81,7 +81,11 @@ export interface SettingsActions {
   replaceKey: () => Promise<void>;
   openRenameDevice: (currentName: string) => void;
   renameDevice: () => Promise<void>;
-  openSwitchOrg: () => Promise<void>;
+  /** Opens the organization picker. Resolves `true` when a dialog actually
+   *  opened, and `false` when there was nothing to ask - a single-org account, a
+   *  call while busy, or a failed read. A caller that navigated to get here
+   *  needs to know, or the user lands on a surface showing nothing. */
+  openSwitchOrg: () => Promise<boolean>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
   openDisconnect: () => void;
@@ -225,21 +229,31 @@ export function useSettingsActions({
   }, [account, newKey, busy, onAccount, onError]);
 
   const openSwitchOrg = useCallback(async () => {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     try {
       const orgs = await oauthListOrgs();
       // Nothing to choose between: opening a picker over a single row asks a
       // question with one answer.
-      if (orgs.length < 2) return;
+      //
+      // **Reported, not just skipped.** This returns `false` so a caller knows
+      // no dialog opened. It matters because the tray's footer control hands
+      // over to this from another window: without an answer, "Switch
+      // organization" closed the popover, brought the window forward and showed
+      // nothing at all - and for a single-org account, which is most accounts.
+      // The caller decides where to land instead; this function still declines
+      // to ask a question with one answer.
+      if (orgs.length < 2) return false;
       setPrompt({
         kind: "switch-org",
         orgs,
         selectedId: account?.org_id ?? orgs[0].orgId,
       });
+      return true;
     } catch (err) {
       onError(err);
       trackError(err, "generic");
+      return false;
     } finally {
       setBusy(false);
     }

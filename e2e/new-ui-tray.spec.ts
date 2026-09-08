@@ -222,4 +222,79 @@ test.describe("tray popover", () => {
     await expect(app.page.getByText("Side Project")).toBeVisible();
     await expect(app.page.getByText("Constellation Labs")).toHaveCount(0);
   });
+
+  test("the dashboard opens on the environment this install talks to", async ({
+    boot,
+  }) => {
+    // The bug this pins: four dashboard URLs were constants hardcoded to
+    // production while the gateway is switchable at build time and in Dev mode,
+    // so a staging install sent every dashboard action to production - the
+    // user's traffic in one environment, their key management in another, with
+    // nothing on screen saying so. `pnpm app:local` defaults to staging, which
+    // made that the normal state rather than an edge case.
+    const app = await boot({
+      windowLabel: "tray",
+      account: { gateway_base_url: "https://gateway-staging.constellationgate.ai" },
+    });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await app.page.getByRole("menuitem", { name: "Visit dashboard" }).click();
+
+    await expect.poll(() => app.lastCall("plugin:opener|open_url")).toMatchObject({
+      url: "https://app-staging.constellationgate.ai/",
+    });
+  });
+
+  test("Contact support opens the dashboard page carrying the support widget", async ({
+    boot,
+  }) => {
+    // The tray drew this entry (`744:38201`) and did not have it, because the
+    // old address 404'd - so one drawn menu item was on the topbar and not
+    // here. Both menus carry it now that support resolves to the dashboard's
+    // Overview page (AG-598, 2026-09-07).
+    const app = await boot({
+      windowLabel: "tray",
+      account: { gateway_base_url: "https://gateway-staging.constellationgate.ai" },
+    });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await app.page.getByRole("menuitem", { name: "Contact support" }).click();
+
+    await expect.poll(() => app.lastCall("plugin:opener|open_url")).toMatchObject({
+      url: "https://app-staging.constellationgate.ai/overview",
+    });
+  });
+
+  test("the organization line hands the selector to the window", async ({ boot }) => {
+    // The popover has no selector of its own and should not grow one: the
+    // window's is a dialog with reads and failure states, and two selectors
+    // over one setting could disagree about which org is active. So this pins
+    // the hand-over, which is the only part the popover owns.
+    const app = await boot({ windowLabel: "tray" });
+
+    await app.page
+      .getByRole("button", { name: /Switch organization/ })
+      .click();
+
+    await expect.poll(() => app.lastCall("request_switch_org")).not.toBeNull();
+  });
+
+  test("a gateway with no dashboard says so instead of guessing one", async ({
+    boot,
+  }) => {
+    // A local dev gateway has no dashboard at all. Opening a guessed URL would
+    // be the same class of silent wrong-environment failure as the constants;
+    // the honest answer is the dismissible banner, which is also what AG-598
+    // asks for (the failure must not discard what the user was doing).
+    const app = await boot({
+      windowLabel: "tray",
+      account: { gateway_base_url: "http://localhost:3000" },
+    });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await app.page.getByRole("menuitem", { name: "Visit dashboard" }).click();
+
+    await expect(app.page.getByText("This gateway has no dashboard")).toBeVisible();
+    expect(await app.lastCall("plugin:opener|open_url")).toBeNull();
+  });
 });

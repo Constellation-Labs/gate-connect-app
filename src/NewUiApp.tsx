@@ -68,15 +68,9 @@ import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict"
 import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import {
-  GATEWAY_SERVERS,
-  GATE_API_KEYS_URL,
-  GATE_DASHBOARD_URL,
-  GATE_DOCS_URL,
-  GATE_POLICIES_URL,
-  GATE_SAVINGS_URL,
-  GATE_SUPPORT_URL,
-} from "./lib/config";
+import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
+import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
+import type { DashboardLinks } from "./lib/dashboard";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
@@ -222,6 +216,36 @@ export function NewUiApp() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
+  /**
+   * Open a link, and show it in the existing error banner if it fails.
+   *
+   * Ten call sites open external URLs, and a rejected `openUrl` used to be
+   * invisible - an opener-ACL miss looked exactly like a dead button. Routed
+   * into `actionError` rather than a new surface: that banner is dismissible and
+   * navigates nowhere, which is what AG-598 asks for (the failure must not
+   * discard what the user was doing).
+   */
+  const openLink = useCallback((url: string) => {
+    void openExternal(url).then((err) => {
+      if (err) setActionError(err);
+    });
+  }, []);
+
+  /**
+   * Every dashboard destination, on the environment this install actually talks
+   * to. `null` when the active gateway has no dashboard - a local one, or a host
+   * `lib/dashboard.ts` declines to map.
+   *
+   * Declared beside the account it derives from, and above every consumer:
+   * `toolEventRows` is built ~400 lines before `openDashboard` exists, so a
+   * dependency on the callback would be a use-before-declaration.
+   *
+   * Keyed on the URL rather than on `account`, which is a fresh object per read.
+   */
+  const dash = useMemo(
+    () => dashboardLinks(account?.gateway_base_url),
+    [account?.gateway_base_url],
+  );
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
   // Whether the first read has landed. A null account before it does is not the
   // same as no account, and treating them alike flashes sign-in at every user.
@@ -613,10 +637,17 @@ export function NewUiApp() {
     () =>
       (toolEvents.view?.entries ?? []).map((e) => ({
         ...e,
-        onView: () =>
-          openLink(`${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`),
+        onView: () => {
+          // `openDashboard` is declared below this memo, so the guard is inlined
+          // rather than depended on. Same rule, same banner.
+          if (dash === null) {
+            setActionError(NO_DASHBOARD);
+            return;
+          }
+          openLink(dash.message(e.id));
+        },
       })),
-    [toolEvents.view],
+    [toolEvents.view, dash, openLink],
   );
 
   // A machine id belongs to the org it sent traffic to, so a filter selected
@@ -1064,19 +1095,44 @@ export function NewUiApp() {
   });
 
   /**
-   * Open a link, and show it in the existing error banner if it fails.
+   * Open a dashboard destination, or say why there is not one.
    *
-   * Ten call sites open external URLs, and a rejected `openUrl` used to be
-   * invisible - an opener-ACL miss looked exactly like a dead button. Routed
-   * into `actionError` rather than a new surface: that banner is dismissible and
-   * navigates nowhere, which is what AG-598 asks for (the failure must not
-   * discard what the user was doing).
+   * The guard is the point. These links used to be constants pinned to
+   * production, so a developer or tester on staging was silently handed the
+   * wrong environment's dashboard - their traffic in one place, their key
+   * management in another, with nothing on screen saying so. Deriving the host
+   * fixes that but introduces a case the constants did not have: a gateway with
+   * no dashboard at all. Reporting it in the existing banner keeps AG-598's
+   * rule (the failure is recoverable and discards nothing) and keeps principle
+   * 1's (the user can see where their data goes), where opening a guessed URL
+   * would break both quietly.
    */
-  const openLink = useCallback((url: string) => {
-    void openExternal(url).then((err) => {
-      if (err) setActionError(err);
-    });
-  }, []);
+  const openDashboard = useCallback(
+    (pick: (links: DashboardLinks) => string) => {
+      if (dash === null) {
+        setActionError(NO_DASHBOARD);
+        return;
+      }
+      openLink(pick(dash));
+    },
+    [dash, openLink],
+  );
+
+  /**
+   * Where a gap notice's action goes (AG-576's taxonomy, AG-598's destinations).
+   *
+   * `ActivityGaps` hands back the kind rather than a URL: it sits at module
+   * scope, and both facts it would need - which environment's dashboard, and
+   * whether that gateway has one - live here.
+   */
+  const openGapLink = useCallback(
+    (kind: "dashboard" | "api-keys" | "docs") => {
+      if (kind === "docs") openLink(GATE_DOCS_URL);
+      else if (kind === "api-keys") openDashboard((d) => d.apiKeys);
+      else openDashboard((d) => d.root);
+    },
+    [openLink, openDashboard],
+  );
 
   /**
    * A tool's config was rewritten. If that app is open it is still on its old
@@ -1535,6 +1591,45 @@ export function NewUiApp() {
   });
 
   /**
+   * The tray asked for the organization selector (AG-582).
+   *
+   * The popover names the selected org and owes a way to change it, but the
+   * selector is a dialog with reads, an in-flight state and a failure path -
+   * so it lives here, and the tray hands over. Rust reveals this window before
+   * emitting, so by the time this fires the user is looking at it.
+   */
+  const openSwitchOrgRef = useRef(settings.openSwitchOrg);
+  openSwitchOrgRef.current = settings.openSwitchOrg;
+  useEffect(() => {
+    const unlisten = listen("switch-org-requested", async () => {
+      setActionError(null);
+      // A single-org account opens no picker (`openSwitchOrg` returns false),
+      // and this hand-over must not end in a window that came forward to show
+      // nothing. Settings is where the account explains itself.
+      if (!(await openSwitchOrgRef.current())) setView({ kind: "settings" });
+    });
+    return () => {
+      // Swallowed for the reason the sibling listeners record: a teardown
+      // unlisten routinely throws and would land in the diagnostic log as an
+      // app error that never happened.
+      void unlisten.then((off) => off()).catch(() => {});
+    };
+    // Subscribe ONCE, through a ref. `useSettingsActions` returns a fresh object
+    // literal every render and this shell re-renders constantly - proxy events,
+    // feed reads, routing state - so `[settings]` tore the listener down and
+    // rebuilt it each time. `listen()` and its `off()` are both async, so every
+    // swap opened a window with no listener registered on the Rust side, and
+    // `request_switch_org` emits immediately after revealing this window -
+    // which takes focus, which is itself a render. The event this feature
+    // depends on could land in that gap and be dropped, and the symptom would
+    // be the one the feature exists to remove: the popover closes, the window
+    // comes forward, nothing happens.
+    //
+    // `[settings.openSwitchOrg]` would not have fixed it either: that callback
+    // depends on `account`, which is a fresh object per read.
+  }, []);
+
+  /**
    * The one-time OAuth offer, for an account still on a pasted key.
    *
    * Raised here rather than in `useSetup`, and only from inside the app shell:
@@ -1802,9 +1897,12 @@ export function NewUiApp() {
         onOpenDocs: () => openLink(GATE_DOCS_URL),
         // No `onContactSupport`, so the row is omitted - and this is NOT the
         // same call as the topnav's. No Settings frame draws a Support row, so
-        // there is nothing to match here; the menu entry is drawn in two
-        // places and now ships despite `GATE_SUPPORT_URL` 404ing (see
-        // `TopnavAction`). Draw one and this gets it too.
+        // there is nothing to match here; the menu entry is drawn in two places
+        // and ships (see `TopnavAction`). Draw one and this gets it too.
+        //
+        // The address is no longer the reason: support resolved to the
+        // dashboard's Overview page on 2026-09-07. This omission is now purely
+        // "no frame draws it".
 
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -1944,11 +2042,15 @@ export function NewUiApp() {
           void openDiagnostics();
           return;
         case "contact_support":
-          openLink(GATE_SUPPORT_URL);
+          // The dashboard's Overview page, on this install's own environment:
+          // support is a floating action button in its corner rather than a
+          // route (AG-598, 2026-09-07). This arrived on `GATE_SUPPORT_URL`,
+          // which pointed at a page that 404'd.
+          openDashboard((d) => d.support);
           return;
       }
     },
-    [runningApps, routing, openDiagnostics, openLink],
+    [runningApps, routing, openDiagnostics, openDashboard],
   );
 
   /**
@@ -2040,10 +2142,11 @@ export function NewUiApp() {
   const onMenuSelect = useCallback(
     (action: TopnavAction) => {
       setMenuOpen(false);
-      if (action === "dashboard") openLink(GATE_DASHBOARD_URL);
-      // Drawn in the menu and shipped even though the address 404s today; the
-      // decision and the reasoning it overruled are on `TopnavAction`.
-      else if (action === "support") openLink(GATE_SUPPORT_URL);
+      if (action === "dashboard") openDashboard((d) => d.root);
+      // Support is the dashboard's Overview page - that is where the support
+      // floating action button lives, and there is no dedicated support route
+      // (settled 2026-09-07, replacing an address that 404'd).
+      else if (action === "support") openDashboard((d) => d.support);
       // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
       // the Settings row opens.
       else if (action === "docs") openLink(GATE_DOCS_URL);
@@ -2061,7 +2164,7 @@ export function NewUiApp() {
           });
       }
     },
-    [openLink, routedForQuit],
+    [openLink, openDashboard, routedForQuit],
   );
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
@@ -2636,9 +2739,14 @@ export function NewUiApp() {
             onClose={() => setOpenEvent(null)}
             onOpenDashboard={() => {
               const requestId = openEvent.requestId;
-              void openExternal(
-                `${GATE_DASHBOARD_URL}messages/${encodeURIComponent(requestId)}`,
-              ).then((err) => {
+              // Not `openDashboard`: this call site owns what happens on
+              // failure, and the rule is the same for both failures - the
+              // summary stays up unless the detail actually opened.
+              if (dash === null) {
+                setActionError(NO_DASHBOARD);
+                return;
+              }
+              void openExternal(dash.message(requestId)).then((err) => {
                 if (err) {
                   // The browser never opened, so AC7's "until the matching
                   // dashboard detail opens" has not been met: leave the summary
@@ -2798,7 +2906,7 @@ export function NewUiApp() {
                 // No dedicated credits endpoint, but the row's own glyph
                 // promises an external link, and the dashboard is where credits
                 // are actually bought.
-                onAddCredits: () => openLink(GATE_DASHBOARD_URL),
+                onAddCredits: () => openDashboard((d) => d.root),
                 // AG-729 gave this a destination. Undefined when the gateway
                 // named none, which removes the control rather than drawing a
                 // dead one - the state every gateway was in before that field
@@ -2899,7 +3007,7 @@ export function NewUiApp() {
                       toolEvents.reload();
                     }}
                     onDiagnostics={() => void openDiagnostics()}
-                    onOpenLink={openLink}
+                    onOpenGapLink={openGapLink}
                   />
                   <ActivityGaps
                     view={null}
@@ -2907,7 +3015,7 @@ export function NewUiApp() {
                     loading={toolEvents.loading}
                     onRetry={toolEvents.reload}
                     onDiagnostics={() => void openDiagnostics()}
-                    onOpenLink={openLink}
+                    onOpenGapLink={openGapLink}
                     subject="Recent activity"
                   />
                 </>
@@ -2921,8 +3029,8 @@ export function NewUiApp() {
           buckets={activity.view?.buckets ?? []}
           policies={activity.view?.policies ?? []}
           savings={activity.view?.savings ?? []}
-          onManagePolicies={() => openLink(GATE_POLICIES_URL)}
-          onManageSavings={() => openLink(GATE_SAVINGS_URL)}
+          onManagePolicies={() => openDashboard((d) => d.policies)}
+          onManageSavings={() => openDashboard((d) => d.savings)}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we
           // asked and were refused. Neither is true while the answer is on its
@@ -2993,7 +3101,7 @@ export function NewUiApp() {
                 view={activity.view}
                 failure={activity.failure}
                 loading={activity.loading}
-                onOpenLink={openLink}
+                onOpenGapLink={openGapLink}
                 onRetry={activity.reload}
                 onDiagnostics={() => void openDiagnostics()}
               />
@@ -3172,7 +3280,7 @@ function ActivityGaps({
   loading,
   onRetry,
   onDiagnostics,
-  onOpenLink,
+  onOpenGapLink,
   subject,
 }: {
   view: ActivityView | null;
@@ -3180,10 +3288,15 @@ function ActivityGaps({
   loading: boolean;
   onRetry: () => void;
   onDiagnostics: () => void;
-  /** Opens an external link and surfaces a failure. Passed in rather than
-   *  imported: this component sits at module scope and cannot reach the shell's
-   *  error banner, and a link that silently fails is what AG-598 is about. */
-  onOpenLink: (url: string) => void;
+  /** Opens the destination for a gap action, and surfaces a failure. Passed in
+   *  rather than imported: this component sits at module scope and cannot reach
+   *  the shell's error banner, and a link that silently fails is what AG-598 is
+   *  about.
+   *
+   *  It takes the KIND, not a URL, since the dashboard host is now derived from
+   *  the active gateway (`lib/dashboard.ts`) and may not exist at all - neither
+   *  fact is knowable out here. */
+  onOpenGapLink: (kind: "dashboard" | "api-keys" | "docs") => void;
   /** Overrides the notice's subject, for a caller that owns one read rather than
    *  the whole pane. The app pane mounts this twice - once for the counters and
    *  chart, once for the event feed - and two notices both headed "Activity"
@@ -3193,9 +3306,9 @@ function ActivityGaps({
   const run = (kind: GapActionKind) => {
     if (kind === "retry") onRetry();
     else if (kind === "diagnostics") onDiagnostics();
-    else if (kind === "dashboard") onOpenLink(GATE_DASHBOARD_URL);
-    else if (kind === "api-keys") onOpenLink(GATE_API_KEYS_URL);
-    else onOpenLink(GATE_DOCS_URL);
+    else if (kind === "dashboard") onOpenGapLink("dashboard");
+    else if (kind === "api-keys") onOpenGapLink("api-keys");
+    else onOpenGapLink("docs");
   };
 
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing

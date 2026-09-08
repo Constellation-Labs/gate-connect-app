@@ -205,13 +205,42 @@ describe("the footer", () => {
     expect(screen.getByText("Acme Engineering")).toBeTruthy();
   });
 
-  it("menu carries dashboard, docs and quit - and no support entry", () => {
+  it("the organization line opens the selector when there is one to open", () => {
+    const onSwitchOrg = vi.fn();
+    renderTray({ onSwitchOrg });
+    // Named for a screen reader, which gets the label and the action in one
+    // string: the visible text is only the org name, so "Acme Engineering" on
+    // its own says nothing about being able to change it.
+    screen
+      .getByRole("button", { name: /Organization: Acme Engineering\. Switch organization/ })
+      .click();
+    expect(onSwitchOrg).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws the organization as the plain label the frame draws when there is nothing to switch to", () => {
+    // An API-key account holds no org locally, so the selector would open on
+    // nothing. The footer goes back to the label `744:38188` draws.
+    renderTray();
+    expect(screen.getByText("Acme Engineering")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Switch organization/ })).toBeNull();
+  });
+
+  it("menu carries all four drawn entries, in the drawn order", () => {
     const onMenuSelect = vi.fn();
     renderTray({ menuOpen: true, onMenuSelect });
-    expect(screen.getByRole("menuitem", { name: /visit dashboard/i })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /read gate docs/i })).toBeTruthy();
-    // Same omission as the topbar: there is no support address to open.
-    expect(screen.queryByRole("menuitem", { name: /support/i })).toBeNull();
+    // `744:38196` / `38201` / `38206` / `38211`. Support was omitted while its
+    // address 404'd, which left one drawn item on the topbar and not here; it
+    // resolved to the dashboard's Overview page on 2026-09-07.
+    expect(
+      screen.getAllByRole("menuitem").map((el) => el.textContent),
+    ).toEqual([
+      "Visit dashboard",
+      "Contact support",
+      "Read Gate docs",
+      "Quit Gate Connect",
+    ]);
+    screen.getByRole("menuitem", { name: "Contact support" }).click();
+    expect(onMenuSelect).toHaveBeenCalledWith("support");
     screen.getByRole("menuitem", { name: "Quit Gate Connect" }).click();
     expect(onMenuSelect).toHaveBeenCalledWith("quit");
   });

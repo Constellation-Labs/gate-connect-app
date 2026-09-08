@@ -45,11 +45,15 @@ import type { RowCount, SidebarGroup } from "./Sidebar";
  *   "Gate is protecting you" are drawn - following the status vocabulary:
  *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
  *   sub-line carrying the intent.
- * - **Contact support is omitted from the menu** for the reason `Topbar`
- *   records: there is still no address behind it.
+ * - **Contact support is in the menu**, as `744:38201` draws it. It was omitted
+ *   for as long as the address behind it 404'd; support resolved to the
+ *   dashboard's own Overview page on 2026-09-07 (that is where the support
+ *   floating action button lives), so the omission went with the reason for it.
+ *   `Topbar` had already shipped its copy of this entry, which left one drawn
+ *   menu item present on one surface and absent on the other.
  */
 
-export type TrayMenuAction = "dashboard" | "docs" | "quit";
+export type TrayMenuAction = "dashboard" | "support" | "docs" | "quit";
 
 /** A tool the detection scan saw but found not installed - the collapsed
  * "Not installed" section's rows. No switch: there is nothing to route, and a
@@ -68,6 +72,7 @@ export function Tray({
   onToggleNotInstalled,
   cli,
   orgName,
+  onSwitchOrg,
   signedOut,
   accountUnread,
   onToggleApp,
@@ -93,6 +98,10 @@ export function Tray({
    * cannot be declined separately. */
   cli?: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
   orgName: string;
+  /** Open the organization selector (AG-582). The tray does not own one - it
+   *  hands over to the window, which does. Omit and the footer draws the org as
+   *  a plain label, which is what it did before the selector was reachable. */
+  onSwitchOrg?: () => void;
   /** No usable credential: the tray cannot route anything, so it says so and
    * hands over to the full app, where setup lives. Not drawn; inferred. */
   signedOut?: boolean;
@@ -204,10 +213,29 @@ export function Tray({
       )}
 
       <footer className="relative flex h-14 shrink-0 items-center justify-between border-t border-base-border bg-base-card px-4">
-        <span className="flex items-center gap-2 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
-          <Icon name="users" size={20} />
-          <span className="truncate">{orgName}</span>
-        </span>
+        {/* The frame draws this as a label beside a `users` glyph (744:38188),
+            and AG-582 asks the same line to open the organization selector. So
+            it stays visually the label it draws and becomes a control: no
+            chevron, no button chrome, just a hover ground and a focus ring, at
+            the drawn type. Without a handler it renders as the plain label the
+            frame draws, so nothing here invents an affordance that leads
+            nowhere. */}
+        {onSwitchOrg ? (
+          <button
+            type="button"
+            onClick={onSwitchOrg}
+            aria-label={`Organization: ${orgName}. Switch organization`}
+            className="-mx-1.5 flex min-w-0 items-center gap-2 rounded-control px-1.5 py-1 text-sm font-medium leading-5 tracking-label-14 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <Icon name="users" size={20} />
+            <span className="truncate">{orgName}</span>
+          </button>
+        ) : (
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
+            <Icon name="users" size={20} />
+            <span className="truncate">{orgName}</span>
+          </span>
+        )}
         <OutlineIconButton
           radius="md"
           icon="ellipsis"
@@ -496,6 +524,7 @@ function CliCard({
 function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) {
   const external: { action: TrayMenuAction; icon: IconName; label: string }[] = [
     { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
+    { action: "support", icon: "headset", label: "Contact support" },
     { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
   ];
   return (

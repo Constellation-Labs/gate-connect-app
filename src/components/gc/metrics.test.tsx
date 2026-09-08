@@ -11,7 +11,11 @@ const buckets: MessagesBucket[] = [
 
 /** The bars, which are `aria-hidden`, so they are not reachable by role. */
 function columns(container: HTMLElement) {
-  return Array.from(container.querySelectorAll("[aria-hidden] > div.w-5"));
+  // Keyed on the stacking direction, not the width. It used to select `.w-5`,
+  // which broke the moment the bars took the frame's 32px - and `.w-8` would be
+  // worse than brittle: the loading placeholder's skeletons are that width too,
+  // so the "no columns while loading" assertion would start matching them.
+  return Array.from(container.querySelectorAll("[aria-hidden] > div.flex-col-reverse"));
 }
 
 /** The legend and the accessible table both use the tooltip's row labels, so
@@ -33,8 +37,13 @@ describe("MessagesChart tooltip", () => {
 
     // The heading names the column; it is not a fifth figure. 8/2/2/0 sum to
     // 12 here only by coincidence of the design's own sample numbers, which is
-    // exactly the confusion this asserts against - and which the redrawn axis
+    // exactly the confusion this asserts against - and which the tooltip
     // settles by heading the column "12:00" rather than "12".
+    //
+    // The axis went the other way on 2026-09-08 (bare "12", no minutes - see
+    // `hourTick`), and this is why the tooltip did not follow it: read on its
+    // own, over a stack of four figures, "12" is the ambiguity the heading
+    // exists to remove.
     const tip = screen.getByText("Total messages", {
       selector: "div > span > span",
     }).closest("div[class*='absolute']") as HTMLElement;
@@ -43,6 +52,44 @@ describe("MessagesChart tooltip", () => {
     expect(within(tip).getByText("8")).toBeTruthy();
     expect(within(tip).getAllByText("2")).toHaveLength(2);
     expect(within(tip).getByText("0")).toBeTruthy();
+  });
+
+  it("labels the axis with bare hours, no minutes", () => {
+    // `116:30705`, the Overview Messages card, draws digits with no `:00`. The
+    // component sample `706:9997` draws "00:00" over 12 buckets and is what
+    // this printed everywhere until 2026-09-08; at the card's real 24 buckets
+    // that ran the labels into each other and off the card edge.
+    const { container } = render(<MessagesChart buckets={buckets} />);
+    const ticks = Array.from(
+      container.querySelectorAll("div.mt-1 > span"),
+    ).map((el) => el.textContent);
+    expect(ticks).toEqual(["11", "12"]);
+  });
+
+  it("gives the bars and the ticks the same geometry, so a bar sits under its label", () => {
+    // Reported from a running build: with 20px bars under 32px labels,
+    // `justify-between` distributed the leftover space differently in the two
+    // rows, so a bar and its tick had different centres - worst on the first
+    // and last bucket, where one edge is pinned and the whole difference shows.
+    // Asserting the classes rather than layout because jsdom computes no
+    // geometry; equal width and gap is the property that makes the centres
+    // coincide, for any number of buckets.
+    const { container } = render(<MessagesChart buckets={buckets} />);
+    const bar = columns(container)[0] as HTMLElement;
+    const tick = container.querySelector("div.mt-1 > span") as HTMLElement;
+    expect(bar.className).toContain("w-8");
+    expect(tick.className).toContain("w-8");
+    expect((bar.parentElement as HTMLElement).className).toContain("gap-2");
+    expect((tick.parentElement as HTMLElement).className).toContain("gap-2");
+  });
+
+  it("names the hour in full in the accessible table's row headers", () => {
+    // The other half of the axis change. A row header is announced on its own,
+    // with no neighbouring ticks to make "11" read as a time, so the table
+    // keeps the full form the axis dropped.
+    render(<MessagesChart buckets={buckets} />);
+    expect(screen.getByRole("rowheader", { name: "11:00" })).toBeTruthy();
+    expect(screen.getByRole("rowheader", { name: "12:00" })).toBeTruthy();
   });
 
   it("clears when the pointer leaves the plot area", () => {

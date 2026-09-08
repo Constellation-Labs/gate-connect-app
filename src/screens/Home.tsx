@@ -11,7 +11,6 @@ import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { trustPromptHint, trustPromptWaiting, trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
-import { GATE_DASHBOARD_URL } from "../lib/config";
 
 /** Connected home - the one room: the master Routing card, the certificate
  * step when it blocks coverage, and one row per model family, ranked so
@@ -26,6 +25,7 @@ import { GATE_DASHBOARD_URL } from "../lib/config";
 export function Home({
   workspace,
   gatewayHost,
+  dashboardUrl,
   proxyOn,
   caTrusted,
   showProxy,
@@ -55,6 +55,11 @@ export function Home({
    * carries the org, so the identifier traffic actually leaves through needs a
    * line of its own rather than disappearing with it. */
   gatewayHost: string;
+  /** The dashboard for the gateway this install talks to, or null when it has
+   *  none (a local gateway). Passed in rather than imported: it is derived from
+   *  the account now, not a constant, and the button is omitted when there is
+   *  nowhere to go - see `lib/dashboard.ts`. */
+  dashboardUrl: string | null;
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
@@ -794,16 +799,18 @@ export function Home({
             DESIGN.md and this is the nearest step to it; the two are half a
             pixel apart. The padding takes the hit area from 19px to 32px, which
             also clears the 24px target minimum it used to miss. */}
-        <button
-          type="button"
-          onClick={() => {
-            void openExternal(GATE_DASHBOARD_URL);
-          }}
-          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-        >
-          <Icon name="cube" size={15} />
-          Gate dashboard
-        </button>
+        {dashboardUrl && (
+          <button
+            type="button"
+            onClick={() => {
+              void openExternal(dashboardUrl);
+            }}
+            className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          >
+            <Icon name="cube" size={15} />
+            Gate dashboard
+          </button>
+        )}
       </div>
 
     </div>

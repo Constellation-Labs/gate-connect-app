@@ -117,6 +117,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
+      dashboardUrl="https://app.constellationgate.ai/"
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
