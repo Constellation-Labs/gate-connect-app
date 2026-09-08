@@ -104,6 +104,28 @@ describe("external URLs are permitted by the opener ACL", () => {
     expect(patterns.some((p) => globToRegExp(p).test(bare))).toBe(false);
   });
 
+  it.each([
+    ["a lookalike host with our domain in the PATH", "https://evil.example.com/a.constellationgate.ai/b"],
+    ["the same trick against the app host", "https://app-x.evil.example.com/a.constellationgate.ai/b"],
+    ["our domain as a query string", "https://evil.example.com/?x=app.constellationgate.ai/"],
+  ])("rejects %s", (_label, url) => {
+    // **These passed until 2026-09-08**, and the reason is the `*` semantics the
+    // docstring above verified: `*` crosses `/`, so `https://*.constellationgate.ai/*`
+    // is not host-anchored - it permits any URL that contains
+    // `.constellationgate.ai/` anywhere, including in a path an attacker owns.
+    // Confirmed against glob 0.3 and tauri-plugin-opener 2.5.4, which matches
+    // with `glob::Pattern` over the raw URL string.
+    //
+    // The fix is to spell the hosts out rather than wildcard the leading label.
+    // `require_literal_separator` would have been the other way, but the plugin
+    // calls plain `Pattern::matches`, so it is not available to us.
+    //
+    // Enumerating is only safe because the assertions above derive their URLs
+    // from `GATEWAY_SERVERS`: adding an environment fails those rather than
+    // quietly leaving its dashboard unopenable.
+    expect(patterns.some((p) => globToRegExp(p).test(url))).toBe(false);
+  });
+
   it("does not allow an unrelated host", () => {
     expect(patterns.some((p) => globToRegExp(p).test("https://evil.example.com/"))).toBe(false);
   });
@@ -149,6 +171,17 @@ describe("the tray popover's opener ACL covers what its menu opens", () => {
       expect(allowed, `${url} matches none of ${JSON.stringify(patterns)}`).toBe(true);
     },
   );
+
+  it("rejects a lookalike host with our domain in the path, like `default` now does", () => {
+    // The same gap, in the file that exists to be the narrower of the two. Both
+    // capability files spell their hosts out for this reason; see the sibling
+    // case in the suite above.
+    expect(
+      patterns.some((p) =>
+        globToRegExp(p).test("https://evil.example.com/a.constellationgate.ai/b"),
+      ),
+    ).toBe(false);
+  });
 
   it("stays narrower than the default capability's any-subdomain wildcard", () => {
     // The narrowness is the point of a separate file (see its description), so

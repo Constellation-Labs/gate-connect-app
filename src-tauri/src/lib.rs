@@ -1439,6 +1439,11 @@ static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// is therefore treated as the second half of that dismissal rather than as a
 /// request to re-open.
 ///
+/// Only stamped when the popover was still VISIBLE as focus left, which is what
+/// keeps the invariant true: a hide performed on purpose (Escape, Expand app,
+/// Switch organization, Quit) blurs the window too, and stamping there would
+/// eat the next tray-icon click rather than the one that caused the blur.
+///
 /// Wall clock rather than `Instant` because it has to live in an atomic. The
 /// comparison is a short grace window, so a clock step can only mean one click
 /// opens when it would have closed.
@@ -4024,9 +4029,24 @@ pub fn run() {
             // pins across both.
             if let WindowEvent::Focused(false) = event {
                 if window.label() == "tray" && !POPOVER_PINNED.load(Ordering::Acquire) {
+                    // Whether the popover was still up when focus left decides
+                    // whether this blur is a dismissal or the echo of one.
+                    //
+                    // Already hidden means something hid it ON PURPOSE and this
+                    // blur is the consequence: Escape, Expand app, Switch
+                    // organization, Quit. Stamping the race mark then would
+                    // consume the user's next tray-icon click, so pressing
+                    // Escape and reaching for the icon - the natural retry -
+                    // would do nothing the first time. The mark exists for one
+                    // race only, a click on the icon that blurs the popover
+                    // before the click itself arrives, and that race can only
+                    // happen while the window is visible.
+                    let was_visible = window.is_visible().unwrap_or(false);
                     let _ = window.hide();
                     POPOVER_VISIBLE.store(false, Ordering::Release);
-                    BLUR_HIDE_AT_MS.store(now_millis(), Ordering::Release);
+                    if was_visible {
+                        BLUR_HIDE_AT_MS.store(now_millis(), Ordering::Release);
+                    }
                 }
             }
             // X-button on the popover should hide it, not quit the app.

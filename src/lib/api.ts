@@ -259,14 +259,14 @@ export const switchGateway = (baseUrl: string) =>
 
 /** Release the first-launch pin so the popover resumes click-away dismissal.
  *  Called once the user interacts with the startup window. */
+export const unpinPopover = () => invoke<void>("unpin_popover");
+
 /** Ask the main window to open the organization selector, from the tray.
  *
  *  Reveals the window and hides the popover, the same hand-over as Expand app.
  *  The selector itself lives in the window because it is a dialog with reads and
  *  failure states; a 400px copy would be a second surface over one setting. */
 export const requestSwitchOrg = () => invoke<void>("request_switch_org");
-
-export const unpinPopover = () => invoke<void>("unpin_popover");
 
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the

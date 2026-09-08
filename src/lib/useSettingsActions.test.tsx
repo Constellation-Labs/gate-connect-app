@@ -237,17 +237,50 @@ describe("useSettingsActions: switching organization", () => {
     });
   });
 
-  it("does not open a picker over a single organization", async () => {
-    // A question with one answer.
+  it("does not open a picker over a single organization, and says it did not", async () => {
+    // A question with one answer - so no dialog, and no error either.
+    //
+    // The return value is load-bearing, not decoration. The tray's footer hands
+    // over to this from another window, so "no dialog opened" has to be
+    // reportable: without it, Switch organization closed the popover, brought
+    // the window forward and showed nothing, for what is most accounts.
     (oauthListOrgs as Mock).mockResolvedValue([ORGS[0]]);
     const { api, onError } = harness();
 
+    let opened: boolean | undefined;
     await act(async () => {
-      await api.current!.openSwitchOrg();
+      opened = await api.current!.openSwitchOrg();
     });
 
+    expect(opened).toBe(false);
     expect(api.current!.prompt).toBeNull();
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("reports that the picker opened when there is something to choose", async () => {
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg();
+    });
+
+    expect(opened).toBe(true);
+  });
+
+  it("reports no picker when the org read fails", async () => {
+    // The caller navigated to get here; a failed read must not look like a
+    // dialog that opened somewhere off screen.
+    (oauthListOrgs as Mock).mockRejectedValue(new Error("offline"));
+    const { api, onError } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg();
+    });
+
+    expect(opened).toBe(false);
+    expect(onError).toHaveBeenCalled();
   });
 
   it("sets the org, re-reads the account, and confirms", async () => {

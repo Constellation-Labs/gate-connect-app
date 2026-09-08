@@ -1598,10 +1598,15 @@ export function NewUiApp() {
    * so it lives here, and the tray hands over. Rust reveals this window before
    * emitting, so by the time this fires the user is looking at it.
    */
+  const openSwitchOrgRef = useRef(settings.openSwitchOrg);
+  openSwitchOrgRef.current = settings.openSwitchOrg;
   useEffect(() => {
-    const unlisten = listen("switch-org-requested", () => {
+    const unlisten = listen("switch-org-requested", async () => {
       setActionError(null);
-      void settings.openSwitchOrg();
+      // A single-org account opens no picker (`openSwitchOrg` returns false),
+      // and this hand-over must not end in a window that came forward to show
+      // nothing. Settings is where the account explains itself.
+      if (!(await openSwitchOrgRef.current())) setView({ kind: "settings" });
     });
     return () => {
       // Swallowed for the reason the sibling listeners record: a teardown
@@ -1609,7 +1614,20 @@ export function NewUiApp() {
       // app error that never happened.
       void unlisten.then((off) => off()).catch(() => {});
     };
-  }, [settings]);
+    // Subscribe ONCE, through a ref. `useSettingsActions` returns a fresh object
+    // literal every render and this shell re-renders constantly - proxy events,
+    // feed reads, routing state - so `[settings]` tore the listener down and
+    // rebuilt it each time. `listen()` and its `off()` are both async, so every
+    // swap opened a window with no listener registered on the Rust side, and
+    // `request_switch_org` emits immediately after revealing this window -
+    // which takes focus, which is itself a render. The event this feature
+    // depends on could land in that gap and be dropped, and the symptom would
+    // be the one the feature exists to remove: the popover closes, the window
+    // comes forward, nothing happens.
+    //
+    // `[settings.openSwitchOrg]` would not have fixed it either: that callback
+    // depends on `account`, which is a fresh object per read.
+  }, []);
 
   /**
    * The one-time OAuth offer, for an account still on a pasted key.
