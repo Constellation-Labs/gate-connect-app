@@ -1730,7 +1730,7 @@ fn drain_backend_errors() -> Vec<BackendError> {
 /// contributes no names, so asking about it finds nothing rather than falling
 /// back to everything.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, Surface); 6] = [
+const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
     ("claude-code", "claude", Surface::Cli),
     ("codex", "codex", Surface::Cli),
     ("opencode", "opencode", Surface::Cli),
@@ -1740,21 +1740,25 @@ const AGENT_PROCESSES: [(&str, &str, Surface); 6] = [
     // already anticipated being asked about a proxy domain key - it just had
     // nothing to answer with until now.
     //
-    // `anthropic` is one slug and two process names because Claude's desktop app
-    // is spelled differently per platform: `Claude` on macOS, `Cowork` in
-    // Windows environments. Same product, same host, same routing switch, so a
-    // second slug would mean one switch that only worked on one OS. Two rows
-    // under one slug is supported throughout - see `agent_process_names`, which
-    // returns all of them precisely so this cannot silently cover only the
-    // first.
-    //
     // Case matters and is not incidental: `Claude` here is the desktop app,
     // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
     // them together. Confirmed with the product.
     ("anthropic", "Claude", Surface::App),
-    ("anthropic", "Cowork", Surface::App),
-    // Confirmed as `ChatGPT` on Windows, where `.exe` is stripped before the
-    // match.
+    // `ChatGPT` on Windows too, where `.exe` is stripped before the match.
+    // Confirmed with the product.
+    //
+    // **There is no Cowork process, and this row is it.** Cowork had a row of
+    // its own here for one commit, under `anthropic`, on the reading that it was
+    // a separate Windows desktop app; it is not. `engine.rs`'s captured Cowork
+    // turn is a request to `chatgpt.com/backend-api/codex/responses` - a path
+    // the `chatgpt` entry claims - so Cowork's traffic and its process are both
+    // this one.
+    //
+    // Worth knowing because the name is used loosely elsewhere in the tree:
+    // `provider.rs` and `GroupMembers.tsx` both label the *anthropic* switch
+    // "Claude Desktop / Cowork". Those are about which switch routes the
+    // traffic, not about a process to close, and at least one of the two
+    // readings is wrong - see the note raised with this change.
     ("chatgpt", "ChatGPT", Surface::App),
 ];
 
@@ -4973,15 +4977,24 @@ mod tests {
         assert_ne!(slug_for("claude"), slug_for("Claude"));
     }
 
-    /// Two rows, one slug. Claude Desktop and Cowork are the same product on
-    /// different platforms, so they share the routing switch - and every lookup
-    /// that takes a slug has to return both, or the one it drops reads as not
-    /// running and never gets closed or reopened.
+    /// The lookup returns *every* name a slug claims, not the first.
+    ///
+    /// No slug names two processes today - the one that briefly did, Cowork
+    /// under `anthropic`, turned out not to be a separate app at all. The guard
+    /// is kept anyway because the shape that failed is a `find`, which drops
+    /// extra rows in silence: the dropped process reads as not running, so it is
+    /// never marked stale, never offered for close and never reopened, with
+    /// nothing on screen saying so. A table this cheap to add a row to should
+    /// not have a lookup that punishes it.
     #[test]
-    fn one_slug_can_name_two_processes() {
-        let names = agent_process_names("anthropic");
-        assert_eq!(names, vec!["Claude", "Cowork"]);
-        assert_eq!(agent_process_names("claude-code"), vec!["claude"]);
+    fn the_lookup_returns_every_name_a_slug_claims() {
+        for (slug, name, _) in AGENT_PROCESSES {
+            assert!(
+                agent_process_names(slug).contains(&name),
+                "{slug} does not resolve back to {name}"
+            );
+        }
+        assert_eq!(agent_process_names("anthropic"), vec!["Claude"]);
         assert!(agent_process_names("hermes").is_empty());
     }
 
