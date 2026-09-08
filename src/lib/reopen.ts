@@ -318,6 +318,11 @@ export type ReopenPresence = "gone" | "stale" | "fresh";
  *  waits on a probe of the relay and the session. */
 const CLOSE_TICKS = 2;
 const VERIFY_TICKS = 10;
+/** How long a tool Gate relaunched may stay gone before the row stops claiming
+ *  Gate is handling it. Generous next to `CLOSE_TICKS`, because a desktop app's
+ *  cold start is seconds and the wrong answer here is telling someone to open an
+ *  app that is already opening. */
+const REOPEN_TICKS = 8;
 
 /**
  * The stage one tool moves to on a watch tick.
@@ -347,7 +352,16 @@ export function nextStage(
     // Still the process we asked to close. Give it a moment, then say so.
     return waited >= CLOSE_TICKS ? "close_failed" : "closing";
   }
-  if (presence === "gone") return "awaiting_reopen";
+  if (presence === "gone") {
+    // Split on who is putting it back. `awaiting_reopen` reads "Closed. Open it
+    // again" - true for a terminal tool, and a lie for an app Gate has already
+    // relaunched, which would have the user starting a second copy of something
+    // that is mid-launch.
+    if (!tool.canReopen) return "awaiting_reopen";
+    // Still gone long after Gate launched it: the relaunch did not take, so the
+    // row stops claiming Gate has it and hands the move back.
+    return waited >= REOPEN_TICKS ? "awaiting_reopen" : "reopening";
+  }
   if (!verdict) {
     return waited >= VERIFY_TICKS ? "verify_failed" : "verifying";
   }

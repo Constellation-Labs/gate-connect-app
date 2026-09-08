@@ -63,8 +63,9 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::integrations::binaries;
 use crate::integrations::dotenv;
 use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
@@ -122,6 +123,17 @@ impl Integration for Hermes {
         ROW_LABEL
     }
 
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        // `launcher_on_path` already walks PATH for these names; this is the
+        // same knowledge, shared so the version probe and the detector cannot
+        // disagree about what the binary is called.
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat", "hermes"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["hermes"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -146,13 +158,16 @@ impl Integration for Hermes {
     }
 
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // `resolve_binary` subsumes what `launcher_on_path` did by hand - the
+        // same PATH walk for the same names - and adds the packaged paths and
+        // the shell bin directories a GUI process does not inherit.
+        // `launcher_paths` stays: those are Hermes-specific locations no
+        // generic search knows about.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
-        if launcher_paths()?.iter().any(|p| p.exists()) {
-            return Ok(true);
-        }
-        Ok(launcher_on_path())
+        Ok(launcher_paths()?.iter().any(|p| p.exists()))
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -537,29 +552,6 @@ fn launcher_paths() -> Result<Vec<PathBuf>> {
         home.join(".local/bin/hermes"),
         crate::env::hermes_config_dir()?.join("bin/hermes"),
     ])
-}
-
-/// Whether a `hermes` executable is reachable on `$PATH`.
-///
-/// A supplement to [`launcher_paths`], never a replacement: launched from Finder
-/// or launchd the app inherits a minimal `PATH` that excludes `~/.local/bin`, so
-/// this would miss the standard install in exactly the case that matters. It
-/// covers the reverse - Hermes somewhere unusual (a venv, `/opt`, a scratch
-/// HOME) that the absolute paths don't know about.
-fn launcher_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        if dir.as_os_str().is_empty() {
-            return false;
-        }
-        #[cfg(target_os = "windows")]
-        let names: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat"];
-        #[cfg(not(target_os = "windows"))]
-        let names: &[&str] = &["hermes"];
-        names.iter().any(|n| dir.join(n).is_file())
-    })
 }
 
 fn state_path() -> Result<PathBuf> {

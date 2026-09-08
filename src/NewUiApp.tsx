@@ -32,6 +32,7 @@ import {
   proxyStatus,
   proxyTrustCa,
   routedClientsStale,
+  toolVersions,
   routingVerdicts,
   runningAgents as fetchRunningAgents,
   pendingQuitTools,
@@ -1606,6 +1607,10 @@ export function NewUiApp() {
     const backend = await fetchDiagnostics().catch(() => null);
     const launch = await launchAtLoginStatus().catch(() => null);
     const clientsStale = await routedClientsStale().catch(() => false);
+    // One `--version` per tool on a cold cache, which is why it lives here and
+    // not in `list_tools`: this path is an explicit user action, the sidebar is
+    // not.
+    const versions = await toolVersions().catch(() => null);
     // One process walk, raced against a timer: a process table that never answers
     // costs the scan and nothing else.
     let scanTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1622,6 +1627,7 @@ export function NewUiApp() {
       platform,
       analyticsId: analyticsId(),
       backend,
+      versions,
       account,
       oauth,
       proxy,

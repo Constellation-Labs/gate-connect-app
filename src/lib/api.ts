@@ -522,6 +522,21 @@ export const runningAgents = (only?: string[]) =>
 export const closeRunningAgents = (only?: string[]) =>
   invoke<number>("close_running_agents", { only: only ?? null });
 
+/** Put back the desktop apps {@link closeRunningAgents} just closed. Resolves to
+ * how many were launched.
+ *
+ * **Takes no path, deliberately.** What gets launched was decided in Rust, from
+ * a process Gate itself found running and captured before the kill. If this call
+ * carried a path, "reopen what you just closed" would become "launch whatever
+ * the webview names".
+ *
+ * Only apps are ever queued - a CLI is never relaunched, because spawning its
+ * binary starts a different one, detached from the shell session, working
+ * directory and conversation the user agreed to close. `only` is the same tool
+ * filter the close took. */
+export const reopenRunningAgents = (only?: string[]) =>
+  invoke<number>("reopen_running_agents", { only: only ?? null });
+
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting
  * when config-routed tools would be left pointing at the dead relay. */
@@ -693,6 +708,18 @@ export const installId = () => invoke<string>("install_id");
  * fifteen-field sweep whose macOS system-proxy readback shells out per network
  * service, and the analytics error context wants this one string at startup. */
 export const osName = () => invoke<string>("os_name");
+
+/** Each visible tool's version, keyed by slug.
+ *
+ * **Never call this on a render path.** It spawns one `--version` per tool on a
+ * cold cache, which is the same rule {@link routingVerdicts} follows.
+ *
+ * A slug missing from the map means no executable was found - the tool may still
+ * be detected through its config directory. A slug present with `null` means the
+ * binary was found and would not say. Those are different findings and the
+ * report prints them differently. */
+export const toolVersions = () =>
+  invoke<Record<string, string | null>>("tool_versions");
 
 /** What to call this machine: the stored name, or the hostname when there is
  *  none. Resolved by the backend so there is one answer, not two.

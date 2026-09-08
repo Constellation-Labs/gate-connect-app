@@ -52,6 +52,10 @@ pub mod tool_watch;
 pub mod verdict_log;
 
 pub mod integrations {
+    /// Finding the executable a tool actually runs, and asking it its version.
+    /// Shared because every integration's own path list answers "installed?"
+    /// and nothing else.
+    pub mod binaries;
     pub mod claude_code;
     pub mod codex;
     /// Managed `.env` edits, shared by the proxy-routed harnesses.
