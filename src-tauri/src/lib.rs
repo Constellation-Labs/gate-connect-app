@@ -1428,6 +1428,22 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// When the popover last dismissed itself on losing focus, as milliseconds
+/// since the epoch (0 = never).
+///
+/// This exists for one race. Clicking the tray icon while the popover is open
+/// blurs it first, so the blur-dismiss below has already hidden the window by
+/// the time the icon's own click arrives - and that handler, seeing a hidden
+/// window, would helpfully re-open it. The icon would then be unable to close
+/// the popover at all. A click within [`BLUR_HIDE_GRACE_MS`] of a blur-dismiss
+/// is therefore treated as the second half of that dismissal rather than as a
+/// request to re-open.
+///
+/// Wall clock rather than `Instant` because it has to live in an atomic. The
+/// comparison is a short grace window, so a clock step can only mean one click
+/// opens when it would have closed.
+static BLUR_HIDE_AT_MS: AtomicU64 = AtomicU64::new(0);
+
 /// Set while a reveal is waiting for the compositor to acknowledge the state
 /// change below, so the restore knows there is work to do.
 #[cfg(target_os = "linux")]
@@ -3428,6 +3444,20 @@ fn reveal_popover(app: tauri::AppHandle) {
     reveal_popover_window(&app);
 }
 
+/// How long after a blur-dismiss a tray-icon click still counts as part of it.
+///
+/// Long enough to cover the blur-then-click ordering on a slow frame, short
+/// enough that a deliberate re-open a moment later still opens.
+const BLUR_HIDE_GRACE_MS: u64 = 400;
+
+/// Milliseconds since the epoch, for the blur-dismiss race guard.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Show the tray popover (window label `tray`), anchored to the tray icon
 /// where the platform reports a rect and at the cursor on Linux, where the
 /// SNI/AppIndicator protocol does not. Placement is correct *here*, unlike
@@ -3450,6 +3480,36 @@ fn reveal_tray_window(app: &tauri::AppHandle) {
     let _ = window.set_focus();
     #[cfg(target_os = "macos")]
     order_front_regardless(&window);
+}
+
+/// Hand a "switch organization" request from the tray popover to the main
+/// window, which owns the organization selector.
+///
+/// The popover shows which organization is selected (its footer names it) and
+/// AG-582 asks it to open the selector - but the selector is a dialog over the
+/// 1024px window, with the orgs read, an in-flight state and a failure path.
+/// Rebuilding it at 400px would be a second surface over one setting, and two
+/// selectors that could disagree about which org is active is the divergence
+/// principle 2 warns about.
+///
+/// So the popover asks, and the window answers. Reveal first, then emit, the
+/// same order `request_quit` uses: the main window's webview is created at
+/// startup and its listener is already mounted, so the event cannot outrun it.
+///
+/// **This is a single-purpose stand-in for a general navigation intent.** The
+/// tray also owes "open this tool's detail" and "open this alert" (AG-584), and
+/// those want a payload rather than another bespoke command. When that lands,
+/// this collapses into it.
+#[tauri::command]
+fn request_switch_org(app: tauri::AppHandle) {
+    reveal_popover_window(&app);
+    let _ = app.emit("switch-org-requested", ());
+    if let Some(tray) = app.get_webview_window("tray") {
+        // Same hand-over as Expand app: the popover asked the window to take
+        // over, so it gets out of the way.
+        let _ = tray.hide();
+        POPOVER_VISIBLE.store(false, Ordering::Release);
+    }
 }
 
 /// Position the tray popover centered horizontally on the tray icon and just
@@ -3800,6 +3860,7 @@ pub fn run() {
                     pin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    request_switch_org,
                     quit_app,
                     pending_quit_tools,
                     request_app_quit,
@@ -3880,6 +3941,7 @@ pub fn run() {
                     pin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    request_switch_org,
                     quit_app,
                     pending_quit_tools,
                     request_app_quit,
@@ -3942,6 +4004,29 @@ pub fn run() {
                         restore_after_repair(window);
                     }
                     _ => {}
+                }
+            }
+            // Click-outside dismisses the popover, which is the convention for a
+            // surface anchored to a tray icon and what this window is.
+            //
+            // TRAY ONLY, and after the guards above: the main and onboarding
+            // windows are ordinary windows that must survive losing focus, and
+            // the challenge-solve webview returns before reaching here.
+            //
+            // [`POPOVER_PINNED`] is what makes this safe, and it is why the pin
+            // machinery was kept when it had no reader. Two things blur the
+            // popover without the user having clicked away from it: a system
+            // dialog the popover itself raised (the certificate trust prompt,
+            // the keychain unlock on first load), and an in-app dialog the user
+            // is mid-decision on. Dismissing then would take away the copy
+            // telling them what to click, or lose a config-overwrite
+            // confirmation because they glanced at another window. The frontend
+            // pins across both.
+            if let WindowEvent::Focused(false) = event {
+                if window.label() == "tray" && !POPOVER_PINNED.load(Ordering::Acquire) {
+                    let _ = window.hide();
+                    POPOVER_VISIBLE.store(false, Ordering::Release);
+                    BLUR_HIDE_AT_MS.store(now_millis(), Ordering::Release);
                 }
             }
             // X-button on the popover should hide it, not quit the app.
@@ -4606,6 +4691,17 @@ pub fn run() {
                             if is_visible && !is_minimized {
                                 let _ = window.hide();
                                 POPOVER_VISIBLE.store(false, Ordering::Release);
+                            } else if now_millis().saturating_sub(
+                                BLUR_HIDE_AT_MS.load(Ordering::Acquire),
+                            ) < BLUR_HIDE_GRACE_MS
+                            {
+                                // The blur-dismiss just hid it, and that blur was
+                                // this very click landing on the tray icon. Re-
+                                // opening here is how the icon would lose the
+                                // ability to close the popover at all. Consume the
+                                // click and clear the mark, so an immediate second
+                                // click still opens.
+                                BLUR_HIDE_AT_MS.store(0, Ordering::Release);
                             } else {
                                 reveal_tray_window(app);
                             }

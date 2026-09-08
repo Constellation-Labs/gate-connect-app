@@ -65,6 +65,7 @@ import {
 } from "./lib/errors";
 import { buildGroups, cascadeTargets } from "./lib/groups";
 import { verdictsBySlug } from "./lib/verdict";
+import { dashboardLinks } from "./lib/dashboard";
 import { isSignedIn, needsOrg } from "./lib/session";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
@@ -1147,6 +1148,10 @@ export function App() {
   }, [proxy]);
 
   const gatewayHost = hostOf(account?.gateway_base_url);
+  /** The dashboard for the gateway this account talks to, or null when it has
+   *  none. Was four production constants until 2026-09-07; see
+   *  `lib/dashboard.ts` for why deriving it matters on a staging install. */
+  const dashboard = dashboardLinks(account?.gateway_base_url);
   // The header's mono sub-label answers "who am I here?", and the gateway host
   // cannot: it is byte-identical for every customer of a given deployment. The
   // org is what gets billed and what the gateway rejects requests without (see
@@ -1204,6 +1209,7 @@ export function App() {
   } else if (screen === "orgpicker") {
     body = (
       <OrgPicker
+        dashboardUrl={dashboard?.root ?? null}
         onDone={onOrgChosen}
         onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
         onReauth={signOut}
@@ -1286,6 +1292,7 @@ export function App() {
       <Home
         workspace={orgName ?? ""}
         gatewayHost={gatewayHost}
+        dashboardUrl={dashboard?.root ?? null}
         proxyOn={proxyOn}
         // `?? false`, matching the other three call sites. An unresolved
         // proxy state is not evidence that the CA is trusted, and defaulting

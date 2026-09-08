@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { openExternal } from "../lib/openExternal";
 import { oauthBeginLogin, saveAccount } from "../lib/api";
-import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS, GATE_API_KEYS_URL } from "../lib/config";
+import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
+import { dashboardLinks } from "../lib/dashboard";
 import { trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { markOAuthOfferSeen } from "../lib/oauthOffer";
@@ -51,6 +52,11 @@ export function FirstRun({
   );
   const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
   const platform = usePlatform();
+
+  /** The dashboard for the gateway this screen is about to sign into - which is
+   *  the one in `gateway`, not the one the app was built against. Null when that
+   *  gateway has no dashboard. */
+  const keyDashboard = dashboardLinks(gateway);
 
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
@@ -192,18 +198,31 @@ export function FirstRun({
             Saved to {secretStoreName(platform)}. Your config files get the
             gateway URL, never the key.
           </p>
+          {/* Derived from the gateway selected ABOVE, not a constant. This is
+              the screen where getting it wrong costs the most: a user signing
+              into staging was being sent to the production dashboard to fetch a
+              key, where the key they find does not work against the gateway
+              they just chose. `keyDashboard` is null for a local gateway, which
+              has no dashboard to send anyone to - so the sentence loses its
+              link rather than pointing at a guess. */}
           <p className="mt-1 text-gc-micro text-gc-ink-3">
-            Find it under{" "}
-            <button
-              type="button"
-              onClick={() => {
-                void openExternal(GATE_API_KEYS_URL);
-              }}
-              className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
-            >
-              API Keys
-            </button>{" "}
-            in your Gate dashboard.
+            {keyDashboard ? (
+              <>
+                Find it under{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void openExternal(keyDashboard.apiKeys);
+                  }}
+                  className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+                >
+                  API Keys
+                </button>{" "}
+                in your Gate dashboard.
+              </>
+            ) : (
+              "Find it under API Keys in your Gate dashboard."
+            )}
           </p>
           <Button full className="mt-3" disabled={!canSubmitKey} onClick={connectWithKey}>
             {submitting ? "Connecting…" : "Connect with key"}

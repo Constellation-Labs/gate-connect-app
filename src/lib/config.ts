@@ -44,35 +44,28 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
     : []),
 ];
 
-/** The Gate dashboard.
+/** Every dashboard URL is DERIVED, not constant - see `lib/dashboard.ts`.
  *
- * The trailing slash is load-bearing. `openUrl` is gated by the opener ACL in
- * `src-tauri/capabilities/default.json`, whose pattern is
- * `https://*.constellationgate.ai/*`, and that is matched with `glob::Pattern`
- * against the raw string we pass. A bare origin has no `/` for the pattern's
- * literal separator, so `https://app.constellationgate.ai` is rejected and the
- * link silently does nothing. Verified: the bare form matches `false`, both
- * slashed forms match `true`.
+ * `GATE_DASHBOARD_URL`, `GATE_API_KEYS_URL`, `GATE_POLICIES_URL` and
+ * `GATE_SAVINGS_URL` used to live here, hardcoded to
+ * `app.constellationgate.ai`, while the gateway above is switchable at build
+ * time AND at runtime through Settings -> Dev mode. So every one of them was
+ * wrong for anybody not on production, and `pnpm app:local` defaults to
+ * staging. `dashboardLinks(account.gateway_base_url)` replaced them on
+ * 2026-09-07; the trailing-slash discipline they documented moved with them and
+ * is asserted in `config.test.ts` for every gateway in `GATEWAY_SERVERS`.
  *
- * Exported as constants so the three call sites cannot drift apart, which is
- * how two of them ended up with the unslashed form. */
-export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
-export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
+ * `GATE_SUPPORT_URL` is gone the same way. It pointed at
+ * `constellationnetwork.io/support`, which 404'd, and needed its own opener-ACL
+ * entry for being the one outbound link off `constellationgate.ai`. Support is
+ * now the dashboard's own Overview page (that is where the support floating
+ * action button lives), so it is `dashboardLinks(...).support` and the bespoke
+ * ACL entry is deleted - the allowlist got smaller.
+ *
+ * Docs stay a constant below: documentation is not per-environment. */
 
-/** Where Overview's two "Manage" links go (AG-572).
- *
- * Same trailing-slash discipline as above: these carry a path segment, so the
- * ACL's literal separator is satisfied and `glob::Pattern` matches.
- *
- * Not org-scoped in the URL. AG-572 asks these to open settings "for the
- * selected organization", but the dashboard resolves the active org from its own
- * session, and a client-supplied org id in the path would either be ignored or
- * disagree with what the user is signed into there. If the dashboard ever grows
- * an explicit `?org=` selector these become builders. */
-export const GATE_POLICIES_URL = "https://app.constellationgate.ai/policies";
-export const GATE_SAVINGS_URL = "https://app.constellationgate.ai/token-savings";
 /** Product documentation. Trailing slash for the same opener-allowlist reason
- *  as the dashboard link above; `docs.constellationgate.ai` matches the
+ *  the dashboard links carry a path; `docs.constellationgate.ai` matches the
  *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.
  *
  *  Why it exists: an app that installs a root certificate, runs a local MITM
@@ -80,27 +73,3 @@ export const GATE_SAVINGS_URL = "https://app.constellationgate.ai/token-savings"
  *  documentation at all, and a Help section whose two items were "Replay tour"
  *  and "Dev mode". */
 export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";
-
-/** Where "Contact support" in the topnav menu goes.
- *
- *  The only outbound link on `constellationnetwork.io` rather than
- *  `constellationgate.ai`, so it needed its own entry in the opener ACL in
- *  `src-tauri/capabilities/default.json`. Without it the menu item looks wired
- *  and does nothing, which is the state it shipped in until now.
- *
- *  That entry lists this exact URL, not the site: the ACL is what a compromised
- *  renderer is held to, and nothing here needs to open the rest of the domain.
- *  Changing this constant means changing the ACL too.
- *
- *  **This address 404s, and nothing references this constant.** Verified
- *  2026-08-26: `constellationnetwork.io/support` returns 404, and
- *  `docs.constellationgate.ai/support` returns 200 only because that site serves
- *  a shell for every path - an obvious nonsense path returns the same page. So
- *  the surfaces that would open it (Settings, and the topnav's Contact support
- *  entry) are deliberately still unwired, and wiring them would ship a button
- *  that opens a broken page.
- *
- *  Do not wire this up on the strength of the constant existing. AG-598 needs a
- *  real destination first; when there is one, replace this value, update the ACL
- *  entry, and the two call sites are then a small change. */
-export const GATE_SUPPORT_URL = "https://constellationnetwork.io/support";

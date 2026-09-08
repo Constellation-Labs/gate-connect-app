@@ -32,15 +32,22 @@ import type { IconName } from "./Icon";
  * (`116:27225`, and the `topnav/menu` component `744:37692` draws the first
  * three).
  *
- * **Contact support ships before its URL works, by decision (2026-09-04).**
- * It was omitted on the argument that an entry opening a 404 is worse than an
- * absent one, since the user cannot tell "not built" from "broken". Overruled:
- * the entry is drawn in both the component and the flow, and the address is
- * being fixed. `GATE_SUPPORT_URL` still points at a page that 404s today, so
- * do not treat a report of that as this being unfinished (AG-598).
+ * **Contact support has a working destination as of 2026-09-07.** It opens the
+ * dashboard's own Overview page, because that is where the support floating
+ * action button lives - there is no dedicated support route, so the link lands
+ * the user on the page carrying the control rather than on the control itself.
+ * Built from `dashboardLinks(...).support`, so it follows the environment this
+ * install talks to (AG-598).
  *
- * `SettingsPane` keeps its Support row omitted, and that is not the same
- * decision: no Settings frame draws one.
+ * This entry shipped for three days ahead of that address, by a decision on
+ * 2026-09-04 that overruled the argument that an entry opening a 404 is worse
+ * than an absent one. The history matters because the same argument had kept
+ * `TrayMenu` from drawing its copy, so one drawn item was present on one
+ * surface and absent on the other until the address arrived. Both draw it now.
+ *
+ * `SettingsPane` keeps its Support row omitted, and that is still not the same
+ * decision: no Settings frame draws one. That omission survives the address
+ * being fixed.
  */
 export type TopnavAction = "dashboard" | "support" | "docs" | "quit";
 

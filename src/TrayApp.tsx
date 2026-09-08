@@ -16,9 +16,12 @@ import {
   listTools,
   pendingRestore,
   proxyStatus,
+  pinPopover,
   requestQuit,
   resumeRestore,
+  requestSwitchOrg,
   revealMainWindow,
+  unpinPopover,
   routingVerdicts,
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
@@ -30,7 +33,8 @@ import { buildGroups } from "./lib/groups";
 import type { Group } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
+import { GATE_DOCS_URL } from "./lib/config";
+import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
 import { trustPromptHint, usePlatform } from "./lib/platform";
 import { useSecurityFeed } from "./lib/securityFeed";
 import { useInstallations } from "./lib/activity";
@@ -541,12 +545,72 @@ export function TrayApp() {
     }
   }, []);
 
+  /** The dashboard for the gateway this install talks to, or null when it has
+   *  none. Same derivation as the window (`lib/dashboard.ts`): a constant here
+   *  sent a staging install to the production dashboard.
+   *
+   *  Memoised at component level rather than computed inside `onMenuSelect`,
+   *  because that callback holds no dependencies and would have closed over the
+   *  `null` account from first render - which reads on screen as "this gateway
+   *  has no dashboard" on every single click. */
+  const dash = useMemo(
+    () => dashboardLinks(account?.gateway_base_url),
+    [account?.gateway_base_url],
+  );
+
+  /**
+   * Hold the popover open across anything the user must not lose by looking
+   * away, and let it dismiss on blur the rest of the time.
+   *
+   * The window dismisses itself when it loses focus (`Focused(false)` in
+   * `lib.rs`), which is the convention for a tray-anchored surface. Three things
+   * blur it without the user having chosen to leave:
+   *
+   * - **The first load.** Rust pins the popover before revealing it at startup,
+   *   precisely because reading the OS credential store can raise a keychain or
+   *   keyring unlock dialog, and it expects the frontend to release that pin
+   *   once the read is done. Only `src/App.tsx` ever did, so this window would
+   *   have stayed pinned for its whole life - blur-dismiss silently dead on the
+   *   popover the user is most likely to have open.
+   * - **A system dialog this surface raised.** Accepting the certificate prompt
+   *   hands focus to the OS trust dialog, and dismissing then takes away the
+   *   copy that says which button to press. `routingBusy` covers that interval,
+   *   which is why it is in here rather than just the prompt.
+   * - **An in-app decision in progress.** Losing a config-overwrite
+   *   confirmation because another window was clicked would be the one dialog
+   *   on this surface where the user approves a destructive write.
+   */
+  const popoverHeld =
+    !loaded || routing.prompt !== null || runningApps.stage !== null || routingBusy;
+  useEffect(() => {
+    // Best-effort on both sides: a failed pin must not break the flow it was
+    // protecting, and a failed unpin leaves a popover that needs the tray icon
+    // to dismiss - annoying, not broken.
+    if (popoverHeld) void pinPopover().catch(() => {});
+    else void unpinPopover().catch(() => {});
+  }, [popoverHeld]);
+
   const onMenuSelect = useCallback(
     (action: TrayMenuAction) => {
       setMenuOpen(false);
-      if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL).then((err) => {
-        if (err) setActionError(err);
-      });
+      if (action === "dashboard") {
+        // Null means this gateway has no dashboard, which is worth saying
+        // rather than opening a guess.
+        if (dash === null) setActionError(NO_DASHBOARD);
+        else
+          void openExternal(dash.root).then((err) => {
+            if (err) setActionError(err);
+          });
+      }
+      else if (action === "support") {
+        // The dashboard's Overview page: support is a floating action button in
+        // its corner, not a route of its own (AG-598, settled 2026-09-07).
+        if (dash === null) setActionError(NO_DASHBOARD);
+        else
+          void openExternal(dash.support).then((err) => {
+            if (err) setActionError(err);
+          });
+      }
       else if (action === "docs") void openExternal(GATE_DOCS_URL).then((err) => {
         if (err) setActionError(err);
       });
@@ -562,7 +626,7 @@ export function TrayApp() {
         }
       }
     },
-    [],
+    [dash],
   );
 
   /** The tools the sweep says are applied and not picked up. Names for the card,
@@ -643,6 +707,19 @@ export function TrayApp() {
           : undefined
       }
       orgName={account?.org_name ?? "No organization"}
+      // Only for an account that HAS orgs to switch between. An API-key account
+      // holds no org locally, so the selector it would open has nothing to
+      // offer, and the footer stays the label the frame draws.
+      onSwitchOrg={
+        account?.auth_mode === "oauth"
+          ? () => {
+              setMenuOpen(false);
+              void requestSwitchOrg().catch((e) =>
+                setActionError(classifyError(e, "generic")),
+              );
+            }
+          : undefined
+      }
       signedOut={account === null && !accountUnread}
       accountUnread={accountUnread}
       onToggleApp={toggleApp}
