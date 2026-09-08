@@ -65,6 +65,11 @@ jobs:
   # merely warns on unmaintained/yanked crates, which is the line worth blocking
   # a merge on. It reads `Cargo.lock` and never builds, so it costs seconds and
   # does not need the Linux GTK stack.
+  #
+  # The five advisories this found on its first run all predate it and are
+  # ignored in `.cargo/audit.toml`, which says for each one what pulls it, how
+  # reachable it is, and what fixes it. Read that file before adding a sixth:
+  # the point of the job is that a NEW advisory turns it red.
   audit:
     name: Dependency advisories
     runs-on: ubuntu-latest
