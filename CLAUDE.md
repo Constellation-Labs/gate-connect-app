@@ -96,4 +96,16 @@ release.
    detail, account form, migrate form) slide as full-popover panels and
    animate in/out, not as nested dialogs.
 
+## Implementation notes that bite
+
+- **`pnpm app:local` cannot see a keychain bug, by construction.**
+  `GATE_CONNECT_TEST_SECRETS` replaces the OS secret store with files, so every
+  code path that talks to the real Keychain / Credential Manager / Secret
+  Service is skipped. A libdbus stack smash in the Secret Service client
+  aborted `pnpm app` on most Linux launches while `pnpm app:local` stayed clean
+  for weeks. CI cannot see it either: every Rust test uses the in-memory
+  backend or the file seam, and `ci/e2e/run.sh` exports the seam too. Anything
+  touching `keyring` or `keychain.rs` has to be checked with `pnpm app` on each
+  OS, and nothing green proves otherwise.
+
 NOTE: never use "—"
