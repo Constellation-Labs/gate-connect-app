@@ -66,19 +66,41 @@ export interface MessagesBucket {
 }
 
 /**
- * A bucket's hour as the axis draws it: zero-padded, on the hour ("00:00").
+ * A bucket's hour, zero-padded, as the Overview axis draws it: **no minutes**.
  *
- * The redrawn chart (`706:9997`, read 2026-08-28) labels every tick this way;
- * it used to draw a bare hour, which is what `label` still carries and what the
- * accessible table used to suffix by hand. One function so the axis, the
- * tooltip heading and that table cannot phrase one bucket three ways.
+ * **The file contradicts itself here, and the Overview card wins.** The
+ * component sample `706:9997` labels its ticks `00:00 ... 11:00` and is what
+ * this function used to print everywhere; the Overview Messages card
+ * (`116:30705`) draws bare numbers, and it is the surface these ticks are on.
+ * CLAUDE.md's rule for a file that disagrees with itself is to match what the
+ * frame renders for the surface being built, and the newest-node tiebreak
+ * points at `706:9997` - which is a 12-bucket sample, where the axis has twice
+ * the room per label that the real 24-bucket card has. Reported broken from a
+ * running build on 2026-09-08: at 24 buckets the `:00` on every tick ran the
+ * labels into each other and off the card.
  *
- * The `chart/tooltip` card is the exception the file has not caught up on: it
- * is an older node (`191:*`) than the redrawn axis around it and still heads
- * itself with a bare hour. A heading that names a column has to match the
- * column, so it follows the axis here.
+ * **What the frame draws and this does not** is `1 ... 24` - bucket ordinals
+ * rather than clock hours. Not adopted: the buckets are wall-clock hours, and
+ * numbering them 1-24 would make "1" mean the first hour of a rolling window
+ * rather than 01:00, which is a claim about *when* the traffic happened that
+ * the axis would be getting wrong. Raise it rather than resolve it by eye.
  */
 export function hourTick(label: string): string {
+  return label.padStart(2, "0");
+}
+
+/**
+ * The same bucket, named in full ("07:00"), for the two places a label is read
+ * on its own: the tooltip heading and the accessible table's row header.
+ *
+ * The docstring above used to argue for one function so the axis, the tooltip
+ * and the table could not phrase one bucket three ways, and that concern is
+ * right - two is the most this should ever be. But the axis is a dense row of
+ * 24 labels where `:00` is pure repetition, while these two are read singly and
+ * out of context: "07" alone in a tooltip, or announced as a row header, does
+ * not say it is a time at all.
+ */
+export function hourHeading(label: string): string {
   return `${label.padStart(2, "0")}:00`;
 }
 
@@ -323,7 +345,7 @@ export function MessagesChart({
         <tbody>
           {buckets.map((b) => (
             <tr key={b.id}>
-              <th scope="row">{hourTick(b.label)}</th>
+              <th scope="row">{hourHeading(b.label)}</th>
               <td>{b.total}</td>
               <td>{b.blocked}</td>
               <td>{b.flagged}</td>
@@ -424,7 +446,7 @@ function ChartTooltip({
       }
     >
       <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-foreground">
-        {hourTick(bucket.label)}
+        {hourHeading(bucket.label)}
       </p>
       <div className="mt-2 flex flex-col gap-1">
         {SERIES.map(({ key, label, className }) => (
