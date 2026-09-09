@@ -1267,6 +1267,25 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
+    /// Linux only: whether every per-user NSS database on this machine holds
+    /// the current CA. `None` everywhere else, and on Linux until a browser
+    /// that keeps one has run.
+    ///
+    /// Beside `ca_trusted` this is the difference between two states the UI
+    /// otherwise cannot tell apart, both of which look like Gate breaking
+    /// HTTPS. Trusted with `Some(true)`: the stores are right and a browser
+    /// still failing is one older than the write, which reopening fixes.
+    /// Trusted with `Some(false)`: `certutil` is missing or its write failed
+    /// (`ca_linux.rs` prints the reason and carries on, because the system
+    /// anchor still serves Firefox and every CLI), so Chromium-based browsers
+    /// cannot validate an intercepted host at all and no amount of reopening
+    /// will change that - the fix is a package install.
+    ///
+    /// It was already collected for the support report (`diagnostics.rs`) and
+    /// nowhere else, which left the product giving advice where it had a
+    /// reading. Principle 6: a reading outranks a sentence beside it.
+    #[serde(default)]
+    pub ca_nss_trusted: Option<bool>,
     /// Whether Gate is putting its proxy into the user's environment - the
     /// channel that routes command-line tools, as distinct from the OS proxy
     /// setting that routes GUI apps. A user-held choice, because the variables

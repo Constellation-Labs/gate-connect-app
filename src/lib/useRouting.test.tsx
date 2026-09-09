@@ -47,6 +47,7 @@ const proxyState = (over: Partial<ProxyState> = {}): ProxyState => ({
   port: 8080,
   pac_port: null,
   ca_trusted: true,
+  ca_nss_trusted: null,
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: false,
   env_export_separable: true,

@@ -734,17 +734,17 @@ describe("browserTrustRestartAdvice", () => {
     // p11-kit, both at process start (`ca_linux.rs`). macOS and Windows
     // re-evaluate trust for a running process, so naming browsers there would
     // be caution rather than mechanism.
-    expect(browserTrustRestartAdvice("linux")).toBeDefined();
-    expect(browserTrustRestartAdvice("macos")).toBeUndefined();
-    expect(browserTrustRestartAdvice("windows")).toBeUndefined();
-    expect(browserTrustRestartAdvice("unknown")).toBeUndefined();
+    expect(browserTrustRestartAdvice("linux", true)).toBeDefined();
+    expect(browserTrustRestartAdvice("macos", null)).toBeUndefined();
+    expect(browserTrustRestartAdvice("windows", null)).toBeUndefined();
+    expect(browserTrustRestartAdvice("unknown", null)).toBeUndefined();
   });
 
   it("names the vault the platform's own way", () => {
     // Through `trustStoreName`, like every other string that says where
     // something of the user's lives. "keyring" would be the wrong vault and
     // "keychain" the wrong platform.
-    expect(browserTrustRestartAdvice("linux")?.body).toContain(
+    expect(browserTrustRestartAdvice("linux", true)?.body).toContain(
       "certificate store",
     );
   });
@@ -753,7 +753,38 @@ describe("browserTrustRestartAdvice", () => {
     // Reopening a window in a process that is still running changes nothing:
     // the NSS read happened at startup. A browser told to "reload" would fail
     // exactly as before and read as Gate being broken.
-    expect(browserTrustRestartAdvice("linux")?.body).toContain("quit");
+    expect(browserTrustRestartAdvice("linux", true)?.body).toContain("quit");
+  });
+
+  it("does not ask for a reopen that cannot work", () => {
+    // `ca_nss_trusted === false` is the reading that says the store Chromium
+    // reads never took the CA - a missing `certutil`, or a write that failed.
+    // Reopening is then a loop with no exit, so the note must not name it, and
+    // must name the package that does end it.
+    const advice = browserTrustRestartAdvice("linux", false);
+    expect(advice?.body).not.toContain("quit it completely");
+    expect(advice?.body).toContain("libnss3-tools");
+    expect(advice?.body).toContain("nss-tools");
+  });
+
+  it("says who is unaffected, because most of the machine is", () => {
+    // The system anchor still serves Firefox and `NODE_EXTRA_CA_CERTS` still
+    // serves the Node CLIs, so this is one family of browsers rather than
+    // routing being broken - and a note that did not say so would read as the
+    // latter.
+    expect(browserTrustRestartAdvice("linux", false)?.body).toContain(
+      "Firefox and command-line tools are unaffected",
+    );
+  });
+
+  it("falls back to the reopen note when there is no reading", () => {
+    // `null` is not "false": it means no browser here keeps an NSS store, so
+    // there is nothing to report about one and the restart is still the only
+    // thing Gate cannot check. Principle 6 in the small - absence of a reading
+    // is not a negative reading.
+    expect(browserTrustRestartAdvice("linux", null)?.title).toBe(
+      browserTrustRestartAdvice("linux", true)?.title,
+    );
   });
 });
 

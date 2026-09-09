@@ -2139,9 +2139,15 @@ export function NewUiApp() {
    * raise this on every launch of an already-trusted install.
    *
    * Cleared by the user alone. Nothing Gate can read afterwards says whether
-   * they reopened anything (`groups.ts` says why the reading does not exist), so
-   * a dismissal is the only thing that can retire it, and it does not come back
-   * until trust is removed and granted again.
+   * they reopened anything, so a dismissal is the only thing that can retire it,
+   * and it does not come back until trust is removed and granted again.
+   *
+   * `ca_nss_trusted` rides along from the same snapshot, and it decides which
+   * note this is: whether the store Chromium reads actually took the CA is a
+   * reading, and it is the difference between "reopen your browser" and "no
+   * reopening will help, install certutil". Read off the *incoming* state rather
+   * than a later poll, so the sentence describes the trust change that just
+   * happened.
    */
   const [browserRestart, setBrowserRestart] = useState<{
     title: string;
@@ -2153,7 +2159,10 @@ export function NewUiApp() {
     const seen = caTrustedSeen.current;
     caTrustedSeen.current = trusted;
     if (seen === false && trusted === true) {
-      setBrowserRestart(browserTrustRestartAdvice(platform) ?? null);
+      setBrowserRestart(
+        browserTrustRestartAdvice(platform, proxy?.ca_nss_trusted ?? null) ??
+          null,
+      );
     }
   }, [proxy, platform]);
 

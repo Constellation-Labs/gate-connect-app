@@ -199,15 +199,37 @@ export function proxyReopenAdvice(
  * Said once, on the transition, not standing: it is only true of processes older
  * than the trust change, and a note that stayed up would keep telling a user who
  * has already reopened everything to reopen it. The shell drives it off
- * `ca_trusted` going false to true, and it is advice rather than a reading for
- * the same reason `PROXY_REOPEN_ADVICE` is - Gate cannot see these processes.
- * `ca_nss_trusted` (diagnostics) is the reading that could sharpen this into
- * "Chromium cannot see the CA at all"; it does not reach `ProxyState` yet.
+ * `ca_trusted` going false to true.
+ *
+ * **Which of the two things it says is a reading, not a guess.** `nssTrusted` is
+ * `ProxyState.ca_nss_trusted`: Gate cannot see a browser process, but it can see
+ * whether the store that browser reads holds the CA, and that decides which
+ * sentence is true. `false` means `certutil` is missing or its write failed
+ * (`ca_linux.rs` says so on stderr and carries on, because the system anchor
+ * still serves Firefox and every CLI), so a Chromium browser cannot validate an
+ * intercepted host however many times it is reopened, and the fix is a package.
+ * Telling that user to quit their browser would send them round a loop that
+ * cannot end. `true` or no reading at all leaves the restart, which is the one
+ * thing Gate genuinely cannot check.
+ *
+ * The false case is still raised on the transition rather than standing, even
+ * though it describes a condition that persists. That is a deliberate limit: a
+ * standing notice needs somewhere to live and something to retire it, and the
+ * honest home for "Chromium cannot see the CA" is the certificate section in
+ * Settings rather than a banner nobody can clear. Until it has one, the
+ * diagnostics report is where the state is legible.
  */
 export function browserTrustRestartAdvice(
   platform: Platform,
+  nssTrusted: boolean | null,
 ): { title: string; body: string } | undefined {
   if (platform !== "linux") return undefined;
+  if (nssTrusted === false) {
+    return {
+      title: "Chromium-based browsers can’t see the certificate",
+      body: `Gate added its certificate to your ${trustStoreName(platform)}, but not to the separate store Chromium-based browsers read - Chrome, Chromium, Brave, Edge and Vivaldi each keep their own. They will reject Gate’s traffic until certutil is installed (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools) and you switch routing on again. Firefox and command-line tools are unaffected.`,
+    };
+  }
   return {
     title: "Browsers already open need reopening",
     body: `Gate has added its certificate to your ${trustStoreName(platform)}. A browser reads that when it starts, so one that was already open will reject Gate’s traffic until you quit it completely and open it again.`,

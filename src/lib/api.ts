@@ -300,6 +300,17 @@ export interface ProxyState {
   /** Loopback port serving the PAC script (macOS/Windows; null on Linux). */
   pac_port: number | null;
   ca_trusted: boolean;
+  /** Linux only: whether every per-user NSS database on this machine holds the
+   * CA. Null elsewhere, and on Linux until a browser that keeps one has run.
+   *
+   * The reading that separates two states `ca_trusted` alone cannot. True: the
+   * stores are right, so a browser still failing is one older than the write
+   * and reopening it is the fix. False: `certutil` is missing or its write
+   * failed, so Chromium-based browsers cannot validate an intercepted host at
+   * all and reopening changes nothing - the fix is a package install. Same
+   * field the support report has always carried (`ca_nss_trusted` in
+   * `Diagnostics`); the product now reads it too. */
+  ca_nss_trusted: boolean | null;
   /** Whether Gate puts its proxy in the shell environment - the channel that
    * routes command-line tools, as opposed to the OS setting that routes GUI
    * apps. A separate choice because those variables are machine-wide. */

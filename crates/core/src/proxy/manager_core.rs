@@ -175,6 +175,11 @@ impl<O: DesktopOps> DesktopManager<O> {
             port,
             pac_port,
             ca_trusted: self.ops.ca_is_trusted()?,
+            // No second store to disagree with the first: macOS and Windows put
+            // user-added roots where the browser already looks. Not a seam on
+            // `DesktopOps` for that reason - there is nothing per-platform to
+            // ask - and `diagnostics.rs` answers the same question the same way.
+            ca_nss_trusted: None,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             relay_base_url: crate::proxy::relay_base_url(),
