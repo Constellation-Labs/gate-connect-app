@@ -88,6 +88,13 @@ fn bind_proxy_ports() -> std::net::TcpListener {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
     fs::write(dir.join("port"), port.to_string()).unwrap();
+    // An engine that has started has minted its CA, and Claude Code's connect
+    // refuses without one rather than writing a proxy it could not verify.
+    fs::write(
+        dir.join("ca-cert.pem"),
+        "-----BEGIN CERTIFICATE-----\ngate-test-ca\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
     #[cfg(target_os = "macos")]
     let snapshot = "[]";
     #[cfg(target_os = "linux")]

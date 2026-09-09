@@ -264,6 +264,22 @@ impl Integration for ClaudeCode {
             );
         }
 
+        // A live engine has minted the CA, so this is a should-not-happen
+        // state (a cleared app-support dir under a still-running engine). It
+        // is worth a refusal rather than a warning because writing the proxy
+        // anyway produces exactly the failure this key exists to prevent, and
+        // a path Claude Code cannot read is one it reports as an SSL error
+        // with no mention of Gate. Refusing leaves the tool unrouted, which is
+        // the recoverable half of that pair.
+        let ca_cert_path = crate::proxy::ca_cert_path()?;
+        if !ca_cert_path.exists() {
+            anyhow::bail!(
+                "Gate's CA certificate is missing at {} - restart the proxy so the engine mints \
+                 it, then connect Claude Code again",
+                ca_cert_path.display()
+            );
+        }
+
         let mut settings = load_settings()?.unwrap_or_default();
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
@@ -307,7 +323,7 @@ impl Integration for ClaudeCode {
         env_block.insert(KEY_NO_PROXY.into(), Value::String(NO_PROXY_VALUE.into()));
         env_block.insert(
             KEY_NODE_EXTRA_CA_CERTS.into(),
-            Value::String(crate::proxy::ca_cert_path()?.display().to_string()),
+            Value::String(ca_cert_path.display().to_string()),
         );
 
         let marker = ensure_object(&mut settings, MARKER_KEY);

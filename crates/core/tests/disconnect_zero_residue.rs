@@ -102,9 +102,12 @@ fn seed_engine_port(port: u16) {
     fs::write(&path, port.to_string()).unwrap();
 }
 
-/// Seed a CA cert so `ca_bundle::ensure()` has something to append. Contents
-/// are never parsed here - the bundle is concatenated text - so a marker string
-/// is enough to prove it made it into the output.
+/// Seed a CA cert, the way a started engine mints one. Hermes needs it so
+/// `ca_bundle::ensure()` has something to append; Claude Code's `connect()`
+/// refuses outright without it, rather than writing a proxy whose leaf the
+/// tool could not verify. Contents are never parsed here - the bundle is
+/// concatenated text - so a marker string is enough to prove it made it into
+/// the output.
 fn seed_ca_cert() {
     let path = env::app_support_dir()
         .unwrap()
@@ -264,6 +267,7 @@ fn claude_code_migrates_legacy_relay_and_restores_user_proxy() {
     )
     .unwrap();
 
+    seed_ca_cert();
     let claude = find(ToolId::ClaudeCode).unwrap();
     claude.connect(&connect_input(9977)).unwrap();
 
@@ -339,6 +343,7 @@ fn claude_code_connect_writes_the_ca_and_disconnect_takes_it_away() {
         .display()
         .to_string();
 
+    seed_ca_cert();
     let claude = find(ToolId::ClaudeCode).unwrap();
     claude.connect(&connect_input(9977)).unwrap();
 
@@ -376,6 +381,39 @@ fn claude_code_connect_writes_the_ca_and_disconnect_takes_it_away() {
         "the user's own CA must come back, not stay overwritten by ours"
     );
     assert!(restored.get("_gateConnect").is_none());
+}
+
+/// No CA on disk, no write at all.
+///
+/// The pair is what makes this integration work, so half of it is not a
+/// partial success: a settings.json carrying the proxy and a CA path Claude
+/// Code cannot read routes every request into the engine and fails the
+/// handshake, reported as an SSL error that names no part of Gate. An engine
+/// that has started has minted the CA, so reaching this means something
+/// removed it underneath us; leaving the tool unrouted is the state a user can
+/// recover from.
+#[test]
+fn claude_code_connect_refuses_when_the_ca_is_missing() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+    // Deliberately no seed_ca_cert() here.
+    let err = find(ToolId::ClaudeCode)
+        .unwrap()
+        .connect(&connect_input(9977))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("CA certificate is missing"),
+        "the refusal must name the missing CA, got: {err}"
+    );
+    assert!(
+        !settings.exists(),
+        "a refused connect must leave settings.json untouched, not half-written"
+    );
 }
 
 #[test]
