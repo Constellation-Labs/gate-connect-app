@@ -478,6 +478,18 @@ export interface RunningAgent {
   /** Process name as the OS spells it, original case. "Claude" is the desktop
    * app, "claude" the CLI. */
   name: string;
+  /** The tool's product name. What to draw when {@link listTools} cannot name
+   * the slug, which is the case for both desktop-app rows: their slugs are
+   * proxy-domain keys, so the registry has no row to read a name off. Falls
+   * back to {@link RunningAgent.name} rather than to a blank. */
+  product_name: string;
+  /** Can the routing sweep answer for this tool at all?
+   *
+   * True exactly for the registry integrations. `routing_verdicts` walks the
+   * registry, so the desktop-app rows never get an entry there whatever they
+   * are doing - and a reopen flow that waited for one could only ever time out
+   * into "Verification failed" for a tool nothing was going to answer for. */
+  verifiable: boolean;
   /** Can Gate Connect launch this tool again itself once it is closed?
    *
    * **False for every tool today**, and it is reported rather than assumed

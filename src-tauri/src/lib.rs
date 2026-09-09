@@ -1784,11 +1784,19 @@ fn drain_backend_errors() -> Vec<BackendError> {
 /// the probe and the kill both walked the whole list. A tool that isn't here
 /// contributes no names, so asking about it finds nothing rather than falling
 /// back to everything.
+///
+/// The third column is the tool's product name, and it is here because two of
+/// these slugs are *not* registry tool ids. `list_tools` is where every surface
+/// gets a product name from, and it has no `anthropic` or `chatgpt` row - so a
+/// process scan that reported only the OS name left the reopen flow drawing
+/// rows titled `Claude` or, where a caller fell back to the key, `anthropic`.
+/// Naming them beside the process is the only place that cannot drift from the
+/// row it names.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
-    ("claude-code", "claude", Surface::Cli),
-    ("codex", "codex", Surface::Cli),
-    ("opencode", "opencode", Surface::Cli),
+const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
+    ("claude-code", "claude", "Claude Code", Surface::Cli),
+    ("codex", "codex", "Codex", Surface::Cli),
+    ("opencode", "opencode", "OpenCode", Surface::Cli),
     // The desktop apps. Their slugs are proxy-domain keys rather than registry
     // tool ids, because that is what these are: Gate routes them through the
     // system proxy, not by rewriting a config file. `agent_names_for`'s doc
@@ -1798,7 +1806,7 @@ const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
     // Case matters and is not incidental: `Claude` here is the desktop app,
     // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
     // them together. Confirmed with the product.
-    ("anthropic", "Claude", Surface::App),
+    ("anthropic", "Claude", "Claude Desktop", Surface::App),
     // `ChatGPT` on Windows too, where `.exe` is stripped before the match.
     // Confirmed with the product.
     //
@@ -1814,7 +1822,7 @@ const AGENT_PROCESSES: [(&str, &str, Surface); 5] = [
     // "Claude Desktop / Cowork". Those are about which switch routes the
     // traffic, not about a process to close, and at least one of the two
     // readings is wrong - see the note raised with this change.
-    ("chatgpt", "ChatGPT", Surface::App),
+    ("chatgpt", "ChatGPT", "ChatGPT", Surface::App),
 ];
 
 /// Whether Gate may relaunch a process it closed.
@@ -1848,8 +1856,8 @@ enum Surface {
 fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
     AGENT_PROCESSES
         .iter()
-        .filter(|(slug, _, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
-        .map(|(_, name, _)| *name)
+        .filter(|(slug, _, _, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
+        .map(|(_, name, _, _)| *name)
         .collect()
 }
 
@@ -1952,8 +1960,23 @@ fn surface_of(process: &sysinfo::Process) -> Option<Surface> {
     let name = agent_name_of(process);
     AGENT_PROCESSES
         .iter()
-        .find(|(_, n, _)| *n == name)
-        .map(|(_, _, surface)| *surface)
+        .find(|(_, n, _, _)| *n == name)
+        .map(|(_, _, _, surface)| *surface)
+}
+
+/// The product name of the tool a running process belongs to, by the same
+/// normalisation the walk filtered on. `None` for a process no row claims.
+///
+/// The fallback every surface of the reopen flow needs when `list_tools` cannot
+/// answer, which is the case for the two desktop-app rows - see
+/// [`AGENT_PROCESSES`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_product_name_of(process: &sysinfo::Process) -> Option<&'static str> {
+    let name = agent_name_of(process);
+    AGENT_PROCESSES
+        .iter()
+        .find(|(_, n, _, _)| *n == name)
+        .map(|(_, _, product, _)| *product)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1961,8 +1984,8 @@ fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     let name = agent_name_of(process);
     AGENT_PROCESSES
         .iter()
-        .find(|(_, n, _)| *n == name)
-        .map(|(slug, _, _)| *slug)
+        .find(|(_, n, _, _)| *n == name)
+        .map(|(slug, _, _, _)| *slug)
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -2257,8 +2280,8 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 fn agent_process_names(slug: &str) -> Vec<&'static str> {
     AGENT_PROCESSES
         .iter()
-        .filter(|(s, _, _)| *s == slug)
-        .map(|(_, name, _)| *name)
+        .filter(|(s, _, _, _)| *s == slug)
+        .map(|(_, name, _, _)| *name)
         .collect()
 }
 
@@ -2796,6 +2819,24 @@ struct RunningAgent {
     /// Process name as the OS spells it, original case - "Claude" is the
     /// desktop app, "claude" the CLI, and which one is running matters.
     name: String,
+    /// The tool's product name, from [`AGENT_PROCESSES`]. What a surface should
+    /// draw when `list_tools` cannot name the slug, which is every scan that
+    /// finds one of the two desktop apps: their slugs are proxy-domain keys, so
+    /// the registry has no row to read a name off.
+    product_name: String,
+    /// Can the routing sweep produce a verdict for this tool at all?
+    ///
+    /// True exactly for the registry integrations. `routing_verdicts` walks
+    /// [`registry::registry`], so the desktop-app rows - whose slugs are
+    /// proxy-domain keys - never get an entry there, whatever they are doing.
+    ///
+    /// Reported rather than inferred because the reopen flow's verification step
+    /// waits on that verdict. Without this the wait could only ever time out:
+    /// the row spun in `Verifying` and then claimed verification had *failed*
+    /// for a tool nothing was ever going to answer for - which on macOS is the
+    /// one row Gate closes and reopens itself, so it is the row the user
+    /// watches.
+    verifiable: bool,
     /// Can Gate Connect launch this tool again itself, once it has been closed?
     ///
     /// **False for every tool in the registry**, and this is a fact about them
@@ -2878,6 +2919,13 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
         agents.push(RunningAgent {
             slug: slug.to_string(),
             name: process.name().to_string_lossy().to_string(),
+            // The table's name, falling back to the OS's rather than to a blank:
+            // a row with no title at all is worse than one titled `Claude`, and
+            // a process the walk yielded always has a row to read.
+            product_name: agent_product_name_of(process)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| process.name().to_string_lossy().to_string()),
+            verifiable: ToolId::from_slug(slug).is_some(),
             // Derived, not assumed: true exactly when Gate resolved somewhere
             // to launch this back from. A CLI never resolves one - see
             // `Surface` - and an app whose executable path the OS would not
@@ -3051,8 +3099,8 @@ fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
     // does not conclude it is broken.
     let names: Vec<&str> = AGENT_PROCESSES
         .iter()
-        .filter(|(slug, _, _)| pending.iter().any(|(s, _)| s == slug))
-        .map(|(_, name, _)| *name)
+        .filter(|(slug, _, _, _)| pending.iter().any(|(s, _)| s == slug))
+        .map(|(_, name, _, _)| *name)
         .collect();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -5121,8 +5169,8 @@ mod tests {
         let slug_for = |raw: &str| {
             AGENT_PROCESSES
                 .iter()
-                .find(|(_, name, _)| *name == normalise_agent_name(raw))
-                .map(|(slug, _, _)| *slug)
+                .find(|(_, name, _, _)| *name == normalise_agent_name(raw))
+                .map(|(slug, _, _, _)| *slug)
         };
         assert_eq!(slug_for("claude"), Some("claude-code"));
         assert_eq!(slug_for("Claude"), Some("anthropic"));
@@ -5140,7 +5188,7 @@ mod tests {
     /// not have a lookup that punishes it.
     #[test]
     fn the_lookup_returns_every_name_a_slug_claims() {
-        for (slug, name, _) in AGENT_PROCESSES {
+        for (slug, name, _, _) in AGENT_PROCESSES {
             assert!(
                 agent_process_names(slug).contains(&name),
                 "{slug} does not resolve back to {name}"
@@ -5150,13 +5198,34 @@ mod tests {
         assert!(agent_process_names("hermes").is_empty());
     }
 
+    /// Every row can be named, and only the registry rows can be verified.
+    ///
+    /// Two halves of the same fact about the two desktop-app rows: their slugs
+    /// are proxy-domain keys, so `list_tools` cannot name them and
+    /// `routing_verdicts` cannot answer for them. The table carries the name;
+    /// `RunningAgent::verifiable` carries the second half, and the reopen flow
+    /// needs it to stop waiting for a verdict that is never coming.
+    #[test]
+    fn desktop_app_rows_are_named_but_not_verifiable() {
+        for (slug, _, product, _) in AGENT_PROCESSES {
+            assert!(!product.is_empty(), "{slug} has no product name");
+            assert_eq!(
+                ToolId::from_slug(slug).is_some(),
+                matches!(slug, "claude-code" | "codex" | "opencode"),
+                "{slug} disagrees with the registry about whether it can be swept"
+            );
+        }
+        assert!(ToolId::from_slug("anthropic").is_none());
+        assert!(ToolId::from_slug("chatgpt").is_none());
+    }
+
     /// The CLI rows must never become relaunchable. This is the assertion that
     /// stops someone "fixing" a CLI's `can_reopen` by widening `Surface`:
     /// spawning a terminal program's binary starts a different one, somewhere
     /// else, and drops the session the user agreed to close.
     #[test]
     fn only_apps_are_relaunchable() {
-        for (slug, _, surface) in AGENT_PROCESSES {
+        for (slug, _, _, surface) in AGENT_PROCESSES {
             let expected = match slug {
                 "claude-code" | "codex" | "opencode" => Surface::Cli,
                 _ => Surface::App,
@@ -5179,7 +5248,7 @@ mod tests {
         ] {
             assert!(!AGENT_PROCESSES
                 .iter()
-                .any(|(_, name, _)| *name == normalise_agent_name(helper)));
+                .any(|(_, name, _, _)| *name == normalise_agent_name(helper)));
         }
     }
 

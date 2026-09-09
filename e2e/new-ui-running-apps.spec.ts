@@ -231,7 +231,7 @@ test.describe("new UI running apps", () => {
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("Codex");
 
-    await banner.getByRole("button", { name: "Reopen tool" }).click();
+    await banner.getByRole("button", { name: "Close tool" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -239,6 +239,71 @@ test.describe("new UI running apps", () => {
     await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
       only: ["codex"],
     });
+  });
+
+  /**
+   * The reopen is what resolves this, and nothing tells the app it happened.
+   *
+   * `tool_watch.rs` watches config files and binaries - it has no view of the
+   * process table - so replacing the old 5s poll with `tools-changed` left the
+   * *process* half of detection with no event behind it. The banner then stood
+   * there naming a tool the user had already reopened, and because the shell
+   * never re-swept, it stood there for the rest of the session.
+   */
+  test("clears the invitation on its own once the tool has been reopened", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...CODEX, status: { kind: "connected" as const } }],
+      staleAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
+    await expect(banner).toBeVisible();
+
+    // The user opens it again, somewhere the app cannot see. No click, no
+    // event, no visibility change - the standing sweep is the only thing that
+    // can notice.
+    await app.patch({ staleAgents: 0 });
+
+    await expect(banner).toBeHidden({ timeout: 25_000 });
+    // And the rail row it was about reads as routing, off the same sweep.
+    // `exact`, because the sidebar's own eyebrow reads "Protected apps".
+    await expect(app.page.getByText("Protected", { exact: true })).toBeVisible({
+      timeout: 25_000,
+    });
+  });
+
+  /**
+   * The button on a reading that has gone stale. It cannot open the offer -
+   * there is no process to offer anything about - and returning in silence is
+   * what made it look broken. The answer is that the invitation was wrong.
+   */
+  test("a stale invitation takes itself down rather than doing nothing", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...CODEX, status: { kind: "connected" as const } }],
+      staleAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
+    await expect(banner).toBeVisible();
+
+    // Quit between the sweep that raised the banner and the press.
+    await app.patch({ staleAgents: 0, runningAgentNames: [] });
+    await banner.getByRole("button", { name: "Close tool" }).click();
+
+    // No dialog about a tool that is not running...
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeHidden();
+    // ...and the banner goes, because the empty scan is the answer to it.
+    await expect(banner).toBeHidden({ timeout: 25_000 });
   });
 
   /**

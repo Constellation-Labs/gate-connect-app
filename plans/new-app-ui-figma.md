@@ -2671,6 +2671,21 @@ the flow's slugs, and `routing_verdicts`. Three things fell out of it:
   someone can watch forever, so it becomes `verification failed` after a budget
   of ticks, and a close whose process is still there after two becomes `could not
   close`. Both are honest readings rather than optimism.
+- **A check that cannot exist is not a check that failed.** The budget above only
+  works where an answer is coming, and for two rows it never is: `anthropic` and
+  `chatgpt` in `AGENT_PROCESSES` are *proxy-domain keys*, and `routing_verdicts`
+  walks the registry, so it has no entry for them whatever they are doing. Those
+  rows spun through the whole budget and then reported **Verification failed** -
+  on macOS every single time, and on the one row Gate closes and relaunches
+  itself (`Surface::App` is the only surface `relaunch_target` resolves), so it
+  was the row the user watched. `RunningAgent.verifiable` now reports whether the
+  sweep can answer at all, and a row it cannot answer for stops at a stage of its
+  own, `reopened`, in a bucket of its own ("Reopened, not checked"). Terminal, but
+  deliberately not filed with the verified: a card claiming Gate had checked a
+  reading nobody took would be the one routing claim in this app with nothing
+  behind it. The same table now carries each row's **product name**, because
+  `list_tools` cannot name a proxy-domain slug either - which is what left these
+  rows drawn as `Claude`, or as the raw key.
 
 The rest, briefly: the offer step names each tool's route in use, requested
 route, running state and who reopens it (AC 1); the confirmation asks for a save
@@ -2679,7 +2694,10 @@ result separates applied-and-verified, waiting for a manual reopen, could not
 close, configuration failed and verification failed (AC 9); and each unresolved
 row carries its own actions - Reopen tool, Retry application, Retry verification,
 Use tool defaults, View diagnostics, Contact support - every one of them scoped
-to a single slug (AC 10). `lib/reopen.ts` holds the vocabulary and the pure
+to a single slug (AC 10). One exception, added later: `awaiting_reopen` offers
+**only** View diagnostics. Its "Retry verification" was a refresh button beside a
+reading that refreshes itself, which teaches the reader that it does not - see
+the standing sweep below. `lib/reopen.ts` holds the vocabulary and the pure
 transitions, for the same reason `lib/recovery.ts` exists: the dialogs, the shell
 banner and the tray card all draw these rows, and a row assembled twice is a row
 that reads "Verifying" on one surface and "Reopen required" on another.
@@ -2688,6 +2706,25 @@ that reads "Verifying" on one surface and "Reopen required" on another.
 detail, a new `ReopenBanner` in the shell's banner slot - which is what Overview
 shares - and a tray card. The banner drops the tool whose pane is open, because
 the card is already sitting on it with the same two routes and the same button.
+
+**All three keep sweeping, and all three say "Close tool".** Two later
+corrections, both from the same root: the reopen is the one reading in this app
+that resolves without anybody touching it, and nothing was watching for it.
+`tool_watch.rs` watches config files and binaries - never the process table - so
+replacing the old 5s poll with `tools-changed` left the *process* half of
+detection with no event behind it, and `redetect` deliberately keeps the sweep
+off the visibility edge because it costs two network probes. The result was a
+banner standing over a tool the user had already reopened, for the rest of the
+session, with a button that scanned, found nothing running and returned in
+silence. So each shell now runs a standing sweep on `REOPEN_IDLE_WATCH_MS` -
+armed only while some verdict reads `reopen_required`, disarmed by the reopen
+that clears it - plus one on the focus edge, and `useRunningApps` reports an
+empty scan (`onNothingRunning`) so a stale invitation takes itself down instead
+of swallowing the click. The label was the other half: Gate cannot reopen a CLI,
+so a button reading "Reopen Claude Code" promised the one thing this flow never
+does. It opens the close confirmation, and all three surfaces now say so. The
+heading above them still reads "Reopen to finish", which is the true sentence -
+Gate closes it, the person opens it.
 
 Two smaller things this turned up. `list_tools` sent only `row_label` ("CLI"),
 which two tools share, and every surface here is a flat list - so `ToolDto` now

@@ -203,7 +203,11 @@ export function ReopenAlert({
         onClick={onReopen}
         className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-foreground shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
-        Reopen tool
+        {/* "Close", not "Reopen" - the same correction as `ReopenBanner`'s
+            button below, and for the same reason: this opens the close
+            confirmation, and Gate cannot start a CLI again. Three surfaces
+            raise this one flow, so they carry one label. */}
+        Close tool
       </button>
     </div>
   );
@@ -258,7 +262,15 @@ export function ReopenBanner({
             onClick={() => onReopen(tool.slug)}
             className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
           >
-            {many ? `Reopen ${tool.name}` : "Reopen tool"}
+            {/* "Close", not "Reopen". The button opens the close
+                confirmation, because a CLI is a shell session Gate does not own
+                and cannot start again - `RunningAgent.can_reopen` is false for
+                every one of them. Labelling it "Reopen Claude Code" promised
+                the one thing this flow never does, and read as broken to
+                anybody who pressed it expecting their tool back. The heading
+                above still says "Reopen to finish", which is the true sentence:
+                Gate closes it, the user opens it. */}
+            {many ? `Close ${tool.name}` : "Close tool"}
           </button>
         ))}
         <button

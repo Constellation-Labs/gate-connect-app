@@ -879,7 +879,10 @@ function ReopenCard({
         onClick={reopen.onReopen}
         className="flex h-8 items-center justify-center rounded-md border border-amber-300 bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 shadow-base-btn-sm transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
       >
-        Reopen tool
+        {/* "Close", not "Reopen": this opens the close confirmation, and Gate
+            cannot start a CLI again. One label across the three surfaces that
+            raise this flow - see `banners.tsx`. */}
+        Close tool
       </button>
     </div>
   );

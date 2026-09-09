@@ -11,6 +11,7 @@ import {
   allSettled,
   isResting,
   nextStage,
+  REOPEN_IDLE_WATCH_MS,
   reopenTools,
   type ReopenPresence,
   type ReopenStage,
@@ -46,14 +47,16 @@ import {
  * what was saved.
  */
 
-/** How often the work stage re-reads the process table and the sweep.
+/** How often the work stage re-reads the process table and the sweep while Gate
+ *  is the one acting.
  *
  *  Two cadences, because the two waits are different lengths: while Gate is
  *  acting the row should move under the reader, and while it is waiting for
  *  someone to open a terminal it should not walk the process table twenty times
- *  a minute for an answer that arrives when it arrives. */
+ *  a minute for an answer that arrives when it arrives. The slower half is
+ *  `REOPEN_IDLE_WATCH_MS`, which lives in `lib/reopen` because both shells keep
+ *  looking on the same cadence once this dialog has been dismissed. */
 const WATCH_MS = 3000;
-const IDLE_WATCH_MS = 10_000;
 
 export type RunningAppsStage =
   /** Affected apps are running; offer to close them. */
@@ -88,9 +91,22 @@ export interface RunningApps {
 
 export function useRunningApps({
   onError,
+  onNothingRunning,
   nameFor,
 }: {
   onError?: (err: unknown) => void;
+  /**
+   * The scan found no process for the tools it was asked about.
+   *
+   * Called instead of opening a dialog, because a dialog about nothing is worse
+   * than silence - but silence alone is what made the shell banner's own button
+   * look broken. The banner is built from a verdict, the verdict is a reading
+   * taken at some earlier moment, and by the time somebody presses the button
+   * the tool may already have been reopened or quit. An empty scan is the
+   * answer to that: the invitation is stale, so the caller re-reads rather than
+   * leaving it on screen over a tool that is not running.
+   */
+  onNothingRunning?: (slugs?: string[]) => void;
   /** The tool's product name for a slug, which the shell reads off
    *  `list_tools`. The scan reports process names ("claude"), and every surface
    *  of this flow is a list of tools read by someone who knows it as Claude
@@ -132,6 +148,11 @@ export function useRunningApps({
     names.current = nameFor;
   }, [nameFor]);
 
+  const nothingRunning = useRef(onNothingRunning);
+  useEffect(() => {
+    nothingRunning.current = onNothingRunning;
+  }, [onNothingRunning]);
+
   const nameMap = useCallback((slugs: string[]): Map<string, string> => {
     const map = new Map<string, string>();
     for (const slug of slugs) {
@@ -171,7 +192,10 @@ export function useRunningApps({
         // app's toggle moved only its own, and naming the others would ask to
         // kill work for no reason.
         const { agents } = await runningAgents(slugs);
-        if (agents.length === 0) return;
+        if (agents.length === 0) {
+          nothingRunning.current?.(slugs);
+          return;
+        }
         // The verdict is read here rather than in the dialog because the two
         // routes it carries are the point of the step: "reopen required"
         // without them does not say what reopening would change.
@@ -181,7 +205,13 @@ export function useRunningApps({
           nameMap(agents.map((a) => a.slug)),
           verdicts,
         );
-        if (tools.length === 0) return;
+        if (tools.length === 0) {
+          // Same answer as an empty scan: every process the walk yielded was
+          // one no slug claims, so there is no tool here to offer anything
+          // about.
+          nothingRunning.current?.(slugs);
+          return;
+        }
         waited.current = new Map();
         commit({ kind: "offer", tools, slugs });
         track("routing_notice_shown");
@@ -278,7 +308,7 @@ export function useRunningApps({
     if (!watching) return;
     const id = setInterval(
       () => void tickRef.current(),
-      acting ? WATCH_MS : IDLE_WATCH_MS,
+      acting ? WATCH_MS : REOPEN_IDLE_WATCH_MS,
     );
     return () => clearInterval(id);
   }, [watching, acting]);

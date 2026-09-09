@@ -508,6 +508,14 @@ export function installFakeTauri(state: BackendState): void {
             // Gate cannot relaunch. A spec that wants the other branch has to
             // change this deliberately.
             can_reopen: false,
+            // The table's product name, which is what the reopen flow draws
+            // when `list_tools` cannot name the slug.
+            product_name: PRODUCT_NAMES[agentSlugOf(name)] ?? name,
+            // True for every row this harness models: `AGENT_PROCESSES` above
+            // carries only the three CLIs, and all three are registry tools the
+            // sweep answers for. The desktop-app rows - which are not - would
+            // need adding here before a spec could exercise `Reopened`.
+            verifiable: true,
             pid: 100 + i,
             started_at_unix: 1_700_000_000,
             // Whether a process predates the last routing change. `staleAgents`

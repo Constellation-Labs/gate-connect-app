@@ -129,6 +129,8 @@ const agents: RunningAgents = {
     {
       slug: "claude-code",
       name: "claude",
+      product_name: "Claude Code",
+      verifiable: true,
       can_reopen: false,
       pid: 12345,
       started_at_unix: NOW_UNIX - (2 * 3600 + 46 * 60),
@@ -137,6 +139,8 @@ const agents: RunningAgents = {
     {
       slug: "codex",
       name: "codex",
+      product_name: "Codex",
+      verifiable: true,
       can_reopen: false,
       pid: 23456,
       started_at_unix: NOW_UNIX - 60,
@@ -286,6 +290,8 @@ describe("agentLine", () => {
       {
         slug: "claude-code",
         name: "Claude",
+        product_name: "Claude Code",
+        verifiable: true,
         can_reopen: false,
         pid: 9,
         started_at_unix: NOW_UNIX - (3 * 86400 + 4 * 3600),
@@ -301,6 +307,8 @@ describe("agentLine", () => {
       {
         slug: "codex",
         name: "codex",
+        product_name: "Codex",
+        verifiable: true,
         can_reopen: false,
         pid: 9,
         started_at_unix: 0,

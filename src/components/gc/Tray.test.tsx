@@ -216,7 +216,7 @@ describe("the reopen notice", () => {
     });
     expect(screen.getByText(/Claude Code is still on/)).toBeTruthy();
     expect(screen.getByText("http://127.0.0.1:8123/anthropic")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reopen tool" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
   });
 
   it("does not truncate the address it exists to name", () => {
@@ -263,7 +263,7 @@ describe("the reopen notice", () => {
   it("reopens on the card's own action", () => {
     const onReopen = vi.fn();
     renderTray({ reopen: { names: ["Codex"], route: null, onReopen } });
-    screen.getByRole("button", { name: "Reopen tool" }).click();
+    screen.getByRole("button", { name: "Close tool" }).click();
     expect(onReopen).toHaveBeenCalledTimes(1);
   });
 });
