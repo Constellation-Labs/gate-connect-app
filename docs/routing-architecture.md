@@ -84,7 +84,7 @@ because registry values outlive a reboot where launchd variables do not.
 
 | Tool                                | Mechanism                         | What Gate writes                                                                             | In UI  |
 |---|---|---|---|
-| Claude Code                         | proxy engine                      | `HTTPS_PROXY` in the `settings.json` env block; canonical Anthropic base URL stays untouched | yes    |
+| Claude Code                         | proxy engine                      | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` in the `settings.json` env block; canonical Anthropic base URL stays untouched | yes    |
 | Codex                               | relay                             | `[model_providers.gate]` + pointer                                                           | yes    |
 | OpenCode                            | relay                             | `provider.<id>.options.baseURL`                                                              | yes    |
 | OpenClaw                            | proxy engine                      | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS`                                                     | yes    |
@@ -98,6 +98,18 @@ connected configuration would silently blind-tunnel around Gate. It is scoped
 to that one destination: a selected connection to any other host is decided by
 the catalog alone. What it does not do is make a bypass detectable from the
 config file - see O1 below.
+
+Claude Code needs the CA in that same env block, not just the proxy. Node and
+Bun ignore the OS trust store, so the system-wide anchor install does nothing
+for `claude`: routed with no `NODE_EXTRA_CA_CERTS` it rejects the engine's leaf
+with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. The settings.json value is a *fallback*
+rather than an override, though. Claude Code returns early when the variable is
+already in its environment and only then reads `env.NODE_EXTRA_CA_CERTS` from
+settings, so a machine that exports its own CA (a corporate bundle from a shell
+rc, or the prior value `env_proxy` restored on disable) keeps that one, still
+cannot verify our leaf, and `status()` - which can only read the file - reports
+Connected anyway. The environment is the channel that wins, and it carries
+Gate's cert alone.
 
 No tool config anywhere holds a credential. Codex is the one documented
 disconnect exception: a passthrough stub survives so threads started while

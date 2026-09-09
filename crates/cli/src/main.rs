@@ -447,7 +447,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
             );
             println!(
-                "  2. Re-run `claude` - it picks up HTTPS_PROXY from ~/.claude/settings.json while keeping Anthropic's canonical base URL."
+                "  2. Re-run `claude` - it picks up HTTPS_PROXY and NODE_EXTRA_CA_CERTS from ~/.claude/settings.json while keeping Anthropic's canonical base URL. If your shell already exports NODE_EXTRA_CA_CERTS, that one wins and has to trust Gate's CA too."
             );
             println!("  3. Select models normally: standard variants stay 200K and (1M) variants keep their 1M context through Gate.");
         }

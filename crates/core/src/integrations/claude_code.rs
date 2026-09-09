@@ -2,9 +2,9 @@
 //!
 //! Configures Anthropic's `claude` CLI to route through Constellation Gate
 //! via the MITM engine's forward proxy. `~/.claude/settings.json` receives
-//! `HTTPS_PROXY=http://gate-claude-code:route@127.0.0.1:<port>` plus a loopback
-//! `NO_PROXY`, which Claude Code injects into its own process at every
-//! invocation.
+//! `HTTPS_PROXY=http://gate-claude-code:route@127.0.0.1:<port>`, a loopback
+//! `NO_PROXY` and `NODE_EXTRA_CA_CERTS` pointing at our CA, which Claude Code
+//! injects into its own process at every invocation.
 //!
 //! Keeping `ANTHROPIC_BASE_URL` unset is essential. Claude Code treats a
 //! custom base URL as non-first-party for capability checks performed before
@@ -48,11 +48,41 @@ const KEY_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const KEY_CUSTOM_HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
 const KEY_HTTPS_PROXY: &str = "HTTPS_PROXY";
 const KEY_NO_PROXY: &str = "NO_PROXY";
-const MANAGED_KEYS: [&str; 4] = [
+/// Node ships its own trust bundle and never reads the OS trust store, so the
+/// system-wide anchor install - the thing that makes curl, git and openssl
+/// accept our leaves - does nothing for `claude`. Without this variable the
+/// proxy written below routes every request into the engine and Node then
+/// rejects the leaf with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, which Claude Code
+/// surfaces as "SSL certificate verification failed. Check your proxy or
+/// corporate SSL certificates".
+///
+/// It has to be written *here* and not left to [`super::env_proxy`], which
+/// exports the same variable. That one delivers it through the login
+/// environment (`environment.d`, `launchctl`, `HKCU\Environment`), a channel
+/// with neither the same reach nor the same timing: `settings.json` takes
+/// effect on the next `claude` launch, a login environment on the next login,
+/// only for sessions descended from it, and only while the user leaves that
+/// separate export switched on. Every gap between the two is a `claude` that
+/// is proxied with no CA - which is the whole failure, because a tool routed
+/// into the engine it cannot verify is worse off than one never routed at all.
+///
+/// What this write does *not* do is win a fight. Measured against the 2.1.266
+/// bundle, Claude Code reads the settings value only as a fallback: it returns
+/// early if the variable is already in its environment, and otherwise applies
+/// `env.NODE_EXTRA_CA_CERTS` to `process.env` at startup, in time for the lazy
+/// trust-store build. So a machine that exports its own CA - a corporate
+/// bundle from a shell rc, or the prior value `env_proxy` hands back on
+/// disable - keeps that one and still cannot verify our leaf, while
+/// [`Integration::status`] reads the file and reports `Connected`. Closing
+/// that hole means the environment carrying both certs, which is
+/// [`crate::proxy::ca_bundle`]'s job, not this one's.
+const KEY_NODE_EXTRA_CA_CERTS: &str = "NODE_EXTRA_CA_CERTS";
+const MANAGED_KEYS: [&str; 5] = [
     KEY_BASE_URL,
     KEY_CUSTOM_HEADERS,
     KEY_HTTPS_PROXY,
     KEY_NO_PROXY,
+    KEY_NODE_EXTRA_CA_CERTS,
 ];
 
 /// Keep loopback off the proxy, the same pairing every other proxy-routed
@@ -154,12 +184,40 @@ impl Integration for ClaudeCode {
         };
 
         match env_block.get(KEY_HTTPS_PROXY).and_then(|v| v.as_str()) {
-            Some(proxy) if proxy == expected_proxy => Ok(Status::Connected),
-            Some(proxy) => Ok(Status::Drifted(format!(
-                "{KEY_HTTPS_PROXY} in settings.json is {proxy:?}, expected {expected_proxy:?}"
+            Some(proxy) if proxy == expected_proxy => {}
+            Some(proxy) => {
+                return Ok(Status::Drifted(format!(
+                    "{KEY_HTTPS_PROXY} in settings.json is {proxy:?}, expected {expected_proxy:?}"
+                )));
+            }
+            None => {
+                return Ok(Status::Drifted(format!(
+                    "managed {KEY_HTTPS_PROXY} missing from settings.json env"
+                )));
+            }
+        }
+
+        // Checked after the proxy and never folded into it: the pair fails
+        // asymmetrically. A missing proxy leaves Claude Code unrouted, which is
+        // visible as traffic that never reaches Gate; a missing CA leaves it
+        // routed into an engine whose leaf it cannot verify, which is visible
+        // only as a TLS error the user has no reason to attribute to us. This
+        // reading as drift rather than `Connected` is also what lets
+        // `provider::reconcile_enabled` repair a settings.json written before
+        // the variable was managed - those files carry the proxy and no CA, and
+        // reported `Connected` all the way through the failure.
+        let expected_ca = crate::proxy::ca_cert_path()?.display().to_string();
+        match env_block
+            .get(KEY_NODE_EXTRA_CA_CERTS)
+            .and_then(|v| v.as_str())
+        {
+            Some(ca) if ca == expected_ca => Ok(Status::Connected),
+            Some(ca) => Ok(Status::Drifted(format!(
+                "{KEY_NODE_EXTRA_CA_CERTS} in settings.json is {ca:?}, expected {expected_ca:?}"
             ))),
             None => Ok(Status::Drifted(format!(
-                "managed {KEY_HTTPS_PROXY} missing from settings.json env"
+                "managed {KEY_NODE_EXTRA_CA_CERTS} missing from settings.json env - Claude Code \
+                 would route through the proxy without trusting Gate's CA"
             ))),
         }
     }
@@ -206,6 +264,22 @@ impl Integration for ClaudeCode {
             );
         }
 
+        // A live engine has minted the CA, so this is a should-not-happen
+        // state (a cleared app-support dir under a still-running engine). It
+        // is worth a refusal rather than a warning because writing the proxy
+        // anyway produces exactly the failure this key exists to prevent, and
+        // a path Claude Code cannot read is one it reports as an SSL error
+        // with no mention of Gate. Refusing leaves the tool unrouted, which is
+        // the recoverable half of that pair.
+        let ca_cert_path = crate::proxy::ca_cert_path()?;
+        if !ca_cert_path.exists() {
+            anyhow::bail!(
+                "Gate's CA certificate is missing at {} - restart the proxy so the engine mints \
+                 it, then connect Claude Code again",
+                ca_cert_path.display()
+            );
+        }
+
         let mut settings = load_settings()?.unwrap_or_default();
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
@@ -247,6 +321,10 @@ impl Integration for ClaudeCode {
         env_block.remove(KEY_CUSTOM_HEADERS);
         env_block.insert(KEY_HTTPS_PROXY.into(), Value::String(claude_proxy_url));
         env_block.insert(KEY_NO_PROXY.into(), Value::String(NO_PROXY_VALUE.into()));
+        env_block.insert(
+            KEY_NODE_EXTRA_CA_CERTS.into(),
+            Value::String(ca_cert_path.display().to_string()),
+        );
 
         let marker = ensure_object(&mut settings, MARKER_KEY);
         marker.insert("previousEnv".into(), Value::Object(prev));
@@ -360,6 +438,9 @@ mod tests {
         assert!(MANAGED_KEYS.contains(&KEY_HTTPS_PROXY));
         // The proxy variable never travels without its loopback bypass.
         assert!(MANAGED_KEYS.contains(&KEY_NO_PROXY));
+        // Nor without the CA. Node ignores the OS trust store, so writing the
+        // proxy alone routes `claude` straight into a TLS failure.
+        assert!(MANAGED_KEYS.contains(&KEY_NODE_EXTRA_CA_CERTS));
         assert!(!MANAGED_KEYS.contains(&"ANTHROPIC_BETAS"));
     }
 
