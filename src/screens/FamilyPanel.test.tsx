@@ -129,6 +129,7 @@ function renderPanel(
       group={group}
       busy={false}
       onBack={vi.fn()}
+      browserChannel={true}
       onToggleGroup={vi.fn()}
       onToggleTool={vi.fn()}
       onSetDomain={vi.fn()}

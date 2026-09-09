@@ -1253,6 +1253,33 @@ impl ProxyDomain {
     }
 }
 
+/// What the per-user NSS store Chromium reads holds, and when it does not hold
+/// our CA, **why** - because the two reasons want opposite things from the user.
+///
+/// A bare boolean was not enough, and shipping one was a bug: `ToolsMissing` is
+/// fixed by installing a package and `WriteFailed` is not, so a UI holding only
+/// "false" either prescribes a package the user may already have or says
+/// nothing. `CertutilFailure` has always drawn this line for the log messages
+/// (see `ca_linux.rs`, and `NSS_TOOLS_HINT`'s own doc comment on why); this
+/// carries it as far as the screen.
+///
+/// `None` on the wire, rather than a fourth variant, for two different absences
+/// that a caller treats alike: not Linux, and Linux with nothing that keeps such
+/// a store. Both mean there is no reading, which is not a negative reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NssTrust {
+    /// Every database found holds the current CA.
+    Trusted,
+    /// `certutil` is not installed, so Gate could not write any of them. The
+    /// one state a package install fixes.
+    ToolsMissing,
+    /// `certutil` is there and at least one database did not take the CA - a
+    /// lock, a permission, a database Gate cannot parse. A package install
+    /// changes nothing here; the log line names the store and the reason.
+    WriteFailed,
+}
+
 /// Snapshot of the proxy subsystem for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyState {
@@ -1267,25 +1294,63 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
-    /// Linux only: whether every per-user NSS database on this machine holds
-    /// the current CA. `None` everywhere else, and on Linux until a browser
-    /// that keeps one has run.
+    /// Linux only: what the store Chromium reads holds, as [`NssTrust`], from
+    /// the last time Gate wrote it in this process. `None` everywhere else, and
+    /// on Linux until a trust write has happened here.
     ///
-    /// Beside `ca_trusted` this is the difference between two states the UI
-    /// otherwise cannot tell apart, both of which look like Gate breaking
-    /// HTTPS. Trusted with `Some(true)`: the stores are right and a browser
-    /// still failing is one older than the write, which reopening fixes.
-    /// Trusted with `Some(false)`: `certutil` is missing or its write failed
-    /// (`ca_linux.rs` prints the reason and carries on, because the system
-    /// anchor still serves Firefox and every CLI), so Chromium-based browsers
-    /// cannot validate an intercepted host at all and no amount of reopening
-    /// will change that - the fix is a package install.
+    /// Beside `ca_trusted` it separates states the UI otherwise cannot tell
+    /// apart, all of which look like Gate breaking HTTPS. Trusted and
+    /// `Trusted`: the stores are right, so a browser still failing is older
+    /// than the write and reopening it is the fix. Trusted and anything else:
+    /// Chromium cannot validate an intercepted host at all, and which sentence
+    /// helps depends on the variant.
     ///
-    /// It was already collected for the support report (`diagnostics.rs`) and
-    /// nowhere else, which left the product giving advice where it had a
-    /// reading. Principle 6: a reading outranks a sentence beside it.
+    /// **Recorded at write time, never probed here.** `status` is polled - the
+    /// window re-reads it on every `tools-changed` and every visibility edge -
+    /// and probing would put one `certutil` per database on that path, which is
+    /// the failure `ca_windows` grew a bounded call and a cooldown for. The
+    /// write path already runs certutil and already knows the outcome per
+    /// store, so the reading is free there and exact. `None` before any write
+    /// is the honest answer for a process that has not looked, and it is never
+    /// the answer where it matters: every path that raises the certificate note
+    /// runs `ensure_trusted` first.
     #[serde(default)]
-    pub ca_nss_trusted: Option<bool>,
+    pub ca_nss_trust: Option<NssTrust>,
+    /// Whether the system proxy Gate writes is one a browser reads *live*, and
+    /// therefore whether a host-matched row covers the same site in a browser.
+    ///
+    /// True on macOS and Windows unconditionally: the PAC goes into the OS
+    /// setting, which is the browser's setting. On Linux it is a question about
+    /// the session, not the OS - `system_proxy_linux.rs` has two channels, and
+    /// only GNOME's `org.gnome.system.proxy` keys are re-read by a running
+    /// browser. On KDE, on a bare WM, or anywhere the schema is absent, Gate
+    /// writes the `environment.d` drop-in alone, nothing in the session points
+    /// a browser at the engine, and a row that claimed the browser would be
+    /// claiming an interception that is not happening.
+    ///
+    /// Named for what the *user* gets rather than for the mechanism, because
+    /// two mechanisms answer it. The copy it drives is `browserScopeNote`.
+    ///
+    /// **Read `false` as "Gate does not write this session's proxy channel",
+    /// never as "this session has none".** The two come apart on KDE, which
+    /// has proxy settings of its own that a running browser reads and that
+    /// Gate simply does not write: the reading is a true statement about Gate
+    /// and a false-negative about the desktop. That direction is deliberate -
+    /// a missing sentence costs a user reassurance they can get from the host
+    /// named beside it, while a present one that is wrong tells them Gate is
+    /// inspecting a browser tab it is not touching, which is the one error
+    /// this field exists to prevent.
+    ///
+    /// So the remedy for KDE is not here. It is `system_proxy_linux.rs`
+    /// learning to write `kioslaverc`'s proxy keys the way it writes GNOME's,
+    /// at which point this answers true there and no copy moves. Do not
+    /// "correct" it by widening the probe to any desktop that *has* a proxy
+    /// setting, and do not delete the sentence it gates on the grounds that it
+    /// is missing for some Linux users: both readings have been made before
+    /// and both put a claim about interception in front of someone who cannot
+    /// check it.
+    #[serde(default)]
+    pub browser_proxy_channel: bool,
     /// Whether Gate is putting its proxy into the user's environment - the
     /// channel that routes command-line tools, as distinct from the OS proxy
     /// setting that routes GUI apps. A user-held choice, because the variables

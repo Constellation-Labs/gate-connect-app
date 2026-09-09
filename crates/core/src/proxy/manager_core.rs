@@ -179,7 +179,12 @@ impl<O: DesktopOps> DesktopManager<O> {
             // user-added roots where the browser already looks. Not a seam on
             // `DesktopOps` for that reason - there is nothing per-platform to
             // ask - and `diagnostics.rs` answers the same question the same way.
-            ca_nss_trusted: None,
+            ca_nss_trust: None,
+            // And for the same reason, in the other direction: the PAC goes in
+            // the OS proxy setting, which *is* the browser's proxy setting on
+            // both of these. Not a question about the session here, as it is on
+            // Linux, so it is not a seam either.
+            browser_proxy_channel: true,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             relay_base_url: crate::proxy::relay_base_url(),

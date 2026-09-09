@@ -1282,6 +1282,10 @@ export function App() {
         onTrustCa={trustCa}
         trustPending={trustPending}
         proxyOn={proxy?.running ?? false}
+        // `?? false` for the reason the Home call site spells out below: an
+        // unresolved proxy state is not evidence, and the reassuring default
+        // here would be a claim that Gate is intercepting a browser.
+        browserChannel={proxy?.browser_proxy_channel ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
       />

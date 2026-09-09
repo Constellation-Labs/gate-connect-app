@@ -300,17 +300,34 @@ export interface ProxyState {
   /** Loopback port serving the PAC script (macOS/Windows; null on Linux). */
   pac_port: number | null;
   ca_trusted: boolean;
-  /** Linux only: whether every per-user NSS database on this machine holds the
-   * CA. Null elsewhere, and on Linux until a browser that keeps one has run.
+  /** Linux only: what the store Chromium reads holds, from the last time Gate
+   * wrote it in this process. Null elsewhere, and on Linux until such a write
+   * has happened - which is not a negative reading (principle 6).
    *
-   * The reading that separates two states `ca_trusted` alone cannot. True: the
-   * stores are right, so a browser still failing is one older than the write
-   * and reopening it is the fix. False: `certutil` is missing or its write
-   * failed, so Chromium-based browsers cannot validate an intercepted host at
-   * all and reopening changes nothing - the fix is a package install. Same
-   * field the support report has always carried (`ca_nss_trusted` in
-   * `Diagnostics`); the product now reads it too. */
-  ca_nss_trusted: boolean | null;
+   * Separates states `ca_trusted` alone cannot, and carries the *cause*,
+   * because the causes want opposite things from the user. `trusted`: the
+   * stores are right, so a browser still failing is older than the write and
+   * reopening it is the fix. `tools_missing`: no `certutil`, so nothing was
+   * written anywhere and a package install is the fix. `write_failed`:
+   * `certutil` is there and a store refused - a lock, a permission - which a
+   * package install does not touch. A bare boolean flattened the last two and
+   * prescribed the wrong fix for one of them. */
+  ca_nss_trust: "trusted" | "tools_missing" | "write_failed" | null;
+  /** Whether the system proxy Gate writes is one a running browser reads, and
+   * so whether a host-matched row covers the same site in a browser.
+   *
+   * Always true on macOS and Windows, where the PAC goes in the OS setting that
+   * is also the browser's. On Linux it is a fact about the session: only
+   * GNOME's proxy keys are re-read live, so a session without that schema (KDE,
+   * a bare WM) gets the `environment.d` drop-in alone and nothing a running
+   * browser will notice. Drives `browserScopeNote`, which must not claim an
+   * interception that is not happening.
+   *
+   * False means "Gate does not write this session's proxy channel", not "this
+   * session has none" - KDE has its own, which Gate does not write yet. The
+   * remedy is in `system_proxy_linux.rs`, not in this copy: see the Rust
+   * field's own comment before widening the claim or dropping the sentence. */
+  browser_proxy_channel: boolean;
   /** Whether Gate puts its proxy in the shell environment - the channel that
    * routes command-line tools, as opposed to the OS setting that routes GUI
    * apps. A separate choice because those variables are machine-wide. */

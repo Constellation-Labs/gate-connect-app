@@ -127,8 +127,11 @@ impl ProxyManager {
             ca_trusted: ca::is_trusted()?,
             // The store Chromium reads, which `ca::is_trusted` above does not
             // look at: it reads the system anchor alone, and the two disagreeing
-            // is the whole of "Firefox works, Chrome doesn't".
-            ca_nss_trusted: ca::nss_ca_trusted(),
+            // is the whole of "Firefox works, Chrome doesn't". Served from what
+            // the last write recorded rather than probed - `status` is polled,
+            // and `certutil` does not belong on a polled path (see the field).
+            ca_nss_trust: ca::recorded_nss_trust(),
+            browser_proxy_channel: system_proxy::browser_proxy_channel(),
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             relay_base_url: crate::proxy::relay_base_url(),

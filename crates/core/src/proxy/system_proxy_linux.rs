@@ -281,6 +281,32 @@ fn gsettings_get(schema: &str, key: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether this session has the channel a running browser reads, cached for the
+/// life of the process.
+///
+/// The module's two channels are not equivalent from a browser's point of view.
+/// GNOME's keys are re-read live by everything on GLib's proxy resolver; the
+/// `environment.d` drop-in reaches a process only at launch. So on a session
+/// with no `org.gnome.system.proxy` schema - KDE, a bare WM - Gate points
+/// nothing at the engine that a browser already running will notice, and the UI
+/// must not claim the browser is covered. This is the reading behind that copy.
+///
+/// Probes `mode` for the same reason [`gsettings_capture`] treats a single
+/// unreadable key as "not GNOME": the binary and the schema have to both be
+/// there, and one `gsettings get` answers both questions.
+///
+/// Cached in a `OnceLock` because it cannot change under us - a desktop session
+/// does not gain the schema while its apps are running - and because `status`
+/// is polled, which is precisely where a per-call subprocess does damage. False
+/// under the test seam, which is accurate rather than defensive: the seam skips
+/// every gsettings write, so nothing in the session points at the engine.
+pub fn browser_proxy_channel() -> bool {
+    static CHANNEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHANNEL.get_or_init(|| {
+        !session_effects_suppressed() && gsettings_get("org.gnome.system.proxy", "mode").is_some()
+    })
+}
+
 /// Capture [`GNOME_KEYS`] so the off path can put them back verbatim.
 ///
 /// `None` when this is not a GNOME session, or when any single key won't read: a

@@ -1,4 +1,4 @@
-import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
+import type { ProviderState, ProxyDomain, ProxyState, Tool, Verdict } from "./api";
 import { browserScopeNote, trustStoreName, type Platform } from "./platform";
 
 /**
@@ -201,38 +201,59 @@ export function proxyReopenAdvice(
  * has already reopened everything to reopen it. The shell drives it off
  * `ca_trusted` going false to true.
  *
- * **Which of the two things it says is a reading, not a guess.** `nssTrusted` is
- * `ProxyState.ca_nss_trusted`: Gate cannot see a browser process, but it can see
- * whether the store that browser reads holds the CA, and that decides which
- * sentence is true. `false` means `certutil` is missing or its write failed
- * (`ca_linux.rs` says so on stderr and carries on, because the system anchor
- * still serves Firefox and every CLI), so a Chromium browser cannot validate an
- * intercepted host however many times it is reopened, and the fix is a package.
- * Telling that user to quit their browser would send them round a loop that
- * cannot end. `true` or no reading at all leaves the restart, which is the one
- * thing Gate genuinely cannot check.
+ * **Which sentence it says is a reading, not a guess.** `nss` is
+ * `ProxyState.ca_nss_trust`, recorded by the write itself, and each of its
+ * values wants something different from the user - which is why it is not a
+ * boolean. `tools_missing`: nothing was written anywhere, and installing a
+ * package is the fix. `write_failed`: `certutil` is there and a store refused,
+ * so a package install changes nothing and the report is what names the store.
+ * `trusted`, or no reading at all, leaves the reopen - the one thing Gate
+ * genuinely cannot check, because it cannot see a browser process.
  *
- * The false case is still raised on the transition rather than standing, even
- * though it describes a condition that persists. That is a deliberate limit: a
- * standing notice needs somewhere to live and something to retire it, and the
- * honest home for "Chromium cannot see the CA" is the certificate section in
- * Settings rather than a banner nobody can clear. Until it has one, the
- * diagnostics report is where the state is legible.
+ * The first version of this said "false means install a package". That is wrong
+ * for a locked or unwritable store, and it withheld the reopen sentence from a
+ * user whose other stores took the CA and only needed exactly that - a loop
+ * with no exit, prescribed at the moment they were reading closely.
+ *
+ * **What it asks for has to be reachable.** Not "switch routing on again":
+ * `manager_linux::enable` returns early when the client is already connected,
+ * *before* `ca::ensure_trusted`, and this note is raised from inside the enable
+ * that just succeeded - so routing is already on while the user reads it, and
+ * re-enabling runs nothing. Off and on again does reach the write, because
+ * `ensure_trusted` deliberately calls `ensure_trusted_nss` outside its
+ * `is_trusted` short-circuit.
+ *
+ * The failure cases are still raised on the transition rather than standing,
+ * even though they describe conditions that persist. That is a deliberate
+ * limit: a standing notice needs somewhere to live and something to retire it,
+ * and the honest home for "Chromium cannot see the CA" is the certificate
+ * section in Settings rather than a banner nobody can clear. Until it has one,
+ * the diagnostics report is where the state is legible.
  */
 export function browserTrustRestartAdvice(
   platform: Platform,
-  nssTrusted: boolean | null,
+  nss: ProxyState["ca_nss_trust"],
 ): { title: string; body: string } | undefined {
   if (platform !== "linux") return undefined;
-  if (nssTrusted === false) {
+  const store = trustStoreName(platform);
+  // Named one by one rather than as "Chromium-based", which is a fact about
+  // engines and not a thing anybody has in their dock.
+  const family = "Chrome, Chromium, Brave, Edge and Vivaldi";
+  if (nss === "tools_missing") {
     return {
       title: "Chromium-based browsers can’t see the certificate",
-      body: `Gate added its certificate to your ${trustStoreName(platform)}, but not to the separate store Chromium-based browsers read - Chrome, Chromium, Brave, Edge and Vivaldi each keep their own. They will reject Gate’s traffic until certutil is installed (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools) and you switch routing on again. Firefox and command-line tools are unaffected.`,
+      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one, and Gate needs certutil to write it. Install it (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools), then turn routing off and on again. Firefox and command-line tools are unaffected.`,
+    };
+  }
+  if (nss === "write_failed") {
+    return {
+      title: "One browser certificate store refused the certificate",
+      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why. Any browser that did take it still needs a full quit and reopen; Firefox and command-line tools are unaffected.`,
     };
   }
   return {
     title: "Browsers already open need reopening",
-    body: `Gate has added its certificate to your ${trustStoreName(platform)}. A browser reads that when it starts, so one that was already open will reject Gate’s traffic until you quit it completely and open it again.`,
+    body: `Gate has added its certificate to your ${store}. A browser reads that when it starts, so one that was already open will reject Gate’s traffic until you quit it completely and open it again.`,
   };
 }
 
@@ -261,6 +282,7 @@ export function browserTrustRestartAdvice(
 export function chatScopeNote(
   member: GroupMember,
   platform: Platform,
+  browserChannel: boolean,
 ): { title: string; body: string } | undefined {
   if (!member.chat) return undefined;
   const hosts = member.domain?.hosts.join(", ");
@@ -270,7 +292,7 @@ export function chatScopeNote(
     body: [
       `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`,
       `It is matched on host, so it covers everything on ${hosts}.`,
-      browserScopeNote(platform),
+      browserScopeNote(platform, browserChannel),
     ]
       .filter(Boolean)
       .join(" "),
