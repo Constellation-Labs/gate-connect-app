@@ -530,12 +530,8 @@ mod tests {
         let due = g.sweep(&p, start + GROUP_WINDOW + Duration::from_secs(1));
         let bodies: Vec<&str> = due.iter().map(body_of).collect();
         assert_eq!(due.len(), 2, "one per cause, got {bodies:?}");
-        assert!(bodies
-            .iter()
-            .any(|b| *b == "Gate blocked 3 more credential matches in codex."));
-        assert!(bodies
-            .iter()
-            .any(|b| *b == "Gate flagged 2 more pii matches in codex."));
+        assert!(bodies.contains(&"Gate blocked 3 more credential matches in codex."));
+        assert!(bodies.contains(&"Gate flagged 2 more pii matches in codex."));
     }
 
     #[test]

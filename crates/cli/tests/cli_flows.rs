@@ -118,6 +118,14 @@ impl Harness {
             .join("proxy");
         fs::create_dir_all(&proxy_dir).unwrap();
         fs::write(proxy_dir.join("port"), port.to_string()).unwrap();
+        // An engine that has started has minted its CA. Claude Code's connect
+        // refuses without one rather than writing a proxy whose leaf the tool
+        // could not verify, so a live engine here has to have the file too.
+        fs::write(
+            proxy_dir.join("ca-cert.pem"),
+            "-----BEGIN CERTIFICATE-----\ngate-test-ca\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
         #[cfg(target_os = "macos")]
         let snapshot = "[]";
         #[cfg(target_os = "linux")]
