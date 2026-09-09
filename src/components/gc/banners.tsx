@@ -287,6 +287,62 @@ export function ReopenBanner({
 }
 
 /**
+ * The shell-width counterpart of [`PaneNote`]: advice that is about the machine
+ * rather than about the pane that happens to be open, dismissible because the
+ * user is the only one who knows when they have acted on it.
+ *
+ * Neutral, for the reason `PaneNote` gives below and one more. The three banners
+ * above it are amber or red and each names something the shell is waiting to
+ * have fixed; this one is told once, on a transition, and there is nothing here
+ * for Gate to re-check afterwards. Drawn in that palette it would read as a
+ * fourth fault, and it would sit above a rail whose rows all say Protected.
+ *
+ * Not in the Figma. The file draws `banner/update`, `banner/routing`,
+ * `banner/partly-routing` and the alert rows, and nothing neutral at this width,
+ * so the frame geometry is borrowed from the routing banner (full-bleed strip,
+ * hairline bottom border, 16/12 padding, a 16px tile beside a two-line stack)
+ * with `base/*` inks in place of the amber.
+ */
+export function NoteBanner({
+  title,
+  body,
+  onDismiss,
+}: {
+  title: string;
+  body: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      className="w-full border-b border-base-border bg-base-card px-4 py-3"
+    >
+      <div className="flex w-full items-start gap-3">
+        <Icon
+          name="info"
+          size={16}
+          className="mt-0.5 shrink-0 text-neutral-500"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium leading-5 text-base-foreground">
+            {title}
+          </p>
+          <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 text-neutral-500 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * A quiet, standing note on a pane: something worth knowing about this surface,
  * which is not a state and not a problem.
  *

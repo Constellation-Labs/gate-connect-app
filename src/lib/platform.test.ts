@@ -124,14 +124,20 @@ describe("browserScopeNote", () => {
     expect(browserScopeNote("windows")).toContain("browser");
   });
 
-  it("says nothing at all where the browser is not covered", () => {
-    // Not a shorter sentence: no sentence. `system_proxy_linux.rs` wires only
-    // environment variables, which a browser never reads, so there is no
-    // browser claim to make - and the mechanism behind that is three clauses
-    // the user cannot act on. The host sentence this appends to has already
-    // bounded the scope. `unknown` is empty for the same reason plus one: it is
-    // the first async tick, which is no time to guess at interception.
-    expect(browserScopeNote("linux")).toBe("");
+  it("qualifies the claim on Linux instead of making the macOS one", () => {
+    // Linux covers the browser through GNOME's proxy keys and the per-user NSS
+    // store, but the `environment.d` channel beside them only reaches a process
+    // at launch - so a browser that follows the desktop settings is covered and
+    // one started from a shell is not, and Gate cannot tell which it is. The
+    // sentence claims exactly the half that always holds.
+    expect(browserScopeNote("linux")).toContain("desktop proxy settings");
+    expect(browserScopeNote("linux")).not.toBe(browserScopeNote("macos"));
+  });
+
+  it("says nothing at all where nothing can be claimed", () => {
+    // `unknown` is the first async tick, which is no time to guess at
+    // interception - and the host sentence this appends to has already bounded
+    // the scope without it.
     expect(browserScopeNote("unknown")).toBe("");
   });
 

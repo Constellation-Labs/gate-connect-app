@@ -63,7 +63,13 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups, describeMember, proxyReopenAdvice } from "./lib/groups";
+import {
+  browserTrustRestartAdvice,
+  buildGroups,
+  chatScopeNote,
+  describeMember,
+  proxyReopenAdvice,
+} from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
@@ -139,6 +145,7 @@ import {
   AlertBanner,
   ErrorBanner,
   ErrorDetails,
+  NoteBanner,
   PaneNote,
   RecoveryBanner,
   ReopenAlert,
@@ -2121,6 +2128,52 @@ export function NewUiApp() {
   );
 
   /**
+   * The one-off note that follows the certificate landing, on Linux.
+   *
+   * Driven off `ca_trusted` going false to true rather than off the action that
+   * did it, because four paths reach the same place - the master switch, a row's
+   * switch through the certificate gate, the shell notice's `trust-certificate`,
+   * and Settings - and a browser open across any of them is in the same state.
+   * The transition has to be *observed* false first: `proxy` is null until the
+   * first status lands, and treating "unknown, then trusted" as the change would
+   * raise this on every launch of an already-trusted install.
+   *
+   * Cleared by the user alone. Nothing Gate can read afterwards says whether
+   * they reopened anything (`groups.ts` says why the reading does not exist), so
+   * a dismissal is the only thing that can retire it, and it does not come back
+   * until trust is removed and granted again.
+   */
+  const [browserRestart, setBrowserRestart] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
+  const caTrustedSeen = useRef<boolean | null>(null);
+  useEffect(() => {
+    const trusted = proxy?.ca_trusted ?? null;
+    const seen = caTrustedSeen.current;
+    caTrustedSeen.current = trusted;
+    if (seen === false && trusted === true) {
+      setBrowserRestart(browserTrustRestartAdvice(platform) ?? null);
+    }
+  }, [proxy, platform]);
+
+  /**
+   * What a chat row's switch covers, on the pane that opens on it.
+   *
+   * Same shape as the advice below and a different kind of thing: this is a
+   * description of the surface, true on every platform and whether or not the
+   * row is on, and it is here because the window shell draws a row's copy as one
+   * sentence and these rows need three. `groups.ts` carries them.
+   */
+  const chatScope = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const member = groups
+      .flatMap((g) => g.members)
+      .find((m) => m.key === view.slug);
+    return member ? chatScopeNote(member, platform) : undefined;
+  }, [view, groups, platform]);
+
+  /**
    * The standing note a proxy-routed row carries on Linux.
    *
    * Not a verdict and not drawn like one: `reopen_required` is measured per tool
@@ -2459,6 +2512,16 @@ export function NewUiApp() {
             tools={reopenPending}
             onReopen={(slug) => void runningApps.offerAfterChange([slug])}
             onDismiss={() => setReopenHidden(true)}
+          />
+        ) : browserRestart ? (
+          // Bottom of the chain, and neutral where the three above are amber or
+          // red: each of those names something still to be fixed in Gate's own
+          // routing, while this is a step outside the app that the user may
+          // already have taken. It must never displace one of them.
+          <NoteBanner
+            title={browserRestart.title}
+            body={browserRestart.body}
+            onDismiss={() => setBrowserRestart(null)}
           />
         ) : undefined
       }
@@ -2987,6 +3050,9 @@ export function NewUiApp() {
               {reopenAlert}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
+              )}
+              {chatScope && (
+                <PaneNote title={chatScope.title} body={chatScope.body} />
               )}
               {paneNotice && (
                 <AlertBanner
