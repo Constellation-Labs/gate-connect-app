@@ -43,6 +43,12 @@ export type ReopenStage =
   /** It is running again and the sweep has not yet said where its traffic
    *  goes. */
   | "verifying"
+  /** It is running again, and no sweep is ever going to answer for it: its slug
+   *  is a proxy-domain key rather than a registry tool, so `routing_verdicts`
+   *  has no row for it. Terminal, and deliberately not filed with the verified
+   *  ones - Gate did what it could and says so, rather than claiming a reading
+   *  nobody took. See `RunningAgent.verifiable`. */
+  | "reopened"
   /** Verified: routing through Gate. */
   | "routing"
   /** Verified: on the tool's own settings, which is the answer when the change
@@ -63,6 +69,7 @@ export const REOPEN_STAGE_LABEL: Record<ReopenStage, string> = {
   awaiting_reopen: "Reopen required",
   reopening: "Reopening",
   verifying: "Verifying",
+  reopened: "Reopened",
   routing: "Routing through Gate",
   not_routed: "On its own settings",
   close_failed: "Could not close",
@@ -86,6 +93,8 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
     "Closed. Open it again and Gate will check its route.",
   reopening: "Gate is starting this tool again.",
   verifying: "It is running again. Gate is checking where its traffic goes.",
+  reopened:
+    "Open again, on the new route. Gate routes this one through the system proxy, so there is no per-tool check to run.",
   routing: "Open, and its traffic is going through Gate.",
   not_routed: "Open, and its traffic is going to its own upstream.",
   close_failed:
@@ -95,6 +104,22 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   verify_failed:
     "Gate could not confirm where its traffic goes, so it is not claiming either answer.",
 };
+
+/**
+ * How often to look while the next move is the user's, in milliseconds.
+ *
+ * One cadence for one wait, shared by the three places that do the looking:
+ * `useRunningApps`' watch while the progress dialog is open, and each shell's
+ * standing sweep for a `reopen_required` verdict once it has been dismissed.
+ * Three copies of this number is how one surface comes to notice a reopen a
+ * minute after another already has.
+ *
+ * Deliberately slower than the cadence for work Gate is doing itself: nothing
+ * is in flight here, and walking the process table and probing the relay twenty
+ * times a minute for an answer that arrives when someone opens a terminal is
+ * cost with no reading behind it.
+ */
+export const REOPEN_IDLE_WATCH_MS = 10_000;
 
 /** Why any of this is necessary, in one sentence. Shared by every surface that
  *  raises the flow, so the reason cannot be phrased two ways. */
@@ -122,6 +147,7 @@ export function isResting(stage: ReopenStage): boolean {
 /** Nothing more will happen to this tool on its own. */
 export function isTerminal(stage: ReopenStage): boolean {
   return (
+    stage === "reopened" ||
     stage === "routing" ||
     stage === "not_routed" ||
     stage === "close_failed" ||
@@ -139,6 +165,7 @@ export function isTerminal(stage: ReopenStage): boolean {
  */
 export type ReopenBucket =
   | "verified"
+  | "reopened"
   | "manual_reopen"
   | "close_failed"
   | "config_failed"
@@ -146,6 +173,7 @@ export type ReopenBucket =
 
 export const REOPEN_BUCKET_TITLE: Record<ReopenBucket, string> = {
   verified: "Applied and verified",
+  reopened: "Reopened, not checked",
   manual_reopen: "Waiting for you to reopen",
   close_failed: "Could not be closed or reopened",
   config_failed: "Configuration failed",
@@ -154,6 +182,8 @@ export const REOPEN_BUCKET_TITLE: Record<ReopenBucket, string> = {
 
 export const REOPEN_BUCKET_BLURB: Record<ReopenBucket, string> = {
   verified: "Gate checked these after they came back.",
+  reopened:
+    "Gate closed and reopened these. They ride the system proxy rather than a config file, so there is no per-tool reading to take.",
   manual_reopen:
     "Their configuration is saved. Open each one and Gate finishes the check.",
   close_failed: "These are still running on the route they started with.",
@@ -167,6 +197,8 @@ export function bucketOf(stage: ReopenStage): ReopenBucket | null {
     case "routing":
     case "not_routed":
       return "verified";
+    case "reopened":
+      return "reopened";
     case "reopen_required":
     case "awaiting_reopen":
       return "manual_reopen";
@@ -224,9 +256,13 @@ export function actionsFor(stage: ReopenStage): ReopenAction[] {
       return ["reopen_tool", "view_diagnostics"];
     case "awaiting_reopen":
       // Closed, and only the user can start it again. A "Reopen tool" button
-      // here would be an instruction dressed up as a control; what this surface
-      // can do is look again.
-      return ["retry_verification", "view_diagnostics"];
+      // here would be an instruction dressed up as a control - and so, it turns
+      // out, was the "Retry verification" that used to sit here: the watch
+      // already re-reads both probes on a tick, and the shells now keep
+      // sweeping after this dialog is dismissed, so the reopen moves the row
+      // whether or not anybody presses anything. A refresh button beside a
+      // reading that refreshes itself teaches the user it does not.
+      return ["view_diagnostics"];
     case "close_failed":
       return ["reopen_tool", "view_diagnostics", "contact_support"];
     case "config_failed":
@@ -252,6 +288,12 @@ export interface ReopenTool {
   canReopen: boolean;
   /** Is a process for it up right now? */
   running: boolean;
+  /** Can the sweep ever answer for it? Straight from the backend, never
+   *  assumed. False for the desktop apps, whose slugs are proxy-domain keys the
+   *  registry has no row for - and the reason `nextStage` stops those rows at
+   *  `reopened` instead of waiting out a verification budget nothing was going
+   *  to answer. */
+  verifiable: boolean;
   /** Where its traffic goes now, and where its saved configuration asks it to
    *  go. Both null when the sweep could not establish them, and the surfaces
    *  omit the pair rather than inventing half of it: a guessed endpoint here is
@@ -275,8 +317,9 @@ export interface ReopenTool {
  */
 export function reopenTools(
   agents: RunningAgent[],
-  /** Product name per slug, from `list_tools`. A process no tool claims keeps
-   *  the name the OS gave it rather than a blank where a tool should be. */
+  /** Product name per slug, from `list_tools`. It cannot answer for the two
+   *  desktop-app rows - their slugs are proxy-domain keys, so the registry has
+   *  no entry - and `RunningAgent.product_name` is what covers those. */
   names: Map<string, string>,
   verdicts: Map<string, Verdict>,
   stage: ReopenStage = "reopen_required",
@@ -290,9 +333,13 @@ export function reopenTools(
     const verdict = verdicts.get(slug);
     tools.push({
       slug,
-      name: names.get(slug) ?? agent.name,
+      // The backend's product name before the OS's: `list_tools` cannot name a
+      // proxy-domain slug, and falling through to the raw process name drew a
+      // row titled `Claude` for what the user calls Claude Desktop.
+      name: names.get(slug) ?? agent.product_name,
       canReopen: agent.can_reopen,
       running: true,
+      verifiable: agent.verifiable,
       routeInUse: verdict?.route_in_use ?? null,
       requestedRoute: verdict?.requested_route ?? null,
       stage,
@@ -362,6 +409,11 @@ export function nextStage(
     // row stops claiming Gate has it and hands the move back.
     return waited >= REOPEN_TICKS ? "awaiting_reopen" : "reopening";
   }
+  // Back, and nothing is coming: the sweep walks the registry and this slug is
+  // not in it. Waiting here is what produced "Verification failed" on macOS
+  // every single time, for the one row Gate closes and reopens itself - a
+  // failure reported against a check that was never going to run.
+  if (!tool.verifiable) return "reopened";
   if (!verdict) {
     return waited >= VERIFY_TICKS ? "verify_failed" : "verifying";
   }
@@ -397,6 +449,7 @@ export function reopenBuckets(
 ): { key: ReopenBucket; title: string; blurb: string; tools: ReopenTool[] }[] {
   const order: ReopenBucket[] = [
     "verified",
+    "reopened",
     "manual_reopen",
     "close_failed",
     "config_failed",

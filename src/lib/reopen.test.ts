@@ -18,6 +18,8 @@ import {
 const agent = (over: Partial<RunningAgent> = {}): RunningAgent => ({
   slug: "codex",
   name: "codex",
+  product_name: "Codex",
+  verifiable: true,
   can_reopen: false,
   pid: 1,
   started_at_unix: 100,
@@ -40,6 +42,7 @@ const tool = (over: Partial<ReopenTool> = {}): ReopenTool => ({
   name: "Codex",
   canReopen: false,
   running: true,
+  verifiable: true,
   routeInUse: null,
   requestedRoute: null,
   stage: "awaiting_reopen",
@@ -208,12 +211,26 @@ describe("what a row offers", () => {
 
   it("does not offer to reopen a tool the user has already been asked to reopen", () => {
     // Gate cannot start it, so the button would be an instruction dressed as a
-    // control. The check is the thing this surface can actually do.
+    // control.
     expect(actionsFor("awaiting_reopen")).not.toContain("reopen_tool");
-    expect(actionsFor("awaiting_reopen")).toContain("retry_verification");
+    // And neither is the check: the watch re-reads both probes on a tick and
+    // the shells keep sweeping after this dialog is dismissed, so the reopen
+    // moves the row whether or not anybody presses anything. A refresh button
+    // beside a self-refreshing reading teaches the user it is not one.
+    expect(actionsFor("awaiting_reopen")).not.toContain("retry_verification");
+    expect(actionsFor("awaiting_reopen")).toEqual(["view_diagnostics"]);
+    // The failure that a check can still change its mind about keeps it.
+    expect(actionsFor("verify_failed")).toContain("retry_verification");
     // Still running on its old route, though, and dealing with that process is
     // something Gate can offer.
     expect(actionsFor("close_failed")).toContain("reopen_tool");
+  });
+
+  it("offers nothing on a row that has nothing left to do", () => {
+    // Gate closed it, reopened it, and cannot check it. Every action here would
+    // invite the user to redo work that landed, or to retry a check that does
+    // not exist for this tool.
+    expect(actionsFor("reopened")).toEqual([]);
   });
 
   it("names every stage and every action", () => {
@@ -224,6 +241,7 @@ describe("what a row offers", () => {
       "awaiting_reopen",
       "reopening",
       "verifying",
+      "reopened",
       "routing",
       "not_routed",
       "close_failed",
@@ -242,9 +260,12 @@ describe("what a row offers", () => {
 describe("a gone process, and who is putting it back", () => {
   const tool = (canReopen: boolean) => ({
     slug: "anthropic",
-    name: "Claude",
+    name: "Claude Desktop",
     canReopen,
     running: true,
+    // The desktop-app row: `routing_verdicts` walks the registry and this slug
+    // is not in it.
+    verifiable: false,
     routeInUse: null,
     requestedRoute: null,
     stage: "closing" as const,
@@ -262,5 +283,64 @@ describe("a gone process, and who is putting it back", () => {
 
   it("hands the move back if the relaunch never takes", () => {
     expect(nextStage(tool(true), undefined, "gone", 99)).toBe("awaiting_reopen");
+  });
+});
+
+describe("a tool the sweep is never going to answer for", () => {
+  /** The desktop-app row: its slug is a proxy-domain key, so `routing_verdicts`
+   *  - which walks the registry - has no entry for it whatever it is doing. */
+  const app = (over: Partial<ReopenTool> = {}): ReopenTool =>
+    tool({
+      slug: "anthropic",
+      name: "Claude Desktop",
+      canReopen: true,
+      verifiable: false,
+      stage: "reopening",
+      ...over,
+    });
+
+  it("stops at reopened instead of waiting out a check that does not exist", () => {
+    // The bug this replaces: with no verdict coming, the row spun in Verifying
+    // for the whole budget and then reported that verification had FAILED - on
+    // macOS, for the one row Gate closes and reopens itself, so it was the row
+    // the user watched. Nothing failed; there was nothing to check.
+    expect(nextStage(app(), undefined, "fresh", 0)).toBe("reopened");
+    expect(nextStage(app(), undefined, "fresh", 99)).toBe("reopened");
+  });
+
+  it("does not claim to have verified it either", () => {
+    // Terminal, so the flow stops - but filed on its own, because a card that
+    // said "Applied and verified" over a tool nobody took a reading on would be
+    // the one routing claim in this app with nothing behind it.
+    expect(isTerminal("reopened")).toBe(true);
+    expect(bucketOf("reopened")).toBe("reopened");
+    expect(allVerified([app({ stage: "reopened" })])).toBe(false);
+  });
+
+  it("still lets Gate close and relaunch it first", () => {
+    // Unverifiable is not untouchable: the stages before the check are about
+    // the process, which Gate can see perfectly well.
+    expect(nextStage(app({ stage: "closing" }), undefined, "stale", 0)).toBe("closing");
+    expect(nextStage(app({ stage: "closing" }), undefined, "gone", 0)).toBe("reopening");
+  });
+
+  it("names it from the scan when list_tools cannot", () => {
+    const [row] = reopenTools(
+      [
+        agent({
+          slug: "anthropic",
+          name: "Claude",
+          product_name: "Claude Desktop",
+          verifiable: false,
+        }),
+      ],
+      // Empty on purpose: `list_tools` has no `anthropic` row to read a name
+      // off, which is exactly the case that used to leave surfaces drawing the
+      // process name or the raw slug.
+      new Map(),
+      new Map(),
+    );
+    expect(row.name).toBe("Claude Desktop");
+    expect(row.verifiable).toBe(false);
   });
 });

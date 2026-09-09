@@ -88,7 +88,7 @@ test.describe("tray popover", () => {
     await expect(app.page.getByText(/Codex is still on/)).toBeVisible();
     await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
 
-    await app.page.getByRole("button", { name: "Reopen tool" }).click();
+    await app.page.getByRole("button", { name: "Close tool" }).click();
 
     // Scoped to the tools actually waiting, and it asks before it signals
     // anything.

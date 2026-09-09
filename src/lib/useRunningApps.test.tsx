@@ -18,6 +18,23 @@ import {
   runningAgents,
 } from "./api";
 
+/** Rust's `AGENT_PROCESSES` product-name column, for the slugs these specs use.
+ *  Modelled rather than echoed off the process name, because the whole point of
+ *  the column is that the two differ: `Claude` is what the OS calls the binary
+ *  and `Claude Desktop` is what the person reading the row calls the app. */
+const PRODUCT_NAMES: Record<string, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  anthropic: "Claude Desktop",
+  chatgpt: "ChatGPT",
+};
+
+/** The registry tools, which is exactly the set `routing_verdicts` answers for
+ *  and exactly the set `list_tools` can name. The two desktop-app slugs are in
+ *  neither, and every assertion here about `reopened` turns on that. */
+const REGISTRY_SLUGS = ["claude-code", "codex", "opencode"];
+
 const agent = (
   slug: string,
   name: string,
@@ -27,7 +44,11 @@ const agent = (
 ) => ({
   slug,
   name,
+  product_name: PRODUCT_NAMES[slug] ?? name,
   can_reopen,
+  // Rust derives this from `ToolId::from_slug`; here it follows the same rule,
+  // so a spec cannot accidentally make a proxy-domain slug sweepable.
+  verifiable: REGISTRY_SLUGS.includes(slug),
   pid,
   started_at_unix: 1000,
   predates_routing: stale,
@@ -49,15 +70,21 @@ const verdict = (
 function harness() {
   const api: { current: ReturnType<typeof useRunningApps> | null } = { current: null };
   const onError = vi.fn();
+  const onNothingRunning = vi.fn();
   function Probe() {
     api.current = useRunningApps({
       onError,
-      nameFor: (slug) => (slug === "codex" ? "Codex" : "Claude Code"),
+      onNothingRunning,
+      // `list_tools`, modelled honestly: it has a row for each registry tool
+      // and nothing for a proxy-domain slug, so it cannot name the desktop
+      // apps. That gap is what `RunningAgent.product_name` covers.
+      nameFor: (slug) =>
+        REGISTRY_SLUGS.includes(slug) ? PRODUCT_NAMES[slug] : undefined,
     });
     return null;
   }
   render(<Probe />);
-  return { api, onError };
+  return { api, onError, onNothingRunning };
 }
 
 /** Walk to the confirmation, which is the only place closing is possible. */
@@ -117,6 +144,37 @@ describe("useRunningApps: when to say anything", () => {
     });
 
     expect(api.current!.stage).toBeNull();
+  });
+
+  it("tells the caller nothing was running, rather than swallowing the click", async () => {
+    // No dialog is still the right answer, but silence alone is what made the
+    // shell banner's own button look broken: the banner is built from a verdict
+    // read at some earlier moment, and by the time somebody presses it the tool
+    // may already have been reopened. So the caller hears about it and re-reads.
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: ["codex"], agents: [] });
+    const { api, onNothingRunning } = harness();
+
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+
+    expect(api.current!.stage).toBeNull();
+    // With the slugs it was asked about, so a caller can tell which invitation
+    // is the stale one.
+    expect(onNothingRunning).toHaveBeenCalledWith(["codex"]);
+  });
+
+  it("does not call it when the scan itself failed", async () => {
+    // "Nothing is running" and "we could not look" are different answers, and
+    // only the first one says a stale banner should come down.
+    (runningAgents as Mock).mockRejectedValue(new Error("scan failed"));
+    const { api, onNothingRunning } = harness();
+
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+
+    expect(onNothingRunning).not.toHaveBeenCalled();
   });
 
   it("stays silent when the scan fails", async () => {
@@ -414,6 +472,37 @@ describe("useRunningApps: following a tool back", () => {
     });
 
     expect(stagesOf(api)).toEqual(["not_routed"]);
+  });
+
+  it("stops a desktop app at reopened rather than failing a check nobody runs", async () => {
+    // The macOS path, end to end. `anthropic` is a proxy-domain key, so
+    // `routing_verdicts` - which walks the registry - returns nothing for it,
+    // ever. The row used to spin in Verifying for the whole budget and then
+    // report Verification failed, on the one row Gate closes and relaunches
+    // itself. Nothing failed; there was no check to run.
+    (runningAgents as Mock)
+      .mockResolvedValueOnce({
+        scanned_names: ["Claude"],
+        agents: [agent("anthropic", "Claude", 11, true, true)],
+      })
+      // Back, and started after the change - which is the whole of what this
+      // flow can establish about it.
+      .mockResolvedValue({
+        scanned_names: ["Claude"],
+        agents: [agent("anthropic", "Claude", 77, false, true)],
+      });
+    // What the real backend sends: no row for this slug at all.
+    (routingVerdicts as Mock).mockResolvedValue([]);
+    const { api } = harness();
+    await toConfirm(api);
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(stagesOf(api)).toEqual(["reopened"]);
+    // And it says the tool's name, not the OS's word for its binary.
+    expect(api.current!.stage!.tools[0].name).toBe("Claude Desktop");
   });
 
   it("moves one row without touching another", async () => {

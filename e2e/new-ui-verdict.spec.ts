@@ -128,7 +128,7 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
     await expect(app.page.getByText("https://gateway.constellationgate.ai")).toBeVisible();
 
-    await app.page.getByRole("button", { name: "Reopen tool" }).click();
+    await app.page.getByRole("button", { name: "Close tool" }).click();
 
     // Hands over to the close-and-reopen conversation, scoped to this tool:
     // Gate can close a process, and only the user can reopen it.
