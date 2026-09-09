@@ -244,6 +244,14 @@ impl Integration for OpenClaw {
         ))
     }
 
+    /// Managed proxy mode is the whole integration: the config it writes points
+    /// OpenClaw's entire egress at the engine, so there is nothing to write
+    /// until the engine is up. See the `context` below, which is the error this
+    /// declaration lets the restore avoid provoking.
+    fn requires_engine(&self) -> bool {
+        true
+    }
+
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(

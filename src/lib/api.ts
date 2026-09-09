@@ -786,7 +786,12 @@ export type RestoreOutcome =
   | "write_failed"
   | "not_installed"
   | "unknown"
-  | "deferred_signed_out";
+  | "deferred_signed_out"
+  /** Nothing was attempted: the engine was not routing yet, and this entry has
+   *  nothing to configure until it is. `restore_all` runs two passes for
+   *  precisely this, and every engine-dependent entry used to be attempted in
+   *  the first one and its refusal recorded as `write_failed`. */
+  | "deferred_engine_down";
 
 
 /** What one interrupted entry still needs. Mirrors `recovery::NextStep`, and is
@@ -819,6 +824,14 @@ export interface RecoveryTool {
   /** What kind of failure the stage was, when it was one. `none` for a stage
    *  that has not failed - including `pending`, where nothing was attempted. */
   error_category: "none" | "write" | "not_installed" | "unknown" | "account";
+  /** Why the last attempt failed, in the backend's own words. Null for any
+   *  stage that is not a failure, and for a failure recorded by a build older
+   *  than the journal field.
+   *
+   *  `error_category` says which *step* failed and can never say why, which
+   *  left the dialog titled "What happened to routing" unable to answer it.
+   *  Machine output, so it is drawn in mono behind a disclosure. */
+  error: string | null;
   stage_at_unix: number;
   /** The last check that established a route, which survives a later failed
    *  verification - so it can be older than `check_at_unix`. Null when no check
@@ -828,7 +841,12 @@ export interface RecoveryTool {
   check_state: "not_installed" | "on" | "off" | "needs_attention" | null;
   check_reason: VerdictReason | null;
   check_at_unix: number;
-  running: boolean;
+  /** Whether a process for this entry is up, or `null` where Gate has no
+   *  process name to look for - a provider slug, OpenClaw or Hermes (names too
+   *  generic to match on), or `env-proxy`, which is not a process. `false` here
+   *  was a measurement nobody took, on four of the five kinds of row that reach
+   *  this summary. */
+  running: boolean | null;
   /** A process is running that predates the last routing change. */
   reopen_pending: boolean;
   next_step: RecoveryNextStep;

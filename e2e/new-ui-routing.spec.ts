@@ -775,6 +775,112 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(dialog.getByText("Next action").first()).toBeVisible();
   });
 
+  /**
+   * The panel a real master-on produced, with the engine still coming up.
+   *
+   * Five entries, four of them reading "Write failed / Configuration write /
+   * Gate could not write this tool's config" - and nothing had been written.
+   * `restore_all` runs a pass before the engine is up, and every entry that
+   * needs the engine was attempted in it and its refusal recorded as a failed
+   * write: the providers because `enable_inner`'s "nothing to do yet" branch
+   * only returned `Applied::NotYet` when the skip list happened to be
+   * non-empty, and the tools because that pass had no early-out at all.
+   *
+   * The row shapes here are the ones that reached the user: a provider whose
+   * only route is a proxy domain, a provider that genuinely failed, and a tool
+   * whose config is the engine's own address.
+   */
+  test("an engine that was still starting is not reported as a failed write", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      pendingRestore: {
+        providers: [
+          { slug: "openrouter", name: "OpenRouter" },
+          { slug: "anthropic", name: "Anthropic" },
+        ],
+        tools: [{ slug: "env-proxy", name: "Terminal tools" }],
+      },
+      restoreJournal: {
+        updated_unix: 1_760_000_000,
+        requested_routing_on: true,
+        entries: [
+          // Proxy-only: no `tool_ids` at all, so there is never a config file
+          // for anything to have failed to write.
+          {
+            slug: "openrouter",
+            name: "OpenRouter",
+            kind: "provider" as const,
+            outcome: "deferred_engine_down" as const,
+            at_unix: 1_760_000_000,
+          },
+          // A real failure, and now with the reason the journal carries.
+          {
+            slug: "anthropic",
+            name: "Anthropic",
+            kind: "provider" as const,
+            outcome: "write_failed" as const,
+            at_unix: 1_760_000_001,
+            error: "configuring Claude Code: permission denied",
+          },
+          {
+            slug: "env-proxy",
+            name: "Terminal tools",
+            kind: "tool" as const,
+            outcome: "deferred_engine_down" as const,
+            at_unix: 1_760_000_002,
+          },
+        ],
+      },
+    });
+
+    await app.page.getByRole("button", { name: "Review details" }).click();
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+
+    // Waiting, not failed - and said apart from the failures, so the two
+    // deferrals do not read as faults.
+    await expect(dialog.getByText("Waiting for routing").first()).toBeVisible();
+    await expect(dialog.getByText(/2 entries are waiting for routing/)).toBeVisible();
+    // Exactly one entry belongs under the failure heading now.
+    await expect(dialog.getByText(/Failures by category: Configuration write\./)).toBeVisible();
+
+    // The provider that failed says so about its *routing*, not about a config
+    // file - OpenRouter has none, and the sentence was shared.
+    await expect(
+      dialog.getByText(/could not restore this provider's routing/),
+    ).toBeVisible();
+    await expect(dialog.getByText(/write this tool's config/)).toHaveCount(0);
+
+    // And it says what went wrong, which the category never could.
+    await dialog.getByRole("group").filter({ hasText: "Details" }).first().click();
+    await expect(
+      dialog.getByText("configuring Claude Code: permission denied"),
+    ).toBeVisible();
+
+    // A provider is checked through its members, so "Never checked" would
+    // invite the reader to go and check something that has no per-provider
+    // check to run.
+    await expect(
+      dialog.getByText("Checked per tool, not per provider").first(),
+    ).toBeVisible();
+    await expect(dialog.getByText("Never checked")).toHaveCount(0);
+
+    // Nothing here has a process name Gate can look for: two provider slugs
+    // and the environment channel, which is not a process.
+    await expect(
+      dialog.getByText("Gate has no process to look for").first(),
+    ).toBeVisible();
+    // `exact`, because the deferral's own sentence says the proxy "was not
+    // running yet" and a substring match picks that up - the assertion is about
+    // the Process line, whose whole text is the reading.
+    await expect(dialog.getByText("Not running", { exact: true })).toHaveCount(0);
+    await expect(
+      dialog.getByText("Gate has no process to look for", { exact: true }),
+    ).toHaveCount(3);
+  });
+
   test("reviewing changes nothing", async ({ boot }) => {
     const app = await boot(withJournal);
 

@@ -221,8 +221,12 @@ export interface BackendState {
         | "write_failed"
         | "not_installed"
         | "unknown"
-        | "deferred_signed_out";
+        | "deferred_signed_out"
+        | "deferred_engine_down";
       at_unix: number;
+      /** The backend's own words for a failure, which the journal carries so
+          the summary can say what happened rather than only which step. */
+      error?: string | null;
     }[];
   } | null;
   /** Per-tool model choices and the catalogue behind the picker (AG-588).

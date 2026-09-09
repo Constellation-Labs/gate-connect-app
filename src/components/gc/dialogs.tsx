@@ -2012,6 +2012,7 @@ export function RestoreDetailsDialog({
   const rows = recoveryRows(summary, now);
   const counts = stageCounts(summary);
   const failures = rows.filter((r) => r.errorCategory.length > 0);
+  const waiting = rows.filter((r) => r.outcome === "deferred_engine_down");
   return (
     <Modal
       tone="neutral"
@@ -2034,10 +2035,22 @@ export function RestoreDetailsDialog({
             {failures.length > 0 && (
               // Categories, not messages. The restore branches on these
               // conditions itself, so the grouping cannot drift from the
-              // attempt the way a parsed error string would.
+              // attempt the way a parsed error string would. Each row carries
+              // its own message under Details.
               <p className="mt-1">
                 Failures by category:{" "}
                 {[...new Set(failures.map((r) => r.errorCategory))].join(", ")}.
+              </p>
+            )}
+            {waiting.length > 0 && (
+              // Said separately from the failures above, and that separation is
+              // the point: these were reached and declined by Gate itself
+              // because the engine was not up, and reporting them under a
+              // failure heading is what sent somebody looking for a problem
+              // that was an engine still starting.
+              <p className="mt-1">
+                {waiting.length === 1 ? "One entry is" : `${waiting.length} entries are`}{" "}
+                waiting for routing to come up, not for you.
               </p>
             )}
           </ModalNote>
@@ -2090,6 +2103,14 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
         <dt className="text-base-muted-foreground">Next action</dt>
         <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
       </dl>
+      {/* The reason, not just the category. "Configuration write" says which
+          step and can never say why, which left this dialog unable to answer
+          its own title - the message existed, on stderr, where nobody reading
+          this will find it. Same component the reopen flow uses for a backend
+          error string, in the same shape of neutral card, so the two surfaces
+          that show one look alike; it draws mono, which is what machine output
+          takes. */}
+      {row.error && <ErrorDetails raw={row.error} title="Details" />}
     </div>
   );
 }

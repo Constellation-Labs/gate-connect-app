@@ -20,6 +20,7 @@ function toolRow(overrides: Partial<RecoveryTool> = {}): RecoveryTool {
     stage: "restored",
     stage_complete: true,
     error_category: "none",
+    error: null,
     stage_at_unix: NOW_UNIX - 240,
     last_verified_state: "on",
     last_verified_unix: NOW_UNIX - 600,
@@ -135,6 +136,129 @@ describe("recoveryRow", () => {
 
   it("offers no action for a settled row", () => {
     expect(recoveryRow(toolRow(), NOW).action).toBeNull();
+  });
+});
+
+describe("what a row is, and what Gate could actually see", () => {
+  /** The report that started this: a master-on with the engine still coming up
+   *  drew five rows, four of them reading "Write failed / Configuration write /
+   *  Gate could not write this tool's config". Nothing had been written. */
+  it("says an engine-deferred entry is waiting, and blames nobody", () => {
+    const row = recoveryRow(
+      toolRow({
+        slug: "openclaw",
+        name: "OpenClaw",
+        stage: "deferred_engine_down",
+        stage_complete: false,
+        // No category: nothing failed, so nothing belongs under a failure
+        // heading.
+        error_category: "none",
+        next_step: "retry",
+      }),
+      NOW,
+    );
+    expect(row.stage).toBe("Waiting for routing");
+    expect(row.errorCategory).toBe("");
+    expect(row.stageDetail).toContain("Nothing was attempted");
+    // A resume is still the move, so the control stays.
+    expect(row.action).toBe("Retry");
+  });
+
+  /** A provider is not a tool, and OpenRouter has no config file at all -
+   *  `tool_ids` is empty, it routes entirely through a proxy domain. Telling its
+   *  row that Gate could not write "this tool's config" described a file that
+   *  does not exist. `kind` was on the DTO the whole time and nothing read it. */
+  it("describes a provider's routing rather than a config file it may not have", () => {
+    const provider = recoveryRow(
+      toolRow({
+        slug: "openrouter",
+        name: "OpenRouter",
+        kind: "provider",
+        stage: "write_failed",
+        stage_complete: false,
+        error_category: "write",
+      }),
+      NOW,
+    );
+    expect(provider.stageDetail).toContain("this provider's routing");
+    expect(provider.stageDetail).not.toContain("config");
+
+    const tool = recoveryRow(
+      toolRow({ stage: "write_failed", stage_complete: false, error_category: "write" }),
+      NOW,
+    );
+    expect(tool.stageDetail).toContain("this tool's config");
+  });
+
+  /** The sweep walks the registry, so a provider slug can never have a verdict
+   *  logged against it. "Never checked" reads as a gap somebody could close,
+   *  and invites the reader to go and check a thing that is checked through its
+   *  members. Confirmed by a real `verdict-log.json`, which holds the six tool
+   *  slugs and none of the three provider ones. */
+  it("does not tell a provider row it has never been checked", () => {
+    const provider = recoveryRow(
+      toolRow({ slug: "anthropic", name: "Anthropic", kind: "provider", check_state: null }),
+      NOW,
+    );
+    expect(provider.checkResult).toBe("Checked per tool, not per provider");
+    // A tool with no check really has never been checked.
+    expect(recoveryRow(toolRow({ check_state: null }), NOW).checkResult).toBe(
+      "Never checked",
+    );
+  });
+
+  /** Three answers, not two. `AGENT_PROCESSES` has no name for a provider slug,
+   *  for OpenClaw or Hermes, or for `env-proxy` - which is not a process - so
+   *  "Not running" was asserting a walk of the process table that never ran.
+   *  The app's own rule: a figure is a measurement, or the card says it is not. */
+  it("does not claim a process is absent when it never looked for one", () => {
+    expect(recoveryRow(toolRow({ running: null }), NOW).runningState).toBe(
+      "Gate has no process to look for",
+    );
+    expect(recoveryRow(toolRow({ running: false }), NOW).runningState).toBe("Not running");
+    expect(recoveryRow(toolRow({ running: true }), NOW).runningState).toBe(
+      "Running, with current settings",
+    );
+    // A stale process still outranks both: it is the more specific reading.
+    expect(
+      recoveryRow(toolRow({ running: true, reopen_pending: true }), NOW).runningState,
+    ).toBe("Running, using the settings it started with");
+  });
+
+  /** The category says which step; only this says what happened. Before the
+   *  journal carried it, the message went to stderr - where nobody reading this
+   *  dialog will find it. */
+  it("carries the backend's own words for a failure, and nothing otherwise", () => {
+    expect(
+      recoveryRow(
+        toolRow({
+          stage: "write_failed",
+          error_category: "write",
+          error: "the Gate proxy is not running",
+        }),
+        NOW,
+      ).error,
+    ).toBe("the Gate proxy is not running");
+    expect(recoveryRow(toolRow(), NOW).error).toBeNull();
+  });
+
+  /** An engine deferral is unfinished, so the notice stays up and the resume
+   *  still has something to do. */
+  it("counts an engine deferral as outstanding", () => {
+    const s = summary({
+      tools: [
+        toolRow({ stage: "restored", stage_complete: true, next_step: "none" }),
+        toolRow({
+          slug: "env-proxy",
+          stage: "deferred_engine_down",
+          stage_complete: false,
+          error_category: "none",
+          next_step: "retry",
+        }),
+      ],
+    });
+    expect(stageCounts(s)).toEqual({ complete: 1, pending: 1, total: 2 });
+    expect(unresolved(s).map((t) => t.slug)).toEqual(["env-proxy"]);
   });
 });
 

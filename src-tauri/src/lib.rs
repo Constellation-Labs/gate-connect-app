@@ -2540,13 +2540,32 @@ struct RecoveryToolDto {
     stage_complete: bool,
     /// What kind of failure the stage was, when it was one.
     error_category: &'static str,
+    /// Why the last attempt failed, in the backend's own words. `None` for any
+    /// stage that is not a failure, and for a failure recorded by a build older
+    /// than the journal field.
+    ///
+    /// The category above says which *step* went wrong and can never say why -
+    /// which left the one dialog whose title is "What happened to routing"
+    /// unable to answer it. Machine output, so the surface draws it in mono
+    /// behind a disclosure.
+    error: Option<String>,
     stage_at_unix: u64,
     last_verified_state: Option<String>,
     last_verified_unix: u64,
     check_state: Option<String>,
     check_reason: Option<String>,
     check_at_unix: u64,
-    running: bool,
+    /// Whether a process for this entry is up, or `None` where Gate has no way
+    /// to look.
+    ///
+    /// An `Option` because `false` was a claim nobody had measured. Four of the
+    /// five kinds of row that reach this summary have no process name in
+    /// `AGENT_PROCESSES` - a provider slug, OpenClaw and Hermes (names too
+    /// generic to match on), and `env-proxy`, which is not a process at all -
+    /// and every one of them rendered "Not running" as though the table had been
+    /// consulted and had answered. The rule the app already holds itself to: a
+    /// figure is a measurement, or the card says it is not.
+    running: Option<bool>,
     reopen_pending: bool,
     next_step: &'static str,
 }
@@ -2593,38 +2612,63 @@ fn recovery_summary() -> Option<RecoverySummaryDto> {
     // order the stages make sense in. Pending entries the journal never mentioned
     // follow, seeded `Pending` - the same thing `JournalWriter::reopen` does, for
     // the same reason.
-    let mut rows: Vec<(String, String, EntryKind, Outcome, u64)> = journal
+    // A struct rather than the tuple this was: it grew a sixth member with the
+    // journalled error, and a positional read of six is how the wrong field
+    // reaches the wrong DTO slot.
+    struct Row {
+        slug: String,
+        name: String,
+        kind: EntryKind,
+        outcome: Outcome,
+        at_unix: u64,
+        error: Option<String>,
+    }
+    let mut rows: Vec<Row> = journal
         .as_ref()
         .map(|j| {
             j.entries
                 .iter()
-                .map(|e| (e.slug.clone(), e.name.clone(), e.kind, e.outcome, e.at_unix))
+                .map(|e| Row {
+                    slug: e.slug.clone(),
+                    name: e.name.clone(),
+                    kind: e.kind,
+                    outcome: e.outcome,
+                    at_unix: e.at_unix,
+                    error: e.error.clone(),
+                })
                 .collect()
         })
         .unwrap_or_default();
-    let seen = |rows: &[(String, String, EntryKind, Outcome, u64)], slug: &str| {
-        rows.iter().any(|(s, ..)| s == slug)
-    };
+    let seen = |rows: &[Row], slug: &str| rows.iter().any(|r| r.slug == slug);
     for (entries, kind) in [
         (&pending.providers, EntryKind::Provider),
         (&pending.tools, EntryKind::Tool),
     ] {
         for entry in entries {
             if !seen(&rows, &entry.slug) {
-                rows.push((
-                    entry.slug.clone(),
-                    entry.name.clone(),
+                rows.push(Row {
+                    slug: entry.slug.clone(),
+                    name: entry.name.clone(),
                     kind,
-                    Outcome::Pending,
-                    0,
-                ));
+                    outcome: Outcome::Pending,
+                    at_unix: 0,
+                    error: None,
+                });
             }
         }
     }
 
     let tools = rows
         .into_iter()
-        .map(|(slug, name, kind, outcome, at_unix)| {
+        .map(|row| {
+            let Row {
+                slug,
+                name,
+                kind,
+                outcome,
+                at_unix,
+                error,
+            } = row;
             let reopen_pending = reopen_pending_for(&slug);
             let logged = verdicts.get(&slug);
             RecoveryToolDto {
@@ -2635,6 +2679,7 @@ fn recovery_summary() -> Option<RecoverySummaryDto> {
                 stage: outcome.as_str(),
                 stage_complete: outcome.is_complete(),
                 error_category: outcome.category(),
+                error,
                 stage_at_unix: at_unix,
                 last_verified_state: logged.and_then(|e| e.verified_state.clone()),
                 last_verified_unix: logged.map(|e| e.verified_unix).unwrap_or(0),
@@ -2664,22 +2709,31 @@ fn recovery_summary() -> Option<RecoverySummaryDto> {
     })
 }
 
-/// Is any process for this tool running, whenever it started?
+/// Is any process for this tool running, whenever it started? `None` where Gate
+/// has no process name to look for, which is not the same as none being up.
 ///
 /// Distinct from [`reopen_pending_for`], which asks the narrower question of
 /// whether one *predates* the last routing change. The summary needs both: "not
 /// running" and "running with current settings" are the same verdict and
 /// different sentences, and a row that cannot tell them apart cannot explain
 /// itself.
+///
+/// The `None` is the correction. `agent_process_names` is empty for a provider
+/// slug, for OpenClaw and Hermes - whose process names are too generic to match
+/// on, as `AGENT_PROCESSES` says - and for `env-proxy`, which is not a process.
+/// Returning `false` for those read as a measurement, and the summary printed
+/// "Not running" for four of five rows on the strength of a walk it never did.
+/// `reopen_pending_for` still returns a plain `bool`: it feeds `next_step`,
+/// where the conservative answer is the right one and its own doc says so.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn agent_running_for(slug: &str) -> bool {
+fn agent_running_for(slug: &str) -> Option<bool> {
     let wanted = agent_process_names(slug);
     if wanted.is_empty() {
-        return false;
+        return None;
     }
     let mut running = false;
     for_each_agent_process(&wanted, |_| running = true);
-    running
+    Some(running)
 }
 
 /// What one per-tool retry did, plus what is left.
