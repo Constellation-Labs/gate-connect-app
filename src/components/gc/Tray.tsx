@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 import type { FeedState } from "../../lib/api";
 import { BaseSwitch, Skeleton, StatusTile } from "./base";
@@ -8,6 +8,7 @@ import type { IconName } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
+import { useRovingMenu } from "../../lib/useRovingMenu";
 
 /**
  * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
@@ -553,7 +554,11 @@ function CliCard({
  * anatomy as the topbar's, plus the Quit entry the tray owes its users - it is
  * the popover surface, and the drawn menu carries it in destructive ink with
  * no external-link glyph (the rendered frame drops the one its metadata
- * carries: quitting does not leave the app). */
+ * carries: quitting does not leave the app).
+ *
+ * Keyboard and focus are `useRovingMenu`'s, shared with the topbar's copy: the
+ * two menus draw differently and behave identically, and the behaviour has one
+ * home so they cannot diverge again. This owns the markup and the scrim. */
 function TrayMenu({
   onSelect,
   onDismiss,
@@ -562,10 +567,8 @@ function TrayMenu({
   onSelect: (action: TrayMenuAction) => void;
   /** Close without choosing: Escape, or a click anywhere else. */
   onDismiss: () => void;
-  /** The button that opened this. Focus returns to it on close - all three
-   *  exits unmount the panel, and with the focused element gone `activeElement`
-   *  falls to `<body>`, so the next Tab restarted from the top of the popover
-   *  rather than from the control the user was just on. */
+  /** The button that opened this; focus returns to it on close. See
+   *  `useRovingMenu`. */
   triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const external: { action: TrayMenuAction; icon: IconName; label: string }[] = [
@@ -573,66 +576,7 @@ function TrayMenu({
     { action: "support", icon: "headset", label: "Contact support" },
     { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
   ];
-  const panel = useRef<HTMLDivElement>(null);
-  /**
-   * Which item is the menu's single tab stop (roving tabindex).
-   *
-   * `role="menu"` is meant to be ONE stop, with the arrows moving inside it. As
-   * four plain buttons every item was in the tab order, so Tab past the last one
-   * walked into the app-list switches - visible behind the open menu, and
-   * click-blocked by the scrim, so the focus ring went somewhere the pointer
-   * could not follow.
-   */
-  const [current, setCurrent] = useState(0);
-
-  /**
-   * Focus the first item when the menu opens.
-   *
-   * Without it the menu was unreachable by keyboard: it opens from a button, so
-   * focus stayed on that button and Tab walked into the list *behind* the menu
-   * rather than into it. `role="menu"` promises arrow-key navigation, so the
-   * roles were describing behaviour that did not exist.
-   */
-  useEffect(() => {
-    panel.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
-    // One cleanup covers every exit: Escape, the scrim and selecting an item all
-    // unmount this panel.
-    const trigger = triggerRef;
-    return () => trigger?.current?.focus();
-  }, [triggerRef]);
-
-  /**
-   * Arrow keys move between items, Escape closes, Home/End jump.
-   *
-   * Wrapping at both ends, which is what a menu does and what a listbox does
-   * not. `preventDefault` on the arrows because this popover's content scrolls:
-   * without it Down would move the selection *and* scroll the list behind.
-   */
-  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onDismiss();
-      return;
-    }
-    const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
-    if (!keys.includes(e.key)) return;
-    const items = Array.from(
-      panel.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [],
-    );
-    if (items.length === 0) return;
-    e.preventDefault();
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      e.key === "Home"
-        ? 0
-        : e.key === "End"
-          ? items.length - 1
-          : e.key === "ArrowDown"
-            ? (at + 1 + items.length) % items.length
-            : (at - 1 + items.length) % items.length;
-    setCurrent(next);
-    items[next]?.focus();
-  };
+  const { panel, current, onKeyDown } = useRovingMenu(triggerRef, onDismiss);
 
   return (
     <>

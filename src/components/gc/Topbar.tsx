@@ -1,4 +1,6 @@
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
+import { useRovingMenu } from "../../lib/useRovingMenu";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
@@ -72,6 +74,34 @@ export function Topbar({
   onMenuToggle: () => void;
   onMenuSelect: (action: TopnavAction) => void;
 }) {
+  /** The button the menu opens from. Focus returns to it when the panel
+   *  unmounts, and the panel is what holds focus while it is open. */
+  const menuButton = useRef<HTMLButtonElement>(null);
+
+  /**
+   * Escape closes the menu, from outside the panel.
+   *
+   * The panel handles the key itself while focus is inside it. This is the case
+   * where focus has since moved elsewhere: the menu is one tab stop, so Tab
+   * leaves it as a unit and the menu stays open with focus behind the scrim -
+   * exactly the gap `TrayApp`'s own document handler covers for the popover.
+   *
+   * **Bubble phase, deliberately**, the same argument `TrayApp` makes for its
+   * window-hiding handler: `useFocusTrap` takes Escape in the capture phase and
+   * calls `stopPropagation`, so a dialog over the window answers the key first -
+   * which is what should happen. Registering in capture would race that trap.
+   */
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Only ever a close: the effect is not registered while the menu is shut,
+      // so the toggle cannot be the thing that opens it.
+      if (e.key === "Escape") onMenuToggle();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen, onMenuToggle]);
+
   return (
     <header className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4">
       {/* Mirrors the width of the button cluster opposite so the lockup sits
@@ -95,8 +125,15 @@ export function Topbar({
           label="More"
           onClick={onMenuToggle}
           expanded={menuOpen}
+          buttonRef={menuButton}
         />
-        {menuOpen && <TopnavMenu onSelect={onMenuSelect} />}
+        {menuOpen && (
+          <TopnavMenu
+            onSelect={onMenuSelect}
+            onDismiss={onMenuToggle}
+            triggerRef={menuButton}
+          />
+        )}
       </div>
     </header>
   );
@@ -157,37 +194,82 @@ export function OutlineIconButton({
 }
 
 /** The 224px overflow menu. Every destination but Quit opens outside the app,
- *  so those rows carry the external-link glyph and Quit does not. */
-export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => void }) {
+ *  so those rows carry the external-link glyph and Quit does not.
+ *
+ *  Keyboard and focus are `useRovingMenu`'s, shared with `TrayMenu`. The two
+ *  menus are deliberately not one component - they draw different shadows,
+ *  paddings, glyph sizes and corners off different frames - but the interaction
+ *  is the same, and diverging on it was the bug this fixes, so it has one home
+ *  rather than a copy per surface. This owns the markup and the scrim. */
+function TopnavMenu({
+  onSelect,
+  onDismiss,
+  triggerRef,
+}: {
+  onSelect: (action: TopnavAction) => void;
+  /** Close without choosing: Escape from inside the panel, or a click anywhere
+   *  else. The window-level Escape is the shell's, and goes through the same
+   *  handler. */
+  onDismiss: () => void;
+  /** The button that opened this; focus returns to it on close. See
+   *  `useRovingMenu`. */
+  triggerRef?: RefObject<HTMLButtonElement>;
+}) {
+  const { panel, current, onKeyDown } = useRovingMenu(triggerRef, onDismiss);
+
   return (
-    <div
-      role="menu"
-      className="absolute right-0 top-10 z-10 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
-    >
-      {MENU_ITEMS.map(({ action, icon, label }) => (
+    <>
+      {/* An invisible scrim, so a click anywhere else closes the menu *and
+          nothing else happens* - the same one `TrayMenu` draws, and for the
+          same reason: without it the menu had no dismissal but the ellipsis
+          button itself, and a click meant to dismiss it landed on whatever pane
+          control was under the pointer. It paints nothing, so it is not a
+          visual change; the design draws no scrim. It also covers the trigger,
+          which is why clicking that while open still closes once rather than
+          toggling twice. */}
+      <div aria-hidden className="fixed inset-0 z-10" onClick={onDismiss} />
+      <div
+        ref={panel}
+        role="menu"
+        // Without a name this announces as a bare "menu". Named for the control
+        // that opens it, so it reads "More, menu" - as `TrayMenu` already did.
+        aria-label="More"
+        onKeyDown={onKeyDown}
+        // z-20 to sit above its own scrim. That ties with `Modal`, which is
+        // harmless: `{dialog}` is the last child of `AppShell`, so tree order
+        // gives a dialog the front, and `onMenuSelect` closes this menu before
+        // one can open anyway.
+        className="absolute right-0 top-10 z-20 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
+      >
+        {MENU_ITEMS.map(({ action, icon, label }, i) => (
+          <button
+            key={action}
+            type="button"
+            role="menuitem"
+            // Roving: only the current item is a tab stop, so Tab leaves the menu
+            // as a unit and the arrows move within it.
+            tabIndex={current === i ? 0 : -1}
+            onClick={() => onSelect(action)}
+            className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <span className="flex items-center gap-2">
+              <Icon name={icon} size={16} />
+              <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
+            </span>
+            <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
+          </button>
+        ))}
         <button
-          key={action}
           type="button"
           role="menuitem"
-          onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          tabIndex={current === MENU_ITEMS.length ? 0 : -1}
+          onClick={() => onSelect(QUIT_ITEM.action)}
+          className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
-          <span className="flex items-center gap-2">
-            <Icon name={icon} size={16} />
-            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
-          </span>
-          <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
+          <Icon name={QUIT_ITEM.icon} size={16} />
+          <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
         </button>
-      ))}
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => onSelect(QUIT_ITEM.action)}
-        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <Icon name={QUIT_ITEM.icon} size={16} />
-        <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
-      </button>
-    </div>
+      </div>
+    </>
   );
 }
