@@ -147,6 +147,7 @@ export function installFakeTauri(state: BackendState): void {
         kind: e.kind,
         stage: e.outcome,
         at: e.at_unix,
+        error: e.error ?? null,
       })) ?? []),
       // Pending entries the journal never mentioned, seeded `pending` - what
       // `JournalWriter::reopen` does, for the same reason.
@@ -158,6 +159,7 @@ export function installFakeTauri(state: BackendState): void {
           kind: p.kind,
           stage: "pending" as const,
           at: 0,
+          error: null,
         })),
     ];
     const complete = ["restored", "not_installed", "unknown"];
@@ -184,7 +186,10 @@ export function installFakeTauri(state: BackendState): void {
                   ? "not_installed"
                   : row.stage === "unknown"
                     ? "unknown"
+                    // `deferred_engine_down` lands here with `pending` and
+                    // `restored`: nothing was attempted, so nothing failed.
                     : "none",
+          error: row.error,
           stage_at_unix: row.at,
           last_verified_state:
             verdict?.state === "on" || verdict?.state === "off" ? verdict.state : null,
@@ -193,7 +198,16 @@ export function installFakeTauri(state: BackendState): void {
           check_state: verdict?.state ?? null,
           check_reason: verdict?.reason ?? null,
           check_at_unix: verdict ? state.nowUnix : 0,
-          running: state.runningAgentNames.length > 0,
+          // `null` where Rust's `agent_process_names` is empty, which is every
+          // provider slug and the three tools with no process name of their own
+          // - and the reason "Not running" used to be printed for rows nothing
+          // had looked for. Modelled here so a spec cannot assert a claim the
+          // real backend does not make.
+          running: AGENT_PROCESSES.some(([slug]) => slug === row.slug)
+            ? state.runningAgentNames.some(
+                (n) => agentSlugOf(n) === row.slug,
+              )
+            : null,
           reopen_pending: reopenPending,
           // `recovery::next_step`, including its ordering: an unfinished write
           // outranks a stale process, because there is nothing on disk yet for
@@ -201,6 +215,8 @@ export function installFakeTauri(state: BackendState): void {
           next_step: !stageComplete
             ? row.stage === "deferred_signed_out"
               ? "sign_in"
+              // Including the engine deferral: a resume either finds the engine
+              // up and does the work, or changes nothing.
               : "retry"
             : reopenPending
               ? "reopen_tool"

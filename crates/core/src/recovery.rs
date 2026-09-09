@@ -71,6 +71,20 @@ pub enum Outcome {
     /// that means giving the provider path the same early-out the tool path has,
     /// rather than matching on an error message here.
     DeferredSignedOut,
+    /// Nothing was attempted because the engine was not routing yet, and this
+    /// entry has nothing to configure until it is. Kept in its snapshot, so the
+    /// post-enable pass picks it up.
+    ///
+    /// `restore_all` runs two passes for exactly this reason, and this is the
+    /// word for what the first one meets. Without it every engine-dependent
+    /// entry was *attempted* in that pass and its refusal recorded as
+    /// `WriteFailed`: a master-on with the engine still coming up reported four
+    /// of five entries as "Gate could not write this tool's config" when nothing
+    /// had been written and nothing had gone wrong. Two shapes reach it - a
+    /// provider whose only route is a proxy domain (`Applied::NotYet`), and a
+    /// tool whose `connect` points at the engine proxy
+    /// (`Integration::requires_engine`).
+    DeferredEngineDown,
 }
 
 impl Outcome {
@@ -80,7 +94,10 @@ impl Outcome {
     pub const fn is_outstanding(self) -> bool {
         matches!(
             self,
-            Outcome::Pending | Outcome::WriteFailed | Outcome::DeferredSignedOut
+            Outcome::Pending
+                | Outcome::WriteFailed
+                | Outcome::DeferredSignedOut
+                | Outcome::DeferredEngineDown
         )
     }
 
@@ -103,7 +120,11 @@ impl Outcome {
     /// so nothing failed.
     pub const fn category(self) -> &'static str {
         match self {
-            Outcome::Pending | Outcome::Restored => "none",
+            // Nothing was tried, so nothing failed. The two deferrals that are
+            // Gate's own doing report no category for the same reason `Pending`
+            // does - filing them under a failure heading is what sent someone
+            // looking for a problem that was really an engine still starting.
+            Outcome::Pending | Outcome::Restored | Outcome::DeferredEngineDown => "none",
             Outcome::WriteFailed => "write",
             Outcome::NotInstalled => "not_installed",
             Outcome::Unknown => "unknown",
@@ -122,6 +143,7 @@ impl Outcome {
             Outcome::NotInstalled => "not_installed",
             Outcome::Unknown => "unknown",
             Outcome::DeferredSignedOut => "deferred_signed_out",
+            Outcome::DeferredEngineDown => "deferred_engine_down",
         }
     }
 }
@@ -168,7 +190,11 @@ impl NextStep {
 /// `reopen_pending` is only consulted once the write is done, for that reason.
 pub const fn next_step(outcome: Outcome, reopen_pending: bool) -> NextStep {
     match outcome {
-        Outcome::Pending | Outcome::WriteFailed => NextStep::Retry,
+        // A resume is the right move for the engine deferral too: by the time
+        // anybody is reading this the engine is either up - in which case the
+        // retry does the work the first pass could not - or it is not, and the
+        // entry lands back here having changed nothing.
+        Outcome::Pending | Outcome::WriteFailed | Outcome::DeferredEngineDown => NextStep::Retry,
         Outcome::DeferredSignedOut => NextStep::SignIn,
         // Settled: restored, or dropped because there is nothing to restore. Only
         // a process holding pre-change settings is left to report.
@@ -193,6 +219,20 @@ pub struct EntryRecord {
     /// When this entry was last touched. Unix seconds; 0 when the clock could not
     /// be read, which the UI renders as unknown rather than as 1970.
     pub at_unix: u64,
+    /// Why the last attempt failed, in the backend's own words. `None` for every
+    /// outcome that is not a failure, and for a failure recorded by a build that
+    /// predates this field.
+    ///
+    /// Here because [`Outcome::category`] is all the summary used to have, and a
+    /// category is not a reason: "Configuration write" says which step, never
+    /// what went wrong, so the dialog that exists to explain an interrupted
+    /// restore could not. The message was already being written - to stderr,
+    /// where nobody reading the dialog will find it.
+    ///
+    /// Machine output, so the surface draws it in mono behind a disclosure, the
+    /// same treatment the reopen flow gives a backend error string.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// The last restore, entry by entry.
@@ -295,6 +335,7 @@ impl JournalWriter {
                 kind,
                 outcome: Outcome::Pending,
                 at_unix: now_unix(),
+                error: None,
             });
         }
         Self { journal }
@@ -316,6 +357,7 @@ impl JournalWriter {
                     kind,
                     outcome: Outcome::Pending,
                     at_unix: at,
+                    error: None,
                 })
                 .collect(),
         };
@@ -325,11 +367,34 @@ impl JournalWriter {
     }
 
     /// Record what happened to one entry and persist immediately.
+    ///
+    /// For an outcome with nothing to explain: restored, dropped, or deferred by
+    /// Gate's own doing. A failure goes through [`JournalWriter::record_failed`]
+    /// instead, which is the only way to set [`EntryRecord::error`] - so a
+    /// failure recorded here would reach the summary as a category with no
+    /// reason behind it, which is the gap that field exists to close. Any
+    /// previous error on the entry is cleared, because a retry that got further
+    /// must not leave the old message standing under a new outcome.
     pub fn record(&mut self, slug: &str, outcome: Outcome) {
+        self.write(slug, outcome, None);
+    }
+
+    /// Record a failed attempt, with the reason the attempt gave.
+    ///
+    /// `error` is the backend's own message rather than a rephrasing: the
+    /// summary draws it as machine output, and a sentence written here would be
+    /// a second account of the failure that could disagree with the log line
+    /// beside it.
+    pub fn record_failed(&mut self, slug: &str, outcome: Outcome, error: &str) {
+        self.write(slug, outcome, Some(error.to_string()));
+    }
+
+    fn write(&mut self, slug: &str, outcome: Outcome, error: Option<String>) {
         let at = now_unix();
         if let Some(entry) = self.journal.entries.iter_mut().find(|e| e.slug == slug) {
             entry.outcome = outcome;
             entry.at_unix = at;
+            entry.error = error;
         }
         self.journal.updated_unix = at;
         self.flush();
@@ -365,6 +430,7 @@ mod tests {
             kind: EntryKind::Tool,
             outcome,
             at_unix: 1,
+            error: None,
         }
     }
 
@@ -471,6 +537,83 @@ mod tests {
         assert!(Outcome::Unknown.is_complete());
         assert!(!Outcome::Pending.is_complete());
         assert_eq!(next_step(Outcome::NotInstalled, false), NextStep::None);
+    }
+
+    /// The engine deferral is outstanding, unfinished, and blames nobody.
+    ///
+    /// All three matter, and each was a way the old behaviour got it wrong. It
+    /// must stay in its snapshot (outstanding) so the post-enable pass picks it
+    /// up; it must not count as a completed stage; and it must report no failure
+    /// category, because nothing failed - a master-on with the engine still
+    /// coming up filed four of five entries under "Configuration write" and sent
+    /// somebody looking for a problem that was an engine starting.
+    #[test]
+    fn the_engine_deferral_is_unfinished_and_not_a_failure() {
+        assert!(Outcome::DeferredEngineDown.is_outstanding());
+        assert!(!Outcome::DeferredEngineDown.is_complete());
+        assert_eq!(Outcome::DeferredEngineDown.category(), "none");
+        // A resume is the move: by the time anyone reads this the engine is
+        // either up, and the retry does the work, or it is not, and nothing
+        // changes.
+        assert_eq!(
+            next_step(Outcome::DeferredEngineDown, false),
+            NextStep::Retry
+        );
+    }
+
+    /// A reason survives the write, and a later clean outcome clears it.
+    ///
+    /// The second half is the one worth pinning: a retry that got further must
+    /// not leave the old message standing under a new stage, which is what makes
+    /// `record` and `record_failed` separate methods rather than one with an
+    /// optional argument nobody passes.
+    ///
+    /// **Redirects the app-support directory, and has to.** Both methods flush
+    /// after every entry - that is the point of the journal - so a test that
+    /// skipped the seam would write over the real `restore-journal.json` in the
+    /// developer's own home, which is a file the app reads to explain an
+    /// interrupted restore. Written the first time without it, and that is
+    /// exactly what it did.
+    #[test]
+    fn a_failure_carries_its_reason_and_a_retry_drops_it() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-journal-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+
+        let error_after_failure;
+        let error_after_retry;
+        {
+            let mut writer = JournalWriter {
+                journal: RestoreJournal {
+                    updated_unix: 1,
+                    requested_routing_on: true,
+                    entries: vec![entry("openclaw", Outcome::Pending)],
+                },
+            };
+            writer.record_failed("openclaw", Outcome::WriteFailed, "the proxy is not running");
+            error_after_failure = writer.journal.entries[0].error.clone();
+            writer.record("openclaw", Outcome::Restored);
+            error_after_retry = writer.journal.entries[0].error.clone();
+        }
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            error_after_failure.as_deref(),
+            Some("the proxy is not running")
+        );
+        assert_eq!(error_after_retry, None);
     }
 
     /// The wire word and the serde rename are the same string, so a stage read

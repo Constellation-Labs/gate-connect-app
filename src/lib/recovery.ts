@@ -39,19 +39,51 @@ export const STAGE_LABEL: Record<RestoreOutcome, string> = {
   not_installed: "No longer installed",
   unknown: "Not recognised",
   deferred_signed_out: "Waiting for sign-in",
+  deferred_engine_down: "Waiting for routing",
 };
 
-/** The one-line detail under a stage. Says what the stage *means* for this tool,
- *  because the label alone leaves "Not started" ambiguous between "nothing
- *  happened to it" and "it is next". */
-export const STAGE_DETAIL: Record<RestoreOutcome, string> = {
+/** The one-line detail under a stage. Says what the stage *means* for this
+ *  entry, because the label alone leaves "Not started" ambiguous between
+ *  "nothing happened to it" and "it is next".
+ *
+ *  **Two sets, because a summary row is not always a tool.** The restore walks
+ *  providers as well as tools, and every row was getting the tool sentence: a
+ *  proxy-only provider - OpenRouter has no `tool_ids` at all - was told "Gate
+ *  could not write this tool's config" about a config file it does not have.
+ *  `RecoveryTool.kind` has been on the DTO the whole time and nothing read it.
+ *
+ *  A provider's routing is not one file, so its sentences talk about routing.
+ *  That stays true whether the provider configures member tools, rides a proxy
+ *  domain, or both, which is why this splits on kind and not on some further
+ *  fact the frontend would have to be told. */
+const STAGE_DETAIL_TOOL: Record<RestoreOutcome, string> = {
   pending: "The operation stopped before reaching this one. Its settings are untouched.",
   restored: "Gate's routing values are back in this tool's config.",
-  write_failed: "Gate could not write this tool's config. It is still recorded, so a retry picks it up.",
+  write_failed:
+    "Gate could not write this tool's config. It is still recorded, so a retry picks it up.",
   not_installed: "Not on this machine any more, so there is nothing to restore.",
   unknown: "Recorded by an older version, or a tool since removed. Dropped.",
   deferred_signed_out: "Nothing was attempted: there is no account to point this tool at.",
+  deferred_engine_down:
+    "Nothing was attempted: this tool points at the Gate proxy, which was not running yet. It is still recorded, so a resume picks it up.",
 };
+
+const STAGE_DETAIL_PROVIDER: Record<RestoreOutcome, string> = {
+  pending: "The operation stopped before reaching this one. Nothing about it was changed.",
+  restored: "This provider's routing is back on.",
+  write_failed:
+    "Gate could not restore this provider's routing. It is still recorded, so a retry picks it up.",
+  not_installed: "Nothing this provider routes is on this machine any more.",
+  unknown: "Recorded by an older version, or a provider since removed. Dropped.",
+  deferred_signed_out: "Nothing was attempted: there is no account to route this provider through.",
+  deferred_engine_down:
+    "Nothing was attempted: this provider routes through the Gate proxy, which was not running yet. It is still recorded, so a resume picks it up.",
+};
+
+/** The detail for one row, by what the row is. */
+export function stageDetail(stage: RestoreOutcome, kind: RecoveryTool["kind"]): string {
+  return kind === "provider" ? STAGE_DETAIL_PROVIDER[stage] : STAGE_DETAIL_TOOL[stage];
+}
 
 /** Grouped failure kinds, for a review that says what *class* of thing went
  *  wrong rather than printing one sentence per entry. `none` never renders. */
@@ -126,12 +158,21 @@ export interface RecoveryRow {
   slug: string;
   name: string;
   kind: "provider" | "tool";
+  /** The raw outcome, beside its label - the same pairing this row already
+   *  makes for `nextStep` and `action`. A surface that needs to group rows by
+   *  what happened can then test the outcome rather than match on the sentence
+   *  drawn for it. */
+  outcome: RestoreOutcome;
   /** What the write reached, and what that means. */
   stage: string;
   stageDetail: string;
   stageComplete: boolean;
   /** Present only for a stage that failed. */
   errorCategory: string;
+  /** The backend's own words for the failure, for a Details disclosure. Machine
+   *  output, so the surface draws it in mono. Null when the stage did not fail,
+   *  and when a build older than the journal field recorded it. */
+  error: string | null;
   /** "Write failed 4m ago", or just the label when the clock said nothing. */
   stageLine: string;
   /** The last route a check actually established, and when. Null when none ever
@@ -140,7 +181,8 @@ export interface RecoveryRow {
   lastVerified: string | null;
   /** The most recent check, whatever it concluded. */
   checkResult: string;
-  /** Whether a process is running, and whether it predates the change. */
+  /** Whether a process is running, and whether it predates the change - or that
+   *  Gate has no way to look, which is a third answer and not the second. */
   runningState: string;
   /** The label of the one action offered, or null when nothing is owed. */
   action: string | null;
@@ -161,10 +203,12 @@ export function recoveryRow(tool: RecoveryTool, now: Date): RecoveryRow {
     slug: tool.slug,
     name: tool.name,
     kind: tool.kind,
+    outcome: tool.stage,
     stage,
-    stageDetail: STAGE_DETAIL[tool.stage],
+    stageDetail: stageDetail(tool.stage, tool.kind),
     stageComplete: tool.stage_complete,
     errorCategory: ERROR_CATEGORY_LABEL[tool.error_category],
+    error: tool.error ?? null,
     // "Not started" has no useful timestamp: the entry was seeded when the
     // operation began, and dating it invites the reader to think something
     // happened to that tool then.
@@ -172,12 +216,26 @@ export function recoveryRow(tool: RecoveryTool, now: Date): RecoveryRow {
     lastVerified: tool.last_verified_state
       ? `${CHECK_LABEL[tool.last_verified_state]}, ${ago(tool.last_verified_unix, now)}`
       : null,
-    checkResult: check ? `${check} (${ago(tool.check_at_unix, now)})` : "Never checked",
+    // "Never checked" is a fact about a tool and a category error about a
+    // provider. The sweep walks the registry, so a provider slug can never have
+    // a verdict logged against it - it is checked through its members, and
+    // saying nothing has ever checked it invites the reader to go and check it.
+    checkResult: check
+      ? `${check} (${ago(tool.check_at_unix, now)})`
+      : tool.kind === "provider"
+        ? "Checked per tool, not per provider"
+        : "Never checked",
+    // Three answers, not two. `null` is "Gate has no process name for this
+    // one", which is the case for a provider slug, for OpenClaw and Hermes, and
+    // for the environment channel - and printing "Not running" for those
+    // asserted a walk of the process table that never happened.
     runningState: tool.reopen_pending
       ? "Running, using the settings it started with"
-      : tool.running
-        ? "Running, with current settings"
-        : "Not running",
+      : tool.running === null
+        ? "Gate has no process to look for"
+        : tool.running
+          ? "Running, with current settings"
+          : "Not running",
     action: tool.next_step === "none" ? null : NEXT_STEP_LABEL[tool.next_step],
     nextStep: tool.next_step,
   };

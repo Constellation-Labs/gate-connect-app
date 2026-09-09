@@ -286,7 +286,31 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], true).map(|(_, state)| state)
+    enable_inner(slug, &[], Request::ByName).map(|(_, state)| state)
+}
+
+/// Who asked, which is the only thing that separates the two callers below.
+///
+/// It replaces an `audit: bool`, and the replacement is the fix rather than
+/// tidying. `enable_inner` needed to know whether it was serving a restore in
+/// two places - whether to emit the audit event, and whether "nothing to
+/// configure yet" is an error - and only the first had a parameter. The second
+/// read `!skip.is_empty()` instead, on the reasoning that a restore is the
+/// caller that passes a skip list. But a skip list is only non-empty when a
+/// member was switched off before routing stopped, and `enable` passes an empty
+/// one too - so an ordinary restore was indistinguishable from a by-name
+/// request and got the by-name error. `restore_all` recorded that as
+/// `WriteFailed`, and the recovery summary told the user Gate could not write a
+/// config it had never opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Request {
+    /// The user named this provider. Nothing happening is a result that needs
+    /// explaining, and the action is theirs, so it is audited.
+    ByName,
+    /// A restore pass. Nothing to do yet is [`Applied::NotYet`], and the audit
+    /// event belongs to the master switch that drove it - see
+    /// [`enable_skipping`].
+    Restore,
 }
 
 /// What an enable actually did, as distinct from whether it went wrong.
@@ -317,10 +341,10 @@ enum Applied {
 /// toggling that provider by hand (see the one-event-per-action rule in
 /// [`crate::audit`]).
 fn enable_skipping(slug: &str, skip: &[String]) -> Result<(Applied, ProviderState)> {
-    enable_inner(slug, skip, false)
+    enable_inner(slug, skip, Request::Restore)
 }
 
-fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, ProviderState)> {
+fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applied, ProviderState)> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -331,10 +355,15 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
     let plan = enable_plan(any_detected, proxy_running());
 
     if plan.nothing {
-        // A restore pass for a family whose members are all switched off has
-        // nothing to do, and nothing to complain about. Only a user who asked
-        // for this provider by name gets the explanation.
-        if !skip.is_empty() {
+        // A restore pass has nothing to do here and nothing to complain about:
+        // either the family's members are all switched off, or - the case this
+        // used to get wrong - the provider's only route is a proxy domain and
+        // the engine is not up yet, which is precisely what the second pass
+        // exists for. Only a user who asked for this provider by name gets the
+        // explanation, and the sentence below is written for them: telling
+        // somebody mid-master-on to "turn on Route through Gate" describes the
+        // operation they are already running.
+        if request == Request::Restore {
             return Ok((Applied::NotYet, state(&p)));
         }
         anyhow::bail!(
@@ -393,7 +422,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
     // Best-effort audit. The account is already loaded here, so its key is the
     // in-hand credential for ApiKey mode; OAuth mode ignores it and reads the
     // live access token.
-    if audit {
+    if request == Request::ByName {
         audit::provider_enabled(
             &account.gateway_base_url,
             Some(&account.api_key),
@@ -941,15 +970,26 @@ pub fn restore_all() -> Result<()> {
             Ok((Applied::Enabled, state)) if state.enabled => {
                 journal.record(&slug, recovery::Outcome::Restored);
             }
-            // Nothing to do yet, or a route that did not take. Neither is a
-            // failure worth reporting - the engine simply is not up - and
-            // neither is a completion. The seeded `Pending` is already the
-            // right entry, so the journal is left alone rather than told a
-            // story about an attempt that has not happened yet.
+            // Nothing to do yet, which `enable_inner` reaches only with the
+            // engine down: recorded as deferred rather than left `Pending`,
+            // because "Not started" reads as an entry the operation never got
+            // to and this one was reached and declined. Stays in the snapshot
+            // either way, for the post-enable pass.
+            Ok((Applied::NotYet, _)) => {
+                journal.record(&slug, recovery::Outcome::DeferredEngineDown);
+                pending.push(slug);
+            }
+            // A route that did not take: an attempt happened and produced
+            // nothing. Not a failure worth reporting and not a completion, so
+            // the seeded `Pending` stands rather than the journal being told a
+            // story about it.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
-                journal.record(&slug, recovery::Outcome::WriteFailed);
+                // The message, not just the category: `Outcome::category` can
+                // say which step failed and never why, and the summary's whole
+                // job is the why.
+                journal.record_failed(&slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
                 pending.push(slug);
             }
         }
@@ -993,7 +1033,10 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
         return Ok(());
     };
     let relay_base_url = crate::proxy::relay_base_url();
-    let mut failed = Vec::new();
+    let engine_proxy_url = crate::proxy::engine_proxy_url();
+    // Not `failed`: an entry stays recorded because it is unfinished, and two of
+    // the branches below leave it here having found nothing wrong with it.
+    let mut outstanding = Vec::new();
     for slug in slugs {
         let Some(integ) = ToolId::from_slug(&slug).and_then(registry::find) else {
             // Written by an older build, or a tool since removed from the registry.
@@ -1008,25 +1051,36 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
             journal.record(&slug, recovery::Outcome::NotInstalled);
             continue;
         }
+        // The engine is not up, and this tool's config is the engine's address.
+        // The provider loop has had this early-out since `Applied::NotYet`
+        // existed; this pass had none, so it called `connect`, got the hard
+        // error both such integrations raise, and recorded a failed write for a
+        // file it never opened. Declared by the integration rather than read off
+        // the error - see `Integration::requires_engine`.
+        if integ.requires_engine() && engine_proxy_url.is_none() {
+            journal.record(&slug, recovery::Outcome::DeferredEngineDown);
+            outstanding.push(slug);
+            continue;
+        }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
             billing_mode: account.billing_mode,
             relay_base_url: relay_base_url.clone(),
-            engine_proxy_url: crate::proxy::engine_proxy_url(),
+            engine_proxy_url: engine_proxy_url.clone(),
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");
-            journal.record(&slug, recovery::Outcome::WriteFailed);
-            failed.push(slug);
+            journal.record_failed(&slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
+            outstanding.push(slug);
         } else {
             journal.record(&slug, recovery::Outcome::Restored);
         }
     }
-    if failed.is_empty() {
+    if outstanding.is_empty() {
         clear_snapshot(SWEPT_TOOLS_SNAPSHOT)
     } else {
-        save_snapshot(SWEPT_TOOLS_SNAPSHOT, &failed)
+        save_snapshot(SWEPT_TOOLS_SNAPSHOT, &outstanding)
     }
 }
 
@@ -1078,22 +1132,29 @@ fn restore_one_provider(slug: &str, queued: Vec<String>) -> Result<()> {
     let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Provider);
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
     let outcome = match enable_skipping(slug, &skip) {
-        Ok((Applied::Enabled, state)) if state.enabled => Ok(true),
-        // Nothing to do yet. Left `Pending` and left in the snapshot, per the
-        // batch's own reasoning: the engine simply is not up.
-        Ok(_) => Ok(false),
+        Ok((Applied::Enabled, state)) if state.enabled => Ok(Some(true)),
+        // Nothing to do yet, which means the engine is not up. Left in the
+        // snapshot per the batch's own reasoning, and recorded as deferred for
+        // the batch's own reason too: a retry that reports "Not started" claims
+        // it never ran.
+        Ok((Applied::NotYet, _)) => Ok(None),
+        // Enabled, but no route came out of it. The batch leaves this `Pending`
+        // and so does the retry.
+        Ok(_) => Ok(Some(false)),
         Err(e) => Err(e),
     };
     let restored = match outcome {
         Ok(restored) => {
-            if restored {
-                journal.record(slug, recovery::Outcome::Restored);
+            match restored {
+                Some(true) => journal.record(slug, recovery::Outcome::Restored),
+                None => journal.record(slug, recovery::Outcome::DeferredEngineDown),
+                Some(false) => {}
             }
             journal.finish();
-            restored
+            restored.unwrap_or(false)
         }
         Err(e) => {
-            journal.record(slug, recovery::Outcome::WriteFailed);
+            journal.record_failed(slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
             journal.finish();
             return Err(e).with_context(|| format!("retrying provider {slug:?}"));
         }
@@ -1149,15 +1210,25 @@ fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
         journal.finish();
         return Ok(());
     };
+    let engine_proxy_url = crate::proxy::engine_proxy_url();
+    if integ.requires_engine() && engine_proxy_url.is_none() {
+        // The batch's early-out, narrowed to one slug: left recorded, and left
+        // saying it is waiting for the engine rather than that its write failed.
+        // Not an `Err`, because nothing went wrong - a retry that returned one
+        // would put an error banner over a tool that is simply next.
+        journal.record(slug, recovery::Outcome::DeferredEngineDown);
+        journal.finish();
+        return Ok(());
+    }
     let input = ConnectInput {
         gateway_base_url: account.gateway_base_url.clone(),
         upstream_url: integ.default_upstream_url().to_string(),
         billing_mode: account.billing_mode,
         relay_base_url: crate::proxy::relay_base_url(),
-        engine_proxy_url: crate::proxy::engine_proxy_url(),
+        engine_proxy_url,
     };
     if let Err(e) = integ.connect(&input) {
-        journal.record(slug, recovery::Outcome::WriteFailed);
+        journal.record_failed(slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
         journal.finish();
         return Err(e).with_context(|| format!("retrying tool {slug:?}"));
     }
@@ -1261,6 +1332,117 @@ mod tests {
             "reporting this as Enabled is what let the pre-engine pass clear \
              the snapshot the post-engine pass needed"
         );
+    }
+
+    /// A restore pass with nothing to do yet says so **whatever the skip list
+    /// holds**, which is the half `an_enable_with_nothing_to_do_yet_says_so`
+    /// cannot see.
+    ///
+    /// That test supplies a skip list, and the guard it was testing read
+    /// `!skip.is_empty()` - so the ordinary case, a restore where nothing had
+    /// been switched off beforehand, fell through to the error written for a
+    /// user who asked for the provider by name. `restore_all` recorded it as
+    /// `WriteFailed`, and the recovery summary told somebody mid-master-on that
+    /// Gate could not write a config file OpenRouter does not have, over a
+    /// message advising them to turn on the routing they were turning on.
+    ///
+    /// `openrouter` is the sharpest case: `tool_ids` is empty, so there is never
+    /// a tool to detect and the engine is the only thing that could give this
+    /// call something to do.
+    #[test]
+    fn a_restore_with_nothing_to_do_yet_says_so_with_no_skip_list() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-noskip-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let applied = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            enable_skipping("openrouter", &[]).map(|(applied, _)| applied)
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(
+            applied.expect("a restore pass with nothing to do yet is not an error"),
+            Applied::NotYet,
+            "an error here is journalled as WriteFailed, and the summary then \
+             reports a failed config write that never happened"
+        );
+    }
+
+    /// The by-name caller keeps its explanation. The fix must not turn the
+    /// user's own click into a silent no-op: they asked for this provider, and
+    /// nothing happening is a result that needs a sentence.
+    #[test]
+    fn a_by_name_enable_with_nothing_to_do_still_explains_itself() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-byname-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let out = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            enable("openrouter")
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let err = out.expect_err("nothing to configure is an error for a by-name enable");
+        assert!(
+            format!("{err:#}").contains("nothing to configure"),
+            "got {err:#}"
+        );
+    }
+
+    /// Only the two engine-routed integrations declare the requirement, and the
+    /// three config-file tools must not: they write a relay URL, which Gate owns
+    /// whether or not the engine is intercepting anything. A `true` here would
+    /// defer a tool that could have been restored in the first pass.
+    #[test]
+    fn only_the_engine_routed_integrations_require_the_engine() {
+        for integ in registry::registry() {
+            let expected = matches!(integ.id(), ToolId::OpenClaw | ToolId::EnvProxy);
+            assert_eq!(
+                integ.requires_engine(),
+                expected,
+                "{} disagrees about needing the engine, which decides whether a \
+                 restore defers it or attempts it",
+                integ.display_name()
+            );
+        }
     }
 
     #[test]

@@ -100,6 +100,12 @@ impl Integration for EnvProxy {
         ))
     }
 
+    /// The variables this exports *are* the engine's address, so there is
+    /// nothing to export until the engine has one.
+    fn requires_engine(&self) -> bool {
+        true
+    }
+
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !supported() {
             anyhow::bail!("Gate cannot export proxy environment variables on this platform");

@@ -235,6 +235,30 @@ pub trait Integration: Send + Sync {
     /// Has Gate Connect already configured this tool?
     fn status(&self) -> Result<Status>;
 
+    /// Does [`connect`](Integration::connect) need the engine to be routing?
+    ///
+    /// True for an integration that points the tool at
+    /// `ConnectInput::engine_proxy_url` rather than at the relay: that field is
+    /// `Some` only while the proxy is up, and both integrations that read it
+    /// treat a missing value as a hard error, because handing a tool a proxy
+    /// address with nothing behind it takes its network down rather than merely
+    /// leaving it un-routed.
+    ///
+    /// Declared rather than discovered, and that is the point.
+    /// [`crate::provider::restore_all`] runs a pass before the engine comes up,
+    /// and without this it called `connect` on those tools anyway and recorded
+    /// the refusal as a failed write - so a master-on reported "Gate could not
+    /// write this tool's config" for two tools it had not written and could not
+    /// have. The alternative, matching on the error message, is what
+    /// [`crate::recovery::Outcome`] says not to do.
+    ///
+    /// Defaults to `false`, which is right for the three config-file tools: they
+    /// write a relay URL, and the relay is a URL Gate owns whether or not the
+    /// engine is intercepting anything.
+    fn requires_engine(&self) -> bool {
+        false
+    }
+
     /// Apply gateway config. Idempotent: a second call with the same
     /// inputs results in the same state. Requires that an upstream
     /// credential has already been saved via `save_upstream_credential`.

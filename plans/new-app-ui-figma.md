@@ -2574,6 +2574,34 @@ Details worth keeping:
   `enable_skipping` has no signed-out branch, so a provider that cannot re-enable
   for want of an account lands on `WriteFailed`. Pinned by a test so it stays
   visible.
+- **Nothing attempted is not something failed** - the correction that shortcoming
+  was pointing at, found in a real run. `restore_all` runs a pass *before* the
+  engine is up, on purpose, and every entry that needs the engine was attempted
+  in it anyway and its refusal journalled as `WriteFailed`. A master-on drew five
+  rows, four reading "Write failed / Configuration write / Gate could not write
+  this tool's config", with nothing written and nothing wrong.
+
+  Two causes, one per pass. The provider path had the right answer -
+  `Applied::NotYet` - behind the wrong guard: `if !skip.is_empty()`, standing in
+  for "this is a restore", when `enable` passes an empty skip list too. So an
+  ordinary restore got the by-name error, whose text advises the reader to turn
+  on the routing they are in the middle of turning on. It is a `Request` enum
+  now, which also absorbs the `audit: bool` that was already carrying the same
+  distinction one place over - two parameters for one fact is how they came to
+  disagree. The tool path had no early-out at all, so it called `connect` on the
+  two integrations that hard-require the engine; `Integration::requires_engine`
+  declares that, rather than the error being matched on, which is the rule this
+  module already states. Both now record `Outcome::DeferredEngineDown`:
+  outstanding, not complete, and **no failure category**, because filing it under
+  one is what sent somebody looking for a problem that was an engine starting.
+- **And the journal carries the reason.** `Outcome::category` says which *step*
+  failed and structurally cannot say why, so the dialog titled "What happened to
+  routing" could not answer its own title - the message existed, on stderr, where
+  nobody reading the dialog will find it. `EntryRecord::error` holds it
+  (`#[serde(default)]`, so older journals still load) and the row draws it under
+  the same `ErrorDetails` disclosure the reopen flow uses. `record_failed` is a
+  separate method from `record` so a clean retry cannot leave the old message
+  standing under a new stage.
 
 **4. The rest of the ticket**, in one pass. What the three PRs above left open is
 now closed, and the shape of each fix is worth recording because most of it was a
@@ -2591,6 +2619,31 @@ missing *reading* rather than a missing control.
   rather than flattened, because a tool whose write finished, whose last check
   said `on`, and whose process predates the write is *not* routing, and only the
   four together say so.
+
+  **Two of those four cannot answer for every row, and now say so.** A summary
+  row is a provider as often as a tool, and three readings were being asserted
+  past what had been measured - the same class of mistake as the reopen flow's
+  `verifiable`, one surface over.
+
+  `running` is `Option<bool>`: `agent_process_names` is empty for every provider
+  slug, for OpenClaw and Hermes (names too generic to match on, as
+  `AGENT_PROCESSES` says) and for `env-proxy`, which is not a process - and all
+  of them rendered "Not running" off a process walk that never ran. Four of the
+  five rows in the reported panel. `reopen_pending_for` keeps its plain `bool`:
+  it feeds `next_step`, where the conservative answer is the right one.
+
+  The verdict log is keyed on registry slugs, so a provider slug can never have
+  an entry - confirmed against a real `verdict-log.json`, which holds the six
+  tool slugs and none of the three provider ones. "Never checked" was therefore
+  structural rather than a fact, and reads as a gap somebody could close; a
+  provider row says it is checked per tool instead.
+
+  And `RecoveryTool.kind` had been on the DTO from the start with **nothing
+  reading it**, so every row got the tool sentence: OpenRouter, whose `tool_ids`
+  is empty and which routes entirely through a proxy domain, was told Gate could
+  not write "this tool's config". `stageDetail(stage, kind)` splits on the one
+  fact the frontend already has, rather than on some further one it would have to
+  be told.
 - **Resume drives the entries one at a time.** `provider::restore_one` is the
   batch narrowed to one slug, with the same rule that an entry leaves its
   snapshot only once it is actually back. The notice walks the queue with it, so
