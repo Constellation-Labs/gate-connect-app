@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
+import { useRovingMenu } from "../../lib/useRovingMenu";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
@@ -127,22 +128,11 @@ export function Topbar({
           buttonRef={menuButton}
         />
         {menuOpen && (
-          <>
-            {/* An invisible scrim, so a click anywhere else closes the menu
-                *and nothing else happens* - the same one `TrayMenu` draws, and
-                for the same reason: without it the menu had no dismissal but
-                the ellipsis button itself, and a click meant to dismiss it
-                landed on whatever pane control was under the pointer. It paints
-                nothing, so it is not a visual change; the design draws no
-                scrim. It also covers the trigger, which is why clicking that
-                while open still closes once rather than toggling twice. */}
-            <div aria-hidden className="fixed inset-0 z-10" onClick={onMenuToggle} />
-            <TopnavMenu
-              onSelect={onMenuSelect}
-              onDismiss={onMenuToggle}
-              triggerRef={menuButton}
-            />
-          </>
+          <TopnavMenu
+            onSelect={onMenuSelect}
+            onDismiss={onMenuToggle}
+            triggerRef={menuButton}
+          />
         )}
       </div>
     </header>
@@ -206,122 +196,80 @@ export function OutlineIconButton({
 /** The 224px overflow menu. Every destination but Quit opens outside the app,
  *  so those rows carry the external-link glyph and Quit does not.
  *
- *  Keyboard behaviour is `TrayMenu`'s, ported: the panel takes focus on open,
- *  the arrows move within it, and it is a single tab stop. The two menus are
- *  deliberately not one component - they draw different shadows, paddings,
- *  glyph sizes and corners off different frames - but the interaction is the
- *  same and diverging on it was the bug. */
-export function TopnavMenu({
+ *  Keyboard and focus are `useRovingMenu`'s, shared with `TrayMenu`. The two
+ *  menus are deliberately not one component - they draw different shadows,
+ *  paddings, glyph sizes and corners off different frames - but the interaction
+ *  is the same, and diverging on it was the bug this fixes, so it has one home
+ *  rather than a copy per surface. This owns the markup and the scrim. */
+function TopnavMenu({
   onSelect,
   onDismiss,
   triggerRef,
 }: {
   onSelect: (action: TopnavAction) => void;
-  /** Close without choosing: Escape from inside the panel. The scrim and the
-   *  window-level Escape are the shell's, and go through the same handler. */
+  /** Close without choosing: Escape from inside the panel, or a click anywhere
+   *  else. The window-level Escape is the shell's, and goes through the same
+   *  handler. */
   onDismiss: () => void;
-  /** The button that opened this. Focus returns to it on close - every exit
-   *  unmounts the panel, and with the focused element gone `activeElement`
-   *  falls to `<body>`, so the next Tab restarts from the top of the window
-   *  rather than from the control the user was just on. */
+  /** The button that opened this; focus returns to it on close. See
+   *  `useRovingMenu`. */
   triggerRef?: RefObject<HTMLButtonElement>;
 }) {
-  const panel = useRef<HTMLDivElement>(null);
-  /**
-   * Which item is the menu's single tab stop (roving tabindex).
-   *
-   * `role="menu"` is meant to be ONE stop, with the arrows moving inside it. As
-   * four plain buttons every item was in the tab order, so Tab past the last
-   * one walked into the sidebar behind the open menu - visible beside it, and
-   * click-blocked by the scrim, so the focus ring went somewhere the pointer
-   * could not follow.
-   */
-  const [current, setCurrent] = useState(0);
-
-  /**
-   * Focus the first item when the menu opens.
-   *
-   * Without it the menu was unreachable by keyboard: it opens from a button, so
-   * focus stayed on that button and Tab walked into the shell *behind* the menu
-   * rather than into it. `role="menu"` promises arrow-key navigation, so the
-   * roles were describing behaviour that did not exist.
-   */
-  useEffect(() => {
-    panel.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
-    // One cleanup covers every exit: Escape, the scrim and selecting an item all
-    // unmount this panel.
-    const trigger = triggerRef;
-    return () => trigger?.current?.focus();
-  }, [triggerRef]);
-
-  /**
-   * Arrow keys move between items, Escape closes, Home/End jump.
-   *
-   * Wrapping at both ends, which is what a menu does and what a listbox does
-   * not. `stopPropagation` on Escape so the shell's document handler does not
-   * also fire on the same key.
-   */
-  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onDismiss();
-      return;
-    }
-    const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
-    if (!keys.includes(e.key)) return;
-    const items = Array.from(
-      panel.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [],
-    );
-    if (items.length === 0) return;
-    e.preventDefault();
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      e.key === "Home"
-        ? 0
-        : e.key === "End"
-          ? items.length - 1
-          : e.key === "ArrowDown"
-            ? (at + 1 + items.length) % items.length
-            : (at - 1 + items.length) % items.length;
-    setCurrent(next);
-    items[next]?.focus();
-  };
+  const { panel, current, onKeyDown } = useRovingMenu(triggerRef, onDismiss);
 
   return (
-    <div
-      ref={panel}
-      role="menu"
-      onKeyDown={onKeyDown}
-      className="absolute right-0 top-10 z-20 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
-    >
-      {MENU_ITEMS.map(({ action, icon, label }, i) => (
+    <>
+      {/* An invisible scrim, so a click anywhere else closes the menu *and
+          nothing else happens* - the same one `TrayMenu` draws, and for the
+          same reason: without it the menu had no dismissal but the ellipsis
+          button itself, and a click meant to dismiss it landed on whatever pane
+          control was under the pointer. It paints nothing, so it is not a
+          visual change; the design draws no scrim. It also covers the trigger,
+          which is why clicking that while open still closes once rather than
+          toggling twice. */}
+      <div aria-hidden className="fixed inset-0 z-10" onClick={onDismiss} />
+      <div
+        ref={panel}
+        role="menu"
+        // Without a name this announces as a bare "menu". Named for the control
+        // that opens it, so it reads "More, menu" - as `TrayMenu` already did.
+        aria-label="More"
+        onKeyDown={onKeyDown}
+        // z-20 to sit above its own scrim. That ties with `Modal`, which is
+        // harmless: `{dialog}` is the last child of `AppShell`, so tree order
+        // gives a dialog the front, and `onMenuSelect` closes this menu before
+        // one can open anyway.
+        className="absolute right-0 top-10 z-20 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
+      >
+        {MENU_ITEMS.map(({ action, icon, label }, i) => (
+          <button
+            key={action}
+            type="button"
+            role="menuitem"
+            // Roving: only the current item is a tab stop, so Tab leaves the menu
+            // as a unit and the arrows move within it.
+            tabIndex={current === i ? 0 : -1}
+            onClick={() => onSelect(action)}
+            className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <span className="flex items-center gap-2">
+              <Icon name={icon} size={16} />
+              <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
+            </span>
+            <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
+          </button>
+        ))}
         <button
-          key={action}
           type="button"
           role="menuitem"
-          // Roving: only the current item is a tab stop, so Tab leaves the menu
-          // as a unit and the arrows move within it.
-          tabIndex={current === i ? 0 : -1}
-          onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          tabIndex={current === MENU_ITEMS.length ? 0 : -1}
+          onClick={() => onSelect(QUIT_ITEM.action)}
+          className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
-          <span className="flex items-center gap-2">
-            <Icon name={icon} size={16} />
-            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
-          </span>
-          <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
+          <Icon name={QUIT_ITEM.icon} size={16} />
+          <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
         </button>
-      ))}
-      <button
-        type="button"
-        role="menuitem"
-        tabIndex={current === MENU_ITEMS.length ? 0 : -1}
-        onClick={() => onSelect(QUIT_ITEM.action)}
-        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <Icon name={QUIT_ITEM.icon} size={16} />
-        <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
-      </button>
-    </div>
+      </div>
+    </>
   );
 }

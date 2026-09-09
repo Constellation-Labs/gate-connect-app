@@ -24,11 +24,13 @@ function renderTopbar(overrides: Partial<Parameters<typeof Topbar>[0]> = {}) {
 afterEach(cleanup);
 
 /**
- * The topbar's overflow menu. Every behaviour here is `TrayMenu`'s, ported
- * because the two menus had diverged: the tray's closed on a click outside, on
- * Escape and under the arrow keys, and this one closed only by clicking the
- * button that had opened it. `Tray.test.tsx` covers the other copy, and the two
- * files are the thing that stops them drifting apart again.
+ * The topbar's overflow menu. Every behaviour here is `TrayMenu`'s too, because
+ * the two menus had diverged: the tray's closed on a click outside, on Escape
+ * and under the arrow keys, and this one closed only by clicking the button
+ * that had opened it. The interaction now has one home (`useRovingMenu`), and
+ * these cases are the mirror of `Tray.test.tsx`'s - each surface is held to the
+ * behaviour at its own wiring, so a menu that stops calling the hook, or calls
+ * it wrong, fails here rather than shipping.
  */
 describe("Topbar menu", () => {
   it("draws no menu and no scrim while it is closed", () => {
@@ -158,6 +160,15 @@ describe("Topbar menu", () => {
     // The stop moves with the arrows: still exactly one, on the focused item.
     fireEvent.keyDown(screen.getByRole("menu"), { key: "End" });
     expect(items.map((el) => el.getAttribute("tabindex"))).toEqual(["-1", "-1", "-1", "0"]);
+  });
+
+  it("names the menu, so it does not announce as a bare menu", () => {
+    // The mirror of `Tray.test.tsx`'s own case. A bare `role="menu"` announces
+    // as just "menu"; named for the control that opens it, it reads
+    // "More, menu".
+    renderTopbar({ menuOpen: true, onMenuSelect: vi.fn() });
+
+    expect(screen.getByRole("menu", { name: "More" })).toBeTruthy();
   });
 
   it("gives focus back to the trigger when it closes", () => {
