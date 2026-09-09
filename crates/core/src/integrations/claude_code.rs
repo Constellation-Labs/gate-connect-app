@@ -65,6 +65,17 @@ const KEY_NO_PROXY: &str = "NO_PROXY";
 /// separate export switched on. Every gap between the two is a `claude` that
 /// is proxied with no CA - which is the whole failure, because a tool routed
 /// into the engine it cannot verify is worse off than one never routed at all.
+///
+/// What this write does *not* do is win a fight. Measured against the 2.1.266
+/// bundle, Claude Code reads the settings value only as a fallback: it returns
+/// early if the variable is already in its environment, and otherwise applies
+/// `env.NODE_EXTRA_CA_CERTS` to `process.env` at startup, in time for the lazy
+/// trust-store build. So a machine that exports its own CA - a corporate
+/// bundle from a shell rc, or the prior value `env_proxy` hands back on
+/// disable - keeps that one and still cannot verify our leaf, while
+/// [`Integration::status`] reads the file and reports `Connected`. Closing
+/// that hole means the environment carrying both certs, which is
+/// [`crate::proxy::ca_bundle`]'s job, not this one's.
 const KEY_NODE_EXTRA_CA_CERTS: &str = "NODE_EXTRA_CA_CERTS";
 const MANAGED_KEYS: [&str; 5] = [
     KEY_BASE_URL,
