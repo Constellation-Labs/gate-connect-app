@@ -508,7 +508,12 @@ export function App() {
   // routing is down also lands on Home, where blockers render.
   useEffect(() => {
     const sweep = () =>
-      void forwardBackendErrors().then((e) => {
+      // Reports to analytics: this is the `main` window's shell, and it is
+      // either this or `NewUiApp` on the flag, never both, so exactly one
+      // reporter is mounted. The tray drains for display only - the buffer
+      // hands each webview its own copy, and two reporters would double every
+      // `error_shown`.
+      void forwardBackendErrors({ reportToAnalytics: true }).then((e) => {
         if (e) setProviderError(e);
       });
     sweep();

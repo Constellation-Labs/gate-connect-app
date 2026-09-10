@@ -56,7 +56,7 @@ import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useRunningApps } from "./lib/useRunningApps";
-import type { ReopenAction, ReopenTool } from "./lib/reopen";
+import type { ReopenAction } from "./lib/reopen";
 import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
@@ -103,8 +103,9 @@ import {
   buildSettingsSections,
 } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
-import type { DialogReopenTool } from "./components/gc/dialogs";
 import {
+  reopenSubjects,
+  teardownSubjects,
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
@@ -1027,7 +1028,11 @@ export function NewUiApp() {
    */
   useEffect(() => {
     const sweep = () =>
-      void forwardBackendErrors().then((e) => {
+      // The analytics reporter of the two shells, and the only one: the buffer
+      // hands each webview its own copy so they cannot race, which would
+      // otherwise double every `error_shown`. This window is always mounted, so
+      // nothing goes unreported by the tray staying quiet.
+      void forwardBackendErrors({ reportToAnalytics: true }).then((e) => {
         if (e) setActionError(e);
       });
     sweep();
@@ -1700,6 +1705,86 @@ export function NewUiApp() {
     //
     // `[settings.openSwitchOrg]` would not have fixed it either: that callback
     // depends on `account`, which is a fresh object per read.
+  }, []);
+
+  /**
+   * What the listener below needs to know when the event lands.
+   *
+   * A ref, and written during render, because that listener subscribes once
+   * with `[]` and must keep doing so - see its own docstring for why a
+   * resubscribing listener drops this event. Reading these off a ref is how it
+   * stays subscribed and still sees the current shell.
+   *
+   * `slotBusy` is conservative: any pending quit, routing prompt, running-apps
+   * stage or model overlay counts, including a state that draws no arm. Being
+   * wrong in that direction refuses a request the slot would have taken; being
+   * wrong in the other direction is the unprompted pop.
+   */
+  const detailsGate = useRef({ ready: false, slotBusy: false });
+  detailsGate.current = {
+    ready: setup.stage.kind === "ready",
+    slotBusy: Boolean(
+      quit || routing.prompt || runningApps.stage || modelOverlay,
+    ),
+  };
+
+  /**
+   * The tray's "Review details", handed over the same way.
+   *
+   * Subscribed once with no dependencies, for the reason the listener above
+   * spells out at length: Rust emits immediately after revealing this window,
+   * the reveal takes focus, focus is a render, and a listener that tears down
+   * and rebuilds on every render can miss the event in that gap. The symptom
+   * would be identical to the bug this fixes, which is what makes it worth
+   * saying twice.
+   *
+   * **Never arms what it cannot draw.** Setting `detailsOpen` on its own makes
+   * the request a no-op *now* and a surprise *later*: nothing resets it except
+   * the dialog's own `onClose`, which cannot run if the dialog never rendered,
+   * so the next render that satisfies the slot pops a dialog nobody asked for.
+   * Three separate things have to hold, and they are three different problems -
+   * conflating them is what left this half-fixed once already.
+   *
+   * 1. **There has to be something to show.** `recoverySummary()` swallows its
+   *    failure at mount (`loadPending`) and the visibility edge only calls
+   *    `redetect`, so the cache can be empty. Hence the read here rather than a
+   *    read of `summary`.
+   * 2. **There has to be a dialog slot.** Below `setup.stage.kind === "ready"`
+   *    this component returns `SetupLayout`, which has none - and the tray can
+   *    reach us there, because its recovery card runs off its own
+   *    `pendingRestore` read and `recovery_summary` needs no account or session.
+   *    This is not a cache problem and the read above does nothing for it.
+   * 3. **The slot has to be free.** Six arms precede `detailsOpen && summary`
+   *    in the chain (quit, the four routing prompts, the running-apps stages,
+   *    the two model overlays). The in-window banner button is protected from
+   *    this by the scrim over it; a request from the *tray* is a different
+   *    window and no scrim reaches it.
+   *
+   * On 2 and 3 the request is refused rather than deferred, and refused
+   * silently: there is nothing to say that the surface in front of the user is
+   * not already saying, and the recovery notice with its own Review button is
+   * still there when they get back to it. Deferring is the bug.
+   */
+  useEffect(() => {
+    const unlisten = listen("recovery-details-requested", async () => {
+      const { ready, slotBusy } = detailsGate.current;
+      if (!ready || slotBusy) return;
+      const fresh = await recoverySummary().catch(() => null);
+      // Cleared only once we know we are acting on the request. It used to be
+      // cleared on the way in, so a "Review details" press in the popover
+      // silently dismissed a failed rename in this window that the user had not
+      // read yet - and then, on the refused paths, did nothing else at all.
+      setActionError(null);
+      if (fresh) {
+        setSummary(fresh);
+        setDetailsOpen(true);
+      } else {
+        setView({ kind: "settings" });
+      }
+    });
+    return () => {
+      void unlisten.then((off) => off()).catch(() => {});
+    };
   }, []);
 
   /**
@@ -2583,7 +2668,7 @@ export function NewUiApp() {
           * positions itself over whatever is behind it. */}
         {teardown && (
           <TeardownReportDialog
-            report={teardown.report}
+            report={teardownSubjects(teardown.report)}
             reason={teardown.reason}
             onClose={() => setTeardown(null)}
           />
@@ -2646,6 +2731,13 @@ export function NewUiApp() {
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
       inventory={inventory}
+      // Only the error banner outranks a dialog, and only because it is the one
+      // report a failed action gets: under the scrim its dismiss button is
+      // readable and unclickable. The recovery and reopen banners are advisory
+      // and persistent - they survive the dialog either way - so they dim with
+      // the rest of the chrome rather than floating over it. Leaving them lifted
+      // put a "Close tool" button on top of the close-apps dialog it opens.
+      noticeAboveDialog={actionError !== null}
       notice={
         actionError ? (
           <ErrorBanner
@@ -2900,7 +2992,7 @@ export function NewUiApp() {
           // left tools behind is the newest thing that happened, and the user
           // asked for the operation that produced it.
           <TeardownReportDialog
-            report={teardown.report}
+            report={teardownSubjects(teardown.report)}
             reason={teardown.reason}
             onClose={() => setTeardown(null)}
           />
@@ -3101,7 +3193,16 @@ export function NewUiApp() {
           // `modelChoice`. `multiProviderSlugs` is `buildGroups`' own
           // membership, so this can never disagree with the rail about which
           // tools those are.
-          {...(multiProviderSlugs.has(view.slug)
+          // `openDomain` joins the multi-provider tools in getting no model
+          // card, and for a stricter reason than theirs: theirs has no single
+          // answer, this one cannot take effect at all. `inject_model_choice`
+          // (proxy/mod.rs) stamps `x-gate-model` only when `client_tool`
+          // positively identifies the sender from its User-Agent, and that
+          // matcher knows five CLI agents. A chat domain is a browser, so the
+          // header is never sent and the gateway never overrides the model.
+          // Offering the choice let the user pick a Gate model, accept the paid
+          // confirmation, and be served their own model anyway.
+          {...(multiProviderSlugs.has(view.slug) || openDomain
             ? {}
             : {
                 modelChoice: openModelChoice,
@@ -3200,14 +3301,18 @@ export function NewUiApp() {
           // reported as unreadable because the *chart* had not landed, which is
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
+          // `openDomain` is deliberately NOT folded in here any more. It is not
+          // a read that failed - no read is attempted for a domain - and
+          // reporting it as one put "couldn't be read" directly under the note
+          // explaining that the reading does not exist. It travels as
+          // `unattributed` instead, which the cards draw ahead of this.
           unavailable={{
             chart:
-              openDomain ||
               unattributedMachine ||
               (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events:
-              openDomain || unattributedMachine || toolEvents.failure !== null,
+            events: unattributedMachine || toolEvents.failure !== null,
           }}
+          unattributed={openDomain}
           alert={
             <>
               {reopenAlert}
@@ -3415,14 +3520,6 @@ const EMPTY_STATS: UsageStats = {
 /** The file Gate rewrites for one tool, for the drift review's copy. */
 function configLocationFor(tools: Tool[], slug: string): string | null {
   return tools.find((t) => t.slug === slug)?.config_location ?? null;
-}
-
-/** The flow's rows, with the product marks the shell holds. The model itself is
- *  `lib/reopen`'s and travels unchanged - the dialogs, the banner and the tray
- *  all draw the same tools, and a second copy of a row is how two surfaces come
- *  to disagree about one. */
-function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
-  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
 }
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {

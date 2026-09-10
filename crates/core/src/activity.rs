@@ -38,19 +38,21 @@ pub use crate::gateway_api::{Failure, FailureCode};
 
 /// Endpoint URL. Test seam mirroring [`crate::org`]'s
 /// `GATE_CONNECT_TEST_ORGS_ENDPOINT`, so the fetch can be pointed at a loopback
-/// mock over plain http. Unset in real builds, where it is
-/// `<gateway_base_url>/v1/me/activity`.
+/// mock over plain http. Debug builds only, through
+/// [`crate::env::test_seam`] - see it for why a release binary must refuse
+/// this. In a real build it is `<gateway_base_url>/v1/me/activity`.
 fn activity_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_ACTIVITY_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_ACTIVITY_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
-/// One tool's recent-request feed, with its own test seam.
-/// `<gateway_base_url>/v1/me/tool-events` in real builds.
+/// One tool's recent-request feed, with its own test seam (debug only, via
+/// [`crate::env::test_seam`]). `<gateway_base_url>/v1/me/tool-events` in real
+/// builds.
 fn tool_events_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOOL_EVENTS_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_TOOL_EVENTS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!(
@@ -59,10 +61,11 @@ fn tool_events_endpoint(gateway_base_url: &str) -> String {
     )
 }
 
-/// Discovery endpoint for the installation picker, with its own test seam.
+/// Discovery endpoint for the installation picker, with its own test seam
+/// (debug only, via [`crate::env::test_seam`]).
 /// `<gateway_base_url>/v1/me/installations` in real builds.
 fn installations_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_INSTALLATIONS_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_INSTALLATIONS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!(

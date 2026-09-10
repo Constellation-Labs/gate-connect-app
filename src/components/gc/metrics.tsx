@@ -139,9 +139,21 @@ const UNAVAILABLE = "n/a";
 export function StatTiles({
   stats,
   pending,
+  unattributed,
   onSelectTokensSaved,
 }: {
   stats: UsageStats;
+  /** No figure on this surface can be a measurement, so none is printed.
+   *
+   *  The flag reaches the chart and the feed; without it here the three biggest
+   *  numbers on the pane were left to the caller's good behaviour. `NewUiApp`
+   *  happens to pass all-`null` stats for a chat domain, so nothing shipped
+   *  wrong - but that put design principle 6 in the shell rather than in the
+   *  component that owns the flag, and a caller passing real zeros would have
+   *  drawn "0 / 0 / 0%" directly above "Messages aren't attributed to this app".
+   *  `lib/activity.ts` keeps `null` and `0` apart precisely so no surface can
+   *  flatten them. Forces the unavailable reading rather than trusting input. */
+  unattributed?: boolean;
   /** First load has not landed yet. Renders skeletons rather than figures: a
    *  zero is a real reading, and `N/A` says there is none. Neither is true
    *  while we are still asking. */
@@ -153,7 +165,11 @@ export function StatTiles({
   // draws a skeleton, `N/A` means there is no reading behind this counter, and
   // a number - including zero - is a reading and prints as one.
   const count = (value: number | null) =>
-    pending ? null : value === null ? UNAVAILABLE : value.toLocaleString();
+    pending
+      ? null
+      : unattributed || value === null
+        ? UNAVAILABLE
+        : value.toLocaleString();
   return (
     <Card className="flex" busy={pending}>
       {pending && <span className="sr-only">Loading your activity</span>}
@@ -164,11 +180,15 @@ export function StatTiles({
         value={
           pending
             ? null
-            : stats.tokensSavedPercent === null
+            : unattributed || stats.tokensSavedPercent === null
               ? UNAVAILABLE
               : `${stats.tokensSavedPercent}%`
         }
-        delta={pending ? undefined : (stats.tokensSavedAmount ?? undefined)}
+        delta={
+          pending || unattributed
+            ? undefined
+            : (stats.tokensSavedAmount ?? undefined)
+        }
         divided
         onSelect={onSelectTokensSaved}
       />
@@ -240,6 +260,7 @@ export function MessagesChart({
   buckets,
   pending,
   unavailable,
+  unattributed,
 }: {
   buckets: MessagesBucket[];
   /** The series is on its way. Draws placeholder columns rather than an empty
@@ -250,6 +271,15 @@ export function MessagesChart({
    *  was sent" are different sentences and only one of them is about the user's
    *  traffic. The gap notice above the pane says which. */
   unavailable?: boolean;
+  /** No series can exist for this surface, and none was asked for. A third
+   *  state, not a flavour of `unavailable`: that one reports a read that should
+   *  have worked and didn't, which is a fault the user might retry. This one is
+   *  the permanent shape of the data - chat-domain traffic arrives unattributed
+   *  on purpose (see `NewUiApp`'s `openDomain`), so there is nothing to fail.
+   *  Folding the two put "couldn't be read" on a pane whose own note, two
+   *  inches above, explained that the reading does not exist. Takes precedence
+   *  over `unavailable`, which is only ever incidentally true here. */
+  unattributed?: boolean;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const highest = buckets.reduce(
@@ -263,13 +293,26 @@ export function MessagesChart({
   // A dense series is what the endpoint returns - an hour with no traffic is a
   // zero bar, not a missing one - so "nothing happened" is 24 zeroes rather than
   // an empty array. Both land here as a highest of zero.
-  const empty = !pending && !unavailable && highest === 0;
+  //
+  // The three negated terms are belt and braces, not conditions: `empty` is
+  // only ever read from the fourth arm of the chain below, so `pending`,
+  // `unattributed` and `unavailable` have all been ruled out by the arms above
+  // it. Stated rather than trimmed, because what keeps them false is the ORDER
+  // of that chain, and a reader who deletes them here has to know that. If the
+  // arms are ever reordered, these are what keep this honest.
+  const empty = !pending && !unavailable && !unattributed && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
       <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
+      ) : unattributed ? (
+        // Ahead of `unavailable`: a surface whose traffic is never attributed
+        // has no read to have failed, and the pane's note already says why.
+        <EmptyNote icon="chartColumn">
+          Messages aren&apos;t attributed to this app
+        </EmptyNote>
       ) : unavailable ? (
         // Not a sentence about their traffic. The pane's gap notice carries the
         // cause and the retry; this only refuses to draw a plot for a series

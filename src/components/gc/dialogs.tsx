@@ -11,11 +11,13 @@ import {
   pinnedModels,
 } from "../../lib/modelCompatibility";
 import { trayLocationName, type Platform } from "../../lib/platform";
+import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type {
   RecoverySummary,
   TeardownReason,
   TeardownReport,
+  TeardownTool,
 } from "../../lib/api";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenTool } from "../../lib/reopen";
@@ -91,17 +93,56 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
 }
 
 /**
+ * Whether this row has routes to draw at all.
+ *
+ * Callers ask BEFORE building the element, because `ModalSubject` guards on the
+ * `details` prop rather than on what it renders: `{details && <div class="mt-1"
+ * …>}`. A truthy element whose render returns `null` still produces the
+ * wrapper, and since the text column is a flex item the `mt-1` cannot collapse,
+ * so every reopen row gained a dead 4px in shipped builds - on the one dialog
+ * whose height was the reported bug. Same in dev whenever a row has no routes.
+ *
+ * **The caller's check is the contract; `RoutePair`'s own is a backstop.** With
+ * every current call site asking first, the component's early return is
+ * unreachable - it is there so a future caller that forgets renders nothing
+ * rather than a broken pair, not because the two checks share the work. Read
+ * the pair that way round and neither looks redundant.
+ */
+function routesShown(tool: DialogReopenTool): boolean {
+  return (
+    import.meta.env.DEV && Boolean(tool.routeInUse) && Boolean(tool.requestedRoute)
+  );
+}
+
+/**
  * The two routes for one tool, when the sweep established both.
  *
- * Omitted rather than half-drawn: a guessed endpoint is a claim about where the
- * user's traffic is going, made on the screen where they came to check exactly
- * that. Sans, not mono - identifier *values* are sans here (design, 2026-09-04),
- * and these are endpoints rather than machine output.
+ * **Development builds only.** AG-566 AC 1 asks the offer step to name the route
+ * in use and the route requested, and it was built to. The frame does not draw
+ * it: `130:58427` gives Codex a name, one description line and an `OPEN` pill,
+ * and nothing else. The file wins on what ships (CLAUDE.md, standing instruction
+ * 2026-08-26), so this is gated rather than deleted - the pair is genuinely
+ * useful when you are debugging which endpoint a tool is actually on, and it is
+ * the fastest way to see that a reopen did what it claimed.
+ *
+ * It also cost the most at tray width: two absolute URLs under a 352px row wrap
+ * to five lines apiece and push the buttons off the popover.
+ *
+ * `import.meta.env.DEV` is false in every `vite build`, the same seam the
+ * gateway picker uses (`NewUiApp`), so no shipped build can render this.
+ *
+ * Omitted rather than half-drawn even in dev: a guessed endpoint is a claim
+ * about where the user's traffic is going, made on the screen where they came to
+ * check exactly that. Sans, not mono - identifier *values* are sans here
+ * (design, 2026-09-04), and these are endpoints rather than machine output.
  */
 function RoutePair({ tool }: { tool: DialogReopenTool }) {
-  if (!tool.routeInUse || !tool.requestedRoute) return null;
+  if (!routesShown(tool)) return null;
   return (
-    <p className="break-all">
+    // `break-words`, not `break-all`: at tray width `break-all` split hostnames
+    // mid-token ("gateway-stag / ing.constellationgate.ai"), which is unreadable
+    // for the one string on screen that has to be read exactly.
+    <p className="break-words">
       In use: <span className="font-medium text-base-foreground">{tool.routeInUse}</span>
       {" · "}
       Requested:{" "}
@@ -470,16 +511,18 @@ export function ApplyChangesDialog({
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
-          details={
-            <>
-              <RoutePair tool={tool} />
-              <p>
-                {tool.canReopen
-                  ? "Gate Connect can close and reopen this one."
-                  : "Gate Connect can close it, and you reopen it."}
-              </p>
-            </>
-          }
+          // No per-row sentence about who reopens. The frame draws none
+          // (`130:58427`: name, description, pill), and the note below already
+          // says it - branching on the same `canReopen` these rows were
+          // branching on, for the whole set at once and in better words. So the
+          // row was rendering one boolean twice, and on a 352px popover it cost
+          // two lines per tool to repeat what the next block states properly.
+          //
+          // The plan's reasoning for reading `can_reopen` from the backend
+          // rather than assuming it in copy is untouched by this: it says the
+          // sentence belongs to "the confirmation", and the confirmation is the
+          // note.
+          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
@@ -538,7 +581,7 @@ export function CloseAppsDialog({
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
-          details={<RoutePair tool={tool} />}
+          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
@@ -712,9 +755,11 @@ function ReopenToolRow({
           <p className="text-base-xs leading-4 text-neutral-600">
             {REOPEN_STAGE_DETAIL[tool.stage]}
           </p>
-          <div className="text-base-xs leading-4 text-neutral-600">
-            <RoutePair tool={tool} />
-          </div>
+          {routesShown(tool) && (
+            <div className="text-base-xs leading-4 text-neutral-600">
+              <RoutePair tool={tool} />
+            </div>
+          )}
           {tool.error && <ErrorDetails raw={tool.error} title="Details" />}
         </div>
         <Icon
@@ -2245,12 +2290,71 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
  * Read-only for the same reason the review above is: it reports a teardown that
  * has already happened. The actions it names live on the rows that own them.
  */
+/**
+ * A teardown row with the mark the shell holds for it.
+ *
+ * The same split `DialogApp` and `DialogReopenTool` make: `lib/api` owns the
+ * reading, the shell owns the brand marks, and this module draws whatever it is
+ * handed. `icon` is optional, so a plain `TeardownReport` still satisfies the
+ * prop below and a caller that has no marks to give simply gets the cube.
+ */
+export type DialogTeardownTool = TeardownTool & {
+  /** 16px product mark. Falls back to a cube while a mark is missing. */
+  icon?: ReactNode;
+};
+
+/** {@link TeardownReport} with marks on its rows. */
+export type DialogTeardownReport = Record<
+  keyof TeardownReport,
+  DialogTeardownTool[]
+>;
+
+/**
+ * The reopen flow's rows, with their product marks.
+ *
+ * Here, next to `DialogReopenTool`, because this is the module that owns the
+ * shape it builds - and because BOTH shells draw this flow. The window had the
+ * marks while the tray did not: `TrayApp` passed `runningApps.stage.tools`
+ * straight through, so the cube fallback fired and the tray listed Claude Code
+ * and Codex behind a generic glyph while the window, same flow and same moment,
+ * drew their real marks.
+ *
+ * It lived in `BrandMark` for a while, which made a leaf presentational module
+ * import a type from this one, and left its sibling {@link teardownSubjects}
+ * behind in the window shell - so the two halves of one job sat in two layers.
+ * `lib/reopen` is not the home either, tempting as it looks: it owns the model
+ * and depends on no component, and moving this there would point it at both
+ * this module and `BrandMark`.
+ *
+ * The model itself is `lib/reopen`'s and travels unchanged; only the mark is
+ * added. A second copy of a row is how two surfaces come to disagree about one
+ * tool, which is the whole reason `lib/reopen` exists.
+ */
+export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
+  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+}
+
+/** The teardown report's four buckets, with the same marks
+ *  {@link reopenSubjects} puts on the reopen rows. The dialog listed Claude Code
+ *  and Codex beside a generic glyph while every other surface drew their real
+ *  marks. */
+export function teardownSubjects(report: TeardownReport): DialogTeardownReport {
+  const marks = (tools: TeardownTool[]): DialogTeardownTool[] =>
+    tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+  return {
+    defaults: marks(report.defaults),
+    still_gate: marks(report.still_gate),
+    awaiting_reopen: marks(report.awaiting_reopen),
+    failed: marks(report.failed),
+  };
+}
+
 export function TeardownReportDialog({
   report,
   reason = "teardown",
   onClose,
 }: {
-  report: TeardownReport;
+  report: DialogTeardownReport;
   /** What produced this report - see `TeardownReason`. Defaults to `teardown`,
    *  which is what every caller but sign-out means. */
   reason?: TeardownReason;
@@ -2342,7 +2446,9 @@ export function TeardownReportDialog({
                 // `ReactNode`, so the bare string rendered as the literal word
                 // "cube" in every teardown row - the one caller that passed a
                 // string where the other five pass a glyph or a brand mark.
-                icon={<Icon name="cube" size={16} />}
+                // The row's own product mark when it has one, and the cube only
+                // as the fallback for a slug with no mark.
+                icon={tool.icon ?? <Icon name="cube" size={16} />}
                 title={tool.name}
                 description={section.detail}
                 // No next-action pill after a sign-out. Nothing was attempted,

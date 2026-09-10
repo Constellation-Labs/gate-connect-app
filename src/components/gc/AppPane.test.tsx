@@ -131,6 +131,20 @@ describe("AppPane recent activity", () => {
     expect(within(feed).queryByText("No recent messages")).toBeNull();
   });
 
+  it("says a chat domain is unattributed rather than unreadable", () => {
+    // Both flags true is the real shape: no read fires for a domain, so the
+    // `unavailable` derivation is incidentally true too. `unattributed` has to
+    // win, or the pane reports a fault over the permanent shape of the data.
+    render(pane({ unattributed: true, unavailable: { events: true } }));
+    const feed = card("Recent activity");
+
+    expect(
+      within(feed).getByText("Recent activity isn't attributed to this app"),
+    ).toBeTruthy();
+    expect(within(feed).queryByText("Recent activity couldn't be read")).toBeNull();
+    expect(within(feed).queryByText("No recent messages")).toBeNull();
+  });
+
   it("reads a genuinely empty feed as nothing recent", () => {
     render(pane());
 
@@ -286,6 +300,59 @@ describe("AppPane counters and chart", () => {
     expect(within(card("Messages")).getByText("Messages couldn't be read")).toBeTruthy();
     // The feed is a separate read and still reports its own empty state.
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
+  });
+
+  it("prints no figure at all when nothing on the pane is attributable", () => {
+    // The fixture is all zeros on purpose: these are real readings, and a pane
+    // that cannot attribute anything must not print them. The earlier version of
+    // this test rendered exactly this state and asserted only on the chart, so
+    // it walked past "Messages 0 / Blocked-Flagged 0 / Tokens saved 0%" sitting
+    // above the very note saying nothing could be attributed.
+    render(pane({ unattributed: true, unavailable: { chart: true } }));
+
+    // `queryAllByText` with a length, not `queryByText`: the singular form
+    // THROWS on multiple matches rather than returning null, so when this
+    // regresses it reports "found multiple elements" instead of the assertion
+    // that was meant. It fails either way; only one of the two says why.
+    expect(screen.queryAllByText("0").length).toBe(0);
+    expect(screen.queryAllByText("0%").length).toBe(0);
+    expect(screen.queryAllByText("+$0.00").length).toBe(0);
+    expect(screen.getAllByText("n/a").length).toBe(3);
+  });
+
+  /**
+   * The feed obeys the flag even when it has rows to draw.
+   *
+   * It used to honour `unattributed` only inside its own `activity.length === 0`
+   * arm, so a non-empty list outvoted the flag and the card printed rows under a
+   * pane note saying nothing here was attributable. Same invariant the chart
+   * already had the right way round, one card over. Load-bearing: move the
+   * `unattributed` arm back below `activity.length === 0` in `AppPane` and this
+   * fails on the row that reappears.
+   */
+  it("says the feed is unattributed even when entries are present", () => {
+    render(pane({ unattributed: true, activity: [entry] }));
+    const feed = card("Recent activity");
+
+    expect(
+      within(feed).getByText("Recent activity isn't attributed to this app"),
+    ).toBeTruthy();
+    expect(within(feed).queryByRole("table")).toBeNull();
+  });
+
+  it("says a chat domain's chart is unattributed rather than unreadable", () => {
+    render(pane({ unattributed: true, unavailable: { chart: true } }));
+    const chart = card("Messages");
+
+    expect(
+      within(chart).getByText("Messages aren't attributed to this app"),
+    ).toBeTruthy();
+    expect(within(chart).queryByText("Messages couldn't be read")).toBeNull();
+    // Not the empty state either: "no messages in the last 24hrs" would be a
+    // claim about traffic Gate cannot see.
+    expect(
+      within(chart).queryByText("No messages sent in the last 24hrs"),
+    ).toBeNull();
   });
 });
 

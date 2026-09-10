@@ -89,12 +89,42 @@ describe("the master status card", () => {
     expect(screen.getByText("On · 2 of 2 tools routing")).toBeTruthy();
   });
 
-  it("reads partially routed when only some rows are", () => {
-    renderTray();
+  it("reads partially routed when only some rows the user asked for are", () => {
+    renderTray({
+      groups: [
+        {
+          id: "anthropic",
+          label: "Anthropic",
+          apps: [
+            { slug: "a", name: "A", status: { kind: "protected" }, on: true },
+            { slug: "b", name: "B", status: { kind: "not-routed" }, on: true },
+          ],
+        },
+      ],
+    });
     expect(
       screen.getByRole("heading", { name: "Partially routed" }),
     ).toBeTruthy();
     expect(screen.getByText("On · 1 of 2 tools routing")).toBeTruthy();
+  });
+
+  /**
+   * The denominator is intent, so a row nobody switched on is not a gap.
+   *
+   * This is the fixture the bug lived on: `claude-web` is a chat surface, it
+   * ships off, and no family switch flips it (`cascadeTargets` returns false for
+   * a `chat` member). Counting it meant green required routing a session-cookie
+   * surface nobody asked for, so the card was pinned to amber "1 of 2" forever
+   * and disagreed with the topbar - which filters by intent - by exactly that
+   * row. Load-bearing: drop the `.filter((a) => a.on)` in `MasterCard` and this
+   * goes back to "Partially routed".
+   */
+  it("does not count a row the user never switched on", () => {
+    renderTray();
+    expect(
+      screen.getByRole("heading", { name: "Gate is protecting you" }),
+    ).toBeTruthy();
+    expect(screen.getByText("On · 1 of 1 tools routing")).toBeTruthy();
   });
 
   it("reads not protected with nothing routing, carrying the Off intent", () => {
@@ -107,7 +137,7 @@ describe("the master status card", () => {
           id: "anthropic",
           label: "Anthropic",
           apps: [
-            { slug: "a", name: "A", status: { kind: "not-routed" }, on: false },
+            { slug: "a", name: "A", status: { kind: "not-routed" }, on: true },
           ],
         },
       ],
@@ -116,12 +146,105 @@ describe("the master status card", () => {
     expect(screen.getByText("Off · 0 of 1 tools routing")).toBeTruthy();
   });
 
+  /**
+   * Nothing asked for is not a gap either, so no fraction is printed.
+   *
+   * With the denominator on intent, switching everything off reaches an empty
+   * ratio by the user's own action rather than only on a machine with no tools.
+   * "0 of 0 tools routing" reports a fault they caused deliberately, with both
+   * halves of the ratio meaningless.
+   */
+  it("prints no ratio when the user has asked for nothing", () => {
+    renderTray({
+      master: { on: false },
+      groups: [
+        {
+          id: "anthropic",
+          label: "Anthropic",
+          apps: [
+            { slug: "a", name: "A", status: { kind: "not-routed" }, on: false },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText("Off · No apps set to route")).toBeTruthy();
+    expect(screen.queryByText(/0 of 0/)).toBeNull();
+  });
+
   it("renders no switch: the drawn card is a status, not a control", () => {
     renderTray();
     // Row switches remain; nothing is named for the master.
     expect(
       screen.queryByRole("switch", { name: /route traffic/i }),
     ).toBeNull();
+  });
+});
+
+/**
+ * The count needs a scope on screen, and "recent" is the only one that is true.
+ *
+ * Stated as a bare absolute, "No security events" sat beside an Overview
+ * reporting blocked traffic in the last 24 hours and read as a broken feed - and
+ * the LIVE pill next to it made that reading worse, not better. The scope lived
+ * in the component's docstring and nowhere the user could see it.
+ *
+ * The first attempt at a scope was "since Gate Connect started", and that is
+ * the claim these tests now pin *against*: the figure is
+ * `securityFeed.events.length`, an array capped at `FEED_CAPACITY` with the
+ * oldest evicted and emptied outright whenever the credential changes. So a
+ * busy machine would read "200 events since Gate Connect started" with the true
+ * number in the thousands, and two seconds after an org switch it would read
+ * none. "Recent" survives the cap, the clear and a genuinely quiet run, which
+ * is why the word went into the count itself rather than onto a second line.
+ *
+ * An earlier version of this docstring asserted the launch scope and said the
+ * card "has to say so", which is the exact sentence the component stopped
+ * saying - it was left behind when the copy was fixed, contradicted by the
+ * inline comment three lines below it.
+ */
+describe("the security card", () => {
+  it("scopes an empty count rather than claiming none ever", () => {
+    renderTray({ security: { state: "live", count: 0, onOpen: noop } });
+
+    expect(screen.getByText("No recent security events")).toBeTruthy();
+    // Not an absolute, and not a run-length claim either: the buffer is capped
+    // and is emptied on a credential change, so "since Gate Connect started"
+    // would be its own overclaim.
+    expect(screen.queryByText(/Since Gate Connect started/)).toBeNull();
+  });
+
+  it("scopes a non-empty count the same way", () => {
+    renderTray({ security: { state: "live", count: 3, onOpen: noop } });
+
+    expect(screen.getByText("3 recent security events")).toBeTruthy();
+  });
+
+  /**
+   * Principle 6's last step: an offline feed is not reading, so its zero is not
+   * a reading. "No recent security events" beside an OFFLINE pill asserts a
+   * quiet machine when what actually happened is that nobody looked - the same
+   * class of overclaim as the two absolutes this card already dropped, just
+   * quieter for being technically the count of an empty buffer.
+   */
+  it("says the feed is unavailable rather than reporting none while offline", () => {
+    renderTray({ security: { state: "offline", count: 0, onOpen: noop } });
+
+    expect(screen.getByText("Security events unavailable")).toBeTruthy();
+    expect(screen.queryByText(/No recent security events/)).toBeNull();
+  });
+
+  /** Reconnecting still counts: the buffer it counts is real, and the pill
+   *  beside it already says the stream is catching up. */
+  it("keeps a real count while reconnecting", () => {
+    renderTray({ security: { state: "reconnecting", count: 2, onOpen: noop } });
+
+    expect(screen.getByText("2 recent security events")).toBeTruthy();
+  });
+
+  it("counts one event in the singular", () => {
+    renderTray({ security: { state: "live", count: 1, onOpen: noop } });
+
+    expect(screen.getByText("1 recent security event")).toBeTruthy();
   });
 });
 

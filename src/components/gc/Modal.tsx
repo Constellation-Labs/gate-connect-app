@@ -223,6 +223,10 @@ export function Modal({
         // were the parts that left. So the panel is capped, and `children`
         // below is the only part that scrolls; header and footer stay put,
         // which is what makes the primary reachable at any height.
+        //
+        // Both surfaces need it, for their own reasons: the long dialog above is
+        // the window at its 1024x800 floor, and in the 400x700 tray the reopen
+        // offer runs past the bottom of the popover on its own, at any height.
         className={`${WIDTH_STYLES[width]} relative flex max-h-full max-w-full flex-col rounded-2xl border bg-base-card p-6 shadow-base-lg ${
           edge === "danger"
             ? "border-base-destructive/40"
@@ -295,7 +299,21 @@ export function Modal({
         )}
 
         {(secondary || middle || primary) && (
-          <div className="mt-6 flex shrink-0 justify-end gap-3">
+          // `flex-wrap`, with `whitespace-nowrap` on each button below. The row
+          // never wrapped, so at tray width the two labels were squeezed and
+          // wrapped *inside* their own fixed `h-9` boxes, which clipped them to
+          // "Yes, close" over a cut-off second line. Wrapping the row instead
+          // stacks them, right-aligned, with both labels intact.
+          //
+          // Two different `shrink-0`s here, on two axes, and both are
+          // load-bearing - so do not read the one below as an echo of this one.
+          // On the ROW it is the column axis: the row is a sibling of the
+          // scrolling body above, and a footer that shrinks is the
+          // unreachable-primary bug again. On each BUTTON it is the row axis:
+          // `whitespace-nowrap` alone stops the label wrapping but still lets
+          // the flex item shrink under it, so the text overflows its own box
+          // instead of the row wrapping.
+          <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-3">
             {secondary && (
               // `disabled` is honoured here the same way the other two honour
               // it. It used to be silently ignored, which made `ModalButton`'s
@@ -308,7 +326,7 @@ export function Modal({
                 type="button"
                 onClick={secondary.disabled ? undefined : secondary.onClick}
                 aria-disabled={secondary.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
                   secondary.disabled
                     ? "cursor-not-allowed opacity-45"
                     : "hover:bg-gray-50"
@@ -322,7 +340,7 @@ export function Modal({
                 type="button"
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   middle.disabled
                     ? "cursor-not-allowed opacity-45"
                     : "hover:bg-gray-50"
@@ -341,7 +359,7 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   primary.disabled ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive
@@ -384,9 +402,15 @@ export function ModalSubject({
   title: string;
   description?: string;
   /** A second line under the description, for a subject that has to carry more
-   *  than a sentence - the reopen step names two routes and who reopens the
-   *  tool, and none of that fits in `description`, which truncates to one line
-   *  by design. Wraps rather than truncating: it is the content of the step. */
+   *  than a sentence - the reopen step names two routes, and that does not fit
+   *  in `description`, which truncates to one line by design. Wraps rather than
+   *  truncating: it is the content of the step. (Who reopens the tool used to
+   *  live here too; it is said once in the note now.)
+   *
+   *  **Pass `undefined`, not an element that renders `null`.** The guard below
+   *  is on this prop, so a truthy element still draws the `mt-1` wrapper, and in
+   *  a flex column that margin cannot collapse. `dialogs.tsx` decides before
+   *  building the element for exactly this reason. */
   details?: ReactNode;
   /**
    * `subject` names a thing and describes it: bold name over grey detail, used

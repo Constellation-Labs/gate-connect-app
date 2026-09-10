@@ -91,6 +91,20 @@ export function UpdateBanner({
  * "protecting you" and a 0-of-4 state "partly routed", which cannot both be
  * right - only two variants are drawn, so the all-or-not-all split is the
  * reading that leaves no state unrepresented.
+ *
+ * **An empty denominator is neither of those and must not borrow the amber
+ * sentence.** `totalCount` is what the user asked for, so zero means they asked
+ * for nothing - and "Gate Connect is partly routing your apps · Partly routed ·
+ * 0 of 0 Apps" reports a gap where there is no gap, in three ways at once: a
+ * count of nothing, a fraction whose halves are both zero, and a fault the user
+ * caused on purpose by switching everything off. Since the denominator became
+ * intent this is reachable by that switch rather than only on a machine with no
+ * tools, which is what made it worth its own branch.
+ *
+ * The tile stays amber because there is no third tone drawn and picking one by
+ * eye is the thing this repo is told not to do - see question 23 in
+ * `docs/figma-questions-for-design.md`. The words are the part that was making
+ * a false claim, so the words are the part that changed.
  */
 export function RoutingBanner({
   protectedCount,
@@ -100,6 +114,7 @@ export function RoutingBanner({
   totalCount: number;
 }) {
   const allProtected = totalCount > 0 && protectedCount === totalCount;
+  const nothingRequested = totalCount === 0;
 
   return (
     <div className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4 py-2">
@@ -114,7 +129,9 @@ export function RoutingBanner({
         <p className="text-sm font-medium leading-5 text-base-foreground">
           {allProtected
             ? "Gate Connect is protecting you"
-            : "Gate Connect is partly routing your apps"}
+            : nothingRequested
+              ? "No apps are set to route through Gate Connect"
+              : "Gate Connect is partly routing your apps"}
         </p>
       </div>
       <p className="text-sm leading-5 tracking-label-14">
@@ -123,14 +140,18 @@ export function RoutingBanner({
         >
           {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
             * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
-          {allProtected ? "Routed" : "Partly routed"}
+          {allProtected ? "Routed" : nothingRequested ? "None routed" : "Partly routed"}
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
-        <span className="text-base-muted-foreground"> · </span>
-        <span className="text-base-muted-foreground">
-          {protectedCount} of {totalCount} Apps
-        </span>
+        {!nothingRequested && (
+          <>
+            <span className="text-base-muted-foreground"> · </span>
+            <span className="text-base-muted-foreground">
+              {protectedCount} of {totalCount} Apps
+            </span>
+          </>
+        )}
       </p>
     </div>
   );

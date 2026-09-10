@@ -20,10 +20,11 @@
 use crate::account;
 use crate::gateway_api::{self, Failure, FailureCode};
 
-/// Credit balance endpoint, with its own test seam.
-/// `<gateway_base_url>/v1/me/credits` in real builds.
+/// Credit balance endpoint, with its own test seam (debug only, via
+/// [`crate::env::test_seam`]). `<gateway_base_url>/v1/me/credits` in real
+/// builds.
 fn credits_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_CREDITS_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_CREDITS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!("{}/v1/me/credits", gateway_base_url.trim_end_matches('/'))
@@ -45,10 +46,11 @@ pub fn credits_json() -> Result<String, Failure> {
     gateway_api::call_json(gateway_api::Method::Get, credits_endpoint(&base), &[], None)
 }
 
-/// Catalogue endpoint, with a test seam mirroring [`crate::activity`]'s.
-/// `<gateway_base_url>/v1/models` in real builds.
+/// Catalogue endpoint, with a test seam mirroring [`crate::activity`]'s (debug
+/// only, via [`crate::env::test_seam`]). `<gateway_base_url>/v1/models` in real
+/// builds.
 fn catalogue_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_GATE_MODELS_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_GATE_MODELS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!("{}/v1/models", gateway_base_url.trim_end_matches('/'))

@@ -75,6 +75,22 @@ impl TempHome {
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         let prev_test_home = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         std::env::set_var("HOME", &dir);
+        // The seam, not just HOME - and it was already set here, which is what
+        // this comment is for rather than a second `set_var`.
+        //
+        // `env::tool_path_override` ignores every published tool-dir variable
+        // while `GATE_CONNECT_TEST_HOME` is set, so an ambient `CODEX_HOME` or
+        // `OPENCODE_CONFIG_DIR` - Orca exports both - cannot punch through the
+        // temp home. That is what makes the XDG pins below redundant: they are
+        // belt and braces from before the seam existed, kept because removing a
+        // guard from the one suite whose job is proving nothing is left behind
+        // needs a better reason than tidiness.
+        //
+        // The incident that motivates the seam belongs to `codex_billing_mode`,
+        // not to this file, and is written up at `crates/core/src/env.rs`. A
+        // previous version of this comment claimed it happened here and credited
+        // the protection to a line that was a duplicate of the one above it,
+        // which would have invited the next reader to delete the real one.
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
         std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);

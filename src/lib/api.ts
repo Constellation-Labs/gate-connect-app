@@ -268,6 +268,15 @@ export const unpinPopover = () => invoke<void>("unpin_popover");
  *  failure states; a 400px copy would be a second surface over one setting. */
 export const requestSwitchOrg = () => invoke<void>("request_switch_org");
 
+/** Ask the main window to open the recovery details, from the tray's card.
+ *
+ *  Same hand-over as `requestSwitchOrg`, and the same reason: the details are a
+ *  dialog over a per-tool table, which does not fit 400px. Replaces a plain
+ *  `revealMainWindow()`, which surfaced the window without telling it what the
+ *  user had asked to see. */
+export const requestRecoveryDetails = () =>
+  invoke<void>("request_recovery_details");
+
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the
  *  window along with the copy telling the user what to click. Always paired
@@ -1013,9 +1022,15 @@ export interface BackendError {
   message: string;
 }
 
-/** Hand over (and clear) the backend's buffered analytics errors. Called once
- * at mount to sweep failures that predate the webview, then again on each
- * `backend-error-pending` nudge. */
+/** Hand over (and clear) **the calling window's** buffered backend errors.
+ * Called once at mount to sweep failures that predate the webview, then again on
+ * each `backend-error-pending` nudge.
+ *
+ * The buffer is per webview label, so this drains only this window's copy and a
+ * second call in the same window gets nothing - the two shells cannot starve
+ * each other, and neither can re-read the other's. See `PENDING_BACKEND_ERRORS`
+ * in `src-tauri/src/lib.rs` for why, and `forwardBackendErrors` for which shell
+ * is allowed to forward the batch to analytics. */
 export const drainBackendErrors = () => invoke<BackendError[]>("drain_backend_errors");
 
 // ---- Diagnostics ----
