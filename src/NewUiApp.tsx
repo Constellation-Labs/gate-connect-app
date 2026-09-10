@@ -771,9 +771,12 @@ export function NewUiApp() {
    *
    * The cheap half of {@link refresh}, and what `tools-changed` and the
    * visibility edge both call. `list_tools` walks config files and `proxy_status`
-   * reads state already in memory; the sweep is left out because it probes the
-   * relay and the gateway, which is not something a filesystem event should be
-   * able to trigger at whatever rate a package manager writes.
+   * reads state already recorded - on Windows it can still shell out to
+   * `certutil` for the CA reading, which is bounded and rate-limited there for
+   * exactly that reason, and on Linux the NSS reading is deliberately taken at
+   * write time so this path never spawns one. The sweep is left out because it
+   * probes the relay and the gateway, which is not something a filesystem event
+   * should be able to trigger at whatever rate a package manager writes.
    *
    * A reading that matches what is on screen is dropped rather than re-set. Both
    * of these feed every memo below, and committing an equal-but-new object would
@@ -2142,10 +2145,10 @@ export function NewUiApp() {
    * they reopened anything, so a dismissal is the only thing that can retire it,
    * and it does not come back until trust is removed and granted again.
    *
-   * `ca_nss_trusted` rides along from the same snapshot, and it decides which
-   * note this is: whether the store Chromium reads actually took the CA is a
-   * reading, and it is the difference between "reopen your browser" and "no
-   * reopening will help, install certutil". Read off the *incoming* state rather
+   * `ca_nss_trust` rides along from the same snapshot, and it decides which note
+   * this is: what the store Chromium reads did with the CA is a reading, and it
+   * separates "reopen your browser" from "install certutil" from "a store
+   * refused, and the report says which". Read off the *incoming* state rather
    * than a later poll, so the sentence describes the trust change that just
    * happened.
    */
@@ -2160,8 +2163,7 @@ export function NewUiApp() {
     caTrustedSeen.current = trusted;
     if (seen === false && trusted === true) {
       setBrowserRestart(
-        browserTrustRestartAdvice(platform, proxy?.ca_nss_trusted ?? null) ??
-          null,
+        browserTrustRestartAdvice(platform, proxy?.ca_nss_trust ?? null) ?? null,
       );
     }
   }, [proxy, platform]);
@@ -2179,8 +2181,10 @@ export function NewUiApp() {
     const member = groups
       .flatMap((g) => g.members)
       .find((m) => m.key === view.slug);
-    return member ? chatScopeNote(member, platform) : undefined;
-  }, [view, groups, platform]);
+    return member
+      ? chatScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
+      : undefined;
+  }, [view, groups, platform, proxy]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -3057,11 +3061,21 @@ export function NewUiApp() {
           alert={
             <>
               {reopenAlert}
-              {proxyAdvice && (
-                <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
-              )}
+              {/* Scope first, then the caveat on it. On a Linux chat row both of
+                  these draw, and in the other order they read as two unrelated
+                  paragraphs where the second happens to contradict the first:
+                  "it covers your browser" under "apps already open may need
+                  reopening". This way the note says what the switch covers and
+                  the note below it says what "already open" costs, which is the
+                  sequence the two facts actually have. `groups.ts` keeps them
+                  separate for a different reason - the proxy pointer and the
+                  trust store are not one fact - and that argument is about
+                  merging the copy, not about ordering it. */}
               {chatScope && (
                 <PaneNote title={chatScope.title} body={chatScope.body} />
+              )}
+              {proxyAdvice && (
+                <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
               {paneNotice && (
                 <AlertBanner

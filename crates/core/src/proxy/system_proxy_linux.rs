@@ -271,14 +271,55 @@ const ENGINE_HOST_GVARIANT: &str = "'127.0.0.1'";
 /// Read one key, or `None` if `gsettings` or the schema is missing (i.e. not a
 /// GNOME session).
 fn gsettings_get(schema: &str, key: &str) -> Option<String> {
-    let out = std::process::Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("gsettings");
+    cmd.args(["get", schema, key]);
+    // Bounded for the same reason `certutil` is, and through the same helper:
+    // `gsettings` talks to dbus, a peer that does not answer blocks in the call
+    // rather than failing it, and `browser_proxy_channel` below puts this on the
+    // path `status` is polled from. A timeout reads as "no answer", which is
+    // what every caller here already does with a key it cannot read.
+    //
+    // Short next to certutil's five seconds: this is a settings lookup against a
+    // session bus, so a second is already far past the point where it is going
+    // to succeed.
+    let out = crate::primitives::output_bounded(cmd, std::time::Duration::from_secs(1)).ok()??;
     if !out.status.success() {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Whether this session has the channel a running browser reads, cached for the
+/// life of the process.
+///
+/// The module's two channels are not equivalent from a browser's point of view.
+/// GNOME's keys are re-read live by everything on GLib's proxy resolver; the
+/// `environment.d` drop-in reaches a process only at launch. So on a session
+/// with no `org.gnome.system.proxy` schema - KDE, a bare WM - Gate points
+/// nothing at the engine that a browser already running will notice, and the UI
+/// must not claim the browser is covered. This is the reading behind that copy.
+///
+/// Probes `mode` for the same reason [`gsettings_capture`] treats a single
+/// unreadable key as "not GNOME": the binary and the schema have to both be
+/// there, and one `gsettings get` answers both questions.
+///
+/// Cached in a `OnceLock` because it cannot change under us - a desktop session
+/// does not gain the schema while its apps are running - and because `status`
+/// is polled, which is precisely where a per-call subprocess does damage. False
+/// under the test seam, which is accurate rather than defensive: the seam skips
+/// every gsettings write, so nothing in the session points at the engine.
+///
+/// The cache bounds how *often* this runs and not how long the one call takes,
+/// and the one call is the boot-path `status` on most launches - so
+/// [`gsettings_get`] is bounded too. Without that a dbus peer that never
+/// answers left the first status unresolved, which holds the window's
+/// in-flight read latch and drops `tools-changed` and visibility refreshes for
+/// as long as it lasts.
+pub fn browser_proxy_channel() -> bool {
+    static CHANNEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHANNEL.get_or_init(|| {
+        !session_effects_suppressed() && gsettings_get("org.gnome.system.proxy", "mode").is_some()
+    })
 }
 
 /// Capture [`GNOME_KEYS`] so the off path can put them back verbatim.

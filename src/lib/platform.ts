@@ -91,26 +91,35 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
  *  and this comment's own escape clause said that when they did, Linux would
  *  return what macOS returns.
  *
- *  It does not, because coverage here is conditional in a way it is not there.
- *  The `environment.d` variables reach a process only at launch, so a browser
- *  started from a shell keeps whatever was in force then, and Gate cannot see
- *  which of the two channels a given browser took. What is true of every
- *  browser that follows the desktop's proxy settings is that this row covers
- *  it, so that is what the sentence says and all it says. The launch-time half
- *  is advice with something the user can act on, and it lives where there is
- *  room for it: `groups.ts`' `PROXY_REOPEN_ADVICE` for the proxy pointer and
- *  `BROWSER_TRUST_RESTART_ADVICE` for the trust store.
+ *  It does not, because coverage here is conditional in a way it is not there,
+ *  and `browserChannel` is the condition. Only GNOME's keys are re-read by a
+ *  running browser; the `environment.d` drop-in reaches a process at launch.
+ *  On a session with no `org.gnome.system.proxy` schema - KDE, a bare WM - Gate
+ *  writes the drop-in alone, so nothing points a browser already running at the
+ *  engine and there is no browser claim to make. Keying that on the OS alone
+ *  was the bug: it made the sentence a claim about interception with nothing
+ *  behind it, on the one screen a user would check it on. It comes from
+ *  `ProxyState.browser_proxy_channel`, which is a reading.
+ *
+ *  Even where it is true, the sentence stops at "follows your desktop proxy
+ *  settings" rather than promising every browser, because a browser started
+ *  from a shell took the other channel and Gate cannot see which. That
+ *  launch-time half is advice with something the user can act on, and it lives
+ *  where there is room for it: `groups.ts`' `PROXY_REOPEN_ADVICE` for the proxy
+ *  pointer and `browserTrustRestartAdvice` for the trust store.
  *
  *  Empty on `unknown` for the same reason it is empty on Linux, plus one: that
  *  value is the first async tick, and a claim about interception is the last
  *  thing to guess at. */
-export function browserScopeNote(p: Platform): string {
+export function browserScopeNote(p: Platform, browserChannel: boolean): string {
   switch (p) {
     case "macos":
     case "windows":
       return "That includes the same site open in your browser.";
     case "linux":
-      return "That includes the same site in a browser that follows your desktop proxy settings.";
+      return browserChannel
+        ? "That includes the same site in a browser that follows your desktop proxy settings."
+        : "";
     default:
       return "";
   }

@@ -41,12 +41,28 @@ pub struct Diagnostics {
     pub ca_cert_path: Option<String>,
     pub ca_cert_present: bool,
     /// Linux only: whether every per-user NSS database found holds our current
-    /// CA. Chromium-based browsers read that store and never the system one, so
-    /// `Some(false)` next to a `ca_trusted` of true is exactly the "Firefox
-    /// works, Chrome doesn't" report, and it is invisible from the popover.
-    /// `None` where the question does not apply: not Linux, or no Chromium
-    /// browser has ever run for this user.
+    /// CA, **probed now**. Chromium-based browsers read that store and never the
+    /// system one, so `Some(false)` next to a `ca_trusted` of true is exactly
+    /// the "Firefox works, Chrome doesn't" report, and it is invisible from the
+    /// popover. `None` where the question does not apply: not Linux, or no
+    /// Chromium browser has ever run for this user.
+    ///
+    /// A different question from [`Diagnostics::ca_nss_write`] below, and the
+    /// two are kept apart rather than reconciled. This one is answerable with no
+    /// write having happened, which is the common case for someone who opens
+    /// Settings and copies a report; it is also `all()` over the stores, so it
+    /// cannot say *which* refused or why. That is what the other one is for.
     pub ca_nss_trusted: Option<bool>,
+    /// Linux only: what the last NSS write **in this process** did, and which
+    /// stores refused it.
+    ///
+    /// Here because the copy raised on a failed write tells the user this report
+    /// names the store and the reason, and for a while it did not - the outcome
+    /// reached the UI as one enum and the detail went to stderr. `None` before
+    /// any write in this process, which is the honest answer for a report taken
+    /// without one; the copy that makes the promise is raised from inside the
+    /// enable that just wrote, so it is never `None` where the promise is made.
+    pub ca_nss_write: Option<crate::proxy::NssReading>,
     /// The persisted "routing should be on" intent. Compared against the live
     /// `running` flag it answers the commonest report we get: routing was on
     /// yesterday and the app came back with it off.
@@ -85,6 +101,7 @@ pub fn collect() -> Diagnostics {
         ca_cert_present: ca_cert_path.as_ref().is_some_and(|p| p.exists()),
         ca_cert_path: ca_cert_path.map(|p| p.display().to_string()),
         ca_nss_trusted: ca_nss_trusted(),
+        ca_nss_write: ca_nss_write(),
         routing_intent: crate::proxy::intent::load_intent(),
         persisted_engine_proxy_url: crate::proxy::persisted_engine_proxy_url(),
         relay_base_url: crate::proxy::relay_base_url(),
@@ -96,6 +113,18 @@ pub fn collect() -> Diagnostics {
 #[cfg(target_os = "linux")]
 fn ca_nss_trusted() -> Option<bool> {
     crate::proxy::ca::nss_ca_trusted()
+}
+
+/// The recorded write outcome, for the report. Not a probe: it is what the write
+/// itself saw, which is the only place the per-store reason exists.
+#[cfg(target_os = "linux")]
+fn ca_nss_write() -> Option<crate::proxy::NssReading> {
+    crate::proxy::ca::recorded_nss_trust()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ca_nss_write() -> Option<crate::proxy::NssReading> {
+    None
 }
 
 #[cfg(not(target_os = "linux"))]

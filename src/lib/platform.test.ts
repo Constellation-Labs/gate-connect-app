@@ -119,9 +119,12 @@ describe("browserScopeNote", () => {
     // macOS wires a PAC through `networksetup` and trusts the CA in the system
     // keychain; Windows sets the WinINET proxy and trusts it in the Windows
     // certificate store. Both are what a browser reads, so a host-matched row
-    // genuinely covers the browser and the copy has to say so.
-    expect(browserScopeNote("macos")).toContain("browser");
-    expect(browserScopeNote("windows")).toContain("browser");
+    // genuinely covers the browser and the copy has to say so. The channel
+    // reading is true on both by construction, and false cannot arise - so
+    // passing it makes no difference here, which this pins.
+    expect(browserScopeNote("macos", true)).toContain("browser");
+    expect(browserScopeNote("windows", true)).toContain("browser");
+    expect(browserScopeNote("macos", false)).toContain("browser");
   });
 
   it("qualifies the claim on Linux instead of making the macOS one", () => {
@@ -130,23 +133,35 @@ describe("browserScopeNote", () => {
     // at launch - so a browser that follows the desktop settings is covered and
     // one started from a shell is not, and Gate cannot tell which it is. The
     // sentence claims exactly the half that always holds.
-    expect(browserScopeNote("linux")).toContain("desktop proxy settings");
-    expect(browserScopeNote("linux")).not.toBe(browserScopeNote("macos"));
+    expect(browserScopeNote("linux", true)).toContain("desktop proxy settings");
+    expect(browserScopeNote("linux", true)).not.toBe(
+      browserScopeNote("macos", true),
+    );
+  });
+
+  it("claims nothing on a Linux session with no desktop proxy channel", () => {
+    // KDE, or a bare WM: `system_proxy_linux.rs` writes only the
+    // `environment.d` drop-in there, which a running browser never re-reads, so
+    // nothing points it at the engine and the row does not cover it. Keying
+    // this on the OS instead of the reading was a claim with nothing behind it.
+    expect(browserScopeNote("linux", false)).toBe("");
   });
 
   it("says nothing at all where nothing can be claimed", () => {
     // `unknown` is the first async tick, which is no time to guess at
     // interception - and the host sentence this appends to has already bounded
     // the scope without it.
-    expect(browserScopeNote("unknown")).toBe("");
+    expect(browserScopeNote("unknown", true)).toBe("");
   });
 
   it("is a whole sentence wherever it says anything, so it can be appended", () => {
     for (const p of PLATFORMS) {
-      const note = browserScopeNote(p);
-      if (note === "") continue;
-      expect(note.endsWith(".")).toBe(true);
-      expect(note).toContain("browser");
+      for (const channel of [true, false]) {
+        const note = browserScopeNote(p, channel);
+        if (note === "") continue;
+        expect(note.endsWith(".")).toBe(true);
+        expect(note).toContain("browser");
+      }
     }
   });
 });

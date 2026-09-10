@@ -734,7 +734,7 @@ describe("browserTrustRestartAdvice", () => {
     // p11-kit, both at process start (`ca_linux.rs`). macOS and Windows
     // re-evaluate trust for a running process, so naming browsers there would
     // be caution rather than mechanism.
-    expect(browserTrustRestartAdvice("linux", true)).toBeDefined();
+    expect(browserTrustRestartAdvice("linux", "trusted")).toBeDefined();
     expect(browserTrustRestartAdvice("macos", null)).toBeUndefined();
     expect(browserTrustRestartAdvice("windows", null)).toBeUndefined();
     expect(browserTrustRestartAdvice("unknown", null)).toBeUndefined();
@@ -744,7 +744,7 @@ describe("browserTrustRestartAdvice", () => {
     // Through `trustStoreName`, like every other string that says where
     // something of the user's lives. "keyring" would be the wrong vault and
     // "keychain" the wrong platform.
-    expect(browserTrustRestartAdvice("linux", true)?.body).toContain(
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain(
       "certificate store",
     );
   });
@@ -753,18 +753,45 @@ describe("browserTrustRestartAdvice", () => {
     // Reopening a window in a process that is still running changes nothing:
     // the NSS read happened at startup. A browser told to "reload" would fail
     // exactly as before and read as Gate being broken.
-    expect(browserTrustRestartAdvice("linux", true)?.body).toContain("quit");
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain(
+      "quit",
+    );
   });
 
-  it("does not ask for a reopen that cannot work", () => {
-    // `ca_nss_trusted === false` is the reading that says the store Chromium
-    // reads never took the CA - a missing `certutil`, or a write that failed.
-    // Reopening is then a loop with no exit, so the note must not name it, and
-    // must name the package that does end it.
-    const advice = browserTrustRestartAdvice("linux", false);
-    expect(advice?.body).not.toContain("quit it completely");
-    expect(advice?.body).toContain("libnss3-tools");
-    expect(advice?.body).toContain("nss-tools");
+  it("names the package only where a package is the fix", () => {
+    // `tools_missing` is the one state an install ends. Prescribing it for
+    // `write_failed` - a locked or unwritable database - sends someone to
+    // install a package they already have, at the one moment they are reading
+    // closely. `CertutilFailure` draws this line in the log messages already.
+    const missing = browserTrustRestartAdvice("linux", "tools_missing");
+    expect(missing?.body).toContain("libnss3-tools");
+    expect(missing?.body).toContain("nss-tools");
+    expect(
+      browserTrustRestartAdvice("linux", "write_failed")?.body,
+    ).not.toContain("libnss3-tools");
+  });
+
+  it("keeps the reopen where a store did take the certificate", () => {
+    // `write_failed` is per-store: the reading is "at least one refused", so
+    // the browsers whose store took it are working and still need the quit.
+    // Withholding that sentence left them with no true instruction at all.
+    expect(browserTrustRestartAdvice("linux", "write_failed")?.body).toContain(
+      "quit and reopen",
+    );
+  });
+
+  it("asks for something that actually re-runs the write", () => {
+    // Not "switch routing on again": the note is raised from inside the enable
+    // that just trusted the CA, so routing is already on, and
+    // `manager_linux::enable` returns early before `ca::ensure_trusted` when
+    // the client is connected. Off and on again is what reaches the write.
+    for (const nss of ["tools_missing", "write_failed"] as const) {
+      const body = browserTrustRestartAdvice("linux", nss)?.body ?? "";
+      expect(body).not.toContain("switch routing on again");
+      if (body.includes("routing")) {
+        expect(body).toContain("turn routing off and on again");
+      }
+    }
   });
 
   it("says who is unaffected, because most of the machine is", () => {
@@ -772,18 +799,19 @@ describe("browserTrustRestartAdvice", () => {
     // serves the Node CLIs, so this is one family of browsers rather than
     // routing being broken - and a note that did not say so would read as the
     // latter.
-    expect(browserTrustRestartAdvice("linux", false)?.body).toContain(
-      "Firefox and command-line tools are unaffected",
-    );
+    for (const nss of ["tools_missing", "write_failed"] as const) {
+      expect(browserTrustRestartAdvice("linux", nss)?.body).toContain(
+        "Firefox and command-line tools are unaffected",
+      );
+    }
   });
 
   it("falls back to the reopen note when there is no reading", () => {
-    // `null` is not "false": it means no browser here keeps an NSS store, so
-    // there is nothing to report about one and the restart is still the only
-    // thing Gate cannot check. Principle 6 in the small - absence of a reading
-    // is not a negative reading.
+    // `null` is not a negative reading: it means no browser here keeps such a
+    // store, or no write has happened in this process. Either way the restart
+    // is still the one thing Gate cannot check. Principle 6 in the small.
     expect(browserTrustRestartAdvice("linux", null)?.title).toBe(
-      browserTrustRestartAdvice("linux", true)?.title,
+      browserTrustRestartAdvice("linux", "trusted")?.title,
     );
   });
 });
@@ -810,6 +838,7 @@ describe("chatScopeNote", () => {
     const note = chatScopeNote(
       chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
       "macos",
+      true,
     );
     expect(note?.body).toContain("claude.ai");
   });
@@ -821,6 +850,7 @@ describe("chatScopeNote", () => {
     const note = chatScopeNote(
       chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
       "macos",
+      true,
     );
     expect(note?.body).toContain("already signed in with");
   });
@@ -831,16 +861,24 @@ describe("chatScopeNote", () => {
     const member = chatMember(
       domain({ slug: "claude-web", hosts: ["claude.ai"] }),
     );
-    expect(chatScopeNote(member, "macos")?.body).toContain(
+    expect(chatScopeNote(member, "macos", true)?.body).toContain(
       "open in your browser",
     );
-    expect(chatScopeNote(member, "linux")?.body).toContain(
+    expect(chatScopeNote(member, "linux", true)?.body).toContain(
       "desktop proxy settings",
     );
-    // `unknown` is the first async tick: the other two sentences still hold, and
-    // the browser one is simply absent rather than guessed.
-    expect(chatScopeNote(member, "unknown")?.body).toContain("claude.ai");
-    expect(chatScopeNote(member, "unknown")?.body).not.toContain("browser");
+    // A Linux session with no GNOME proxy schema: the host sentences still
+    // hold and the browser one is absent, because nothing there points a
+    // running browser at the engine.
+    expect(chatScopeNote(member, "linux", false)?.body).toContain("claude.ai");
+    expect(chatScopeNote(member, "linux", false)?.body).not.toContain(
+      "browser",
+    );
+    // `unknown` is the first async tick: same treatment, for a different
+    // reason - that is no time to guess at interception.
+    expect(chatScopeNote(member, "unknown", true)?.body).not.toContain(
+      "browser",
+    );
   });
 
   it("says nothing on a row that is not a chat surface", () => {
@@ -852,13 +890,13 @@ describe("chatScopeNote", () => {
       name: "App",
       chat: false,
     };
-    expect(chatScopeNote(member, "macos")).toBeUndefined();
+    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
   });
 
   it("says nothing when the catalog named no host", () => {
     // The host is the scope, so a chat member with no hosts has no sentence to
     // make - and a note reading "everything on " would be worse than silence.
     const member = chatMember(domain({ slug: "claude-web", hosts: [] }));
-    expect(chatScopeNote(member, "macos")).toBeUndefined();
+    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
   });
 });

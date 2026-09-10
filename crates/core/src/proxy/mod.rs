@@ -1253,6 +1253,65 @@ impl ProxyDomain {
     }
 }
 
+/// What the per-user NSS store Chromium reads holds, and when it does not hold
+/// our CA, **why** - because the two reasons want opposite things from the user.
+///
+/// A bare boolean was not enough, and shipping one was a bug: `ToolsMissing` is
+/// fixed by installing a package and `WriteFailed` is not, so a UI holding only
+/// "false" either prescribes a package the user may already have or says
+/// nothing. `CertutilFailure` has always drawn this line for the log messages
+/// (see `ca_linux.rs`, and `NSS_TOOLS_HINT`'s own doc comment on why); this
+/// carries it as far as the screen.
+///
+/// `None` on the wire, rather than a fourth variant, for two different absences
+/// that a caller treats alike: not Linux, and Linux with nothing that keeps such
+/// a store. Both mean there is no reading, which is not a negative reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NssTrust {
+    /// Every database found holds the current CA.
+    Trusted,
+    /// `certutil` is not installed, so Gate could not write any of them. The
+    /// one state a package install fixes.
+    ToolsMissing,
+    /// `certutil` is there and at least one database did not take the CA - a
+    /// lock, a permission, a database Gate cannot parse. A package install
+    /// changes nothing here; the log line names the store and the reason.
+    WriteFailed,
+}
+
+/// One NSS database that would not take the CA, and what it said.
+///
+/// The copy that raises this state tells the user the diagnostics report names
+/// which store refused and why, and for a while it did not: the outcome reached
+/// the UI as a single [`NssTrust`] and the per-store reason went to stderr. A
+/// sentence that sends somebody to a report has to be answerable there.
+///
+/// Only the `WriteFailed` cause is collected. A missing `certutil` fails every
+/// store for one reason the report already states, so listing it once per
+/// database would be three lines saying what the outcome said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssRefusal {
+    /// The database directory, as a display path. In the user's own home, and
+    /// the point of showing it is that they can go and look.
+    pub store: String,
+    /// `certutil`'s own words, by way of `CertutilFailure`. Machine output.
+    pub reason: String,
+}
+
+/// What the last NSS write in this process did, with the detail behind it.
+///
+/// [`NssTrust`] alone is what the UI switches copy on; the refusals are what
+/// makes the report able to answer the question that copy points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssReading {
+    pub outcome: NssTrust,
+    /// Empty for every outcome but `WriteFailed`, and never used to *infer* the
+    /// outcome: a store list that came back empty because nothing was collected
+    /// is not a store list that came back empty because nothing refused.
+    pub refusals: Vec<NssRefusal>,
+}
+
 /// Snapshot of the proxy subsystem for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyState {
@@ -1267,25 +1326,63 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
-    /// Linux only: whether every per-user NSS database on this machine holds
-    /// the current CA. `None` everywhere else, and on Linux until a browser
-    /// that keeps one has run.
+    /// Linux only: what the store Chromium reads holds, as [`NssTrust`], from
+    /// the last time Gate wrote it in this process. `None` everywhere else, and
+    /// on Linux until a trust write has happened here.
     ///
-    /// Beside `ca_trusted` this is the difference between two states the UI
-    /// otherwise cannot tell apart, both of which look like Gate breaking
-    /// HTTPS. Trusted with `Some(true)`: the stores are right and a browser
-    /// still failing is one older than the write, which reopening fixes.
-    /// Trusted with `Some(false)`: `certutil` is missing or its write failed
-    /// (`ca_linux.rs` prints the reason and carries on, because the system
-    /// anchor still serves Firefox and every CLI), so Chromium-based browsers
-    /// cannot validate an intercepted host at all and no amount of reopening
-    /// will change that - the fix is a package install.
+    /// Beside `ca_trusted` it separates states the UI otherwise cannot tell
+    /// apart, all of which look like Gate breaking HTTPS. Trusted and
+    /// `Trusted`: the stores are right, so a browser still failing is older
+    /// than the write and reopening it is the fix. Trusted and anything else:
+    /// Chromium cannot validate an intercepted host at all, and which sentence
+    /// helps depends on the variant.
     ///
-    /// It was already collected for the support report (`diagnostics.rs`) and
-    /// nowhere else, which left the product giving advice where it had a
-    /// reading. Principle 6: a reading outranks a sentence beside it.
+    /// **Recorded at write time, never probed here.** `status` is polled - the
+    /// window re-reads it on every `tools-changed` and every visibility edge -
+    /// and probing would put one `certutil` per database on that path, which is
+    /// the failure `ca_windows` grew a bounded call and a cooldown for. The
+    /// write path already runs certutil and already knows the outcome per
+    /// store, so the reading is free there and exact. `None` before any write
+    /// is the honest answer for a process that has not looked, and it is never
+    /// the answer where it matters: every path that raises the certificate note
+    /// runs `ensure_trusted` first.
     #[serde(default)]
-    pub ca_nss_trusted: Option<bool>,
+    pub ca_nss_trust: Option<NssTrust>,
+    /// Whether the system proxy Gate writes is one a browser reads *live*, and
+    /// therefore whether a host-matched row covers the same site in a browser.
+    ///
+    /// True on macOS and Windows unconditionally: the PAC goes into the OS
+    /// setting, which is the browser's setting. On Linux it is a question about
+    /// the session, not the OS - `system_proxy_linux.rs` has two channels, and
+    /// only GNOME's `org.gnome.system.proxy` keys are re-read by a running
+    /// browser. On KDE, on a bare WM, or anywhere the schema is absent, Gate
+    /// writes the `environment.d` drop-in alone, nothing in the session points
+    /// a browser at the engine, and a row that claimed the browser would be
+    /// claiming an interception that is not happening.
+    ///
+    /// Named for what the *user* gets rather than for the mechanism, because
+    /// two mechanisms answer it. The copy it drives is `browserScopeNote`.
+    ///
+    /// **Read `false` as "Gate does not write this session's proxy channel",
+    /// never as "this session has none".** The two come apart on KDE, which
+    /// has proxy settings of its own that a running browser reads and that
+    /// Gate simply does not write: the reading is a true statement about Gate
+    /// and a false-negative about the desktop. That direction is deliberate -
+    /// a missing sentence costs a user reassurance they can get from the host
+    /// named beside it, while a present one that is wrong tells them Gate is
+    /// inspecting a browser tab it is not touching, which is the one error
+    /// this field exists to prevent.
+    ///
+    /// So the remedy for KDE is not here. It is `system_proxy_linux.rs`
+    /// learning to write `kioslaverc`'s proxy keys the way it writes GNOME's,
+    /// at which point this answers true there and no copy moves. Do not
+    /// "correct" it by widening the probe to any desktop that *has* a proxy
+    /// setting, and do not delete the sentence it gates on the grounds that it
+    /// is missing for some Linux users: both readings have been made before
+    /// and both put a claim about interception in front of someone who cannot
+    /// check it.
+    #[serde(default)]
+    pub browser_proxy_channel: bool,
     /// Whether Gate is putting its proxy into the user's environment - the
     /// channel that routes command-line tools, as distinct from the OS proxy
     /// setting that routes GUI apps. A user-held choice, because the variables
@@ -1869,6 +1966,39 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 
 #[cfg(test)]
 mod tests {
+    /// The wire words the frontend's own union spells out.
+    ///
+    /// `NssTrust` reaches TypeScript twice - on `ProxyState.ca_nss_trust` and
+    /// inside `Diagnostics.ca_nss_write` - and both are typed as a string union
+    /// by hand. A renamed variant would compile on both sides and simply stop
+    /// matching, which for the copy means falling through to the reopen advice
+    /// on a machine that needs a package installed.
+    #[test]
+    fn the_nss_wire_words_are_what_the_frontend_expects() {
+        let word = |t: NssTrust| serde_json::to_value(t).expect("serialize NssTrust");
+        assert_eq!(word(NssTrust::Trusted), "trusted");
+        assert_eq!(word(NssTrust::ToolsMissing), "tools_missing");
+        assert_eq!(word(NssTrust::WriteFailed), "write_failed");
+    }
+
+    /// A refusal carries the store and the reason, under the names the report
+    /// reads. This is the payload behind "the diagnostics report names which one
+    /// and why", so the field names are part of the promise.
+    #[test]
+    fn a_refusal_serialises_the_store_and_the_reason() {
+        let reading = NssReading {
+            outcome: NssTrust::WriteFailed,
+            refusals: vec![NssRefusal {
+                store: "/home/u/.pki/nssdb".into(),
+                reason: "certutil -A exited 255".into(),
+            }],
+        };
+        let json = serde_json::to_value(&reading).expect("serialize NssReading");
+        assert_eq!(json["outcome"], "write_failed");
+        assert_eq!(json["refusals"][0]["store"], "/home/u/.pki/nssdb");
+        assert_eq!(json["refusals"][0]["reason"], "certutil -A exited 255");
+    }
+
     /// The engine calls the gateway-auth notify once per refused request, and
     /// a dead session refuses *every* request from every routed tool. Both
     /// latches exist to keep that flood down to one re-verification: the

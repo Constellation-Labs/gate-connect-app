@@ -43,6 +43,7 @@ export function FamilyPanel({
   onTrustCa,
   trustPending,
   proxyOn,
+  browserChannel,
   onEnableRouting,
   authMode,
 }: {
@@ -57,6 +58,8 @@ export function FamilyPanel({
   onTrustCa: () => Promise<void>;
   trustPending: boolean;
   proxyOn: boolean;
+  /** Passed straight through to `GroupMembers`, which explains it. */
+  browserChannel: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
 }) {
@@ -146,6 +149,7 @@ export function FamilyPanel({
         onTrustCa={onTrustCa}
         trustPending={trustPending}
         proxyOn={proxyOn}
+        browserChannel={browserChannel}
         onEnableRouting={onEnableRouting}
         authMode={authMode}
       />

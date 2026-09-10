@@ -94,6 +94,9 @@ function renderDetail(
       onTrustCa={vi.fn()}
       trustPending={false}
       proxyOn={true}
+      // The GNOME case, so the chat rows' browser sentence is exercised; the
+      // false case has its own test below.
+      browserChannel={true}
       onEnableRouting={vi.fn()}
       {...props}
     />,
@@ -278,6 +281,7 @@ describe("GroupMembers intent versus flow", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
       proxyOn={true}
+      browserChannel={true}
       onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -363,6 +367,7 @@ describe("GroupMembers master-off remedy", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
         proxyOn={false}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -408,6 +413,7 @@ describe("GroupMembers certificate failure", () => {
         onTrustCa={() => Promise.reject("User canceled (-128)")}
         trustPending={false}
         proxyOn={true}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
       />,
     );
