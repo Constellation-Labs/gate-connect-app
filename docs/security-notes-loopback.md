@@ -63,6 +63,22 @@ Blast radius in both cases is spend, not theft: the raw key is not
 disclosed, and the catalog-constrained upstream resolution means the relay
 cannot be aimed at an arbitrary host.
 
+That bound depends on the `GATE_CONNECT_TEST_*` seams being debug-only, and
+for a while five of them were not. `GATE_CONNECT_TEST_{ACTIVITY,TOOL_EVENTS,
+INSTALLATIONS,CREDITS,GATE_MODELS}_ENDPOINT` read `std::env::var_os` directly
+instead of `env::test_seam`, so a release build obeyed them - and each URL goes
+to `gateway_api::call_json`, which attaches the live `x-gate-api-key` or bearer
+with no scheme or host check. One line in a shell profile therefore sent the
+raw `sk-gw-` key in cleartext to an arbitrary host on every later launch:
+theft, persistent, and from a user-writable location rather than for the
+lifetime of one process. Found by review, not in the field.
+
+All five now go through the helper, and the rule is a test rather than a
+sentence - `env::tests::every_seam_is_read_through_the_helper` scans this
+crate's production sources for a bare read of a seam name, so a sixth cannot be
+added the same way. If that test is ever relaxed, this paragraph is the reason
+it exists.
+
 Decision: ship with the browser and cross-user-Linux defenses; treat the
 macOS/Windows cross-user token as a tracked follow-up rather than a blocker,
 because multi-user desktop machines are rare in the target audience and the

@@ -628,4 +628,74 @@ mod tests {
             .to_string_lossy()
             .ends_with("opencode.json"));
     }
+
+    /// No seam is read behind [`test_seam`]'s back.
+    ///
+    /// The header on `test_seam` states an invariant the whole
+    /// `GATE_CONNECT_TEST_*` family relies on - a release binary ignores every
+    /// seam - and `docs/security-notes-loopback.md` bounds the accepted
+    /// loopback risk with it, in those words: "Blast radius in both cases is
+    /// spend, not theft: the raw key is not disclosed."
+    ///
+    /// Five endpoint seams had been reading `std::env::var_os` directly and so
+    /// were honoured in shipped builds, while their four siblings went through
+    /// the helper. That was not a redirection bug, it was a disclosure one:
+    /// every one of those URLs is handed to `gateway_api::call_json`, which
+    /// attaches the live `x-gate-api-key` or bearer with no scheme or host
+    /// check, so a single line in `~/.zshenv` harvested the raw `sk-gw-` key to
+    /// an arbitrary host on every later launch. Persistent, user-writable, and
+    /// well past the posture that document concedes.
+    ///
+    /// So the rule is checked rather than described. Scans this crate's own
+    /// sources for a bare read of a seam name, skipping `env.rs` (where the
+    /// helper lives) and everything from the first `#[cfg(test)]` onward - test
+    /// code legitimately saves and restores these variables around a scratch
+    /// home.
+    #[test]
+    fn every_seam_is_read_through_the_helper() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read crate sources") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(files.len() > 10, "the walk found almost nothing: {files:?}");
+
+        let mut offenders = Vec::new();
+        for file in files {
+            if file.file_name().is_some_and(|n| n == "env.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("read source");
+            // Production half only: `#[cfg(test)]` blocks sit at the bottom of
+            // every file in this crate, and their save/restore of a seam is not
+            // what this is looking for.
+            let production = text.split("#[cfg(test)]").next().unwrap_or("");
+            for (n, line) in production.lines().enumerate() {
+                let reads_env = line.contains("env::var_os(") || line.contains("env::var(");
+                if reads_env && line.contains("\"GATE_CONNECT_TEST_") {
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        file.strip_prefix(&src).unwrap_or(&file).display(),
+                        n + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these read a test seam without going through `env::test_seam`, so a \
+             RELEASE build obeys them - and every endpoint seam is on a path that \
+             attaches the live credential:\n{}",
+            offenders.join("\n")
+        );
+    }
 }
