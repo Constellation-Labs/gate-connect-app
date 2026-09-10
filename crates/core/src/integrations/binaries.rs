@@ -45,8 +45,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
 
 /// How long a `--version` may take before it is abandoned.
 ///
@@ -340,7 +338,7 @@ mod tests {
         // The whole reason for the timeout. `sleep 30` would outlast any
         // patience the caller has; this must come back promptly with None.
         let tool = fake_tool("hang", "sleep 30");
-        let started = Instant::now();
+        let started = std::time::Instant::now();
         assert_eq!(binary_version(&tool), None);
         assert!(
             started.elapsed() < VERSION_TIMEOUT + Duration::from_secs(1),

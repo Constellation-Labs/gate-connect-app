@@ -552,9 +552,7 @@ impl NssEntry {
     fn ssl_ca_trusted(&self) -> bool {
         match self {
             Self::Absent => false,
-            Self::Present { flags } => {
-                flags.split(',').next().is_some_and(|ssl| ssl.contains('C'))
-            }
+            Self::Present { flags } => flags.split(',').next().is_some_and(|ssl| ssl.contains('C')),
         }
     }
 }
