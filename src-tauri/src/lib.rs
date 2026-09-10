@@ -6,6 +6,11 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
+/// How a challenge-solve attempt ended; reported to the engine so the cooldown
+/// message can name the failure. Only the solve window uses it, hence the cfg.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use gate_connect_core::proxy::SolveOutcome;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -1341,12 +1346,15 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
 /// recognise it too.
 const CF_CHALLENGE_WINDOW: &str = "cf-challenge";
 
-/// The last `cf_clearance` value fed into the engine. Lets the solve window
-/// tell a pre-existing still-good cookie in the webview store (feed it
-/// straight away with no user action - the engine value is memory-only, so
-/// this is the normal case right after an app restart) from the very cookie
-/// Cloudflare just challenged (wait for the solve to mint a new value;
-/// re-feeding the stale one would loop: inject -> challenge -> reopen).
+/// The last `cf_clearance` value fed into the engine, so the solve window can
+/// tell a freshly minted cookie from the very one Cloudflare just challenged
+/// (wait for the solve to mint a new value; re-feeding the stale one would
+/// loop: inject -> challenge -> reopen).
+///
+/// Now a backstop rather than the main event: the window is incognito, so its
+/// jar starts empty and anything appearing in it is new by construction. It
+/// still guards the case where Cloudflare hands back the same value it just
+/// rejected, which would otherwise re-enter that loop.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
 
@@ -1356,10 +1364,35 @@ static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
 /// close the window, and clear the solve latch. If the user closes the window
 /// first, just clear the latch - the next challenged turn re-opens it.
 ///
-/// The webview loads the live site the way the browser does (it honours the
-/// system proxy, and `/` is not a rewritten path, so the interstitial itself
-/// egresses from the user's IP) - the browser path is the one empirically
-/// proven to mint a cookie Cloudflare then accepts from Gate's IP.
+/// The webview loads the live site the way the browser does: it honours the
+/// system proxy, and its navigation is not a rewritten path, so the
+/// interstitial egresses from the user's own IP.
+///
+/// That is also this approach's ceiling: `cf_clearance` is bound to the
+/// address it was issued to, and this window can only ever mint one for the
+/// user's. Which bounds what the window is FOR rather than breaking it. The
+/// app's passthrough traffic leaves from that same address and is fixed by
+/// the cookie; the rewritten chat turn is a separate mechanism, challenged on
+/// its user-agent rather than its address, and handled upstream of here.
+///
+/// The captures behind both halves live with the flag they justify,
+/// `engine::website_shaped_rewritten_turns`. Read them there rather than
+/// restating them: the copy that used to sit in this comment spent a while
+/// claiming the opposite of what the captures actually show.
+///
+/// So this window is not the chat turn's fix and never was. Keep it anyway:
+/// without it the app's warm-up sequence 403s across the board, which kills
+/// the app before it can issue a chat turn at all.
+///
+/// What it does NOT do is render the interstitial the engine intercepted.
+/// That response is Cloudflare's answer to a POST the app made, and its
+/// challenge script only runs against the origin that issued it, so there is
+/// nothing to replay: the window instead makes its own request to the same
+/// host wearing the same user-agent, and lets Cloudflare challenge that.
+/// Which means the load has to be one Cloudflare will actually adjudicate -
+/// it goes to the challenged PATH for that reason (`proxy::cf_challenged_path`),
+/// and starts from an empty jar (see the `incognito` note below). Treat any
+/// change to either as load-bearing.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn open_cf_challenge_window(app: &tauri::AppHandle) {
     // A window from a previous attempt should not exist here - the observer
@@ -1372,18 +1405,53 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
     // orphan would also be invisible - the exact failure this avoids.
     // `destroy`, not `close`: close is asynchronous, so the build below
     // would race the teardown and fail on the still-taken label.
+    // Every exit below reports through this. It holds the latch the notify
+    // claimed on our behalf and releases it on drop, so a panic anywhere in
+    // the poll thread cannot leave challenge detection silently dead for the
+    // rest of the process.
+    let solve = gate_connect_core::proxy::CfChallengeSolve::new();
     if let Some(stale) = app.get_webview_window(CF_CHALLENGE_WINDOW) {
         eprintln!("[gate] challenge-solve: destroying an orphaned solve window");
         let _ = stale.destroy();
     }
+    // The origin, used to read the cookie jar. Host-scoped, so it finds
+    // `cf_clearance` whatever path the window is actually sitting on.
     let url: tauri::Url = "https://chatgpt.com"
         .parse()
         // Infallible: static, pre-validated URL.
         .expect("static chatgpt.com URL parses");
+    // What to LOAD: the path Cloudflare just challenged, not the host root.
+    //
+    // The rule here is scoped to a path rather than to the host - a capture
+    // put the managed challenge on
+    // `/backend-api/sentinel/chat-requirements/prepare` while `/` loaded
+    // normally - so loading the root asked a question Cloudflare had no reason
+    // to answer, and the window sat waiting for an interstitial that was never
+    // coming. Following the challenged turn's own path is what puts the window
+    // in front of the same rule the app hit.
+    //
+    // Falls back to the origin when nothing has been recorded yet, which
+    // should not happen (the window only opens after a challenge names a
+    // path) but is a sane thing to load rather than a reason to fail.
+    //
+    // Joined onto the parsed origin rather than concatenated into a string,
+    // and checked afterwards: the path crosses a process boundary through a
+    // global, and between the two no value it could hold moves this window
+    // off chatgpt.com.
+    let nav_url = gate_connect_core::proxy::cf_challenged_path()
+        .and_then(|path| url.join(&path).ok())
+        .filter(|candidate| candidate.host_str() == Some("chatgpt.com"))
+        .unwrap_or_else(|| url.clone());
+    // Behind the debug switch, unlike the rest of this flow's logging: a
+    // challenged path can name a conversation or a resource of the user's,
+    // where every other line here carries no user data at all.
+    if gate_connect_core::proxy::engine::debug_log() {
+        eprintln!("[gate] challenge-solve: loading {nav_url}");
+    }
     let builder = tauri::WebviewWindowBuilder::new(
         app,
         CF_CHALLENGE_WINDOW,
-        tauri::WebviewUrl::External(url.clone()),
+        tauri::WebviewUrl::External(nav_url),
     )
     .title("Verify ChatGPT connection")
     .inner_size(480.0, 640.0)
@@ -1398,27 +1466,66 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
     // that work, so it may simply not complete while concealed. The reveal is
     // the safety net either way - the worst case is that the window appears a
     // few seconds later and behaves as it always did.
-    .visible(false);
+    .visible(false)
+    // Empty jar, every time. This is what makes the window a CHALLENGE
+    // surface rather than a chat window.
+    //
+    // Sharing the app's normal webview profile looked harmless and is the
+    // whole bug: that profile already holds a live chatgpt.com session and a
+    // `cf_clearance` from an earlier solve, so Cloudflare waves the load
+    // through and the user is shown their own conversation list. Nothing is
+    // challenged, nothing new is minted, and the poll below then rejects the
+    // cookie it does find as unchanged (correctly - re-feeding the value that
+    // was just challenged would loop) and hangs until its deadline, which
+    // spends the long no-capture cooldown on an attempt that was never given
+    // anything to solve.
+    //
+    // Incognito starts with no cookies at all, so the same load has to be
+    // adjudicated from scratch: either Cloudflare issues the interstitial -
+    // which is the thing we are here to capture the answer to - or it does
+    // not, and the absence is then real evidence rather than an artifact of a
+    // cookie we brought with us. Anything it mints is new by construction,
+    // which is also what retires the unchanged-value stall.
+    //
+    // The cost is that this window is signed out. That is fine and slightly
+    // desirable: `cf_clearance` is bot-management state, issued to any client
+    // that passes the check, and has nothing to do with the account - so the
+    // window never needs, and now never sees, the user's session.
+    .incognito(true);
     // Wear the app's own user-agent: a stock webview is waved through without
     // a challenge, and `cf_clearance` only exists as the result of one, so
     // without this there is nothing to capture. See
-    // `proxy::chatgpt_app_user_agent`. Absent until the engine has seen an app
-    // request, in which case the platform default stands.
-    let app_user_agent = gate_connect_core::proxy::chatgpt_app_user_agent();
-    let builder = match app_user_agent.as_deref() {
-        Some(ua) => builder.user_agent(ua),
-        None => builder,
+    // `proxy::chatgpt_app_user_agent`.
+    //
+    // None recorded yet is a reason NOT to open a window. Wearing the
+    // platform default, the load classifies as some client other than the
+    // app, so the engine never records its challenge as ours: the reveal
+    // never fires, the window is never shown, and the attempt closes at the
+    // 20s deadline reporting "Cloudflare did not challenge Gate's page" while
+    // an unseen interstitial sits on screen. Reporting plainly that no window
+    // opened is the honest version of the same silence, and costs the same
+    // cooldown.
+    let Some(app_user_agent) = gate_connect_core::proxy::chatgpt_app_user_agent() else {
+        eprintln!(
+            "[gate] challenge-solve: no chatgpt.com app user-agent recorded yet, so a window \
+             could not be challenged as the app - not opening one"
+        );
+        solve.finish(SolveOutcome::WindowFailed);
+        return;
     };
-    eprintln!(
-        "[gate] challenge-solve window opening as {}",
-        app_user_agent.as_deref().unwrap_or("<platform default UA>")
-    );
+    let builder = builder.user_agent(&app_user_agent);
+    eprintln!("[gate] challenge-solve window opening as {app_user_agent}");
+    // Sampled before the build, which is what kicks the navigation off:
+    // everything the poll asks about that load is `*_since(started)`, so a
+    // challenge recorded in the gap between the two would read as "never
+    // challenged" and close the window unseen on a ten minute cooldown.
+    let started = std::time::Instant::now();
     // Built for its side effect; the poll thread below re-resolves the window
     // by label, so there is nothing to hold on to here.
     if let Err(e) = builder.build() {
         eprintln!("[gate] opening the challenge-solve window failed: {e}");
         report_backend_error("cf_challenge_window", format!("{e}"));
-        gate_connect_core::proxy::cf_challenge_solve_finished(false);
+        solve.finish(SolveOutcome::WindowFailed);
         return;
     }
     // Deliberately no `set_focus` here: the window is hidden, and the whole
@@ -1441,14 +1548,23 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         // Bounded, because the window can sit on a challenge it will never
         // clear: the poll would otherwise log a jar line every two seconds
         // for as long as the app runs. Generous enough for a person to read
-        // an interstitial and click through it.
-        let started = std::time::Instant::now();
+        // an interstitial and click through it. `started` comes from before
+        // the build, so nothing this thread asks about the load has a blind
+        // spot in front of it.
         let deadline = started + std::time::Duration::from_secs(180);
         // How long a non-interactive challenge gets to resolve unseen before
         // we assume it wants a human. Short enough that an interactive one
         // does not feel stalled, long enough to cover a page load plus the
         // challenge round trip on a slow link.
         let reveal_at = started + std::time::Duration::from_secs(8);
+        // How long to wait for Cloudflare to challenge the window's own load
+        // before concluding it never will. Past this with nothing challenged,
+        // the window is sitting on an ordinary chatgpt.com page and there is
+        // nothing for anyone to solve, so it closes without ever being shown -
+        // the alternative is putting the ChatGPT site in front of someone
+        // whose message just went through fine. Comfortably longer than
+        // `reveal_at` so a slow load still gets its chance.
+        let no_challenge_at = started + std::time::Duration::from_secs(20);
         let mut revealed = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1456,7 +1572,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // closed it). Release the latch, reporting no capture so the
             // cooldown keeps the next challenge from reopening immediately.
             let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
-                gate_connect_core::proxy::cf_challenge_solve_finished(false);
+                solve.finish(SolveOutcome::Unsolved);
                 return;
             };
             if std::time::Instant::now() >= deadline {
@@ -1464,17 +1580,69 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
                     "[gate] challenge-solve: no cf_clearance after 3 minutes, giving up on this attempt"
                 );
                 let _ = window.close();
-                gate_connect_core::proxy::cf_challenge_solve_finished(false);
+                solve.finish(SolveOutcome::Unsolved);
+                return;
+            }
+            let navigation_challenged =
+                gate_connect_core::proxy::cf_navigation_challenged_since(started);
+            // Never challenged, so there is nothing here to solve. Close
+            // without ever showing it: the window would only display an
+            // ordinary chatgpt.com page to someone who is not expecting one.
+            // Reported as no capture, which is honest and also starts the
+            // cooldown - if this host is not challenging our navigations, the
+            // next app turn should not reopen the window to find out again.
+            //
+            // Which of the two silences this is decides what the user is told,
+            // because they have different fixes: a page Cloudflare declined to
+            // challenge means the window is asking the wrong question, while a
+            // load the engine never saw means the webview is not going through
+            // the proxy at all and no challenge could ever be observed.
+            if !navigation_challenged && std::time::Instant::now() >= no_challenge_at {
+                let outcome = if gate_connect_core::proxy::cf_navigation_seen_since(started) {
+                    SolveOutcome::NotChallenged
+                } else {
+                    SolveOutcome::NotProxied
+                };
+                eprintln!(
+                    "[gate] challenge-solve: nothing to solve ({outcome:?}) - closing without \
+                     showing the window"
+                );
+                let _ = window.close();
+                solve.finish(outcome);
                 return;
             }
             // Nothing captured while hidden: either the challenge wants a
             // click, or being concealed stopped it running. Both are fixed by
             // putting it in front of the user, and this is the one moment in
             // the flow where taking focus is warranted.
-            if !revealed && std::time::Instant::now() >= reveal_at {
+            //
+            // Gated on the window actually HAVING a challenge on screen. "No
+            // cookie yet" was the old trigger and it cannot tell an unsolved
+            // interstitial from a page that loaded perfectly well, so a turn
+            // that succeeded could still be followed by the ChatGPT site
+            // appearing over the user's work a few seconds later.
+            //
+            // `set_focus` alone does not always do it. Gate is a background
+            // process at this point - the user is in the ChatGPT app, which is
+            // what got challenged - and neither platform lets a background app
+            // take the foreground on request: Windows refuses and flashes the
+            // taskbar button instead, macOS needs `orderFrontRegardless` (see
+            // the popover's own helper, written for this same reason).
+            //
+            // Kept to `show` + `set_focus` plus that macOS helper, which
+            // touches AppKit directly rather than the runtime. Raising the
+            // window topmost from here was tried and rejected: each such call
+            // dispatches to the main thread and blocks, and this thread
+            // exists precisely because `cookies_for_url` deadlocks on Windows
+            // when the main thread is busy (wry#583). If a raise turns out to
+            // be needed it belongs on the BUILDER, where it costs no runtime
+            // dispatch.
+            if !revealed && navigation_challenged && std::time::Instant::now() >= reveal_at {
                 eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
                 let _ = window.show();
                 let _ = window.set_focus();
+                #[cfg(target_os = "macos")]
+                order_front_regardless(&window);
                 revealed = true;
             }
             let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
@@ -1516,7 +1684,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             gate_connect_core::proxy::manager().refresh_cf_clearance(&value);
             eprintln!("[gate] challenge-solve: captured cf_clearance, fed to the engine");
             let _ = window.close();
-            gate_connect_core::proxy::cf_challenge_solve_finished(true);
+            solve.finish(SolveOutcome::Captured);
             return;
         }
     });
@@ -1861,10 +2029,12 @@ pub fn run() {
                     }
                 });
 
-                // ChatGPT app Cloudflare-challenge fix: the engine detects
-                // `cf-mitigated: challenge` on a rewritten chatgpt.com app
-                // turn (the app shell can't render the interstitial) and this
-                // observer opens a one-time solve webview at the real host;
+                // ChatGPT app Cloudflare-challenge fix: the engine detects a
+                // challenge answering a chatgpt.com app turn - marked
+                // `cf-mitigated: challenge`, or an unmarked 403/503 of HTML,
+                // rewritten or passthrough alike - and, because the app shell
+                // cannot render an interstitial, this observer opens a
+                // one-time solve webview at the path that was challenged;
                 // the captured `cf_clearance` is fed back into the engine and
                 // merged into subsequent app turns. Off-thread because the
                 // observer fires on the engine thread mid-response and must
