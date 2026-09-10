@@ -42,10 +42,11 @@
 //! binaries now rather than Node entrypoints. Measured at 80ms cold and under a
 //! millisecond warm.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 /// How long a `--version` may take before it is abandoned.
 ///
@@ -134,41 +135,20 @@ pub fn resolve_binary(well_known: &[&str], names: &[&str]) -> Option<PathBuf> {
 /// decide what we execute.
 ///
 /// stdin is null so a tool that would prompt gets EOF instead of hanging on a
-/// terminal it does not have; stderr is discarded because the version is on
-/// stdout and an update notice on stderr is not our business.
+/// terminal it does not have; stderr is captured and dropped, because the
+/// version is on stdout and an update notice on stderr is not our business.
+///
+/// The bound is [`crate::primitives::output_bounded`], which is this loop and
+/// the two `ca_*` copies of it written once. What it adds here is the backoff:
+/// the hand-rolled version polled at a flat 10ms, and a probe that answers in
+/// two is now not held for the other eight.
 pub fn binary_version(path: &Path) -> Option<String> {
-    let mut child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let deadline = Instant::now() + VERSION_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    // Killed AND reaped: dropping a `Child` does not wait, and
-                    // a zombie per probe would accumulate for the life of the
-                    // app.
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    }
-
-    // Read only after exit. The output is a few bytes, so the pipe cannot have
-    // filled and blocked the child before it got here.
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    parse_version(&out)
+    let mut cmd = Command::new(path);
+    cmd.arg("--version");
+    // Killed AND reaped inside the helper: dropping a `Child` does not wait,
+    // and a zombie per probe would accumulate for the life of the app.
+    let out = crate::primitives::output_bounded(cmd, VERSION_TIMEOUT).ok()??;
+    parse_version(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// Pull a version out of whatever the tool printed.
