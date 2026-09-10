@@ -34,6 +34,7 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
+    prev_seam: Option<String>,
     prev_xdg_config: Option<String>,
     prev_xdg_data: Option<String>,
 }
@@ -52,14 +53,24 @@ impl TempHome {
         ));
         fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("HOME").ok();
+        let prev_seam = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         let prev_xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         std::env::set_var("HOME", &dir);
+        // The seam, not just HOME. `env::tool_path_override` ignores every
+        // published tool-dir variable while this is set, which is the only thing
+        // that stops an ambient `CODEX_HOME` or `OPENCODE_CONFIG_DIR` - Orca
+        // exports both - from punching straight through the temp home. Without
+        // it this suite read and OVERWROTE the developer's real Codex
+        // `auth.json` and `config.toml`. The XDG pins below are kept for the
+        // same belt-and-braces reason they were added, and are now redundant.
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
         TempHome {
             dir,
             prev,
+            prev_seam,
             prev_xdg_config,
             prev_xdg_data,
         }
@@ -75,6 +86,7 @@ impl Drop for TempHome {
             }
         }
         restore("HOME", &self.prev);
+        restore("GATE_CONNECT_TEST_HOME", &self.prev_seam);
         restore("XDG_CONFIG_HOME", &self.prev_xdg_config);
         restore("XDG_DATA_HOME", &self.prev_xdg_data);
         let _ = fs::remove_dir_all(&self.dir);

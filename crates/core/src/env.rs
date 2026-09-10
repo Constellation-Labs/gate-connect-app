@@ -228,6 +228,35 @@ pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
         .expect("app-support override mutex poisoned") = dir;
 }
 
+/// A tool's own config-dir override, unless a test has redirected the home.
+///
+/// The published overrides (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, …) must win in
+/// production: a harness that reads its config from elsewhere has to be edited
+/// and read *there*, or Gate Connect writes a file the CLI never opens and then
+/// reports Connected off that write (AG-674).
+///
+/// They must NOT win over the test-home seam. `GATE_CONNECT_TEST_HOME` exists so
+/// a test can redirect every per-user path into a scratch directory, and an
+/// override set in the developer's environment silently punches through it: the
+/// test then reads and WRITES the real tool config. That is not hypothetical.
+/// `codex_billing_mode.rs` scoped `HOME` and the seam but not `CODEX_HOME`, and
+/// on a machine where something exports it (Orca sets a Codex runtime home) the
+/// suite read the developer's live `auth.json` - so `payg_connects_with_no_auth_
+/// json_where_byok_cannot` failed, because BYOK found a login it was asserting
+/// the absence of - and, far worse, `write_auth_json` and `connect` overwrote
+/// that same `auth.json` and `config.toml` with test fixtures.
+///
+/// [`opencode_config_dir`] already carried this exact guard for `XDG_CONFIG_HOME`,
+/// with the same reasoning written out. It was right; it was just applied to two
+/// variables instead of all eight. Every override goes through here now, so the
+/// next one added cannot forget it.
+fn tool_path_override(var: &str) -> Option<PathBuf> {
+    if test_home_override().is_some() {
+        return None;
+    }
+    env_path(var)
+}
+
 /// `~/.claude` - Claude Code's user config root. Same on all platforms;
 /// Claude Code itself reads `~/.claude/settings.json` regardless of OS.
 ///
@@ -235,7 +264,7 @@ pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
 /// invocation - so a Gate Connect that ignored it would edit a file the CLI
 /// never reads and then report Connected off that write (AG-674).
 pub fn claude_code_config_dir() -> Result<PathBuf> {
-    if let Some(dir) = env_path("CLAUDE_CONFIG_DIR") {
+    if let Some(dir) = tool_path_override("CLAUDE_CONFIG_DIR") {
         return Ok(dir);
     }
     Ok(home()?.join(".claude"))
@@ -276,7 +305,7 @@ pub fn claude_code_settings_path() -> Result<PathBuf> {
 /// anything else, so it is the directory the harness actually loads. Honoured
 /// here for the same reason as `CLAUDE_CONFIG_DIR` above (AG-674).
 pub fn codex_config_dir() -> Result<PathBuf> {
-    if let Some(dir) = env_path("CODEX_HOME") {
+    if let Some(dir) = tool_path_override("CODEX_HOME") {
         return Ok(dir);
     }
     Ok(home()?.join(".codex"))
@@ -312,13 +341,11 @@ pub fn codex_auth_json_path() -> Result<PathBuf> {
 /// must not pick up the developer's real `XDG_CONFIG_HOME` and write outside its
 /// scratch directory.
 pub fn opencode_config_dir() -> Result<PathBuf> {
-    if let Some(dir) = env_path("OPENCODE_CONFIG_DIR") {
+    if let Some(dir) = tool_path_override("OPENCODE_CONFIG_DIR") {
         return Ok(dir);
     }
-    if test_home_override().is_none() {
-        if let Some(xdg) = env_path("XDG_CONFIG_HOME") {
-            return Ok(xdg.join("opencode"));
-        }
+    if let Some(xdg) = tool_path_override("XDG_CONFIG_HOME") {
+        return Ok(xdg.join("opencode"));
     }
     Ok(home()?.join(".config/opencode"))
 }
@@ -335,7 +362,7 @@ pub fn opencode_config_dir() -> Result<PathBuf> {
 /// file. A project config touching the same provider options silently overrides
 /// what we write here, and no amount of care in this function detects it.
 pub fn opencode_config_path() -> Result<PathBuf> {
-    if let Some(path) = env_path("OPENCODE_CONFIG") {
+    if let Some(path) = tool_path_override("OPENCODE_CONFIG") {
         return Ok(path);
     }
     Ok(opencode_config_dir()?.join("opencode.json"))
@@ -366,10 +393,8 @@ pub fn opencode_managed_config_path() -> PathBuf {
 /// authenticated and is therefore worth redirecting; it writes no credential of
 /// its own. Honors `XDG_DATA_HOME` for the same reason as the config dir.
 pub fn opencode_auth_path() -> Result<PathBuf> {
-    if test_home_override().is_none() {
-        if let Some(xdg) = env_path("XDG_DATA_HOME") {
-            return Ok(xdg.join("opencode/auth.json"));
-        }
+    if let Some(xdg) = tool_path_override("XDG_DATA_HOME") {
+        return Ok(xdg.join("opencode/auth.json"));
     }
     Ok(home()?.join(".local/share/opencode/auth.json"))
 }
@@ -387,10 +412,7 @@ pub fn openclaw_config_dir() -> Result<PathBuf> {
 /// file OpenClaw actually reads. The test-home seam still applies to the
 /// default path via [`openclaw_config_dir`].
 pub fn openclaw_config_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("OPENCLAW_CONFIG_PATH")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-    {
+    if let Some(path) = tool_path_override("OPENCLAW_CONFIG_PATH") {
         return Ok(path);
     }
     Ok(openclaw_config_dir()?.join("openclaw.json"))
@@ -404,10 +426,7 @@ pub fn openclaw_config_path() -> Result<PathBuf> {
 /// - Linux/macOS: `~/.hermes`
 /// - Windows: `%LOCALAPPDATA%\hermes`
 pub fn hermes_config_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("HERMES_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-    {
+    if let Some(path) = tool_path_override("HERMES_HOME") {
         return Ok(path);
     }
     #[cfg(target_os = "windows")]
@@ -488,6 +507,75 @@ mod tests {
         with_var("CODEX_HOME", None, || {
             assert!(codex_config_dir().unwrap().ends_with(".codex"));
         });
+    }
+
+    /// The test-home seam outranks every published tool-dir override.
+    ///
+    /// The regression this pins did real damage. `codex_billing_mode.rs` scoped
+    /// `HOME` and `GATE_CONNECT_TEST_HOME` but not `CODEX_HOME`, and on a machine
+    /// that exports one (Orca gives Codex its own runtime home) the suite
+    /// resolved Codex's paths to the developer's live directory: it read their
+    /// real `auth.json` - which made a test asserting "no login exists" fail,
+    /// because one did - and then overwrote that file and `config.toml` with its
+    /// own fixtures.
+    ///
+    /// Both halves are asserted here, because they are the two ways to get this
+    /// wrong: the override must still win in production (AG-674), and must lose
+    /// the moment a test has redirected the home.
+    #[test]
+    fn the_test_home_seam_outranks_the_tool_dir_overrides() {
+        let _lock = path_env_lock();
+
+        // Production: the override decides, exactly as AG-674 requires.
+        with_var("CODEX_HOME", Some("/tmp/gate-codex-elsewhere"), || {
+            with_var("GATE_CONNECT_TEST_HOME", None, || {
+                assert_eq!(
+                    codex_config_dir().unwrap(),
+                    PathBuf::from("/tmp/gate-codex-elsewhere"),
+                    "the published override must still win when no test is scoping paths"
+                );
+            });
+        });
+
+        // Under the seam: the override is ignored and the path stays inside the
+        // scratch home. Anything else and a test writes to the real tool config.
+        let scratch = std::env::temp_dir().join("gate-seam-outranks-test");
+        with_var("CODEX_HOME", Some("/tmp/gate-codex-elsewhere"), || {
+            with_var(
+                "GATE_CONNECT_TEST_HOME",
+                Some(&scratch.to_string_lossy()),
+                || {
+                    let dir = codex_config_dir().unwrap();
+                    assert!(
+                        dir.starts_with(&scratch),
+                        "CODEX_HOME escaped the test home: {}",
+                        dir.display()
+                    );
+                },
+            );
+        });
+
+        // The same rule for every other published override, so a new one cannot
+        // be added through `env_path` and quietly reopen this.
+        for var in [
+            "CLAUDE_CONFIG_DIR",
+            "OPENCODE_CONFIG_DIR",
+            "OPENCLAW_CONFIG_PATH",
+            "HERMES_HOME",
+        ] {
+            with_var(var, Some("/tmp/gate-elsewhere"), || {
+                with_var(
+                    "GATE_CONNECT_TEST_HOME",
+                    Some(&scratch.to_string_lossy()),
+                    || {
+                        assert!(
+                            tool_path_override(var).is_none(),
+                            "{var} punched through the test home"
+                        );
+                    },
+                );
+            });
+        }
     }
 
     /// The layer above the file we write has a fixed, machine-wide path on every
