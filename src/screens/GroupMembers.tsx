@@ -57,7 +57,12 @@ function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | u
  * naming the wrong vault undoes the reassurance they exist to give. Takes the
  * group because one branch has to look sideways at its siblings: see
  * `configSiblingOnHost`. */
-function explain(member: GroupMember, platform: Platform, group: Group): string {
+function explain(
+  member: GroupMember,
+  platform: Platform,
+  group: Group,
+  browserChannel: boolean,
+): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
@@ -92,15 +97,16 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     // reassurance: these rows are the ones where transparency about the
     // mechanism IS the product.
     //
-    // Which clients that covers is the platform's answer, not ours, so the
-    // browser half goes through `browserScopeNote`, which is empty wherever
-    // there is nothing to claim - on Linux the proxy is wired through
-    // environment variables a browser never reads, and the host sentence has
-    // already bounded the scope without it. Sentences, not clauses, so dropping
-    // one leaves the rest reading normally.
+    // Which clients that covers is the platform's *and the session's* answer,
+    // not ours, so the browser half goes through `browserScopeNote` with the
+    // `browser_proxy_channel` reading. It is empty wherever there is nothing to
+    // claim - a Linux session with no GNOME proxy schema, where Gate writes
+    // only environment variables a running browser never re-reads - and the
+    // host sentence has already bounded the scope without it. Sentences, not
+    // clauses, so dropping one leaves the rest reading normally.
     if (member.chat) {
       const hosts = member.domain?.hosts.join(", ") ?? "";
-      const scope = browserScopeNote(platform);
+      const scope = browserScopeNote(platform, browserChannel);
       const covers = member.routed
         ? `That covers everything on ${hosts}.`
         : `Switch it on and Gate records and inspects that traffic - everything on ${hosts}.`;
@@ -224,6 +230,7 @@ export function GroupMembers({
   onTrustCa,
   trustPending,
   proxyOn,
+  browserChannel,
   onEnableRouting,
   authMode,
 }: {
@@ -241,6 +248,11 @@ export function GroupMembers({
   /** Whether the engine is running. A member can be switched on and still not
    * route, which is what the master-off state is. */
   proxyOn: boolean;
+  /** Whether the session has the proxy channel a running browser reads, so a
+   * chat row's copy can say whether it covers the browser. A reading
+   * (`ProxyState.browser_proxy_channel`), not a platform guess: on Linux it is
+   * false wherever GNOME's proxy schema is absent. */
+  browserChannel: boolean;
   /** The remedy for the master-off state, for the same reason `onTrustCa`
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
@@ -643,7 +655,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform, group)}
+                    {explain(member, platform, group, browserChannel)}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide

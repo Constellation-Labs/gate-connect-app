@@ -111,6 +111,24 @@ const SERIES = [
   { key: "redacted", label: "Redacted", className: "bg-chart-redacted" },
 ] as const;
 
+/**
+ * The same four series in the order the BAR stacks them, bottom to top.
+ *
+ * `SERIES` above is the legend's order and the tooltip's, which is how the
+ * frame lists them (`864:3597`: Total messages, Blocked, Flagged, Redacted).
+ * The drawn bar is not that order: `706:10515` renders red/500, amber/400,
+ * violet/500, blue/400 from the top down, so redaction sits directly on the
+ * blue total and blocked caps the stack. Blocked and redacted are swapped
+ * between the two surfaces, and the code had been reusing one order for both -
+ * which put redaction on top, where the eye reads the most severe band.
+ */
+const STACK = [
+  SERIES[0], // total, the blue base
+  SERIES[3], // redacted
+  SERIES[2], // flagged
+  SERIES[1], // blocked, on top
+] as const;
+
 /** What any counter reads with no figure behind it.
  *
  *  Lowercase, as `228:89343` and `272:1728` render it - the tile's label above
@@ -203,7 +221,11 @@ function Stat({
         onSelect ? " transition hover:bg-gray-50" : ""
       }`}
     >
-      <span className="block font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+      {/* `gray/600` #4b5563, the raw ramp the tile's own variable names
+        * (`121:34785`), not `base/muted-foreground` #6b7280. One step darker,
+        * and the label sits above the figure rather than beside it, so the
+        * quieter grey read as a caption for something else. */}
+      <span className="block font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-gray-600">
         {label}
       </span>
       <span className="mt-2 flex items-baseline gap-2">
@@ -314,13 +336,20 @@ export function MessagesChart({
           20px that predated it. */}
       <div
         aria-hidden
-        className="relative mt-5 flex h-28 items-end justify-between gap-2"
+        // 5.5rem = 88px, the drawn plot height excluding the tick row: the
+        // `bars` frame is 108 tall and the tallest stack inside it is 88, with
+        // the 20px tick row below (`706:10513` -> `706:10564`, and the same 88
+        // in `864:3510`). This was `h-28`, 112px, which stretched every bar by
+        // a quarter against identical proportional data. In rem so
+        // `useTextScale` still carries it.
+        className="relative mt-5 flex h-[5.5rem] items-end justify-between gap-2"
         onMouseLeave={() => setHovered(null)}
       >
         {buckets.map((bucket, i) => (
-          // `flex-col-reverse` so the first series renders at the *bottom* of
-          // the stack: the design bases each bar on the blue total and piles
-          // blocked, flagged and redacted on top of it.
+          // `flex-col-reverse` so `STACK`'s first entry renders at the *bottom*
+          // of the stack: the design bases each bar on the blue total and piles
+          // redacted, flagged and blocked on top of it, in that order. See
+          // `STACK` for why that is not `SERIES`' order.
           //
           // `h-full` on the hit target, not just the bar: a quiet hour is a
           // sliver two pixels tall, and hovering it should not require aim.
@@ -329,7 +358,7 @@ export function MessagesChart({
             className="flex h-full w-8 flex-col-reverse"
             onMouseEnter={() => setHovered(i)}
           >
-            {SERIES.map(({ key, className }) => {
+            {STACK.map(({ key, className }) => {
               const value = bucket[key];
               if (!value) return null;
               return (
@@ -358,7 +387,12 @@ export function MessagesChart({
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
-            className="w-8 text-center text-base-2xs text-base-muted-foreground"
+            // `leading-4`: the drawn tick is a 16px-tall text node at 10px
+            // (`706:10520`, `864:3517`). `text-base-2xs` carries no
+            // line-height, so without this the tick inherits preflight's 1.5
+            // and boxes at 15px, shifting the whole row up a pixel against the
+            // 20px the frame leaves under the bars.
+            className="w-8 text-center text-base-2xs leading-4 text-base-muted-foreground"
           >
             {hourTick(bucket.label)}
           </span>

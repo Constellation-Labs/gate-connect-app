@@ -25,19 +25,24 @@ function hostOf(url: string): string {
  *  persisted first (defaulting to DEFAULT_GATEWAY_BASE_URL) so the backend can
  *  record the chosen auth mode. Dev mode targets another environment before
  *  connecting. `initialGateway` pre-points at a previously-selected gateway;
- *  `reauth` swaps the copy for an expired-session prompt (OAuth account whose
- *  silent refresh failed). */
+ *  `reauth` swaps the copy for a returning-user prompt, and `deliberate` says
+ *  which kind of return it was: a session that died, or one the user ended. */
 export function FirstRun({
   onConnected,
   initialGateway,
   startOnKey,
   reauth = false,
+  deliberate = false,
 }: {
   onConnected: () => void;
   initialGateway?: string;
   /** Open directly on the API-key form. */
   startOnKey?: boolean;
   reauth?: boolean;
+  /** The session ended because the user asked it to, rather than expiring.
+   *  Same pane either way; only the sentence below the heading changes. See
+   *  `preferences::signed_out_deliberately`. */
+  deliberate?: boolean;
 }) {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -119,7 +124,11 @@ export function FirstRun({
             with nothing to orient by. */}
         <h1 className="mt-3 text-gc-panel-title font-semibold tracking-[-0.02em] text-gc-navy">
           {reauth ? (
-            "Welcome back"
+            deliberate ? (
+              "You are signed out"
+            ) : (
+              "Welcome back"
+            )
           ) : (
             <>
               Welcome to Gate <span className="text-gc-accent">Connect</span>
@@ -127,8 +136,15 @@ export function FirstRun({
           )}
         </h1>
         <p className="mt-1.5 max-w-[290px] text-gc-body-sm leading-[1.45] text-gc-ink-3">
+          {/* "Your session expired" was said after every route to this screen,
+              including the three that are not expiries: the Settings sign-out,
+              the org-picker dead end, and "use an API key instead" - the last
+              two of which the app performs itself, so it was blaming an
+              authentication failure for its own navigation. */}
           {reauth
-            ? "Your session expired. Sign in again to keep routing your desktop agents through Gate."
+            ? deliberate
+              ? "Sign in again whenever you want to route your desktop agents through Gate."
+              : "Your session expired. Sign in again to keep routing your desktop agents through Gate."
             : "Sign in to route your desktop agents through Gate, right from the menu bar."}
         </p>
       </div>

@@ -192,8 +192,18 @@ test.describe("new UI: the two ways back to first run", () => {
     const calls = await app.calls();
     expect(calls.some((c) => c.cmd === "clear_account")).toBe(false);
 
-    // Account intact, session gone: that is the reauth prompt, not a welcome.
-    await expect(app.page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+    // Account intact, session gone, and the user is the one who ended it - so
+    // the pane says that rather than reporting an expiry. This assertion used
+    // to require "Session expired", which is how the defect survived: the check
+    // and the bug agreed. The fake now records the reason the real
+    // `oauth_sign_out` records, so the two states are distinguishable here at
+    // all. Its opposite number is "an expired session asks to sign in again"
+    // above, which boots straight into a dead session and must keep the expiry
+    // wording.
+    await expect(
+      app.page.getByRole("heading", { name: "You are signed out" }),
+    ).toBeVisible();
+    await expect(app.page.getByText("Your session expired")).toHaveCount(0);
   });
 
   /**
@@ -223,8 +233,16 @@ test.describe("new UI: the two ways back to first run", () => {
     await app.page.getByRole("button", { name: "Yes, disconnect Gate" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("Still using Gate’s values")).toBeVisible();
+    // "Still pointing at Gate", not "Still using Gate's values", and no claim
+    // that a restore failed. Sign-out keeps the configs deliberately, so the
+    // heading, the tone and the detail line all say what happened rather than
+    // grading it - the report used to open "Some tools were left as they were"
+    // over "The teardown could not put these back", which accused the app of
+    // failing at a job it had decided not to do. See `TeardownReason`.
+    await expect(dialog.getByText("You are signed out")).toBeVisible();
+    await expect(dialog.getByText("Still pointing at Gate")).toBeVisible();
     await expect(dialog.getByText("Claude Code")).toBeVisible();
+    await expect(dialog.getByText("could not put these back")).toHaveCount(0);
   });
 
   test("an API-key account is offered reset but not disconnect", async ({ boot }) => {

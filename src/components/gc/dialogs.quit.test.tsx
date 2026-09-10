@@ -18,6 +18,7 @@ function renderChooser(overrides: Partial<Parameters<typeof QuitDialog>[0]> = {}
   return render(
     <QuitDialog
       tools={["Claude Code", "Codex"]}
+      platform="macos"
       choice="disconnect"
       onChoose={noop}
       onContinue={noop}
@@ -90,7 +91,12 @@ describe("the safe-to-close confirmation", () => {
     );
     expect(
       screen.getByText(
-        "Tools are disconnected and their previous settings are restored. Setup will be waiting the next time you open the app.",
+        // Not the drawn "Setup will be waiting the next time you open the
+        // app": quitting with a disconnect puts tool configs back and leaves
+        // the session, the org and the certificate alone, so the drawn sentence
+        // described a reset that does not happen. Third standing copy
+        // exception - see CLAUDE.md before "fixing" this back to the frame.
+        "Tools are disconnected and their previous settings are restored. You will still be signed in the next time you open the app.",
       ),
     ).toBeTruthy();
   });

@@ -260,6 +260,28 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     if (backend?.ca_nss_trusted === false) {
       lines.push(row("browser store", "CA MISSING (chromium)"));
     }
+    // What the write itself saw, which is the only place the cause lives. The
+    // line above is `all()` over the stores and probed now, so it cannot
+    // separate "certutil is not installed" from "one database refused" - and
+    // the note the app raises on a failed write tells the reader this report
+    // names which store and why. Silent before any write in this process, and
+    // silent on a clean one: `trusted` is what the line above already says.
+    const nssWrite = backend?.ca_nss_write ?? null;
+    if (nssWrite && nssWrite.outcome !== "trusted") {
+      lines.push(
+        row(
+          "browser write",
+          nssWrite.outcome === "tools_missing"
+            ? "FAILED - certutil not installed"
+            : "FAILED - a store refused",
+        ),
+      );
+      // One line per store, because the fix differs per store and a count would
+      // send the reader back to guessing. `reason` is certutil's own words.
+      for (const refusal of nssWrite.refusals) {
+        lines.push(row("  refused", `${refusal.store} (${refusal.reason})`));
+      }
+    }
     lines.push(
       row(
         "env export",

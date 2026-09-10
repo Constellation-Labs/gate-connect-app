@@ -1,5 +1,5 @@
-import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
-import type { Platform } from "./platform";
+import type { ProviderState, ProxyDomain, ProxyState, Tool, Verdict } from "./api";
+import { browserScopeNote, trustStoreName, type Platform } from "./platform";
 
 /**
  * Home's ledger groups everything routable by the model family it belongs to
@@ -175,6 +175,128 @@ export function proxyReopenAdvice(
   platform: Platform,
 ): typeof PROXY_REOPEN_ADVICE | undefined {
   return kind === "proxy" && platform === "linux" ? PROXY_REOPEN_ADVICE : undefined;
+}
+
+/**
+ * What a browser that was open across the *first* enable cannot know yet.
+ *
+ * A different fact from [`PROXY_REOPEN_ADVICE`], and the two must not be merged:
+ * that one is about the proxy pointer, which a browser on the desktop's own
+ * settings re-reads live, so it would tell a Firefox user to restart for no
+ * reason. This is about the trust store, which is read once at process start.
+ * `ca_linux.rs` installs the CA into the per-user NSS databases Chromium reads
+ * and into the system bundle Firefox picks up through p11-kit, and neither is
+ * consulted again by a running process - so a browser that was open when the CA
+ * landed fails every intercepted host with `ERR_CERT_AUTHORITY_INVALID` and
+ * looks like Gate breaking the web rather than like a step left to do.
+ *
+ * Linux-only for the same reason as the advice above, and the same kind of
+ * reason: macOS trusts in the login keychain and Windows in the per-user root
+ * store, both of which the system trust evaluation re-reads for a running
+ * process. Naming browsers there would be caution rather than mechanism. This
+ * is mechanism.
+ *
+ * Said once, on the transition, not standing: it is only true of processes older
+ * than the trust change, and a note that stayed up would keep telling a user who
+ * has already reopened everything to reopen it. The shell drives it off
+ * `ca_trusted` going false to true.
+ *
+ * **Which sentence it says is a reading, not a guess.** `nss` is
+ * `ProxyState.ca_nss_trust`, recorded by the write itself, and each of its
+ * values wants something different from the user - which is why it is not a
+ * boolean. `tools_missing`: nothing was written anywhere, and installing a
+ * package is the fix. `write_failed`: `certutil` is there and a store refused,
+ * so a package install changes nothing and the report is what names the store.
+ * `trusted`, or no reading at all, leaves the reopen - the one thing Gate
+ * genuinely cannot check, because it cannot see a browser process.
+ *
+ * The first version of this said "false means install a package". That is wrong
+ * for a locked or unwritable store, and it withheld the reopen sentence from a
+ * user whose other stores took the CA and only needed exactly that - a loop
+ * with no exit, prescribed at the moment they were reading closely.
+ *
+ * **What it asks for has to be reachable.** Not "switch routing on again":
+ * `manager_linux::enable` returns early when the client is already connected,
+ * *before* `ca::ensure_trusted`, and this note is raised from inside the enable
+ * that just succeeded - so routing is already on while the user reads it, and
+ * re-enabling runs nothing. Off and on again does reach the write, because
+ * `ensure_trusted` deliberately calls `ensure_trusted_nss` outside its
+ * `is_trusted` short-circuit.
+ *
+ * The failure cases are still raised on the transition rather than standing,
+ * even though they describe conditions that persist. That is a deliberate
+ * limit: a standing notice needs somewhere to live and something to retire it,
+ * and the honest home for "Chromium cannot see the CA" is the certificate
+ * section in Settings rather than a banner nobody can clear. Until it has one,
+ * the diagnostics report is where the state is legible.
+ */
+export function browserTrustRestartAdvice(
+  platform: Platform,
+  nss: ProxyState["ca_nss_trust"],
+): { title: string; body: string } | undefined {
+  if (platform !== "linux") return undefined;
+  const store = trustStoreName(platform);
+  // Named one by one rather than as "Chromium-based", which is a fact about
+  // engines and not a thing anybody has in their dock.
+  const family = "Chrome, Chromium, Brave, Edge and Vivaldi";
+  if (nss === "tools_missing") {
+    return {
+      title: "Chromium-based browsers can’t see the certificate",
+      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one, and Gate needs certutil to write it. Install it (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools), then turn routing off and on again. Firefox and command-line tools are unaffected.`,
+    };
+  }
+  if (nss === "write_failed") {
+    return {
+      title: "One browser certificate store refused the certificate",
+      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why. Any browser that did take it still needs a full quit and reopen; Firefox and command-line tools are unaffected.`,
+    };
+  }
+  return {
+    title: "Browsers already open need reopening",
+    body: `Gate has added its certificate to your ${store}. A browser reads that when it starts, so one that was already open will reject Gate’s traffic until you quit it completely and open it again.`,
+  };
+}
+
+/**
+ * What a chat row's switch covers, for the pane that opens on it.
+ *
+ * The window shell draws a row's copy as one sentence (`describeMember`, through
+ * `AppPane`'s `description`), which is enough for "App" and "CLI" and not enough
+ * for these: the switch inspects a credential the user is already signed in with
+ * and it matches on HOST rather than on the app that made the request, so it
+ * covers clients the row does not name. The popover said this on the row itself
+ * (`screens/GroupMembers.tsx`' `explain`) and the window said it nowhere, which
+ * left the fact in the shell that is no longer the default - and the browser
+ * half, which is the part a user most needs before flipping a switch that reads
+ * a session cookie, reaching nobody.
+ *
+ * Not shared with that `explain`: its wording turns on `routed` and ends with a
+ * sentence about the family switch above it, and there is no family switch above
+ * anything on a pane. The one thing both shells must not say differently is the
+ * browser claim, and both take that from `browserScopeNote`.
+ *
+ * Undefined for every other row, including a proxy row that is not a chat
+ * surface: those are already covered by their own description and the host is
+ * not a claim about someone's browser.
+ */
+export function chatScopeNote(
+  member: GroupMember,
+  platform: Platform,
+  browserChannel: boolean,
+): { title: string; body: string } | undefined {
+  if (!member.chat) return undefined;
+  const hosts = member.domain?.hosts.join(", ");
+  if (!hosts) return undefined;
+  return {
+    title: "What this switch covers",
+    body: [
+      `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`,
+      `It is matched on host, so it covers everything on ${hosts}.`,
+      browserScopeNote(platform, browserChannel),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  };
 }
 
 export type MemberAttention =

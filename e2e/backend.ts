@@ -146,6 +146,11 @@ export interface BackendState {
   securityFeed: {
     state: "live" | "reconnecting" | "offline";
     events: SecurityEventFixture[];
+    /** Whether the catch-up read for events from before this connection
+        succeeded. Defaults to true - the feed and its history fail
+        independently, so a spec that wants the LIVE-with-no-history case sets
+        this false and leaves `state` at "live". */
+    historyOk?: boolean;
   };
   preferences: {
     routing_health_notifications: boolean;
@@ -162,6 +167,11 @@ export interface BackendState {
     /** The user's own name for this device, or null when it follows the
         hostname. The override, exactly as `preferences.json` stores it. */
     device_name: string | null;
+    /** Whether the last sign-out was one the user asked for. False is the
+        default because it is the expiry wording, which is what the sign-in
+        screen said before this existed; a spec that wants the deliberate
+        sign-out copy sets it true. */
+    signed_out_deliberately: boolean;
   };
   routedClientsStale: boolean;
   runningAgents: number;
@@ -351,16 +361,13 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
  *  brokered key. In `defaultState`'s domain list because the shipped catalog
  *  always carries it: the row exists on every ledger, switched off.
  *
- *  "Every ledger" means every STAGING ledger, and this fixture and
- *  `CHATGPT_APPS_DOMAIN` are both the staging shape. `proxy::config`'s
- *  `STAGING_ONLY_SLUGS` clears `supported` on these two unless the account
- *  points at the staging gateway, and `defaultState`'s account names the
- *  production host - the fixture is deliberately inconsistent with it, because
- *  the gate lives entirely in the backend. What the frontend does with a
- *  gated-off domain is already covered without a special case: `buildGroups`
- *  filters on `supported`, so the row is simply absent, which is what an
- *  unsupported domain has always meant here. Flip `supported` to false in a
- *  spec's `merge` to render that. */
+ *  "Every ledger" is now literal - this fixture and `CHATGPT_APPS_DOMAIN` once
+ *  described the staging shape only, because the backend cleared `supported` on
+ *  both unless the account pointed at the staging gateway. That gate is gone, so
+ *  the catalog these fixtures mirror is the same in either environment. What the
+ *  frontend does with an unsupported domain needs no special case either way:
+ *  `buildGroups` filters on `supported`, so the row is simply absent. Flip
+ *  `supported` to false in a spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
   display_name: "Web",
@@ -488,7 +495,7 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
-    securityFeed: { state: "live", events: [] },
+    securityFeed: { state: "live", events: [], historyOk: true },
     preferences: {
       routing_health_notifications: true,
       blocked_event_notifications: true,
@@ -497,6 +504,7 @@ export function defaultState(): BackendState {
       share_diagnostics: true,
       share_diagnostics_recorded: true,
       device_name: null,
+      signed_out_deliberately: false,
     },
     routedClientsStale: false,
     runningAgents: 0,

@@ -40,6 +40,7 @@ import {
   runningAgentsCount,
   staleAgentsCount,
   pendingQuitTools,
+  getPreferences,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
@@ -211,6 +212,10 @@ export function App() {
   }
   const [account, setAccount] = useState<Account | null>(null);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+  /** Whether the last sign-out was one the user asked for, rather than a session
+   *  that died. Only meaningful on the sign-in screen, which is the one place
+   *  that has to describe how the session ended. */
+  const [signedOutDeliberately, setSignedOutDeliberately] = useState(false);
   // Where the org picker returns to when done: "home" (startup re-pick),
   // "success" (fresh sign-in), or "settings" (Switch organization).
   const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
@@ -1147,6 +1152,40 @@ export function App() {
     setScreen("firstrun");
   }, [proxy]);
 
+  /**
+   * What to call the sign-out, read when the sign-in screen is entered.
+   *
+   * Signing out and a session expiring leave identical state behind - no token,
+   * `auth_mode` still OAuth, kept that way on purpose so this screen offers
+   * sign-in rather than the legacy key form. So the reason has to be recorded,
+   * and `oauth_sign_out` records it; this is the read.
+   *
+   * On entering the screen rather than cached at sign-out, because FOUR paths
+   * land here and only one of them is a sign-out: the focus check and
+   * `session-signin-required` above both route here for a session that died on
+   * its own, and neither passes through `signOut`. A value cached when the user
+   * signed out would still be true after they signed back in, and would then
+   * tell someone whose session really did expire that they had signed
+   * themselves out - the same wrong answer this fixes, pointing the other way.
+   * Asking the backend each time cannot drift.
+   *
+   * A failed read leaves the previous answer, and the initial `false` is the
+   * expiry wording: that is what this screen said before, and it is the safe
+   * direction to be wrong in.
+   */
+  useEffect(() => {
+    if (screen !== "firstrun") return;
+    let alive = true;
+    getPreferences()
+      .then((prefs) => {
+        if (alive) setSignedOutDeliberately(prefs.signed_out_deliberately);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [screen]);
+
   const gatewayHost = hostOf(account?.gateway_base_url);
   /** The dashboard for the gateway this account talks to, or null when it has
    *  none. Was four production constants until 2026-09-07; see
@@ -1204,6 +1243,11 @@ export function App() {
         // signed in (silent refresh failed / explicit sign-out): show the
         // welcome-back re-auth copy rather than the first-run welcome.
         reauth={!!account && account.auth_mode === "oauth"}
+        // Which kind of return it was. Without this the pane called every one
+        // of them an expiry, including the two the app causes itself: the
+        // org-picker dead end signs the user out to get them back here, and so
+        // does "use an API key instead".
+        deliberate={signedOutDeliberately}
       />
     );
   } else if (screen === "orgpicker") {
@@ -1282,6 +1326,10 @@ export function App() {
         onTrustCa={trustCa}
         trustPending={trustPending}
         proxyOn={proxy?.running ?? false}
+        // `?? false` for the reason the Home call site spells out below: an
+        // unresolved proxy state is not evidence, and the reassuring default
+        // here would be a claim that Gate is intercepting a browser.
+        browserChannel={proxy?.browser_proxy_channel ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
       />

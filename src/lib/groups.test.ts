@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
 import type { Group, GroupMember } from "./groups";
 import {
+  browserTrustRestartAdvice,
   buildGroups,
+  chatScopeNote,
   groupSummary,
   MULTI_PROVIDER_ID,
   cascadeTargets,
@@ -717,5 +719,184 @@ describe("proxyReopenAdvice", () => {
     // Principle 6 in the other direction: this is the one routing line with
     // nothing behind it, so it has to admit that in its own words.
     expect(PROXY_REOPEN_ADVICE.body).toContain("advice rather than a reading");
+  });
+});
+
+/**
+ * The certificate's own restart note, which is a different fact from the proxy
+ * advice above and has to stay one: that one is about a pointer a browser on the
+ * desktop's settings re-reads live, this one about a trust store nothing re-reads
+ * at all.
+ */
+describe("browserTrustRestartAdvice", () => {
+  it("is Linux-only, because that is where the trust store is read once", () => {
+    // Chromium reads `~/.pki/nssdb` and Firefox the system bundle through
+    // p11-kit, both at process start (`ca_linux.rs`). macOS and Windows
+    // re-evaluate trust for a running process, so naming browsers there would
+    // be caution rather than mechanism.
+    expect(browserTrustRestartAdvice("linux", "trusted")).toBeDefined();
+    expect(browserTrustRestartAdvice("macos", null)).toBeUndefined();
+    expect(browserTrustRestartAdvice("windows", null)).toBeUndefined();
+    expect(browserTrustRestartAdvice("unknown", null)).toBeUndefined();
+  });
+
+  it("names the vault the platform's own way", () => {
+    // Through `trustStoreName`, like every other string that says where
+    // something of the user's lives. "keyring" would be the wrong vault and
+    // "keychain" the wrong platform.
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain(
+      "certificate store",
+    );
+  });
+
+  it("asks for a full quit, not a new window", () => {
+    // Reopening a window in a process that is still running changes nothing:
+    // the NSS read happened at startup. A browser told to "reload" would fail
+    // exactly as before and read as Gate being broken.
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain(
+      "quit",
+    );
+  });
+
+  it("names the package only where a package is the fix", () => {
+    // `tools_missing` is the one state an install ends. Prescribing it for
+    // `write_failed` - a locked or unwritable database - sends someone to
+    // install a package they already have, at the one moment they are reading
+    // closely. `CertutilFailure` draws this line in the log messages already.
+    const missing = browserTrustRestartAdvice("linux", "tools_missing");
+    expect(missing?.body).toContain("libnss3-tools");
+    expect(missing?.body).toContain("nss-tools");
+    expect(
+      browserTrustRestartAdvice("linux", "write_failed")?.body,
+    ).not.toContain("libnss3-tools");
+  });
+
+  it("keeps the reopen where a store did take the certificate", () => {
+    // `write_failed` is per-store: the reading is "at least one refused", so
+    // the browsers whose store took it are working and still need the quit.
+    // Withholding that sentence left them with no true instruction at all.
+    expect(browserTrustRestartAdvice("linux", "write_failed")?.body).toContain(
+      "quit and reopen",
+    );
+  });
+
+  it("asks for something that actually re-runs the write", () => {
+    // Not "switch routing on again": the note is raised from inside the enable
+    // that just trusted the CA, so routing is already on, and
+    // `manager_linux::enable` returns early before `ca::ensure_trusted` when
+    // the client is connected. Off and on again is what reaches the write.
+    for (const nss of ["tools_missing", "write_failed"] as const) {
+      const body = browserTrustRestartAdvice("linux", nss)?.body ?? "";
+      expect(body).not.toContain("switch routing on again");
+      if (body.includes("routing")) {
+        expect(body).toContain("turn routing off and on again");
+      }
+    }
+  });
+
+  it("says who is unaffected, because most of the machine is", () => {
+    // The system anchor still serves Firefox and `NODE_EXTRA_CA_CERTS` still
+    // serves the Node CLIs, so this is one family of browsers rather than
+    // routing being broken - and a note that did not say so would read as the
+    // latter.
+    for (const nss of ["tools_missing", "write_failed"] as const) {
+      expect(browserTrustRestartAdvice("linux", nss)?.body).toContain(
+        "Firefox and command-line tools are unaffected",
+      );
+    }
+  });
+
+  it("falls back to the reopen note when there is no reading", () => {
+    // `null` is not a negative reading: it means no browser here keeps such a
+    // store, or no write has happened in this process. Either way the restart
+    // is still the one thing Gate cannot check. Principle 6 in the small.
+    expect(browserTrustRestartAdvice("linux", null)?.title).toBe(
+      browserTrustRestartAdvice("linux", "trusted")?.title,
+    );
+  });
+});
+
+/**
+ * The chat rows' scope sentence, which the window shell had no room for and
+ * therefore did not say at all.
+ */
+describe("chatScopeNote", () => {
+  const chatMember = (platformDomain: ProxyDomain): GroupMember => ({
+    key: "claude-web",
+    kind: "proxy",
+    name: "Web",
+    routed: false,
+    desired: false,
+    attention: null,
+    domain: platformDomain,
+    chat: true,
+  });
+
+  it("names the host, because the row's name is a surface", () => {
+    // "Web" under "Anthropic" says nothing about which traffic moves. The switch
+    // is matched on host by `proxy::decide`, so the host is the scope.
+    const note = chatScopeNote(
+      chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
+      "macos",
+      true,
+    );
+    expect(note?.body).toContain("claude.ai");
+  });
+
+  it("says the credential is the user's own, not a brokered key", () => {
+    // The whole reason these rows are outside the family cascade: there is no
+    // API key involved, so the reassurance Gate offers elsewhere ("your key is
+    // in the keychain") is not the promise being made here.
+    const note = chatScopeNote(
+      chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
+      "macos",
+      true,
+    );
+    expect(note?.body).toContain("already signed in with");
+  });
+
+  it("carries the browser claim, and takes it from the platform", () => {
+    // The one sentence both shells must not word differently, which is why both
+    // read it out of `browserScopeNote` rather than writing their own.
+    const member = chatMember(
+      domain({ slug: "claude-web", hosts: ["claude.ai"] }),
+    );
+    expect(chatScopeNote(member, "macos", true)?.body).toContain(
+      "open in your browser",
+    );
+    expect(chatScopeNote(member, "linux", true)?.body).toContain(
+      "desktop proxy settings",
+    );
+    // A Linux session with no GNOME proxy schema: the host sentences still
+    // hold and the browser one is absent, because nothing there points a
+    // running browser at the engine.
+    expect(chatScopeNote(member, "linux", false)?.body).toContain("claude.ai");
+    expect(chatScopeNote(member, "linux", false)?.body).not.toContain(
+      "browser",
+    );
+    // `unknown` is the first async tick: same treatment, for a different
+    // reason - that is no time to guess at interception.
+    expect(chatScopeNote(member, "unknown", true)?.body).not.toContain(
+      "browser",
+    );
+  });
+
+  it("says nothing on a row that is not a chat surface", () => {
+    // A key-brokered proxy row is covered by its own description, and its host
+    // is not a claim about anybody's browser.
+    const member: GroupMember = {
+      ...chatMember(domain()),
+      key: "anthropic",
+      name: "App",
+      chat: false,
+    };
+    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
+  });
+
+  it("says nothing when the catalog named no host", () => {
+    // The host is the scope, so a chat member with no hosts has no sentence to
+    // make - and a note reading "everything on " would be worse than silence.
+    const member = chatMember(domain({ slug: "claude-web", hosts: [] }));
+    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
   });
 });

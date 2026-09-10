@@ -135,6 +135,25 @@ pub struct Preferences {
     /// token store; the `time` crate is pulled in without its formatting feature.
     #[serde(default)]
     pub gate_model_paid_ack_unix: Option<i64>,
+    /// Whether the last sign-out was one the user asked for.
+    ///
+    /// A deliberate sign-out and an expired session end in exactly the same
+    /// state: no token, and `auth_mode` still `OAuth` - kept that way on purpose
+    /// so the welcome pane offers sign-in rather than the legacy key form. The
+    /// difference between them is *why*, and only the sign-out path knows it, so
+    /// it has to be recorded or the welcome pane guesses. It guessed
+    /// "Session expired", which framed the user's own click as an
+    /// authentication failure.
+    ///
+    /// The same argument `share_diagnostics_recorded` makes further up: two
+    /// facts that produce one value are two fields.
+    ///
+    /// Durable rather than in-memory because the distinction outlives the
+    /// process - someone who signs out, quits and comes back tomorrow still did
+    /// not have a session expire. Cleared when a sign-in succeeds, so it can
+    /// only ever describe the most recent departure.
+    #[serde(default)]
+    pub signed_out_deliberately: bool,
 }
 
 /// What Gate should serve for one tool.
@@ -178,6 +197,7 @@ impl Default for Preferences {
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
+            signed_out_deliberately: false,
         }
     }
 }
@@ -315,6 +335,17 @@ pub fn reset_cache_for_tests() {
 pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
     let mut prefs = load();
     prefs.routing_health_notifications = enabled;
+    save(&prefs)
+}
+
+/// Record whether the session ended because the user asked it to.
+///
+/// Read-modify-write, as above. Called with `true` by `oauth_sign_out` and with
+/// `false` wherever a sign-in completes, so it always describes the most recent
+/// departure rather than accumulating.
+pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.signed_out_deliberately = deliberate;
     save(&prefs)
 }
 

@@ -175,6 +175,16 @@ impl<O: DesktopOps> DesktopManager<O> {
             port,
             pac_port,
             ca_trusted: self.ops.ca_is_trusted()?,
+            // No second store to disagree with the first: macOS and Windows put
+            // user-added roots where the browser already looks. Not a seam on
+            // `DesktopOps` for that reason - there is nothing per-platform to
+            // ask - and `diagnostics.rs` answers the same question the same way.
+            ca_nss_trust: None,
+            // And for the same reason, in the other direction: the PAC goes in
+            // the OS proxy setting, which *is* the browser's proxy setting on
+            // both of these. Not a question about the session here, as it is on
+            // Linux, so it is not a seam either.
+            browser_proxy_channel: true,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             relay_base_url: crate::proxy::relay_base_url(),
@@ -539,6 +549,10 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// webview so a freshly minted cookie reaches in-flight app turns without
     /// a restart.
     pub fn refresh_cf_clearance(&self, cf_clearance: &str) {
+        // Recorded here rather than in the engine, so a cookie captured while
+        // the engine is down (or restarted afterwards) is not lost with it;
+        // see `proxy::LAST_CAPTURED_CF_CLEARANCE`.
+        super::record_captured_cf_clearance(cf_clearance);
         if let Some(running) = self
             .engine
             .lock()

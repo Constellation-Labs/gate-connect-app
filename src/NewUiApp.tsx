@@ -13,6 +13,7 @@ import type {
   ProviderState,
   PendingRestore,
   RecoverySummary,
+  TeardownReason,
   TeardownReport,
   TeardownTool,
   Tool,
@@ -64,7 +65,13 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups, describeMember, proxyReopenAdvice } from "./lib/groups";
+import {
+  browserTrustRestartAdvice,
+  buildGroups,
+  chatScopeNote,
+  describeMember,
+  proxyReopenAdvice,
+} from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
@@ -131,6 +138,7 @@ import {
   TeardownReportDialog,
   DisconnectGateDialog,
   OAuthOfferDialog,
+  OpenCodeEnvDialog,
   RenameDeviceDialog,
   OrganizationSwitchedDialog,
   ReplaceApiKeyDialog,
@@ -143,6 +151,7 @@ import {
   AlertBanner,
   ErrorBanner,
   ErrorDetails,
+  NoteBanner,
   PaneNote,
   RecoveryBanner,
   ReopenAlert,
@@ -768,9 +777,12 @@ export function NewUiApp() {
    *
    * The cheap half of {@link refresh}, and what `tools-changed` and the
    * visibility edge both call. `list_tools` walks config files and `proxy_status`
-   * reads state already in memory; the sweep is left out because it probes the
-   * relay and the gateway, which is not something a filesystem event should be
-   * able to trigger at whatever rate a package manager writes.
+   * reads state already recorded - on Windows it can still shell out to
+   * `certutil` for the CA reading, which is bounded and rate-limited there for
+   * exactly that reason, and on Linux the NSS reading is deliberately taken at
+   * write time so this path never spawns one. The sweep is left out because it
+   * probes the relay and the gateway, which is not something a filesystem event
+   * should be able to trigger at whatever rate a package manager writes.
    *
    * A reading that matches what is on screen is dropped rather than re-set. Both
    * of these feed every memo below, and committing an equal-but-new object would
@@ -1001,7 +1013,10 @@ export function NewUiApp() {
   } | null>(null);
   /** Where the tools stand after a teardown - routing off, sign-out or reset.
    * Null unless one just ran and left something outstanding. */
-  const [teardown, setTeardown] = useState<TeardownReport | null>(null);
+  const [teardown, setTeardown] = useState<{
+    report: TeardownReport;
+    reason: TeardownReason;
+  } | null>(null);
 
   /**
    * Backend failures buffer Rust-side because they can predate this webview - the
@@ -1117,12 +1132,15 @@ export function NewUiApp() {
   /** Where the tools stand after a teardown, raised only when something is
    * actually outstanding: a clean routing-off has nothing to report, and a
    * dialog saying so would be a dialog about nothing. */
-  const reportTeardown = useCallback(async () => {
+  const reportTeardown = useCallback(async (reason: TeardownReason) => {
     const report = await teardownReport().catch(() => null);
     if (!report) return;
     const outstanding =
       report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
-    if (outstanding > 0) setTeardown(report);
+    // The reason travels with the report because the report cannot carry it:
+    // the buckets are read back off disk and say where each tool points, never
+    // whether anything tried to move it. See `TeardownReason`.
+    if (outstanding > 0) setTeardown({ report, reason });
   }, []);
 
   /** The tool's product name for a slug. The rail's `name` is a surface kind
@@ -1220,7 +1238,7 @@ export function NewUiApp() {
         // settings and the sweep is best-effort per tool. AG-570 requires the
         // result to name what it could not put back, so the configs are read
         // back and anything outstanding is reported.
-        if (!next) await reportTeardown();
+        if (!next) await reportTeardown("teardown");
       }
     },
     [routing, runningApps, reportTeardown],
@@ -1430,6 +1448,14 @@ export function NewUiApp() {
       const member = groups
         .flatMap((g) => g.members)
         .find((m) => m.key === slug);
+      // Cleared here rather than in each branch, because only one branch used
+      // to do it. `routeApp` clears on the way in; `setDomainRouted` never did,
+      // so a proxy row that failed and was then retried successfully turned the
+      // switch on and left "Could not connect" on screen above it - the switch
+      // and the banner asserting opposite things about the same click. The
+      // click is the moment the last failure stops being the current answer,
+      // whichever kind of row it lands on.
+      setActionError(null);
       void (member?.kind === "proxy"
         ? routing.setDomainRouted(slug, next)
         : routeApp(slug, next));
@@ -1617,6 +1643,7 @@ export function NewUiApp() {
     // `undefined` while the preference read is in flight, which is not the same as
     // unanswered - see the note on the hook's argument.
     diagnosticsAnswered: prefs?.share_diagnostics_recorded,
+    signedOutDeliberately: prefs?.signed_out_deliberately,
     // Same `undefined` distinction: null means the name follows the hostname,
     // and no preferences at all means the read has not landed.
     deviceNamed: prefs ? prefs.device_name !== null : undefined,
@@ -1635,7 +1662,7 @@ export function NewUiApp() {
     // and can fail doing it; sign-out deliberately leaves the configs alone,
     // which is exactly the case worth reporting - the session those configs
     // authenticate with has just ended.
-    onTeardown: () => void reportTeardown(),
+    onTeardown: (reason) => void reportTeardown(reason),
     onError: (e) => setActionError(classifyError(e, "generic")),
   });
 
@@ -1852,8 +1879,10 @@ export function NewUiApp() {
       const reference = await sendDiagnosticReport(await collectReport());
       setSendState({ kind: "sent", reference });
     } catch (e) {
-      const { title, hint } = classifyError(e, "generic");
-      setSendState({ kind: "failed", title, hint });
+      // `raw` too: the hint promises details below, and the dialog now has a
+      // disclosure to put them in.
+      const { title, hint, raw } = classifyError(e, "generic");
+      setSendState({ kind: "failed", title, hint, raw });
     }
   }, [collectReport]);
 
@@ -1876,8 +1905,17 @@ export function NewUiApp() {
           ? () => settings.openRenameDevice(device)
           : undefined,
         installId: installId ?? "Unavailable",
-        loginId: account?.org_name ?? "-",
-        plan: "-",
+        // The signed-in identity, which is what "Login ID" names and what the
+        // frame draws (`130:48905`, jdoe@acme.com). This was `org_name`, so the
+        // row repeated the organization already shown in the sidebar and the
+        // org switcher, and no screen named the account the user was signed in
+        // as. An API-key account has no email and gets the dash.
+        loginId: oauth?.email ?? "-",
+        // No gateway field carries a plan today, so this says so rather than
+        // drawing a bare dash nobody can read a meaning into. Same vocabulary
+        // as `installId` above; the frame's "Free" is a mock value, not a
+        // reading. When the gateway starts naming one, this is the seam.
+        plan: "Unavailable",
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
@@ -1934,13 +1972,24 @@ export function NewUiApp() {
         onDisconnect:
           account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
-        onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
+        onToggleLaunchAtLogin: () => {
+          // Same rule as the five preference switches: `toggleLaunchAtLogin`
+          // reports failure through `onError` and never cleared a previous one,
+          // so a successful retry moved the switch and kept the stale banner.
+          setActionError(null);
+          void settings.toggleLaunchAtLogin();
+        },
         onRetryLaunchAtLogin: () => void loadLaunchAtLogin(),
         // Optimistic then re-read: the switch has to move on click, and the
         // re-read is what makes a failed write show up rather than leaving the
         // UI asserting a value the file does not hold.
         onToggleRoutingHealthNotifications: () => {
           const next = !(prefs?.routing_health_notifications ?? true);
+          // The retry clears its own last failure. Every one of these five
+          // rolled back correctly on a failed write and then left the banner up
+          // after the next write succeeded, so the switch showed the new value
+          // with an error above it still describing the old attempt.
+          setActionError(null);
           setPrefs((p) =>
             p ? { ...p, routing_health_notifications: next } : p,
           );
@@ -1953,6 +2002,8 @@ export function NewUiApp() {
         // write instead of leaving the UI asserting a value the file lacks.
         onToggleBlockedEventNotifications: () => {
           const next = !(prefs?.blocked_event_notifications ?? true);
+          // Same as the switch above: the retry clears its own last failure.
+          setActionError(null);
           setPrefs((p) => (p ? { ...p, blocked_event_notifications: next } : p));
           void setBlockedEventNotifications(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
@@ -1960,6 +2011,8 @@ export function NewUiApp() {
         },
         onToggleFlaggedEventNotifications: () => {
           const next = !(prefs?.flagged_event_notifications ?? true);
+          // Same as the switch above: the retry clears its own last failure.
+          setActionError(null);
           setPrefs((p) => (p ? { ...p, flagged_event_notifications: next } : p));
           void setFlaggedEventNotifications(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
@@ -1967,6 +2020,8 @@ export function NewUiApp() {
         },
         onToggleSecurityNotificationSound: () => {
           const next = !(prefs?.security_notification_sound ?? true);
+          // Same as the switch above: the retry clears its own last failure.
+          setActionError(null);
           setPrefs((p) => (p ? { ...p, security_notification_sound: next } : p));
           void setSecurityNotificationSound(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
@@ -1974,6 +2029,8 @@ export function NewUiApp() {
         },
         onToggleShareDiagnostics: () => {
           const next = !(prefs?.share_diagnostics ?? true);
+          // Same as the switch above: the retry clears its own last failure.
+          setActionError(null);
           setPrefs((p) => (p ? { ...p, share_diagnostics: next } : p));
           // Stop (or resume) collection immediately, not on the next launch. An
           // opt-out that only takes effect after a restart is not an opt-out, and
@@ -2020,6 +2077,9 @@ export function NewUiApp() {
     // object each render, which would defeat the memo.
     [
       account,
+      // The Login ID row reads the signed-in email from here, so the memo has
+      // to see a sign-in or sign-out land or the row keeps the old identity.
+      oauth,
       launchAtLogin,
       launchAtLoginUnavailable,
       prefs,
@@ -2059,37 +2119,52 @@ export function NewUiApp() {
   }, [setupStageKind, setupOrgs, loadOrgs]);
 
   /**
-   * The rows the topbar banner counts: every rail row the family switches can
-   * actually route.
+   * Re-read preferences when the sign-in screen appears.
    *
-   * `railApps`, not `apps`: the latter is installed config tools only, so the
-   * banner counted a different population from the rail beneath it - "6 Apps"
-   * over a sidebar listing twelve rows. The rail is what "Apps" means to the
-   * reader (principle 3: the sidebar lists apps).
+   * `signed_out_deliberately` is written by `oauth_sign_out`, which happens
+   * long after `prefs` was filled: `loadPreferences` runs at mount and after a
+   * preference toggle, and `onSession` sets only account and oauth. So the
+   * welcome pane was reading the value this shell held at launch - `false` for
+   * anyone who was signed in then - and went on saying "Session expired" over
+   * the user's own Disconnect. The fix that added the preference never reached
+   * the shell it was written for.
    *
-   * Minus the chat rows, which is the correction that came out of review. A
-   * `chat: true` member is deliberately never flipped by a family switch -
-   * `cascadeTargets` returns false for it and `cascadeDesired` excludes it -
-   * because it intercepts a session-cookie surface rather than a key-brokered
-   * API, so routing it stays a per-row act. Counting those rows in the
-   * DENOMINATOR of a health banner means `allProtected` can never be true on a
-   * default install: `chatgpt` ships supported and is not staging-gated, so a
-   * user who switched on everything Gate offers to cascade would read "partly
-   * routing" in amber on the topbar permanently, unless they separately chose
-   * to route their ChatGPT web traffic. A banner that cannot go green is worse
-   * than a banner that counts a smaller set.
+   * Keyed on the stage rather than done in `confirmDisconnect`, for the reason
+   * the popover's copy of this is: sign-out is only one of the ways this screen
+   * appears. A session that dies on its own lands here too, without passing
+   * through any sign-out, and a value refreshed only on the deliberate path
+   * would then be stale in the direction that hides a real failure.
    */
-  const bannerApps = useMemo(() => {
-    const chatSlugs = new Set(
-      groups
-        .flatMap((g) => g.members)
-        .filter((m) => m.chat)
-        .map((m) => m.key),
-    );
-    return railApps.filter((a) => !chatSlugs.has(a.slug));
-  }, [groups, railApps]);
+  useEffect(() => {
+    if (setupStageKind === "welcome") void loadPreferences();
+  }, [setupStageKind, loadPreferences]);
 
-  const protectedCount = bannerApps.filter(
+  /**
+   * How much of what the user asked for is actually routed.
+   *
+   * Two corrections to what this counted, and they pull in opposite directions.
+   *
+   * `railApps`, not `apps`: `apps` is config-routed tools only, so with the
+   * proxy domain rows on screen the banner counted a different population from
+   * the one under it. On staging that read "0 of 4 Apps" while the Anthropic
+   * family beside it said "1 of 3" with App Protected - two counts of the same
+   * thing, disagreeing, on one screen. The rail is what the user is looking at.
+   *
+   * But only the rows they turned ON. The domain rows are per-row opt-ins that
+   * ship off, so counting all of them made the green state almost unreachable:
+   * somebody with every tool they use routed would read amber "4 of 7" forever,
+   * and a banner that can never go green is not a status, it is decoration.
+   * Filtering by intent puts the denominator back on the same footing as the
+   * numerator - `on` is what the user asked for, `protected` is what happened -
+   * so green means "everything you asked for is routed" and amber means
+   * something you asked for is not. A row nobody turned on is not a gap.
+   *
+   * Principle 2's split, applied to a count: the denominator is intent, the
+   * numerator is observation, and they are read from the two different places
+   * that own them.
+   */
+  const desiredApps = railApps.filter((a) => a.on);
+  const protectedCount = desiredApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
 
@@ -2196,6 +2271,62 @@ export function NewUiApp() {
         .map((v) => ({ slug: v.slug, name: toolName(v.slug) ?? v.slug })),
     [verdicts, toolName, view],
   );
+
+  /**
+   * The one-off note that follows the certificate landing, on Linux.
+   *
+   * Driven off `ca_trusted` going false to true rather than off the action that
+   * did it, because four paths reach the same place - the master switch, a row's
+   * switch through the certificate gate, the shell notice's `trust-certificate`,
+   * and Settings - and a browser open across any of them is in the same state.
+   * The transition has to be *observed* false first: `proxy` is null until the
+   * first status lands, and treating "unknown, then trusted" as the change would
+   * raise this on every launch of an already-trusted install.
+   *
+   * Cleared by the user alone. Nothing Gate can read afterwards says whether
+   * they reopened anything, so a dismissal is the only thing that can retire it,
+   * and it does not come back until trust is removed and granted again.
+   *
+   * `ca_nss_trust` rides along from the same snapshot, and it decides which note
+   * this is: what the store Chromium reads did with the CA is a reading, and it
+   * separates "reopen your browser" from "install certutil" from "a store
+   * refused, and the report says which". Read off the *incoming* state rather
+   * than a later poll, so the sentence describes the trust change that just
+   * happened.
+   */
+  const [browserRestart, setBrowserRestart] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
+  const caTrustedSeen = useRef<boolean | null>(null);
+  useEffect(() => {
+    const trusted = proxy?.ca_trusted ?? null;
+    const seen = caTrustedSeen.current;
+    caTrustedSeen.current = trusted;
+    if (seen === false && trusted === true) {
+      setBrowserRestart(
+        browserTrustRestartAdvice(platform, proxy?.ca_nss_trust ?? null) ?? null,
+      );
+    }
+  }, [proxy, platform]);
+
+  /**
+   * What a chat row's switch covers, on the pane that opens on it.
+   *
+   * Same shape as the advice below and a different kind of thing: this is a
+   * description of the surface, true on every platform and whether or not the
+   * row is on, and it is here because the window shell draws a row's copy as one
+   * sentence and these rows need three. `groups.ts` carries them.
+   */
+  const chatScope = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const member = groups
+      .flatMap((g) => g.members)
+      .find((m) => m.key === view.slug);
+    return member
+      ? chatScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
+      : undefined;
+  }, [view, groups, platform, proxy]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -2346,6 +2477,7 @@ export function NewUiApp() {
         {stage.kind === "welcome" ? (
           <WelcomePane
             reauth={stage.reauth}
+            deliberate={stage.deliberate}
             onSignIn={() => void setup.signIn()}
             onUseApiKey={setup.openApiKey}
             // The card had no way to name the gateway it was about to sign in
@@ -2438,7 +2570,8 @@ export function NewUiApp() {
           * positions itself over whatever is behind it. */}
         {teardown && (
           <TeardownReportDialog
-            report={teardownSubjects(teardown)}
+            report={teardownSubjects(teardown.report)}
+            reason={teardown.reason}
             onClose={() => setTeardown(null)}
           />
         )}
@@ -2460,7 +2593,7 @@ export function NewUiApp() {
             }
           : undefined
       }
-      routing={{ protectedCount, totalCount: bannerApps.length }}
+      routing={{ protectedCount, totalCount: desiredApps.length }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
@@ -2544,6 +2677,16 @@ export function NewUiApp() {
             onReopen={(slug) => void runningApps.offerAfterChange([slug])}
             onDismiss={() => setReopenHidden(true)}
           />
+        ) : browserRestart ? (
+          // Bottom of the chain, and neutral where the three above are amber or
+          // red: each of those names something still to be fixed in Gate's own
+          // routing, while this is a step outside the app that the user may
+          // already have taken. It must never displace one of them.
+          <NoteBanner
+            title={browserRestart.title}
+            body={browserRestart.body}
+            onDismiss={() => setBrowserRestart(null)}
+          />
         ) : undefined
       }
       onToggleApp={toggleRailApp}
@@ -2569,6 +2712,7 @@ export function NewUiApp() {
         ) : quit?.kind === "choose" ? (
           <QuitDialog
             tools={quit.tools}
+            platform={platform}
             choice={quit.choice}
             onChoose={(choice) =>
               setQuit((q) => (q?.kind === "choose" ? { ...q, choice } : q))
@@ -2590,41 +2734,10 @@ export function NewUiApp() {
             onReplace={() => routing.resolvePrompt(true)}
           />
         ) : routing.prompt?.kind === "opencode-env" ? (
-          // Not in the Figma: OpenCode's coupling to the environment channel has
-          // no frame, and the alternative to a dialog is a click that silently
-          // rewrites machine-wide settings.
-          //
-          // Informational in tone, not destructive: nothing is being replaced or
-          // removed, so the primary is the plain one and it says what it turns
-          // on. Focus stays on the primary for the same reason - `useFocusTrap`'s
-          // `initialFocus` is for the dialogs where the safe answer is "no".
-          <Modal
-            tone="neutral"
-            // No terminal glyph in the set; `squareCode` is the closest thing
-            // to the shell this dialog is about.
-            icon="squareCode"
-            title="Turning on OpenCode also turns on Terminal tools"
-            secondary={{
-              label: "Cancel",
-              onClick: () => routing.resolvePrompt(false),
-            }}
-            primary={{
-              label: "Turn both on",
-              onClick: () => routing.resolvePrompt(true),
-            }}
-            onDismiss={() => routing.resolvePrompt(false)}
-          >
-            {/* The drawn sentence ended "...that reads them, not OpenCode",
-                which contradicts the clause before it - the variables are how
-                Gate routes OpenCode. Cut rather than reworded, 2026-09-04, so
-                nothing is invented: what the copy is for is the breadth, and
-                naming git, curl and npm carries that on its own. */}
-            <p className="text-sm leading-5 text-neutral-600">
-              OpenCode has no gateway setting of its own, so Gate routes it with
-              your machine&apos;s proxy variables. Those apply to every command
-              line tool that reads them. That includes git, curl and npm.
-            </p>
-          </Modal>
+          <OpenCodeEnvDialog
+            onCancel={() => routing.resolvePrompt(false)}
+            onConfirm={() => routing.resolvePrompt(true)}
+          />
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and
           // connecting cannot proceed without one. Asking first matters because
@@ -2781,7 +2894,8 @@ export function NewUiApp() {
           // left tools behind is the newest thing that happened, and the user
           // asked for the operation that produced it.
           <TeardownReportDialog
-            report={teardownSubjects(teardown)}
+            report={teardownSubjects(teardown.report)}
+            reason={teardown.reason}
             onClose={() => setTeardown(null)}
           />
         ) : collectedDataOpen ? (
@@ -2801,6 +2915,7 @@ export function NewUiApp() {
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}
+            collecting={diagnosticsReport === COLLECTING_DIAGNOSTICS}
             copied={settings.copied}
             onCopy={() => void settings.copyText(diagnosticsReport)}
             onClose={() => setDiagnosticsReport(null)}
@@ -2812,6 +2927,7 @@ export function NewUiApp() {
               account?.has_api_key ?? false,
             )}
             newKey={settings.newKey}
+            busy={settings.busy}
             onNewKeyChange={settings.setNewKey}
             onCancel={settings.dismissPrompt}
             onReplace={() => void settings.replaceKey()}
@@ -2821,6 +2937,7 @@ export function NewUiApp() {
             organizations={settings.prompt.orgs.map(toDialogOrg)}
             selectedId={settings.prompt.selectedId}
             currentId={account?.org_id ?? undefined}
+            busy={settings.busy}
             onSelect={settings.selectOrg}
             onCancel={settings.dismissPrompt}
             onConfirm={() => void settings.confirmSwitchOrg()}
@@ -2829,6 +2946,7 @@ export function NewUiApp() {
           <RenameDeviceDialog
             currentName={settings.prompt.currentName}
             newName={settings.newDeviceName}
+            busy={settings.busy}
             onNewNameChange={settings.setNewDeviceName}
             onCancel={settings.dismissPrompt}
             onRename={() => void settings.renameDevice()}
@@ -2850,12 +2968,14 @@ export function NewUiApp() {
           />
         ) : settings.prompt?.kind === "disconnect" ? (
           <DisconnectGateDialog
+            busy={settings.busy}
             onCancel={settings.dismissPrompt}
             onDisconnect={() => void settings.confirmDisconnect()}
           />
         ) : settings.prompt?.kind === "reset" ? (
           <ResetGateConnectDialog
             acknowledged={settings.prompt.acknowledged}
+            busy={settings.busy}
             onAcknowledgedChange={settings.acknowledgeReset}
             onCancel={settings.dismissPrompt}
             onReset={() => void settings.confirmReset()}
@@ -2918,6 +3038,7 @@ export function NewUiApp() {
           state={securityFeed.state}
           loading={securityFeed.loading}
           unavailable={securityFeed.unavailable}
+          historyUnavailable={securityFeed.historyUnavailable}
           onRetry={securityFeed.retry}
           onOpenEvent={setOpenEvent}
         />
@@ -2954,8 +3075,19 @@ export function NewUiApp() {
           // read yet - and a skeleton is the honest account of that. A domain
           // pane is never pending: its read will not fire (see `openDomain`),
           // and a skeleton would promise an answer that is not coming.
+          //
+          // Nor is an unattributed one, for exactly the same reason and by the
+          // same mechanism: `toolActivity` is gated on `machineKnown`, so with
+          // the gateway answering "I do not know this machine" the read never
+          // fires and view and failure both stay null forever. This expression
+          // read that as loading, so the counters span a skeleton for as long as
+          // the pane is open while the notice beside them says the reading is
+          // not coming. `unavailable` below already excluded it; this did not.
+          // With the flag off, `EMPTY_STATS` renders `n/a` - a reading nobody
+          // gave, said in the vocabulary principle 6 asks for.
           pending={
             !openDomain &&
+            !unattributedMachine &&
             (!installsResolved ||
               (toolActivity.view === null && toolActivity.failure === null))
           }
@@ -3054,8 +3186,12 @@ export function NewUiApp() {
                   : undefined,
               })}
           activity={toolEventRows}
+          // Same exclusion as the chart's `pending`, and the same reason: the
+          // feed read is gated on `machineKnown` too, so an unattributed machine
+          // left this true indefinitely.
           eventsPending={
             !openDomain &&
+            !unattributedMachine &&
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
@@ -3082,6 +3218,19 @@ export function NewUiApp() {
           alert={
             <>
               {reopenAlert}
+              {/* Scope first, then the caveat on it. On a Linux chat row both of
+                  these draw, and in the other order they read as two unrelated
+                  paragraphs where the second happens to contradict the first:
+                  "it covers your browser" under "apps already open may need
+                  reopening". This way the note says what the switch covers and
+                  the note below it says what "already open" costs, which is the
+                  sequence the two facts actually have. `groups.ts` keeps them
+                  separate for a different reason - the proxy pointer and the
+                  trust store are not one fact - and that argument is about
+                  merging the copy, not about ordering it. */}
+              {chatScope && (
+                <PaneNote title={chatScope.title} body={chatScope.body} />
+              )}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}

@@ -52,6 +52,7 @@ import {
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
+  OpenCodeEnvDialog,
   ReopenProgressDialog,
   ReviewConfigDialog,
 } from "./components/gc/dialogs";
@@ -946,6 +947,18 @@ export function TrayApp() {
               }
               onKeep={() => routing.resolvePrompt(false)}
               onReplace={() => routing.resolvePrompt(true)}
+            />
+          ) : routing.prompt?.kind === "opencode-env" ? (
+            // The tray routes OpenCode through the same `setAppRouted` the
+            // window does, and `useRouting` raises this prompt from inside it -
+            // then awaits a promise only a rendered dialog resolves. This slot
+            // drew drift and trust and nothing else, so flipping OpenCode on
+            // here set the prompt, showed nothing, and left the switch spinning
+            // until the popover unmounted. Same dialog the window draws, from
+            // the same component, so the two cannot drift apart again.
+            <OpenCodeEnvDialog
+              onCancel={() => routing.resolvePrompt(false)}
+              onConfirm={() => routing.resolvePrompt(true)}
             />
           ) : routing.prompt?.kind === "trust" ? (
             // Same dialog as the window shell, for the same reason: the OS

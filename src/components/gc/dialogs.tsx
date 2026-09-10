@@ -10,8 +10,14 @@ import {
   needsOf,
   pinnedModels,
 } from "../../lib/modelCompatibility";
+import { trayLocationName, type Platform } from "../../lib/platform";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
-import type { RecoverySummary, TeardownReport, TeardownTool } from "../../lib/api";
+import type {
+  RecoverySummary,
+  TeardownReason,
+  TeardownReport,
+  TeardownTool,
+} from "../../lib/api";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenTool } from "../../lib/reopen";
 import {
@@ -155,6 +161,7 @@ export function SwitchOrganizationDialog({
   organizations,
   selectedId,
   currentId,
+  busy,
   onSelect,
   onCancel,
   onConfirm,
@@ -165,6 +172,12 @@ export function SwitchOrganizationDialog({
    * is refused - the drawn dialog mutes it - because confirming a no-op switch
    * would fire the whole switch sequence to change nothing. */
   currentId?: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
   onSelect: (id: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -175,13 +188,14 @@ export function SwitchOrganizationDialog({
       title="Switch organization"
       width={512}
       subtitle="Select where this device sends activity and uses Gate credits"
-      secondary={{ label: "Cancel", onClick: onCancel }}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{
-        label: "Switch organization",
+        label: busy ? "Working…" : "Switch organization",
         onClick: onConfirm,
-        disabled: currentId !== undefined && selectedId === currentId,
+        disabled:
+          busy || (currentId !== undefined && selectedId === currentId),
       }}
-      onDismiss={onCancel}
+      onDismiss={busy ? undefined : onCancel}
     >
       <div
         role="radiogroup"
@@ -781,12 +795,19 @@ function ReopenToolRow({
  */
 export function DiagnosticsDialog({
   report,
+  collecting,
   copied,
   onCopy,
   onClose,
 }: {
   /** Pre-built by `lib/diagnosticsReport`. */
   report: string;
+  /** The probes are still running, so `report` is the placeholder rather than
+   *  the report. Copy is disabled while this is true: the button was live over
+   *  "Collecting diagnostics...", so a user who pressed it early got that
+   *  sentence on the clipboard and no way to tell it apart from the real thing
+   *  once it was pasted somewhere else. */
+  collecting?: boolean;
   /** Flips the primary button's label after a successful copy. */
   copied?: boolean;
   onCopy: () => void;
@@ -805,7 +826,11 @@ export function DiagnosticsDialog({
       // The drawn subtitle reads "this installed" - a typo, kept corrected.
       subtitle="The state of this install, as text you can hand to someone else"
       secondary={{ label: "Close", onClick: onClose }}
-      primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
+      primary={{
+        label: copied ? "Copied" : "Copy report",
+        onClick: onCopy,
+        disabled: collecting,
+      }}
       onDismiss={onClose}
     >
       {/* `mono/body-14` (`363:9120`), not the 12/16 this rendered: the report is
@@ -1496,12 +1521,19 @@ export function UseGateModelDialog({
 export function RenameDeviceDialog({
   currentName,
   newName,
+  busy,
   onNewNameChange,
   onCancel,
   onRename,
 }: {
   currentName: string;
   newName: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
   onNewNameChange: (next: string) => void;
   onCancel: () => void;
   onRename: () => void;
@@ -1515,13 +1547,13 @@ export function RenameDeviceDialog({
       tile="sm"
       title="Rename your device"
       width={480}
-      secondary={{ label: "Cancel", onClick: onCancel }}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{
-        label: "Rename device",
+        label: busy ? "Working…" : "Rename device",
         onClick: onRename,
-        disabled: !newName.trim(),
+        disabled: busy || !newName.trim(),
       }}
-      onDismiss={onCancel}
+      onDismiss={busy ? undefined : onCancel}
       initialFocus={field}
     >
       <ModalField label="Current device name" value={currentName} readOnly />
@@ -1548,12 +1580,19 @@ export function RenameDeviceDialog({
 export function ReplaceApiKeyDialog({
   currentKeyMasked,
   newKey,
+  busy,
   onNewKeyChange,
   onCancel,
   onReplace,
 }: {
   currentKeyMasked: string;
   newKey: string;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
   onNewKeyChange: (next: string) => void;
   onCancel: () => void;
   onReplace: () => void;
@@ -1565,13 +1604,13 @@ export function ReplaceApiKeyDialog({
       tile="sm"
       title="Replace API key"
       width={480}
-      secondary={{ label: "Cancel", onClick: onCancel }}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{
-        label: "Replace key",
+        label: busy ? "Working…" : "Replace key",
         onClick: onReplace,
-        disabled: !newKey.trim(),
+        disabled: busy || !newKey.trim(),
       }}
-      onDismiss={onCancel}
+      onDismiss={busy ? undefined : onCancel}
       initialFocus={field}
     >
       <ModalField
@@ -1591,6 +1630,58 @@ export function ReplaceApiKeyDialog({
 }
 
 /**
+ * Turning on OpenCode also turns on the shell environment channel.
+ *
+ * Not in the Figma: OpenCode's coupling to the environment channel has no frame,
+ * and the alternative to a dialog is a click that silently rewrites machine-wide
+ * settings.
+ *
+ * Informational in tone, not destructive: nothing is being replaced or removed,
+ * so the primary is the plain one and it says what it turns on. Focus stays on
+ * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
+ * dialogs where the safe answer is "no".
+ *
+ * **Shared because the tray needs it too, and did not have it.** `useRouting`
+ * raises this prompt for whichever shell called `setAppRouted`, and awaits a
+ * promise only a rendered dialog resolves. The tray routed OpenCode through that
+ * same call while drawing only the drift and trust prompts, so the switch span
+ * forever and the toggle never completed - a deadlock that cleared only when the
+ * popover unmounted. Lived inline in `NewUiApp` until then; a second copy is how
+ * the tray would fall behind again.
+ */
+export function OpenCodeEnvDialog({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      tone="neutral"
+      // No terminal glyph in the set; `squareCode` is the closest thing to the
+      // shell this dialog is about.
+      icon="squareCode"
+      title="Turning on OpenCode also turns on Terminal tools"
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{ label: "Turn both on", onClick: onConfirm }}
+      onDismiss={onCancel}
+    >
+      {/* The drawn sentence ended "...that reads them, not OpenCode", which
+          contradicts the clause before it - the variables are how Gate routes
+          OpenCode. Cut rather than reworded, 2026-09-04, so nothing is
+          invented: what the copy is for is the breadth, and naming git, curl
+          and npm carries that on its own. */}
+      <p className="text-sm leading-5 text-neutral-600">
+        OpenCode has no gateway setting of its own, so Gate routes it with your
+        machine&apos;s proxy variables. Those apply to every command line tool
+        that reads them. That includes git, curl and npm.
+      </p>
+    </Modal>
+  );
+}
+
+/**
  * End the signed-in session. Red tone and a primary that names what it does,
  * because it stops this device talking to Gate.
  *
@@ -1602,9 +1693,16 @@ export function ReplaceApiKeyDialog({
  * Raised with the designer.
  */
 export function DisconnectGateDialog({
+  busy,
   onCancel,
   onDisconnect,
 }: {
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
   onCancel: () => void;
   onDisconnect: () => void;
 }) {
@@ -1619,11 +1717,12 @@ export function DisconnectGateDialog({
       width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{
-        label: "Yes, disconnect Gate",
+        label: busy ? "Working…" : "Yes, disconnect Gate",
         onClick: onDisconnect,
         destructive: true,
+        disabled: busy,
       }}
-      onDismiss={onCancel}
+      onDismiss={busy ? undefined : onCancel}
       edge="danger"
     >
       {/* `164:73502` reads "Protection turns off, your apps stop routing through
@@ -1648,11 +1747,18 @@ export function DisconnectGateDialog({
  */
 export function ResetGateConnectDialog({
   acknowledged,
+  busy,
   onAcknowledgedChange,
   onCancel,
   onReset,
 }: {
   acknowledged: boolean;
+  /** A write is in flight. The primary names the operation instead of sitting
+   *  idle, and both buttons refuse a second click - `useSettingsActions` has
+   *  guarded against double submits with its own `busy` since it was written,
+   *  but only `SwitchGatewayDialog` was ever handed the flag, so every other
+   *  Settings dialog looked untouched for the whole write. */
+  busy?: boolean;
   onAcknowledgedChange: (next: boolean) => void;
   onCancel: () => void;
   onReset: () => void;
@@ -1664,14 +1770,14 @@ export function ResetGateConnectDialog({
       title="Reset Gate Connect"
       width={544}
       subtitle="This removes Gate Connect setup from this device."
-      secondary={{ label: "Cancel", onClick: onCancel }}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{
-        label: "Reset Gate Connect",
+        label: busy ? "Working…" : "Reset Gate Connect",
         onClick: onReset,
         destructive: true,
-        disabled: !acknowledged,
+        disabled: busy || !acknowledged,
       }}
-      onDismiss={onCancel}
+      onDismiss={busy ? undefined : onCancel}
     >
       <ModalSteps
         label="What happens next:"
@@ -1914,7 +2020,7 @@ export type SendDiagnosticsState =
   | { kind: "confirm" }
   | { kind: "sending" }
   | { kind: "sent"; reference: string }
-  | { kind: "failed"; title: string; hint: string };
+  | { kind: "failed"; title: string; hint: string; raw?: string };
 
 /**
  * Send one diagnostics report (AG-603).
@@ -1969,8 +2075,11 @@ export function SendDiagnosticsDialog({
         sent
           ? { label: copied ? "Copied" : "Copy reference", onClick: onCopyReference }
           : {
+              // With the ellipsis, like every other in-flight label in this
+              // file ("Working…"). Without it the button read as a state the
+              // dialog had arrived at rather than one it was passing through.
               label: sending
-                ? "Sending"
+                ? "Sending…"
                 : state.kind === "failed"
                   ? "Retry"
                   : "Send",
@@ -2005,6 +2114,13 @@ export function SendDiagnosticsDialog({
             <DialogError>
               <p className="font-medium">{state.title}</p>
               <p className="mt-1">{state.hint}</p>
+              {/* The hint is `classifyError`'s fallback, which ends "the
+                * details below help when reporting it" - and there were no
+                * details below. The classifier had the raw message all along;
+                * this dialog was the one surface that dropped it on the way in.
+                * Same disclosure `ErrorBanner` and the setup screen use, so the
+                * copy behaves the same way wherever that sentence appears. */}
+              <ErrorDetails raw={state.raw} title={state.title} />
             </DialogError>
           )}
           <CollectedDataScroller />
@@ -2188,13 +2304,18 @@ export type DialogTeardownReport = Record<
 
 export function TeardownReportDialog({
   report,
+  reason = "teardown",
   onClose,
 }: {
   report: DialogTeardownReport;
+  /** What produced this report - see `TeardownReason`. Defaults to `teardown`,
+   *  which is what every caller but sign-out means. */
+  reason?: TeardownReason;
   onClose: () => void;
 }) {
   const outstanding =
     report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
+  const signOut = reason === "sign-out";
   const sections: {
     key: keyof TeardownReport;
     title: string;
@@ -2203,8 +2324,18 @@ export function TeardownReportDialog({
   }[] = [
     {
       key: "still_gate",
-      title: "Still using Gate’s values",
-      detail: "The teardown could not put these back. Their config still points at Gate.",
+      // Sign-out keeps configs deliberately, so this bucket is not a failure
+      // there and must not read as one. The fixed sentence below reported "the
+      // teardown could not put these back" over an operation that never tried,
+      // which is a false failure report about the app's own decision - and it
+      // arrived with a Retry pill beside it inviting the user to fix nothing.
+      // What the user actually needs to know is where those tools now point.
+      title: signOut
+        ? "Still pointing at Gate"
+        : "Still using Gate’s values",
+      detail: signOut
+        ? "Left as they were, on purpose. Their config still points at Gate, which now has no session behind it."
+        : "The teardown could not put these back. Their config still points at Gate.",
       tone: "amber",
     },
     {
@@ -2230,13 +2361,25 @@ export function TeardownReportDialog({
   ];
   return (
     <Modal
-      tone={outstanding > 0 ? "warning" : "success"}
-      icon={outstanding > 0 ? "triangleAlert" : "circleCheck"}
-      title={outstanding > 0 ? "Some tools were left as they were" : "Every tool is back on its own settings"}
+      // Sign-out's heading says what happened rather than grading it. "Some
+      // tools were left as they were" is a warning when a restore was supposed
+      // to run and did not; after a deliberate sign-out it is simply the
+      // outcome, and the tone, glyph and count all followed that mistake.
+      tone={signOut ? "neutral" : outstanding > 0 ? "warning" : "success"}
+      icon={signOut ? "logOut" : outstanding > 0 ? "triangleAlert" : "circleCheck"}
+      title={
+        signOut
+          ? "You are signed out"
+          : outstanding > 0
+            ? "Some tools were left as they were"
+            : "Every tool is back on its own settings"
+      }
       subtitle={
-        outstanding > 0
-          ? `${outstanding} of ${outstanding + report.defaults.length} tools still need something.`
-          : "Nothing is left pointing at Gate."
+        signOut
+          ? "Your tools keep their settings. Sign in again to start routing through Gate."
+          : outstanding > 0
+            ? `${outstanding} of ${outstanding + report.defaults.length} tools still need something.`
+            : "Nothing is left pointing at Gate."
       }
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
@@ -2252,20 +2395,31 @@ export function TeardownReportDialog({
             {report[section.key].map((tool) => (
               <ModalSubject
                 key={tool.slug}
-                // `ModalSubject.icon` is a ReactNode, not an icon NAME - every
-                // other call site passes an element. The bare string "cube" here
-                // rendered as the literal word inside the 40px tile, and
-                // TypeScript could not object because `string` is a ReactNode.
+                // A node, not the name of one. `ModalSubject`'s `icon` is a
+                // `ReactNode`, so the bare string rendered as the literal word
+                // "cube" in every teardown row - the one caller that passed a
+                // string where the other five pass a glyph or a brand mark.
+                // The row's own product mark when it has one, and the cube only
+                // as the fallback for a slug with no mark.
                 icon={tool.icon ?? <Icon name="cube" size={16} />}
                 title={tool.name}
                 description={section.detail}
+                // No next-action pill after a sign-out. Nothing was attempted,
+                // so there is nothing to retry: an amber "Retry disconnect"
+                // under a heading that says these were left alone on purpose
+                // offers the user a fix for a failure that did not happen. The
+                // original finding asked for exactly this - the pills should
+                // either act or stop looking like buttons - and correcting the
+                // heading without the pills only fixed half of it.
                 pill={
-                  tool.next_action === "none"
-                    ? { label: "Done", tone: section.tone }
-                    : {
-                        label: TEARDOWN_ACTION_LABEL[tool.next_action],
-                        tone: section.tone,
-                      }
+                  signOut
+                    ? undefined
+                    : tool.next_action === "none"
+                      ? { label: "Done", tone: section.tone }
+                      : {
+                          label: TEARDOWN_ACTION_LABEL[tool.next_action],
+                          tone: section.tone,
+                        }
                 }
               />
             ))}
@@ -2308,6 +2462,7 @@ export type QuitChoice = "disconnect" | "leave";
 
 export function QuitDialog({
   tools,
+  platform,
   choice,
   onChoose,
   busy,
@@ -2322,6 +2477,10 @@ export function QuitDialog({
   busy?: boolean;
   onContinue: () => void;
   onCancel: () => void;
+  /** Names where the app lives when the window is not on screen. The note below
+   *  said "the menu bar" on every platform, which is a place Windows and GNOME
+   *  users do not have. */
+  platform: Platform;
 }) {
   const plural = tools.length > 1;
   return (
@@ -2372,12 +2531,26 @@ export function QuitDialog({
           onSelect={() => onChoose("leave")}
         />
       </div>
+      {/* Two corrections to the drawn sentence, both of them about what this
+        * app actually does on the OS it is running on.
+        *
+        * "the menu bar" was hardcoded, so Windows and Linux users were pointed
+        * at somewhere their desktop has no such thing - while `Onboarding`'s
+        * own tray step had been naming all three correctly the whole time.
+        * `trayLocationName` is now the one place that answers this.
+        *
+        * And "minimize this app to" was never true anywhere: minimizing sends
+        * the window to the taskbar or the dock, and it is *closing* it that
+        * hides it and leaves Gate in the tray. Both are safe, which is the
+        * reassurance the note exists to give, so it now says both rather than
+        * naming the one action that does not do what it claimed. */}
       <ModalNote tone="info">
         <span className="font-medium">
           Closing the main window is a different action.
         </span>{" "}
-        You can safely <span className="font-medium">minimize</span> this app to
-        the menu bar to keep protection running quietly.
+        You can safely <span className="font-medium">close or minimize</span>{" "}
+        this window. Gate Connect keeps running in {trayLocationName(platform)},
+        and protection continues quietly.
       </ModalNote>
     </Modal>
   );
@@ -2424,9 +2597,24 @@ export function QuitSafeToCloseDialog({
       }}
       onDismiss={busy ? undefined : onCancel}
     >
+      {/* The drawn second sentence was "Setup will be waiting the next time you
+        * open the app", and it is not true of this branch. Quitting with a
+        * disconnect calls `snapshot_and_disable_everything`, which puts tool
+        * configs back and does nothing else: the session, the organization and
+        * the certificate all survive, and the engine re-enables itself on the
+        * next launch. The native notification fired seconds later by the same
+        * teardown already says so in as many words ("everything reconnects when
+        * Gate Connect starts again"), so the drawn copy contradicted the app
+        * twice over - once about the facts, once about itself.
+        *
+        * This is the THIRD standing copy exception, after `Replace API key` and
+        * `Disconnect Gate?`. Decided 2026-09-10 rather than deduced: CLAUDE.md
+        * asks for a third to be raised, and it was. See
+        * `docs/figma-questions-for-design.md`. Do not "fix" it back to
+        * `694:33002`. */}
       <ModalNote tone="neutral">
         {disconnected
-          ? "Tools are disconnected and their previous settings are restored. Setup will be waiting the next time you open the app."
+          ? "Tools are disconnected and their previous settings are restored. You will still be signed in the next time you open the app."
           : "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."}
       </ModalNote>
     </Modal>

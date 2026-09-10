@@ -105,13 +105,21 @@ export function Overview({
 }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
-      <header className="flex items-baseline justify-between">
+      {/* `mb-2` on top of the pane's `gap-4` for a 24px drop to whatever comes
+        * first below, alert or stat tiles. The frame draws the header at y0
+        * 24px tall and opens its content at y48 (`864:3475` -> `864:3478`),
+        * where the cards below it are 16px apart - so this one gap is not the
+        * pane's rhythm and cannot come from `gap-4`. */}
+      <header className="mb-2 flex items-baseline justify-between">
         <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
           Overview
         </h1>
         <div className="flex items-center gap-3">
           {scope}
-          <span className="text-base-xs text-base-muted-foreground">{period}</span>
+          {/* `copy/14`, not `copy/12`: the period label is a 20px-tall text
+            * node in both Overview generations (`864:3477`, `121:34782`'s
+            * parent), which is 14px type. */}
+          <span className="text-sm text-base-muted-foreground">{period}</span>
         </div>
       </header>
 
@@ -182,14 +190,22 @@ function PolicyTable({
         <div className="px-4">
         <table className="mt-5 w-full">
         <thead>
-          <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-3 text-left font-normal">
+          {/* `label/12`: Geist **Medium** 12/16 (`884:9598`). `font-medium`
+            * rather than the `font-normal` that used to undo preflight's bold,
+            * and `leading-4` because `text-base-xs` carries no line-height of
+            * its own and would otherwise inherit preflight's 1.5 (18px). */}
+          <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+            <th scope="col" className="pb-3 text-left">
               Policy type
             </th>
-            <th scope="col" className="pb-3 text-right font-normal">
+            <th scope="col" className="pb-3 text-right">
               Action
             </th>
-            <th scope="col" className="w-24 pb-3 text-right font-normal">
+            {/* 110px, not 96: the frame right-aligns the status badge to the
+              * card's inner edge and the action badge 60px before it
+              * (`884:9609` -> `884:9611`, and the same 60 on all three rows).
+              * The badge is 50 wide, so the column has to be 50 + 60. */}
+            <th scope="col" className="w-[110px] pb-3 text-right">
               Status
             </th>
           </tr>
@@ -198,7 +214,10 @@ function PolicyTable({
           {policies.map((policy) => (
             <tr key={policy.id} className="border-t border-base-border">
               <td className="py-3">
-                <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
+                {/* `heading/14`: Geist Medium 14/20 at 0% tracking
+                  * (`884:9607`), which is why the tracking is named rather
+                  * than left to `text-sm`'s own -0.14px. */}
+                <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
                   <Icon name={policy.icon} size={20} className="text-base-muted-foreground" />
                   {policy.name}
                 </span>
@@ -206,7 +225,7 @@ function PolicyTable({
               <td className="py-3 text-right">
                 {policy.action ? (
                   <span
-                    className={`inline-block rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                    className={`inline-flex items-center rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
                   >
                     {policy.action}
                   </span>
@@ -264,11 +283,12 @@ function SavingsTable({
       <div className="px-4">
       <table className="mt-5 w-full">
         <thead>
-          <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-3 text-left font-normal">
+          {/* `label/12`, as on the policies table above. */}
+          <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+            <th scope="col" className="pb-3 text-left">
               Savings type
             </th>
-            <th scope="col" className="w-24 pb-3 text-right font-normal">
+            <th scope="col" className="w-24 pb-3 text-right">
               Status
             </th>
           </tr>
@@ -277,7 +297,8 @@ function SavingsTable({
           {savings.map((saving) => (
             <tr key={saving.id} className="border-t border-base-border">
               <td className="py-3">
-                <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
+                {/* `heading/14`, as on the policies table above. */}
+                <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
                   <Icon name={saving.icon} size={20} className="text-base-muted-foreground" />
                   {saving.name}
                 </span>
@@ -328,9 +349,12 @@ function StatusPill({ on }: { on: boolean }) {
         on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-base-foreground"
       }`}
     >
-      {/* The drawn glyph is circleCheck at 12px in green/800, one step lighter
-        * than the label (sampled from `Overview/routed-1` on 2026-08-21). */}
-      {on && <Icon name="circleCheck" size={12} className="text-green-800" />}
+      {/* 14px, in green/800 one step lighter than the label. The 12px this
+        * drew was sampled off `Overview/routed-1` on 2026-08-21; both current
+        * policies cards draw the glyph at 14 (`884:9612` in the 720px frame,
+        * `884:10387` in the 1280 one), and 14 is also what makes the badge
+        * measure the drawn 50px: 8 + 14 + 4 + 15.84 + 8. */}
+      {on && <Icon name="circleCheck" size={14} className="text-green-800" />}
       {on ? "On" : "Off"}
     </span>
   );

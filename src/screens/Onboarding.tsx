@@ -7,7 +7,12 @@ import { setTourSeen } from "../lib/tour";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Icon } from "../components/gc/Icon";
 import type { IconName } from "../components/gc/Icon";
-import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
+import {
+  secretStoreName,
+  trayLocationName,
+  usePlatform,
+  type Platform,
+} from "../lib/platform";
 import whatIsGateConnect from "../assets/onboarding-what-is-gate-connect.png";
 import seeWhatGateIsDoing from "../assets/onboarding-see-what-gate-is-doing.png";
 import whereIsGateConnect from "../assets/onboarding-where-is-gate-connect.png";
@@ -16,16 +21,15 @@ import whereIsGateConnect from "../assets/onboarding-where-is-gate-connect.png";
  * the seen-flag in its own storage without waiting for a restart. */
 export const TOUR_SEEN_EVENT = "gc:tour-seen";
 
-/** Where the tray icon lives, in this OS's own vocabulary. */
+/** Where the tray icon lives, in this OS's own vocabulary.
+ *
+ *  The location noun is `trayLocationName`'s now, shared with the quit chooser,
+ *  which had been hardcoding "menu bar" on every platform. Only the corner
+ *  differs here: Windows puts its tray at the bottom right, the other two at
+ *  the top right. */
 function whereItLives(platform: Platform): string {
-  switch (platform) {
-    case "windows":
-      return "Gate Connect lives in the system tray at the bottom right of your screen.";
-    case "linux":
-      return "Gate Connect lives in the top bar at the top right of your screen.";
-    default:
-      return "Gate Connect lives in the menu bar at the top right of your screen.";
-  }
+  const corner = platform === "windows" ? "bottom right" : "top right";
+  return `Gate Connect lives in ${trayLocationName(platform)} at the ${corner} of your screen.`;
 }
 
 type Step = {
@@ -195,23 +199,38 @@ function IntroButton({
   onClick,
   primary,
   disabled,
+  size = "default",
   className = "",
 }: {
   children: React.ReactNode;
   onClick: () => void;
   primary?: boolean;
   disabled?: boolean;
+  /**
+   * Which `Button` size this instance is. The footer pair is `Size=default`
+   * (h36, 10/12, 14px label, `232:4359` and `212:85188`); the locate control
+   * between the card and the footer is `Size=sm` (h32, 8/12, 12px label on a
+   * 6px gap, radius 4 - `267:5083`, which reports the variant by name). One
+   * component, two published recipes, and this had been drawing the footer's
+   * on both.
+   */
+  size?: "default" | "sm";
   className?: string;
 }) {
+  const sm = size === "sm";
   return (
     <button
       type="button"
       onClick={disabled ? undefined : onClick}
       aria-disabled={disabled || undefined}
-      className={`flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex items-center justify-center font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+        sm
+          ? "h-8 gap-1.5 rounded-control px-3 text-base-xs leading-4 tracking-button-xs"
+          : "h-9 gap-2 rounded-md px-3 text-sm tracking-button-sm"
+      } ${
         primary
           ? "border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] text-base-primary-foreground shadow-base-btn-primary hover:bg-blue-ribbon-800"
-          : "border border-base-input bg-base-card text-base-primary shadow-base-btn hover:bg-gray-50"
+          : `border border-base-input bg-base-card text-base-primary hover:bg-gray-50 ${sm ? "shadow-base-btn-sm" : "shadow-base-btn"}`
       } ${disabled ? "cursor-not-allowed" : ""} ${className}`}
     >
       {children}
@@ -392,10 +411,12 @@ export function Onboarding() {
               </section>
 
               {/* Outside the card, between it and the footer, which is where
-                  the frame puts it. */}
+                  the frame puts it: 16px under the card, not 24. The card
+                  bottoms out at y596 and the button sits at y612
+                  (`212:85100` -> `267:5083`). */}
               {step.locate && (
-                <div className="mt-6 flex justify-center">
-                  <IntroButton onClick={() => void invoke("reveal_popover")}>
+                <div className="mt-4 flex justify-center">
+                  <IntroButton size="sm" onClick={() => void invoke("reveal_popover")}>
                     <Icon name="focus" size={16} />
                     Show me where Gate Connect lives
                   </IntroButton>
@@ -419,7 +440,10 @@ export function Onboarding() {
               }}
               // WKWebView renders native checkboxes white-on-white and
               // effectively invisible, so we draw the box + check ourselves.
-              className="peer size-4 cursor-pointer appearance-none rounded-xs border border-base-input bg-base-background shadow-base-xs transition-colors checked:border-base-primary checked:bg-base-primary"
+              // Radius 4, not the 2px this drew: the `Checkbox` component's own
+              // box is `borderRadius=4px` on `base/background` with a
+              // `base/input` line (`I212:85185;46:68`).
+              className="peer size-4 cursor-pointer appearance-none rounded-control border border-base-input bg-base-background shadow-base-xs transition-colors checked:border-base-primary checked:bg-base-primary"
             />
             <svg
               aria-hidden
