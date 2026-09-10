@@ -249,7 +249,7 @@ export function AppPane({
 
       {alert}
 
-      <StatTiles stats={stats} pending={pending} />
+      <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
       <MessagesChart
         buckets={buckets}
         pending={pending}

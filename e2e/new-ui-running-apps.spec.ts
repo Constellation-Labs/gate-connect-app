@@ -157,9 +157,14 @@ test.describe("new UI running apps", () => {
     await expect(dialog).not.toContainText("Claude Code");
   });
 
-  test("names the route in use and the route asked for", async ({ boot }) => {
-    // "Reopen required" without the pair does not say what reopening would
-    // change, which is the whole reason this step exists rather than a sentence.
+  test("names the running tool and who reopens it", async ({ boot }) => {
+    // The route pair used to be asserted here. It is development-only now, and
+    // Playwright serves the dev server (`playwright.config.ts`), so those two
+    // lines would have stayed green forever while proving nothing about a
+    // release build - a test named for AC 1 asserting AC 1 after AC 1 stopped
+    // shipping. Both sides of the build split are covered properly in
+    // `dialogs.apply.test.tsx`, which stubs the flag; what is left here is what
+    // the frame actually draws.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CODEX],
@@ -170,8 +175,7 @@ test.describe("new UI running apps", () => {
     await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toContainText("In use:");
-    await expect(dialog).toContainText("Requested:");
+    await expect(dialog).toContainText("Codex");
     // Who reopens it, read off the backend rather than written into the copy -
     // and said ONCE, in the note, rather than repeated on every row. The rows
     // carried their own copy of this until the frame (`130:58427`) settled that

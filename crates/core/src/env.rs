@@ -555,22 +555,42 @@ mod tests {
             );
         });
 
-        // The same rule for every other published override, so a new one cannot
-        // be added through `env_path` and quietly reopen this.
-        for var in [
-            "CLAUDE_CONFIG_DIR",
-            "OPENCODE_CONFIG_DIR",
-            "OPENCLAW_CONFIG_PATH",
-            "HERMES_HOME",
-        ] {
+        // Every other published override, asserted on its RESOLVER rather than
+        // on `tool_path_override` itself.
+        //
+        // Asserting the helper proved nothing: it checks the seam before it ever
+        // looks at `var`, so under a set test home it answers `None` for any
+        // string at all, including one no resolver consults. A new
+        // `foo_config_dir` reaching for `env_path("FOO_HOME")` directly would
+        // reopen the seam for `FOO_HOME`, this test would stay green, and the
+        // next suite run would read and overwrite the developer's real Foo
+        // config - the incident this whole guard exists to prevent, for the
+        // ninth variable. Going through the resolver is what makes the check
+        // load-bearing, which is what the `CODEX_HOME` case above already did.
+        //
+        // All eight, because the doc on `tool_path_override` claims all eight:
+        // `OPENCODE_CONFIG`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` were covered
+        // nowhere before this.
+        let resolvers: [(&str, fn() -> Result<PathBuf>); 7] = [
+            ("CLAUDE_CONFIG_DIR", claude_code_config_dir),
+            ("OPENCODE_CONFIG_DIR", opencode_config_dir),
+            ("OPENCODE_CONFIG", opencode_config_path),
+            ("XDG_CONFIG_HOME", opencode_config_dir),
+            ("XDG_DATA_HOME", opencode_auth_path),
+            ("OPENCLAW_CONFIG_PATH", openclaw_config_path),
+            ("HERMES_HOME", hermes_config_dir),
+        ];
+        for (var, resolve) in resolvers {
             with_var(var, Some("/tmp/gate-elsewhere"), || {
                 with_var(
                     "GATE_CONNECT_TEST_HOME",
                     Some(&scratch.to_string_lossy()),
                     || {
+                        let path = resolve().unwrap();
                         assert!(
-                            tool_path_override(var).is_none(),
-                            "{var} punched through the test home"
+                            path.starts_with(&scratch),
+                            "{var} punched through the test home: {}",
+                            path.display()
                         );
                     },
                 );

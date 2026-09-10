@@ -302,6 +302,20 @@ describe("AppPane counters and chart", () => {
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
   });
 
+  it("prints no figure at all when nothing on the pane is attributable", () => {
+    // The fixture is all zeros on purpose: these are real readings, and a pane
+    // that cannot attribute anything must not print them. The earlier version of
+    // this test rendered exactly this state and asserted only on the chart, so
+    // it walked past "Messages 0 / Blocked-Flagged 0 / Tokens saved 0%" sitting
+    // above the very note saying nothing could be attributed.
+    render(pane({ unattributed: true, unavailable: { chart: true } }));
+
+    expect(screen.queryByText("0")).toBeNull();
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("+$0.00")).toBeNull();
+    expect(screen.getAllByText("n/a").length).toBe(3);
+  });
+
   it("says a chat domain's chart is unattributed rather than unreadable", () => {
     render(pane({ unattributed: true, unavailable: { chart: true } }));
     const chart = card("Messages");

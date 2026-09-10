@@ -121,9 +121,21 @@ const UNAVAILABLE = "n/a";
 export function StatTiles({
   stats,
   pending,
+  unattributed,
   onSelectTokensSaved,
 }: {
   stats: UsageStats;
+  /** No figure on this surface can be a measurement, so none is printed.
+   *
+   *  The flag reaches the chart and the feed; without it here the three biggest
+   *  numbers on the pane were left to the caller's good behaviour. `NewUiApp`
+   *  happens to pass all-`null` stats for a chat domain, so nothing shipped
+   *  wrong - but that put design principle 6 in the shell rather than in the
+   *  component that owns the flag, and a caller passing real zeros would have
+   *  drawn "0 / 0 / 0%" directly above "Messages aren't attributed to this app".
+   *  `lib/activity.ts` keeps `null` and `0` apart precisely so no surface can
+   *  flatten them. Forces the unavailable reading rather than trusting input. */
+  unattributed?: boolean;
   /** First load has not landed yet. Renders skeletons rather than figures: a
    *  zero is a real reading, and `N/A` says there is none. Neither is true
    *  while we are still asking. */
@@ -135,7 +147,7 @@ export function StatTiles({
   // draws a skeleton, `N/A` means there is no reading behind this counter, and
   // a number - including zero - is a reading and prints as one.
   const count = (value: number | null) =>
-    pending ? null : value === null ? UNAVAILABLE : value.toLocaleString();
+    pending ? null : unattributed || value === null ? UNAVAILABLE : value.toLocaleString();
   return (
     <Card className="flex" busy={pending}>
       {pending && <span className="sr-only">Loading your activity</span>}
@@ -146,11 +158,15 @@ export function StatTiles({
         value={
           pending
             ? null
-            : stats.tokensSavedPercent === null
+            : unattributed || stats.tokensSavedPercent === null
               ? UNAVAILABLE
               : `${stats.tokensSavedPercent}%`
         }
-        delta={pending ? undefined : (stats.tokensSavedAmount ?? undefined)}
+        delta={
+          pending || unattributed
+            ? undefined
+            : (stats.tokensSavedAmount ?? undefined)
+        }
         divided
         onSelect={onSelectTokensSaved}
       />

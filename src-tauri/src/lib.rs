@@ -15,6 +15,7 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -1716,7 +1717,32 @@ struct BackendError {
     message: String,
 }
 
-static PENDING_BACKEND_ERRORS: Mutex<Vec<BackendError>> = Mutex::new(Vec::new());
+/// Buffered failures, **per webview label**, because both shells drain.
+///
+/// This was one shared `Vec` and the drain took it (`std::mem::take`). That was
+/// correct while exactly one shell drained; the tray gained a drain and the two
+/// began racing over a single take, with the loser getting `[]`. Both webviews
+/// are mounted from launch - `tauri.conf.json` declares `main` and `tray`
+/// created hidden and never destroyed - so the race is live on every report, and
+/// `report_backend_error` broadcasts the nudge to both.
+///
+/// Two ways that showed. A resume failure raised in the popover could be taken
+/// by the hidden main window, leaving the tray to redraw an identical card and
+/// say nothing, which is the dead button this was meant to fix. And a startup
+/// failure could be taken by the hidden *tray*, where `actionError` is never
+/// cleared on hide, so it surfaced later as an unexplained banner over a popover
+/// the user had just opened while the foreground window showed nothing.
+///
+/// A copy per label fixes both: each shell drains only what was queued for it,
+/// and neither can consume the other's. Keyed by label rather than by a cursor
+/// because the buffer evicts its oldest entry at the cap, and a per-shell index
+/// into a shifting `Vec` is a second thing to get wrong.
+static PENDING_BACKEND_ERRORS: Mutex<Option<HashMap<String, Vec<BackendError>>>> =
+    Mutex::new(None);
+
+/// The webviews that drain. A label not listed here queues nothing, which is
+/// what keeps a transient window from accumulating a buffer nobody reads.
+const ERROR_SINK_LABELS: [&str; 2] = ["main", "tray"];
 /// Set once in `setup`; lets failure sites without an AppHandle (threads,
 /// spawn_blocking closures) nudge the popover.
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -1725,11 +1751,18 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// popover to drain it. Capped so a repeating failure can't grow unbounded;
 /// oldest entries drop first.
 fn report_backend_error(context: &'static str, message: String) {
-    if let Ok(mut pending) = PENDING_BACKEND_ERRORS.lock() {
-        if pending.len() >= 32 {
-            pending.remove(0);
+    if let Ok(mut guard) = PENDING_BACKEND_ERRORS.lock() {
+        let per_label = guard.get_or_insert_with(HashMap::new);
+        for label in ERROR_SINK_LABELS {
+            let pending = per_label.entry(label.to_string()).or_default();
+            if pending.len() >= 32 {
+                pending.remove(0);
+            }
+            pending.push(BackendError {
+                context,
+                message: message.clone(),
+            });
         }
-        pending.push(BackendError { context, message });
     }
     if let Some(handle) = APP_HANDLE.get() {
         let _ = handle.emit("backend-error-pending", ());
@@ -1758,12 +1791,23 @@ fn signal_session_changed() {
     }
 }
 
-/// Hand the buffered backend failures to the frontend and clear the buffer.
+/// Hand the calling window its buffered backend failures and clear ITS copy.
+///
+/// Scoped to `window.label()`: see [`PENDING_BACKEND_ERRORS`]. A drain from a
+/// label that queues nothing returns empty rather than stealing another
+/// shell's, which is the behaviour that matters if a third window ever calls
+/// this.
 #[tauri::command]
-fn drain_backend_errors() -> Vec<BackendError> {
+fn drain_backend_errors(window: tauri::Window) -> Vec<BackendError> {
+    let label = window.label().to_string();
     PENDING_BACKEND_ERRORS
         .lock()
-        .map(|mut v| std::mem::take(&mut *v))
+        .ok()
+        .and_then(|mut guard| {
+            guard
+                .as_mut()
+                .and_then(|per_label| per_label.get_mut(&label).map(std::mem::take))
+        })
         .unwrap_or_default()
 }
 
@@ -5230,6 +5274,58 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One shell draining cannot starve the other.
+    ///
+    /// The buffer was a single `Vec` and the drain took it. That held while one
+    /// shell drained; the tray gained a drain, both webviews are mounted from
+    /// launch, and `report_backend_error` nudges both - so the two raced over
+    /// one take and the loser got nothing. The user-visible halves: a resume
+    /// failure raised in the popover taken by the hidden main window, leaving
+    /// the tray silent (the dead button this was fixing), and a startup failure
+    /// taken by the hidden tray, surfacing later as an unexplained banner.
+    ///
+    /// `drain_backend_errors` is keyed on the calling window's label, so this
+    /// exercises the buffer directly rather than through a `tauri::Window` a
+    /// unit test cannot build.
+    #[test]
+    fn each_shell_drains_its_own_copy_of_a_failure() {
+        fn drain(label: &str) -> Vec<BackendError> {
+            PENDING_BACKEND_ERRORS
+                .lock()
+                .ok()
+                .and_then(|mut guard| {
+                    guard
+                        .as_mut()
+                        .and_then(|per| per.get_mut(label).map(std::mem::take))
+                })
+                .unwrap_or_default()
+        }
+
+        if let Ok(mut guard) = PENDING_BACKEND_ERRORS.lock() {
+            *guard = None;
+        }
+        report_backend_error("provider_restore", "resume failed".into());
+
+        let main_first = drain("main");
+        assert_eq!(
+            main_first.len(),
+            1,
+            "the window should see the failure it was told about"
+        );
+
+        let tray_after = drain("tray");
+        assert_eq!(
+            tray_after.len(),
+            1,
+            "the tray must still see it: with one shared buffer this was empty, \
+             and the popover redrew an identical card saying nothing"
+        );
+
+        // And a drain is still a drain: neither shell re-reads its own.
+        assert!(drain("main").is_empty());
+        assert!(drain("tray").is_empty());
+    }
 
     /// The collision this normalisation exists to avoid.
     ///

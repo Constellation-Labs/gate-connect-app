@@ -86,6 +86,22 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
 }
 
 /**
+ * Whether this row has routes to draw at all.
+ *
+ * Callers ask BEFORE building the element, because `ModalSubject` guards on the
+ * `details` prop rather than on what it renders: `{details && <div class="mt-1"
+ * …>}`. A truthy element whose render returns `null` still produces the
+ * wrapper, and since the text column is a flex item the `mt-1` cannot collapse,
+ * so every reopen row gained a dead 4px in shipped builds - on the one dialog
+ * whose height was the reported bug. Same in dev whenever a row has no routes.
+ */
+function routesShown(tool: DialogReopenTool): boolean {
+  return (
+    import.meta.env.DEV && Boolean(tool.routeInUse) && Boolean(tool.requestedRoute)
+  );
+}
+
+/**
  * The two routes for one tool, when the sweep established both.
  *
  * **Development builds only.** AG-566 AC 1 asks the offer step to name the route
@@ -108,8 +124,7 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
  * (design, 2026-09-04), and these are endpoints rather than machine output.
  */
 function RoutePair({ tool }: { tool: DialogReopenTool }) {
-  if (!import.meta.env.DEV) return null;
-  if (!tool.routeInUse || !tool.requestedRoute) return null;
+  if (!routesShown(tool)) return null;
   return (
     // `break-words`, not `break-all`: at tray width `break-all` split hostnames
     // mid-token ("gateway-stag / ing.constellationgate.ai"), which is unreadable
@@ -486,7 +501,7 @@ export function ApplyChangesDialog({
           // rather than assuming it in copy is untouched by this: it says the
           // sentence belongs to "the confirmation", and the confirmation is the
           // note.
-          details={<RoutePair tool={tool} />}
+          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
@@ -545,7 +560,7 @@ export function CloseAppsDialog({
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
-          details={<RoutePair tool={tool} />}
+          details={routesShown(tool) ? <RoutePair tool={tool} /> : undefined}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
@@ -719,9 +734,11 @@ function ReopenToolRow({
           <p className="text-base-xs leading-4 text-neutral-600">
             {REOPEN_STAGE_DETAIL[tool.stage]}
           </p>
-          <div className="text-base-xs leading-4 text-neutral-600">
-            <RoutePair tool={tool} />
-          </div>
+          {routesShown(tool) && (
+            <div className="text-base-xs leading-4 text-neutral-600">
+              <RoutePair tool={tool} />
+            </div>
+          )}
           {tool.error && <ErrorDetails raw={tool.error} title="Details" />}
         </div>
         <Icon

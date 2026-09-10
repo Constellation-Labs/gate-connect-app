@@ -133,18 +133,26 @@ describe("the master status card", () => {
  * in the component's docstring and nowhere the user could see it.
  */
 describe("the security card", () => {
-  it("scopes an empty count to this run rather than claiming none ever", () => {
+  it("scopes an empty count rather than claiming none ever", () => {
     renderTray({ security: { state: "live", count: 0, onOpen: noop } });
 
-    expect(screen.getByText("No security events")).toBeTruthy();
-    expect(screen.getByText("Since Gate Connect started")).toBeTruthy();
+    expect(screen.getByText("No recent security events")).toBeTruthy();
+    // Not an absolute, and not a run-length claim either: the buffer is capped
+    // and is emptied on a credential change, so "since Gate Connect started"
+    // would be its own overclaim.
+    expect(screen.queryByText(/Since Gate Connect started/)).toBeNull();
   });
 
   it("scopes a non-empty count the same way", () => {
     renderTray({ security: { state: "live", count: 3, onOpen: noop } });
 
-    expect(screen.getByText("3 security events")).toBeTruthy();
-    expect(screen.getByText("Since Gate Connect started")).toBeTruthy();
+    expect(screen.getByText("3 recent security events")).toBeTruthy();
+  });
+
+  it("counts one event in the singular", () => {
+    renderTray({ security: { state: "live", count: 1, onOpen: noop } });
+
+    expect(screen.getByText("1 recent security event")).toBeTruthy();
   });
 });
 

@@ -364,9 +364,15 @@ export function ModalSubject({
   title: string;
   description?: string;
   /** A second line under the description, for a subject that has to carry more
-   *  than a sentence - the reopen step names two routes and who reopens the
-   *  tool, and none of that fits in `description`, which truncates to one line
-   *  by design. Wraps rather than truncating: it is the content of the step. */
+   *  than a sentence - the reopen step names two routes, and that does not fit
+   *  in `description`, which truncates to one line by design. Wraps rather than
+   *  truncating: it is the content of the step. (Who reopens the tool used to
+   *  live here too; it is said once in the note now.)
+   *
+   *  **Pass `undefined`, not an element that renders `null`.** The guard below
+   *  is on this prop, so a truthy element still draws the `mt-1` wrapper, and in
+   *  a flex column that margin cannot collapse. `dialogs.tsx` decides before
+   *  building the element for exactly this reason. */
   details?: ReactNode;
   /**
    * `subject` names a thing and describes it: bold name over grey detail, used

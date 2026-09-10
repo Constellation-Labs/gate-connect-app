@@ -58,13 +58,18 @@ describe("TeardownReportDialog row marks", () => {
   });
 
   it("falls back to a glyph, not a word, when no mark is supplied", () => {
-    const { container } = renderReport({
+    renderReport({
       defaults: [{ slug: "mystery", name: "Mystery Tool", next_action: "none" }],
     });
 
     expect(screen.getByText("Mystery Tool")).toBeTruthy();
     expect(screen.queryByText("cube")).toBeNull();
-    // The fallback is still drawn - the row is not left with an empty tile.
-    expect(container.querySelectorAll("svg").length).toBeGreaterThan(0);
+
+    // Scoped to the ROW, not the dialog. A `container.querySelectorAll("svg")`
+    // here was satisfied by the Modal's own tone tile, which always draws an
+    // icon: dropping the fallback entirely and leaving the 40px row tile empty
+    // kept all three tests green.
+    const row = screen.getByText("Mystery Tool").closest("div")?.parentElement;
+    expect(row?.querySelectorAll("svg").length ?? 0).toBeGreaterThan(0);
   });
 });

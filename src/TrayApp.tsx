@@ -882,10 +882,13 @@ export function TrayApp() {
               // effect was the tray closing.
               //
               // Unconditional, unlike the window banner's own `onReviewDetails`
-              // (gated on `summary`), and it agrees with it: `recovery_summary`
-              // answers `Some` whenever the journal exists OR the pending set is
-              // non-empty, and a non-empty pending set is this card's whole
-              // render condition. So there is always something to review here.
+              // (gated on its cached `summary`). That is not the same fact, and
+              // an earlier version of this comment claimed it was: the backend
+              // answering `Some` says nothing about whether the *window* holds a
+              // summary, and the window is what decides whether anything opens.
+              // The tray cannot see that state, so it does not try to predict
+              // it - the window re-reads the summary on this event and routes to
+              // Settings when there is nothing to show.
               onReview: () =>
                 void requestRecoveryDetails().catch((e) =>
                   setActionError(classifyError(e, "generic")),

@@ -1688,15 +1688,32 @@ export function NewUiApp() {
    * would be identical to the bug this fixes, which is what makes it worth
    * saying twice.
    *
-   * No guard on `summary` here. The tray only offers the button when a summary
-   * exists - the same condition the banner's own `onReviewDetails` uses - and
-   * the dialog slot requires `detailsOpen && summary` anyway, so a request that
-   * somehow arrived without one opens nothing rather than an empty dialog.
+   * **Reads the summary before opening, rather than trusting the cache.** The
+   * first version set `detailsOpen` alone and reasoned that the dialog slot's
+   * `detailsOpen && summary` made that safe. It does not: it makes the request a
+   * no-op *now* and a surprise *later*, because nothing resets `detailsOpen`
+   * except the dialog's own `onClose`, which cannot run if the dialog never
+   * rendered. So the first summary to arrive afterwards popped the dialog
+   * unprompted.
+   *
+   * Two reachable ways the cache is empty. `recoverySummary()` swallows its
+   * failure at mount (`loadPending`), and the visibility edge only calls
+   * `redetect`, which does not re-read it. And the window may not be past setup
+   * at all - there is no `AppShell` and no dialog slot then - which the tray can
+   * reach, because its recovery card runs off its own `pendingRestore` read that
+   * needs no account.
+   *
+   * So: fetch, commit, and only then open. Nothing to show routes to Settings
+   * rather than opening an empty dialog, mirroring what the org-switch listener
+   * above does with its own dead end.
    */
   useEffect(() => {
-    const unlisten = listen("recovery-details-requested", () => {
+    const unlisten = listen("recovery-details-requested", async () => {
       setActionError(null);
-      setDetailsOpen(true);
+      const fresh = await recoverySummary().catch(() => null);
+      if (fresh) setSummary(fresh);
+      if (fresh) setDetailsOpen(true);
+      else setView({ kind: "settings" });
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
@@ -2042,18 +2059,37 @@ export function NewUiApp() {
   }, [setupStageKind, setupOrgs, loadOrgs]);
 
   /**
-   * The topbar banner's "N of M Apps", over every rail row.
+   * The rows the topbar banner counts: every rail row the family switches can
+   * actually route.
    *
    * `railApps`, not `apps`: the latter is installed config tools only, so the
-   * banner counted a different population from the rail beneath it and the
-   * tray's identical card beside it - one session showed "2 of 6 Apps" in the
-   * window while the tray said "4 of 12 tools routing", the same machine
-   * described twice. The rail is what "Apps" means to the reader (principle 3:
-   * the sidebar lists apps), it is what the user can act on, and the chat
-   * domains it adds are exactly the rows the banner was silently dropping.
-   * `Tray`'s `MasterCard` derives its counts the same way for the same reason.
+   * banner counted a different population from the rail beneath it - "6 Apps"
+   * over a sidebar listing twelve rows. The rail is what "Apps" means to the
+   * reader (principle 3: the sidebar lists apps).
+   *
+   * Minus the chat rows, which is the correction that came out of review. A
+   * `chat: true` member is deliberately never flipped by a family switch -
+   * `cascadeTargets` returns false for it and `cascadeDesired` excludes it -
+   * because it intercepts a session-cookie surface rather than a key-brokered
+   * API, so routing it stays a per-row act. Counting those rows in the
+   * DENOMINATOR of a health banner means `allProtected` can never be true on a
+   * default install: `chatgpt` ships supported and is not staging-gated, so a
+   * user who switched on everything Gate offers to cascade would read "partly
+   * routing" in amber on the topbar permanently, unless they separately chose
+   * to route their ChatGPT web traffic. A banner that cannot go green is worse
+   * than a banner that counts a smaller set.
    */
-  const protectedCount = railApps.filter(
+  const bannerApps = useMemo(() => {
+    const chatSlugs = new Set(
+      groups
+        .flatMap((g) => g.members)
+        .filter((m) => m.chat)
+        .map((m) => m.key),
+    );
+    return railApps.filter((a) => !chatSlugs.has(a.slug));
+  }, [groups, railApps]);
+
+  const protectedCount = bannerApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
 
@@ -2424,7 +2460,7 @@ export function NewUiApp() {
             }
           : undefined
       }
-      routing={{ protectedCount, totalCount: railApps.length }}
+      routing={{ protectedCount, totalCount: bannerApps.length }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}

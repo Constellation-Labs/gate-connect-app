@@ -846,21 +846,28 @@ function SecurityCard({
     >
       <span className="flex min-w-0 items-center gap-2.5">
         <Icon name="shieldCheck" size={20} />
-        {/* Two lines, the master card's recipe. The count is what the feed has
-          * buffered since launch, and the label used to state it as an absolute:
-          * "No security events" beside an Overview reporting two blocked in the
-          * last 24 hours reads as a broken feed, and the LIVE pill next to it
-          * makes that reading worse rather than better. The scope was in this
-          * function's own docstring and nowhere the user could see it. */}
-        <span className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium leading-5 text-base-foreground">
-            {security.count === 0
-              ? "No security events"
-              : `${security.count} security event${security.count === 1 ? "" : "s"}`}
-          </span>
-          <span className="truncate text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
-            Since Gate Connect started
-          </span>
+        {/* "recent", in the count itself.
+          *
+          * A bare "No security events" beside an Overview reporting blocked
+          * traffic in the last 24 hours reads as a broken feed, and the LIVE
+          * pill makes that worse rather than better. The first fix for that was
+          * a second line reading "Since Gate Connect started", which review
+          * caught as a second inaccurate absolute: the figure is
+          * `securityFeed.events.length`, and that array is capped at
+          * `FEED_CAPACITY` (200, oldest evicted) and emptied whenever the
+          * credential changes - an org switch or a re-auth. So a busy machine
+          * would read "200 events since Gate Connect started" while the true
+          * number was thousands, and two seconds after an org switch it would
+          * claim none on a process up for hours.
+          *
+          * "recent" is true under all three: the cap, the clear, and a genuinely
+          * quiet run. One line rather than two also settles what truncation eats
+          * first - with a scope on its own line it was the SCOPE that got cut at
+          * large text scales, which is the wrong half to lose. */}
+        <span className="min-w-0 text-sm font-medium leading-5 text-base-foreground">
+          {security.count === 0
+            ? "No recent security events"
+            : `${security.count} recent security event${security.count === 1 ? "" : "s"}`}
         </span>
       </span>
       <span
