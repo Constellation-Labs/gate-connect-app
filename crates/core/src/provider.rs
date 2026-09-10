@@ -570,10 +570,10 @@ pub fn reconcile_enabled() -> Result<()> {
                 engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             if let Err(e) = integ.connect(&input) {
-                eprintln!(
-                    "[gate] auto-configuring {} failed: {e:#}",
+                crate::logging::failure(&format!(
+                    "auto-configuring {} failed: {e:#}",
                     integ.display_name()
-                );
+                ));
             }
         }
     }
@@ -621,7 +621,10 @@ fn reconcile_unmapped_tools(
             engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
-            eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
+            crate::logging::failure(&format!(
+                "re-applying {} failed: {e:#}",
+                integ.display_name()
+            ));
         }
     }
     Ok(())
@@ -778,7 +781,11 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
         // `disable_inner(_, false)`: the sweep is the master switch's doing,
         // and that one operator action already emits `proxy_disabled`.
         if let Err(e) = disable_inner(slug, false) {
-            eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
+            // `{e:#}` rather than `{e}`: the chain is the reason, and the outer
+            // context on its own routinely says only which step it was.
+            crate::logging::failure(&format!(
+                "disabling provider {slug:?} during master-off failed: {e:#}"
+            ));
         }
     }
     Ok(())
@@ -824,10 +831,10 @@ pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
                 // Kept on stderr for the log, *and* returned. It used to be only
                 // the former, which meant a tool left pointing at a dead relay
                 // was invisible to the caller and the quit reported success.
-                eprintln!(
-                    "[gate] disconnecting {} during quit failed: {e}",
+                crate::logging::failure(&format!(
+                    "disconnecting {} during quit failed: {e:#}",
                     integ.display_name()
-                );
+                ));
                 failed.push(integ.display_name().to_string());
             }
         }
@@ -985,7 +992,12 @@ pub fn restore_all() -> Result<()> {
             // story about it.
             Ok(_) => pending.push(slug),
             Err(e) => {
-                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+                // `{e:#}`, matching the string journalled two lines down: the
+                // two accounts of one failure disagreeing on detail is how a
+                // reader comes to think they are about different things.
+                crate::logging::failure(&format!(
+                    "restoring provider {slug:?} on master-on failed: {e:#}"
+                ));
                 // The message, not just the category: `Outcome::category` can
                 // say which step failed and never why, and the summary's whole
                 // job is the why.
@@ -1070,7 +1082,9 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
             engine_proxy_url: engine_proxy_url.clone(),
         };
         if let Err(e) = integ.connect(&input) {
-            eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");
+            crate::logging::failure(&format!(
+                "restoring tool {slug:?} on master-on failed: {e:#}"
+            ));
             journal.record_failed(&slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
             outstanding.push(slug);
         } else {

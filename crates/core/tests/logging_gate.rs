@@ -86,6 +86,52 @@ fn an_unknown_level_reads_as_information() {
     assert_eq!(Level::from_wire("nonsense"), Level::Info);
 }
 
+/// A swallowed failure reaches the file, not only the terminal it was printed
+/// in.
+///
+/// The gap this closes: `provider.rs` reported every failure it recovered from
+/// with a bare `eprintln!`, so the account of *why* a restore could not write a
+/// config lived in a `pnpm app:local` terminal and nowhere else. A shipped
+/// staging build has no terminal attached, and a developer's is gone the moment
+/// the window closes - which left the one question the recovery summary cannot
+/// answer from a category with no record at all.
+#[test]
+fn a_swallowed_failure_lands_in_the_file() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempHome::set();
+
+    logging::failure(
+        "restoring tool \"openclaw\" on master-on failed: the Gate proxy is not running",
+    );
+
+    let body = tmp.contents();
+    assert!(body.contains("restoring tool"));
+    assert!(body.contains("the Gate proxy is not running"));
+    // Warn, not Error: the caller continued past this, and a file people open to
+    // find what stopped them should not label a recovery as a stop.
+    assert!(body.contains("WARN restoring tool"), "got {body:?}");
+    // No `[gate]` in the file - the level is stamped, so the prefix would be
+    // noise on every line. It goes to stderr, where it marks the line as ours.
+    assert!(!body.contains("[gate]"), "got {body:?}");
+}
+
+/// And it is scrubbed by the same backstop as any other line: the helper must
+/// not be a second door into the file that skips the redaction.
+#[test]
+fn a_swallowed_failure_is_scrubbed_too() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempHome::set();
+
+    logging::failure("connecting failed: gateway refused sk-gw-abcdef0123456789");
+
+    let body = tmp.contents();
+    assert!(
+        !body.contains("sk-gw-abcdef0123456789"),
+        "the key must not land"
+    );
+    assert!(body.contains("<redacted>"));
+}
+
 /// The backstop: a Gate key interpolated into an error string does not reach the
 /// file. It is not licence to log secrets - see the module note - but this shape
 /// arrives by accident, from a message that quoted what it was sent.

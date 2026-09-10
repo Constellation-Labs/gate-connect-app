@@ -137,6 +137,35 @@ pub fn log(level: Level, message: &str) {
         .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
+/// A failure the caller is swallowing, to both places it can be read.
+///
+/// stderr for a developer watching `pnpm app:local`, and the log file for
+/// everything after the fact - which is the file the diagnostics report names
+/// and the one somebody can be asked to send. Both, because neither alone
+/// covers the case: a shipped staging build has no terminal attached, and a
+/// terminal line is gone the moment the window is closed.
+///
+/// The gap this closes is narrow and was real. A restore that could not write a
+/// tool's config printed its reason here and nowhere else, so the only account
+/// of *why* lived in a terminal - and the surface asking about it, the recovery
+/// summary, could name the failed step and never the reason. That summary now
+/// journals the message too; this is the other half, for the failures no surface
+/// reports at all.
+///
+/// `Warn`, not `Error`: every caller is continuing past this. Something the
+/// operation recovered from should not read like something that stopped it, in
+/// a file people open to find what stopped it.
+///
+/// Same rule as [`log`] on what may be passed: no credential, prompt or request
+/// body. [`redact`] is a backstop, not a licence.
+pub fn failure(message: &str) {
+    // Prefixed on stderr only. The file stamps its own level, so `[gate]` there
+    // would be noise on every line; on a shared terminal it is what marks the
+    // line as ours.
+    eprintln!("[gate] {message}");
+    log(Level::Warn, message);
+}
+
 fn rotate_if_large(path: &std::path::Path) {
     let Ok(meta) = std::fs::metadata(path) else {
         return;
