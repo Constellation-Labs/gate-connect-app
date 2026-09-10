@@ -94,9 +94,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::env;
+use crate::integrations::binaries;
 use crate::integrations::dotenv;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
@@ -164,6 +165,24 @@ impl Integration for OpenClaw {
         "OpenClaw"
     }
 
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
+    /// (`src/lib/groups.ts`); it is a description of the surface, not something
+    /// the integration knows.
+    fn row_label(&self) -> &'static str {
+        "CLI"
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["openclaw.exe", "openclaw.cmd", "openclaw.bat", "openclaw"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["openclaw"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -172,8 +191,26 @@ impl Integration for OpenClaw {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        settings_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::openclaw_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         Ok(env::openclaw_config_dir()?.exists())
@@ -205,6 +242,14 @@ impl Integration for OpenClaw {
             crate::proxy::persisted_engine_proxy_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
+    }
+
+    /// Managed proxy mode is the whole integration: the config it writes points
+    /// OpenClaw's entire egress at the engine, so there is nothing to write
+    /// until the engine is up. See the `context` below, which is the error this
+    /// declaration lets the restore avoid provoking.
+    fn requires_engine(&self) -> bool {
+        true
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -793,6 +838,41 @@ mod tests {
         assert_eq!(coverage_note(OpenAiAuthMode::ApiKey), None);
     }
 
+    /// AG-674 for OpenClaw, which is the one integration where the answer is
+    /// already right and the job is to keep it that way.
+    ///
+    /// OpenClaw has one config file, and the only way for the harness to load a
+    /// different one than Gate wrote is `OPENCLAW_CONFIG_PATH`. That is honoured
+    /// in [`crate::env::openclaw_config_path`], so `status` reads whatever
+    /// OpenClaw reads: point the variable somewhere new and the file we wrote
+    /// stops being the file we report from, which is drift, not Connected. No
+    /// `Overridden` state is reachable here because no second layer exists to
+    /// lose to - and a check pretending otherwise would be inventing one.
+    #[test]
+    fn the_config_path_override_decides_which_file_status_reads() {
+        let _lock = crate::env::path_env_lock();
+        let prev = std::env::var_os("OPENCLAW_CONFIG_PATH");
+        let elsewhere = std::env::temp_dir().join(format!(
+            "gate-openclaw-elsewhere-{}/openclaw.json",
+            std::process::id()
+        ));
+        std::env::set_var("OPENCLAW_CONFIG_PATH", &elsewhere);
+        let resolved = crate::env::openclaw_config_path();
+        match prev {
+            Some(v) => std::env::set_var("OPENCLAW_CONFIG_PATH", v),
+            None => std::env::remove_var("OPENCLAW_CONFIG_PATH"),
+        }
+        assert_eq!(resolved.unwrap(), elsewhere);
+
+        // And a file with none of our values in it is never Connected, however
+        // healthy the engine behind the URL we wrote elsewhere is.
+        let ours = "http://127.0.0.1:9977";
+        assert!(matches!(
+            compute_status("", false, Some(ours), true),
+            Status::Drifted(_)
+        ));
+    }
+
     #[test]
     fn current_proxy_url_reads_the_single_key() {
         let settings = json!({ "proxy": { "proxyUrl": "http://127.0.0.1:9977" } })
@@ -908,7 +988,8 @@ mod tests {
         assert_eq!(
             decide(&routed, "chatgpt.com", MODEL_CALL),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: CHATGPT_DOMAIN_SLUG.into()
             }
         );
 
@@ -923,7 +1004,8 @@ mod tests {
                 MODEL_CALL
             ),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: CHATGPT_DOMAIN_SLUG.into()
             }
         );
     }

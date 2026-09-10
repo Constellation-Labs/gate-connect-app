@@ -31,11 +31,30 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 /// config path honors XDG (as OpenCode itself does), so leaving the ambient
 /// values in place would let a test escape its temp home and edit the
 /// developer's real `~/.config/opencode/opencode.json`.
+///
+/// **And `GATE_CONNECT_TEST_HOME`, which is the only one of the four that works
+/// on Windows.** `env::app_support_dir` and `env::home` consult that seam first
+/// and otherwise fall through to `dirs`, which reads Known Folders rather than
+/// the environment - `env.rs` says so where the seam is defined. So on Windows
+/// the three variables above redirected nothing: `seed_ca_cert` wrote the CA
+/// into the runner's real `%LOCALAPPDATA%\Gate Connect`, `Drop` deleted only
+/// the temp dir, and the file outlived the test that made it. The next test to
+/// run found a CA it had deliberately not seeded.
+///
+/// That is what made `claude_code_connect_refuses_when_the_ca_is_missing` fail
+/// on Windows and nowhere else, and only sometimes: `HOME_LOCK` serialises these
+/// tests but cannot un-write a file in a shared location, and the harness picks
+/// the order. It failed exactly when a seeding test was scheduled first.
+///
+/// The same hole pointed `claude_code_settings_path` at the runner's real
+/// profile, so these tests were reading and deleting a `~/.claude/settings.json`
+/// that only happened to be absent on a fresh runner.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
     prev_xdg_config: Option<String>,
     prev_xdg_data: Option<String>,
+    prev_test_home: Option<String>,
 }
 
 impl TempHome {
@@ -54,14 +73,33 @@ impl TempHome {
         let prev = std::env::var("HOME").ok();
         let prev_xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
+        let prev_test_home = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         std::env::set_var("HOME", &dir);
+        // The seam, not just HOME - and it was already set here, which is what
+        // this comment is for rather than a second `set_var`.
+        //
+        // `env::tool_path_override` ignores every published tool-dir variable
+        // while `GATE_CONNECT_TEST_HOME` is set, so an ambient `CODEX_HOME` or
+        // `OPENCODE_CONFIG_DIR` - Orca exports both - cannot punch through the
+        // temp home. That is what makes the XDG pins below redundant: they are
+        // belt and braces from before the seam existed, kept because removing a
+        // guard from the one suite whose job is proving nothing is left behind
+        // needs a better reason than tidiness.
+        //
+        // The incident that motivates the seam belongs to `codex_billing_mode`,
+        // not to this file, and is written up at `crates/core/src/env.rs`. A
+        // previous version of this comment claimed it happened here and credited
+        // the protection to a line that was a duplicate of the one above it,
+        // which would have invited the next reader to delete the real one.
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         TempHome {
             dir,
             prev,
             prev_xdg_config,
             prev_xdg_data,
+            prev_test_home,
         }
     }
 }
@@ -77,6 +115,7 @@ impl Drop for TempHome {
         restore("HOME", &self.prev);
         restore("XDG_CONFIG_HOME", &self.prev_xdg_config);
         restore("XDG_DATA_HOME", &self.prev_xdg_data);
+        restore("GATE_CONNECT_TEST_HOME", &self.prev_test_home);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -125,6 +164,7 @@ fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         upstream_url: "https://api.anthropic.com".to_string(),
+        billing_mode: Default::default(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }

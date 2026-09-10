@@ -1,17 +1,16 @@
 import { useEffect, useState } from "react";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import type { Group, GroupException } from "../lib/groups";
-import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "../lib/groups";
+import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { trustPromptHint, trustPromptWaiting, trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
-import { GATE_DASHBOARD_URL } from "../lib/config";
 
 /** Connected home - the one room: the master Routing card, the certificate
  * step when it blocks coverage, and one row per model family, ranked so
@@ -26,6 +25,7 @@ import { GATE_DASHBOARD_URL } from "../lib/config";
 export function Home({
   workspace,
   gatewayHost,
+  dashboardUrl,
   proxyOn,
   caTrusted,
   showProxy,
@@ -48,12 +48,18 @@ export function Home({
   envExportSeparable,
   envExportOn,
   onToggleEnvExport,
+  verdicts,
 }: {
   workspace: string;
   /** The gateway host on its own, separate from `workspace`: the header now
    * carries the org, so the identifier traffic actually leaves through needs a
    * line of its own rather than disappearing with it. */
   gatewayHost: string;
+  /** The dashboard for the gateway this install talks to, or null when it has
+   *  none (a local gateway). Passed in rather than imported: it is derived from
+   *  the account now, not a constant, and the button is omitted when there is
+   *  nowhere to go - see `lib/dashboard.ts`. */
+  dashboardUrl: string | null;
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
@@ -90,10 +96,22 @@ export function Home({
   envExportSeparable: boolean;
   envExportOn: boolean;
   onToggleEnvExport: () => void;
+  /** The routing sweep, by slug.
+   *
+   * Threaded in rather than fetched here because the ledger is built in three
+   * places from the same inputs and they must agree. Undefined while the sweep
+   * is in flight, which is a real state and not an opt-out: a member with no
+   * verdict does not count as routing, which is the point - AG-570 forbids a
+   * completed file write from producing On on its own. */
+  verdicts?: Map<string, Verdict>;
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
-  const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(providers, tools, domains, {
+    proxyOn,
+    caTrusted,
+    verdicts,
+  });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
@@ -781,16 +799,18 @@ export function Home({
             DESIGN.md and this is the nearest step to it; the two are half a
             pixel apart. The padding takes the hit area from 19px to 32px, which
             also clears the 24px target minimum it used to miss. */}
-        <button
-          type="button"
-          onClick={() => {
-            void openExternal(GATE_DASHBOARD_URL);
-          }}
-          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-        >
-          <Icon name="cube" size={15} />
-          Gate dashboard
-        </button>
+        {dashboardUrl && (
+          <button
+            type="button"
+            onClick={() => {
+              void openExternal(dashboardUrl);
+            }}
+            className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          >
+            <Icon name="cube" size={15} />
+            Gate dashboard
+          </button>
+        )}
       </div>
 
     </div>
@@ -855,7 +875,7 @@ function FamilyRow({
   //
   // Suppressed by an exception for the same reason as before: that sentence
   // takes this slot and already names a member.
-  const roster = !exception && group.id === MULTI_PROVIDER_ID && group.members.length > 0;
+  const roster = !exception && !!group.multiProvider && group.members.length > 0;
   const secondLine = !!exception || roster;
   return (
     <div

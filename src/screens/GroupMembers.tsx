@@ -56,12 +56,35 @@ function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | u
  * Takes the platform because two of these branches name the secret store, and
  * naming the wrong vault undoes the reassurance they exist to give. Takes the
  * group because one branch has to look sideways at its siblings: see
- * `configSiblingOnHost`. */
-function explain(member: GroupMember, platform: Platform, group: Group): string {
+ * `configSiblingOnHost`.
+ *
+ * One object rather than four positionals: the last two are a `Group` and a
+ * boolean, and the two before them are both things a caller could plausibly
+ * hand over in the wrong order. */
+function explain({
+  member,
+  platform,
+  group,
+  browserChannel,
+}: {
+  member: GroupMember;
+  platform: Platform;
+  group: Group;
+  /** `ProxyState.browser_proxy_channel`: whether this session has the proxy
+   *  channel a running browser re-reads. Only the chat branch consults it. */
+  browserChannel: boolean;
+}): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
+  }
+  if (member.attention === "unverified") {
+    // Says what is *not* known, not what is wrong. Gate has the configuration it
+    // wants and cannot confirm the traffic is following it, and the honest
+    // sentence for that is the absence of a reading - inventing a cause here
+    // would send the user to fix whichever one we guessed.
+    return `${member.name}’s config points at Gate, but Gate hasn’t been able to confirm its traffic is routing.`;
   }
   if (member.kind === "proxy") {
     if (member.attention === "needs-trust") {
@@ -85,15 +108,16 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     // reassurance: these rows are the ones where transparency about the
     // mechanism IS the product.
     //
-    // Which clients that covers is the platform's answer, not ours, so the
-    // browser half goes through `browserScopeNote`, which is empty wherever
-    // there is nothing to claim - on Linux the proxy is wired through
-    // environment variables a browser never reads, and the host sentence has
-    // already bounded the scope without it. Sentences, not clauses, so dropping
-    // one leaves the rest reading normally.
+    // Which clients that covers is the platform's *and the session's* answer,
+    // not ours, so the browser half goes through `browserScopeNote` with the
+    // `browser_proxy_channel` reading. It is empty wherever there is nothing to
+    // claim - a Linux session with no GNOME proxy schema, where Gate writes
+    // only environment variables a running browser never re-reads - and the
+    // host sentence has already bounded the scope without it. Sentences, not
+    // clauses, so dropping one leaves the rest reading normally.
     if (member.chat) {
       const hosts = member.domain?.hosts.join(", ") ?? "";
-      const scope = browserScopeNote(platform);
+      const scope = browserScopeNote(platform, browserChannel);
       const covers = member.routed
         ? `That covers everything on ${hosts}.`
         : `Switch it on and Gate records and inspects that traffic - everything on ${hosts}.`;
@@ -134,6 +158,8 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       return `${member.name}'s own config points at your Gate gateway. Requests carry the key from ${secretStoreName(platform)}; the key itself never lands in the config file.`;
     case "drifted":
       return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
+    case "overridden":
+      return `${member.name} has Gate's configuration, and another configuration it reads first sends its traffic elsewhere. The details below name that file; change it there, then re-check.`;
     case "error":
       return `Gate Connect couldn’t read ${member.name}’s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
     default:
@@ -147,6 +173,9 @@ function rawDetail(member: GroupMember): string | null {
   const status = member.tool?.status;
   if (status?.kind === "error") return status.message;
   if (status?.kind === "drifted") return status.reason || null;
+  // The winning layer, verbatim. It is the only thing on screen that says where
+  // to go and look, so it gets the same treatment as a drift reason.
+  if (status?.kind === "overridden") return status.source || null;
   return null;
 }
 
@@ -212,6 +241,7 @@ export function GroupMembers({
   onTrustCa,
   trustPending,
   proxyOn,
+  browserChannel,
   onEnableRouting,
   authMode,
 }: {
@@ -229,6 +259,11 @@ export function GroupMembers({
   /** Whether the engine is running. A member can be switched on and still not
    * route, which is what the master-off state is. */
   proxyOn: boolean;
+  /** Whether the session has the proxy channel a running browser reads, so a
+   * chat row's copy can say whether it covers the browser. A reading
+   * (`ProxyState.browser_proxy_channel`), not a platform guess: on Linux it is
+   * false wherever GNOME's proxy schema is absent. */
+  browserChannel: boolean;
   /** The remedy for the master-off state, for the same reason `onTrustCa`
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
@@ -631,7 +666,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform, group)}
+                    {explain({ member, platform, group, browserChannel })}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide

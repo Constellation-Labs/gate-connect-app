@@ -175,8 +175,19 @@ impl<O: DesktopOps> DesktopManager<O> {
             port,
             pac_port,
             ca_trusted: self.ops.ca_is_trusted()?,
+            // No second store to disagree with the first: macOS and Windows put
+            // user-added roots where the browser already looks. Not a seam on
+            // `DesktopOps` for that reason - there is nothing per-platform to
+            // ask - and `diagnostics.rs` answers the same question the same way.
+            ca_nss_trust: None,
+            // And for the same reason, in the other direction: the PAC goes in
+            // the OS proxy setting, which *is* the browser's proxy setting on
+            // both of these. Not a question about the session here, as it is on
+            // Linux, so it is not a seam either.
+            browser_proxy_channel: true,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            relay_base_url: crate::proxy::relay_base_url(),
             domains: config::load_domains()?,
         })
     }
@@ -262,6 +273,10 @@ impl<O: DesktopOps> DesktopManager<O> {
                 oauth_token: crate::oauth::access_token_for_injection(),
                 // Selected org, injected as X-Gate-Org-Id alongside the token.
                 org_id: crate::account::org_id_for_injection(),
+                // Who pays: `Payg` drops the upstream hint and the tool's own
+                // credential on the rewrite path. A later switch pushes an
+                // update via `refresh_mode`.
+                billing_mode: account.billing_mode,
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem,
                 ca_key_pem: ca.key_pem,
@@ -510,6 +525,22 @@ impl<O: DesktopOps> DesktopManager<O> {
             .as_ref()
         {
             running.update_org(org_id);
+        }
+    }
+
+    /// Push a changed billing mode into the running engine (and the relay it
+    /// hosts), if any. Used when the user switches BYOK/PAYG so the new request
+    /// shape reaches in-flight routing without a restart. Reads the mode from
+    /// disk rather than taking it as an argument, so a live engine can never be
+    /// routing under a mode the account does not hold.
+    pub fn refresh_mode(&self) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_mode(crate::account::billing_mode_for_injection());
         }
     }
 
@@ -1220,6 +1251,7 @@ mod tests {
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
         mgr.refresh_org("org-uuid-2");
+        mgr.refresh_mode();
         mgr.refresh_cf_clearance("cf-clearance-cookie");
         assert!(mgr.status().expect("status").running);
 

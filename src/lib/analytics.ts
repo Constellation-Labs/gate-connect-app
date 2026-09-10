@@ -14,6 +14,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { POSTHOG_KEY_VALUE, POSTHOG_HOST } from "./config";
 import { fetchPlatform } from "./platform";
 import { classifyError, type ErrorContext } from "./errors";
+import { getPreferences } from "./api";
+import { errorContext } from "./errorContext";
 
 /** The only event names we ever emit. */
 export type AnalyticsEvent =
@@ -47,7 +49,7 @@ export type AnalyticsEvent =
   | "launch_at_login_toggled"
   | "error_shown";
 
-type Props = Record<string, string | number | boolean>;
+export type Props = Record<string, string | number | boolean>;
 
 /**
  * Prop keys allowed on the wire. Anything not listed is dropped before send -
@@ -72,9 +74,22 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "step",
   "tool_count",
   "integrations_disabled",
+  // The error context (`lib/errorContext.ts`), which rides `trackError` and
+  // `captureException` and no other event. Listed here rather than waved past
+  // `sanitize` because the allowlist is the backstop, and a context object is
+  // exactly the kind of thing that grows a field nobody reviewed.
+  "install_id",
+  "os_version",
+  "tools_detected",
+  "verdict_states",
+  "feed_state",
 ]);
 
 let enabled = false;
+/** Whether `posthog.init` has run. Distinct from `enabled`, which is whether we
+ * are currently allowed to send: a user who opts out and back in must not
+ * re-initialise a live client. */
+let started = false;
 
 function sanitize(props?: Props): Props | undefined {
   if (!props) return undefined;
@@ -86,13 +101,34 @@ function sanitize(props?: Props): Props | undefined {
 }
 
 /**
- * Initialize PostHog. No-op (analytics stays disabled) when no build-time key
- * is present, so dev builds and unconfigured releases send nothing. App version
- * and platform ride along as super-properties - both coarse and non-identifying
- * - so events are attributable to a build.
+ * Start PostHog, if there is a key **and** the user has not opted out.
+ *
+ * Consent is read before the client is constructed, not after: opting out and
+ * then initialising would put the user's device on the wire before the opt-out
+ * took effect, however briefly. An install that has opted out never creates the
+ * client at all.
+ *
+ * A failed read means **do not collect**. `preferences::load()` is infallible on
+ * the Rust side, so the only way here is the IPC itself failing - and consent that
+ * cannot be confirmed is not consent. The cost is a session of missing telemetry
+ * on an app that is already misbehaving.
+ *
+ * No-op without a build-time key either way, so dev builds and unconfigured
+ * releases send nothing. App version and platform ride along as super-properties
+ * - both coarse and non-identifying - so events are attributable to a build.
  */
-export function initAnalytics(): void {
+export async function initAnalytics(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return;
+  const consented = await getPreferences()
+    .then((p) => p.share_diagnostics)
+    .catch(() => false);
+  if (!consented) return;
+  startPosthog();
+}
+
+function startPosthog(): void {
+  if (!POSTHOG_KEY_VALUE || started) return;
+  started = true;
   posthog.init(POSTHOG_KEY_VALUE, {
     api_host: POSTHOG_HOST,
     autocapture: false,
@@ -108,6 +144,32 @@ export function initAnalytics(): void {
       posthog.register({ app_version, platform });
     },
   );
+}
+
+/**
+ * Apply a consent change made in Settings, so the switch controls something
+ * rather than only recording an intention.
+ *
+ * Turning it **off** opts the live client out and stops every entry point below;
+ * `opt_out_capturing` also persists PostHog's own flag, so a queued event does
+ * not leak out after the user said no. Turning it **on** starts the client if
+ * this session never did (the opted-out install case) and opts back in otherwise.
+ *
+ * Called by the Settings switch. Safe to call with the value it already has.
+ */
+export function setAnalyticsConsent(consented: boolean): void {
+  if (!POSTHOG_KEY_VALUE) return;
+  if (!consented) {
+    if (started) safely("opt_out_capturing", () => posthog.opt_out_capturing());
+    enabled = false;
+    return;
+  }
+  if (!started) {
+    startPosthog();
+    return;
+  }
+  safely("opt_in_capturing", () => posthog.opt_in_capturing());
+  enabled = true;
 }
 
 /**
@@ -167,8 +229,16 @@ export function track(event: AnalyticsEvent, props?: Props): void {
 export function trackError(err: unknown, context: ErrorContext, props?: Props): void {
   if (!enabled) return;
   const { title } = classifyError(err, context);
-  track("error_shown", { ...props, context, title });
-  safely("captureException", () => posthog.captureException(new Error(title), { context }));
+  // The state Gate was in, merged UNDER the call site's own props so a caller
+  // naming the tool it was toggling still wins. Errors only: see
+  // `lib/errorContext.ts` for why this is not a super-property.
+  track("error_shown", { ...errorContext(), ...props, context, title });
+  // The paired exception carries the same state. It is a separate record from
+  // the `error_shown` event above, and whoever triages the exception list does
+  // not have that event beside them.
+  safely("captureException", () =>
+    posthog.captureException(new Error(title), { ...sanitize(errorContext()), context }),
+  );
 }
 
 /**
@@ -178,5 +248,10 @@ export function trackError(err: unknown, context: ErrorContext, props?: Props): 
  */
 export function captureException(err: unknown): void {
   if (!enabled) return;
-  safely("captureException", () => posthog.captureException(err));
+  // Sanitised like any other payload: an uncaught exception is our own bug and
+  // its stack is the point, but the context riding beside it goes through the
+  // same allowlist everything else does.
+  safely("captureException", () =>
+    posthog.captureException(err, sanitize(errorContext())),
+  );
 }

@@ -19,6 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::audit;
+use crate::recovery;
 use crate::registry::{self, ConnectInput, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
@@ -67,7 +68,12 @@ pub fn providers() -> Vec<Provider> {
     vec![
         Provider {
             slug: "anthropic",
-            display_name: "Claude",
+            // The vendor, not the product. Its rows are named for the surface
+            // they cover now ("App", "Web", "CLI"), so the heading is the only
+            // thing left saying whose traffic this is - and "Claude" over a row
+            // reading "CLI" leaves a user guessing between Claude Code and
+            // claude.ai.
+            display_name: "Anthropic",
             subtitle: "Claude Code + Claude Desktop",
             tool_ids: &[ToolId::ClaudeCode],
             // Only the api.anthropic.com domain. The `claude-web` chat domain is
@@ -84,7 +90,27 @@ pub fn providers() -> Vec<Provider> {
             display_name: "OpenAI",
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
-            proxy_domain_slugs: &["openai"],
+            // Empty, and the `openai` domain's absence is the point.
+            //
+            // That entry is api.openai.com, and nothing in this family rides its
+            // switch. Codex is config-routed: in API-key mode it points at the
+            // relay, which resolves routes against the WHOLE catalog
+            // (`relay.rs` builds from `default_domains()`, not the enabled set),
+            // so Codex routes whether that switch is on or off. The ChatGPT
+            // desktop app talks to chatgpt.com, which is the `chatgpt` entry
+            // below. What the switch actually governs is MITM interception of
+            // api.openai.com for any system-proxy-honouring client - generic
+            // traffic, no OpenAI tool Gate configures.
+            //
+            // Its real dependants are the multi-provider harnesses: OpenClaw and
+            // Hermes blind-tunnel anything outside the enabled catalog, so this
+            // switch is what lets Gate see their OpenAI calls. It sits under
+            // Experimental with them now (`LEFTOVER_GROUPS` in
+            // `src/lib/groups.ts`), which is where its dependants are.
+            //
+            // Consequence worth stating: this family's switch now governs Codex
+            // alone. That is what it was already doing in effect.
+            proxy_domain_slugs: &[],
             // Same split as Claude above: a domain listed here gets a ledger row
             // under OpenAI and a switch of its own, and the family switch's
             // cascade never reaches it, because what these carry is the user's
@@ -253,7 +279,31 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], true).map(|(_, state)| state)
+    enable_inner(slug, &[], Request::ByName).map(|(_, state)| state)
+}
+
+/// Who asked, which is the only thing that separates the two callers below.
+///
+/// It replaces an `audit: bool`, and the replacement is the fix rather than
+/// tidying. `enable_inner` needed to know whether it was serving a restore in
+/// two places - whether to emit the audit event, and whether "nothing to
+/// configure yet" is an error - and only the first had a parameter. The second
+/// read `!skip.is_empty()` instead, on the reasoning that a restore is the
+/// caller that passes a skip list. But a skip list is only non-empty when a
+/// member was switched off before routing stopped, and `enable` passes an empty
+/// one too - so an ordinary restore was indistinguishable from a by-name
+/// request and got the by-name error. `restore_all` recorded that as
+/// `WriteFailed`, and the recovery summary told the user Gate could not write a
+/// config it had never opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Request {
+    /// The user named this provider. Nothing happening is a result that needs
+    /// explaining, and the action is theirs, so it is audited.
+    ByName,
+    /// A restore pass. Nothing to do yet is [`Applied::NotYet`], and the audit
+    /// event belongs to the master switch that drove it - see
+    /// [`enable_skipping`].
+    Restore,
 }
 
 /// What an enable actually did, as distinct from whether it went wrong.
@@ -284,10 +334,10 @@ enum Applied {
 /// toggling that provider by hand (see the one-event-per-action rule in
 /// [`crate::audit`]).
 fn enable_skipping(slug: &str, skip: &[String]) -> Result<(Applied, ProviderState)> {
-    enable_inner(slug, skip, false)
+    enable_inner(slug, skip, Request::Restore)
 }
 
-fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, ProviderState)> {
+fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applied, ProviderState)> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -298,10 +348,15 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
     let plan = enable_plan(any_detected, proxy_running());
 
     if plan.nothing {
-        // A restore pass for a family whose members are all switched off has
-        // nothing to do, and nothing to complain about. Only a user who asked
-        // for this provider by name gets the explanation.
-        if !skip.is_empty() {
+        // A restore pass has nothing to do here and nothing to complain about:
+        // either the family's members are all switched off, or - the case this
+        // used to get wrong - the provider's only route is a proxy domain and
+        // the engine is not up yet, which is precisely what the second pass
+        // exists for. Only a user who asked for this provider by name gets the
+        // explanation, and the sentence below is written for them: telling
+        // somebody mid-master-on to "turn on Route through Gate" describes the
+        // operation they are already running.
+        if request == Request::Restore {
             return Ok((Applied::NotYet, state(&p)));
         }
         anyhow::bail!(
@@ -325,6 +380,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                billing_mode: account.billing_mode,
                 relay_base_url: crate::proxy::relay_base_url(),
                 engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
@@ -359,7 +415,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
     // Best-effort audit. The account is already loaded here, so its key is the
     // in-hand credential for ApiKey mode; OAuth mode ignores it and reads the
     // live access token.
-    if audit {
+    if request == Request::ByName {
         audit::provider_enabled(
             &account.gateway_base_url,
             Some(&account.api_key),
@@ -387,7 +443,10 @@ fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
         let Some(integ) = registry::find(id) else {
             continue;
         };
-        let connected = matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)));
+        let connected = matches!(
+            integ.status(),
+            Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+        );
         if connected || integ.detect().unwrap_or(false) {
             integ
                 .disconnect()
@@ -487,7 +546,11 @@ pub fn reconcile_enabled() -> Result<()> {
                 Ok(Status::Drifted(_)) => {
                     relay_base_url.is_some() && integ.config_is_managed().unwrap_or(false)
                 }
-                _ => false, // NotInstalled / Connected / status error - leave as-is
+                // NotInstalled / Connected / Overridden / status error - leave
+                // as-is. Overridden belongs on this side of the line and not
+                // with drift: our values are already exactly what connect would
+                // write, so a re-apply is a no-op that would run on every pass.
+                _ => false,
             };
             if !reapply {
                 continue;
@@ -495,14 +558,15 @@ pub fn reconcile_enabled() -> Result<()> {
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                billing_mode: account.billing_mode,
                 relay_base_url: relay_base_url.clone(),
                 engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             if let Err(e) = integ.connect(&input) {
-                eprintln!(
-                    "[gate] auto-configuring {} failed: {e:#}",
+                crate::logging::failure(&format!(
+                    "auto-configuring {} failed: {e:#}",
                     integ.display_name()
-                );
+                ));
             }
         }
     }
@@ -545,11 +609,15 @@ fn reconcile_unmapped_tools(
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: account.billing_mode,
             relay_base_url: Some(relay_base_url.to_string()),
             engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
-            eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
+            crate::logging::failure(&format!(
+                "re-applying {} failed: {e:#}",
+                integ.display_name()
+            ));
         }
     }
     Ok(())
@@ -706,7 +774,11 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
         // `disable_inner(_, false)`: the sweep is the master switch's doing,
         // and that one operator action already emits `proxy_disabled`.
         if let Err(e) = disable_inner(slug, false) {
-            eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
+            // `{e:#}` rather than `{e}`: the chain is the reason, and the outer
+            // context on its own routinely says only which step it was.
+            crate::logging::failure(&format!(
+                "disabling provider {slug:?} during master-off failed: {e:#}"
+            ));
         }
     }
     Ok(())
@@ -726,20 +798,38 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
 /// user's tools are concerned - the relay stops either way - and using the
 /// narrower [`snapshot_and_disable_all`] for the switch left the harnesses
 /// pointed at a dead port while the UI reported "not routing".
-pub fn snapshot_and_disable_everything() -> Result<()> {
+///
+/// Returns the **display names of the tools it could not return to their own
+/// settings**, empty when everything came back. Best-effort still means the call
+/// succeeds when one tool fails, because the sweep must not abandon the remaining
+/// tools; the difference is that the failure is now the caller's to report rather
+/// than a line on stderr. A quit that leaves a config pointing at a relay about
+/// to die is exactly what the user needs told, and the old signature could not
+/// say it.
+pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked()?;
     let mut disconnected = Vec::new();
+    let mut failed = Vec::new();
     for integ in registry::registry() {
-        if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+        if !matches!(
+            integ.status(),
+            Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+        ) {
             continue;
         }
         match integ.disconnect() {
             Ok(()) => disconnected.push(integ.id().slug().to_string()),
-            Err(e) => eprintln!(
-                "[gate] disconnecting {} during quit failed: {e}",
-                integ.display_name()
-            ),
+            Err(e) => {
+                // Kept on stderr for the log, *and* returned. It used to be only
+                // the former, which meant a tool left pointing at a dead relay
+                // was invisible to the caller and the quit reported success.
+                crate::logging::failure(&format!(
+                    "disconnecting {} during quit failed: {e:#}",
+                    integ.display_name()
+                ));
+                failed.push(integ.display_name().to_string());
+            }
         }
     }
     // Union for the same reason as the provider snapshot.
@@ -749,7 +839,69 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
             snapshot.push(slug);
         }
     }
-    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
+    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)?;
+    Ok(failed)
+}
+
+/// One thing a restore has recorded and not finished.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PendingEntry {
+    pub slug: String,
+    /// What to call it on screen. Falls back to the slug for an entry whose
+    /// provider or tool is no longer in the registry - an uninstall between the
+    /// snapshot and now - because naming it is still better than dropping it from
+    /// a list the user is being asked to act on.
+    pub name: String,
+}
+
+/// Routing work that was written down and has not completed.
+///
+/// The snapshots have always been a record of unfinished work - [`restore_all`]
+/// keeps failures in the file and only clears it once everything is back - but
+/// nothing ever read them for display. So a restore that half-succeeded left the
+/// user with some tools routing, some not, and no statement anywhere that Gate
+/// knew about it.
+///
+/// Empty means there is nothing outstanding, which is the normal case.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct PendingRestore {
+    /// Providers still waiting to be re-enabled.
+    pub providers: Vec<PendingEntry>,
+    /// Standalone tools (OpenCode and friends) still waiting to be reconnected.
+    pub tools: Vec<PendingEntry>,
+}
+
+impl PendingRestore {
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty() && self.tools.is_empty()
+    }
+}
+
+/// What a restore still owes, read from the snapshots.
+///
+/// Read-only: it opens no config, starts nothing, and writes nothing. Safe to call
+/// on a status refresh.
+pub fn pending_restore() -> Result<PendingRestore> {
+    let providers = load_snapshot(PROVIDER_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = find(&slug)
+                .map(|p| p.display_name.to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    let tools = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = ToolId::from_slug(&slug)
+                .and_then(registry::find)
+                .map(|integ| integ.display_name().to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    Ok(PendingRestore { providers, tools })
 }
 
 /// Master ON: re-enable every provider that was on when routing was last
@@ -783,15 +935,84 @@ pub fn restore_all() -> Result<()> {
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
     let mut pending = Vec::new();
-    for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
+    let queued = load_snapshot(PROVIDER_SNAPSHOT)?;
+    // One journal for the whole restore, seeded with BOTH passes before the first
+    // attempt. Both, because a restore is one operation from the user's side and
+    // two writers would each clobber the other's file. Seeded up front, because an
+    // interruption has to leave the entries it never reached visibly Pending rather
+    // than absent.
+    //
+    // Explanation only: the snapshots remain the state a resume actually works from.
+    let mut journal = recovery::JournalWriter::begin(
+        queued
+            .iter()
+            .map(|slug| {
+                let name = find(slug)
+                    .map(|p| p.display_name.to_string())
+                    .unwrap_or_else(|| slug.clone());
+                (slug.clone(), name, recovery::EntryKind::Provider)
+            })
+            .chain(
+                load_snapshot(SWEPT_TOOLS_SNAPSHOT)?
+                    .into_iter()
+                    .map(|slug| {
+                        let name = ToolId::from_slug(&slug)
+                            .and_then(registry::find)
+                            .map(|integ| integ.display_name().to_string())
+                            .unwrap_or_else(|| slug.clone());
+                        (slug, name, recovery::EntryKind::Tool)
+                    }),
+            )
+            .collect(),
+    );
+    for slug in queued {
+        if find(&slug).is_none() {
+            // Written by an older build, or a provider since removed. The tool
+            // pass below has had this guard since it was written; this loop
+            // never got it, so an unresolvable slug took the `Err` arm, was
+            // recorded as a failed write and pushed straight back into the
+            // snapshot. That is a retry that cannot ever succeed: `enable_inner`
+            // fails on `find` before touching a file, so every resume produced
+            // the identical "unknown provider" and the entry outlived every
+            // attempt to clear it. Observed in the wild as a permanent "Routing
+            // didn't finish - google is still waiting" card whose Resume now
+            // could not, even in principle, do anything.
+            //
+            // Dropped rather than retried, and recorded as settled, which is
+            // exactly what `Outcome::Unknown` is for - `is_outstanding` already
+            // excludes it, so the recovery card stops counting it.
+            journal.record(&slug, recovery::Outcome::Unknown);
+            continue;
+        }
         match enable_skipping(&slug, &skip) {
-            Ok((Applied::Enabled, state)) if state.enabled => {}
-            // Nothing to do yet, or a route that did not take. Neither is a
-            // failure worth reporting - the engine simply is not up - and
-            // neither is a completion.
+            Ok((Applied::Enabled, state)) if state.enabled => {
+                journal.record(&slug, recovery::Outcome::Restored);
+            }
+            // Nothing to do yet, which `enable_inner` reaches only with the
+            // engine down: recorded as deferred rather than left `Pending`,
+            // because "Not started" reads as an entry the operation never got
+            // to and this one was reached and declined. Stays in the snapshot
+            // either way, for the post-enable pass.
+            Ok((Applied::NotYet, _)) => {
+                journal.record(&slug, recovery::Outcome::DeferredEngineDown);
+                pending.push(slug);
+            }
+            // A route that did not take: an attempt happened and produced
+            // nothing. Not a failure worth reporting and not a completion, so
+            // the seeded `Pending` stands rather than the journal being told a
+            // story about it.
             Ok(_) => pending.push(slug),
             Err(e) => {
-                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+                // `{e:#}`, matching the string journalled two lines down: the
+                // two accounts of one failure disagreeing on detail is how a
+                // reader comes to think they are about different things.
+                crate::logging::failure(&format!(
+                    "restoring provider {slug:?} on master-on failed: {e:#}"
+                ));
+                // The message, not just the category: `Outcome::category` can
+                // say which step failed and never why, and the summary's whole
+                // job is the why.
+                journal.record_failed(&slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
                 pending.push(slug);
             }
         }
@@ -805,7 +1026,12 @@ pub fn restore_all() -> Result<()> {
     } else {
         save_snapshot(PROVIDER_SNAPSHOT, &pending)?;
     }
-    restore_swept_tools()
+    // The same journal continues into the tool pass. Finished here rather than
+    // there, and finished even when that pass errors: the journal is the record of
+    // what happened, so a failure is exactly when it must survive.
+    let swept = restore_swept_tools(&mut journal);
+    journal.finish();
+    swept
 }
 
 /// Reconnect the standalone tools the master-off sweep disconnected (see
@@ -814,44 +1040,291 @@ pub fn restore_all() -> Result<()> {
 /// is back. Tools uninstalled (or slugs unknown) since the quit are dropped.
 /// Signed out since the quit: leave the snapshot for a later signed-in
 /// restore - there's no gateway to point the tools at.
-fn restore_swept_tools() -> Result<()> {
+fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
     let slugs = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
     if slugs.is_empty() {
         return Ok(());
     }
     let Some(account) = account::load()? else {
+        // Signed out: nothing is attempted and the snapshot is left for a later
+        // signed-in restore. Recorded as deferred rather than failed - there is
+        // nothing wrong with these tools, and calling it a failure would send the
+        // user looking for a problem that is really a missing account.
+        for slug in &slugs {
+            journal.record(slug, recovery::Outcome::DeferredSignedOut);
+        }
         return Ok(());
     };
     let relay_base_url = crate::proxy::relay_base_url();
-    let mut failed = Vec::new();
+    let engine_proxy_url = crate::proxy::engine_proxy_url();
+    // Not `failed`: an entry stays recorded because it is unfinished, and two of
+    // the branches below leave it here having found nothing wrong with it.
+    let mut outstanding = Vec::new();
     for slug in slugs {
         let Some(integ) = ToolId::from_slug(&slug).and_then(registry::find) else {
+            // Written by an older build, or a tool since removed from the registry.
+            // Dropped from the snapshot deliberately, so it is recorded as settled
+            // rather than left looking like unfinished work.
+            journal.record(&slug, recovery::Outcome::Unknown);
             continue;
         };
         if !integ.detect().unwrap_or(false) {
+            // Uninstalled since the snapshot. Also dropped: there is nothing to
+            // restore, and retrying forever would be wrong.
+            journal.record(&slug, recovery::Outcome::NotInstalled);
+            continue;
+        }
+        // The engine is not up, and this tool's config is the engine's address.
+        // The provider loop has had this early-out since `Applied::NotYet`
+        // existed; this pass had none, so it called `connect`, got the hard
+        // error both such integrations raise, and recorded a failed write for a
+        // file it never opened. Declared by the integration rather than read off
+        // the error - see `Integration::requires_engine`.
+        if integ.requires_engine() && engine_proxy_url.is_none() {
+            journal.record(&slug, recovery::Outcome::DeferredEngineDown);
+            outstanding.push(slug);
             continue;
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: account.billing_mode,
             relay_base_url: relay_base_url.clone(),
-            engine_proxy_url: crate::proxy::engine_proxy_url(),
+            engine_proxy_url: engine_proxy_url.clone(),
         };
         if let Err(e) = integ.connect(&input) {
-            eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");
-            failed.push(slug);
+            crate::logging::failure(&format!(
+                "restoring tool {slug:?} on master-on failed: {e:#}"
+            ));
+            journal.record_failed(&slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
+            outstanding.push(slug);
+        } else {
+            journal.record(&slug, recovery::Outcome::Restored);
         }
     }
-    if failed.is_empty() {
+    if outstanding.is_empty() {
         clear_snapshot(SWEPT_TOOLS_SNAPSHOT)
     } else {
-        save_snapshot(SWEPT_TOOLS_SNAPSHOT, &failed)
+        save_snapshot(SWEPT_TOOLS_SNAPSHOT, &outstanding)
     }
+}
+
+/// Retry exactly one recorded entry, leaving every other entry's recorded work
+/// alone.
+///
+/// [`restore_all`] is the batch: it walks both snapshots and re-attempts
+/// everything in them. That is the right shape for "resume this operation", and
+/// the wrong shape for two things the recovery summary needs. One is a retry of a
+/// single failing tool, which must not re-enter the providers that already came
+/// back. The other is progress: a caller that wants to say which tool it is
+/// working on can only do that if it drives the entries itself.
+///
+/// The semantics are [`restore_all`]'s, narrowed to one slug and not otherwise
+/// reinterpreted:
+///
+/// - **The snapshot is still the state.** The slug leaves its snapshot only once
+///   it is actually back, so an unsuccessful retry is a no-op on disk and the
+///   next one tries again.
+/// - **[`Applied::NotYet`] is not a failure.** A domain-only provider with no
+///   engine up yet stays recorded and stays `Pending`, exactly as the batch
+///   leaves it. Nothing is journalled about an attempt that did not happen.
+/// - **The skip list outlives a partial restore** and clears with the last
+///   provider, because a later retry needs to know which members to leave off.
+/// - **A slug in neither snapshot is `Ok`**, not an error: two windows can offer
+///   the same retry, and the second one arrives to find the work already done.
+///
+/// Errors are the retry's own: a failed write returns `Err` *and* records
+/// `WriteFailed`, so the caller can report the failure rather than infer it from
+/// an unchanged pending list.
+pub fn restore_one(slug: &str) -> Result<()> {
+    let _guard = master_flow_guard();
+    let providers = load_snapshot(PROVIDER_SNAPSHOT)?;
+    if providers.iter().any(|s| s == slug) {
+        return restore_one_provider(slug, providers);
+    }
+    let tools = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
+    if tools.iter().any(|s| s == slug) {
+        return restore_one_tool(slug, tools);
+    }
+    Ok(())
+}
+
+/// [`restore_one`] for a provider slug, with the queue it was found in.
+fn restore_one_provider(slug: &str, queued: Vec<String>) -> Result<()> {
+    // Resolved once. It was looked up twice - for the display name and again for
+    // the guard - and the first call already handles `None`.
+    let provider = find(slug);
+    let name = provider
+        .as_ref()
+        .map(|p| p.display_name.to_string())
+        .unwrap_or_else(|| slug.to_string());
+    let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Provider);
+    // One copy of the snapshot rewrite, for the two exits that need it: the
+    // unknown-slug settle below and a successful restore at the end drop the
+    // entry the same way, and the `RESTORE_SKIP_MEMBERS` clear has to ride along
+    // in both. Two copies of a snapshot rewrite is how the two come to disagree,
+    // which is why `restore_one_tool` factors its own out the same way.
+    let drop_from_snapshot = || -> Result<()> {
+        let remaining: Vec<String> = queued.iter().filter(|s| *s != slug).cloned().collect();
+        if remaining.is_empty() {
+            clear_snapshot(PROVIDER_SNAPSHOT)?;
+            // Held until the provider queue empties, for the reason `restore_all`
+            // gives: a partial restore gets retried, and the retry needs to know
+            // what to leave alone.
+            clear_snapshot(RESTORE_SKIP_MEMBERS)
+        } else {
+            save_snapshot(PROVIDER_SNAPSHOT, &remaining)
+        }
+    };
+    if provider.is_none() {
+        // The same guard the batch pass above now carries, and the same one
+        // `restore_one_tool` has always had: a slug this build cannot resolve is
+        // settled, not outstanding, because no retry can change the answer.
+        // Without it the per-row Retry failed identically every time and left
+        // the entry in the snapshot for the next one.
+        journal.record(slug, recovery::Outcome::Unknown);
+        journal.finish();
+        return drop_from_snapshot();
+    }
+    let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
+    let outcome = match enable_skipping(slug, &skip) {
+        Ok((Applied::Enabled, state)) if state.enabled => Ok(Some(true)),
+        // Nothing to do yet, which means the engine is not up. Left in the
+        // snapshot per the batch's own reasoning, and recorded as deferred for
+        // the batch's own reason too: a retry that reports "Not started" claims
+        // it never ran.
+        Ok((Applied::NotYet, _)) => Ok(None),
+        // Enabled, but no route came out of it. The batch leaves this `Pending`
+        // and so does the retry.
+        Ok(_) => Ok(Some(false)),
+        Err(e) => Err(e),
+    };
+    let restored = match outcome {
+        Ok(restored) => {
+            match restored {
+                Some(true) => journal.record(slug, recovery::Outcome::Restored),
+                None => journal.record(slug, recovery::Outcome::DeferredEngineDown),
+                Some(false) => {}
+            }
+            journal.finish();
+            restored.unwrap_or(false)
+        }
+        Err(e) => {
+            journal.record_failed(slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
+            journal.finish();
+            return Err(e).with_context(|| format!("retrying provider {slug:?}"));
+        }
+    };
+    if !restored {
+        return Ok(());
+    }
+    drop_from_snapshot()
+}
+
+/// [`restore_one`] for a swept tool slug, with the queue it was found in.
+///
+/// Mirrors [`restore_swept_tools`]'s per-entry branches - unknown slug, gone from
+/// the machine, signed out, write failed - because they are the same four
+/// conditions and a second reading of them would be a second set of outcomes.
+fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
+    let integ = ToolId::from_slug(slug).and_then(registry::find);
+    let name = integ
+        .as_ref()
+        .map(|i| i.display_name().to_string())
+        .unwrap_or_else(|| slug.to_string());
+    let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Tool);
+    let drop_from_snapshot = |journal: recovery::JournalWriter| -> Result<()> {
+        journal.finish();
+        let remaining: Vec<String> = queued.iter().filter(|s| *s != slug).cloned().collect();
+        if remaining.is_empty() {
+            clear_snapshot(SWEPT_TOOLS_SNAPSHOT)
+        } else {
+            save_snapshot(SWEPT_TOOLS_SNAPSHOT, &remaining)
+        }
+    };
+    let Some(integ) = integ else {
+        journal.record(slug, recovery::Outcome::Unknown);
+        return drop_from_snapshot(journal);
+    };
+    if !integ.detect().unwrap_or(false) {
+        journal.record(slug, recovery::Outcome::NotInstalled);
+        return drop_from_snapshot(journal);
+    }
+    let Some(account) = account::load()? else {
+        // Left in the snapshot for a later signed-in retry, and recorded as
+        // deferred rather than failed: there is nothing wrong with this tool.
+        journal.record(slug, recovery::Outcome::DeferredSignedOut);
+        journal.finish();
+        return Ok(());
+    };
+    let engine_proxy_url = crate::proxy::engine_proxy_url();
+    if integ.requires_engine() && engine_proxy_url.is_none() {
+        // The batch's early-out, narrowed to one slug: left recorded, and left
+        // saying it is waiting for the engine rather than that its write failed.
+        // Not an `Err`, because nothing went wrong - a retry that returned one
+        // would put an error banner over a tool that is simply next.
+        journal.record(slug, recovery::Outcome::DeferredEngineDown);
+        journal.finish();
+        return Ok(());
+    }
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url.clone(),
+        upstream_url: integ.default_upstream_url().to_string(),
+        billing_mode: account.billing_mode,
+        relay_base_url: crate::proxy::relay_base_url(),
+        engine_proxy_url,
+    };
+    if let Err(e) = integ.connect(&input) {
+        journal.record_failed(slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
+        journal.finish();
+        return Err(e).with_context(|| format!("retrying tool {slug:?}"));
+    }
+    journal.record(slug, recovery::Outcome::Restored);
+    drop_from_snapshot(journal)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slug the registry no longer knows - a provider or tool uninstalled between
+    /// the snapshot and now - still gets named, because dropping it silently would
+    /// shorten a list the user is being asked to act on.
+    #[test]
+    fn an_unknown_slug_still_names_itself() {
+        let entry = PendingEntry {
+            slug: "retired-provider".into(),
+            name: "retired-provider".into(),
+        };
+        assert_eq!(entry.name, entry.slug);
+    }
+
+    #[test]
+    fn nothing_outstanding_reads_as_empty() {
+        assert!(PendingRestore::default().is_empty());
+        assert!(!PendingRestore {
+            providers: vec![PendingEntry {
+                slug: "openai".into(),
+                name: "OpenAI".into(),
+            }],
+            tools: Vec::new(),
+        }
+        .is_empty());
+    }
+
+    /// Tools alone count. The two snapshots are separate files and a restore can
+    /// finish the providers and still owe the standalone tools.
+    #[test]
+    fn tools_alone_are_still_outstanding() {
+        assert!(!PendingRestore {
+            providers: Vec::new(),
+            tools: vec![PendingEntry {
+                slug: "opencode".into(),
+                name: "OpenCode".into(),
+            }],
+        }
+        .is_empty());
+    }
 
     /// `Applied::NotYet` is private, so the only place that can name it is a
     /// test in this module - and `restore_all`'s behavioural test cannot
@@ -908,12 +1381,262 @@ mod tests {
         );
     }
 
+    /// A restore pass with nothing to do yet says so **whatever the skip list
+    /// holds**, which is the half `an_enable_with_nothing_to_do_yet_says_so`
+    /// cannot see.
+    ///
+    /// That test supplies a skip list, and the guard it was testing read
+    /// `!skip.is_empty()` - so the ordinary case, a restore where nothing had
+    /// been switched off beforehand, fell through to the error written for a
+    /// user who asked for the provider by name. `restore_all` recorded it as
+    /// `WriteFailed`, and the recovery summary told somebody mid-master-on that
+    /// Gate could not write a config file OpenRouter does not have, over a
+    /// message advising them to turn on the routing they were turning on.
+    ///
+    /// `openrouter` is the sharpest case: `tool_ids` is empty, so there is never
+    /// a tool to detect and the engine is the only thing that could give this
+    /// call something to do.
     #[test]
-    fn openai_provider_maps_to_codex_and_openai_domain() {
+    fn a_restore_with_nothing_to_do_yet_says_so_with_no_skip_list() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-noskip-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let applied = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            enable_skipping("openrouter", &[]).map(|(applied, _)| applied)
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(
+            applied.expect("a restore pass with nothing to do yet is not an error"),
+            Applied::NotYet,
+            "an error here is journalled as WriteFailed, and the summary then \
+             reports a failed config write that never happened"
+        );
+    }
+
+    /// The by-name caller keeps its explanation. The fix must not turn the
+    /// user's own click into a silent no-op: they asked for this provider, and
+    /// nothing happening is a result that needs a sentence.
+    #[test]
+    fn a_by_name_enable_with_nothing_to_do_still_explains_itself() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-byname-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let out = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            enable("openrouter")
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let err = out.expect_err("nothing to configure is an error for a by-name enable");
+        assert!(
+            format!("{err:#}").contains("nothing to configure"),
+            "got {err:#}"
+        );
+    }
+
+    /// A snapshot entry naming a provider this build does not have is DROPPED,
+    /// not retried.
+    ///
+    /// The regression this pins was permanent and self-sustaining. A stale
+    /// `restore-snapshot.json` of `["google"]` - a provider an older build knew
+    /// and this one does not - took the `Err` arm of `restore_all`'s loop,
+    /// because `enable_inner` fails on `find` before it opens a file. That arm
+    /// journalled `WriteFailed` and pushed the slug straight back into the
+    /// snapshot, so the next resume produced the identical error, and so did
+    /// every resume after it. On screen: a "Routing didn't finish - google is
+    /// still waiting" card that no action could clear, with a Resume now that
+    /// could not in principle succeed.
+    ///
+    /// `Outcome::Unknown` already existed for exactly this and the tool pass
+    /// already used it; only the provider pass lacked the branch.
+    #[test]
+    fn a_snapshot_entry_for_an_unknown_provider_is_dropped_not_retried() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-unknown-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let outcome = (|| -> Result<(PendingRestore, PendingRestore)> {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            save_snapshot(PROVIDER_SNAPSHOT, &["google".to_string()])?;
+            let before = pending_restore()?;
+            // Best-effort like every caller: what matters is the snapshot after.
+            let _ = restore_all();
+            let after = pending_restore()?;
+            Ok((before, after))
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let (before, after) = outcome.expect("the snapshot round-trip is not what is under test");
+        assert!(
+            before.providers.iter().any(|e| e.slug == "google"),
+            "the test set this up wrong: google should start out pending, got {:?}",
+            before.providers
+        );
+        assert!(
+            !after.providers.iter().any(|e| e.slug == "google"),
+            "an unresolvable slug survived the restore, so the recovery card is \
+             permanent and Resume now can never clear it; got {:?}",
+            after.providers
+        );
+    }
+
+    /// The same slug through the **per-row Retry**, which is the other button.
+    ///
+    /// `restore_all` and `restore_one` reach the guard by different routes, and
+    /// only the batch was covered. That matters here more than it usually would:
+    /// the bug class this is about is "a card no action can clear", and Retry is
+    /// half of what the user can press. `restore_one_provider` carries its own
+    /// copy of the branch - it has to, because it has its own queue to rewrite -
+    /// so a fix to one is not a fix to the other.
+    #[test]
+    fn the_per_row_retry_also_drops_an_unknown_provider() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-unknown-retry-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let outcome = (|| -> Result<(PendingRestore, Result<()>, PendingRestore)> {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            save_snapshot(PROVIDER_SNAPSHOT, &["google".to_string()])?;
+            let before = pending_restore()?;
+            let retry = restore_one("google");
+            let after = pending_restore()?;
+            Ok((before, retry, after))
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let (before, retry, after) =
+            outcome.expect("the snapshot round-trip is not what is under test");
+        assert!(
+            before.providers.iter().any(|e| e.slug == "google"),
+            "the test set this up wrong: google should start out pending, got {:?}",
+            before.providers
+        );
+        // Not an `Err`: nothing failed, the answer is simply settled. A retry
+        // that reported failure here would redraw the card it just cleared.
+        assert!(
+            retry.is_ok(),
+            "an unresolvable slug is settled, not a failure; got {:?}",
+            retry.err().map(|e| format!("{e:#}"))
+        );
+        assert!(
+            !after.providers.iter().any(|e| e.slug == "google"),
+            "the per-row Retry left an unresolvable slug in the snapshot, so the \
+             row comes back and the button can never clear it; got {:?}",
+            after.providers
+        );
+    }
+
+    /// Only the two engine-routed integrations declare the requirement, and the
+    /// three config-file tools must not: they write a relay URL, which Gate owns
+    /// whether or not the engine is intercepting anything. A `true` here would
+    /// defer a tool that could have been restored in the first pass.
+    #[test]
+    fn only_the_engine_routed_integrations_require_the_engine() {
+        for integ in registry::registry() {
+            let expected = matches!(integ.id(), ToolId::OpenClaw | ToolId::EnvProxy);
+            assert_eq!(
+                integ.requires_engine(),
+                expected,
+                "{} disagrees about needing the engine, which decides whether a \
+                 restore defers it or attempts it",
+                integ.display_name()
+            );
+        }
+    }
+
+    #[test]
+    fn openai_provider_governs_codex_and_no_domain_at_all() {
+        // The `openai` domain used to hang here. It is api.openai.com, and no
+        // OpenAI tool Gate configures rides its switch: Codex routes through the
+        // relay, which resolves against the whole catalog rather than the
+        // enabled set, and the ChatGPT desktop app talks to chatgpt.com. What
+        // the switch governs is generic interception of that host, whose real
+        // dependants are the multi-provider harnesses - so the row moved to
+        // Experimental with them.
         let p = find("openai").expect("openai provider present");
         assert_eq!(p.display_name, "OpenAI");
         assert!(p.tool_ids.contains(&ToolId::Codex));
-        assert_eq!(p.proxy_domain_slugs, &["openai"]);
+        assert!(
+            p.proxy_domain_slugs.is_empty(),
+            "a domain here rejoins the family cascade, got {:?}",
+            p.proxy_domain_slugs
+        );
     }
 
     #[test]
@@ -929,13 +1652,12 @@ mod tests {
         let p = find("openai").expect("openai provider present");
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt"));
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt-apps"));
-        assert_eq!(p.proxy_domain_slugs, &["openai"]);
     }
 
     #[test]
     fn anthropic_provider_maps_to_claude_code_and_anthropic_domain() {
         let p = find("anthropic").expect("anthropic provider present");
-        assert_eq!(p.display_name, "Claude");
+        assert_eq!(p.display_name, "Anthropic");
         assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
         assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
     }

@@ -54,6 +54,17 @@ enum Command {
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
+    /// Show or change who pays the upstream provider.
+    ///
+    /// `byok` (the default) forwards each tool's own provider credential and
+    /// the provider bills you directly. `payg` sends neither, so Gate routes
+    /// through your workspace's provider accounts and debits its prepaid
+    /// balance - top up in the dashboard first, since a funded balance is what
+    /// activates it. Run with no argument to print the current mode.
+    BillingMode {
+        /// `byok` or `payg`. Omit to print the current mode.
+        mode: Option<String>,
+    },
     /// Show the currently signed-in gateway URL, if any.
     Whoami,
     /// List supported tools and their current state.
@@ -198,6 +209,7 @@ fn main() -> Result<()> {
             api_key_file,
         } => cmd_set_upstream(&tool, api_key, api_key_file),
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
+        Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
     };
@@ -365,8 +377,65 @@ fn cmd_logout() -> Result<()> {
 
 fn cmd_whoami() -> Result<()> {
     match account::load_base_url()? {
-        Some(url) => println!("Signed in: {url}"),
+        Some(url) => {
+            println!("Signed in: {url}");
+            // Who pays is not visible anywhere else on a headless machine, and
+            // it decides whether traffic spends the workspace balance.
+            println!(
+                "Billing:   {}",
+                billing_mode_label(account::billing_mode()?)
+            );
+        }
         None => println!("Not signed in. Run `gate-connect login --base-url … --api-key …`."),
+    }
+    Ok(())
+}
+
+fn billing_mode_label(mode: account::BillingMode) -> &'static str {
+    match mode {
+        account::BillingMode::Byok => "byok (your own provider keys)",
+        account::BillingMode::Payg => "payg (billed to your Gate balance)",
+    }
+}
+
+/// Print or switch the account's billing mode.
+///
+/// Switching rewrites nothing on its own beyond the account file: the relay and
+/// the MITM engine read the mode per request, so routing follows immediately in
+/// whichever process hosts them - except that Codex's provider block encodes
+/// the mode, so it needs a reconnect, and this says so rather than silently
+/// leaving it on the old shape.
+fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
+    let Some(requested) = mode else {
+        println!("{}", billing_mode_label(account::billing_mode()?));
+        return Ok(());
+    };
+    let mode = match requested.to_ascii_lowercase().as_str() {
+        "byok" => account::BillingMode::Byok,
+        "payg" => account::BillingMode::Payg,
+        other => anyhow::bail!("unknown billing mode {other:?} - expected `byok` or `payg`"),
+    };
+    account::set_billing_mode(mode)?;
+    println!("Billing mode: {}", billing_mode_label(mode));
+
+    // Codex is the one config integration whose file depends on the mode.
+    if matches!(
+        registry::find(ToolId::Codex).map(|i| i.status()),
+        Some(Ok(Status::Connected))
+            | Some(Ok(Status::Drifted(_)))
+            | Some(Ok(Status::Overridden(_)))
+    ) {
+        println!(
+            "note: run `gate-connect connect codex` to rewrite its provider block for this mode."
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous mode until it is toggled off and on."
+            );
+        }
     }
     Ok(())
 }
@@ -434,6 +503,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
+        billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
     };

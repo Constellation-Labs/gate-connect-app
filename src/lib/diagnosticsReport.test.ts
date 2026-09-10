@@ -20,7 +20,8 @@ const backend: Diagnostics = {
   data_dir: "/home/x/.local/share/Gate Connect",
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
-  ca_nss_trusted: true,
+  ca_nss_trusted: "holds",
+  ca_nss_write: { outcome: "trusted", refusals: [] },
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -32,6 +33,7 @@ const account: Account = {
   gateway_base_url: "https://gateway.constellationgate.ai",
   has_api_key: false,
   auth_mode: "oauth",
+  billing_mode: "byok",
   org_id: "2f9c0000-0000-0000-0000-000000000000",
   org_name: "Constellation",
 };
@@ -47,6 +49,9 @@ const proxy: ProxyState = {
   port: 45981,
   pac_port: null,
   ca_trusted: true,
+  ca_nss_trust: null,
+  browser_proxy_channel: false,
+  relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
   env_export_separable: false,
   domains: [
@@ -100,15 +105,19 @@ const tools: Tool[] = [
   {
     slug: "claude-code",
     name: "Claude Code",
+    product_name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status: { kind: "connected" },
   },
   {
     slug: "codex",
     name: "Codex",
+    product_name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
+    config_location: null,
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];
@@ -121,12 +130,25 @@ const agents: RunningAgents = {
   scanned_names: ["claude", "codex", "opencode"],
   agents: [
     {
+      slug: "claude-code",
       name: "claude",
+      product_name: "Claude Code",
+      verifiable: true,
+      can_reopen: false,
       pid: 12345,
       started_at_unix: NOW_UNIX - (2 * 3600 + 46 * 60),
       predates_routing: true,
     },
-    { name: "codex", pid: 23456, started_at_unix: NOW_UNIX - 60, predates_routing: false },
+    {
+      slug: "codex",
+      name: "codex",
+      product_name: "Codex",
+      verifiable: true,
+      can_reopen: false,
+      pid: 23456,
+      started_at_unix: NOW_UNIX - 60,
+      predates_routing: false,
+    },
   ],
 };
 
@@ -137,6 +159,7 @@ function report(overrides: Partial<Parameters<typeof buildDiagnosticsReport>[0]>
     platform: "linux",
     analyticsId: { kind: "id", value: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" },
     backend,
+    versions: null,
     account,
     oauth,
     proxy,
@@ -236,14 +259,97 @@ describe("buildDiagnosticsReport", () => {
   it("flags a CA the browser's own store is missing", () => {
     // The certificate line still says trusted, because the OS store holds it.
     // Only this line explains why Chrome rejects what Firefox accepts.
-    const text = report({ backend: { ...backend, ca_nss_trusted: false } });
+    const text = report({ backend: { ...backend, ca_nss_trusted: "absent" } });
     expect(text).toContain("certificate     trusted");
     expect(text).toContain("browser store   CA MISSING (chromium)");
+  });
+
+  /** A store Gate could not open is not a store without the CA, and this line
+   *  is what a support engineer acts on. Printing MISSING for a database that
+   *  never answered is a positive claim manufactured out of the absence of a
+   *  reading - and the bounded certutil this branch added gave that case a new
+   *  way to happen, in the shape of a call killed at its deadline. */
+  it("does not report a store it could not read as a store missing the CA", () => {
+    const text = report({ backend: { ...backend, ca_nss_trusted: "unreadable" } });
+    expect(text).toContain("browser store   could not be read (chromium)");
+    expect(text).not.toContain("CA MISSING");
   });
 
   it("says nothing about the browser store where the question does not apply", () => {
     const text = report({ backend: { ...backend, ca_nss_trusted: null } });
     expect(text).not.toContain("browser store");
+  });
+
+  /** The promise `browserTrustRestartAdvice`'s `write_failed` copy makes: "The
+   *  diagnostics report names which one and why." It has to be answerable here,
+   *  because the person reading it is already stuck and a report with nothing in
+   *  it costs them a round trip to find that out. */
+  it("names the store that refused the certificate, and its reason", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_trusted: "absent",
+        ca_nss_write: {
+          outcome: "write_failed",
+          refusals: [
+            {
+              store: "/home/u/.pki/nssdb",
+              reason: "certutil -A exited 255: SEC_ERROR_TOKEN_NOT_LOGGED_IN",
+            },
+          ],
+        },
+      },
+    });
+    expect(text).toContain("browser write   FAILED - a store refused");
+    expect(text).toContain("/home/u/.pki/nssdb");
+    expect(text).toContain("SEC_ERROR_TOKEN_NOT_LOGGED_IN");
+  });
+
+  /** The other cause, which the probe above cannot tell apart from it: one is
+   *  fixed by installing a package and one is not, and prescribing the package
+   *  to somebody whose database was locked sends them the wrong way. */
+  it("separates a missing certutil from a store that refused", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_trusted: "absent",
+        ca_nss_write: { outcome: "tools_missing", refusals: [] },
+      },
+    });
+    expect(text).toContain("browser write   FAILED - certutil not installed");
+    expect(text).not.toContain("refused");
+  });
+
+  /** A clean write adds nothing: the certificate line already says trusted, and
+   *  a second line agreeing with it is noise in a file people scan. */
+  it("says nothing about the write when the write succeeded", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_write: { outcome: "trusted", refusals: [] },
+      },
+    });
+    expect(text).not.toContain("browser write");
+  });
+
+  /** ...but no record at all is a different thing from a clean one, and
+   *  printing nothing for both made a report taken before any write read as
+   *  "the write was fine". Principle 6: a section nobody read says so. */
+  it("says so when nothing has recorded a write for this certificate", () => {
+    const text = report({
+      backend: { ...backend, ca_nss_trusted: "absent", ca_nss_write: null },
+    });
+    expect(text).toContain("browser write   no record for this certificate");
+  });
+
+  /** And says nothing where there is no such store to have written: every
+   *  macOS and Windows report would otherwise carry a line about a question
+   *  that does not apply to it. */
+  it("says nothing about the write off the platform that has a second store", () => {
+    const text = report({
+      backend: { ...backend, ca_nss_trusted: null, ca_nss_write: null },
+    });
+    expect(text).not.toContain("browser write");
   });
 
   it("survives a first-run popover with no account and no proxy", () => {
@@ -268,7 +374,11 @@ describe("agentLine", () => {
   it("switches to days for the process that has been up all weekend", () => {
     const line = agentLine(
       {
+        slug: "claude-code",
         name: "Claude",
+        product_name: "Claude Code",
+        verifiable: true,
+        can_reopen: false,
         pid: 9,
         started_at_unix: NOW_UNIX - (3 * 86400 + 4 * 3600),
         predates_routing: true,
@@ -280,7 +390,16 @@ describe("agentLine", () => {
 
   it("says so rather than printing an epoch when the platform withheld the start time", () => {
     const line = agentLine(
-      { name: "codex", pid: 9, started_at_unix: 0, predates_routing: false },
+      {
+        slug: "codex",
+        name: "codex",
+        product_name: "Codex",
+        verifiable: true,
+        can_reopen: false,
+        pid: 9,
+        started_at_unix: 0,
+        predates_routing: false,
+      },
       NOW,
     );
     expect(line).toContain("start time unavailable");
@@ -295,5 +414,32 @@ describe("toolStatusLine", () => {
     expect(toolStatusLine({ kind: "error", message: "keychain denied" })).toBe(
       "error: keychain denied",
     );
+  });
+});
+
+describe("tool versions", () => {
+  it("prints the version beside the status", () => {
+    const out = report({ versions: { "claude-code": "2.1.263" } });
+    expect(out).toMatch(/claude-code.*\(v2\.1\.263\)/);
+  });
+
+  it("says so when the binary was found and would not answer", () => {
+    // Different from silence: the executable is there, so "not installed" is
+    // the wrong conclusion to draw from a missing version.
+    const out = report({ versions: { "claude-code": null } });
+    expect(out).toContain("(version unreadable)");
+  });
+
+  it("says nothing at all when no executable was found", () => {
+    // A tool detected through its config directory with no binary on disk. The
+    // absence IS the finding, and inventing a phrase for it would bury it.
+    const out = report({ versions: {} });
+    expect(out).not.toContain("version unreadable");
+    expect(out).not.toMatch(/\(v\d/);
+  });
+
+  it("prints nothing when the probe never ran", () => {
+    const out = report({ versions: null });
+    expect(out).not.toContain("version unreadable");
   });
 });

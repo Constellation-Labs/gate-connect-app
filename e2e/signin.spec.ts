@@ -90,9 +90,18 @@ test.describe("sign out", () => {
     await app.openSettings();
     await app.page.getByRole("button", { name: "Sign out" }).click();
 
-    await expect(app.page.getByRole("heading", { name: /Welcome/ })).toBeVisible();
+    // "You are signed out", not "Welcome back" and not "Your session expired":
+    // the user pressed the button, so the pane reports that rather than
+    // diagnosing an authentication failure that did not happen. The two states
+    // leave identical account data behind, which is why the reason is recorded
+    // rather than inferred - see `preferences::signed_out_deliberately`.
+    await expect(
+      app.page.getByRole("heading", { name: "You are signed out" }),
+    ).toBeVisible();
+    await expect(app.page.getByText("Your session expired")).toHaveCount(0);
     const state = await app.state();
     expect(state.oauth.signed_in).toBe(false);
     expect(state.account).not.toBeNull();
+    expect(state.preferences.signed_out_deliberately).toBe(true);
   });
 });

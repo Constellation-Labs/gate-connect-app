@@ -114,7 +114,7 @@ describe("FirstRun sign-in path", () => {
     fireEvent.click(signInButton());
     const alert = await screen.findByRole("alert");
     // The sign_in fallback title, not the raw string.
-    expect(alert.textContent).toContain("Couldn’t save your account");
+    expect(alert.textContent).toContain("Couldn’t complete sign-in");
     expect(onConnected).not.toHaveBeenCalled();
     expect((signInButton() as HTMLButtonElement).disabled).toBe(false);
   });

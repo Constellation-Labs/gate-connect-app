@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { openExternal } from "../lib/openExternal";
 import { oauthBeginLogin, saveAccount } from "../lib/api";
-import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS, GATE_API_KEYS_URL } from "../lib/config";
+import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
+import { dashboardLinks } from "../lib/dashboard";
 import { trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { markOAuthOfferSeen } from "../lib/oauthOffer";
@@ -24,19 +25,24 @@ function hostOf(url: string): string {
  *  persisted first (defaulting to DEFAULT_GATEWAY_BASE_URL) so the backend can
  *  record the chosen auth mode. Dev mode targets another environment before
  *  connecting. `initialGateway` pre-points at a previously-selected gateway;
- *  `reauth` swaps the copy for an expired-session prompt (OAuth account whose
- *  silent refresh failed). */
+ *  `reauth` swaps the copy for a returning-user prompt, and `deliberate` says
+ *  which kind of return it was: a session that died, or one the user ended. */
 export function FirstRun({
   onConnected,
   initialGateway,
   startOnKey,
   reauth = false,
+  deliberate = false,
 }: {
   onConnected: () => void;
   initialGateway?: string;
   /** Open directly on the API-key form. */
   startOnKey?: boolean;
   reauth?: boolean;
+  /** The session ended because the user asked it to, rather than expiring.
+   *  Same pane either way; only the sentence below the heading changes. See
+   *  `preferences::signed_out_deliberately`. */
+  deliberate?: boolean;
 }) {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -51,6 +57,11 @@ export function FirstRun({
   );
   const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
   const platform = usePlatform();
+
+  /** The dashboard for the gateway this screen is about to sign into - which is
+   *  the one in `gateway`, not the one the app was built against. Null when that
+   *  gateway has no dashboard. */
+  const keyDashboard = dashboardLinks(gateway);
 
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
@@ -113,7 +124,11 @@ export function FirstRun({
             with nothing to orient by. */}
         <h1 className="mt-3 text-gc-panel-title font-semibold tracking-[-0.02em] text-gc-navy">
           {reauth ? (
-            "Welcome back"
+            deliberate ? (
+              "You are signed out"
+            ) : (
+              "Welcome back"
+            )
           ) : (
             <>
               Welcome to Gate <span className="text-gc-accent">Connect</span>
@@ -121,8 +136,15 @@ export function FirstRun({
           )}
         </h1>
         <p className="mt-1.5 max-w-[290px] text-gc-body-sm leading-[1.45] text-gc-ink-3">
+          {/* "Your session expired" was said after every route to this screen,
+              including the three that are not expiries: the Settings sign-out,
+              the org-picker dead end, and "use an API key instead" - the last
+              two of which the app performs itself, so it was blaming an
+              authentication failure for its own navigation. */}
           {reauth
-            ? "Your session expired. Sign in again to keep routing your desktop agents through Gate."
+            ? deliberate
+              ? "Sign in again whenever you want to route your desktop agents through Gate."
+              : "Your session expired. Sign in again to keep routing your desktop agents through Gate."
             : "Sign in to route your desktop agents through Gate, right from the menu bar."}
         </p>
       </div>
@@ -192,18 +214,31 @@ export function FirstRun({
             Saved to {secretStoreName(platform)}. Your config files get the
             gateway URL, never the key.
           </p>
+          {/* Derived from the gateway selected ABOVE, not a constant. This is
+              the screen where getting it wrong costs the most: a user signing
+              into staging was being sent to the production dashboard to fetch a
+              key, where the key they find does not work against the gateway
+              they just chose. `keyDashboard` is null for a local gateway, which
+              has no dashboard to send anyone to - so the sentence loses its
+              link rather than pointing at a guess. */}
           <p className="mt-1 text-gc-micro text-gc-ink-3">
-            Find it under{" "}
-            <button
-              type="button"
-              onClick={() => {
-                void openExternal(GATE_API_KEYS_URL);
-              }}
-              className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
-            >
-              API Keys
-            </button>{" "}
-            in your Gate dashboard.
+            {keyDashboard ? (
+              <>
+                Find it under{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void openExternal(keyDashboard.apiKeys);
+                  }}
+                  className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+                >
+                  API Keys
+                </button>{" "}
+                in your Gate dashboard.
+              </>
+            ) : (
+              "Find it under API Keys in your Gate dashboard."
+            )}
           </p>
           <Button full className="mt-3" disabled={!canSubmitKey} onClick={connectWithKey}>
             {submitting ? "Connecting…" : "Connect with key"}

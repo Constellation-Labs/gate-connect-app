@@ -3,7 +3,8 @@
 //!
 //! - macOS Keychain (via `apple-native` → Security.framework)
 //! - Windows Credential Manager (via `windows-native`)
-//! - Linux Secret Service (via `sync-secret-service`, vendored libdbus)
+//! - Linux Secret Service (via `async-secret-service` → `zbus`, on an
+//!   encrypted DH session; see the `keyring` entry in the root `Cargo.toml`)
 //!
 //! Every secret Gate Connect writes uses the same service prefix
 //! (`ai.constellation.gate-connect.*`) so the user can audit / nuke

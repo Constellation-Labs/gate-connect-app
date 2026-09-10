@@ -55,7 +55,9 @@ describe("QuitConfirm copy", () => {
 
 describe("QuitConfirm actions", () => {
   it("disconnects the tools before quitting", async () => {
-    (disconnectToolsForQuit as Mock).mockResolvedValue(undefined);
+    // Empty list = every tool was put back. A non-empty one is the partial
+    // teardown covered below.
+    (disconnectToolsForQuit as Mock).mockResolvedValue([]);
     (quitApp as Mock).mockResolvedValue(undefined);
     renderConfirm(["Claude Code"]);
     fireEvent.click(screen.getByRole("button", { name: "Disconnect tools and quit" }));
@@ -71,6 +73,27 @@ describe("QuitConfirm actions", () => {
     await vi.waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1));
     expect(disconnectToolsForQuit).not.toHaveBeenCalled();
     expect(track).toHaveBeenCalledWith("quit_confirmed", { integrations_disabled: false });
+  });
+
+  /**
+   * The teardown is best-effort per tool, so it can succeed overall while leaving
+   * one tool pointing at a relay that dies with this process. Quitting there
+   * would strand it silently, which is the thing AG-596 rules out: Gate Connect
+   * "does not claim cleanup completed".
+   */
+  it("names the tools it could not put back, and does not quit", async () => {
+    (disconnectToolsForQuit as Mock).mockResolvedValue(["Codex"]);
+    (quitApp as Mock).mockResolvedValue(undefined);
+    renderConfirm(["Claude Code", "Codex"]);
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect tools and quit" }));
+
+    expect(await screen.findByText(/Couldn’t put Codex back/)).toBeTruthy();
+    expect(quitApp).not.toHaveBeenCalled();
+    // The primary becomes a retry rather than repeating a label that already ran.
+    expect(screen.getByRole("button", { name: "Try disconnecting again" })).toBeTruthy();
+    // Quitting stays available: refusing to let someone quit their own app is
+    // worse than letting them quit informed.
+    expect(screen.getByRole("button", { name: "Quit without disconnecting" })).toBeTruthy();
   });
 
   it("surfaces a failed disconnect and does not quit", async () => {

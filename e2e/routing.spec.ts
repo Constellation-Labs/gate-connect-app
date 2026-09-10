@@ -185,7 +185,7 @@ test.describe("routing", () => {
         domains: [
           {
             slug: "anthropic",
-            display_name: "Claude apps",
+            display_name: "App",
             hosts: ["api.anthropic.com"],
             upstream_url: "https://gateway.constellationgate.ai",
             rewrite_prefixes: ["/v1"],
@@ -217,8 +217,8 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Claude").click();
-    const member = app.page.getByRole("switch", { name: "Route Claude Code through Gate" });
+    await app.familyRow("Anthropic").click();
+    const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await expect(member).toHaveAttribute("aria-checked", "false");
 
     await member.click();
@@ -243,8 +243,8 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Claude").click();
-    await app.page.getByRole("switch", { name: "Route Claude apps through Gate" }).click();
+    await app.familyRow("Anthropic").click();
+    await app.page.getByRole("switch", { name: "Route App through Gate" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
       slug: "anthropic",
@@ -269,17 +269,14 @@ test.describe("family panel", () => {
     });
 
     await app.familyRow("OpenAI").click();
-    const subscription = app.page.getByRole("switch", {
-      name: "Route ChatGPT (Codex subscription) through Gate",
-    });
-    const apps = app.page.getByRole("switch", {
-      name: "Route ChatGPT app chat + Codex tools through Gate",
-    });
+    const subscription = app.page.getByRole("switch", { name: "Route App through Gate" });
+    const apps = app.page.getByRole("switch", { name: "Route Web through Gate" });
     await expect(subscription).toHaveAttribute("aria-checked", "false");
     await expect(apps).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Codex and the OpenAI apps route, neither of these
-    // rows moves.
+    // The whole family on: Codex routes and neither of these rows moves. No
+    // domain is cascaded at all - `openai` left this family for Experimental,
+    // so `proxy_domain_slugs` is empty and the switch governs the tool alone.
     const family = app.page.getByRole("switch", { name: "Route OpenAI through Gate" });
     await family.click();
     // The family switch reads its own state back from `proxy_status`, which
@@ -290,7 +287,7 @@ test.describe("family panel", () => {
     await expect(family).toHaveAttribute("aria-checked", "true");
     expect(
       (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
-    ).toEqual(["openai"]);
+    ).toEqual([]);
     const domains = (await app.state()).proxy.domains;
     expect(domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(false);
     expect(domains.find((d) => d.slug === "chatgpt-apps")?.enabled).toBe(false);
@@ -317,13 +314,13 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Claude").click();
-    const chat = app.page.getByRole("switch", { name: "Route Claude Desktop chat through Gate" });
+    await app.familyRow("Anthropic").click();
+    const chat = app.page.getByRole("switch", { name: "Route Web through Gate" });
     await expect(chat).toHaveAttribute("aria-checked", "false");
 
     // The whole family on: Claude Code and Claude apps route, the chat row does
     // not move. Same completion signal as the test above.
-    const family = app.page.getByRole("switch", { name: "Route Claude through Gate" });
+    const family = app.page.getByRole("switch", { name: "Route Anthropic through Gate" });
     await family.click();
     await expect(family).toHaveAttribute("aria-checked", "true");
     expect(
@@ -348,8 +345,8 @@ test.describe("family panel", () => {
       failures: { connect_tool: "permission denied writing ~/.claude/settings.json" },
     });
 
-    await app.familyRow("Claude").click();
-    const member = app.page.getByRole("switch", { name: "Route Claude Code through Gate" });
+    await app.familyRow("Anthropic").click();
+    const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await member.click();
 
     await expect(app.page.getByText(/couldn|permission|denied/i).first()).toBeVisible();

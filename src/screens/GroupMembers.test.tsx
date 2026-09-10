@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { ProviderState, ProxyDomain, Tool } from "../lib/api";
+import type { ProviderState, ProxyDomain, Tool, Verdict } from "../lib/api";
 import { buildGroups } from "../lib/groups";
 import { GroupMembers } from "./GroupMembers";
 
@@ -8,17 +8,26 @@ vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // GroupMembers names the secret store in two of its explainers. Pin the
 // platform so that copy is deterministic, and so the real hook's async
 // resolve does not settle outside act().
+//
+// Through a `vi.hoisted` cell rather than a literal, because one suite below
+// needs Linux: the browser scope sentence is the only copy here that differs
+// by session rather than by OS, and Linux is the platform where it can be
+// withheld.
+const platformMock = vi.hoisted(() => ({ current: "macos" as "macos" | "linux" }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
-  usePlatform: () => "macos",
+  usePlatform: () => platformMock.current,
 }));
 
 function tool(slug: string, name: string, status: Tool["status"]): Tool {
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
   };
 }
@@ -47,12 +56,41 @@ const CATALOG: ProviderState[] = [
   },
 ];
 
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
+
 function renderDetail(
   tools: Tool[],
   domains: ProxyDomain[] = [domain],
   props: Partial<React.ComponentProps<typeof GroupMembers>> = {},
 ) {
-  const [group] = buildGroups(CATALOG, tools, domains, { proxyOn: true, caTrusted: true });
+  const [group] = buildGroups(CATALOG, tools, domains, {
+    proxyOn: true,
+    caTrusted: true,
+    verdicts: sweep(tools),
+  });
   render(
     <GroupMembers
       group={group}
@@ -62,6 +100,10 @@ function renderDetail(
       onTrustCa={vi.fn()}
       trustPending={false}
       proxyOn={true}
+      // No chat row in this catalog, so the value is inert here. The sentence
+      // it drives is exercised in "GroupMembers chat row scope" below, in both
+      // directions.
+      browserChannel={true}
       onEnableRouting={vi.fn()}
       {...props}
     />,
@@ -246,6 +288,7 @@ describe("GroupMembers intent versus flow", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
       proxyOn={true}
+      browserChannel={true}
       onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -331,6 +374,7 @@ describe("GroupMembers master-off remedy", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
         proxyOn={false}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -376,11 +420,76 @@ describe("GroupMembers certificate failure", () => {
         onTrustCa={() => Promise.reject("User canceled (-128)")}
         trustPending={false}
         proxyOn={true}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
+  });
+});
+
+describe("GroupMembers chat row scope", () => {
+  /** A chat surface: its own row, its own switch, out of the family cascade. */
+  const CHAT_DOMAIN: ProxyDomain = {
+    slug: "claude-web",
+    display_name: "Claude web",
+    hosts: ["claude.ai"],
+    upstream_url: "https://claude.ai",
+    rewrite_prefixes: [],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+  };
+
+  const CHAT_CATALOG: ProviderState[] = [
+    { ...CATALOG[0], chat_domain_slugs: ["claude-web"] },
+  ];
+
+  beforeEach(() => {
+    platformMock.current = "linux";
+  });
+  afterEach(() => {
+    platformMock.current = "macos";
+  });
+
+  function renderChat(browserChannel: boolean) {
+    const [group] = buildGroups(CHAT_CATALOG, [], [domain, CHAT_DOMAIN], {
+      proxyOn: true,
+      caTrusted: true,
+    });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn={true}
+        browserChannel={browserChannel}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude web details" }));
+  }
+
+  it("claims the browser where this session has the channel a browser reads", () => {
+    renderChat(true);
+    expect(screen.getByText(/browser that follows your desktop proxy settings/)).toBeTruthy();
+  });
+
+  it("makes no browser claim where it does not", () => {
+    // The wiring this pins, rather than the sentence: `browserScopeNote` has
+    // its own unit tests, and what was untested is that `GroupMembers` threads
+    // the prop into `explain` at all. A default that ignored it would pass
+    // every test above and claim an interception that is not happening - the
+    // one error the reading exists to prevent.
+    renderChat(false);
+    expect(screen.queryByText(/browser that follows/)).toBeNull();
+    // The rest of the row still reads normally: the scope note is a sentence,
+    // not a clause, so dropping it leaves the host sentence standing.
+    expect(screen.getAllByText(/claude\.ai/).length).toBeGreaterThan(0);
   });
 });
 

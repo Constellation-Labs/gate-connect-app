@@ -35,10 +35,28 @@ pub enum AuthMode {
     OAuth,
 }
 
+/// Who pays the upstream provider for the traffic Gate Connect routes.
+///
+/// `Byok` (the default, and every install predating this field) sends
+/// `X-Gate-Upstream-Url` and lets the tool's own credential through, so the
+/// provider bills the user directly. `Payg` omits that header and strips the
+/// tool's credential, so the gateway forwards under one of the org's own
+/// provider accounts and debits its prepaid balance. The gateway infers the
+/// mode from the request shape alone - there is no flag on the Gate key - so
+/// this only ever decides which shape the relay and the MITM engine emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingMode {
+    #[default]
+    Byok,
+    Payg,
+}
+
 pub struct Account {
     pub gateway_base_url: String,
     pub api_key: String,
     pub auth_mode: AuthMode,
+    pub billing_mode: BillingMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +74,11 @@ struct AccountFile {
     /// as `ApiKey`, preserving the legacy behavior.
     #[serde(default)]
     auth_mode: AuthMode,
+    /// Who pays the upstream provider. Absent in files written before PAYG
+    /// support existed; `#[serde(default)]` loads those as `Byok`, which is
+    /// what they have always been.
+    #[serde(default)]
+    billing_mode: BillingMode,
     /// Selected organization (OAuth mode only). `org_id` is the UUID injected
     /// on `X-Gate-Org-Id`; `org_name` is cached for display. Non-secret. Absent
     /// until the user picks an org after signing in.
@@ -93,6 +116,7 @@ pub fn load() -> Result<Option<Account>> {
         gateway_base_url: file.gateway_base_url,
         api_key,
         auth_mode: file.auth_mode,
+        billing_mode: file.billing_mode,
     }))
 }
 
@@ -145,6 +169,35 @@ fn read_account_file() -> Result<Option<AccountFile>> {
     Ok(Some(parsed))
 }
 
+/// Is this a gateway URL we accept?
+///
+/// Production rule: `https://` only. The key travels on every request and the
+/// proxy exports this host machine-wide, so plaintext is never acceptable for a
+/// real gateway.
+///
+/// Debug builds additionally accept `http://localhost` and `http://127.0.0.1`,
+/// so a developer can point the app at a gateway running on their own machine
+/// (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
+/// `#[cfg(debug_assertions)]` means this cannot reach a release build: `tauri
+/// build` compiles with `--release`, so the shipped app enforces https for every
+/// URL including loopback.
+fn is_acceptable_gateway_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    {
+        // Host-exact, not a prefix match: `http://localhost.evil.test` must not
+        // pass. Port and path are free-form, so `http://127.0.0.1:3000` works.
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if parsed.scheme() == "http" {
+                return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+            }
+        }
+    }
+    false
+}
+
 /// Persist account state.
 ///
 /// `api_key = Some(value)` writes the key to keychain (creating or
@@ -156,7 +209,16 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if gateway_base_url.len() > 2048 {
         anyhow::bail!("gateway base URL is unexpectedly long (>2048 bytes)");
     }
-    if !gateway_base_url.starts_with("https://") {
+    if !is_acceptable_gateway_url(gateway_base_url) {
+        // Two messages, because the two builds enforce different rules and the
+        // debug one is where this is most likely to be read: a developer who
+        // typos `http://localhos:3000`, or points at a LAN address, is otherwise
+        // told https is required and goes off to change the wrong thing.
+        #[cfg(debug_assertions)]
+        anyhow::bail!(
+            "gateway base URL must be https://, or http:// on localhost or 127.0.0.1 exactly"
+        );
+        #[cfg(not(debug_assertions))]
         anyhow::bail!("gateway base URL must be https://");
     }
     // Recompute the prefix from a new key; otherwise preserve the one already
@@ -169,14 +231,20 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
     };
     // Preserve the auth mode and selected org - both are chosen via their own
-    // setters, not by saving a URL/key.
+    // setters, not by saving a URL/key. Same for the billing mode
+    // ([`set_billing_mode`]).
     let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    let billing_mode = existing
+        .as_ref()
+        .map(|f| f.billing_mode)
+        .unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
     let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
         auth_mode,
+        billing_mode,
         org_id,
         org_name,
     })?;
@@ -190,6 +258,16 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         // gateway wants the Cognito token, and `audit::credential` picks by mode.
         let new_prefix = key.chars().take(12).collect::<String>();
         audit::api_key_saved(gateway_base_url, Some(key), old_prefix, &new_prefix);
+
+        // A new key can mean a new org, and the held activity reading belongs to
+        // whichever org the *previous* key resolved to. The cache scope carries the
+        // key prefix now, so a stale entry would simply never match - but leaving
+        // one org's figures on disk under a credential that can no longer read them
+        // is not something to rely on a scope check for. Best-effort, and last: a
+        // cache that will not clear must not fail a key replace.
+        if old_prefix != Some(new_prefix.as_str()) {
+            let _ = crate::activity_cache::clear();
+        }
     }
     Ok(())
 }
@@ -224,9 +302,11 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
-    let auth_mode = read_account_file()?
-        .map(|f| f.auth_mode)
-        .unwrap_or_default();
+    let file = read_account_file()?;
+    let auth_mode = file.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    // The billing mode is not environment-specific - it says who pays, not
+    // where - so a repoint carries it over the same way the auth mode does.
+    let billing_mode = file.as_ref().map(|f| f.billing_mode).unwrap_or_default();
     // The stored prefix named the key we just deleted, so drop it too. The org
     // is environment-specific, so a gateway switch clears it - the user re-picks
     // against the new environment after re-authenticating.
@@ -234,6 +314,7 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix: None,
         auth_mode,
+        billing_mode,
         org_id: None,
         org_name: None,
     })?;
@@ -305,6 +386,39 @@ pub fn set_auth_mode(mode: AuthMode) -> Result<()> {
     };
     audit::auth_mode_changed(&gateway_base_url, None, label);
     Ok(())
+}
+
+/// Switch the persisted billing mode, preserving everything else. Mirrors
+/// [`set_auth_mode`]: a mode is chosen by its own setter, never as a side
+/// effect of saving a URL or key. Requires an existing `account.json`.
+///
+/// Changing this changes the *shape* of every subsequent routed request, but
+/// nothing that is already running: the caller pushes the new mode into a live
+/// engine (`proxy::manager().refresh_mode`) and re-applies the tool configs
+/// that depend on it.
+pub fn set_billing_mode(mode: BillingMode) -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.billing_mode = mode;
+    write_account_file(&file)
+}
+
+/// Current persisted billing mode, defaulting to `Byok` when no account exists
+/// yet. A cheap disk read that never touches the keychain.
+pub fn billing_mode() -> Result<BillingMode> {
+    Ok(read_account_file()?
+        .map(|f| f.billing_mode)
+        .unwrap_or_default())
+}
+
+/// The billing mode to route by right now, falling back to `Byok` when the
+/// account cannot be read at all. The single source of truth the proxy managers
+/// seed the engine/relay from (mirrors [`org_id_for_injection`]).
+///
+/// Fails towards `Byok` deliberately: that shape carries the tool's own
+/// credential, so an unreadable account degrades to "the provider bills the
+/// user", never to spending an org's balance by accident.
+pub fn billing_mode_for_injection() -> BillingMode {
+    billing_mode().unwrap_or_default()
 }
 
 /// Current persisted auth mode, defaulting to `ApiKey` when no account exists
@@ -390,6 +504,11 @@ pub fn clear() -> Result<()> {
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .
     crate::oauth::clear()?;
+    // The held activity reading belongs to the org that just went away. Best
+    // effort, and after the credentials on purpose: a cache file that will not
+    // delete must not be the reason a disconnect reports failure, and without a
+    // credential it can no longer be read anyway.
+    let _ = crate::activity_cache::clear();
     Ok(())
 }
 

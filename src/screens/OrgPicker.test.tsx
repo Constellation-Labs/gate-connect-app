@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Org } from "../lib/api";
-import { GATE_DASHBOARD_URL } from "../lib/config";
 
 // The picker fetches the org list on mount and persists a choice; mock the two
 // commands (and keep everything else real) so a test can hold the fetch
@@ -37,10 +36,22 @@ const TWO_ORGS: Org[] = [
   makeOrg({ orgId: "org-2", name: "Side Project", slug: "side-project", role: "member" }),
 ];
 
+/** A staging dashboard on purpose: the prop exists because this screen used to
+ *  hardcode production, and a test pinning the production URL would not have
+ *  caught that. */
+const DASHBOARD = "https://app-staging.constellationgate.ai/";
+
 function renderPicker(props: Partial<React.ComponentProps<typeof OrgPicker>> = {}) {
   const onDone = vi.fn();
   const onReauth = vi.fn();
-  render(<OrgPicker onDone={onDone} onReauth={onReauth} {...props} />);
+  render(
+    <OrgPicker
+      onDone={onDone}
+      onReauth={onReauth}
+      dashboardUrl={DASHBOARD}
+      {...props}
+    />,
+  );
   return { onDone, onReauth };
 }
 
@@ -132,9 +143,22 @@ describe("OrgPicker error and empty states", () => {
     renderPicker({ onUseApiKey });
     await screen.findByText(/isn’t in an organization yet/);
     fireEvent.click(screen.getByRole("button", { name: "Create an organization" }));
-    expect(openExternal).toHaveBeenCalledWith(GATE_DASHBOARD_URL);
+    expect(openExternal).toHaveBeenCalledWith(DASHBOARD);
     fireEvent.click(screen.getByRole("button", { name: "Use a Gate API key instead" }));
     expect(onUseApiKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops Create an organization when the gateway has no dashboard", async () => {
+    // A local gateway. The org has to be created somewhere this account can
+    // actually see it, and there is no such page - so the button goes rather
+    // than opening a guess. `onUseApiKey` is the remaining way forward.
+    (oauthListOrgs as Mock).mockImplementation(async () => []);
+    renderPicker({ onUseApiKey: vi.fn(), dashboardUrl: null });
+    await screen.findByText(/isn’t in an organization yet/);
+    expect(screen.queryByRole("button", { name: "Create an organization" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Use a Gate API key instead" }),
+    ).not.toBeNull();
   });
 
   it("hides the key fallback when no handler is wired", async () => {

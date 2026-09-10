@@ -36,9 +36,11 @@
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::env;
+use crate::integrations::binaries;
+use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "Anthropic";
@@ -120,6 +122,24 @@ impl Integration for ClaudeCode {
         "Claude Code"
     }
 
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
+    /// (`src/lib/groups.ts`); it is a description of the surface, not something
+    /// the integration knows.
+    fn row_label(&self) -> &'static str {
+        "CLI"
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["claude.exe", "claude.cmd", "claude.bat", "claude"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["claude"];
+        (CLAUDE_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -128,8 +148,30 @@ impl Integration for ClaudeCode {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        settings_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // Exactly what `detect` and `status` read: the well-known binaries, the
+        // config directory whose existence stands in for a Volta/asdf/npx
+        // install, and the settings file inside it that decides Connected from
+        // Drifted.
+        let mut paths: Vec<PathBuf> = CLAUDE_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::claude_code_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLAUDE_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         // Fall back to the per-user config dir Claude Code writes on first
@@ -211,15 +253,26 @@ impl Integration for ClaudeCode {
             .get(KEY_NODE_EXTRA_CA_CERTS)
             .and_then(|v| v.as_str())
         {
-            Some(ca) if ca == expected_ca => Ok(Status::Connected),
-            Some(ca) => Ok(Status::Drifted(format!(
-                "{KEY_NODE_EXTRA_CA_CERTS} in settings.json is {ca:?}, expected {expected_ca:?}"
-            ))),
-            None => Ok(Status::Drifted(format!(
-                "managed {KEY_NODE_EXTRA_CA_CERTS} missing from settings.json env - Claude Code \
-                 would route through the proxy without trusting Gate's CA"
-            ))),
+            Some(ca) if ca == expected_ca => {}
+            Some(ca) => {
+                return Ok(Status::Drifted(format!(
+                    "{KEY_NODE_EXTRA_CA_CERTS} in settings.json is {ca:?}, expected {expected_ca:?}"
+                )));
+            }
+            None => {
+                return Ok(Status::Drifted(format!(
+                    "managed {KEY_NODE_EXTRA_CA_CERTS} missing from settings.json env - Claude \
+                     Code would route through the proxy without trusting Gate's CA"
+                )));
+            }
         }
+
+        // Everything we write is on disk and correct. Whether Claude Code uses
+        // it is a different question, and the last one asked (AG-674).
+        Ok(match managed_settings_override(&expected_proxy)? {
+            Some(o) => o.into_status(),
+            None => Status::Connected,
+        })
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -403,6 +456,78 @@ fn settings_path() -> Result<PathBuf> {
     env::claude_code_settings_path()
 }
 
+/// The enterprise managed settings, when they decide the route instead of us.
+///
+/// Claude Code merges five layers, and `~/.claude/settings.json` - the only one
+/// Gate writes - is the *bottom* of them. Four sit above it: the project's
+/// `.claude/settings.json`, its `.claude/settings.local.json`, the command
+/// line, and, above everything including the flags, the enterprise managed
+/// settings this reads.
+///
+/// **Only that top layer is visible from here**, and the reason is worth
+/// stating because it is the shape of the whole story: the three layers in
+/// between are chosen by the directory `claude` was started in, and this
+/// process does not know that directory. A repo-local `settings.local.json`
+/// that sets its own `HTTPS_PROXY` still reads as connected, and the honest
+/// place for that is [`crate::integrations::precedence`]'s note rather than a
+/// check here pretending to cover it.
+///
+/// Two keys displace us, for different reasons. `HTTPS_PROXY` is the socket:
+/// a different value there and the traffic never reaches our engine at all.
+/// `ANTHROPIC_BASE_URL` is subtler and is why it counts even though we route by
+/// proxy - the engine's route selector is scoped to Anthropic's canonical
+/// address (see the module header), so a base URL pointing somewhere else is
+/// decided by the catalog alone, which is not a route this integration can
+/// claim.
+fn managed_settings_override(expected_proxy: &str) -> Result<Option<Override>> {
+    let path = env::claude_code_managed_settings_path();
+    // A parse failure here must not fail `status`. This file belongs to an
+    // administrator, we never write it, and an unreadable one is not evidence
+    // that anything overrides us - reporting the tool as unreadable off
+    // somebody else's malformed JSON would be a worse answer than the one we
+    // already have.
+    let Some(settings) = super::json_config::load_object(&path).ok().flatten() else {
+        return Ok(None);
+    };
+    Ok(override_in(
+        &settings,
+        &path.display().to_string(),
+        expected_proxy,
+    ))
+}
+
+/// The reading itself, split from the file it comes from so it can be tested:
+/// the real path is machine-wide (`/etc/claude-code`, `/Library/Application
+/// Support`) and no test may write there.
+fn override_in(
+    settings: &Map<String, Value>,
+    source: &str,
+    expected_proxy: &str,
+) -> Option<Override> {
+    let env_block = settings.get("env").and_then(|v| v.as_object())?;
+    if let Some(proxy) = env_block.get(KEY_HTTPS_PROXY).and_then(|v| v.as_str()) {
+        if proxy != expected_proxy {
+            return Some(Override::new(
+                source,
+                format!(
+                    "sets {KEY_HTTPS_PROXY} to {proxy:?}, which Claude Code loads over the \
+                     {expected_proxy:?} in settings.json"
+                ),
+            ));
+        }
+    }
+    if let Some(base) = env_block.get(KEY_BASE_URL).and_then(|v| v.as_str()) {
+        return Some(Override::new(
+            source,
+            format!(
+                "sets {KEY_BASE_URL} to {base:?}, so Claude Code addresses that host instead of \
+                 the canonical Anthropic one Gate's proxy route is scoped to"
+            ),
+        ));
+    }
+    None
+}
+
 fn load_settings() -> Result<Option<Map<String, Value>>> {
     super::json_config::load_object(&settings_path()?)
 }
@@ -442,6 +567,87 @@ mod tests {
         // proxy alone routes `claude` straight into a TLS failure.
         assert!(MANAGED_KEYS.contains(&KEY_NODE_EXTRA_CA_CERTS));
         assert!(!MANAGED_KEYS.contains(&"ANTHROPIC_BETAS"));
+    }
+
+    /// AG-674's disagreement case for this integration: our `HTTPS_PROXY` is in
+    /// `settings.json` and correct, and the managed layer above it points the
+    /// CLI at a different proxy. The old reading - ours is on disk, so we are
+    /// connected - is the one this test exists to prevent.
+    #[test]
+    fn a_managed_proxy_beats_the_one_we_wrote() {
+        let managed: Map<String, Value> =
+            serde_json::from_str(r#"{"env": {"HTTPS_PROXY": "http://corp-egress.example:3128"}}"#)
+                .unwrap();
+        let o = override_in(
+            &managed,
+            "/etc/claude-code/managed-settings.json",
+            "http://127.0.0.1:1234",
+        )
+        .expect("a different managed proxy is an override");
+        // The path is half the answer: a status line that says the traffic is
+        // not ours has to say where to go and look.
+        assert!(o.source.contains("managed-settings.json"));
+        assert!(o.to_string().contains("corp-egress.example:3128"));
+    }
+
+    /// The same value is not a disagreement. An administrator who exports Gate's
+    /// own proxy machine-wide has not taken the route away from us, and saying
+    /// so would send the user hunting for a conflict that does not exist.
+    #[test]
+    fn a_managed_layer_repeating_our_proxy_is_not_an_override() {
+        let managed: Map<String, Value> =
+            serde_json::from_str(r#"{"env": {"HTTPS_PROXY": "http://127.0.0.1:1234"}}"#).unwrap();
+        assert_eq!(
+            override_in(
+                &managed,
+                "/etc/claude-code/managed-settings.json",
+                "http://127.0.0.1:1234"
+            ),
+            None
+        );
+    }
+
+    /// A base URL displaces us even though we route by proxy: the engine's route
+    /// selector is scoped to Anthropic's canonical address, so traffic addressed
+    /// elsewhere is not on the route this integration configures.
+    #[test]
+    fn a_managed_base_url_is_an_override_even_with_our_proxy_intact() {
+        let managed: Map<String, Value> = serde_json::from_str(
+            r#"{"env": {"HTTPS_PROXY": "http://127.0.0.1:1234",
+                        "ANTHROPIC_BASE_URL": "https://gateway.example/anthropic"}}"#,
+        )
+        .unwrap();
+        let o = override_in(
+            &managed,
+            "/etc/claude-code/managed-settings.json",
+            "http://127.0.0.1:1234",
+        )
+        .expect("a managed base URL is an override");
+        assert!(o.to_string().contains("gateway.example"));
+    }
+
+    /// Nothing above us, nothing to say. Includes the file existing but carrying
+    /// unrelated policy, which is the common case on a managed machine.
+    #[test]
+    fn managed_settings_without_routing_keys_say_nothing() {
+        let managed: Map<String, Value> =
+            serde_json::from_str(r#"{"permissions": {"defaultMode": "acceptEdits"}}"#).unwrap();
+        assert_eq!(
+            override_in(
+                &managed,
+                "/etc/claude-code/managed-settings.json",
+                "http://127.0.0.1:1234"
+            ),
+            None
+        );
+        assert_eq!(
+            override_in(
+                &Map::new(),
+                "/etc/claude-code/managed-settings.json",
+                "http://127.0.0.1:1234"
+            ),
+            None
+        );
     }
 
     #[test]

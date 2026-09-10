@@ -26,8 +26,8 @@ test.describe("navigation", () => {
   test("Escape steps back out of a family panel", async ({ boot }) => {
     const app = await boot();
 
-    await app.familyRow("Claude").click();
-    await expect(app.page.getByRole("switch", { name: /Route Claude Code/ })).toBeVisible();
+    await app.familyRow("Anthropic").click();
+    await expect(app.page.getByRole("switch", { name: /Route CLI/ })).toBeVisible();
 
     await app.page.keyboard.press("Escape");
     await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
@@ -50,14 +50,14 @@ test.describe("navigation", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://api.anthropic.com",
           status: { kind: "detected" },
         },
         {
           slug: "codex",
-          name: "Codex",
+          name: "CLI",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://api.openai.com/v1",
           status: { kind: "detected" },
