@@ -34,6 +34,7 @@ import {
   drainBackendErrors,
   pendingQuitTools,
 } from "./lib/api";
+import { consoleUrlFor, gatewayEnvLabel } from "./lib/config";
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
@@ -1144,6 +1145,12 @@ export function App() {
   }, [proxy]);
 
   const gatewayHost = hostOf(account?.gateway_base_url);
+  // The two facts the host alone could not carry. Both are derived from the
+  // account rather than baked in, because the baked-in console was production
+  // for everyone: an app switched to staging in Dev mode kept offering links
+  // to a dashboard reading a different database, and neither surface said so.
+  const gatewayEnv = gatewayEnvLabel(account?.gateway_base_url);
+  const consoleUrl = consoleUrlFor(account?.gateway_base_url);
   // The header's mono sub-label answers "who am I here?", and the gateway host
   // cannot: it is byte-identical for every customer of a given deployment. The
   // org is what gets billed and what the gateway rejects requests without (see
@@ -1200,6 +1207,7 @@ export function App() {
   } else if (screen === "orgpicker") {
     body = (
       <OrgPicker
+        consoleUrl={consoleUrl}
         onDone={onOrgChosen}
         onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
         onReauth={signOut}
@@ -1282,6 +1290,8 @@ export function App() {
       <Home
         workspace={orgName ?? ""}
         gatewayHost={gatewayHost}
+        gatewayEnv={gatewayEnv}
+        consoleUrl={consoleUrl}
         proxyOn={proxyOn}
         // `?? false`, matching the other three call sites. An unresolved
         // proxy state is not evidence that the CA is trusted, and defaulting

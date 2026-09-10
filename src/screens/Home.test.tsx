@@ -4,10 +4,12 @@ import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
 import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
+import { openExternal } from "../lib/openExternal";
 import { Home } from "./Home";
 
 // The CA-trust card swaps the trust-store name by platform; drive it by
 // mocking usePlatform rather than the async Tauri lookup.
+vi.mock("../lib/openExternal", () => ({ openExternal: vi.fn(async () => {}) }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
   usePlatform: vi.fn(),
@@ -86,6 +88,8 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
+      gatewayEnv={null}
+      consoleUrl="https://app.constellationgate.ai/"
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
@@ -426,6 +430,32 @@ describe("Home ledger rows", () => {
     const host = screen.getByText("gateway.constellationgate.ai");
     expect(host.contains(link)).toBe(false);
     expect(link.contains(host)).toBe(false);
+  });
+
+  it("names a non-default gateway in words, not just by its host", () => {
+    // The host alone answers "production or staging?" only for someone who
+    // already knows what the hosts mean. A reporter on 0.2.0 read
+    // `gateway-staging…` as the address, spent a session in front of an empty
+    // production dashboard, and had nothing on any surface to pull on.
+    renderHome({
+      gatewayHost: "gateway-staging.constellationgate.ai",
+      gatewayEnv: "staging",
+    });
+    expect(screen.getByText("staging")).toBeTruthy();
+  });
+
+  it("shows no badge on production, so the badge means something when it appears", () => {
+    renderHome();
+    expect(screen.queryByText("staging")).toBeNull();
+  });
+
+  it("opens the console that reads the gateway it is pointed at", () => {
+    // Was a module constant pinned to production, which is precisely how a
+    // staging-routed app sent its user to a dashboard reading a different
+    // database.
+    renderHome({ consoleUrl: "https://app-staging.constellationgate.ai/" });
+    fireEvent.click(screen.getByRole("button", { name: /Gate dashboard/ }));
+    expect(openExternal).toHaveBeenCalledWith("https://app-staging.constellationgate.ai/");
   });
 
   it("prints the host once when there is no org to name", () => {
