@@ -78,6 +78,30 @@ explicit product decision: enabling it moves a credential strictly more
 powerful than an API key off-box. Any move to surface it in the UI must
 re-open that decision.
 
+## Noted: the website-shaped user-agent on rewritten chatgpt.com turns
+
+A chatgpt.com app turn routed to the gateway is presented the way the
+*website* presents it: the app shell's product token (`CodexBrowser/…`) is
+stripped from the `user-agent`, and no captured `cf_clearance` is injected.
+Both halves together, or neither - see
+`engine::website_shaped_rewritten_turns` for the captures behind it.
+
+Written down here because it is a deliberate decision with a cost, not an
+implementation detail. Gate ships a request naming a different client than
+the one that sent it to a third party's bot management, which erases the
+signal that vendor uses to tell its own clients apart. It buys the chat turn:
+with the app's token on it the same request is challenged and the turn fails
+outright, cookie or no cookie.
+
+The scope grew when it landed: it applies to every rewritten turn, where it
+first applied only to a rewritten turn with no clearance in hand. Its only
+control today is `GATE_CF_APP_SHAPED_TURNS`, an environment variable that is
+read once per process and turns the behaviour OFF when set. That is the shape
+of a measurement switch, not of a user-facing one - a user cannot see the
+reshape or turn it off from the app. Promoting it to a real setting (and
+saying so in the UI) is an open product decision, and is the thing to revisit
+first if this starts costing more than it buys.
+
 ## Related hardening landed with this review
 
 - `GATE_CONNECT_TEST_*` seams (extra trust roots, secrets-dir redirect,

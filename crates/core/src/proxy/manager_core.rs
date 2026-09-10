@@ -549,6 +549,10 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// webview so a freshly minted cookie reaches in-flight app turns without
     /// a restart.
     pub fn refresh_cf_clearance(&self, cf_clearance: &str) {
+        // Recorded here rather than in the engine, so a cookie captured while
+        // the engine is down (or restarted afterwards) is not lost with it;
+        // see `proxy::LAST_CAPTURED_CF_CLEARANCE`.
+        super::record_captured_cf_clearance(cf_clearance);
         if let Some(running) = self
             .engine
             .lock()
