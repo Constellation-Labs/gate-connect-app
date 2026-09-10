@@ -62,6 +62,34 @@ describe("ApplyChangesDialog route pair", () => {
     expect(screen.getByText("Open")).toBeTruthy();
   });
 
+  it("says who reopens once, in the note, not once per row", () => {
+    vi.stubEnv("DEV", false);
+    renderOffer([codex, { ...codex, slug: "claude-code", name: "Claude Code" }]);
+
+    // The frame draws no per-row sentence, and the note below already carries
+    // the same `canReopen` split for the whole set. Two rows repeating it cost
+    // four lines in a 400px popover to say what the next block says properly.
+    expect(screen.queryByText(/Gate Connect can close it, and you reopen it/)).toBeNull();
+    expect(
+      screen.queryByText(/Gate Connect can close and reopen this one/),
+    ).toBeNull();
+
+    // The fact itself survives, once, for the whole set.
+    expect(
+      screen.getByText(/Gate Connect can close these apps, but cannot reopen them/),
+    ).toBeTruthy();
+  });
+
+  it("still names which tools Gate can reopen when some of them differ", () => {
+    vi.stubEnv("DEV", false);
+    renderOffer([
+      codex,
+      { ...codex, slug: "claude-code", name: "Claude Code", canReopen: true },
+    ]);
+
+    expect(screen.getByText(/Gate Connect will reopen Claude Code/)).toBeTruthy();
+  });
+
   it("draws the mark the shell supplies rather than a fallback word", () => {
     vi.stubEnv("DEV", false);
     renderOffer([{ ...codex, icon: <svg data-testid="codex-mark" /> }]);

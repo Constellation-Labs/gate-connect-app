@@ -475,16 +475,18 @@ export function ApplyChangesDialog({
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
-          details={
-            <>
-              <RoutePair tool={tool} />
-              <p>
-                {tool.canReopen
-                  ? "Gate Connect can close and reopen this one."
-                  : "Gate Connect can close it, and you reopen it."}
-              </p>
-            </>
-          }
+          // No per-row sentence about who reopens. The frame draws none
+          // (`130:58427`: name, description, pill), and the note below already
+          // says it - branching on the same `canReopen` these rows were
+          // branching on, for the whole set at once and in better words. So the
+          // row was rendering one boolean twice, and on a 352px popover it cost
+          // two lines per tool to repeat what the next block states properly.
+          //
+          // The plan's reasoning for reading `can_reopen` from the backend
+          // rather than assuming it in copy is untouched by this: it says the
+          // sentence belongs to "the confirmation", and the confirmation is the
+          // note.
+          details={<RoutePair tool={tool} />}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
