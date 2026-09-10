@@ -785,13 +785,38 @@ describe("browserTrustRestartAdvice", () => {
     // that just trusted the CA, so routing is already on, and
     // `manager_linux::enable` returns early before `ca::ensure_trusted` when
     // the client is connected. Off and on again is what reaches the write.
-    for (const nss of ["tools_missing", "write_failed"] as const) {
+    //
+    // Unconditional, for all three failure readings. Guarding the second
+    // assertion on the body mentioning "routing" made this vacuous for
+    // `write_failed`, whose copy did not - and what the guard was hiding was
+    // that `write_failed` prescribed no retry at all: it named the store, and
+    // then left the reader with nothing to do once they had unlocked it.
+    for (const nss of ["tools_missing", "write_failed", "not_written"] as const) {
       const body = browserTrustRestartAdvice("linux", nss)?.body ?? "";
       expect(body).not.toContain("switch routing on again");
-      if (body.includes("routing")) {
-        expect(body).toContain("turn routing off and on again");
-      }
+      expect(body).toContain("turn routing off and on again");
     }
+  });
+
+  it("sends nobody to the report when no store refused", () => {
+    // `not_written` is the reading `--system-trust` leaves: the stores
+    // answered and nobody wrote them. `write_failed`'s sentence promises the
+    // report names which store and why, and here there is no refusal in it -
+    // so a shared sentence would send the reader to a report with nothing in
+    // it, at the moment they are already stuck.
+    const advice = browserTrustRestartAdvice("linux", "not_written");
+    expect(advice?.body).not.toContain("diagnostics report");
+    expect(advice?.body).not.toContain("libnss3-tools");
+    expect(advice?.body).toContain("turn routing off and on again");
+  });
+
+  it("counts the stores the way the report does", () => {
+    // The refusals are a list and the report prints one line per entry, so a
+    // title saying "one store" undercounts what the body and the report both
+    // say on a machine with two locked databases.
+    const advice = browserTrustRestartAdvice("linux", "write_failed");
+    expect(advice?.title).not.toContain("One browser");
+    expect(advice?.body).toContain("at least one");
   });
 
   it("says who is unaffected, because most of the machine is", () => {

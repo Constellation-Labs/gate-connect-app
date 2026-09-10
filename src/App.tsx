@@ -1284,7 +1284,10 @@ export function App() {
         proxyOn={proxy?.running ?? false}
         // `?? false` for the reason the Home call site spells out below: an
         // unresolved proxy state is not evidence, and the reassuring default
-        // here would be a claim that Gate is intercepting a browser.
+        // here would be a claim that Gate is intercepting a browser. Only
+        // load-bearing on Linux - `browserScopeNote` makes the claim
+        // unconditionally on macOS and Windows, where the PAC goes into the
+        // setting the browser itself reads.
         browserChannel={proxy?.browser_proxy_channel ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}

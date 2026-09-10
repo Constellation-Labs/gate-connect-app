@@ -33,7 +33,7 @@ const backend: BackendDiagnostics = {
   data_dir: "/home/x/.local/share/Gate Connect",
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
-  ca_nss_trusted: true,
+  ca_nss_trusted: "holds",
   ca_nss_write: null,
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",

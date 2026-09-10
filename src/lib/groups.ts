@@ -207,8 +207,10 @@ export function proxyReopenAdvice(
  * boolean. `tools_missing`: nothing was written anywhere, and installing a
  * package is the fix. `write_failed`: `certutil` is there and a store refused,
  * so a package install changes nothing and the report is what names the store.
- * `trusted`, or no reading at all, leaves the reopen - the one thing Gate
- * genuinely cannot check, because it cannot see a browser process.
+ * `not_written`: the stores answered and nobody has put the CA in them, so a
+ * retry is the fix and there is nothing to read in the report. `trusted`, or no
+ * reading at all, leaves the reopen - the one thing Gate genuinely cannot
+ * check, because it cannot see a browser process.
  *
  * The first version of this said "false means install a package". That is wrong
  * for a locked or unwritable store, and it withheld the reopen sentence from a
@@ -229,6 +231,11 @@ export function proxyReopenAdvice(
  * and the honest home for "Chromium cannot see the CA" is the certificate
  * section in Settings rather than a banner nobody can clear. Until it has one,
  * the diagnostics report is where the state is legible.
+ *
+ * What *does* retire one of these is the reading changing: the shell clears the
+ * note when `ca_nss_trust` leaves the variant that raised it, so a user who
+ * installs the package and cycles routing sees the sentence go rather than
+ * being left reading a claim they have just falsified.
  */
 export function browserTrustRestartAdvice(
   platform: Platform,
@@ -247,8 +254,21 @@ export function browserTrustRestartAdvice(
   }
   if (nss === "write_failed") {
     return {
-      title: "One browser certificate store refused the certificate",
-      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why. Any browser that did take it still needs a full quit and reopen; Firefox and command-line tools are unaffected.`,
+      // "A store", not "one store": the refusals are a list and the report
+      // prints a line per entry, so the title must not undercount what the
+      // body and the report both say.
+      title: "A browser certificate store refused the certificate",
+      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why. Once it is unlocked, turn routing off and on again to retry. Any browser that did take it still needs a full quit and reopen; Firefox and command-line tools are unaffected.`,
+    };
+  }
+  if (nss === "not_written") {
+    // Nothing refused and nothing is missing: the stores answered and the CA
+    // is not in them, which is what `trust-ca --system-trust` leaves behind.
+    // Neither of the sentences above fits - there is no store to go and read
+    // about in the report, and no package to install.
+    return {
+      title: "Chromium-based browsers don’t have the certificate yet",
+      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one and Gate has not written those, so turn routing off and on again to add it. Firefox and command-line tools are unaffected.`,
     };
   }
   return {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ProviderState, ProxyDomain, Tool, Verdict } from "../lib/api";
 import { buildGroups } from "../lib/groups";
@@ -8,9 +8,15 @@ vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // GroupMembers names the secret store in two of its explainers. Pin the
 // platform so that copy is deterministic, and so the real hook's async
 // resolve does not settle outside act().
+//
+// Through a `vi.hoisted` cell rather than a literal, because one suite below
+// needs Linux: the browser scope sentence is the only copy here that differs
+// by session rather than by OS, and Linux is the platform where it can be
+// withheld.
+const platformMock = vi.hoisted(() => ({ current: "macos" as "macos" | "linux" }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
-  usePlatform: () => "macos",
+  usePlatform: () => platformMock.current,
 }));
 
 function tool(slug: string, name: string, status: Tool["status"]): Tool {
@@ -94,8 +100,9 @@ function renderDetail(
       onTrustCa={vi.fn()}
       trustPending={false}
       proxyOn={true}
-      // The GNOME case, so the chat rows' browser sentence is exercised; the
-      // false case has its own test below.
+      // No chat row in this catalog, so the value is inert here. The sentence
+      // it drives is exercised in "GroupMembers chat row scope" below, in both
+      // directions.
       browserChannel={true}
       onEnableRouting={vi.fn()}
       {...props}
@@ -419,6 +426,70 @@ describe("GroupMembers certificate failure", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
+  });
+});
+
+describe("GroupMembers chat row scope", () => {
+  /** A chat surface: its own row, its own switch, out of the family cascade. */
+  const CHAT_DOMAIN: ProxyDomain = {
+    slug: "claude-web",
+    display_name: "Claude web",
+    hosts: ["claude.ai"],
+    upstream_url: "https://claude.ai",
+    rewrite_prefixes: [],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+  };
+
+  const CHAT_CATALOG: ProviderState[] = [
+    { ...CATALOG[0], chat_domain_slugs: ["claude-web"] },
+  ];
+
+  beforeEach(() => {
+    platformMock.current = "linux";
+  });
+  afterEach(() => {
+    platformMock.current = "macos";
+  });
+
+  function renderChat(browserChannel: boolean) {
+    const [group] = buildGroups(CHAT_CATALOG, [], [domain, CHAT_DOMAIN], {
+      proxyOn: true,
+      caTrusted: true,
+    });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn={true}
+        browserChannel={browserChannel}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude web details" }));
+  }
+
+  it("claims the browser where this session has the channel a browser reads", () => {
+    renderChat(true);
+    expect(screen.getByText(/browser that follows your desktop proxy settings/)).toBeTruthy();
+  });
+
+  it("makes no browser claim where it does not", () => {
+    // The wiring this pins, rather than the sentence: `browserScopeNote` has
+    // its own unit tests, and what was untested is that `GroupMembers` threads
+    // the prop into `explain` at all. A default that ignored it would pass
+    // every test above and claim an interception that is not happening - the
+    // one error the reading exists to prevent.
+    renderChat(false);
+    expect(screen.queryByText(/browser that follows/)).toBeNull();
+    // The rest of the row still reads normally: the scope note is a sentence,
+    // not a clause, so dropping it leaves the host sentence standing.
+    expect(screen.getAllByText(/claude\.ai/).length).toBeGreaterThan(0);
   });
 });
 

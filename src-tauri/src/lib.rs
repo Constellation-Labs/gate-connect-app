@@ -1114,6 +1114,21 @@ async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> 
     .map_err(|e| format!("proxy status join error: {e}"))?
 }
 
+/// Read the store Chromium reads, once, for the note the window raises when
+/// trust is granted somewhere this process could not see it happen.
+///
+/// Async for the same reason `proxy_status` is, and more so: this is the call
+/// that deliberately shells out to `certutil`, once or twice per NSS database.
+/// The window asks for it on a transition and never on a poll - see
+/// `proxy::probe_browser_store`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+async fn proxy_browser_store() -> Result<Option<gate_connect_core::proxy::NssTrust>, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::proxy::probe_browser_store)
+        .await
+        .map_err(|e| format!("browser store probe join error: {e}"))
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 async fn proxy_enable(
@@ -3974,6 +3989,7 @@ pub fn run() {
                     disconnect_tools_for_quit,
                     list_providers,
                     proxy_status,
+                    proxy_browser_store,
                     proxy_enable,
                     proxy_disable,
                     proxy_set_domain,
