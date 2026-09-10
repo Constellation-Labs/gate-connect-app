@@ -206,7 +206,10 @@ export function Modal({
   );
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-neutral-900/40 p-6">
+    // The scrim is black at 40%, not a dark neutral: every dialog frame's
+    // `overlay` rectangle resolves `tailwind colors/base/black` (`143:70543`).
+    // `neutral-900` is #171717, which reads a shade warmer over the pane.
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 p-6">
       <div
         ref={panelRef}
         role="dialog"
@@ -257,7 +260,7 @@ export function Modal({
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
-              className="text-lg font-medium leading-6 tracking-heading text-base-foreground"
+              className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground"
             >
               {title}
             </h2>

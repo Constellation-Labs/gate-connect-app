@@ -132,7 +132,7 @@ A third was found, raised and decided on 2026-09-10, so it joins them:
  same function seconds later, already said so ("everything reconnects when Gate
  Connect starts again"), so the frame contradicted the app and the app's next
  message both. Verified by relaunching, not only by reading. Frames `694:33002`
- and `694:33340`; question 20 in `docs/figma-questions-for-design.md`.
+ and `694:33340`; question 22 in `docs/figma-questions-for-design.md`.
 
 If you find a fourth of these, raise it rather than deciding it.
 
@@ -155,7 +155,7 @@ one-to-one so any value can be traced back without guessing.
   #fef2f2` on a filled destructive one. Never `text-white` on a button.
 - **The `Button` set has at least four sizes, not two.** `default` (h36,
   10/12), `sm` (h32, 8/12), **`xs`** (h24, 4/10) and **`icon`** (square).
-  All carry a moulded elevation - `shadow-base-btn`, `-btn-sm`,
+  All carry a moulded elevation - `shadow-base-btn`, `-btn-sm`, `-btn-xs`,
   `-btn-primary`, `-btn-destructive` - never a flat `shadow-base-2xs`, and a
   filled primary also takes the white/black 8% vertical gradient over
   `base.primary`.
@@ -166,12 +166,28 @@ one-to-one so any value can be traced back without guessing.
   `height/h-6: 24`. That is how to identify a variant when the set itself is
   unreachable. `xs` is drawn on `banner/update`'s dismiss and the table View
   buttons; `banners.tsx` already matched it exactly on every property.
+  **`sm` and `xs` do NOT share one elevation, and there are two tokens now.**
+  The white inset is blurred **4px** on `sm` and **6px** on `xs`, both at 40%,
+  which is the only property separating them. Measured 2026-09-10 on instances
+  that name their own variant: `267:5083` (the intro's locate button) and
+  `121:35058` (the Overview card footer) are `Size=sm` at 4px, `744:37756` is
+  `Size=xs` at 6px. `base-btn-sm` had been holding the `xs` value, so every
+  `h-8` button in the app wore the `xs` highlight; it now holds `sm`'s and
+  `base-btn-xs` holds the other. `docs/review-figma-banners.md`'s conclusion
+  that the two "evidently share it" was reasoning from a single `xs` instance.
   **Radius follows the VARIANT, not the surface** - which is why one shared
   component kept being wrong for somebody. Measured: `icon` is 4px
-  (`127:46660`, the topbar), `sm` is 8px (`694:34124`, the tray footer), `xs`
-  is 4px, all three on a `base.input` line, and both icon glyphs export
-  `#203DE2` `base.primary`. So `OutlineIconButton` takes its radius from the
-  call site. The older pane/dialog phrasing - panes 4px on `base.border`,
+  (`127:46660`, the topbar), `xs` is 4px, both on a `base.input` line, and
+  both icon glyphs export `#203DE2` `base.primary`. So `OutlineIconButton`
+  takes its radius from the call site.
+  **`sm` is where the file argues with itself**, so read the instance rather
+  than this line: `694:34124` (the tray footer) draws 8px on `base.input`,
+  while `267:5083` and `121:35058` both draw **4px on `base.border`** - the
+  same variant, a different radius AND a different edge. This file said "`sm`
+  is 8px ... on a `base.input` line" on the strength of the tray instance
+  alone. It is the same shape as the dialog-button conflict below and is
+  raised with design in the same place, not resolved by eye.
+  The older pane/dialog phrasing - panes 4px on `base.border`,
   dialogs 8px on `base.input` - still describes most instances and is
   confirmed on the Overview dialogs (`694:32469/70`, `694:33509/18`) and the
   Gate-model confirmation (`130:48311/2`); it is contradicted by the Settings
@@ -239,6 +255,14 @@ one-to-one so any value can be traced back without guessing.
   **`heading/16` is a different style at -1%**, so card and section headings
   keep `tracking-heading-16` and the -2% default is for `copy/16`. The lockup
   is neither, and keeps its measured literal.
+  **The heading ramp does not share one tracking, so never reach for
+  `tracking-heading` by size proximity.** `heading/18` is -1% (-0.18px) and
+  `heading/14` is **0%** - the one named heading step with no tracking at all -
+  against `heading/20`'s -1% (-0.2px), which is what bare `tracking-heading`
+  means. Both have tokens now (`tracking-heading-18`, `-14`); the dialog title
+  had been borrowing `heading/20`'s value at a size no dialog draws, and the
+  table row labels were taking `text-sm`'s own -0.14px where the frame draws
+  none. Measured 2026-09-10 on `143:70623` and `884:9607`.
 - Destructive actions are filled `red-600`. There are only ever a couple
   per screen; if a third appears, question it.
 
@@ -319,6 +343,13 @@ deliberate reversal of an earlier "no dashboard" rule.
   where the variable set is ambiguous - two neutrals on one node - render it
   and sample the pixels. That settled the wordmark ("Connect" is
   `neutral/600`, sampled (82,82,82)) and the feed badge radius.
+  The `gray` ramp is a live case of the same thing and `gray-600` #4b5563 is
+  the one to know: the Overview stat-tile eyebrow (`121:34785`) and the pane's
+  period label (`864:3477`) both resolve `tailwind colors/gray/600`, one step
+  darker than the `base/muted-foreground` #6b7280 they had been given. So a
+  `text-gray-600` in the new UI is deliberate, not drift. `gray` is not
+  redefined in `tailwind.config.ts` - only `blue` is - so the class renders the
+  Tailwind default, which is the value the variable names.
 - **The window minimum is enforced twice, and has to be.** `minWidth`/
   `minHeight` in `tauri.conf.json` is what macOS, Windows and X11 honour.
   Wayland ignores it: tao asks with `gtk_window_set_geometry_hints` and
