@@ -3315,6 +3315,17 @@ the Flows pages remain invisible to MCP. The resolution above rests on `#208`'s
 frame reads plus the fact that design named only `label/copy`. Worth one line of
 confirmation.
 
+**Superseded 2026-09-10 on the method, not the conclusion: these styles ARE
+readable per node.** The page listing is still one entry (`Design docs`), but a
+node inside an unlisted page resolves fine when asked for by id, and both
+`get_variable_defs` and the framelink reader return the *text style* attached to
+a text node, tracking included - `get_variable_defs` on `121:34785` comes back
+with `mono/eyebrow: Font(... letterSpacing: 8)`, and framelink on `143:70622`
+gives `heading/18: ... letterSpacing: '-0.01em'`. So a tracking question does not
+need the token export and does not have to wait for design. That is how
+`heading/18` (-1%) and `heading/14` (**0%**) were settled, and it is worth trying
+before recording another check as inconclusive.
+
 The three wordmarks keep their measured `tracking-[-0.16px]` literal. The lockup
 is 16px semibold at -1% and is neither `label/copy-16` nor a heading, so letting
 the new `text-base` default take it to -2% would have been a change on no
