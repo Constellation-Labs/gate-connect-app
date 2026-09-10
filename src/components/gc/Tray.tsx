@@ -844,12 +844,23 @@ function SecurityCard({
       onClick={security.onOpen}
       className="flex w-full items-center justify-between gap-3 rounded-md border border-base-border bg-base-card p-3 text-left shadow-base-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
-      <span className="flex items-center gap-2.5">
+      <span className="flex min-w-0 items-center gap-2.5">
         <Icon name="shieldCheck" size={20} />
-        <span className="text-sm font-medium leading-5 text-base-foreground">
-          {security.count === 0
-            ? "No security events"
-            : `${security.count} security event${security.count === 1 ? "" : "s"}`}
+        {/* Two lines, the master card's recipe. The count is what the feed has
+          * buffered since launch, and the label used to state it as an absolute:
+          * "No security events" beside an Overview reporting two blocked in the
+          * last 24 hours reads as a broken feed, and the LIVE pill next to it
+          * makes that reading worse rather than better. The scope was in this
+          * function's own docstring and nowhere the user could see it. */}
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate text-sm font-medium leading-5 text-base-foreground">
+            {security.count === 0
+              ? "No security events"
+              : `${security.count} security event${security.count === 1 ? "" : "s"}`}
+          </span>
+          <span className="truncate text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
+            Since Gate Connect started
+          </span>
         </span>
       </span>
       <span

@@ -39,6 +39,7 @@ export function AppShell({
   refreshingApps,
   inventory,
   notice,
+  noticeAboveDialog,
   dialog,
   children,
 }: {
@@ -72,6 +73,21 @@ export function AppShell({
    * pane is open - a failed toggle is about the window, not about one view.
    */
   notice?: ReactNode;
+  /**
+   * Lift the notice above the dialog scrim.
+   *
+   * False by default, because the design dims the chrome and banners along with
+   * the pane and a banner that stays lit while a dialog is open reads as part of
+   * the dialog. Only a notice that is *the sole report of a failed action* earns
+   * the exception - see the call site.
+   *
+   * This used to be unconditional, which was right when `notice` carried only
+   * `ErrorBanner` and wrong the moment it carried three. The recovery and reopen
+   * banners then floated over every dialog, undimmed and overlapping it; the
+   * sharpest case was a "Close tool" button sitting on top of the close-apps
+   * dialog that same button opens.
+   */
+  noticeAboveDialog?: boolean;
   /** A dialog covering the window, or nothing. */
   dialog?: ReactNode;
   /** The open pane. */
@@ -104,11 +120,16 @@ export function AppShell({
         totalCount={routing.totalCount}
       />
 
-      {/* Above the modal scrim (`Modal` is z-20). A failed rename or key
-        * replacement is reported here and nowhere else, and under the scrim
-        * its dismiss button sat beneath a full-window overlay - readable,
-        * unclickable. */}
-      {notice && <div className="relative z-30">{notice}</div>}
+      {/* Above the modal scrim (`Modal` is z-20) only when the caller asks. A
+        * failed rename or key replacement is reported here and nowhere else,
+        * and under the scrim its dismiss button sat beneath a full-window
+        * overlay - readable, unclickable. Every other notice dims with the rest
+        * of the chrome, which is what the design draws. */}
+      {notice && (
+        <div className={noticeAboveDialog ? "relative z-30" : undefined}>
+          {notice}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <Sidebar

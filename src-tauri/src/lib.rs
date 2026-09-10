@@ -3619,6 +3619,30 @@ fn request_switch_org(app: tauri::AppHandle) {
     }
 }
 
+/// Hand a "review what the interrupted restore did" request from the tray's
+/// recovery card to the main window, which owns the per-tool account of it.
+///
+/// The second of the bespoke intents the doc above predicted, and for the same
+/// reason: the details are a 512px dialog over a table of per-tool outcomes,
+/// and the popover is 400px wide.
+///
+/// **This exists because the card's button did nothing visible.** It was wired
+/// to `expand`, the header's "Expand app", which reveals the window wherever it
+/// was last left and takes no destination - so "Review details" hid the tray,
+/// surfaced the window on whatever pane the user had been on, and never opened
+/// the details. With the window already visible behind the popover, the only
+/// effect was the tray closing. Revealing is half the job; the window has to be
+/// told what was asked for.
+#[tauri::command]
+fn request_recovery_details(app: tauri::AppHandle) {
+    reveal_popover_window(&app);
+    let _ = app.emit("recovery-details-requested", ());
+    if let Some(tray) = app.get_webview_window("tray") {
+        let _ = tray.hide();
+        POPOVER_VISIBLE.store(false, Ordering::Release);
+    }
+}
+
 /// Position the tray popover centered horizontally on the tray icon and just
 /// above or below it, whichever side has room on the icon's monitor - macOS's
 /// menu bar is at the top so the popover lands below, Windows' taskbar is
@@ -3967,6 +3991,7 @@ pub fn run() {
                     pin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    request_recovery_details,
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,
@@ -4048,6 +4073,7 @@ pub fn run() {
                     pin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    request_recovery_details,
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,

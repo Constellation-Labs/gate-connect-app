@@ -218,6 +218,7 @@ export function MessagesChart({
   buckets,
   pending,
   unavailable,
+  unattributed,
 }: {
   buckets: MessagesBucket[];
   /** The series is on its way. Draws placeholder columns rather than an empty
@@ -228,6 +229,15 @@ export function MessagesChart({
    *  was sent" are different sentences and only one of them is about the user's
    *  traffic. The gap notice above the pane says which. */
   unavailable?: boolean;
+  /** No series can exist for this surface, and none was asked for. A third
+   *  state, not a flavour of `unavailable`: that one reports a read that should
+   *  have worked and didn't, which is a fault the user might retry. This one is
+   *  the permanent shape of the data - chat-domain traffic arrives unattributed
+   *  on purpose (see `NewUiApp`'s `openDomain`), so there is nothing to fail.
+   *  Folding the two put "couldn't be read" on a pane whose own note, two
+   *  inches above, explained that the reading does not exist. Takes precedence
+   *  over `unavailable`, which is only ever incidentally true here. */
+  unattributed?: boolean;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const highest = buckets.reduce(
@@ -241,13 +251,19 @@ export function MessagesChart({
   // A dense series is what the endpoint returns - an hour with no traffic is a
   // zero bar, not a missing one - so "nothing happened" is 24 zeroes rather than
   // an empty array. Both land here as a highest of zero.
-  const empty = !pending && !unavailable && highest === 0;
+  const empty = !pending && !unavailable && !unattributed && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
       <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
+      ) : unattributed ? (
+        // Ahead of `unavailable`: a surface whose traffic is never attributed
+        // has no read to have failed, and the pane's note already says why.
+        <EmptyNote icon="chartColumn">
+          Messages aren&apos;t attributed to this app
+        </EmptyNote>
       ) : unavailable ? (
         // Not a sentence about their traffic. The pane's gap notice carries the
         // cause and the retry; this only refuses to draw a plot for a series

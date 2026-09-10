@@ -1675,6 +1675,31 @@ export function NewUiApp() {
   }, []);
 
   /**
+   * The tray's "Review details", handed over the same way.
+   *
+   * Subscribed once with no dependencies, for the reason the listener above
+   * spells out at length: Rust emits immediately after revealing this window,
+   * the reveal takes focus, focus is a render, and a listener that tears down
+   * and rebuilds on every render can miss the event in that gap. The symptom
+   * would be identical to the bug this fixes, which is what makes it worth
+   * saying twice.
+   *
+   * No guard on `summary` here. The tray only offers the button when a summary
+   * exists - the same condition the banner's own `onReviewDetails` uses - and
+   * the dialog slot requires `detailsOpen && summary` anyway, so a request that
+   * somehow arrived without one opens nothing rather than an empty dialog.
+   */
+  useEffect(() => {
+    const unlisten = listen("recovery-details-requested", () => {
+      setActionError(null);
+      setDetailsOpen(true);
+    });
+    return () => {
+      void unlisten.then((off) => off()).catch(() => {});
+    };
+  }, []);
+
+  /**
    * The one-time OAuth offer, for an account still on a pasted key.
    *
    * Raised here rather than in `useSetup`, and only from inside the app shell:
@@ -2012,7 +2037,19 @@ export function NewUiApp() {
     if (setupStageKind === "org-picker" && setupOrgs === null) void loadOrgs();
   }, [setupStageKind, setupOrgs, loadOrgs]);
 
-  const protectedCount = apps.filter(
+  /**
+   * The topbar banner's "N of M Apps", over every rail row.
+   *
+   * `railApps`, not `apps`: the latter is installed config tools only, so the
+   * banner counted a different population from the rail beneath it and the
+   * tray's identical card beside it - one session showed "2 of 6 Apps" in the
+   * window while the tray said "4 of 12 tools routing", the same machine
+   * described twice. The rail is what "Apps" means to the reader (principle 3:
+   * the sidebar lists apps), it is what the user can act on, and the chat
+   * domains it adds are exactly the rows the banner was silently dropping.
+   * `Tray`'s `MasterCard` derives its counts the same way for the same reason.
+   */
+  const protectedCount = railApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
 
@@ -2383,7 +2420,7 @@ export function NewUiApp() {
             }
           : undefined
       }
-      routing={{ protectedCount, totalCount: apps.length }}
+      routing={{ protectedCount, totalCount: railApps.length }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
@@ -2423,6 +2460,13 @@ export function NewUiApp() {
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
       inventory={inventory}
+      // Only the error banner outranks a dialog, and only because it is the one
+      // report a failed action gets: under the scrim its dismiss button is
+      // readable and unclickable. The recovery and reopen banners are advisory
+      // and persistent - they survive the dialog either way - so they dim with
+      // the rest of the chrome rather than floating over it. Leaving them lifted
+      // put a "Close tool" button on top of the close-apps dialog it opens.
+      noticeAboveDialog={actionError !== null}
       notice={
         actionError ? (
           <ErrorBanner
@@ -2879,7 +2923,16 @@ export function NewUiApp() {
           // `modelChoice`. `multiProviderSlugs` is `buildGroups`' own
           // membership, so this can never disagree with the rail about which
           // tools those are.
-          {...(multiProviderSlugs.has(view.slug)
+          // `openDomain` joins the multi-provider tools in getting no model
+          // card, and for a stricter reason than theirs: theirs has no single
+          // answer, this one cannot take effect at all. `inject_model_choice`
+          // (proxy/mod.rs) stamps `x-gate-model` only when `client_tool`
+          // positively identifies the sender from its User-Agent, and that
+          // matcher knows five CLI agents. A chat domain is a browser, so the
+          // header is never sent and the gateway never overrides the model.
+          // Offering the choice let the user pick a Gate model, accept the paid
+          // confirmation, and be served their own model anyway.
+          {...(multiProviderSlugs.has(view.slug) || openDomain
             ? {}
             : {
                 modelChoice: openModelChoice,
@@ -2974,14 +3027,18 @@ export function NewUiApp() {
           // reported as unreadable because the *chart* had not landed, which is
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
+          // `openDomain` is deliberately NOT folded in here any more. It is not
+          // a read that failed - no read is attempted for a domain - and
+          // reporting it as one put "couldn't be read" directly under the note
+          // explaining that the reading does not exist. It travels as
+          // `unattributed` instead, which the cards draw ahead of this.
           unavailable={{
             chart:
-              openDomain ||
               unattributedMachine ||
               (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events:
-              openDomain || unattributedMachine || toolEvents.failure !== null,
+            events: unattributedMachine || toolEvents.failure !== null,
           }}
+          unattributed={openDomain}
           alert={
             <>
               {reopenAlert}

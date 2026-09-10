@@ -19,6 +19,7 @@ import {
   pinPopover,
   requestQuit,
   resumeRestore,
+  requestRecoveryDetails,
   requestSwitchOrg,
   revealMainWindow,
   unpinPopover,
@@ -28,6 +29,7 @@ import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
+import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import type { Group } from "./lib/groups";
@@ -276,6 +278,33 @@ export function TrayApp() {
       setLoaded(true);
     })();
   }, [refreshVerdicts, loadRecovery]);
+
+  /**
+   * Drain the backend's buffered failures, exactly as the window shell does.
+   *
+   * The tray had no drain, which is the third time this gap has been shipped -
+   * `backendErrors.ts` was lifted out of `App.tsx` precisely "so both shells
+   * share one copy", and then only one shell called it. It bit hardest on
+   * "Resume now": `resume_restore` swallows the restore's error on purpose
+   * (`lib.rs`, "Best-effort, like every other caller of this") and still returns
+   * `pending_restore()` as `Ok`, so the frontend `catch` never fires. A resume
+   * that failed for the same reason it failed the first time therefore redrew
+   * an identical card and said nothing - indistinguishable from a dead button,
+   * which is how it was reported. `provider_restore` is already in
+   * `ROUTING_DOWN_CONTEXTS`, so the failure was reaching the buffer all along
+   * and only ever needed reading here.
+   */
+  useEffect(() => {
+    const sweep = () =>
+      void forwardBackendErrors().then((e) => {
+        if (e) setActionError(e);
+      });
+    sweep();
+    const unlisten = listen("backend-error-pending", sweep);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
 
   // Told rather than polled, same as the window shell: the backend watches the
   // tool config files and emits `tools-changed` (`core/src/tool_watch.rs`). This
@@ -846,8 +875,21 @@ export function TrayApp() {
               onResume: () => void resumeNow(),
               // The per-tool account lives in the window, so this reveals it
               // rather than drawing a second, shorter version of the same
-              // operation at 400px.
-              onReview: expand,
+              // operation at 400px - but it has to say what it came for.
+              // `expand` alone was the bug: it surfaced the window on whatever
+              // pane the user was last on and opened nothing, so with the
+              // window already visible behind the popover the only visible
+              // effect was the tray closing.
+              //
+              // Unconditional, unlike the window banner's own `onReviewDetails`
+              // (gated on `summary`), and it agrees with it: `recovery_summary`
+              // answers `Some` whenever the journal exists OR the pending set is
+              // non-empty, and a non-empty pending set is this card's whole
+              // render condition. So there is always something to review here.
+              onReview: () =>
+                void requestRecoveryDetails().catch((e) =>
+                  setActionError(classifyError(e, "generic")),
+                ),
             }
           : undefined
       }

@@ -125,6 +125,29 @@ describe("the master status card", () => {
   });
 });
 
+/**
+ * The count is what the feed has buffered since launch, and the card has to say
+ * so. Stated as an absolute, "No security events" sat beside an Overview
+ * reporting blocked traffic in the last 24 hours and read as a broken feed - and
+ * the LIVE pill next to it made that reading worse, not better. The scope lived
+ * in the component's docstring and nowhere the user could see it.
+ */
+describe("the security card", () => {
+  it("scopes an empty count to this run rather than claiming none ever", () => {
+    renderTray({ security: { state: "live", count: 0, onOpen: noop } });
+
+    expect(screen.getByText("No security events")).toBeTruthy();
+    expect(screen.getByText("Since Gate Connect started")).toBeTruthy();
+  });
+
+  it("scopes a non-empty count the same way", () => {
+    renderTray({ security: { state: "live", count: 3, onOpen: noop } });
+
+    expect(screen.getByText("3 security events")).toBeTruthy();
+    expect(screen.getByText("Since Gate Connect started")).toBeTruthy();
+  });
+});
+
 describe("the group rows", () => {
   it("draws the eyebrow with its protected-over-total counter", () => {
     renderTray();

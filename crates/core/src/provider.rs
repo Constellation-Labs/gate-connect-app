@@ -966,6 +966,24 @@ pub fn restore_all() -> Result<()> {
             .collect(),
     );
     for slug in queued {
+        if find(&slug).is_none() {
+            // Written by an older build, or a provider since removed. The tool
+            // pass below has had this guard since it was written; this loop
+            // never got it, so an unresolvable slug took the `Err` arm, was
+            // recorded as a failed write and pushed straight back into the
+            // snapshot. That is a retry that cannot ever succeed: `enable_inner`
+            // fails on `find` before touching a file, so every resume produced
+            // the identical "unknown provider" and the entry outlived every
+            // attempt to clear it. Observed in the wild as a permanent "Routing
+            // didn't finish - google is still waiting" card whose Resume now
+            // could not, even in principle, do anything.
+            //
+            // Dropped rather than retried, and recorded as settled, which is
+            // exactly what `Outcome::Unknown` is for - `is_outstanding` already
+            // excludes it, so the recovery card stops counting it.
+            journal.record(&slug, recovery::Outcome::Unknown);
+            continue;
+        }
         match enable_skipping(&slug, &skip) {
             Ok((Applied::Enabled, state)) if state.enabled => {
                 journal.record(&slug, recovery::Outcome::Restored);
@@ -1130,6 +1148,22 @@ fn restore_one_provider(slug: &str, queued: Vec<String>) -> Result<()> {
         .map(|p| p.display_name.to_string())
         .unwrap_or_else(|| slug.to_string());
     let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Provider);
+    if find(slug).is_none() {
+        // The same guard the batch pass above now carries, and the same one
+        // `restore_one_tool` has always had: a slug this build cannot resolve is
+        // settled, not outstanding, because no retry can change the answer.
+        // Without it the per-row Retry failed identically every time and left
+        // the entry in the snapshot for the next one.
+        journal.record(slug, recovery::Outcome::Unknown);
+        journal.finish();
+        let remaining: Vec<String> = queued.into_iter().filter(|s| s != slug).collect();
+        return if remaining.is_empty() {
+            clear_snapshot(PROVIDER_SNAPSHOT)?;
+            clear_snapshot(RESTORE_SKIP_MEMBERS)
+        } else {
+            save_snapshot(PROVIDER_SNAPSHOT, &remaining)
+        };
+    }
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
     let outcome = match enable_skipping(slug, &skip) {
         Ok((Applied::Enabled, state)) if state.enabled => Ok(Some(true)),
@@ -1424,6 +1458,70 @@ mod tests {
         assert!(
             format!("{err:#}").contains("nothing to configure"),
             "got {err:#}"
+        );
+    }
+
+    /// A snapshot entry naming a provider this build does not have is DROPPED,
+    /// not retried.
+    ///
+    /// The regression this pins was permanent and self-sustaining. A stale
+    /// `restore-snapshot.json` of `["google"]` - a provider an older build knew
+    /// and this one does not - took the `Err` arm of `restore_all`'s loop,
+    /// because `enable_inner` fails on `find` before it opens a file. That arm
+    /// journalled `WriteFailed` and pushed the slug straight back into the
+    /// snapshot, so the next resume produced the identical error, and so did
+    /// every resume after it. On screen: a "Routing didn't finish - google is
+    /// still waiting" card that no action could clear, with a Resume now that
+    /// could not in principle succeed.
+    ///
+    /// `Outcome::Unknown` already existed for exactly this and the tool pass
+    /// already used it; only the provider pass lacked the branch.
+    #[test]
+    fn a_snapshot_entry_for_an_unknown_provider_is_dropped_not_retried() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-unknown-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let outcome = (|| -> Result<(PendingRestore, PendingRestore)> {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            save_snapshot(PROVIDER_SNAPSHOT, &["google".to_string()])?;
+            let before = pending_restore()?;
+            // Best-effort like every caller: what matters is the snapshot after.
+            let _ = restore_all();
+            let after = pending_restore()?;
+            Ok((before, after))
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        let (before, after) = outcome.expect("the snapshot round-trip is not what is under test");
+        assert!(
+            before.providers.iter().any(|e| e.slug == "google"),
+            "the test set this up wrong: google should start out pending, got {:?}",
+            before.providers
+        );
+        assert!(
+            !after.providers.iter().any(|e| e.slug == "google"),
+            "an unresolvable slug survived the restore, so the recovery card is \
+             permanent and Resume now can never clear it; got {:?}",
+            after.providers
         );
     }
 

@@ -81,6 +81,7 @@ export function AppPane({
   eventsPending,
   onLoadMore,
   unavailable,
+  unattributed,
   alert,
 }: {
   name: string;
@@ -191,6 +192,15 @@ export function AppPane({
    *  the pane's notice names the cause. Reporting it as an empty state would tell
    *  a user who has been working all morning that their tool is idle. */
   unavailable?: { chart?: boolean; events?: boolean };
+  /** This app's traffic is never attributed to it, so neither section has a
+   *  reading to show and neither ever will.
+   *
+   *  Deliberately separate from `unavailable`, which reports a read that failed
+   *  and might succeed on a retry. Both were once the same flag, and the result
+   *  was a chat-domain pane whose note explained that per-app activity does not
+   *  exist directly above two cards claiming it could not be read - a fault
+   *  report over a permanent, intended shape of the data. */
+  unattributed?: boolean;
   /** Slot for an `AlertBanner` when this app has drifted. */
   alert?: ReactNode;
 }) {
@@ -244,6 +254,7 @@ export function AppPane({
         buckets={buckets}
         pending={pending}
         unavailable={unavailable?.chart}
+        unattributed={unattributed}
       />
 
       {onChooseModel && onChangeModel && onAddCredits && (
@@ -267,6 +278,7 @@ export function AppPane({
         activity={activity}
         pending={eventsPending}
         unavailable={unavailable?.events}
+        unattributed={unattributed}
         onLoadMore={onLoadMore}
       />
     </div>
@@ -666,6 +678,7 @@ function RecentActivity({
   activity,
   pending,
   unavailable,
+  unattributed,
   onLoadMore,
 }: {
   activity: ActivityEntry[];
@@ -673,6 +686,8 @@ function RecentActivity({
   pending?: boolean;
   /** No feed was read at all; see `AppPane`. */
   unavailable?: boolean;
+  /** No feed can exist for this surface; see `AppPane`. */
+  unattributed?: boolean;
   /** Absent when there is no next page. */
   onLoadMore?: () => void;
   /** See `AppPane`. */
@@ -693,9 +708,13 @@ function RecentActivity({
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
         <EmptyNote>
-          {unavailable
-            ? "Recent activity couldn't be read"
-            : "No recent messages"}
+          {unattributed
+            ? // Ahead of `unavailable`, for the reason `MessagesChart` gives:
+              // no read was attempted, so none can have failed.
+              "Recent activity isn't attributed to this app"
+            : unavailable
+              ? "Recent activity couldn't be read"
+              : "No recent messages"}
         </EmptyNote>
       ) : (
         <table className="mt-5 w-full">
