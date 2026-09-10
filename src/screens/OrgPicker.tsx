@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { openExternal } from "../lib/openExternal";
-import { GATE_DASHBOARD_URL } from "../lib/config";
 import type { Org } from "../lib/api";
 import { oauthListOrgs, setOrg } from "../lib/api";
 import { trackError } from "../lib/analytics";
@@ -17,11 +16,16 @@ import { Icon } from "../components/gc/Icon";
  *  header back button (the Settings switch flow); the post-login flow omits it
  *  since an org must be chosen to route. */
 export function OrgPicker({
+  consoleUrl,
   onDone,
   onBack,
   onReauth,
   onUseApiKey,
 }: {
+  /** The console for the account's gateway. Was a module constant pinned to
+   * production, which pointed a staging-signed-in user at an org list from a
+   * different database. */
+  consoleUrl: string;
   onDone: () => void;
   onBack?: () => void;
   onReauth: () => void;
@@ -162,7 +166,7 @@ export function OrgPicker({
                 variant="accent"
                 full
                 onClick={() => {
-                  void openExternal(GATE_DASHBOARD_URL);
+                  void openExternal(consoleUrl);
                 }}
               >
                 Create an organization

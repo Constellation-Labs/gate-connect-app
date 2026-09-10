@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Org } from "../lib/api";
-import { GATE_DASHBOARD_URL } from "../lib/config";
 
 // The picker fetches the org list on mount and persists a choice; mock the two
 // commands (and keep everything else real) so a test can hold the fetch
@@ -40,7 +39,14 @@ const TWO_ORGS: Org[] = [
 function renderPicker(props: Partial<React.ComponentProps<typeof OrgPicker>> = {}) {
   const onDone = vi.fn();
   const onReauth = vi.fn();
-  render(<OrgPicker onDone={onDone} onReauth={onReauth} {...props} />);
+  render(
+    <OrgPicker
+      consoleUrl="https://app.constellationgate.ai/"
+      onDone={onDone}
+      onReauth={onReauth}
+      {...props}
+    />,
+  );
   return { onDone, onReauth };
 }
 
@@ -132,7 +138,7 @@ describe("OrgPicker error and empty states", () => {
     renderPicker({ onUseApiKey });
     await screen.findByText(/isn’t in an organization yet/);
     fireEvent.click(screen.getByRole("button", { name: "Create an organization" }));
-    expect(openExternal).toHaveBeenCalledWith(GATE_DASHBOARD_URL);
+    expect(openExternal).toHaveBeenCalledWith("https://app.constellationgate.ai/");
     fireEvent.click(screen.getByRole("button", { name: "Use a Gate API key instead" }));
     expect(onUseApiKey).toHaveBeenCalledTimes(1);
   });

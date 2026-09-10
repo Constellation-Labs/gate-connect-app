@@ -26,29 +26,71 @@ export const POSTHOG_HOST = "https://us.i.posthog.com";
 export interface GatewayServer {
   label: string;
   url: string;
+  /** The console that reads the same database as this gateway.
+   *
+   *  Carried on the server entry rather than derived by string surgery, and
+   *  rather than living as its own constant, because the two facts have to
+   *  move together: staging and production are separate stacks with separate
+   *  databases, so a console paired with the wrong gateway shows a permanently
+   *  empty dashboard and says nothing about why.
+   *
+   *  The trailing slash is load-bearing. `openUrl` is gated by the opener ACL
+   *  in `src-tauri/capabilities/default.json`, whose pattern is
+   *  `https://*.constellationgate.ai/*`, matched with `glob::Pattern` against
+   *  the raw string we pass. A bare origin has no `/` for the pattern's
+   *  literal separator, so `https://app.constellationgate.ai` is rejected and
+   *  the link silently does nothing. Verified: the bare form matches `false`,
+   *  both slashed forms match `true`. `consoleUrlFor` appends paths straight
+   *  onto this, so the slash has to live here. */
+  consoleUrl: string;
 }
 
 export const GATEWAY_SERVERS: GatewayServer[] = [
-  { label: "Production", url: "https://gateway.constellationgate.ai" },
-  { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+  {
+    label: "Production",
+    url: "https://gateway.constellationgate.ai",
+    consoleUrl: "https://app.constellationgate.ai/",
+  },
+  {
+    label: "Staging",
+    url: "https://gateway-staging.constellationgate.ai",
+    consoleUrl: "https://app-staging.constellationgate.ai/",
+  },
 ];
 
-/** The Gate dashboard.
+/** The console for a gateway, plus an optional path under it.
  *
- * The trailing slash is load-bearing. `openUrl` is gated by the opener ACL in
- * `src-tauri/capabilities/default.json`, whose pattern is
- * `https://*.constellationgate.ai/*`, and that is matched with `glob::Pattern`
- * against the raw string we pass. A bare origin has no `/` for the pattern's
- * literal separator, so `https://app.constellationgate.ai` is rejected and the
- * link silently does nothing. Verified: the bare form matches `false`, both
- * slashed forms match `true`.
+ *  Why this is a function of the account and not a constant: the app used to
+ *  hardcode the production console on every link it offers, so an app switched
+ *  to staging in Dev mode sent the user to a dashboard reading a different
+ *  database. The user then sat in front of an empty Activity page with routing
+ *  on and traffic flowing, and nothing on either surface named the mismatch.
  *
- * Exported as constants so the three call sites cannot drift apart, which is
- * how two of them ended up with the unslashed form. */
-export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
-export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
+ *  An unrecognised gateway falls back to production. Nothing in the UI can
+ *  produce one - both first-run and Settings pick from GATEWAY_SERVERS - so
+ *  this is the "account file was hand-edited" case, and the old behaviour is
+ *  the least surprising answer to it. */
+export function consoleUrlFor(gatewayBaseUrl: string | null | undefined, path = ""): string {
+  const normalized = (gatewayBaseUrl ?? "").trim().replace(/\/+$/, "");
+  const server = GATEWAY_SERVERS.find((s) => s.url === normalized) ?? GATEWAY_SERVERS[0];
+  return `${server.consoleUrl}${path}`;
+}
+
+/** A short lowercase name for the environment, or null when it is production.
+ *
+ *  Null rather than "production" because the default needs no badge: marking
+ *  it would make the marker background noise everywhere and teach people to
+ *  stop reading it, which is exactly how the staging case went unnoticed. It
+ *  is also null for an unrecognised gateway, where there is nothing truthful
+ *  to say beyond the host itself, which is already on screen. */
+export function gatewayEnvLabel(gatewayBaseUrl: string | null | undefined): string | null {
+  const normalized = (gatewayBaseUrl ?? "").trim().replace(/\/+$/, "");
+  const index = GATEWAY_SERVERS.findIndex((s) => s.url === normalized);
+  return index > 0 ? GATEWAY_SERVERS[index].label.toLowerCase() : null;
+}
+
 /** Product documentation. Trailing slash for the same opener-allowlist reason
- *  as the dashboard link above; `docs.constellationgate.ai` matches the
+ *  as the console links above; `docs.constellationgate.ai` matches the
  *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.
  *
  *  Why it exists: an app that installs a root certificate, runs a local MITM

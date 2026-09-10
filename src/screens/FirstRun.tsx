@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { openExternal } from "../lib/openExternal";
 import { oauthBeginLogin, saveAccount } from "../lib/api";
-import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS, GATE_API_KEYS_URL } from "../lib/config";
+import { consoleUrlFor, DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
 import { trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { markOAuthOfferSeen } from "../lib/oauthOffer";
@@ -197,7 +197,10 @@ export function FirstRun({
             <button
               type="button"
               onClick={() => {
-                void openExternal(GATE_API_KEYS_URL);
+                // The key has to come from the console for the gateway being connected
+                // to: a staging key is not a production key, and the link used to go
+                // to production whatever the picker above said.
+                void openExternal(consoleUrlFor(gateway, "api-keys"));
               }}
               className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
             >
