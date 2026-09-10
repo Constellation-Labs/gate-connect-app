@@ -133,12 +133,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // thing that can enable it is that row's own switch (or
             // `proxy domain claude-web on` from the CLI).
             //
-            // `supported: true` is the catalog's answer, not the app's:
-            // `proxy::config::gated_catalog` flips it to false unless the
-            // account points at the staging gateway, which is where the
-            // gateway-side classification for this surface lands first. That
-            // gate is the only thing standing between this entry and a row, so
-            // read it before assuming the row is live in production.
+            // `supported: true` in both environments. This entry was gated to
+            // the staging gateway while the gateway-side classification for the
+            // surface was staging-only; that classification is deployed to
+            // production, so the row is offered everywhere and `enabled: false`
+            // above is the only thing keeping it off.
             enabled: false,
             supported: true,
         },
@@ -264,9 +263,10 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // be enabled from its own row or from `proxy domain chatgpt-apps
             // on`. Whatever else exposes this entry must keep that property.
             //
-            // And, like `claude-web`, staging-gated: `proxy::config`'s
-            // `STAGING_ONLY_SLUGS` clears `supported` on a production account,
-            // so this entry has no row and cannot route there.
+            // And, like `claude-web`, offered in both environments: the staging
+            // gate both entries carried is gone now that the gateway classifies
+            // these surfaces in production, so `enabled: false` is what keeps
+            // this one off until its own switch says otherwise.
             enabled: false,
             supported: true,
         },
