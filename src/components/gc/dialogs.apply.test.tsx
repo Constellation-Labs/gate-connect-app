@@ -1,0 +1,72 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { ApplyChangesDialog } from "./dialogs";
+import type { DialogReopenTool } from "./dialogs";
+
+const noop = () => {};
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
+
+const codex: DialogReopenTool = {
+  slug: "codex",
+  name: "Codex",
+  stage: "reopen_required",
+  running: true,
+  canReopen: false,
+  verifiable: true,
+  routeInUse: "https://gateway-staging.constellationgate.ai",
+  requestedRoute: "https://api.openai.com/v1",
+};
+
+function renderOffer(tools: DialogReopenTool[] = [codex]) {
+  return render(
+    <ApplyChangesDialog tools={tools} onCloseApps={noop} onReopenLater={noop} />,
+  );
+}
+
+/**
+ * The routes are a development affordance, not shipped copy.
+ *
+ * AG-566 AC 1 asks the offer step to name the route in use and the route
+ * requested, and it was built to. The frame does not draw either: `130:58427`
+ * gives Codex a name, one description line and an `OPEN` pill. The file wins on
+ * what ships, so the pair is gated on `import.meta.env.DEV` rather than deleted
+ * - it is the fastest way to see which endpoint a tool is actually on while
+ * debugging, and it is false in every `vite build`.
+ */
+describe("ApplyChangesDialog route pair", () => {
+  it("names both routes in a development build", () => {
+    vi.stubEnv("DEV", true);
+    renderOffer();
+
+    expect(screen.getByText(/In use:/)).toBeTruthy();
+    expect(
+      screen.getByText("https://gateway-staging.constellationgate.ai"),
+    ).toBeTruthy();
+    expect(screen.getByText("https://api.openai.com/v1")).toBeTruthy();
+  });
+
+  it("ships neither route, because the frame draws neither", () => {
+    vi.stubEnv("DEV", false);
+    renderOffer();
+
+    expect(screen.queryByText(/In use:/)).toBeNull();
+    expect(
+      screen.queryByText("https://gateway-staging.constellationgate.ai"),
+    ).toBeNull();
+    // The row itself survives: the tool, its state and the pill are drawn.
+    expect(screen.getByText("Codex")).toBeTruthy();
+    expect(screen.getByText("Open")).toBeTruthy();
+  });
+
+  it("draws the mark the shell supplies rather than a fallback word", () => {
+    vi.stubEnv("DEV", false);
+    renderOffer([{ ...codex, icon: <svg data-testid="codex-mark" /> }]);
+
+    expect(screen.getByTestId("codex-mark")).toBeTruthy();
+    expect(screen.queryByText("cube")).toBeNull();
+  });
+});

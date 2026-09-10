@@ -45,7 +45,7 @@ import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
-import { brandMarkFor } from "./components/gc/BrandMark";
+import { brandMarkFor, reopenSubjects } from "./components/gc/BrandMark";
 import { ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
@@ -966,13 +966,13 @@ export function TrayApp() {
             </Modal>
           ) : runningApps.stage?.kind === "offer" ? (
             <ApplyChangesDialog
-              tools={runningApps.stage.tools}
+              tools={reopenSubjects(runningApps.stage.tools)}
               onCloseApps={runningApps.goToConfirm}
               onReopenLater={runningApps.dismiss}
             />
           ) : runningApps.stage?.kind === "confirm" ? (
             <CloseAppsDialog
-              tools={runningApps.stage.tools}
+              tools={reopenSubjects(runningApps.stage.tools)}
               onGoBack={runningApps.goBack}
               onCloseApps={() => void runningApps.closeApps()}
             />
@@ -993,7 +993,7 @@ export function TrayApp() {
               />
             ) : (
               <ReopenProgressDialog
-                tools={runningApps.stage.tools}
+                tools={reopenSubjects(runningApps.stage.tools)}
                 onAction={(slug, action) => {
                   if (action === "retry_verification") {
                     void runningApps.checkNow();

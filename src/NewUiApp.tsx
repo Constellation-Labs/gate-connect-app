@@ -55,7 +55,7 @@ import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useRunningApps } from "./lib/useRunningApps";
-import type { ReopenAction, ReopenTool } from "./lib/reopen";
+import type { ReopenAction } from "./lib/reopen";
 import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
@@ -76,7 +76,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
-import { brandMarkFor } from "./components/gc/BrandMark";
+import { brandMarkFor, reopenSubjects } from "./components/gc/BrandMark";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -97,7 +97,6 @@ import {
 } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
 import type {
-  DialogReopenTool,
   DialogTeardownReport,
   DialogTeardownTool,
 } from "./components/gc/dialogs";
@@ -3238,14 +3237,6 @@ const EMPTY_STATS: UsageStats = {
 /** The file Gate rewrites for one tool, for the drift review's copy. */
 function configLocationFor(tools: Tool[], slug: string): string | null {
   return tools.find((t) => t.slug === slug)?.config_location ?? null;
-}
-
-/** The flow's rows, with the product marks the shell holds. The model itself is
- *  `lib/reopen`'s and travels unchanged - the dialogs, the banner and the tray
- *  all draw the same tools, and a second copy of a row is how two surfaces come
- *  to disagree about one. */
-function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
-  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
 }
 
 /** The teardown report's four buckets, with the same marks `reopenSubjects`

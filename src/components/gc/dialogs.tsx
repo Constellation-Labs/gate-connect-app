@@ -88,15 +88,33 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
 /**
  * The two routes for one tool, when the sweep established both.
  *
- * Omitted rather than half-drawn: a guessed endpoint is a claim about where the
- * user's traffic is going, made on the screen where they came to check exactly
- * that. Sans, not mono - identifier *values* are sans here (design, 2026-09-04),
- * and these are endpoints rather than machine output.
+ * **Development builds only.** AG-566 AC 1 asks the offer step to name the route
+ * in use and the route requested, and it was built to. The frame does not draw
+ * it: `130:58427` gives Codex a name, one description line and an `OPEN` pill,
+ * and nothing else. The file wins on what ships (CLAUDE.md, standing instruction
+ * 2026-08-26), so this is gated rather than deleted - the pair is genuinely
+ * useful when you are debugging which endpoint a tool is actually on, and it is
+ * the fastest way to see that a reopen did what it claimed.
+ *
+ * It also cost the most at tray width: two absolute URLs under a 352px row wrap
+ * to five lines apiece and push the buttons off the popover.
+ *
+ * `import.meta.env.DEV` is false in every `vite build`, the same seam the
+ * gateway picker uses (`NewUiApp`), so no shipped build can render this.
+ *
+ * Omitted rather than half-drawn even in dev: a guessed endpoint is a claim
+ * about where the user's traffic is going, made on the screen where they came to
+ * check exactly that. Sans, not mono - identifier *values* are sans here
+ * (design, 2026-09-04), and these are endpoints rather than machine output.
  */
 function RoutePair({ tool }: { tool: DialogReopenTool }) {
+  if (!import.meta.env.DEV) return null;
   if (!tool.routeInUse || !tool.requestedRoute) return null;
   return (
-    <p className="break-all">
+    // `break-words`, not `break-all`: at tray width `break-all` split hostnames
+    // mid-token ("gateway-stag / ing.constellationgate.ai"), which is unreadable
+    // for the one string on screen that has to be read exactly.
+    <p className="break-words">
       In use: <span className="font-medium text-base-foreground">{tool.routeInUse}</span>
       {" · "}
       Requested:{" "}

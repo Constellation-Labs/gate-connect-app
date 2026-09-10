@@ -212,7 +212,11 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl border bg-base-card p-6 shadow-base-lg ${
+        // `max-h-full` + scroll because this component serves two surfaces of
+        // very different size. At 1280x800 no dialog comes near the height; in
+        // the 400x700 tray the reopen offer runs past the bottom of the popover,
+        // and without a cap the footer buttons were simply unreachable.
+        className={`${WIDTH_STYLES[width]} max-h-full max-w-full overflow-y-auto rounded-2xl border bg-base-card p-6 shadow-base-lg ${
           edge === "danger"
             ? "border-base-destructive/40"
             : "border-base-border"
@@ -266,7 +270,12 @@ export function Modal({
         {children && <div className="mt-6 flex flex-col gap-4">{children}</div>}
 
         {(secondary || middle || primary) && (
-          <div className="mt-6 flex justify-end gap-3">
+          // `flex-wrap`, with `whitespace-nowrap` on each button below. The row
+          // never wrapped, so at tray width the two labels were squeezed and
+          // wrapped *inside* their own fixed `h-9` boxes, which clipped them to
+          // "Yes, close" over a cut-off second line. Wrapping the row instead
+          // stacks them, right-aligned, with both labels intact.
+          <div className="mt-6 flex flex-wrap justify-end gap-3">
             {secondary && (
               // `disabled` is honoured here the same way the other two honour
               // it. It used to be silently ignored, which made `ModalButton`'s
@@ -279,7 +288,7 @@ export function Modal({
                 type="button"
                 onClick={secondary.disabled ? undefined : secondary.onClick}
                 aria-disabled={secondary.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
                   secondary.disabled
                     ? "cursor-not-allowed opacity-45"
                     : "hover:bg-gray-50"
@@ -293,7 +302,7 @@ export function Modal({
                 type="button"
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   middle.disabled
                     ? "cursor-not-allowed opacity-45"
                     : "hover:bg-gray-50"
@@ -312,7 +321,7 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
-                className={`flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   primary.disabled ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive
