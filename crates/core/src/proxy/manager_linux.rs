@@ -130,7 +130,10 @@ impl ProxyManager {
             // is the whole of "Firefox works, Chrome doesn't". Served from what
             // the last write recorded rather than probed - `status` is polled,
             // and `certutil` does not belong on a polled path (see the field).
-            ca_nss_trust: ca::recorded_nss_trust(),
+            // The outcome alone: the copy switches on the variant, and the
+            // per-store refusals behind it are the report's business, not this
+            // snapshot's - `status` is polled and every poll would clone them.
+            ca_nss_trust: ca::recorded_nss_trust().map(|r| r.outcome),
             browser_proxy_channel: system_proxy::browser_proxy_channel(),
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),

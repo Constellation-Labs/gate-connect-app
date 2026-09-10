@@ -12,6 +12,59 @@ use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 
+/// Run a command to completion, or kill it once `timeout` has passed.
+///
+/// `Ok(None)` is the timeout: the child was signalled and reaped, and the caller
+/// decides what a non-answer means. Everything else is the ordinary
+/// [`std::process::Command::output`] contract.
+///
+/// **Why this exists at all.** Two of the subprocesses this app shells out to
+/// live on paths the window polls - `certutil` against an NSS database, and
+/// `gsettings get` against the session's proxy schema - and neither hangs for a
+/// reason the app can see. A locked database, a stalled network mount, a dbus
+/// peer that does not answer: each of them blocks in the open, on a path where
+/// somebody is waiting on a switch. `ca_windows` grew a private version of this
+/// loop first and `ca_linux` a second one; this is that shape, once, so the
+/// third caller is not a third copy.
+///
+/// **The child is reaped after the kill**, which the earlier copies do not do.
+/// `Child::kill` signals and `Child::drop` deliberately does not wait, so on
+/// Unix a killed child stays a zombie for the life of the parent - harmless
+/// once, and this is called per database per enable.
+///
+/// **Only for commands whose output is small.** stdout and stderr are piped and
+/// not read until the child exits, so a child that writes more than the pipe
+/// buffer holds blocks on the write, never exits, and is reported as a hang.
+/// Every caller here emits at most a certificate or a settings value. A command
+/// with unbounded output needs a reader thread instead.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn output_bounded(
+    mut cmd: Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    /// Gap between `try_wait` polls. Same value as the two copies this replaces.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            // Reaped, not just signalled. See the note above.
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(POLL);
+    }
+    child.wait_with_output().map(Some)
+}
+
 /// Write `bytes` to `path` atomically: stage to a sibling tempfile,
 /// fsync, chmod, then rename into place. A crash mid-write leaves either
 /// the old file intact or no file at all -- never a torn destination.

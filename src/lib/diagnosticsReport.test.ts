@@ -21,6 +21,7 @@ const backend: Diagnostics = {
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
   ca_nss_trusted: true,
+  ca_nss_write: null,
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -266,6 +267,58 @@ describe("buildDiagnosticsReport", () => {
   it("says nothing about the browser store where the question does not apply", () => {
     const text = report({ backend: { ...backend, ca_nss_trusted: null } });
     expect(text).not.toContain("browser store");
+  });
+
+  /** The promise `browserTrustRestartAdvice`'s `write_failed` copy makes: "The
+   *  diagnostics report names which one and why." It has to be answerable here,
+   *  because the person reading it is already stuck and a report with nothing in
+   *  it costs them a round trip to find that out. */
+  it("names the store that refused the certificate, and its reason", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_trusted: false,
+        ca_nss_write: {
+          outcome: "write_failed",
+          refusals: [
+            {
+              store: "/home/u/.pki/nssdb",
+              reason: "certutil -A exited 255: SEC_ERROR_TOKEN_NOT_LOGGED_IN",
+            },
+          ],
+        },
+      },
+    });
+    expect(text).toContain("browser write   FAILED - a store refused");
+    expect(text).toContain("/home/u/.pki/nssdb");
+    expect(text).toContain("SEC_ERROR_TOKEN_NOT_LOGGED_IN");
+  });
+
+  /** The other cause, which the probe above cannot tell apart from it: one is
+   *  fixed by installing a package and one is not, and prescribing the package
+   *  to somebody whose database was locked sends them the wrong way. */
+  it("separates a missing certutil from a store that refused", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_trusted: false,
+        ca_nss_write: { outcome: "tools_missing", refusals: [] },
+      },
+    });
+    expect(text).toContain("browser write   FAILED - certutil not installed");
+    expect(text).not.toContain("refused");
+  });
+
+  /** A clean write adds nothing: the certificate line already says trusted, and
+   *  a second line agreeing with it is noise in a file people scan. */
+  it("says nothing about the write when the write succeeded", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_write: { outcome: "trusted", refusals: [] },
+      },
+    });
+    expect(text).not.toContain("browser write");
   });
 
   it("survives a first-run popover with no account and no proxy", () => {

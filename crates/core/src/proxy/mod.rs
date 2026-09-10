@@ -1280,6 +1280,38 @@ pub enum NssTrust {
     WriteFailed,
 }
 
+/// One NSS database that would not take the CA, and what it said.
+///
+/// The copy that raises this state tells the user the diagnostics report names
+/// which store refused and why, and for a while it did not: the outcome reached
+/// the UI as a single [`NssTrust`] and the per-store reason went to stderr. A
+/// sentence that sends somebody to a report has to be answerable there.
+///
+/// Only the `WriteFailed` cause is collected. A missing `certutil` fails every
+/// store for one reason the report already states, so listing it once per
+/// database would be three lines saying what the outcome said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssRefusal {
+    /// The database directory, as a display path. In the user's own home, and
+    /// the point of showing it is that they can go and look.
+    pub store: String,
+    /// `certutil`'s own words, by way of `CertutilFailure`. Machine output.
+    pub reason: String,
+}
+
+/// What the last NSS write in this process did, with the detail behind it.
+///
+/// [`NssTrust`] alone is what the UI switches copy on; the refusals are what
+/// makes the report able to answer the question that copy points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NssReading {
+    pub outcome: NssTrust,
+    /// Empty for every outcome but `WriteFailed`, and never used to *infer* the
+    /// outcome: a store list that came back empty because nothing was collected
+    /// is not a store list that came back empty because nothing refused.
+    pub refusals: Vec<NssRefusal>,
+}
+
 /// Snapshot of the proxy subsystem for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyState {
@@ -1934,6 +1966,39 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 
 #[cfg(test)]
 mod tests {
+    /// The wire words the frontend's own union spells out.
+    ///
+    /// `NssTrust` reaches TypeScript twice - on `ProxyState.ca_nss_trust` and
+    /// inside `Diagnostics.ca_nss_write` - and both are typed as a string union
+    /// by hand. A renamed variant would compile on both sides and simply stop
+    /// matching, which for the copy means falling through to the reopen advice
+    /// on a machine that needs a package installed.
+    #[test]
+    fn the_nss_wire_words_are_what_the_frontend_expects() {
+        let word = |t: NssTrust| serde_json::to_value(t).expect("serialize NssTrust");
+        assert_eq!(word(NssTrust::Trusted), "trusted");
+        assert_eq!(word(NssTrust::ToolsMissing), "tools_missing");
+        assert_eq!(word(NssTrust::WriteFailed), "write_failed");
+    }
+
+    /// A refusal carries the store and the reason, under the names the report
+    /// reads. This is the payload behind "the diagnostics report names which one
+    /// and why", so the field names are part of the promise.
+    #[test]
+    fn a_refusal_serialises_the_store_and_the_reason() {
+        let reading = NssReading {
+            outcome: NssTrust::WriteFailed,
+            refusals: vec![NssRefusal {
+                store: "/home/u/.pki/nssdb".into(),
+                reason: "certutil -A exited 255".into(),
+            }],
+        };
+        let json = serde_json::to_value(&reading).expect("serialize NssReading");
+        assert_eq!(json["outcome"], "write_failed");
+        assert_eq!(json["refusals"][0]["store"], "/home/u/.pki/nssdb");
+        assert_eq!(json["refusals"][0]["reason"], "certutil -A exited 255");
+    }
+
     /// The engine calls the gateway-auth notify once per refused request, and
     /// a dead session refuses *every* request from every routed tool. Both
     /// latches exist to keep that flood down to one re-verification: the

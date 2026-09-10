@@ -35,8 +35,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hudsucker::rcgen::KeyPair;
@@ -45,7 +44,7 @@ use crate::env;
 use crate::keychain;
 use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
-use crate::proxy::NssTrust;
+use crate::proxy::{NssReading, NssRefusal, NssTrust};
 
 /// Subject CN of our CA. Used both as the cert subject and as the basename of
 /// the installed anchor file.
@@ -283,6 +282,12 @@ fn anchor_remove_script(store: &TrustStore) -> String {
     )
 }
 
+/// How long one `certutil` call gets before it is killed. Generous next to
+/// Windows' 10s because every call here is against a local database and the
+/// slow case is a lock, not a service - but bounded, because `enable` waits on
+/// these and the user waits on `enable`.
+const CERTUTIL_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What to tell the user when `certutil` is not installed. Naming the package
 /// matters: without it the message is a bare "no such file" for a binary most
 /// people have never heard of, attached to a browser failure that looks like a
@@ -291,16 +296,6 @@ fn anchor_remove_script(store: &TrustStore) -> String {
 /// The `.deb` depends on it (`src-tauri/tauri.conf.json`), which is where nearly
 /// every Linux install comes from, so this is for the ones that route around
 /// packaging: the AppImage, a hand-built tarball, `cargo run`.
-/// How long one `certutil` call gets before it is killed. Generous next to
-/// Windows' 10s because every call here is against a local database and the
-/// slow case is a lock, not a service - but bounded, because `enable` waits on
-/// these and the user waits on `enable`.
-const CERTUTIL_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Gap between `try_wait` polls while waiting out [`CERTUTIL_TIMEOUT`]. Same
-/// value as the Windows twin.
-const CERTUTIL_POLL: Duration = Duration::from_millis(50);
-
 const NSS_TOOLS_HINT: &str =
     "install certutil (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools) and retry";
 
@@ -390,8 +385,8 @@ impl std::fmt::Display for CertutilFailure {
 /// under the escalation the system anchor needs would write into root's HOME
 /// instead of the user's.
 fn certutil_output(db: &Path, args: &[&str]) -> std::result::Result<String, CertutilFailure> {
-    let child = Command::new("certutil")
-        .arg("-d")
+    let mut cmd = Command::new("certutil");
+    cmd.arg("-d")
         // `sql:` selects the modern cert9.db format. Chromium has written that
         // format for years, and naming it explicitly avoids certutil falling
         // back to the legacy cert8.db pair on an empty directory.
@@ -400,47 +395,30 @@ fn certutil_output(db: &Path, args: &[&str]) -> std::result::Result<String, Cert
         // A database with a password set makes certutil prompt for it on stdin.
         // Under the GUI that reads EOF, but the CLI would hand it the user's
         // terminal and block there, so close it and let the call fail instead.
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(CertutilFailure::Missing),
-        Err(e) => return Err(CertutilFailure::Failed(format!("running certutil: {e}"))),
-    };
+        .stdin(Stdio::null());
     // Bounded, for the reason `ca_windows`' `certutil_bounded` is: stdin being
     // closed turns the password prompt into an EOF rather than a wait, but a
     // database another process holds locked, or one on a stalled network mount,
     // blocks in the open instead - and this runs where a user is waiting on a
-    // switch. Killed at the deadline and reported as a failure, which is what
-    // it is; the caller's own hint machinery then keeps it out of the
-    // missing-package advice.
+    // switch. A killed call is reported as a failure, which is what it is; the
+    // caller's own hint machinery then keeps it out of the missing-package
+    // advice.
     //
-    // Piped rather than null (Windows nulls it): the reads below want the PEM.
-    // Safe with `try_wait` because the output is one certificate - the pipe
-    // buffer swallows it whole, so the child never blocks on a write we are not
-    // yet reading. Do not reuse this shape for an unbounded output.
-    let deadline = Instant::now() + CERTUTIL_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {}
-            Err(e) => return Err(CertutilFailure::Failed(format!("waiting on certutil: {e}"))),
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
+    // `output_bounded` rather than a loop here: it is the same shape
+    // `ca_windows` wrote first, and it reaps the child after the kill, which
+    // neither hand-rolled copy did. Its own note covers why this is only safe
+    // for a small output - one certificate, here.
+    let out = match crate::primitives::output_bounded(cmd, CERTUTIL_TIMEOUT) {
+        Ok(Some(out)) => out,
+        Ok(None) => {
             return Err(CertutilFailure::Failed(format!(
                 "certutil {} did not finish within {}s and was killed",
                 args.join(" "),
                 CERTUTIL_TIMEOUT.as_secs()
-            )));
+            )))
         }
-        thread::sleep(CERTUTIL_POLL);
-    }
-    let out = match child.wait_with_output() {
-        Ok(out) => out,
-        Err(e) => return Err(CertutilFailure::Failed(format!("reading certutil: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(CertutilFailure::Missing),
+        Err(e) => return Err(CertutilFailure::Failed(format!("running certutil: {e}"))),
     };
     if !out.status.success() {
         return Err(CertutilFailure::Failed(format!(
@@ -512,15 +490,21 @@ fn pem_body(pem: &str) -> String {
 /// a plumbing argument on `ensure_trusted` for the sake of one boolean's worth
 /// of information. Process-scoped on purpose: it describes what this process
 /// did, and a second Gate writing the same store is a state neither can cache.
-static RECORDED_NSS_TRUST: Mutex<Option<NssTrust>> = Mutex::new(None);
+static RECORDED_NSS_TRUST: Mutex<Option<NssReading>> = Mutex::new(None);
 
-fn record_nss_trust(state: Option<NssTrust>) {
+fn record_nss_trust(state: Option<NssReading>) {
     *RECORDED_NSS_TRUST.lock().expect("nss trust mutex poisoned") = state;
 }
 
-/// The recorded reading, for [`super::manager`]'s `status`.
-pub fn recorded_nss_trust() -> Option<NssTrust> {
-    *RECORDED_NSS_TRUST.lock().expect("nss trust mutex poisoned")
+/// The recorded reading, for [`super::manager`]'s `status` and for the
+/// diagnostics report. `status` takes the outcome alone; the report takes the
+/// refusals too, because it is what the copy points at for the store and the
+/// reason.
+pub fn recorded_nss_trust() -> Option<NssReading> {
+    RECORDED_NSS_TRUST
+        .lock()
+        .expect("nss trust mutex poisoned")
+        .clone()
 }
 
 /// Fold one store's failure into the machine's answer.
@@ -577,6 +561,9 @@ fn ensure_trusted_nss() {
     // Starts at the answer the steady state gives - every database already
     // holding the CA skips its whole body below - and degrades as stores fail.
     let mut outcome = NssTrust::Trusted;
+    // The stores that refused, for the report the copy sends people to. Only
+    // the `Failed` cause is collected - see `NssRefusal`.
+    let mut refusals: Vec<NssRefusal> = Vec::new();
     for dir in dirs {
         // Nothing to do where the database already holds exactly our current
         // CA, which is the steady state on every enable after the first. Worth
@@ -595,6 +582,12 @@ fn ensure_trusted_nss() {
         let args = ["-A", "-t", "C,,", "-n", CA_COMMON_NAME, "-i", &cert_arg];
         if let Err(e) = certutil(&dir, &args) {
             outcome = degrade(outcome, &e);
+            if matches!(e, CertutilFailure::Failed(_)) {
+                refusals.push(NssRefusal {
+                    store: dir.display().to_string(),
+                    reason: e.to_string(),
+                });
+            }
             // Say so when the delete landed and the add did not: that leaves the
             // store worse than we found it, and a browser that stopped working
             // *because* of this reads nothing like one that never worked.
@@ -611,7 +604,7 @@ fn ensure_trusted_nss() {
             );
         }
     }
-    record_nss_trust(Some(outcome));
+    record_nss_trust(Some(NssReading { outcome, refusals }));
 }
 
 /// Drop the CA from every per-user NSS database.

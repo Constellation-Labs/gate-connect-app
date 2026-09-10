@@ -271,10 +271,18 @@ const ENGINE_HOST_GVARIANT: &str = "'127.0.0.1'";
 /// Read one key, or `None` if `gsettings` or the schema is missing (i.e. not a
 /// GNOME session).
 fn gsettings_get(schema: &str, key: &str) -> Option<String> {
-    let out = std::process::Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("gsettings");
+    cmd.args(["get", schema, key]);
+    // Bounded for the same reason `certutil` is, and through the same helper:
+    // `gsettings` talks to dbus, a peer that does not answer blocks in the call
+    // rather than failing it, and `browser_proxy_channel` below puts this on the
+    // path `status` is polled from. A timeout reads as "no answer", which is
+    // what every caller here already does with a key it cannot read.
+    //
+    // Short next to certutil's five seconds: this is a settings lookup against a
+    // session bus, so a second is already far past the point where it is going
+    // to succeed.
+    let out = crate::primitives::output_bounded(cmd, std::time::Duration::from_secs(1)).ok()??;
     if !out.status.success() {
         return None;
     }
@@ -300,6 +308,13 @@ fn gsettings_get(schema: &str, key: &str) -> Option<String> {
 /// is polled, which is precisely where a per-call subprocess does damage. False
 /// under the test seam, which is accurate rather than defensive: the seam skips
 /// every gsettings write, so nothing in the session points at the engine.
+///
+/// The cache bounds how *often* this runs and not how long the one call takes,
+/// and the one call is the boot-path `status` on most launches - so
+/// [`gsettings_get`] is bounded too. Without that a dbus peer that never
+/// answers left the first status unresolved, which holds the window's
+/// in-flight read latch and drops `tools-changed` and visibility refreshes for
+/// as long as it lasts.
 pub fn browser_proxy_channel() -> bool {
     static CHANNEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CHANNEL.get_or_init(|| {

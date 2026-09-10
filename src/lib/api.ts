@@ -989,6 +989,19 @@ export interface Diagnostics {
    * disagreeing is the whole of "Firefox works, Chrome doesn't". `null` where
    * the question does not apply (not Linux, or no such browser here). */
   ca_nss_trusted: boolean | null;
+  /** Linux only: what the last NSS write *in this process* did, and which stores
+   *  refused it. A different question from `ca_nss_trusted` above, which is
+   *  probed now and is `all()` over the stores, so it cannot say which one or
+   *  why. Null before any write in this process.
+   *
+   *  The copy raised on a failed write tells the user this report names the
+   *  store and the reason, so the report has to carry them. */
+  ca_nss_write: {
+    outcome: "trusted" | "tools_missing" | "write_failed";
+    /** Empty for every outcome but `write_failed`. `reason` is certutil's own
+     *  words, so it is drawn as machine output. */
+    refusals: { store: string; reason: string }[];
+  } | null;
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;
