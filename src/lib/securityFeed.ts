@@ -86,8 +86,11 @@ export function useSecurityFeed(enabled: boolean, credential = ""): SecurityFeed
     setLoading(true);
     setUnavailable(false);
     // The old org's failed catch-up says nothing about the new one's. The
-    // backend clears its own copy in `reset_for_account_change`; this keeps the
-    // two from disagreeing for the length of one read.
+    // backend clears its copy too, in `reset_for_account_change`, which
+    // `set_org` and `clear_account` now call - they did not when this line was
+    // written, so the seed below would re-read the previous org's verdict and
+    // the emit-on-change guard would then suppress the correction. This keeps
+    // the two from disagreeing for the length of one read.
     setHistoryOk(true);
   }, [credential]);
 

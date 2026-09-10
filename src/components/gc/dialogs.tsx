@@ -2345,13 +2345,22 @@ export function TeardownReportDialog({
                 icon={<Icon name="cube" size={16} />}
                 title={tool.name}
                 description={section.detail}
+                // No next-action pill after a sign-out. Nothing was attempted,
+                // so there is nothing to retry: an amber "Retry disconnect"
+                // under a heading that says these were left alone on purpose
+                // offers the user a fix for a failure that did not happen. The
+                // original finding asked for exactly this - the pills should
+                // either act or stop looking like buttons - and correcting the
+                // heading without the pills only fixed half of it.
                 pill={
-                  tool.next_action === "none"
-                    ? { label: "Done", tone: section.tone }
-                    : {
-                        label: TEARDOWN_ACTION_LABEL[tool.next_action],
-                        tone: section.tone,
-                      }
+                  signOut
+                    ? undefined
+                    : tool.next_action === "none"
+                      ? { label: "Done", tone: section.tone }
+                      : {
+                          label: TEARDOWN_ACTION_LABEL[tool.next_action],
+                          tone: section.tone,
+                        }
                 }
               />
             ))}

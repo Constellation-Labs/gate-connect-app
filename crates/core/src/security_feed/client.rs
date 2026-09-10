@@ -114,6 +114,10 @@ impl Feed {
         // carrying it over would put a warning on a pane that has not asked
         // anything yet. The window resets its own copy on the credential change
         // too; this keeps the two agreeing.
+        //
+        // Worth knowing: until `set_org` and `clear_account` were wired to call
+        // this, nothing in production did, so the buffer and dedupe above had
+        // the same hole and the frontend's clear was undone by its own re-seed.
         self.history_ok.store(true, Ordering::SeqCst);
         self.retry_now();
     }

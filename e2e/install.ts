@@ -332,10 +332,18 @@ export function installFakeTauri(state: BackendState): void {
         expires_at_unix: 4102444800,
       };
       if (state.account) state.account.auth_mode = "oauth";
+      // Cleared on the way in, as the real command does: whatever ended the
+      // last session, this one is live.
+      state.preferences.signed_out_deliberately = false;
       return state.oauth;
     },
     oauth_sign_out: () => {
       state.oauth = { signed_in: false, email: null, expires_at_unix: 0 };
+      // The real command records that this sign-out was asked for, which is the
+      // only thing that tells the welcome pane apart from an expiry. The fake
+      // omitted it, so every harness run modelled a session that had died and
+      // no test could see the pane get it wrong.
+      state.preferences.signed_out_deliberately = true;
       return null;
     },
     set_auth_mode: ({ oauth }) => {

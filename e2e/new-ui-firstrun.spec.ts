@@ -192,8 +192,18 @@ test.describe("new UI: the two ways back to first run", () => {
     const calls = await app.calls();
     expect(calls.some((c) => c.cmd === "clear_account")).toBe(false);
 
-    // Account intact, session gone: that is the reauth prompt, not a welcome.
-    await expect(app.page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+    // Account intact, session gone, and the user is the one who ended it - so
+    // the pane says that rather than reporting an expiry. This assertion used
+    // to require "Session expired", which is how the defect survived: the check
+    // and the bug agreed. The fake now records the reason the real
+    // `oauth_sign_out` records, so the two states are distinguishable here at
+    // all. Its opposite number is "an expired session asks to sign in again"
+    // above, which boots straight into a dead session and must keep the expiry
+    // wording.
+    await expect(
+      app.page.getByRole("heading", { name: "You are signed out" }),
+    ).toBeVisible();
+    await expect(app.page.getByText("Your session expired")).toHaveCount(0);
   });
 
   /**

@@ -442,6 +442,9 @@ async fn clear_account() -> Result<(), String> {
     .map_err(|e| format!("sign-out join error: {e}"))?;
     // What changed: the account is gone.
     if done.is_ok() {
+        // Same reason as the org switch: the events belonged to the account
+        // being cleared, and the feed outlives it.
+        security_feed().reset_for_account_change();
         signal_session_changed();
     }
     done
@@ -1036,6 +1039,17 @@ async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
     .map_err(|e| format!("set org join error: {e}"))?;
     // What changed: another org, so every figure on screen belongs to the previous one.
     if done.is_ok() {
+        // The feed included. It is a process singleton, so without this its
+        // buffer, its dedupe set and its catch-up verdict all survive the
+        // switch - and `security_feed_recent` hands the previous org's events
+        // straight back to a window that has just cleared its own copy. That is
+        // the one thing the activity surfaces are not allowed to do: show one
+        // org's traffic under another org's name.
+        //
+        // `reset_for_account_change` was written for exactly this and had no
+        // production caller at all, only a test, so the guarantee its name makes
+        // was never kept.
+        security_feed().reset_for_account_change();
         signal_session_changed();
     }
     done

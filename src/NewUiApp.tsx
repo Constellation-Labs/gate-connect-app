@@ -2070,16 +2070,52 @@ export function NewUiApp() {
   }, [setupStageKind, setupOrgs, loadOrgs]);
 
   /**
-   * How much of what the rail lists is actually routed.
+   * Re-read preferences when the sign-in screen appears.
+   *
+   * `signed_out_deliberately` is written by `oauth_sign_out`, which happens
+   * long after `prefs` was filled: `loadPreferences` runs at mount and after a
+   * preference toggle, and `onSession` sets only account and oauth. So the
+   * welcome pane was reading the value this shell held at launch - `false` for
+   * anyone who was signed in then - and went on saying "Session expired" over
+   * the user's own Disconnect. The fix that added the preference never reached
+   * the shell it was written for.
+   *
+   * Keyed on the stage rather than done in `confirmDisconnect`, for the reason
+   * the popover's copy of this is: sign-out is only one of the ways this screen
+   * appears. A session that dies on its own lands here too, without passing
+   * through any sign-out, and a value refreshed only on the deliberate path
+   * would then be stale in the direction that hides a real failure.
+   */
+  useEffect(() => {
+    if (setupStageKind === "welcome") void loadPreferences();
+  }, [setupStageKind, loadPreferences]);
+
+  /**
+   * How much of what the user asked for is actually routed.
+   *
+   * Two corrections to what this counted, and they pull in opposite directions.
    *
    * `railApps`, not `apps`: `apps` is config-routed tools only, so with the
    * proxy domain rows on screen the banner counted a different population from
    * the one under it. On staging that read "0 of 4 Apps" while the Anthropic
    * family beside it said "1 of 3" with App Protected - two counts of the same
-   * thing, disagreeing, on one screen. The rail is what the user is looking at,
-   * so the rail is what gets counted.
+   * thing, disagreeing, on one screen. The rail is what the user is looking at.
+   *
+   * But only the rows they turned ON. The domain rows are per-row opt-ins that
+   * ship off, so counting all of them made the green state almost unreachable:
+   * somebody with every tool they use routed would read amber "4 of 7" forever,
+   * and a banner that can never go green is not a status, it is decoration.
+   * Filtering by intent puts the denominator back on the same footing as the
+   * numerator - `on` is what the user asked for, `protected` is what happened -
+   * so green means "everything you asked for is routed" and amber means
+   * something you asked for is not. A row nobody turned on is not a gap.
+   *
+   * Principle 2's split, applied to a count: the denominator is intent, the
+   * numerator is observation, and they are read from the two different places
+   * that own them.
    */
-  const protectedCount = railApps.filter(
+  const desiredApps = railApps.filter((a) => a.on);
+  const protectedCount = desiredApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
 
@@ -2507,7 +2543,7 @@ export function NewUiApp() {
             }
           : undefined
       }
-      routing={{ protectedCount, totalCount: railApps.length }}
+      routing={{ protectedCount, totalCount: desiredApps.length }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
