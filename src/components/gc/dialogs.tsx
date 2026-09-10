@@ -11,7 +11,7 @@ import {
   pinnedModels,
 } from "../../lib/modelCompatibility";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
-import type { RecoverySummary, TeardownReport } from "../../lib/api";
+import type { RecoverySummary, TeardownReport, TeardownTool } from "../../lib/api";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenTool } from "../../lib/reopen";
 import {
@@ -2130,11 +2130,30 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
  * Read-only for the same reason the review above is: it reports a teardown that
  * has already happened. The actions it names live on the rows that own them.
  */
+/**
+ * A teardown row with the mark the shell holds for it.
+ *
+ * The same split `DialogApp` and `DialogReopenTool` make: `lib/api` owns the
+ * reading, the shell owns the brand marks, and this module draws whatever it is
+ * handed. `icon` is optional, so a plain `TeardownReport` still satisfies the
+ * prop below and a caller that has no marks to give simply gets the cube.
+ */
+export type DialogTeardownTool = TeardownTool & {
+  /** 16px product mark. Falls back to a cube while a mark is missing. */
+  icon?: ReactNode;
+};
+
+/** {@link TeardownReport} with marks on its rows. */
+export type DialogTeardownReport = Record<
+  keyof TeardownReport,
+  DialogTeardownTool[]
+>;
+
 export function TeardownReportDialog({
   report,
   onClose,
 }: {
-  report: TeardownReport;
+  report: DialogTeardownReport;
   onClose: () => void;
 }) {
   const outstanding =
@@ -2196,7 +2215,11 @@ export function TeardownReportDialog({
             {report[section.key].map((tool) => (
               <ModalSubject
                 key={tool.slug}
-                icon="cube"
+                // `ModalSubject.icon` is a ReactNode, not an icon NAME - every
+                // other call site passes an element. The bare string "cube" here
+                // rendered as the literal word inside the 40px tile, and
+                // TypeScript could not object because `string` is a ReactNode.
+                icon={tool.icon ?? <Icon name="cube" size={16} />}
                 title={tool.name}
                 description={section.detail}
                 pill={

@@ -14,6 +14,7 @@ import type {
   PendingRestore,
   RecoverySummary,
   TeardownReport,
+  TeardownTool,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -95,7 +96,11 @@ import {
   buildSettingsSections,
 } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
-import type { DialogReopenTool } from "./components/gc/dialogs";
+import type {
+  DialogReopenTool,
+  DialogTeardownReport,
+  DialogTeardownTool,
+} from "./components/gc/dialogs";
 import {
   ApplyChangesDialog,
   ChangeReadyDialog,
@@ -2398,7 +2403,7 @@ export function NewUiApp() {
           * positions itself over whatever is behind it. */}
         {teardown && (
           <TeardownReportDialog
-            report={teardown}
+            report={teardownSubjects(teardown)}
             onClose={() => setTeardown(null)}
           />
         )}
@@ -2741,7 +2746,7 @@ export function NewUiApp() {
           // left tools behind is the newest thing that happened, and the user
           // asked for the operation that produced it.
           <TeardownReportDialog
-            report={teardown}
+            report={teardownSubjects(teardown)}
             onClose={() => setTeardown(null)}
           />
         ) : collectedDataOpen ? (
@@ -3241,6 +3246,20 @@ function configLocationFor(tools: Tool[], slug: string): string | null {
  *  to disagree about one. */
 function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
   return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+}
+
+/** The teardown report's four buckets, with the same marks `reopenSubjects`
+ *  puts on the reopen rows. The dialog listed Claude Code and Codex beside a
+ *  generic glyph while every other surface drew their real marks. */
+function teardownSubjects(report: TeardownReport): DialogTeardownReport {
+  const marks = (tools: TeardownTool[]): DialogTeardownTool[] =>
+    tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+  return {
+    defaults: marks(report.defaults),
+    still_gate: marks(report.still_gate),
+    awaiting_reopen: marks(report.awaiting_reopen),
+    failed: marks(report.failed),
+  };
 }
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {
