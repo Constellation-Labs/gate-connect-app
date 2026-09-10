@@ -105,6 +105,7 @@ export function SecurityPane({
   state,
   loading,
   unavailable,
+  historyUnavailable,
   onRetry,
   onOpenEvent,
 }: {
@@ -115,6 +116,11 @@ export function SecurityPane({
   /** The feed could not be read at all. Distinct from an empty feed, and the
    *  distinction is AC6's whole point. */
   unavailable: boolean;
+  /** The catch-up read failed, so anything from before this connection is
+   *  missing. A third state beside the two above, because the stream and its
+   *  history fail independently: LIVE with no history is precisely the
+   *  combination that rendered as "No security events". */
+  historyUnavailable?: boolean;
   onRetry: () => void;
   onOpenEvent: (event: SecurityEvent) => void;
 }) {
@@ -137,6 +143,25 @@ export function SecurityPane({
           </span>
         </div>
       </header>
+
+      {/* Rows on screen and a failed catch-up is not the empty case, so it does
+        * not belong in the table's empty cell - but the list is still partial
+        * and nothing else in the app would mention it. Said once, above the
+        * rows, rather than annotating each one. */}
+      {historyUnavailable && !loading && events.length > 0 && (
+        // No action here either, for the reason spelled out in the empty case
+        // below: nothing the window can call re-runs the catch-up while the
+        // stream is Live.
+        <div
+          role="status"
+          className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3"
+        >
+          <p className="text-sm leading-5 text-amber-900">
+            Showing events from this session only. Earlier events couldn’t be
+            loaded.
+          </p>
+        </div>
+      )}
 
       <Card className="p-4" busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
@@ -172,6 +197,28 @@ export function SecurityPane({
                           Try again
                         </button>
                       </span>
+                    </EmptyNote>
+                  ) : historyUnavailable ? (
+                    // Live, empty, and unable to say the feed is empty: the
+                    // catch-up read is what would have answered that, and it
+                    // failed. Saying "No security events" here is the same
+                    // mistake `unavailable` above exists to prevent, one layer
+                    // down - a claim about the user's traffic made by a screen
+                    // whose question was refused.
+                    //
+                    // No Try again, deliberately, unlike the case above. That
+                    // one recovers because `retry` re-seeds and the read can
+                    // succeed. This one cannot: `Feed::retry_now` only wakes the
+                    // backoff between connection attempts, and the catch-up runs
+                    // once per connection off `hello` - so while the stream is
+                    // Live, which is exactly when this renders, a retry issues
+                    // no request and changes nothing. A button that reliably
+                    // does nothing is worse than no button; the next reconnect
+                    // is what fixes this, and the sentence says what is true
+                    // meanwhile. Giving the backfill a forced re-run is the real
+                    // fix and is a backend change, tracked separately.
+                    <EmptyNote icon="triangleAlert">
+                      Earlier events couldn’t be loaded
                     </EmptyNote>
                   ) : (
                     // AC6: loaded, and there is nothing. A real answer.

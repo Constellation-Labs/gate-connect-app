@@ -338,7 +338,11 @@ is. Recorded because it looks exactly like drift and an audit will find it
 again.
 
 Still open, and smaller: the file never states a **minimum** size. We have
-locked the main window at 1024x720 so it can never render below a drawn size.
+locked the main window at 1280x800, with a floor of 1024x**800**, so it can
+never render below the drawn height. (This paragraph said 1024x720 until
+2026-09-10, which is stale twice over and worth naming: an external audit
+measured every dialog's vertical position in a 720-tall window on the strength
+of it, and reported offsets the shipped window does not have.)
 Tell us if you would rather it shrink further and we will reason about the
 layout below 1024.
 
@@ -469,6 +473,113 @@ will ever have here, and we still went sans. Worth confirming that is the
 answer you meant.
 
 **What we need.** Frames for the row and the dialog, or a sign-off on these.
+
+---
+
+## 19. The Blocked bar and the Blocked legend swatch are different reds
+
+**What we see.** In the same card, in both Overview generations, the bar and
+the key disagree about one series.
+
+| Node | Colour |
+| --- | --- |
+| Bar segment `706:10516` (720px frame) | `red/500` #ef4444 |
+| Bar segment `864:3513` (1280 frame) | `red/500` #ef4444 |
+| Legend swatch `706:10605` / `864:3602` | `red/400` #f87171 |
+| Tooltip component `744:37718` | `red/400` #f87171 |
+
+**Why it matters.** We ship one token, `chart.blocked` #f87171, for the bar, the
+swatch and the tooltip alike, so our swatch is exact and our bars are one step
+light. We had this at red/500 and moved it to red/400 in an earlier pass on the
+strength of the swatch and the tooltip agreeing, which is recorded in
+`tailwind.config.ts`. Neither pass had read the bar rectangles.
+
+**The other three series agree**, which is why this reads as one node's slip
+rather than a rule that bars are a step more saturated: bars and swatches are
+both `blue/400` for Total, both `amber/400` for Flagged and both `violet/500`
+for Redacted. Only Blocked splits.
+
+**What we need.** One red for the series - and if the bar is meant to be the
+saturated one, say so and we will carry two tokens deliberately rather than
+treat this as a slip. Related, and yours to settle at the same time: question 17
+above, where Redacted splits violet/purple between a swatch and a component.
+
+---
+
+## 20. Does every dialog open its body 24px under the header, or 16?
+
+**What we see.** Both, and the split does not follow anything we can name.
+
+| Dialog | Header to body |
+| --- | --- |
+| `Diagnostics report` (`363:9028` -> `363:9034`) | 24px |
+| `Replace API key` (`177:74562` -> `177:74567`) | 24px |
+| `Disconnect Gate?` (`143:70619` -> `164:73502`) | **16px** |
+
+**Why it matters.** `Modal` is one primitive with one gap, currently the 24px
+that two of these three want. The odd one out is also the only one of the three
+with the small 32px header tile rather than a 44px one, so this could be a rule
+("small tile, tighter body") or it could be a drag. We are not going to add a
+per-dialog override for a guess.
+
+**What we need.** Is 24 the rule with the disconnect dialog drawn loose, or does
+the gap follow the header tile's size?
+
+---
+
+## 21. The 10px status labels do not reach the contrast floor
+
+**What we see.** The green and amber status labels render at 10px in
+`green-600` `#16a34a` and `amber-600` `#d97706`, both on white. Measured against
+white those are **3.30:1** and **3.19:1**. They match the file exactly; this is
+not a drift.
+
+**Why it matters.** WCAG asks 4.5:1 of normal-size text and allows 3:1 only for
+large text, which starts at 18.66px bold or 24px regular. At 10px these are
+normal text by any reading, so both fail. And they are the labels carrying the
+one fact the sidebar exists to convey - whether a tool is protected - which
+makes them the worst place in the app to be hard to read.
+
+**Why it is here and not fixed.** Every route out of it is a deliberate
+deviation from the file, and there are three: darken the inks (`green-700`
+`#15803d` and `amber-700` `#b45309` both clear 4.5:1), raise the type size,
+which changes the threshold instead of the palette but moves layout, or accept
+the ratio. Which one is right is a design decision, and the second and third
+change frames rather than code.
+
+**What we need.** A choice between those three, applied to the file and the code
+together. Until then the code keeps drawing what the file draws.
+
+---
+
+## 22. ANSWERED - the quit report's second sentence, and the third copy exception
+
+**What we saw.** `QuitSafeToCloseDialog`'s disconnect branch (`694:33002`) draws
+"Tools are disconnected and their previous settings are restored. **Setup will
+be waiting the next time you open the app.**" The second sentence is not true of
+what the branch does. Quitting with a disconnect calls
+`snapshot_and_disable_everything`, which puts tool configs back and nothing
+else: the session, the organization and the certificate all survive, and the
+engine re-enables itself on the next launch. The teardown's own native
+notification, fired seconds later from the same function, already says the
+opposite in as many words - "everything reconnects when Gate Connect starts
+again". So the drawn copy contradicted both the app and the app's own next
+message.
+
+Confirmed live, not only read: the review's WINDOW-11 case quit with a
+disconnect, relaunched, and found the session and the routed settings both
+restored.
+
+**Answered 2026-09-10.** Shipped as "Tools are disconnected and their previous
+settings are restored. You will still be signed in the next time you open the
+app." This is the **third standing copy exception**, after `Replace API key`'s
+field label and `Disconnect Gate?`'s subtitle, and it is recorded in `CLAUDE.md`
+beside them. Raised rather than deduced, per the standing rule that a third one
+gets asked about.
+
+**Still worth a frame.** The exception list is now three long, which is three
+places a future reader has to be told not to "correct" the code back to the
+file. A corrected `694:33002` would retire one of them.
 
 ---
 

@@ -43,6 +43,49 @@ test.describe("new UI security feed", () => {
     await expect(app.page.getByText("Unavailable")).toHaveCount(0);
   });
 
+  test("a failed catch-up is not reported as an empty feed", async ({ boot }) => {
+    // The case that produced the original defect: the stream is Live, so the
+    // pane looks healthy, but the catch-up that would have answered "is there
+    // history?" was refused. Saying "No security events" here is a claim about
+    // the user's traffic made by a screen whose question was never answered -
+    // the same mistake the whole-feed `Unavailable` state exists to prevent,
+    // one layer down.
+    const app = await boot({
+      securityFeed: { state: "live", events: [], historyOk: false },
+    });
+
+    await app.page.getByRole("button", { name: "Security events" }).click();
+
+    await expect(
+      app.page.getByText("Earlier events couldn’t be loaded"),
+    ).toBeVisible();
+    await expect(app.page.getByText("No security events")).toHaveCount(0);
+    // The feed itself is fine, and the pill must go on saying so: the stream
+    // and its history fail independently.
+    await expect(app.page.getByText("Live")).toBeVisible();
+    // Deliberately no recovery action. `retry_now` only wakes the backoff
+    // between connection attempts and the catch-up runs once per connection,
+    // so while the stream is Live a retry issues no request at all. A control
+    // that reliably does nothing teaches the user the feature is broken.
+    await expect(app.page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  });
+
+  test("a partial history says so above the rows it does have", async ({ boot }) => {
+    // Events on screen and a failed catch-up is not the empty case, but the
+    // list is still partial and nothing else in the app would mention it.
+    const app = await boot({
+      securityFeed: { state: "live", events: [blocked], historyOk: false },
+    });
+
+    await app.page.getByRole("button", { name: "Security events" }).click();
+
+    await expect(
+      app.page.getByText("Showing events from this session only."),
+    ).toBeVisible();
+    await expect(app.page.getByText("Blocked")).toBeVisible();
+    await expect(app.page.getByText("No security events")).toHaveCount(0);
+  });
+
   test("an event pushed while the pane is open appears on it", async ({ boot }) => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Security events" }).click();

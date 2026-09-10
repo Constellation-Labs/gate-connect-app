@@ -70,6 +70,33 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
   }
 }
 
+/** Where the app lives when its window is not on screen, as a noun phrase ready
+ *  to drop after "in" / "to".
+ *
+ *  Carries the determiner for the same reason [`secretStoreName`] does: these
+ *  are the OS's own names for the thing, and every string that points the user
+ *  at it has to use the right one. Windows puts it in the system tray at the
+ *  bottom right; GNOME calls its equivalent the top bar; macOS the menu bar.
+ *
+ *  Hardcoding "menu bar" is the failure this exists to prevent. The quit
+ *  chooser did exactly that and told Windows users to minimize the app to a
+ *  menu bar their OS does not have, while the onboarding step two files away
+ *  had already been naming all three correctly.
+ *
+ *  `unknown` answers "the menu bar", preserving what the onboarding step said
+ *  before this was shared. It is only reachable during the first async tick of
+ *  `fetchPlatform`, before any of these surfaces has drawn. */
+export function trayLocationName(p: Platform): string {
+  switch (p) {
+    case "windows":
+      return "the system tray";
+    case "linux":
+      return "the top bar";
+    default:
+      return "the menu bar";
+  }
+}
+
 /** Whether a host-scoped row also covers the same site in a browser, as a
  *  sentence to append - or the empty string where there is nothing to claim.
  *

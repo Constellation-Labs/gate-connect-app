@@ -33,8 +33,17 @@ import { track, trackError } from "./analytics";
 
 export type SetupStage =
   | { kind: "loading" }
-  /** No usable credential. `reauth` when an account exists but its session died. */
-  | { kind: "welcome"; reauth: boolean }
+  /** No usable credential. `reauth` when an account exists but its session is
+   *  gone; `deliberate` when the user is the one who ended it.
+   *
+   *  Two fields rather than three stage kinds, because the pane is the same
+   *  pane - only the heading and the sentence under it change. And two fields
+   *  rather than one, because "there is a session to get back into" and "the
+   *  last one expired on its own" are different facts that happened to produce
+   *  the same value: the pane read the first and printed the second, so
+   *  choosing Disconnect Gate reported "Session expired" over the user's own
+   *  click. See `preferences::signed_out_deliberately`. */
+  | { kind: "welcome"; reauth: boolean; deliberate: boolean }
   /** The key route, entered from the welcome pane on purpose. */
   | { kind: "api-key" }
   | { kind: "org-picker" }
@@ -89,6 +98,7 @@ export function useSetup({
   onProxy,
   diagnosticsAnswered,
   deviceNamed,
+  signedOutDeliberately,
 }: {
   /** Whether the first read of account and OAuth state has come back. Without
    *  it, a null account on launch is indistinguishable from no account, and the
@@ -108,6 +118,10 @@ export function useSetup({
    * makes, and for the same reason: "not yet known" must not render as "never
    * named" and flash the pane at someone who named it months ago. */
   deviceNamed?: boolean;
+  /** Whether the last sign-out was one the user asked for, from
+   *  `preferences.signed_out_deliberately`. `undefined` while the preference
+   *  read is in flight, the same distinction the two props above make. */
+  signedOutDeliberately?: boolean;
 }): Setup {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -168,7 +182,16 @@ export function useSetup({
       if (keyPaneOpen) return { kind: "api-key" };
       // Reauth only for an OAuth account, matching the popover: an API-key
       // account that lost its key never had a session to expire.
-      return { kind: "welcome", reauth: account?.auth_mode === "oauth" };
+      return {
+        kind: "welcome",
+        reauth: account?.auth_mode === "oauth",
+        // `?? false` reads an unfinished preference load as "not deliberate",
+        // which is the pre-existing behaviour and the safe way round: it costs
+        // one render of the expiry wording at most, where the opposite default
+        // would tell someone whose session really did expire that they had
+        // signed themselves out.
+        deliberate: signedOutDeliberately ?? false,
+      };
     }
     // Name the machine before the apps are chosen, the order the key pane's own
     // copy promises. Guarded on `sawSignedOut` for the reason the confirmation

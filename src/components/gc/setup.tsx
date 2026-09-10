@@ -401,10 +401,12 @@ export function GatewayPicker({
 /**
  * Sign-in. OAuth is the primary path; the API-key path stays available because
  * it is the only route forward for a user whose account has no OAuth identity.
- * `reauth` swaps the copy for an expired-session prompt.
+ * `reauth` swaps the copy for a returning-user prompt, and `deliberate` decides
+ * which kind of return it was: a session that expired, or one the user ended.
  */
 export function WelcomePane({
   reauth,
+  deliberate,
   onSignIn,
   onUseApiKey,
   gateway,
@@ -412,6 +414,10 @@ export function WelcomePane({
   error,
 }: {
   reauth?: boolean;
+  /** The session ended because the user asked it to, rather than expiring. Same
+   *  pane, but it must not call a deliberate sign-out an authentication
+   *  failure - see `SetupStage`'s `welcome`. */
+  deliberate?: boolean;
   onSignIn: () => void;
   /** Opens the key pane. The design makes the key its own destination rather
    *  than a form that unfolds under the sign-in buttons, so this navigates. */
@@ -430,7 +436,11 @@ export function WelcomePane({
         large={!reauth}
         title={
           reauth ? (
-            "Session expired"
+            deliberate ? (
+              "You are signed out"
+            ) : (
+              "Session expired"
+            )
           ) : (
             <>
               <span className="font-semibold text-base-primary">Gate</span>{" "}
@@ -440,7 +450,9 @@ export function WelcomePane({
         }
         subtitle={
           reauth
-            ? "Sign in again to keep routing your apps through Gate."
+            ? deliberate
+              ? "Sign in again whenever you want to start routing your apps through Gate."
+              : "Sign in again to keep routing your apps through Gate."
             : "Sign in once, then choose which AI apps route through Gate. Claude, Codex, OpenCode, and supported apps keep working normally while Gate handles protection underneath."
         }
       />

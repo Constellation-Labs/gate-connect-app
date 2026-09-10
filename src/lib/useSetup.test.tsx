@@ -122,19 +122,19 @@ describe("useSetup: which stage", () => {
 
   it("welcomes a user with no account", () => {
     const { api } = harness({ account: null, oauth: null });
-    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false, deliberate: false });
   });
 
   it("asks an OAuth account with a dead session to sign in again", () => {
     const { api } = harness({ account: oauthAccount(), oauth: SIGNED_OUT });
-    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: true });
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: true, deliberate: false });
   });
 
   it("does not claim a session expired for an API-key account", () => {
     // It never had one. `switch_gateway` clears the key, which is how this state
     // is reached.
     const { api } = harness({ account: keyAccount({ has_api_key: false }), oauth: null });
-    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false, deliberate: false });
   });
 
   it("sends a signed-in OAuth user with no org to the picker", () => {
@@ -314,7 +314,7 @@ describe("useSetup: the API-key path", () => {
     // signing out, then back in, rewrote a staging or local account with the
     // production URL.
     expect(saveAccount).toHaveBeenCalledWith("https://gw.example", null);
-    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false, deliberate: false });
   });
 
   it("opens the key route as its own pane, and goes back", () => {
@@ -324,7 +324,7 @@ describe("useSetup: the API-key path", () => {
     expect(api.current!.stage).toEqual({ kind: "api-key" });
 
     act(() => api.current!.closeApiKey());
-    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false, deliberate: false });
   });
 
   it("names the device after a sign-in, before confirming", async () => {

@@ -227,7 +227,7 @@ function TopnavMenu({
           visual change; the design draws no scrim. It also covers the trigger,
           which is why clicking that while open still closes once rather than
           toggling twice. */}
-      <div aria-hidden className="fixed inset-0 z-10" onClick={onDismiss} />
+      <div aria-hidden className="fixed inset-0 z-40" onClick={onDismiss} />
       <div
         ref={panel}
         role="menu"
@@ -235,11 +235,17 @@ function TopnavMenu({
         // that opens it, so it reads "More, menu" - as `TrayMenu` already did.
         aria-label="More"
         onKeyDown={onKeyDown}
-        // z-20 to sit above its own scrim. That ties with `Modal`, which is
-        // harmless: `{dialog}` is the last child of `AppShell`, so tree order
-        // gives a dialog the front, and `onMenuSelect` closes this menu before
-        // one can open anyway.
-        className="absolute right-0 top-10 z-20 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
+        // Above `AppShell`'s notice wrapper (z-30), not merely above its own
+        // scrim. The reopen banner is a notice, notices are raised over the
+        // modal scrim so a failed rename stays clickable, and the rule was
+        // applied to every notice - so the reopen banner drew across this menu
+        // and hid its middle entries while the first and last stayed visible.
+        // There is no z between the two: the notice is deliberately above
+        // `Modal` (z-20), so anything above the notice is above a dialog too.
+        // That costs nothing here, because a menu and a dialog never coexist -
+        // `onMenuSelect` closes this before opening one - and the scrim above
+        // now takes the first outside click either way.
+        className="absolute right-0 top-10 z-50 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
       >
         {MENU_ITEMS.map(({ action, icon, label }, i) => (
           <button

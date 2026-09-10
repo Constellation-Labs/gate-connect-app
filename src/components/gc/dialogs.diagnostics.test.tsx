@@ -67,7 +67,7 @@ describe("SendDiagnosticsDialog", () => {
     // onClick, not the `disabled` attribute, so that it stays focusable and a
     // screen reader can still say what it is.
     expect(
-      screen.getByRole("button", { name: "Sending" }).getAttribute("aria-disabled"),
+      screen.getByRole("button", { name: "Sending…" }).getAttribute("aria-disabled"),
     ).toBe("true");
     const cancel = screen.getByRole("button", { name: "Cancel" });
     expect(cancel.getAttribute("aria-disabled")).toBe("true");

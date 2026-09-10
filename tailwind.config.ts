@@ -197,6 +197,14 @@ export default {
           // Two independent nodes agree on red/400: the legend swatch
           // (706:10090) and the tooltip component (744:37718). This was
           // red/500, one step too saturated.
+          // What neither pass read was the BAR: `706:10516` and `864:3513`,
+          // the blocked segment in both Overview generations, draw red/500
+          // #ef4444. So the file splits this one series between its bar and
+          // its key. Not flipped here, because only Blocked splits - bar and
+          // swatch agree on blue/400, amber/400 and violet/500 for the other
+          // three (`864:3597`) - which makes it one node's slip rather than a
+          // rule that bars run a step hot. Raised with design as question 19,
+          // alongside the violet/purple split below.
           flagged: "#fbbf24", // tailwind amber/400
           redacted: "#8b5cf6", // tailwind violet/500
           // The file disagrees with itself here and this stays put until a
@@ -294,6 +302,19 @@ export default {
         "base-btn-sm": [
           "0 1px 2px 0 rgba(0,0,0,0.05)",
           "inset 0 -4px 4px 0 rgba(0,0,0,0.04)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.4)",
+        ].join(", "),
+        // `Size=xs` (h24). Same lip as `sm` and the same 40% highlight, but the
+        // highlight is blurred 6px rather than 4px - the one property that
+        // separates the two. They were a single token here until the variant
+        // instances were read individually: `sm` (`267:5083`, the intro's
+        // locate button, and `121:35058`, the Overview footer) draws
+        // `inset 0 4px 4px rgba(255,255,255,0.4)`, while `xs` (`744:37756`,
+        // `banner/update`'s dismiss) draws the 6px. Every `h-8` call site was
+        // getting the `xs` highlight.
+        "base-btn-xs": [
+          "0 1px 2px 0 rgba(0,0,0,0.05)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.04)",
           "inset 0 4px 6px 0 rgba(255,255,255,0.4)",
         ].join(", "),
         "base-btn-primary": [
@@ -388,9 +409,22 @@ export default {
         // override the 28, which is how three of the four panes drifted to it -
         // they need `leading-6`, and `SettingsPane` always had it.
         heading: "-0.2px",
+        // `heading/18`: Geist Medium 18/24 at -1% - the dialog title, and only
+        // that. Numerically a hair off `heading` above (-0.18 against -0.2) and
+        // kept separate for the reason this whole group is: one Figma variable,
+        // one token. `Modal`'s title had been borrowing `heading`, which is
+        // `heading/20`'s -1% at a size the dialog never draws.
+        // Measured on "Disconnect Gate?" (`143:70623`), which names the style.
+        "heading-18": "-0.18px",
         // `heading/24`: Geist Medium 24/28 at -1% - the stat-tile figure
         // (116:26516), the only step that uses it.
         "heading-24": "-0.24px",
+        // `heading/14`: Geist Medium 14/20 at **0%** - the policy and savings
+        // row labels (`884:9607`). The only named heading step with no
+        // tracking, which is why it needs a token of its own: `text-sm` carries
+        // `label/copy-14`'s -0.14px in its own tuple, so a call site that wants
+        // `heading/14` has to say so.
+        "heading-14": "0px",
         // `label/12` and `label/14`, both at -1%. Numerically `label-12` is the
         // same -0.12px as `button-xs` above; kept apart because this group is
         // named to mirror the Figma variables one-to-one, and a rail label is

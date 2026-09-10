@@ -724,6 +724,12 @@ export const securityFeedState = () => invoke<FeedState>("security_feed_state");
  * which is a different claim entirely. */
 export const securityFeedRecent = () => invoke<SecurityEvent[]>("security_feed_recent");
 
+/** Whether the events from before this connection could be fetched. Read on
+ *  mount alongside {@link securityFeedState}; afterwards the window follows the
+ *  `security-feed-history` event. A `false` means the feed is showing only what
+ *  arrived live, which is not the same as the feed being empty. */
+export const securityFeedHistoryOk = () => invoke<boolean>("security_feed_history_ok");
+
 /** The "Try again" behind an Unavailable feed. Wakes the connection out of its
  *  backoff so the click does something visible rather than waiting out a sleep. */
 export const securityFeedRetry = () => invoke<void>("security_feed_retry");
@@ -757,6 +763,11 @@ export interface Preferences {
    * display fallback and goes no further, so skipping the naming step really
    * does skip it. */
   device_name: string | null;
+  /** Whether the last sign-out was one the user asked for, as opposed to a
+   *  session that expired. The two leave identical state behind - no token,
+   *  `auth_mode` still `oauth` - so the welcome pane cannot tell them apart
+   *  without this, and used to call both "Session expired". */
+  signed_out_deliberately: boolean;
   /** Notify when a request is blocked. Gated per category rather than as one
    *  switch because the two differ in weight: a block stopped something, a flag
    *  only noted it. */
@@ -945,6 +956,20 @@ export interface RetryRestore {
  *  one it is working on. */
 export const retryRestoreEntry = (slug: string) =>
   invoke<RetryRestore>("retry_restore_entry", { slug });
+
+/** Why the tools are being reported on, which decides what the report can claim
+ *  about them.
+ *
+ *  `teardown` is the case the report was written for: routing off, reset or a
+ *  quit-with-disconnect all *attempt* to put every config back, so a tool still
+ *  carrying Gate's values is a restore that failed.
+ *
+ *  `sign-out` attempts nothing. Ending the session deliberately keeps the
+ *  configs (see `confirmDisconnect`), so the same bucket means something else
+ *  entirely - those tools are fine, they are just now pointing at a gateway with
+ *  no session behind it. Reported as a failure, it accused the app of a job it
+ *  had decided not to do. */
+export type TeardownReason = "teardown" | "sign-out";
 
 /** One tool in a teardown report. */
 export interface TeardownTool {

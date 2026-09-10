@@ -206,13 +206,24 @@ export function Modal({
   );
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-neutral-900/40 p-6">
+    // The scrim is black at 40%, not a dark neutral: every dialog frame's
+    // `overlay` rectangle resolves `tailwind colors/base/black` (`143:70543`).
+    // `neutral-900` is #171717, which reads a shade warmer over the pane.
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 p-6">
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl border bg-base-card p-6 shadow-base-lg ${
+        // `max-h-full` plus a scrolling body, because a dialog grows with its
+        // rows and this had no height rule at all: a long one - five running
+        // tools at the 1024x800 floor - overflowed a centred flex item, which
+        // does not clip at the bottom, it pushes out of BOTH ends, and the half
+        // above the viewport cannot be scrolled to. The title and the buttons
+        // were the parts that left. So the panel is capped, and `children`
+        // below is the only part that scrolls; header and footer stay put,
+        // which is what makes the primary reachable at any height.
+        className={`${WIDTH_STYLES[width]} relative flex max-h-full max-w-full flex-col rounded-2xl border bg-base-card p-6 shadow-base-lg ${
           edge === "danger"
             ? "border-base-destructive/40"
             : "border-base-border"
@@ -223,12 +234,23 @@ export function Modal({
             type="button"
             onClick={onDismiss}
             aria-label="Close"
-            className="float-right -mr-1 -mt-1 flex size-6 items-center justify-center rounded-sm text-base-muted-foreground transition-colors hover:bg-gray-50 hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            // Absolute, not `float-right`: floats do not apply to flex items,
+            // and the panel is a flex column now. Same place it drew before -
+            // the 24px padding less the 4px the old negative margins pulled it
+            // back by - and the header reserves room for it below.
+            className="absolute right-5 top-5 flex size-6 items-center justify-center rounded-sm text-base-muted-foreground transition-colors hover:bg-gray-50 hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             <Icon name="x" size={24} />
           </button>
         )}
-        <div className="flex items-center gap-3">
+        <div
+          className={`flex shrink-0 items-center gap-3 ${
+            // The float used to reserve this space on the first line. It no
+            // longer can, so the heading gets the gutter explicitly rather than
+            // running under the X.
+            closeButton && onDismiss ? "pr-8" : ""
+          }`}
+        >
           <span
             aria-hidden
             className={`flex shrink-0 items-center justify-center border shadow-base-2xs ${TILE_SIZES[tileSize].box} ${TONE_STYLES[tone]}`}
@@ -238,7 +260,7 @@ export function Modal({
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
-              className="text-lg font-medium leading-6 tracking-heading text-base-foreground"
+              className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground"
             >
               {title}
             </h2>
@@ -263,10 +285,17 @@ export function Modal({
         {/* 16px between body blocks, measured on the rename fields
          * (`143:67460` -> `143:67465`) and the reset steps -> checkbox
          * (`177:73952` -> `177:73976`). This was 12px. */}
-        {children && <div className="mt-6 flex flex-col gap-4">{children}</div>}
+        {children && (
+          // `min-h-0` is what lets this shrink below its content inside the
+          // flex column - without it the panel grows past `max-h-full` again
+          // and nothing scrolls.
+          <div className="mt-6 flex min-h-0 flex-col gap-4 overflow-y-auto">
+            {children}
+          </div>
+        )}
 
         {(secondary || middle || primary) && (
-          <div className="mt-6 flex justify-end gap-3">
+          <div className="mt-6 flex shrink-0 justify-end gap-3">
             {secondary && (
               // `disabled` is honoured here the same way the other two honour
               // it. It used to be silently ignored, which made `ModalButton`'s

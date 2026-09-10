@@ -332,10 +332,18 @@ export function installFakeTauri(state: BackendState): void {
         expires_at_unix: 4102444800,
       };
       if (state.account) state.account.auth_mode = "oauth";
+      // Cleared on the way in, as the real command does: whatever ended the
+      // last session, this one is live.
+      state.preferences.signed_out_deliberately = false;
       return state.oauth;
     },
     oauth_sign_out: () => {
       state.oauth = { signed_in: false, email: null, expires_at_unix: 0 };
+      // The real command records that this sign-out was asked for, which is the
+      // only thing that tells the welcome pane apart from an expiry. The fake
+      // omitted it, so every harness run modelled a session that had died and
+      // no test could see the pane get it wrong.
+      state.preferences.signed_out_deliberately = true;
       return null;
     },
     set_auth_mode: ({ oauth }) => {
@@ -466,6 +474,10 @@ export function installFakeTauri(state: BackendState): void {
     // same thing from the window's side.
     security_feed_state: () => state.securityFeed.state,
     security_feed_recent: () => state.securityFeed.events.map((e) => ({ ...e })),
+    // Defaults to true where a fixture leaves it out: not knowing whether the
+    // history is missing is not evidence that it is - the same rule the hook
+    // applies when this command is unavailable.
+    security_feed_history_ok: () => state.securityFeed.historyOk ?? true,
     security_feed_retry: () => null,
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;

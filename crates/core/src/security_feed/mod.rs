@@ -128,6 +128,20 @@ pub struct Hello {
 pub enum Update {
     State(FeedState),
     Event(Box<SecurityEvent>),
+    /// Whether the catch-up read succeeded. `false` means the events from before
+    /// this connection could not be fetched.
+    ///
+    /// Separate from [`FeedState`] because the two are genuinely independent: the
+    /// stream can be Live while the history behind it is missing, which is
+    /// exactly the case that went unreported. The backfill is best-effort by
+    /// design and stays that way - a failed catch-up must never take the live
+    /// connection down - but "best-effort" was being read as "silent", so a
+    /// gateway answering the history route with 400 produced a pane that said
+    /// LIVE and "No security events". That is a claim about the user's traffic
+    /// made by a screen whose question was refused.
+    History {
+        ok: bool,
+    },
 }
 
 /// Bounded set of event ids already delivered.
