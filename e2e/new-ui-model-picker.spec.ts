@@ -446,7 +446,13 @@ test.describe("new UI model card credits", () => {
     const app = await boot(base);
     await openApp(app);
 
-    await expect(app.page.getByText("N/A")).toBeVisible();
+    // The credits line specifically. A bare "N/A" used to be unambiguous only
+    // because the stat tiles above it were stuck in skeletons: this fixture
+    // stubs no `activity_installations`, so the machine is unattributed, and
+    // those counters now correctly read "n/a" rather than promising a reading
+    // that is not coming. Three more matches, none of them what this test is
+    // about.
+    await expect(app.page.getByText("Gate credits: N/A")).toBeVisible();
     await expect(app.page.getByText("$0.00 available")).toHaveCount(0);
   });
 

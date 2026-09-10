@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  securityFeedHistoryOk,
   securityFeedRecent,
   securityFeedRetry,
   securityFeedState,
@@ -53,6 +54,15 @@ export interface SecurityFeedView {
   /** The mount read failed outright, so there is nothing to show and no reason
    *  to believe the list is empty. Distinct from an empty feed. */
   unavailable: boolean;
+  /** The catch-up read for events from before this connection failed, so what is
+   *  on screen is only what arrived live.
+   *
+   *  A third state, and it has to be: the stream can be Live with its history
+   *  missing, which is what a gateway answering the history route with 400
+   *  produced - a pane showing the LIVE pill over "No security events" while the
+   *  local log recorded the refusal. `unavailable` is about this window's own
+   *  read failing; this is about the backfill behind it. */
+  historyUnavailable: boolean;
   /** AC6's recovery action. */
   retry: () => void;
 }
@@ -62,6 +72,7 @@ export function useSecurityFeed(enabled: boolean, credential = ""): SecurityFeed
   const [state, setState] = useState<FeedState>("offline");
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
+  const [historyOk, setHistoryOk] = useState(true);
   /** Which account the events on screen belong to, so a reply that lands after a
    *  switch is dropped rather than shown under the new org's name. */
   const attempt = useRef(0);
@@ -74,12 +85,31 @@ export function useSecurityFeed(enabled: boolean, credential = ""): SecurityFeed
     setEvents([]);
     setLoading(true);
     setUnavailable(false);
+    // The old org's failed catch-up says nothing about the new one's. The
+    // backend clears its own copy in `reset_for_account_change`; this keeps the
+    // two from disagreeing for the length of one read.
+    setHistoryOk(true);
   }, [credential]);
 
   const seed = useCallback(() => {
     if (!enabled) return;
     const mine = ++attempt.current;
     setLoading(true);
+    // The backfill runs once per connection, so a window that mounted after it
+    // failed would never see the event. Seeded here for the same reason the
+    // connection state and the buffer are.
+    //
+    // Its own read, deliberately NOT in the `Promise.all` below. This is a
+    // supplementary fact about a feed that loaded, so a backend that cannot
+    // answer it must not be able to fail the load - inside the `all`, one
+    // rejection would take the buffer and the connection state with it and
+    // render a working feed as Unavailable. Failing quietly to `true` is right
+    // too: not knowing whether history is missing is not evidence that it is.
+    securityFeedHistoryOk()
+      .then((okHistory) => {
+        if (mine === attempt.current) setHistoryOk(okHistory);
+      })
+      .catch(() => {});
     Promise.all([securityFeedRecent(), securityFeedState()])
       .then(([recent, feedState]) => {
         if (mine !== attempt.current) return;
@@ -126,9 +156,17 @@ export function useSecurityFeed(enabled: boolean, credential = ""): SecurityFeed
       // no longer what is happening.
       setUnavailable(false);
     });
+    // Deliberately NOT folded into the state listener: the connection and its
+    // history fail independently, which is the whole reason this exists. A
+    // successful reconnect that still cannot fetch the history must not clear
+    // this, and a failed catch-up must not disturb the LIVE pill.
+    const offHistory = listen<boolean>("security-feed-history", (e) => {
+      setHistoryOk(e.payload);
+    });
     return () => {
       void offEvent.then((f) => f()).catch(() => {});
       void offState.then((f) => f()).catch(() => {});
+      void offHistory.then((f) => f()).catch(() => {});
     };
   }, [enabled]);
 
@@ -139,5 +177,12 @@ export function useSecurityFeed(enabled: boolean, credential = ""): SecurityFeed
     seed();
   }, [seed]);
 
-  return { events, state, loading, unavailable, retry };
+  return {
+    events,
+    state,
+    loading,
+    unavailable,
+    historyUnavailable: !historyOk,
+    retry,
+  };
 }

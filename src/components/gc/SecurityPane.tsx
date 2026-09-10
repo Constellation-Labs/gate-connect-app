@@ -105,6 +105,7 @@ export function SecurityPane({
   state,
   loading,
   unavailable,
+  historyUnavailable,
   onRetry,
   onOpenEvent,
 }: {
@@ -115,6 +116,11 @@ export function SecurityPane({
   /** The feed could not be read at all. Distinct from an empty feed, and the
    *  distinction is AC6's whole point. */
   unavailable: boolean;
+  /** The catch-up read failed, so anything from before this connection is
+   *  missing. A third state beside the two above, because the stream and its
+   *  history fail independently: LIVE with no history is precisely the
+   *  combination that rendered as "No security events". */
+  historyUnavailable?: boolean;
   onRetry: () => void;
   onOpenEvent: (event: SecurityEvent) => void;
 }) {
@@ -137,6 +143,29 @@ export function SecurityPane({
           </span>
         </div>
       </header>
+
+      {/* Rows on screen and a failed catch-up is not the empty case, so it does
+        * not belong in the table's empty cell - but the list is still partial
+        * and nothing else in the app would mention it. Said once, above the
+        * rows, rather than annotating each one. */}
+      {historyUnavailable && !loading && events.length > 0 && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3"
+        >
+          <p className="text-sm leading-5 text-amber-900">
+            Showing events from this session only. Earlier events couldn’t be
+            loaded.
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="shrink-0 text-sm font-medium leading-5 text-base-primary underline underline-offset-2"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       <Card className="p-4" busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
@@ -164,6 +193,25 @@ export function SecurityPane({
                     <EmptyNote icon="triangleAlert">
                       <span className="flex flex-col items-center gap-2">
                         <span>Unavailable</span>
+                        <button
+                          type="button"
+                          onClick={onRetry}
+                          className="text-base-primary underline underline-offset-2"
+                        >
+                          Try again
+                        </button>
+                      </span>
+                    </EmptyNote>
+                  ) : historyUnavailable ? (
+                    // Live, empty, and unable to say the feed is empty: the
+                    // catch-up read is what would have answered that, and it
+                    // failed. Saying "No security events" here is the same
+                    // mistake `unavailable` above exists to prevent, one layer
+                    // down - a claim about the user's traffic made by a screen
+                    // whose question was refused.
+                    <EmptyNote icon="triangleAlert">
+                      <span className="flex flex-col items-center gap-2">
+                        <span>Earlier events couldn’t be loaded</span>
                         <button
                           type="button"
                           onClick={onRetry}

@@ -223,8 +223,16 @@ test.describe("new UI: the two ways back to first run", () => {
     await app.page.getByRole("button", { name: "Yes, disconnect Gate" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("Still using Gate’s values")).toBeVisible();
+    // "Still pointing at Gate", not "Still using Gate's values", and no claim
+    // that a restore failed. Sign-out keeps the configs deliberately, so the
+    // heading, the tone and the detail line all say what happened rather than
+    // grading it - the report used to open "Some tools were left as they were"
+    // over "The teardown could not put these back", which accused the app of
+    // failing at a job it had decided not to do. See `TeardownReason`.
+    await expect(dialog.getByText("You are signed out")).toBeVisible();
+    await expect(dialog.getByText("Still pointing at Gate")).toBeVisible();
     await expect(dialog.getByText("Claude Code")).toBeVisible();
+    await expect(dialog.getByText("could not put these back")).toHaveCount(0);
   });
 
   test("an API-key account is offered reset but not disconnect", async ({ boot }) => {

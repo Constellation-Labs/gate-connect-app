@@ -7,7 +7,12 @@ import { setTourSeen } from "../lib/tour";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Icon } from "../components/gc/Icon";
 import type { IconName } from "../components/gc/Icon";
-import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
+import {
+  secretStoreName,
+  trayLocationName,
+  usePlatform,
+  type Platform,
+} from "../lib/platform";
 import whatIsGateConnect from "../assets/onboarding-what-is-gate-connect.png";
 import seeWhatGateIsDoing from "../assets/onboarding-see-what-gate-is-doing.png";
 import whereIsGateConnect from "../assets/onboarding-where-is-gate-connect.png";
@@ -16,16 +21,15 @@ import whereIsGateConnect from "../assets/onboarding-where-is-gate-connect.png";
  * the seen-flag in its own storage without waiting for a restart. */
 export const TOUR_SEEN_EVENT = "gc:tour-seen";
 
-/** Where the tray icon lives, in this OS's own vocabulary. */
+/** Where the tray icon lives, in this OS's own vocabulary.
+ *
+ *  The location noun is `trayLocationName`'s now, shared with the quit chooser,
+ *  which had been hardcoding "menu bar" on every platform. Only the corner
+ *  differs here: Windows puts its tray at the bottom right, the other two at
+ *  the top right. */
 function whereItLives(platform: Platform): string {
-  switch (platform) {
-    case "windows":
-      return "Gate Connect lives in the system tray at the bottom right of your screen.";
-    case "linux":
-      return "Gate Connect lives in the top bar at the top right of your screen.";
-    default:
-      return "Gate Connect lives in the menu bar at the top right of your screen.";
-  }
+  const corner = platform === "windows" ? "bottom right" : "top right";
+  return `Gate Connect lives in ${trayLocationName(platform)} at the ${corner} of your screen.`;
 }
 
 type Step = {

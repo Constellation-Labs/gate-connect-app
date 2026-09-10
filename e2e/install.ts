@@ -466,6 +466,10 @@ export function installFakeTauri(state: BackendState): void {
     // same thing from the window's side.
     security_feed_state: () => state.securityFeed.state,
     security_feed_recent: () => state.securityFeed.events.map((e) => ({ ...e })),
+    // Defaults to true where a fixture leaves it out: not knowing whether the
+    // history is missing is not evidence that it is - the same rule the hook
+    // applies when this command is unavailable.
+    security_feed_history_ok: () => state.securityFeed.historyOk ?? true,
     security_feed_retry: () => null,
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;

@@ -41,6 +41,10 @@ pub struct Feed {
     wake: Arc<tokio::sync::Notify>,
     /// Cleared to stop the loop at shutdown.
     running: AtomicBool,
+    /// Whether the last catch-up read succeeded. Held here, not just emitted,
+    /// because a window that mounts after the backfill has already failed would
+    /// otherwise never hear about it - the same reason `recent` is buffered.
+    history_ok: AtomicBool,
 }
 
 impl Default for Feed {
@@ -57,11 +61,30 @@ impl Feed {
             dedupe: Mutex::new(Dedupe::new(DEDUPE_CAPACITY)),
             wake: Arc::new(tokio::sync::Notify::new()),
             running: AtomicBool::new(true),
+            // Nothing has failed yet, and "not asked" must not render as
+            // "asked and refused".
+            history_ok: AtomicBool::new(true),
         }
     }
 
     pub fn state(&self) -> FeedState {
         *self.state.read().expect("feed state lock")
+    }
+
+    /// Whether the events from before this connection could be fetched. For a
+    /// window seeding itself on mount.
+    pub fn history_ok(&self) -> bool {
+        self.history_ok.load(Ordering::SeqCst)
+    }
+
+    /// Record the catch-up read's outcome, emitting only on a change - the same
+    /// guard `set_state` makes, and for the same reason: every reconnect runs a
+    /// backfill, and an unchanged answer repainted the pane each time.
+    fn set_history_ok(&self, ok: bool, sink: &dyn Fn(Update)) {
+        if self.history_ok.swap(ok, Ordering::SeqCst) == ok {
+            return;
+        }
+        sink(Update::History { ok });
     }
 
     /// The buffer, newest last, for a window that just mounted.
@@ -87,6 +110,11 @@ impl Feed {
     pub fn reset_for_account_change(&self) {
         self.recent.lock().expect("feed buffer lock").clear();
         self.dedupe.lock().expect("feed dedupe lock").clear();
+        // The old org's failed catch-up says nothing about the new one's, and
+        // carrying it over would put a warning on a pane that has not asked
+        // anything yet. The window resets its own copy on the credential change
+        // too; this keeps the two agreeing.
+        self.history_ok.store(true, Ordering::SeqCst);
         self.retry_now();
     }
 
@@ -322,6 +350,12 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                     e.message
                 ),
             );
+            // Every early return below says the same thing to the window: the
+            // events from before this connection were not fetched. Reported on
+            // each of them rather than only on the HTTP status, because "we
+            // never asked" and "we asked and were refused" leave the pane in
+            // exactly the same state - holding no history and no reason.
+            feed.set_history_ok(false, sink);
             return;
         }
     };
@@ -334,7 +368,10 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            feed.set_history_ok(false, sink);
+            return;
+        }
     };
     // Built through `Url` rather than `RequestBuilder::query`, which this
     // build's reqwest features do not include, and which would also leave the
@@ -346,6 +383,7 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill url unusable: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
@@ -366,6 +404,7 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill failed: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
@@ -375,6 +414,7 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
             crate::logging::Level::Warn,
             &format!("security feed: backfill answered {status}"),
         );
+        feed.set_history_ok(false, sink);
         return;
     }
     let page = match resp.json::<HistoryPage>().await {
@@ -384,10 +424,15 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill body unreadable: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
 
+    // The catch-up landed, so a warning left over from an earlier attempt stops
+    // being true. Before the merge, so the pane is not told the history is
+    // missing while its rows are arriving.
+    feed.set_history_ok(true, sink);
     let found = page.events.len();
     let merged = feed.merge_history(page.events, sink);
     crate::logging::log(

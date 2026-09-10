@@ -472,6 +472,62 @@ answer you meant.
 
 ---
 
+## 19. The 10px status labels do not reach the contrast floor
+
+**What we see.** The green and amber status labels render at 10px in
+`green-600` `#16a34a` and `amber-600` `#d97706`, both on white. Measured against
+white those are **3.30:1** and **3.19:1**. They match the file exactly; this is
+not a drift.
+
+**Why it matters.** WCAG asks 4.5:1 of normal-size text and allows 3:1 only for
+large text, which starts at 18.66px bold or 24px regular. At 10px these are
+normal text by any reading, so both fail. And they are the labels carrying the
+one fact the sidebar exists to convey - whether a tool is protected - which
+makes them the worst place in the app to be hard to read.
+
+**Why it is here and not fixed.** Every route out of it is a deliberate
+deviation from the file, and there are three: darken the inks (`green-700`
+`#15803d` and `amber-700` `#b45309` both clear 4.5:1), raise the type size,
+which changes the threshold instead of the palette but moves layout, or accept
+the ratio. Which one is right is a design decision, and the second and third
+change frames rather than code.
+
+**What we need.** A choice between those three, applied to the file and the code
+together. Until then the code keeps drawing what the file draws.
+
+---
+
+## 20. ANSWERED - the quit report's second sentence, and the third copy exception
+
+**What we saw.** `QuitSafeToCloseDialog`'s disconnect branch (`694:33002`) draws
+"Tools are disconnected and their previous settings are restored. **Setup will
+be waiting the next time you open the app.**" The second sentence is not true of
+what the branch does. Quitting with a disconnect calls
+`snapshot_and_disable_everything`, which puts tool configs back and nothing
+else: the session, the organization and the certificate all survive, and the
+engine re-enables itself on the next launch. The teardown's own native
+notification, fired seconds later from the same function, already says the
+opposite in as many words - "everything reconnects when Gate Connect starts
+again". So the drawn copy contradicted both the app and the app's own next
+message.
+
+Confirmed live, not only read: the review's WINDOW-11 case quit with a
+disconnect, relaunched, and found the session and the routed settings both
+restored.
+
+**Answered 2026-09-10.** Shipped as "Tools are disconnected and their previous
+settings are restored. You will still be signed in the next time you open the
+app." This is the **third standing copy exception**, after `Replace API key`'s
+field label and `Disconnect Gate?`'s subtitle, and it is recorded in `CLAUDE.md`
+beside them. Raised rather than deduced, per the standing rule that a third one
+gets asked about.
+
+**Still worth a frame.** The exception list is now three long, which is three
+places a future reader has to be told not to "correct" the code back to the
+file. A corrected `694:33002` would retire one of them.
+
+---
+
 ## For information: things we found and fixed without asking
 
 So the list above is not mistaken for the whole audit. All of these were

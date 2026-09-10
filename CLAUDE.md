@@ -121,7 +121,20 @@ to match its frame:
   off, and about billing rather than the keychain. Worth knowing before
   anyone rewrites this copy; not a third exception.
 
-If you find a third of these, raise it rather than deciding it.
+A third was found, raised and decided on 2026-09-10, so it joins them:
+
+- **Quit > Safe to close** says you will still be signed in next time, not the
+ drawn "Setup will be waiting the next time you open the app". The drawn
+ sentence is false about the branch it sits in: quitting with a disconnect runs
+ `snapshot_and_disable_everything`, which puts tool configs back and touches
+ nothing else - session, org and certificate all survive, and the engine
+ re-enables on the next launch. The teardown's own notification, fired from the
+ same function seconds later, already said so ("everything reconnects when Gate
+ Connect starts again"), so the frame contradicted the app and the app's next
+ message both. Verified by relaunching, not only by reading. Frames `694:33002`
+ and `694:33340`; question 20 in `docs/figma-questions-for-design.md`.
+
+If you find a fourth of these, raise it rather than deciding it.
 
 `https://www.figma.com/design/9FrccCojXy0f8QD8Wm5Lln/Gate-Connect`
 
