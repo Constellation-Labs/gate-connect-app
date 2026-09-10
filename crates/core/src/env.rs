@@ -571,7 +571,9 @@ mod tests {
         // All eight, because the doc on `tool_path_override` claims all eight:
         // `OPENCODE_CONFIG`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` were covered
         // nowhere before this.
-        let resolvers: [(&str, fn() -> Result<PathBuf>); 7] = [
+        /// A published override paired with the resolver that consults it.
+        type Resolver = fn() -> Result<PathBuf>;
+        let resolvers: [(&str, Resolver); 7] = [
             ("CLAUDE_CONFIG_DIR", claude_code_config_dir),
             ("OPENCODE_CONFIG_DIR", opencode_config_dir),
             ("OPENCODE_CONFIG", opencode_config_path),

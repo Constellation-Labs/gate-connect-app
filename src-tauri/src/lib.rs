@@ -1737,8 +1737,7 @@ struct BackendError {
 /// and neither can consume the other's. Keyed by label rather than by a cursor
 /// because the buffer evicts its oldest entry at the cap, and a per-shell index
 /// into a shifting `Vec` is a second thing to get wrong.
-static PENDING_BACKEND_ERRORS: Mutex<Option<HashMap<String, Vec<BackendError>>>> =
-    Mutex::new(None);
+static PENDING_BACKEND_ERRORS: Mutex<Option<HashMap<String, Vec<BackendError>>>> = Mutex::new(None);
 
 /// The webviews that drain. A label not listed here queues nothing, which is
 /// what keeps a transient window from accumulating a buffer nobody reads.
