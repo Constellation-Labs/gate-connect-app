@@ -620,6 +620,10 @@ export function installFakeTauri(state: BackendState): void {
     // and requesting the tray-menu quit are Rust-side effects with nothing to
     // model here - the call log is what a spec asserts on.
     reveal_popover: () => null,
+    // Reveal plus a destination. Distinct from `reveal_popover` on purpose: the
+    // tray's "Review details" used the bare reveal and so opened nothing, and a
+    // spec can only tell the two apart if the fake backend can.
+    request_recovery_details: () => null,
     request_app_quit: () => null,
     pending_quit_tools: () => {
       const pending = state.pendingQuitTools;

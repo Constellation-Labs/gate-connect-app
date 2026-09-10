@@ -113,8 +113,13 @@ test.describe("tray popover", () => {
     await app.page.getByRole("button", { name: "Review details" }).click();
 
     // Reveals the window rather than drawing a second, shorter version of the
-    // same operation.
-    await expect.poll(() => app.lastCall("reveal_popover")).not.toBeNull();
+    // same operation - but it has to say what it came for. This used to call the
+    // bare `reveal_popover`, which surfaces the window on whatever pane it was
+    // last on and opens nothing, so with the window already visible the only
+    // effect was the tray closing.
+    await expect
+      .poll(() => app.lastCall("request_recovery_details"))
+      .not.toBeNull();
   });
 
   test("Expand app reveals the main window", async ({ boot }) => {

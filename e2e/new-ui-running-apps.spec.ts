@@ -172,8 +172,11 @@ test.describe("new UI running apps", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toContainText("In use:");
     await expect(dialog).toContainText("Requested:");
-    // Who reopens it, read off the backend rather than written into the copy.
-    await expect(dialog).toContainText("you reopen it");
+    // Who reopens it, read off the backend rather than written into the copy -
+    // and said ONCE, in the note, rather than repeated on every row. The rows
+    // carried their own copy of this until the frame (`130:58427`) settled that
+    // they draw a name, a description and a pill and nothing else.
+    await expect(dialog).toContainText("reopen Codex yourself");
   });
 
   test("the confirmation asks for a save it cannot check itself", async ({ boot }) => {
