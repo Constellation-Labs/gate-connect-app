@@ -142,9 +142,11 @@ pub(crate) fn notify_engine_crash_observer() {
     }
 }
 
-/// Observer the desktop shell registers to hear that a rewritten chatgpt.com
-/// app turn was answered with a Cloudflare managed challenge
-/// (`cf-mitigated: challenge`). The app shell has no HTML/JS surface to run
+/// Observer the desktop shell registers to hear that a chatgpt.com app turn
+/// was answered with a Cloudflare challenge: `cf-mitigated: challenge`, or an
+/// unmarked interstitial (a 403/503 carrying HTML), on a rewritten turn and a
+/// passthrough one alike - see `engine::cf_challenge_detected` for the shapes
+/// that count. The app shell has no HTML/JS surface to run
 /// the interstitial, so the GUI opens a one-time solve webview, captures the
 /// resulting `cf_clearance` cookie, and feeds it back through
 /// [`engine::RunningEngine::update_cf_clearance`]. Set once at startup. Not
@@ -180,10 +182,17 @@ const CF_CHALLENGE_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::fr
 /// waiting.
 const CF_CHALLENGE_SUCCESS_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Earliest instant at which the observer may fire again; `None` means "no
-/// cooldown running". Set by every finished attempt: the long cooldown after
-/// one that captured nothing, the short grace after one that captured.
-static CF_CHALLENGE_NEXT_ALLOWED: std::sync::Mutex<Option<std::time::Instant>> =
+/// The running cooldown and the attempt that started it: no observer may fire
+/// before that instant, and the outcome says which timer it is - the long
+/// cooldown after an attempt that captured nothing, the short grace after one
+/// that captured. `None` means no attempt has finished yet.
+///
+/// ONE cell rather than two, because the halves have to agree. Written and
+/// read separately, a notify landing between the two writes paired a fresh
+/// cooldown with the PREVIOUS attempt's outcome, which is exactly the two
+/// wrong messages this reporting exists to prevent: "did not succeed" after a
+/// solve that worked, "just completed" after one that did not.
+static CF_COOLDOWN: std::sync::Mutex<Option<(std::time::Instant, SolveOutcome)>> =
     std::sync::Mutex::new(None);
 
 /// When a chatgpt.com **navigation** was last answered with a Cloudflare
@@ -205,9 +214,7 @@ static CF_NAVIGATION_CHALLENGED_AT: std::sync::Mutex<Option<std::time::Instant>>
 /// Note that a chatgpt.com navigation came back challenged. Called by the
 /// engine's `handle_response`; see [`CF_NAVIGATION_CHALLENGED_AT`].
 pub(crate) fn record_cf_navigation_challenged() {
-    if let Ok(mut at) = CF_NAVIGATION_CHALLENGED_AT.lock() {
-        *at = Some(std::time::Instant::now());
-    }
+    stamp(&CF_NAVIGATION_CHALLENGED_AT);
     if engine::debug_log() {
         eprintln!("[gate-proxy] the solve window's own navigation was challenged");
     }
@@ -222,15 +229,31 @@ static CF_NAVIGATION_SEEN_AT: std::sync::Mutex<Option<std::time::Instant>> =
 
 /// Note that a chatgpt.com navigation passed through the engine.
 pub(crate) fn record_cf_navigation_seen() {
-    if let Ok(mut at) = CF_NAVIGATION_SEEN_AT.lock() {
-        *at = Some(std::time::Instant::now());
-    }
+    stamp(&CF_NAVIGATION_SEEN_AT);
 }
 
 /// Whether the engine has seen a chatgpt.com navigation since `since`.
 pub fn cf_navigation_seen_since(since: std::time::Instant) -> bool {
-    CF_NAVIGATION_SEEN_AT
-        .lock()
+    stamped_since(&CF_NAVIGATION_SEEN_AT, since)
+}
+
+/// Stamp one of the two navigation-evidence cells with "now".
+///
+/// Shared with [`stamped_since`] so the poison decision - swallow it; this
+/// evidence is diagnostic, and a missing stamp costs a worse message rather
+/// than a wrong action - is made in one place instead of four.
+fn stamp(cell: &std::sync::Mutex<Option<std::time::Instant>>) {
+    if let Ok(mut at) = cell.lock() {
+        *at = Some(std::time::Instant::now());
+    }
+}
+
+/// Whether `cell` has been stamped at or after `since`.
+fn stamped_since(
+    cell: &std::sync::Mutex<Option<std::time::Instant>>,
+    since: std::time::Instant,
+) -> bool {
+    cell.lock()
         .ok()
         .and_then(|at| *at)
         .is_some_and(|at| at >= since)
@@ -273,11 +296,7 @@ pub fn cf_challenged_path() -> Option<String> {
 /// earlier attempt cannot be read as this one's: the caller passes the moment
 /// its window opened.
 pub fn cf_navigation_challenged_since(since: std::time::Instant) -> bool {
-    CF_NAVIGATION_CHALLENGED_AT
-        .lock()
-        .ok()
-        .and_then(|at| *at)
-        .is_some_and(|at| at >= since)
+    stamped_since(&CF_NAVIGATION_CHALLENGED_AT, since)
 }
 
 /// Register the challenge observer. First registration wins; later calls are
@@ -301,7 +320,7 @@ pub(crate) enum ChallengeNotice {
     /// A solve is already in flight, so its window is already up.
     AlreadySolving,
     /// A finished attempt CAPTURED a cookie and its short grace is still
-    /// running. Carries what is left of it.
+    /// running.
     ///
     /// Split from [`CoolingDown`](Self::CoolingDown) because it is the
     /// opposite news wearing the same shape. Both are "the observer stayed
@@ -310,10 +329,15 @@ pub(crate) enum ChallengeNotice {
     /// which is exactly what the grace exists to absorb. Reporting it as a
     /// failed attempt tells someone who just solved a challenge that their
     /// solve did not take.
-    Settling(std::time::Duration),
+    Settling,
     /// A finished attempt captured nothing and its retry cooldown is still
-    /// running. Carries what is left of the wait.
-    CoolingDown(std::time::Duration),
+    /// running. Carries what is left of the wait, and the attempt that
+    /// started it: the message names both, and taking them from the same
+    /// snapshot is what stops the two from disagreeing (see [`CF_COOLDOWN`]).
+    CoolingDown {
+        remaining: std::time::Duration,
+        last: SolveOutcome,
+    },
     /// Nothing is listening - a daemon-hosted engine (Linux) has no GUI in
     /// its process. No window will open, now or later.
     Unobserved,
@@ -329,51 +353,67 @@ pub(crate) fn notify_cf_challenge_observer() -> ChallengeNotice {
     let Some(observer) = CF_CHALLENGE_OBSERVER.get() else {
         return ChallengeNotice::Unobserved;
     };
-    let remaining = CF_CHALLENGE_NEXT_ALLOWED
+    // One snapshot of both halves; see [`CF_COOLDOWN`] for what reading them
+    // separately used to cost.
+    let now = std::time::Instant::now();
+    let cooldown = CF_COOLDOWN
         .lock()
         .ok()
-        .and_then(|next| *next)
-        .and_then(|next| next.checked_duration_since(std::time::Instant::now()));
-    if let Some(remaining) = remaining {
-        // Which timer is running decides what this means. The success grace
-        // and the retry cooldown are both "stay quiet for a while", but one
-        // follows a solve that worked and the other one that did not, and the
-        // user is told the difference.
-        let settling = LAST_SOLVE_OUTCOME
-            .lock()
-            .ok()
-            .and_then(|last| *last)
-            .is_some_and(SolveOutcome::captured);
-        // Say so. A suppressed challenge is otherwise indistinguishable from
-        // a challenge that was never detected - both are silence followed by
-        // the app showing Cloudflare's page - and telling those apart is the
-        // first question anyone debugging this asks.
-        if engine::debug_log() {
+        .and_then(|c| *c)
+        .and_then(|(next, last)| Some((next.checked_duration_since(now)?, last)));
+    // The latch is claimed only when nothing else is suppressing us: the swap
+    // IS the claim, and taking it on a path that returns without opening a
+    // window would wedge every later attempt for the life of the process.
+    let solving =
+        cooldown.is_none() && CF_CHALLENGE_SOLVING.swap(true, std::sync::atomic::Ordering::AcqRel);
+    let notice = challenge_notice(cooldown, solving);
+    // Say so. A suppressed challenge is otherwise indistinguishable from a
+    // challenge that was never detected - both are silence followed by the
+    // app showing Cloudflare's page - and telling those apart is the first
+    // question anyone debugging this asks.
+    if engine::debug_log() {
+        if let Some((remaining, last)) = cooldown {
             eprintln!(
                 "[gate-proxy] challenge detected but the previous solve attempt's \
-                 {} is still running ({}s left)",
-                if settling {
+                 {} is still running ({}s left, last {last:?})",
+                if last.captured() {
                     "success grace"
                 } else {
                     "cooldown"
                 },
                 remaining.as_secs()
             );
-        }
-        return if settling {
-            ChallengeNotice::Settling(remaining)
-        } else {
-            ChallengeNotice::CoolingDown(remaining)
-        };
-    }
-    if CF_CHALLENGE_SOLVING.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        if engine::debug_log() {
+        } else if solving {
             eprintln!("[gate-proxy] challenge detected while a solve is already in flight");
         }
-        return ChallengeNotice::AlreadySolving;
     }
-    observer();
-    ChallengeNotice::Opening
+    if notice == ChallengeNotice::Opening {
+        observer();
+    }
+    notice
+}
+
+/// Which notice a challenge earns: `cooldown` is what is left of a running
+/// timer and the attempt that started it (`None` when none is running), and
+/// `solving` says whether one was already in flight.
+///
+/// Pure, and split out for that reason - this four-way selection is the one
+/// piece of the flow with mutable global state behind it, and the two wrong
+/// messages it exists to prevent are both a matter of picking the wrong arm.
+fn challenge_notice(
+    cooldown: Option<(std::time::Duration, SolveOutcome)>,
+    solving: bool,
+) -> ChallengeNotice {
+    match cooldown {
+        // Which timer is running decides what this means. The success grace
+        // and the retry cooldown are both "stay quiet for a while", but one
+        // follows a solve that worked and the other one that did not, and the
+        // user is told the difference.
+        Some((_, last)) if last.captured() => ChallengeNotice::Settling,
+        Some((remaining, last)) => ChallengeNotice::CoolingDown { remaining, last },
+        None if solving => ChallengeNotice::AlreadySolving,
+        None => ChallengeNotice::Opening,
+    }
 }
 
 /// How a solve attempt ended. Only [`Captured`](SolveOutcome::Captured)
@@ -400,6 +440,15 @@ pub enum SolveOutcome {
     /// The window's load never reached the engine at all, so its traffic is
     /// bypassing the proxy and no challenge of ours could ever be observed.
     NotProxied,
+    /// No window was ever put up: building it failed, or there was no app
+    /// user-agent for it to wear, without which its load classifies as some
+    /// other client and its challenge could never be recognised as ours.
+    ///
+    /// Distinct from [`Unsolved`](Self::Unsolved) because that outcome's
+    /// advice - finish the check when it opens - describes something the user
+    /// can go and look at, and here there is nothing to look at and never
+    /// will be.
+    WindowFailed,
 }
 
 impl SolveOutcome {
@@ -407,29 +456,7 @@ impl SolveOutcome {
     fn captured(self) -> bool {
         matches!(self, SolveOutcome::Captured)
     }
-
-    /// The clause appended to the cooldown message, naming what to do about
-    /// this particular failure. `None` for a success, which is never shown.
-    fn advice(self) -> Option<&'static str> {
-        match self {
-            SolveOutcome::Captured => None,
-            SolveOutcome::Unsolved => {
-                Some("the verification window was not completed - finish the check when it opens")
-            }
-            SolveOutcome::NotChallenged => Some(
-                "Cloudflare did not challenge Gate's verification page, so there was nothing \
-                 to solve - this needs a fix in Gate, not something you can clear",
-            ),
-            SolveOutcome::NotProxied => Some(
-                "Gate's verification window did not go through the proxy, so its check could \
-                 not be observed - this needs a fix in Gate",
-            ),
-        }
-    }
 }
-
-/// How the last finished attempt ended, for the cooldown message.
-static LAST_SOLVE_OUTCOME: std::sync::Mutex<Option<SolveOutcome>> = std::sync::Mutex::new(None);
 
 /// Release the solve latch and start the cooldown for the next attempt.
 /// `outcome` reports how it ended: anything but
@@ -437,30 +464,60 @@ static LAST_SOLVE_OUTCOME: std::sync::Mutex<Option<SolveOutcome>> = std::sync::M
 /// challenge the webview cannot clear stops reopening the window on every
 /// subsequent request; a capture starts the short grace, so challenged
 /// responses already in flight when the cookie landed cannot immediately
-/// reopen the window it just closed. The GUI calls this exactly once per
-/// attempt.
+/// reopen the window it just closed. Called for you by [`CfChallengeSolve`]'s
+/// drop; prefer holding the guard to calling this.
 pub fn cf_challenge_solve_finished(outcome: SolveOutcome) {
     let cooldown = if outcome.captured() {
         CF_CHALLENGE_SUCCESS_GRACE
     } else {
         CF_CHALLENGE_RETRY_COOLDOWN
     };
-    if let Ok(mut next) = CF_CHALLENGE_NEXT_ALLOWED.lock() {
-        *next = Some(std::time::Instant::now() + cooldown);
-    }
-    if let Ok(mut last) = LAST_SOLVE_OUTCOME.lock() {
-        *last = Some(outcome);
+    // Both halves under one lock, in one write.
+    if let Ok(mut running) = CF_COOLDOWN.lock() {
+        *running = Some((std::time::Instant::now() + cooldown, outcome));
     }
     CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
 }
 
-/// What to tell the user about the last failed attempt, if anything is known.
-pub(crate) fn last_solve_advice() -> Option<&'static str> {
-    LAST_SOLVE_OUTCOME
-        .lock()
-        .ok()
-        .and_then(|last| *last)
-        .and_then(SolveOutcome::advice)
+/// Holds the solve latch for the life of one attempt and releases it on drop,
+/// reporting the outcome the attempt finished with - or
+/// [`Unsolved`](SolveOutcome::Unsolved), and so the long cooldown, if it never
+/// got that far.
+///
+/// The GUI takes one as it opens the window, so the release survives a panic
+/// anywhere in the poll thread: a latch left set is every later challenge
+/// silently suppressed for the rest of the process, which is the failure this
+/// whole path exists to prevent. Same shape as [`GateAuthCheck`] next door,
+/// written for the same reason.
+pub struct CfChallengeSolve {
+    outcome: std::cell::Cell<SolveOutcome>,
+}
+
+impl CfChallengeSolve {
+    /// Take the latch for an attempt that is now running.
+    pub fn new() -> Self {
+        Self {
+            outcome: std::cell::Cell::new(SolveOutcome::Unsolved),
+        }
+    }
+
+    /// Finish the attempt with `outcome`. Consumes the guard, so the release
+    /// happens here rather than wherever the scope happens to end.
+    pub fn finish(self, outcome: SolveOutcome) {
+        self.outcome.set(outcome);
+    }
+}
+
+impl Default for CfChallengeSolve {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CfChallengeSolve {
+    fn drop(&mut self) {
+        cf_challenge_solve_finished(self.outcome.get());
+    }
 }
 
 /// Observer the desktop shell registers to hear that the gateway refused a
@@ -565,6 +622,41 @@ pub fn gate_auth_check_finished() {
         *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
     }
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// The last `cf_clearance` a solve captured, kept for the life of the
+/// process so an engine restart does not throw it away.
+///
+/// The engine's own copy is a watch channel owned by the running engine, so
+/// every restart - a domain toggled, the crash fail-safe reverting - started
+/// again from nothing and the app's passthrough warm-up went back to 403ing
+/// until the next challenge fired a fresh solve. The cookie outlives the
+/// engine that was using it: it is bound to the user's address and to the
+/// user-agent it was minted under, neither of which a restart changes.
+///
+/// Memory only, deliberately. It is bot-management state with a short life,
+/// not something to write to disk.
+static LAST_CAPTURED_CF_CLEARANCE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Remember a captured `cf_clearance`. Called by the manager on the way in,
+/// so it is recorded even when no engine is running to take it.
+///
+/// Gated like `manager_core` itself: the solve webview that produces one is a
+/// macOS/Windows surface, and on Linux nothing calls this outside tests.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) fn record_captured_cf_clearance(cf_clearance: &str) {
+    if let Ok(mut held) = LAST_CAPTURED_CF_CLEARANCE.lock() {
+        *held = (!cf_clearance.is_empty()).then(|| cf_clearance.to_owned());
+    }
+}
+
+/// The captured `cf_clearance`, if a solve has produced one this run. Read by
+/// the engine as it starts, to seed its live copy.
+pub(crate) fn captured_cf_clearance() -> Option<String> {
+    LAST_CAPTURED_CF_CLEARANCE
+        .lock()
+        .ok()
+        .and_then(|c| c.clone())
 }
 
 /// The `user-agent` last seen on an intercepted chatgpt.com app request.
@@ -1690,35 +1782,68 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 mod tests {
     use super::SolveOutcome;
 
-    /// The three failures are what the user actually sees when a solve does
-    /// not work, and they are not the same problem: one is theirs to finish,
-    /// two are ours to fix. Advice that did not distinguish them is what left
-    /// a cooldown reading as "it is broken, wait ten minutes".
+    /// Only a capture takes the short grace. Every failure is a failure for
+    /// cooldown purposes, however differently it is worded (the wording lives
+    /// with the rest of the message, in `engine::solve_advice`).
     #[test]
-    fn every_failed_outcome_offers_advice_and_success_offers_none() {
-        assert!(SolveOutcome::Captured.advice().is_none());
+    fn only_a_capture_takes_the_short_grace() {
+        assert!(SolveOutcome::Captured.captured());
         for outcome in [
             SolveOutcome::Unsolved,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
+            SolveOutcome::WindowFailed,
         ] {
-            let advice = outcome
-                .advice()
-                .unwrap_or_else(|| panic!("{outcome:?} needs advice"));
-            assert!(!advice.is_empty());
-            // Only `Captured` picks the short grace; everything here is a
-            // failure and must take the long cooldown.
             assert!(!outcome.captured(), "{outcome:?}");
         }
-        assert!(SolveOutcome::Captured.captured());
-        // The two Gate-side failures say so, rather than sending the user off
-        // to solve something they cannot.
-        assert!(SolveOutcome::NotChallenged
-            .advice()
-            .is_some_and(|a| a.contains("fix in Gate")));
-        assert!(SolveOutcome::NotProxied
-            .advice()
-            .is_some_and(|a| a.contains("fix in Gate")));
+    }
+
+    /// The four-way selection the two wrong messages came out of: a solve
+    /// that WORKED reported as one that did not, and a suppressed challenge
+    /// promising a window that a cooldown had already ruled out.
+    #[test]
+    fn the_notice_names_which_timer_is_running() {
+        use super::{challenge_notice, ChallengeNotice};
+        use std::time::Duration;
+
+        let left = Duration::from_secs(420);
+        // Nothing running and nothing in flight: this challenge gets a window.
+        assert_eq!(challenge_notice(None, false), ChallengeNotice::Opening);
+        // A window is already up; the turn waits for it rather than stacking
+        // a second one.
+        assert_eq!(
+            challenge_notice(None, true),
+            ChallengeNotice::AlreadySolving
+        );
+        // The grace after a capture is good news wearing the same shape as a
+        // cooldown, and must never be reported as a failed attempt.
+        assert_eq!(
+            challenge_notice(Some((left, SolveOutcome::Captured)), false),
+            ChallengeNotice::Settling
+        );
+        // Every failure keeps its own advice, carried with the wait so the
+        // two cannot be read out of step with each other.
+        for last in [
+            SolveOutcome::Unsolved,
+            SolveOutcome::NotChallenged,
+            SolveOutcome::NotProxied,
+            SolveOutcome::WindowFailed,
+        ] {
+            assert_eq!(
+                challenge_notice(Some((left, last)), false),
+                ChallengeNotice::CoolingDown {
+                    remaining: left,
+                    last
+                },
+                "{last:?}"
+            );
+        }
+        // A running timer outranks the latch either way: a solve in flight
+        // during a grace is still settling, not "already solving".
+        assert_eq!(
+            challenge_notice(Some((left, SolveOutcome::Captured)), true),
+            ChallengeNotice::Settling
+        );
     }
 
     /// The engine calls the gateway-auth notify once per refused request, and

@@ -290,7 +290,11 @@ fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
 
 /// Whether to emit per-request engine logs to stderr. Off unless
 /// `GATE_PROXY_DEBUG` is set in the environment, so production stays quiet.
-pub(crate) fn debug_log() -> bool {
+///
+/// Public because the desktop shell has diagnostics of its own to gate the
+/// same way (the challenge-solve flow logs the path it is loading), and one
+/// switch for all of Gate's noise is the point.
+pub fn debug_log() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
 }
@@ -768,6 +772,14 @@ impl HttpHandler for GateHandler {
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
+        // Asked before the rewrite below, which has to know: a navigation on
+        // chatgpt.com is never routed, and never carries anything of ours.
+        // Scoped to that host so the header reads stay off every other
+        // request's path; see both uses further down.
+        let navigation = host
+            .as_deref()
+            .is_some_and(|h| h.eq_ignore_ascii_case("chatgpt.com"))
+            && wants_html(&req);
         let mut action = "passthrough";
         // A protocol upgrade is never rewritten to the gateway. This is the end
         // state, not a holding position: Gate does not carry upgraded protocols,
@@ -822,9 +834,29 @@ impl HttpHandler for GateHandler {
             // Gate the rewrite on owner UID too: plain-HTTP requests reach here
             // without a CONNECT (so `should_intercept` never gated them), and we
             // must not inject the Gate key for a non-owner peer.
-            if let (Decision::Rewrite { upstream_url }, true) =
-                (decide(&rules, host, &path), self.peer_allowed(ctx))
-            {
+            //
+            // A navigation on chatgpt.com is never routed, whatever the rules
+            // say. Gate's own solve webview loads the PATH Cloudflare
+            // challenged (`proxy::cf_challenged_path`), and three of the paths
+            // it can be sent to - `/backend-api/f/conversation`,
+            // `/backend-api/ps/mcp`, `/backend-api/wham/` - are rewrite
+            // prefixes of the `chatgpt-apps` entry, reached by a GET because
+            // `decide` is method agnostic. Routing that load defeats the window
+            // three ways at once: it egresses from the gateway instead of the
+            // user's own address, which is the one thing the window is FOR; it
+            // strips the product token the challenge keys on
+            // ([`website_shaped_rewritten_turns`]), so Cloudflare has no reason
+            // to challenge it at all and the attempt closes as "never
+            // challenged" on a ten minute cooldown; and it puts Gate's
+            // credential on a top-level document navigation whose answer the
+            // webview then renders under chatgpt.com's origin. Nothing real is
+            // given up: the app's own turns ask for `text/event-stream` or
+            // JSON, never HTML, so no routed traffic is a navigation.
+            if let (Decision::Rewrite { upstream_url }, true, false) = (
+                decide(&rules, host, &path),
+                self.peer_allowed(ctx),
+                navigation,
+            ) {
                 let api_key = self.api_key.borrow().clone();
                 let token = self.token.borrow().clone();
                 let oauth_token = (!token.is_empty()).then(|| token.as_ref());
@@ -874,7 +906,11 @@ impl HttpHandler for GateHandler {
         // for the browser. Gated on `peer_allowed` like the rewrite above,
         // and `inject_cf_clearance` never clobbers a cookie the client sent
         // itself.
-        if host.as_deref() == Some("chatgpt.com") && self.peer_allowed(ctx) {
+        if host
+            .as_deref()
+            .is_some_and(|h| h.eq_ignore_ascii_case("chatgpt.com"))
+            && self.peer_allowed(ctx)
+        {
             let rewritten = action == "rewrite->gateway";
             let mut cf_injected = false;
             if client == crate::proxy::ClientClass::App {
@@ -895,25 +931,36 @@ impl HttpHandler for GateHandler {
                 // `cf_clearance`. Both halves, or neither - see
                 // [`website_shaped_rewritten_turns`] for why they are one
                 // decision and what happens when they come apart.
-                let website_shaped = rewritten && website_shaped_rewritten_turns();
-                if website_shaped {
-                    let stripped = req
-                        .headers()
+                //
+                // The STRIP is what decides, which is the whole point of
+                // reading it back out of [`website_shaped_user_agent`]: a turn
+                // whose user-agent could not be reshaped keeps its cookie
+                // instead of landing in the fourth row of that table.
+                let reshaped = website_shaped_user_agent(
+                    rewritten,
+                    req.headers()
                         .get(hudsucker::hyper::header::USER_AGENT)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(browser_ua_without_product_token)
-                        .and_then(|ua| HeaderValue::from_str(ua).ok());
-                    if let Some(ua) = stripped {
-                        req.headers_mut()
-                            .insert(hudsucker::hyper::header::USER_AGENT, ua);
-                    }
+                        .and_then(|v| v.to_str().ok()),
+                );
+                let website_shaped = reshaped.is_some();
+                if let Some(ua) = reshaped {
+                    req.headers_mut()
+                        .insert(hudsucker::hyper::header::USER_AGENT, ua);
                 }
                 // The clearance goes on every turn we are NOT reshaping: the
                 // passthrough calls it demonstrably fixes, and rewritten ones
                 // too when the reshape is switched off.
-                if !cf.is_empty() && !website_shaped {
-                    inject_cf_clearance(&mut req, &cf);
-                    cf_injected = true;
+                //
+                // Never on a navigation. The only navigation to this host that
+                // reaches the engine is the solve webview's own load, and that
+                // window is incognito exactly so it starts from an empty jar
+                // and has to be adjudicated from scratch. Handing it the cookie
+                // we are already holding is Cloudflare waving it through,
+                // nothing minted, and the long no-capture cooldown spent on an
+                // attempt that was never given anything to solve - the bug the
+                // empty jar was introduced to end, one layer down.
+                if !cf.is_empty() && !website_shaped && !navigation {
+                    cf_injected = inject_cf_clearance(&mut req, &cf);
                 }
             }
             self.chatgpt_turn = Some(ChatgptTurn {
@@ -922,7 +969,7 @@ impl HttpHandler for GateHandler {
                 path: path.clone(),
                 rewritten,
                 cf_injected,
-                wants_html: wants_html(&req),
+                wants_html: navigation,
             });
         }
         if debug_log() {
@@ -992,19 +1039,24 @@ impl HttpHandler for GateHandler {
         // below reports what actually arrived, and swapping the response
         // before it runs would make every challenged turn log the
         // substitution instead of the evidence.
-        let navigation = self
-            .chatgpt_turn
-            .as_ref()
-            .is_some_and(|turn| turn.wants_html);
+        let turn = self.chatgpt_turn.as_ref();
+        // A navigation, and one of OURS. `wants_html` is exactly what an
+        // ordinary browser tab looks like too, so without the client gate a
+        // Chrome window loading chatgpt.com during the solve window's 20s
+        // probe stamps the evidence that window is judged on, and the GUI then
+        // reports "Cloudflare did not challenge Gate's page" where the truth
+        // was "the page never reached the proxy" - the two diagnoses
+        // [`crate::proxy::SolveOutcome`] was split apart to tell. The solve
+        // webview always classifies App: it wears the app's user-agent, and
+        // the GUI refuses to open it at all when none has been recorded yet.
+        let navigation =
+            turn.is_some_and(|t| t.wants_html && t.client == crate::proxy::ClientClass::App);
         if navigation {
             // Seen at all, whatever the answer. This is what tells a page
             // Cloudflare declined to challenge from one that never reached us.
             crate::proxy::record_cf_navigation_seen();
         }
-        let notice = match (
-            cf_challenge_detected(self.chatgpt_turn.as_ref(), &res),
-            navigation,
-        ) {
+        let notice = match (cf_challenge_detected(turn, &res), navigation) {
             // The solve webview's own load, challenged. Record it and get out
             // of the way: no window to open (this one IS the window) and
             // nothing to substitute.
@@ -1016,7 +1068,7 @@ impl HttpHandler for GateHandler {
                 // Where the challenge landed, so the solve window can be
                 // challenged at the same path instead of guessing at the
                 // host root. See `proxy::CF_CHALLENGED_PATH`.
-                if let Some(turn) = self.chatgpt_turn.as_ref() {
+                if let Some(turn) = turn {
                     crate::proxy::record_cf_challenged_path(&turn.path);
                 }
                 Some(crate::proxy::notify_cf_challenge_observer())
@@ -1069,10 +1121,8 @@ impl HttpHandler for GateHandler {
             // only - the values are session credentials. Gate's provenance
             // headers separate a relayed Cloudflare 403 from one the gateway
             // raised.
-            if let Some(turn) = self
-                .chatgpt_turn
-                .as_ref()
-                .filter(|t| t.rewritten || t.client == crate::proxy::ClientClass::App)
+            if let Some(turn) =
+                turn.filter(|t| t.rewritten || t.client == crate::proxy::ClientClass::App)
             {
                 let header = |name: &str| {
                     res.headers()
@@ -1234,7 +1284,7 @@ fn cf_challenge_message(notice: crate::proxy::ChallengeNotice) -> Cow<'static, s
         // The solve worked and this turn was simply already on its way when
         // the cookie landed. Nothing is wrong and there is nothing to wait
         // for: the next turn carries the clearance.
-        ChallengeNotice::Settling(_) => Cow::Borrowed(
+        ChallengeNotice::Settling => Cow::Borrowed(
             "Cloudflare's check was just completed and Gate is using the result. \
              Send the message again.",
         ),
@@ -1243,13 +1293,13 @@ fn cf_challenge_message(notice: crate::proxy::ChallengeNotice) -> Cow<'static, s
         // the wait is a known quantity. The advice clause names WHY the last
         // attempt failed - the three failures are indistinguishable from here
         // otherwise, and two of them are ours to fix rather than the user's.
-        ChallengeNotice::CoolingDown(remaining) => {
+        ChallengeNotice::CoolingDown { remaining, last } => {
             let mut message = format!(
                 "Cloudflare is verifying this connection and Gate's last attempt to solve it \
                  did not succeed. It will try again in about {}s",
                 remaining.as_secs().max(1)
             );
-            if let Some(advice) = crate::proxy::last_solve_advice() {
+            if let Some(advice) = solve_advice(last) {
                 message.push_str(" - ");
                 message.push_str(advice);
             }
@@ -1259,6 +1309,35 @@ fn cf_challenge_message(notice: crate::proxy::ChallengeNotice) -> Cow<'static, s
         ChallengeNotice::Unobserved => Cow::Borrowed(
             "Cloudflare is verifying this connection. Gate cannot open a verification window \
              in this setup; open chatgpt.com in your browser and complete the check there.",
+        ),
+    }
+}
+
+/// The clause appended to the cooldown message above, naming what to do about
+/// the particular way the last attempt failed. `None` for a success, which is
+/// never shown.
+///
+/// Lives here rather than on [`crate::proxy::SolveOutcome`] so the whole
+/// sentence the user reads is in one file, and the test asserting its wording
+/// can see all of it.
+fn solve_advice(outcome: crate::proxy::SolveOutcome) -> Option<&'static str> {
+    use crate::proxy::SolveOutcome;
+    match outcome {
+        SolveOutcome::Captured => None,
+        SolveOutcome::Unsolved => {
+            Some("the verification window was not completed - finish the check when it opens")
+        }
+        SolveOutcome::NotChallenged => Some(
+            "Cloudflare did not challenge Gate's verification page, so there was nothing \
+             to solve - this needs a fix in Gate, not something you can clear",
+        ),
+        SolveOutcome::NotProxied => Some(
+            "Gate's verification window did not go through the proxy, so its check could \
+             not be observed - this needs a fix in Gate",
+        ),
+        SolveOutcome::WindowFailed => Some(
+            "Gate could not open its verification window at all - this needs a fix in Gate, \
+             and there is nothing on screen to look for",
         ),
     }
 }
@@ -1277,9 +1356,13 @@ fn wants_html<T>(req: &Request<T>) -> bool {
         return true;
     }
     header(hudsucker::hyper::header::ACCEPT.as_str()).is_some_and(|accept| {
-        accept
-            .split(',')
-            .any(|t| t.trim().to_ascii_lowercase().starts_with("text/html"))
+        accept.split(',').any(|t| {
+            // Media type without its parameters, like `is_unmarked_interstitial`:
+            // `text/html;q=0.9` is a navigation, `text/html-ish` is not.
+            t.split(';')
+                .next()
+                .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
+        })
     })
 }
 
@@ -1333,13 +1416,20 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
 /// would reintroduce the miss on exactly the route this is here to fix. The
 /// content type carries the weight instead: the app's API surface answers SSE
 /// or JSON, and never HTML.
+///
+/// What IS consulted, on the unmarked arm only, is provenance: a 403 the
+/// gateway raised itself is not a challenge at all, and relabelling one costs
+/// the caller the real verdict, replaces its body, and spends a ten minute
+/// cooldown on a window that could not have helped. Cloudflare naming a
+/// mitigation still outranks it - that is a statement, not an inference. See
+/// the arm below for how narrowly the provenance is read.
 fn cf_challenge_detected<T>(
     turn: Option<&ChatgptTurn>,
     res: &hudsucker::hyper::Response<T>,
 ) -> bool {
-    if !turn.is_some_and(|t| t.client == crate::proxy::ClientClass::App) {
+    let Some(turn) = turn.filter(|t| t.client == crate::proxy::ClientClass::App) else {
         return false;
-    }
+    };
     let marked = res
         .headers()
         .get("cf-mitigated")
@@ -1348,8 +1438,31 @@ fn cf_challenge_detected<T>(
         // Cloudflare said what it did. Naming any other mitigation ("block")
         // is still an answer, and a more authoritative one than the shape
         // below, so it vetoes rather than falling through to it.
-        Some(mitigation) => mitigation.eq_ignore_ascii_case("challenge"),
-        None => is_unmarked_interstitial(res),
+        //
+        // A 2xx is not a challenge even so: the origin's own answer is on its
+        // way through, and substituting a body for it would replace a live
+        // stream with an error. The unmarked arm checks the status for the
+        // same reason, and this closes the asymmetry between them.
+        Some(mitigation) => {
+            mitigation.eq_ignore_ascii_case("challenge") && !res.status().is_success()
+        }
+        // Nothing stated, so the shape has to carry it - and an error the
+        // GATEWAY raised wears the same shape. Gate names itself in
+        // `x-gate-error-source`, and a relayed Cloudflare answer still carries
+        // Cloudflare's own `cf-ray` (every `rewritten=true` response in the
+        // captures did, colo `IAD`), so provenance is read as "ours" only when
+        // Gate claims the error AND Cloudflare left no fingerprint at all.
+        // Deliberately that narrow: the header's vocabulary belongs to the
+        // gateway rather than to this repo, and if it turns out to be set on
+        // relayed answers too, a looser test here would take detection out on
+        // the one route that needs it most. Only consulted on a rewritten
+        // turn; a passthrough answer never went near the gateway.
+        None => {
+            let gateway_raised = turn.rewritten
+                && res.headers().contains_key("x-gate-error-source")
+                && !res.headers().contains_key("cf-ray");
+            !gateway_raised && is_unmarked_interstitial(res)
+        }
     }
 }
 
@@ -1374,28 +1487,64 @@ fn is_unmarked_interstitial<T>(res: &hudsucker::hyper::Response<T>) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
 }
 
-/// Merge a `cf_clearance` value into the request's `cookie` header without
-/// disturbing cookies the client already sent (append with `; ` when a
-/// header is present, set it when none is). No-op if the client already
-/// carries its own `cf_clearance`.
-fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) {
-    use hudsucker::hyper::header::COOKIE;
-    let merged = match req.headers().get(COOKIE).and_then(|v| v.to_str().ok()) {
-        Some(cookies) => {
-            let has_own = cookies.split(';').any(|c| {
-                c.split_once('=')
-                    .is_some_and(|(name, _)| name.trim() == "cf_clearance")
-            });
-            if has_own {
-                return;
-            }
-            format!("{cookies}; cf_clearance={cf_clearance}")
-        }
-        None => format!("cf_clearance={cf_clearance}"),
-    };
-    if let Ok(value) = HeaderValue::from_str(&merged) {
-        req.headers_mut().insert(COOKIE, value);
+/// The `user-agent` a rewritten chatgpt.com app turn should present, or
+/// `None` to leave the request wearing the one the app sent.
+///
+/// `Some` is also what makes the turn *website shaped*, which is what
+/// withholds the clearance - see [`website_shaped_rewritten_turns`] for why
+/// the two halves are one decision. Reading the strip's own result is what
+/// keeps them together: a turn whose user-agent has no product token to
+/// remove (`/backend-api/ps/mcp` sends no user-agent at all, and the native
+/// agent's `Codex Desktop/…` is not a browser string) would otherwise be
+/// reshaped in name only and lose its cookie for nothing.
+fn website_shaped_user_agent(rewritten: bool, user_agent: Option<&str>) -> Option<HeaderValue> {
+    if !rewritten || !website_shaped_rewritten_turns() {
+        return None;
     }
+    user_agent
+        .and_then(browser_ua_without_product_token)
+        .and_then(|ua| HeaderValue::from_str(ua).ok())
+}
+
+/// Merge a `cf_clearance` value into the request's `cookie` header without
+/// disturbing cookies the client already sent. Returns whether ours actually
+/// went on the wire, which is what the correlated debug line reports.
+///
+/// EVERY `cookie` field is read, not just the first: HTTP/2 lets the crumbs
+/// arrive split across several fields and neither `h2` nor `hyper` joins them
+/// for us, so scanning one field would miss a client's own `cf_clearance` and
+/// writing one back would drop every crumb but that first. They are rejoined
+/// into a single field rather than appended to, because two `cookie` lines is
+/// not a shape a browser sends and looking like one is the point of this whole
+/// path.
+///
+/// No-op if the client already carries its own `cf_clearance`.
+fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) -> bool {
+    use hudsucker::hyper::header::COOKIE;
+    let existing: Vec<&str> = req
+        .headers()
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    let has_own = existing.iter().flat_map(|field| field.split(';')).any(|c| {
+        c.split_once('=')
+            .is_some_and(|(name, _)| name.trim() == "cf_clearance")
+    });
+    if has_own {
+        return false;
+    }
+    let mut merged = existing.join("; ");
+    if !merged.is_empty() {
+        merged.push_str("; ");
+    }
+    merged.push_str("cf_clearance=");
+    merged.push_str(cf_clearance);
+    let Ok(value) = HeaderValue::from_str(&merged) else {
+        return false;
+    };
+    req.headers_mut().insert(COOKIE, value);
+    true
 }
 
 /// Rewrite a request to the gateway. Returns whether *our* OAuth bearer went
@@ -1864,9 +2013,14 @@ where
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
-    // Starts empty: a cf_clearance only exists once the GUI's challenge-solve
-    // webview captures one (memory-only; a restart re-solves on demand).
-    let (cf_clearance_tx, cf_clearance_rx) = watch::channel::<Arc<str>>(Arc::from(""));
+    // Seeded from whatever the last solve captured this run, and empty until
+    // one has: the cookie outlives the engine that was using it, so a restart
+    // (a domain toggled, the crash fail-safe reverting) must not send the
+    // app's warm-up back to 403ing on a cookie we are still holding. Process
+    // memory only - see `super::LAST_CAPTURED_CF_CLEARANCE`.
+    let (cf_clearance_tx, cf_clearance_rx) = watch::channel::<Arc<str>>(Arc::from(
+        super::captured_cf_clearance().unwrap_or_default().as_str(),
+    ));
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
     let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
@@ -2243,7 +2397,7 @@ mod tests {
     #[test]
     fn inject_cf_clearance_sets_the_header_when_none_is_present() {
         let mut req = app_chat_turn(None);
-        inject_cf_clearance(&mut req, "abc123");
+        assert!(inject_cf_clearance(&mut req, "abc123"));
         assert_eq!(cookie_header(&req), Some("cf_clearance=abc123"));
     }
 
@@ -2252,7 +2406,7 @@ mod tests {
         let mut req = app_chat_turn(Some(
             "__Secure-next-auth.session-token=s3ss10n; oai-did=dev",
         ));
-        inject_cf_clearance(&mut req, "abc123");
+        assert!(inject_cf_clearance(&mut req, "abc123"));
         assert_eq!(
             cookie_header(&req),
             Some("__Secure-next-auth.session-token=s3ss10n; oai-did=dev; cf_clearance=abc123")
@@ -2263,7 +2417,9 @@ mod tests {
     fn inject_cf_clearance_never_clobbers_a_client_supplied_cf_clearance() {
         let original = "oai-did=dev; cf_clearance=client-owned";
         let mut req = app_chat_turn(Some(original));
-        inject_cf_clearance(&mut req, "ours");
+        // And says so, which is what keeps `cf-injected=` in the correlated
+        // debug line from claiming a cookie that never went on the wire.
+        assert!(!inject_cf_clearance(&mut req, "ours"));
         assert_eq!(cookie_header(&req), Some(original));
     }
 
@@ -2405,8 +2561,11 @@ mod tests {
 
         let opening = cf_challenge_message(ChallengeNotice::Opening);
         let solving = cf_challenge_message(ChallengeNotice::AlreadySolving);
-        let settling = cf_challenge_message(ChallengeNotice::Settling(Duration::from_secs(23)));
-        let cooling = cf_challenge_message(ChallengeNotice::CoolingDown(Duration::from_secs(420)));
+        let settling = cf_challenge_message(ChallengeNotice::Settling);
+        let cooling = cf_challenge_message(ChallengeNotice::CoolingDown {
+            remaining: Duration::from_secs(420),
+            last: crate::proxy::SolveOutcome::NotChallenged,
+        });
         let unobserved = cf_challenge_message(ChallengeNotice::Unobserved);
 
         // Only the outcome that opens one may promise one.
@@ -2421,6 +2580,10 @@ mod tests {
         // The wait is a number the user can act on, not "try later".
         assert!(cooling.contains("420s"), "{cooling}");
         assert!(cooling.contains("did not succeed"), "{cooling}");
+        // And the whole sentence is here to read: the clause naming WHICH
+        // failure it was is appended from `solve_advice` in this file, so a
+        // wording that reads as a contradiction cannot hide across modules.
+        assert!(cooling.contains("fix in Gate"), "{cooling}");
         // It must not promise a window either - that is the whole point of
         // splitting these apart.
         assert!(!cooling.contains("opened a window"), "{cooling}");
@@ -2433,8 +2596,11 @@ mod tests {
         for notice in [
             ChallengeNotice::Opening,
             ChallengeNotice::AlreadySolving,
-            ChallengeNotice::Settling(Duration::from_secs(23)),
-            ChallengeNotice::CoolingDown(Duration::from_secs(420)),
+            ChallengeNotice::Settling,
+            ChallengeNotice::CoolingDown {
+                remaining: Duration::from_secs(420),
+                last: crate::proxy::SolveOutcome::Unsolved,
+            },
             ChallengeNotice::Unobserved,
         ] {
             let body = serde_json::json!({
@@ -2791,5 +2957,190 @@ mod tests {
         assert!(pac
             .trim_end()
             .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
+    }
+    /// HTTP/2 lets a client split its cookies across several `cookie` fields
+    /// and nothing in the stack joins them for us, so reading only the first
+    /// one dropped the rest of the jar on every injected turn - including,
+    /// silently, the session cookie.
+    #[test]
+    fn inject_cf_clearance_keeps_every_cookie_crumb() {
+        let crumbed = || {
+            Request::builder()
+                .method("POST")
+                .uri("https://chatgpt.com/backend-api/f/conversation")
+                .header("cookie", "oai-did=dev")
+                .header("cookie", "__Secure-next-auth.session-token=s3ss10n")
+                .body(())
+                .unwrap()
+        };
+
+        let mut req = crumbed();
+        assert!(inject_cf_clearance(&mut req, "abc123"));
+        // Rejoined into one field, in order, with ours last. Two `cookie`
+        // lines is not a shape a browser sends.
+        assert_eq!(
+            req.headers()
+                .get_all(hudsucker::hyper::header::COOKIE)
+                .iter()
+                .count(),
+            1
+        );
+        assert_eq!(
+            cookie_header(&req),
+            Some("oai-did=dev; __Secure-next-auth.session-token=s3ss10n; cf_clearance=abc123")
+        );
+
+        // A client cf_clearance living in a later crumb is still the client's.
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/f/conversation")
+            .header("cookie", "oai-did=dev")
+            .header("cookie", "cf_clearance=client-owned")
+            .body(())
+            .unwrap();
+        assert!(!inject_cf_clearance(&mut req, "ours"));
+        assert!(!cookie_header(&req).is_some_and(|c| c.contains("ours")));
+    }
+
+    /// Both halves of the reshape, or neither. A turn whose identity could
+    /// not be removed must keep its cookie: "app user-agent, no clearance" is
+    /// the one combination the measurements never covered, and it is what
+    /// `/backend-api/ps/mcp` (which sends no user-agent at all) would get if
+    /// the strip and the withholding were decided separately.
+    #[test]
+    fn the_reshape_only_counts_when_the_identity_actually_came_off() {
+        // Reads the same `OnceLock` the flag test pins; if something in the
+        // suite starts setting the opt-out these disagree on purpose.
+        assert!(website_shaped_rewritten_turns());
+        let shell = "CodexBrowser/1.2.3 Mozilla/5.0 (Macintosh) AppleWebKit/537.36";
+
+        let reshaped = website_shaped_user_agent(true, Some(shell))
+            .expect("a shell user-agent has a product token to strip");
+        assert_eq!(
+            reshaped.to_str().unwrap(),
+            "Mozilla/5.0 (Macintosh) AppleWebKit/537.36"
+        );
+
+        // Nothing to strip: no user-agent at all, and an agent UA that is not
+        // a browser string. Both keep their cookie.
+        assert!(website_shaped_user_agent(true, None).is_none());
+        assert!(website_shaped_user_agent(true, Some("Codex Desktop/1.2.3")).is_none());
+        // Already website shaped, so there is no identity left to remove.
+        assert!(website_shaped_user_agent(true, Some("Mozilla/5.0 (Macintosh)")).is_none());
+        // And a passthrough turn is never reshaped: it carries the app's own
+        // user-agent to an address Cloudflare issued its clearance to.
+        assert!(website_shaped_user_agent(false, Some(shell)).is_none());
+    }
+
+    /// A 403 the GATEWAY raised is not Cloudflare. Relabelling one costs the
+    /// caller the real verdict, replaces its body, and spends the ten minute
+    /// cooldown on a window that could not have helped.
+    #[test]
+    fn an_error_the_gateway_raised_is_not_a_challenge() {
+        let turn = |rewritten| ChatgptTurn {
+            client: ClientClass::App,
+            method: Method::POST,
+            path: "/backend-api/f/conversation".into(),
+            rewritten,
+            cf_injected: false,
+            wants_html: false,
+        };
+        let gateway_error = |extra: Option<(&str, &str)>| {
+            let builder = hudsucker::hyper::Response::builder()
+                .status(403)
+                .header("content-type", "text/html")
+                .header("x-gate-error-source", "gateway");
+            let builder = match extra {
+                Some((name, value)) => builder.header(name, value),
+                None => builder,
+            };
+            builder.body(()).unwrap()
+        };
+
+        // Gate claims it and Cloudflare left no fingerprint: ours, so no
+        // window and no substituted body.
+        assert!(!cf_challenge_detected(
+            Some(&turn(true)),
+            &gateway_error(None)
+        ));
+        // Read that narrowly on purpose. The header's vocabulary belongs to
+        // the gateway, so a relayed challenge that carries it anyway must
+        // still be detected - and every relayed answer in the captures came
+        // back with Cloudflare's `cf-ray` on it.
+        assert!(cf_challenge_detected(
+            Some(&turn(true)),
+            &gateway_error(Some(("cf-ray", "9012abcd3456-IAD")))
+        ));
+        assert!(cf_challenge_detected(
+            Some(&turn(true)),
+            &gateway_error(Some(("cf-mitigated", "challenge")))
+        ));
+        // A passthrough answer never went near the gateway, so provenance it
+        // somehow carries says nothing about who challenged it.
+        assert!(cf_challenge_detected(
+            Some(&turn(false)),
+            &gateway_error(None)
+        ));
+    }
+
+    /// `cf-mitigated: challenge` on a 2xx is not an interstitial - the
+    /// origin's own answer is on its way through, and substituting a body for
+    /// it would replace a live stream with an error.
+    #[test]
+    fn a_successful_response_is_never_swallowed() {
+        let app = ChatgptTurn {
+            client: ClientClass::App,
+            method: Method::POST,
+            path: "/backend-api/f/conversation".into(),
+            rewritten: true,
+            cf_injected: false,
+            wants_html: false,
+        };
+        let streaming = hudsucker::hyper::Response::builder()
+            .status(200)
+            .header("cf-mitigated", "challenge")
+            .header("content-type", "text/event-stream")
+            .body(())
+            .unwrap();
+        assert!(!cf_challenge_detected(Some(&app), &streaming));
+    }
+
+    /// The three failures are what the user actually sees when a solve does
+    /// not work, and they are not the same problem: one is theirs to finish,
+    /// the rest are ours to fix. Advice that did not distinguish them is what
+    /// left a cooldown reading as "it is broken, wait ten minutes".
+    #[test]
+    fn every_failed_outcome_offers_advice_and_success_offers_none() {
+        use crate::proxy::SolveOutcome;
+
+        assert!(solve_advice(SolveOutcome::Captured).is_none());
+        for outcome in [
+            SolveOutcome::Unsolved,
+            SolveOutcome::NotChallenged,
+            SolveOutcome::NotProxied,
+            SolveOutcome::WindowFailed,
+        ] {
+            let advice =
+                solve_advice(outcome).unwrap_or_else(|| panic!("{outcome:?} needs advice"));
+            assert!(!advice.is_empty());
+        }
+        // The Gate-side failures say so, rather than sending the user off to
+        // solve something they cannot.
+        for outcome in [
+            SolveOutcome::NotChallenged,
+            SolveOutcome::NotProxied,
+            SolveOutcome::WindowFailed,
+        ] {
+            assert!(
+                solve_advice(outcome).is_some_and(|a| a.contains("fix in Gate")),
+                "{outcome:?}"
+            );
+        }
+        // And the one the user can act on must not tell them to look for a
+        // window that never opened.
+        assert!(solve_advice(SolveOutcome::Unsolved)
+            .is_some_and(|a| a.contains("finish the check when it opens")));
+        assert!(solve_advice(SolveOutcome::WindowFailed)
+            .is_some_and(|a| a.contains("nothing on screen")));
     }
 }
