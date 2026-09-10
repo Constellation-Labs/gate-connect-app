@@ -301,8 +301,9 @@ export interface ProxyState {
   pac_port: number | null;
   ca_trusted: boolean;
   /** Linux only: what the store Chromium reads holds, from the last time Gate
-   * wrote it in this process. Null elsewhere, and on Linux until such a write
-   * has happened - which is not a negative reading (principle 6).
+   * wrote it on this machine. Null elsewhere, and on Linux until such a write
+   * has been recorded for the current CA - which is not a negative reading
+   * (principle 6).
    *
    * Separates states `ca_trusted` alone cannot, and carries the *cause*,
    * because the causes want opposite things from the user. `trusted`: the
@@ -311,8 +312,17 @@ export interface ProxyState {
    * written anywhere and a package install is the fix. `write_failed`:
    * `certutil` is there and a store refused - a lock, a permission - which a
    * package install does not touch. A bare boolean flattened the last two and
-   * prescribed the wrong fix for one of them. */
-  ca_nss_trust: "trusted" | "tools_missing" | "write_failed" | null;
+   * prescribed the wrong fix for one of them.
+   *
+   * `not_written` comes only from `proxyBrowserStore()`, never from a write:
+   * the stores answered and nobody has put the CA in them, which is what
+   * `proxy trust-ca --system-trust` leaves behind. A retry is the fix, so it
+   * is neither of the two failures above.
+   *
+   * Recorded in a file rather than in the process that wrote it, so the CLI
+   * writing the store and the window drawing the copy about it are the same
+   * reading. Null still means nobody has looked - see `proxyBrowserStore`. */
+  ca_nss_trust: "trusted" | "tools_missing" | "write_failed" | "not_written" | null;
   /** Whether the system proxy Gate writes is one a running browser reads, and
    * so whether a host-matched row covers the same site in a browser.
    *
@@ -345,6 +355,23 @@ export interface ProxyState {
 }
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
+
+/** Read the store Chromium reads, once, for the moment `proxyStatus` cannot
+ * answer for.
+ *
+ * `ca_nss_trust` is a record of a write, and the write does not always happen
+ * here: `gate-connect proxy trust-ca` runs it in the CLI and exits, and
+ * `--system-trust` installs the system anchor and touches no Chromium store at
+ * all. Both leave the window watching `ca_trusted` go true with a null reading
+ * beside it, and the fall-through sentence there tells the user to reopen their
+ * browser - which on a machine with no `certutil` is advice that cannot work.
+ *
+ * Deliberately not folded into `proxyStatus`: this shells out to `certutil`
+ * once or twice per NSS database, and status is polled. Call it on the
+ * transition that raises the note, never on a refresh. `null` is a fine answer
+ * and means the fall-through stands. */
+export const proxyBrowserStore = () =>
+  invoke<ProxyState["ca_nss_trust"]>("proxy_browser_store");
 
 /** Turn the proxy on: starts the loopback engine, trusts the CA (the one
  * step that prompts, and only when not already trusted), and points the
@@ -1009,15 +1036,23 @@ export interface Diagnostics {
   /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
    * a real state and otherwise invisible. */
   ca_cert_present: boolean;
-  /** Linux only: whether the per-user NSS store Chromium reads holds the CA.
-   * Chromium never reads the system store, so this and `ca_trusted`
-   * disagreeing is the whole of "Firefox works, Chrome doesn't". `null` where
-   * the question does not apply (not Linux, or no such browser here). */
-  ca_nss_trusted: boolean | null;
-  /** Linux only: what the last NSS write *in this process* did, and which stores
-   *  refused it. A different question from `ca_nss_trusted` above, which is
-   *  probed now and is `all()` over the stores, so it cannot say which one or
-   *  why. Null before any write in this process.
+  /** Linux only: what a live read of the per-user NSS stores Chromium reads
+   * found. Chromium never reads the system store, so `absent` beside a
+   * `ca_trusted` of true is the whole of "Firefox works, Chrome doesn't".
+   * `null` where the question does not apply (not Linux, or no such browser
+   * here).
+   *
+   * Three answers rather than a boolean because `unreadable` - a locked
+   * database, one on a stalled mount, no `certutil` to open it with - is not
+   * `absent`, and the report prints this as a statement of fact. It said
+   * `CA MISSING` for both until a bounded certutil gave "could not open" a
+   * second way to happen. */
+  ca_nss_trusted: "holds" | "absent" | "unreadable" | null;
+  /** Linux only: what the last NSS write *on this machine* did, and which
+   *  stores refused it. A different question from `ca_nss_trusted` above,
+   *  which is probed now and is a fold over the stores, so it cannot say which
+   *  one or why. Null before any write, and after one whose CA has since been
+   *  regenerated: the record is keyed by the certificate's fingerprint.
    *
    *  The copy raised on a failed write tells the user this report names the
    *  store and the reason, so the report has to carry them. */

@@ -256,9 +256,18 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     // Linux only: Chromium-based browsers read a per-user NSS store and never
     // the system one, so the certificate above reading "trusted" while this
     // line appears is the whole of "Firefox works, Chrome doesn't". Silent when
-    // the question does not apply.
-    if (backend?.ca_nss_trusted === false) {
+    // the question does not apply, and silent when the store holds it - that is
+    // what the line above already says.
+    //
+    // `unreadable` is its own line rather than folded into the one above it.
+    // "CA MISSING" is a claim about the user's store, and printing it for a
+    // database Gate never managed to open manufactures that claim out of the
+    // absence of a reading - which is the one thing this report must not do,
+    // because it is the sentence a support engineer acts on.
+    if (backend?.ca_nss_trusted === "absent") {
       lines.push(row("browser store", "CA MISSING (chromium)"));
+    } else if (backend?.ca_nss_trusted === "unreadable") {
+      lines.push(row("browser store", "could not be read (chromium)"));
     }
     // What the write itself saw, which is the only place the cause lives. The
     // line above is `all()` over the stores and probed now, so it cannot
@@ -267,7 +276,15 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     // names which store and why. Silent before any write in this process, and
     // silent on a clean one: `trusted` is what the line above already says.
     const nssWrite = backend?.ca_nss_write ?? null;
-    if (nssWrite && nssWrite.outcome !== "trusted") {
+    // No record is not a clean write, and printing nothing for both made the
+    // two identical on the page. Said in words rather than left blank, per
+    // principle 6: a section that was never read says so. Only where the
+    // question applies at all - `ca_nss_trusted` is null off Linux and on a
+    // machine with no Chromium store, and a "no record" line there would be
+    // answering a question nobody asked.
+    if (!nssWrite && backend?.ca_nss_trusted != null) {
+      lines.push(row("browser write", "no record for this certificate"));
+    } else if (nssWrite && nssWrite.outcome !== "trusted") {
       lines.push(
         row(
           "browser write",

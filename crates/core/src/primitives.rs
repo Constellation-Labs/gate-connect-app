@@ -10,13 +10,17 @@ use std::fs;
 use std::path::Path;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Run a command to completion, or kill it once `timeout` has passed.
 ///
 /// `Ok(None)` is the timeout: the child was signalled and reaped, and the caller
 /// decides what a non-answer means. Everything else is the ordinary
-/// [`std::process::Command::output`] contract.
+/// [`std::process::Command::output`] contract, stdin included: it is set to
+/// [`std::process::Stdio::null`] here the way `output()` sets it, so a child
+/// that would prompt gets EOF rather than the caller's terminal. A caller that
+/// wants otherwise sets stdin on the `Command` after this returns it - none do.
 ///
 /// **Why this exists at all.** Two of the subprocesses this app shells out to
 /// live on paths the window polls - `certutil` against an NSS database, and
@@ -26,37 +30,66 @@ use std::process::Command;
 /// somebody is waiting on a switch.
 ///
 /// Three private copies of this loop had grown before it: `ca_windows`,
-/// `ca_linux`, and `integrations::binaries`' version probe. This is that shape
-/// once, so the next caller is not a fourth.
+/// `ca_linux`, and `integrations::binaries`' version probe. Two of them are now
+/// this one. `ca_windows::certutil_bounded` keeps its own on purpose and its
+/// doc says why: it nulls all three stdio handles rather than piping, and it
+/// deliberately does not `wait()` after the kill, because reaping is a Unix
+/// concern and waiting on a `TerminateProcess` that failed would reintroduce
+/// the hang it exists to remove.
 ///
 /// **The child is reaped after the kill.** `Child::kill` signals and
 /// `Child::drop` deliberately does not wait, so on Unix a killed child stays a
 /// zombie for the life of the parent - harmless once, and the certutil caller
-/// reaches it per database per enable. Of the three copies only
-/// `integrations::binaries` got that right, and its comment says why; the two
-/// in `ca_*` did not.
+/// reaches it per database per enable. Only the direct child: a caller that
+/// spawns a shell which forks leaves the grandchild behind, and every caller
+/// here runs a leaf binary for that reason.
 ///
 /// **Only for commands whose output is small.** stdout and stderr are piped and
 /// not read until the child exits, so a child that writes more than the pipe
 /// buffer holds blocks on the write, never exits, and is reported as a hang.
-/// Every caller here emits at most a certificate or a settings value. A command
-/// with unbounded output needs a reader thread instead.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// Nothing here caps the bytes: the deadline bounds how long a fast writer gets,
+/// and a caller that puts the output somewhere a person reads truncates it
+/// itself (`ca_linux`'s `one_line_capped`). Every caller emits at most a
+/// certificate or a settings value. A command with unbounded output needs a
+/// reader thread instead.
 pub fn output_bounded(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<Option<std::process::Output>> {
-    /// Gap between `try_wait` polls. The value all three copies used.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+    /// First gap between `try_wait` polls, doubling to [`POLL_MAX`].
+    ///
+    /// A flat 50ms - the value the `ca_*` copies used - is a floor on every
+    /// call, because a freshly spawned child has essentially never exited by
+    /// the first `try_wait`. That is paid six times over on `gsettings_capture`
+    /// and once per database per enable on `certutil`, all on a path where
+    /// somebody is waiting on a switch. Starting short and backing off costs a
+    /// few extra wakeups on a call that was going to be slow anyway, and
+    /// nothing on the ones that answer in single-digit milliseconds - which is
+    /// every one of them on a healthy machine. `integrations::binaries` polled
+    /// at 10ms flat for the same reason before it moved here.
+    const POLL_FIRST: std::time::Duration = std::time::Duration::from_millis(1);
+    /// Ceiling for the backoff, so a genuinely stuck child is not spun on.
+    const POLL_MAX: std::time::Duration = std::time::Duration::from_millis(50);
 
     let mut child = cmd
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
     let deadline = std::time::Instant::now() + timeout;
+    let mut poll = POLL_FIRST;
     loop {
-        if child.try_wait()?.is_some() {
-            break;
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            // Kill and reap before propagating. Returning `?` straight out left
+            // the one path in here that creates the zombie the rest of this
+            // function exists to avoid.
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
@@ -64,9 +97,46 @@ pub fn output_bounded(
             let _ = child.wait();
             return Ok(None);
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(poll);
+        poll = (poll * 2).min(POLL_MAX);
     }
     child.wait_with_output().map(Some)
+}
+
+/// The system directories a session tool is looked for in, before falling back
+/// to a `PATH` search. Ordered as a distro would: `/usr/bin` holds `certutil`
+/// and `gsettings` on Debian, Ubuntu, Fedora and Arch alike, and `/bin` is a
+/// symlink to it on all four.
+///
+/// Deliberately not `/usr/local/bin`: it is the one standard directory that is
+/// group-writable on a number of setups, which is the property this helper
+/// exists to avoid. A tool that really lives there is still found, through the
+/// `PATH` fallback.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const SYSTEM_BIN_DIRS: [&str; 2] = ["/usr/bin", "/bin"];
+
+/// Resolve `program` to an absolute path under [`SYSTEM_BIN_DIRS`], or hand
+/// back the bare name for `Command` to search `PATH` for.
+///
+/// `Command::new("certutil")` re-runs the `PATH` search in the child at spawn
+/// time, so a directory earlier on `PATH` than `/usr/bin` decides what we
+/// execute - and `~/.local/bin` and `~/bin` are on the default `PATH` on both
+/// Debian and Fedora. Same user, so this is not a privilege boundary; it is the
+/// standard the surrounding code already holds, `ca_linux` building its
+/// escalated script out of `/bin/mkdir` and `/usr/bin/install`, and
+/// `integrations::binaries` spawning the absolute path it resolved rather than
+/// the name.
+///
+/// The fallback is deliberate rather than a hole left open: a distro that keeps
+/// its tools somewhere else entirely must still work, and the alternative to
+/// searching `PATH` there is reporting a tool as missing when it is installed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn system_program(program: &str) -> PathBuf {
+    SYSTEM_BIN_DIRS
+        .iter()
+        .map(|dir| Path::new(dir).join(program))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(program))
 }
 
 /// Write `bytes` to `path` atomically: stage to a sibling tempfile,
@@ -430,12 +500,55 @@ mod tests {
         let waited = started.elapsed();
 
         assert!(out.is_none(), "a killed command has no output to report");
-        // Generously bounded: the assertion is "it did not wait for the child",
-        // not a claim about scheduler precision on a loaded runner.
+        // Bounded well clear of the 300ms deadline but well under the child's
+        // own 30s, so a loaded runner does not fail it and a deadline that grew
+        // by an order of magnitude does not pass it. The earlier 10s bound
+        // would have let a 3s deadline through.
         assert!(
-            waited < std::time::Duration::from_secs(10),
+            waited < std::time::Duration::from_secs(5),
             "waited {waited:?}, which means the deadline did not fire"
         );
+    }
+
+    /// A command that answers quickly is not held up by the poll gap.
+    ///
+    /// The regression this pins: a flat 50ms first poll is a floor on every
+    /// call, and `gsettings_capture` makes six of them in a row on the enable
+    /// path. `sh -c :` exits in single-digit milliseconds, so anything near
+    /// 50ms here means the backoff went back to starting at its ceiling.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_quick_command_is_not_held_for_a_poll_gap() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", ":"]);
+        let started = std::time::Instant::now();
+        output_bounded(cmd, std::time::Duration::from_secs(5))
+            .expect("spawn")
+            .expect("not a timeout");
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_millis(40),
+            "waited {waited:?} for a command that exits immediately"
+        );
+    }
+
+    /// stdin is closed, the way `Command::output` closes it.
+    ///
+    /// `certutil` sets this itself and its comment says why - a
+    /// password-protected NSS database hands the child the caller's terminal
+    /// and blocks there. The helper owes every other caller the same, and
+    /// `gsettings_get` lost it silently on the way in here from `.output()`.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn stdin_is_closed_for_the_child() {
+        let mut cmd = Command::new("sh");
+        // Reads EOF immediately on a null stdin; blocks to the deadline on an
+        // inherited one under a terminal.
+        cmd.args(["-c", "cat; printf done"]);
+        let out = output_bounded(cmd, std::time::Duration::from_secs(5))
+            .expect("spawn")
+            .expect("not a timeout");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "done");
     }
 
     /// And it is reaped, not just signalled.

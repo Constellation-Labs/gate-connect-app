@@ -56,13 +56,24 @@ function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | u
  * Takes the platform because two of these branches name the secret store, and
  * naming the wrong vault undoes the reassurance they exist to give. Takes the
  * group because one branch has to look sideways at its siblings: see
- * `configSiblingOnHost`. */
-function explain(
-  member: GroupMember,
-  platform: Platform,
-  group: Group,
-  browserChannel: boolean,
-): string {
+ * `configSiblingOnHost`.
+ *
+ * One object rather than four positionals: the last two are a `Group` and a
+ * boolean, and the two before them are both things a caller could plausibly
+ * hand over in the wrong order. */
+function explain({
+  member,
+  platform,
+  group,
+  browserChannel,
+}: {
+  member: GroupMember;
+  platform: Platform;
+  group: Group;
+  /** `ProxyState.browser_proxy_channel`: whether this session has the proxy
+   *  channel a running browser re-reads. Only the chat branch consults it. */
+  browserChannel: boolean;
+}): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
@@ -655,7 +666,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform, group, browserChannel)}
+                    {explain({ member, platform, group, browserChannel })}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide

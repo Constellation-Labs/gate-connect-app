@@ -29,6 +29,7 @@ import {
   listTools,
   oauthStatus,
   openOnboardingWindow,
+  proxyBrowserStore,
   proxyEnable,
   proxyStatus,
   proxyTrustCa,
@@ -2237,9 +2238,11 @@ export function NewUiApp() {
    * first status lands, and treating "unknown, then trusted" as the change would
    * raise this on every launch of an already-trusted install.
    *
-   * Cleared by the user alone. Nothing Gate can read afterwards says whether
-   * they reopened anything, so a dismissal is the only thing that can retire it,
-   * and it does not come back until trust is removed and granted again.
+   * Cleared by the user alone, for the reopen sentence: nothing Gate can read
+   * afterwards says whether they reopened anything, so a dismissal is the only
+   * thing that can retire it, and it does not come back until trust is removed
+   * and granted again. The *failure* sentences do have something that retires
+   * them - see the effect below.
    *
    * `ca_nss_trust` rides along from the same snapshot, and it decides which note
    * this is: what the store Chromium reads did with the CA is a reading, and it
@@ -2253,16 +2256,72 @@ export function NewUiApp() {
     body: string;
   } | null>(null);
   const caTrustedSeen = useRef<boolean | null>(null);
+  const nssSeen = useRef<ProxyState["ca_nss_trust"]>(null);
   useEffect(() => {
     const trusted = proxy?.ca_trusted ?? null;
     const seen = caTrustedSeen.current;
     caTrustedSeen.current = trusted;
-    if (seen === false && trusted === true) {
-      setBrowserRestart(
-        browserTrustRestartAdvice(platform, proxy?.ca_nss_trust ?? null) ?? null,
-      );
+    if (seen !== false || trusted !== true) return;
+    const nss = proxy?.ca_nss_trust ?? null;
+    if (nss !== null) {
+      setBrowserRestart(browserTrustRestartAdvice(platform, nss) ?? null);
+      return;
     }
+    // No reading to switch on, which does not mean no answer exists: the write
+    // that turned `ca_trusted` true may have happened in the CLI, or
+    // `--system-trust` may have installed the anchor and no Chromium store at
+    // all. Ask once, here, where a user action just happened - never on the
+    // poll, which is the whole reason `status` serves a record instead.
+    //
+    // The plain reopen note goes up first rather than after the round trip: it
+    // is what `ca_trusted` alone already establishes, it is the answer on most
+    // machines, and a note that appears a beat late reads as a second event.
+    // The probe then replaces it if the store has something more specific to
+    // say. `null` back leaves the fall-through standing, which is the safe
+    // sentence.
+    const fallback = browserTrustRestartAdvice(platform, null) ?? null;
+    setBrowserRestart(fallback);
+    if (platform !== "linux") return;
+    void proxyBrowserStore()
+      .then((probed) => {
+        if (probed === null) return;
+        const refined = browserTrustRestartAdvice(platform, probed) ?? null;
+        // Only if the note we put up is still the note on screen. Identity,
+        // not a flag on this effect run: `proxy` is a fresh object on every
+        // status poll, so an effect-scoped `live` would be torn down by the
+        // next poll and drop the answer this exists to fetch. What must not
+        // happen is overwriting a dismissal, or a later transition's note,
+        // and comparing against the object we set covers both.
+        setBrowserRestart((current) => (current === fallback ? refined : current));
+      })
+      .catch(() => {
+        // A probe that will not run is no reading either, and the note it
+        // would have refined is already on screen.
+      });
   }, [proxy, platform]);
+
+  /**
+   * ...and what retires it when the user does what it asked.
+   *
+   * The failure notes prescribe an action - install a package, unlock the
+   * store, then turn routing off and on - and doing it re-runs the write and
+   * changes `ca_nss_trust`. What it does not change is `ca_trusted`, which was
+   * true throughout, so the effect above never fires again and the note stood
+   * over a machine that had just been fixed.
+   *
+   * Only a *failure* leaving is retired, and only the note we raised: the
+   * reopen sentence is the one thing Gate cannot check, so it stays until the
+   * user dismisses it. `trusted` is not a signal to clear anything either - it
+   * is what the reopen note is drawn over.
+   */
+  useEffect(() => {
+    const nss = proxy?.ca_nss_trust ?? null;
+    const was = nssSeen.current;
+    nssSeen.current = nss;
+    const wasFailing =
+      was === "tools_missing" || was === "write_failed" || was === "not_written";
+    if (wasFailing && nss === "trusted") setBrowserRestart(null);
+  }, [proxy]);
 
   /**
    * What a chat row's switch covers, on the pane that opens on it.

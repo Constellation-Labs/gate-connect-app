@@ -20,8 +20,8 @@ const backend: Diagnostics = {
   data_dir: "/home/x/.local/share/Gate Connect",
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
-  ca_nss_trusted: true,
-  ca_nss_write: null,
+  ca_nss_trusted: "holds",
+  ca_nss_write: { outcome: "trusted", refusals: [] },
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -259,9 +259,20 @@ describe("buildDiagnosticsReport", () => {
   it("flags a CA the browser's own store is missing", () => {
     // The certificate line still says trusted, because the OS store holds it.
     // Only this line explains why Chrome rejects what Firefox accepts.
-    const text = report({ backend: { ...backend, ca_nss_trusted: false } });
+    const text = report({ backend: { ...backend, ca_nss_trusted: "absent" } });
     expect(text).toContain("certificate     trusted");
     expect(text).toContain("browser store   CA MISSING (chromium)");
+  });
+
+  /** A store Gate could not open is not a store without the CA, and this line
+   *  is what a support engineer acts on. Printing MISSING for a database that
+   *  never answered is a positive claim manufactured out of the absence of a
+   *  reading - and the bounded certutil this branch added gave that case a new
+   *  way to happen, in the shape of a call killed at its deadline. */
+  it("does not report a store it could not read as a store missing the CA", () => {
+    const text = report({ backend: { ...backend, ca_nss_trusted: "unreadable" } });
+    expect(text).toContain("browser store   could not be read (chromium)");
+    expect(text).not.toContain("CA MISSING");
   });
 
   it("says nothing about the browser store where the question does not apply", () => {
@@ -277,7 +288,7 @@ describe("buildDiagnosticsReport", () => {
     const text = report({
       backend: {
         ...backend,
-        ca_nss_trusted: false,
+        ca_nss_trusted: "absent",
         ca_nss_write: {
           outcome: "write_failed",
           refusals: [
@@ -301,7 +312,7 @@ describe("buildDiagnosticsReport", () => {
     const text = report({
       backend: {
         ...backend,
-        ca_nss_trusted: false,
+        ca_nss_trusted: "absent",
         ca_nss_write: { outcome: "tools_missing", refusals: [] },
       },
     });
@@ -317,6 +328,26 @@ describe("buildDiagnosticsReport", () => {
         ...backend,
         ca_nss_write: { outcome: "trusted", refusals: [] },
       },
+    });
+    expect(text).not.toContain("browser write");
+  });
+
+  /** ...but no record at all is a different thing from a clean one, and
+   *  printing nothing for both made a report taken before any write read as
+   *  "the write was fine". Principle 6: a section nobody read says so. */
+  it("says so when nothing has recorded a write for this certificate", () => {
+    const text = report({
+      backend: { ...backend, ca_nss_trusted: "absent", ca_nss_write: null },
+    });
+    expect(text).toContain("browser write   no record for this certificate");
+  });
+
+  /** And says nothing where there is no such store to have written: every
+   *  macOS and Windows report would otherwise carry a line about a question
+   *  that does not apply to it. */
+  it("says nothing about the write off the platform that has a second store", () => {
+    const text = report({
+      backend: { ...backend, ca_nss_trusted: null, ca_nss_write: null },
     });
     expect(text).not.toContain("browser write");
   });

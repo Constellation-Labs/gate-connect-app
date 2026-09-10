@@ -915,6 +915,32 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
     })
 }
 
+/// Read the store Chromium reads, once, off the polled path.
+///
+/// For the one moment `status` cannot answer for: `ca_trusted` has just gone
+/// true and [`ProxyState::ca_nss_trust`] is `None`, because the write that
+/// turned it true happened somewhere this process cannot see - the CLI's
+/// `proxy trust-ca`, or `--system-trust`, which installs the system anchor and
+/// touches no Chromium store at all. The UI raises a note on that transition,
+/// and its fall-through sentence tells the user to reopen their browser; on a
+/// machine with no `certutil` that is advice which cannot work.
+///
+/// Deliberately not on `status`: this shells out once or twice per database.
+/// It is called from a transition, not a poll, and `None` is a perfectly good
+/// answer - it leaves the caller saying only what `ca_trusted` established.
+///
+/// `None` off Linux, where the OS store and the browser's are the same store.
+pub fn probe_browser_store() -> Option<NssTrust> {
+    #[cfg(target_os = "linux")]
+    {
+        ca::probe_nss_trust()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// Path to the local root CA's public cert on disk. Tools that ship their own
 /// trust bundle instead of using the OS trust store (Node, Python) have to be
 /// pointed at this to accept the engine's minted leaf certs.
@@ -1578,7 +1604,8 @@ impl ProxyDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NssTrust {
-    /// Every database found holds the current CA.
+    /// Every database found holds the current CA, with the SSL-CA trust flag
+    /// the add asks for.
     Trusted,
     /// `certutil` is not installed, so Gate could not write any of them. The
     /// one state a package install fixes.
@@ -1587,6 +1614,41 @@ pub enum NssTrust {
     /// lock, a permission, a database Gate cannot parse. A package install
     /// changes nothing here; the log line names the store and the reason.
     WriteFailed,
+    /// The databases answered and at least one simply does not hold the CA,
+    /// with nothing having refused: nobody wrote it. Reachable only from
+    /// [`ca::probe_nss_trust`], never from a write, and the state
+    /// `proxy trust-ca --system-trust` leaves behind - it installs the system
+    /// anchor and no Chromium store. A retry is the fix, which is what makes
+    /// this a different sentence from `WriteFailed`: there is no refusal to go
+    /// and read, and no package to install.
+    NotWritten,
+}
+
+/// What a live read of the per-user NSS stores found, for the diagnostics
+/// report.
+///
+/// Three answers rather than a `bool`, because the two negatives are not the
+/// same claim and the report prints this as a fact a support engineer acts on.
+/// `Absent` says the stores were read and the CA is not in them; `Unreadable`
+/// says one could not be read at all - no `certutil`, a locked database, a call
+/// killed at its deadline - and a report that prints the first when it means
+/// the second is manufacturing a positive claim out of the absence of a
+/// reading. `None` on the wire keeps its meaning: no Chromium store exists on
+/// this machine, so the question does not apply.
+///
+/// `Absent` outranks `Unreadable` when both are found: one store definitely
+/// lacking the CA is a true statement whatever the store beside it did, and it
+/// is the more actionable of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NssProbe {
+    /// Every database found holds the current CA, with SSL-CA trust.
+    Holds,
+    /// Every database answered, and at least one does not hold it.
+    Absent,
+    /// At least one database could not be asked, and none was definitely
+    /// missing the CA.
+    Unreadable,
 }
 
 /// One NSS database that would not take the CA, and what it said.
@@ -1636,8 +1698,8 @@ pub struct ProxyState {
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
     /// Linux only: what the store Chromium reads holds, as [`NssTrust`], from
-    /// the last time Gate wrote it in this process. `None` everywhere else, and
-    /// on Linux until a trust write has happened here.
+    /// the last time Gate wrote it on this machine. `None` everywhere else, and
+    /// on Linux until a trust write has been recorded for the current CA.
     ///
     /// Beside `ca_trusted` it separates states the UI otherwise cannot tell
     /// apart, all of which look like Gate breaking HTTPS. Trusted and
@@ -1651,10 +1713,22 @@ pub struct ProxyState {
     /// and probing would put one `certutil` per database on that path, which is
     /// the failure `ca_windows` grew a bounded call and a cooldown for. The
     /// write path already runs certutil and already knows the outcome per
-    /// store, so the reading is free there and exact. `None` before any write
-    /// is the honest answer for a process that has not looked, and it is never
-    /// the answer where it matters: every path that raises the certificate note
-    /// runs `ensure_trusted` first.
+    /// store, so the reading is free there and exact.
+    ///
+    /// **The record is a file, not a static**, because two processes write the
+    /// same store: `gate-connect proxy trust-ca` runs `ensure_trusted` in the
+    /// CLI, and the GUI is the thing that draws the copy about it. A
+    /// process-scoped record left the GUI watching `ca_trusted` go true with no
+    /// reading behind it, and telling the user to reopen a browser on a machine
+    /// where `certutil` was never installed. `ca_linux`'s `nss_record_path`
+    /// keys the file by the CA's own fingerprint, so a record cannot outlive
+    /// the certificate it describes.
+    ///
+    /// `None` is still reachable, and still means nobody has looked: a machine
+    /// with no Chromium store, a record written for a different CA, or a first
+    /// run before any write. The UI answers it by probing once, off the polled
+    /// path, on the transition that would raise the note - see
+    /// `ca::probe_nss_trust`.
     #[serde(default)]
     pub ca_nss_trust: Option<NssTrust>,
     /// Whether the system proxy Gate writes is one a browser reads *live*, and
@@ -2284,12 +2358,43 @@ mod tests {
     /// by hand. A renamed variant would compile on both sides and simply stop
     /// matching, which for the copy means falling through to the reopen advice
     /// on a machine that needs a package installed.
+    ///
+    /// The `match` is what makes this cover an **added** variant too, which has
+    /// the same failure mode and which the assertions alone would let through:
+    /// adding one without a word here does not compile, and adding one without
+    /// a branch in `browserTrustRestartAdvice` falls through to the same wrong
+    /// sentence a rename does.
     #[test]
     fn the_nss_wire_words_are_what_the_frontend_expects() {
         let word = |t: NssTrust| serde_json::to_value(t).expect("serialize NssTrust");
-        assert_eq!(word(NssTrust::Trusted), "trusted");
-        assert_eq!(word(NssTrust::ToolsMissing), "tools_missing");
-        assert_eq!(word(NssTrust::WriteFailed), "write_failed");
+        for outcome in [
+            NssTrust::Trusted,
+            NssTrust::ToolsMissing,
+            NssTrust::WriteFailed,
+            NssTrust::NotWritten,
+        ] {
+            let expected = match outcome {
+                NssTrust::Trusted => "trusted",
+                NssTrust::ToolsMissing => "tools_missing",
+                NssTrust::WriteFailed => "write_failed",
+                NssTrust::NotWritten => "not_written",
+            };
+            assert_eq!(word(outcome), expected);
+        }
+    }
+
+    /// The probe's own three words, which the report prints one line off.
+    #[test]
+    fn the_nss_probe_words_are_what_the_report_expects() {
+        let word = |p: NssProbe| serde_json::to_value(p).expect("serialize NssProbe");
+        for probe in [NssProbe::Holds, NssProbe::Absent, NssProbe::Unreadable] {
+            let expected = match probe {
+                NssProbe::Holds => "holds",
+                NssProbe::Absent => "absent",
+                NssProbe::Unreadable => "unreadable",
+            };
+            assert_eq!(word(probe), expected);
+        }
     }
 
     /// A refusal carries the store and the reason, under the names the report
