@@ -139,7 +139,9 @@ pub enum Update {
     /// gateway answering the history route with 400 produced a pane that said
     /// LIVE and "No security events". That is a claim about the user's traffic
     /// made by a screen whose question was refused.
-    History { ok: bool },
+    History {
+        ok: bool,
+    },
 }
 
 /// Bounded set of event ids already delivered.
