@@ -442,6 +442,9 @@ async fn clear_account() -> Result<(), String> {
     .map_err(|e| format!("sign-out join error: {e}"))?;
     // What changed: the account is gone.
     if done.is_ok() {
+        // Same reason as the org switch: the events belonged to the account
+        // being cleared, and the feed outlives it.
+        security_feed().reset_for_account_change();
         signal_session_changed();
     }
     done
@@ -563,6 +566,12 @@ async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, Stri
         // engine so routing switches to it without waiting for a restart.
         gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
             .map_err(|e| format!("{e:#}"))?;
+        // Whatever ended the last session, this one is live - so the flag stops
+        // describing anything. Best-effort: a preferences write that fails must
+        // not fail a sign-in that succeeded, and the cost of it going unwritten
+        // is one welcome pane that would have said the wrong word, on a screen
+        // the user is no longer looking at.
+        let _ = gate_connect_core::preferences::set_signed_out_deliberately(false);
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
         Ok(OAuthStatusDto::from(&tokens))
@@ -586,6 +595,14 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 async fn oauth_sign_out() -> Result<(), String> {
     let done = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // Say that this was asked for. The state left behind is identical to an
+        // expired session - no token, `auth_mode` still OAuth by design two
+        // lines up - so without this the welcome pane can only guess, and it
+        // guessed "Session expired" over the user's own deliberate click.
+        // Best-effort and after the credential, on the same reasoning as the
+        // cache clear below: a preferences write must not be the reason a
+        // sign-out reports failure.
+        let _ = gate_connect_core::preferences::set_signed_out_deliberately(true);
         // The held activity readings belong to the org just signed out of, and
         // signing out is not a disconnect: `account.json` keeps the gateway and
         // the org, so `activity_cache`'s scope stays byte-identical and every
@@ -1022,6 +1039,17 @@ async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
     .map_err(|e| format!("set org join error: {e}"))?;
     // What changed: another org, so every figure on screen belongs to the previous one.
     if done.is_ok() {
+        // The feed included. It is a process singleton, so without this its
+        // buffer, its dedupe set and its catch-up verdict all survive the
+        // switch - and `security_feed_recent` hands the previous org's events
+        // straight back to a window that has just cleared its own copy. That is
+        // the one thing the activity surfaces are not allowed to do: show one
+        // org's traffic under another org's name.
+        //
+        // `reset_for_account_change` was written for exactly this and had no
+        // production caller at all, only a test, so the guarantee its name makes
+        // was never kept.
+        security_feed().reset_for_account_change();
         signal_session_changed();
     }
     done
@@ -2232,6 +2260,18 @@ fn fire_notification(
 #[tauri::command]
 fn security_feed_state() -> gate_connect_core::security_feed::FeedState {
     security_feed().state()
+}
+
+/// Whether the events from before this connection could be fetched.
+///
+/// Read on mount for the same reason `security_feed_state` is: the
+/// `security-feed-history` event only reaches a window that was already
+/// listening, and the backfill runs once per connection - so a window opened
+/// after a failed catch-up would never hear about it and would render the gap as
+/// an empty feed.
+#[tauri::command]
+fn security_feed_history_ok() -> bool {
+    security_feed().history_ok()
 }
 
 /// The events the feed has buffered, oldest first.
@@ -3535,7 +3575,11 @@ fn reveal_popover_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    #[cfg(target_os = "linux")]
+    // Same correction as the single-instance callback: this is the tray's
+    // "Expand app" and the onboarding window's close handler, both of which
+    // have to produce a window the user can see. A minimized one is not that,
+    // and `show` alone does not un-iconify it.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     let _ = window.unminimize();
     // Before the show, for the reason in `map_maximized_for_decorations`.
     #[cfg(target_os = "linux")]
@@ -3900,7 +3944,21 @@ pub fn run() {
             // A second launch landed here, in the already-running instance.
             // Reveal the popover, mirroring the "show" tray-menu handler.
             if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "linux")]
+                // Every desktop platform, not Linux alone. `show` un-hides a
+                // window; it does not un-iconify one, and `set_focus` on a
+                // minimized window focuses it minimized. So on Windows a second
+                // launch of the executable kept the single instance - correctly -
+                // and left the window in the taskbar with nothing on screen,
+                // which reads as a launch that did nothing at all. Read-only
+                // `IsIconic` stayed true across both `WindowStyle Hidden` and
+                // `WindowStyle Normal`; Alt+Tab or the tray's Expand app were the
+                // only ways back.
+                //
+                // The Linux-only guard was written for Linux's own reason and
+                // never revisited when this became the main window's re-entry
+                // point. Harmless where a window is not minimized: `unminimize`
+                // is a no-op then.
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -4003,6 +4061,7 @@ pub fn run() {
                     reopen_running_agents,
                     drain_backend_errors,
                     security_feed_state,
+                    security_feed_history_ok,
                     security_feed_recent,
                     security_feed_retry,
                     set_blocked_event_notifications,
@@ -4569,6 +4628,13 @@ pub fn run() {
                             Update::Event(event) => {
                                 let _ = feed_handle.emit("security-event", &*event);
                                 notify_for_event(&feed_handle, &grouper, &event);
+                            }
+                            // Independent of the connection state on purpose:
+                            // the stream can be Live with its history missing,
+                            // which is the case that used to render as an empty
+                            // feed. See `Update::History`.
+                            Update::History { ok } => {
+                                let _ = feed_handle.emit("security-feed-history", ok);
                             }
                         }
                     })

@@ -736,8 +736,23 @@ function Row({ row }: { row: SettingsRow }) {
               className={`truncate text-sm leading-5 text-base-foreground ${
                 // In a description row the text has taken the width, so the
                 // value sits with the control rather than claiming a column.
-                row.description !== undefined ? "shrink-0" : "min-w-0 flex-1"
+                //
+                // Capped and shrinkable, not `shrink-0`: `truncate` cannot fire
+                // on a flex item that refuses to shrink and has no width to
+                // truncate against, so the item just grew to its content. A
+                // valid 64-character device name - the backend truncates at 128
+                // bytes, so it is well inside what a rename accepts - then took
+                // the row's whole width, squeezed the description into a
+                // one-word column and pushed "Rename device" past the right
+                // edge of a 1024px window. `max-w-xs` gives `truncate` a bound
+                // to work against and leaves the trailing control its place.
+                row.description !== undefined
+                  ? "min-w-0 max-w-xs shrink"
+                  : "min-w-0 flex-1"
               }`}
+              // The full value is still reachable, since the visible text is
+              // now an ellipsis of it.
+              title={row.value}
             >
               {row.value}
             </p>

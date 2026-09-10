@@ -41,6 +41,10 @@ pub struct Feed {
     wake: Arc<tokio::sync::Notify>,
     /// Cleared to stop the loop at shutdown.
     running: AtomicBool,
+    /// Whether the last catch-up read succeeded. Held here, not just emitted,
+    /// because a window that mounts after the backfill has already failed would
+    /// otherwise never hear about it - the same reason `recent` is buffered.
+    history_ok: AtomicBool,
 }
 
 impl Default for Feed {
@@ -57,11 +61,30 @@ impl Feed {
             dedupe: Mutex::new(Dedupe::new(DEDUPE_CAPACITY)),
             wake: Arc::new(tokio::sync::Notify::new()),
             running: AtomicBool::new(true),
+            // Nothing has failed yet, and "not asked" must not render as
+            // "asked and refused".
+            history_ok: AtomicBool::new(true),
         }
     }
 
     pub fn state(&self) -> FeedState {
         *self.state.read().expect("feed state lock")
+    }
+
+    /// Whether the events from before this connection could be fetched. For a
+    /// window seeding itself on mount.
+    pub fn history_ok(&self) -> bool {
+        self.history_ok.load(Ordering::SeqCst)
+    }
+
+    /// Record the catch-up read's outcome, emitting only on a change - the same
+    /// guard `set_state` makes, and for the same reason: every reconnect runs a
+    /// backfill, and an unchanged answer repainted the pane each time.
+    fn set_history_ok(&self, ok: bool, sink: &dyn Fn(Update)) {
+        if self.history_ok.swap(ok, Ordering::SeqCst) == ok {
+            return;
+        }
+        sink(Update::History { ok });
     }
 
     /// The buffer, newest last, for a window that just mounted.
@@ -87,6 +110,15 @@ impl Feed {
     pub fn reset_for_account_change(&self) {
         self.recent.lock().expect("feed buffer lock").clear();
         self.dedupe.lock().expect("feed dedupe lock").clear();
+        // The old org's failed catch-up says nothing about the new one's, and
+        // carrying it over would put a warning on a pane that has not asked
+        // anything yet. The window resets its own copy on the credential change
+        // too; this keeps the two agreeing.
+        //
+        // Worth knowing: until `set_org` and `clear_account` were wired to call
+        // this, nothing in production did, so the buffer and dedupe above had
+        // the same hole and the frontend's clear was undone by its own re-seed.
+        self.history_ok.store(true, Ordering::SeqCst);
         self.retry_now();
     }
 
@@ -299,6 +331,43 @@ async fn wait(feed: &Feed, delay: Duration) {
     }
 }
 
+/// A response body, cut to one bounded line so it can ride in a log entry.
+///
+/// Returns the empty string when there is nothing worth appending, so a caller
+/// can interpolate it unconditionally rather than branching.
+///
+/// Two bounds, and both matter. Control characters become spaces because the log
+/// is line-oriented - `logging::log` writes one `\n`-terminated entry - and a
+/// body containing newlines would read back as several entries, one of them
+/// carrying no timestamp or level. And the length is capped because a body is
+/// whatever the far end felt like sending, while this file is something a user
+/// may be asked to send us.
+///
+/// Redaction is `logging::log`'s, applied to every message it writes. This does
+/// not add its own: the module note is explicit that the scrub is a backstop and
+/// not a licence to log anything, and what reaches here is an error body from
+/// our own gateway rather than user content.
+fn log_snippet(body: &str) -> String {
+    /// Enough for the gateway's `{"error":{"code":..,"message":..}}` shape,
+    /// which is the thing worth reading, and short enough that a runaway body
+    /// cannot flood the file.
+    const MAX_CHARS: usize = 300;
+
+    let flat: String = body
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.trim();
+    if flat.is_empty() {
+        return String::new();
+    }
+    let mut out: String = flat.chars().take(MAX_CHARS).collect();
+    if flat.chars().nth(MAX_CHARS).is_some() {
+        out.push('…');
+    }
+    format!(": {out}")
+}
+
 /// Fetch the events this client could not have received, and merge them.
 ///
 /// Exists because the stream has no replay: the server reports
@@ -322,6 +391,12 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                     e.message
                 ),
             );
+            // Every early return below says the same thing to the window: the
+            // events from before this connection were not fetched. Reported on
+            // each of them rather than only on the HTTP status, because "we
+            // never asked" and "we asked and were refused" leave the pane in
+            // exactly the same state - holding no history and no reason.
+            feed.set_history_ok(false, sink);
             return;
         }
     };
@@ -334,7 +409,10 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            feed.set_history_ok(false, sink);
+            return;
+        }
     };
     // Built through `Url` rather than `RequestBuilder::query`, which this
     // build's reqwest features do not include, and which would also leave the
@@ -346,6 +424,7 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill url unusable: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
@@ -366,15 +445,34 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill failed: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
     let status = resp.status();
     if !status.is_success() {
+        // The body, not just the status.
+        //
+        // A bare "400 Bad Request" is not diagnosable on this gateway, because
+        // it has no 404 for a path it does not route: the proxy's `@All("*")`
+        // catch-all swallows an unmatched path and drives it through the LLM
+        // pipeline, which rejects a bodiless GET carrying no `model`. So a 400
+        // here means either a genuinely bad request or a route this deployment
+        // has not shipped, and those want opposite responses - fix the client,
+        // or wait for the server. The status alone cannot tell them apart; the
+        // body can, and says so in as many words.
+        //
+        // Not hypothetical: the 400 seen against staging on 2026-09-09 was the
+        // second kind, and the status-only line left it unexplained.
+        let body = resp.text().await.unwrap_or_default();
         crate::logging::log(
             crate::logging::Level::Warn,
-            &format!("security feed: backfill answered {status}"),
+            &format!(
+                "security feed: backfill answered {status}{}",
+                log_snippet(&body)
+            ),
         );
+        feed.set_history_ok(false, sink);
         return;
     }
     let page = match resp.json::<HistoryPage>().await {
@@ -384,10 +482,15 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
                 crate::logging::Level::Warn,
                 &format!("security feed: backfill body unreadable: {e}"),
             );
+            feed.set_history_ok(false, sink);
             return;
         }
     };
 
+    // The catch-up landed, so a warning left over from an earlier attempt stops
+    // being true. Before the merge, so the pane is not told the history is
+    // missing while its rows are arriving.
+    feed.set_history_ok(true, sink);
     let found = page.events.len();
     let merged = feed.merge_history(page.events, sink);
     crate::logging::log(
@@ -661,6 +764,45 @@ mod tests {
             feed.newest_at().as_deref(),
             Some("2026-09-02T13:05:00.000Z")
         );
+    }
+
+    #[test]
+    fn a_log_snippet_is_one_line_and_bounded() {
+        // The reason this helper exists: a status alone could not tell a real
+        // bad request from a route the deployment does not have, and the body
+        // is what separates them.
+        assert_eq!(
+            log_snippet(r#"{"error":{"message":"no model"}}"#),
+            r#": {"error":{"message":"no model"}}"#
+        );
+
+        // Nothing to append rather than a bare colon.
+        assert_eq!(log_snippet(""), "");
+        assert_eq!(log_snippet("   \n  "), "");
+
+        // The log writes one newline-terminated entry, so a body carrying its
+        // own newlines must not read back as several - the second of which
+        // would have no timestamp or level in front of it.
+        let flattened = log_snippet("first\nsecond\r\tthird");
+        assert!(
+            !flattened.contains('\n') && !flattened.contains('\r') && !flattened.contains('\t'),
+            "control characters survived: {flattened:?}"
+        );
+        assert_eq!(flattened, ": first second  third");
+    }
+
+    #[test]
+    fn a_long_log_snippet_is_cut_and_says_so() {
+        let long = "x".repeat(400);
+        let out = log_snippet(&long);
+        // 300 body chars, the ": " prefix, and the ellipsis that marks the cut.
+        assert_eq!(out.chars().count(), 2 + 300 + 1);
+        assert!(out.ends_with('…'), "a cut body must show that it was cut");
+
+        // Exactly at the bound is not a cut, so it carries no ellipsis.
+        let exact = log_snippet(&"y".repeat(300));
+        assert_eq!(exact.chars().count(), 2 + 300);
+        assert!(!exact.ends_with('…'));
     }
 
     #[test]

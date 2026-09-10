@@ -146,6 +146,11 @@ export interface BackendState {
   securityFeed: {
     state: "live" | "reconnecting" | "offline";
     events: SecurityEventFixture[];
+    /** Whether the catch-up read for events from before this connection
+        succeeded. Defaults to true - the feed and its history fail
+        independently, so a spec that wants the LIVE-with-no-history case sets
+        this false and leaves `state` at "live". */
+    historyOk?: boolean;
   };
   preferences: {
     routing_health_notifications: boolean;
@@ -162,6 +167,11 @@ export interface BackendState {
     /** The user's own name for this device, or null when it follows the
         hostname. The override, exactly as `preferences.json` stores it. */
     device_name: string | null;
+    /** Whether the last sign-out was one the user asked for. False is the
+        default because it is the expiry wording, which is what the sign-in
+        screen said before this existed; a spec that wants the deliberate
+        sign-out copy sets it true. */
+    signed_out_deliberately: boolean;
   };
   routedClientsStale: boolean;
   runningAgents: number;
@@ -488,7 +498,7 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
-    securityFeed: { state: "live", events: [] },
+    securityFeed: { state: "live", events: [], historyOk: true },
     preferences: {
       routing_health_notifications: true,
       blocked_event_notifications: true,
@@ -497,6 +507,7 @@ export function defaultState(): BackendState {
       share_diagnostics: true,
       share_diagnostics_recorded: true,
       device_name: null,
+      signed_out_deliberately: false,
     },
     routedClientsStale: false,
     runningAgents: 0,

@@ -16,7 +16,13 @@ import {
   setOrg,
   switchGateway,
 } from "./api";
-import type { Account, OAuthStatus, Org, ProxyState } from "./api";
+import type {
+  Account,
+  OAuthStatus,
+  Org,
+  ProxyState,
+  TeardownReason,
+} from "./api";
 import { launchAtLoginStatus } from "./api";
 import { track, trackError } from "./analytics";
 
@@ -139,7 +145,7 @@ export function useSettingsActions({
    * decision: the report is read back from the configs, not returned by these
    * commands, so there is nothing here to hand over.
    */
-  onTeardown?: () => void;
+  onTeardown?: (reason: TeardownReason) => void;
   onError: (err: unknown) => void;
 }): SettingsActions {
   const [prompt, setPrompt] = useState<SettingsPrompt | null>(null);
@@ -309,7 +315,12 @@ export function useSettingsActions({
       // account), so every connected tool is now pointing at Gate with no
       // session behind it. That is a state the user should be told about rather
       // than discover from a failing tool.
-      onTeardown?.();
+      //
+      // Named, because the report cannot tell the two apart from its own
+      // contents: the same `still_gate` bucket means "a restore failed" after a
+      // reset and "left alone on purpose" here, and it was reporting the first
+      // for both.
+      onTeardown?.("sign-out");
     } catch (err) {
       onError(err);
       trackError(err, "sign_out");
@@ -440,7 +451,7 @@ export function useSettingsActions({
       // that could disagree with what is on disk.
       onSession({ account: null, oauth: null });
       setPrompt(null);
-      onTeardown?.();
+      onTeardown?.("teardown");
     } catch (err) {
       onError(err);
       trackError(err, "forget");
@@ -448,7 +459,7 @@ export function useSettingsActions({
       // aborts when a tool cannot be disconnected, which leaves that tool
       // pointing at Gate with the account still in place. The error says the
       // reset stopped; the report says which tool stopped it.
-      onTeardown?.();
+      onTeardown?.("teardown");
     } finally {
       setBusy(false);
     }
