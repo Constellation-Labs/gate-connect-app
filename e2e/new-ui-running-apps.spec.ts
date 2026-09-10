@@ -175,11 +175,13 @@ test.describe("new UI running apps", () => {
     await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toContainText("Codex");
     // Who reopens it, read off the backend rather than written into the copy -
     // and said ONCE, in the note, rather than repeated on every row. The rows
     // carried their own copy of this until the frame (`130:58427`) settled that
     // they draw a name, a description and a pill and nothing else.
+    //
+    // One assertion, not two: a separate `toContainText("Codex")` above this
+    // proved nothing the sentence does not already contain.
     await expect(dialog).toContainText("reopen Codex yourself");
   });
 

@@ -224,9 +224,9 @@ export function Modal({
         // below is the only part that scrolls; header and footer stay put,
         // which is what makes the primary reachable at any height.
         //
-        // Both surfaces need it, at opposite ends of the size range: at
-        // 1280x800 it is the long dialog above, and in the 400x700 tray the
-        // reopen offer runs past the bottom of the popover on its own.
+        // Both surfaces need it, for their own reasons: the long dialog above is
+        // the window at its 1024x800 floor, and in the 400x700 tray the reopen
+        // offer runs past the bottom of the popover on its own, at any height.
         className={`${WIDTH_STYLES[width]} relative flex max-h-full max-w-full flex-col rounded-2xl border bg-base-card p-6 shadow-base-lg ${
           edge === "danger"
             ? "border-base-destructive/40"
@@ -305,9 +305,14 @@ export function Modal({
           // "Yes, close" over a cut-off second line. Wrapping the row instead
           // stacks them, right-aligned, with both labels intact.
           //
-          // `shrink-0` keeps the row out of the panel's scroll: it is a sibling
-          // of the scrolling body in the flex column above, and a footer that
-          // shrinks is the unreachable-primary bug again.
+          // Two different `shrink-0`s here, on two axes, and both are
+          // load-bearing - so do not read the one below as an echo of this one.
+          // On the ROW it is the column axis: the row is a sibling of the
+          // scrolling body above, and a footer that shrinks is the
+          // unreachable-primary bug again. On each BUTTON it is the row axis:
+          // `whitespace-nowrap` alone stops the label wrapping but still lets
+          // the flex item shrink under it, so the text overflows its own box
+          // instead of the row wrapping.
           <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-3">
             {secondary && (
               // `disabled` is honoured here the same way the other two honour

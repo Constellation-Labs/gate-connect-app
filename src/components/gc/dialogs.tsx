@@ -11,6 +11,7 @@ import {
   pinnedModels,
 } from "../../lib/modelCompatibility";
 import { trayLocationName, type Platform } from "../../lib/platform";
+import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type {
   RecoverySummary,
@@ -100,6 +101,12 @@ function toolIcon(tool: DialogReopenTool): ReactNode {
  * wrapper, and since the text column is a flex item the `mt-1` cannot collapse,
  * so every reopen row gained a dead 4px in shipped builds - on the one dialog
  * whose height was the reported bug. Same in dev whenever a row has no routes.
+ *
+ * **The caller's check is the contract; `RoutePair`'s own is a backstop.** With
+ * every current call site asking first, the component's early return is
+ * unreachable - it is there so a future caller that forgets renders nothing
+ * rather than a broken pair, not because the two checks share the work. Read
+ * the pair that way round and neither looks redundant.
  */
 function routesShown(tool: DialogReopenTool): boolean {
   return (
@@ -2301,6 +2308,46 @@ export type DialogTeardownReport = Record<
   keyof TeardownReport,
   DialogTeardownTool[]
 >;
+
+/**
+ * The reopen flow's rows, with their product marks.
+ *
+ * Here, next to `DialogReopenTool`, because this is the module that owns the
+ * shape it builds - and because BOTH shells draw this flow. The window had the
+ * marks while the tray did not: `TrayApp` passed `runningApps.stage.tools`
+ * straight through, so the cube fallback fired and the tray listed Claude Code
+ * and Codex behind a generic glyph while the window, same flow and same moment,
+ * drew their real marks.
+ *
+ * It lived in `BrandMark` for a while, which made a leaf presentational module
+ * import a type from this one, and left its sibling {@link teardownSubjects}
+ * behind in the window shell - so the two halves of one job sat in two layers.
+ * `lib/reopen` is not the home either, tempting as it looks: it owns the model
+ * and depends on no component, and moving this there would point it at both
+ * this module and `BrandMark`.
+ *
+ * The model itself is `lib/reopen`'s and travels unchanged; only the mark is
+ * added. A second copy of a row is how two surfaces come to disagree about one
+ * tool, which is the whole reason `lib/reopen` exists.
+ */
+export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
+  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+}
+
+/** The teardown report's four buckets, with the same marks
+ *  {@link reopenSubjects} puts on the reopen rows. The dialog listed Claude Code
+ *  and Codex beside a generic glyph while every other surface drew their real
+ *  marks. */
+export function teardownSubjects(report: TeardownReport): DialogTeardownReport {
+  const marks = (tools: TeardownTool[]): DialogTeardownTool[] =>
+    tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
+  return {
+    defaults: marks(report.defaults),
+    still_gate: marks(report.still_gate),
+    awaiting_reopen: marks(report.awaiting_reopen),
+    failed: marks(report.failed),
+  };
+}
 
 export function TeardownReportDialog({
   report,

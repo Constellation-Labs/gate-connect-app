@@ -15,7 +15,6 @@ import type {
   RecoverySummary,
   TeardownReason,
   TeardownReport,
-  TeardownTool,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -83,7 +82,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
-import { brandMarkFor, reopenSubjects } from "./components/gc/BrandMark";
+import { brandMarkFor } from "./components/gc/BrandMark";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -103,11 +102,9 @@ import {
   buildSettingsSections,
 } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
-import type {
-  DialogTeardownReport,
-  DialogTeardownTool,
-} from "./components/gc/dialogs";
 import {
+  reopenSubjects,
+  teardownSubjects,
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
@@ -1030,7 +1027,11 @@ export function NewUiApp() {
    */
   useEffect(() => {
     const sweep = () =>
-      void forwardBackendErrors().then((e) => {
+      // The analytics reporter of the two shells, and the only one: the buffer
+      // hands each webview its own copy so they cannot race, which would
+      // otherwise double every `error_shown`. This window is always mounted, so
+      // nothing goes unreported by the tray staying quiet.
+      void forwardBackendErrors({ reportToAnalytics: true }).then((e) => {
         if (e) setActionError(e);
       });
     sweep();
@@ -1706,6 +1707,27 @@ export function NewUiApp() {
   }, []);
 
   /**
+   * What the listener below needs to know when the event lands.
+   *
+   * A ref, and written during render, because that listener subscribes once
+   * with `[]` and must keep doing so - see its own docstring for why a
+   * resubscribing listener drops this event. Reading these off a ref is how it
+   * stays subscribed and still sees the current shell.
+   *
+   * `slotBusy` is conservative: any pending quit, routing prompt, running-apps
+   * stage or model overlay counts, including a state that draws no arm. Being
+   * wrong in that direction refuses a request the slot would have taken; being
+   * wrong in the other direction is the unprompted pop.
+   */
+  const detailsGate = useRef({ ready: false, slotBusy: false });
+  detailsGate.current = {
+    ready: setup.stage.kind === "ready",
+    slotBusy: Boolean(
+      quit || routing.prompt || runningApps.stage || modelOverlay,
+    ),
+  };
+
+  /**
    * The tray's "Review details", handed over the same way.
    *
    * Subscribed once with no dependencies, for the reason the listener above
@@ -1715,32 +1737,49 @@ export function NewUiApp() {
    * would be identical to the bug this fixes, which is what makes it worth
    * saying twice.
    *
-   * **Reads the summary before opening, rather than trusting the cache.** The
-   * first version set `detailsOpen` alone and reasoned that the dialog slot's
-   * `detailsOpen && summary` made that safe. It does not: it makes the request a
-   * no-op *now* and a surprise *later*, because nothing resets `detailsOpen`
-   * except the dialog's own `onClose`, which cannot run if the dialog never
-   * rendered. So the first summary to arrive afterwards popped the dialog
-   * unprompted.
+   * **Never arms what it cannot draw.** Setting `detailsOpen` on its own makes
+   * the request a no-op *now* and a surprise *later*: nothing resets it except
+   * the dialog's own `onClose`, which cannot run if the dialog never rendered,
+   * so the next render that satisfies the slot pops a dialog nobody asked for.
+   * Three separate things have to hold, and they are three different problems -
+   * conflating them is what left this half-fixed once already.
    *
-   * Two reachable ways the cache is empty. `recoverySummary()` swallows its
-   * failure at mount (`loadPending`), and the visibility edge only calls
-   * `redetect`, which does not re-read it. And the window may not be past setup
-   * at all - there is no `AppShell` and no dialog slot then - which the tray can
-   * reach, because its recovery card runs off its own `pendingRestore` read that
-   * needs no account.
+   * 1. **There has to be something to show.** `recoverySummary()` swallows its
+   *    failure at mount (`loadPending`) and the visibility edge only calls
+   *    `redetect`, so the cache can be empty. Hence the read here rather than a
+   *    read of `summary`.
+   * 2. **There has to be a dialog slot.** Below `setup.stage.kind === "ready"`
+   *    this component returns `SetupLayout`, which has none - and the tray can
+   *    reach us there, because its recovery card runs off its own
+   *    `pendingRestore` read and `recovery_summary` needs no account or session.
+   *    This is not a cache problem and the read above does nothing for it.
+   * 3. **The slot has to be free.** Six arms precede `detailsOpen && summary`
+   *    in the chain (quit, the four routing prompts, the running-apps stages,
+   *    the two model overlays). The in-window banner button is protected from
+   *    this by the scrim over it; a request from the *tray* is a different
+   *    window and no scrim reaches it.
    *
-   * So: fetch, commit, and only then open. Nothing to show routes to Settings
-   * rather than opening an empty dialog, mirroring what the org-switch listener
-   * above does with its own dead end.
+   * On 2 and 3 the request is refused rather than deferred, and refused
+   * silently: there is nothing to say that the surface in front of the user is
+   * not already saying, and the recovery notice with its own Review button is
+   * still there when they get back to it. Deferring is the bug.
    */
   useEffect(() => {
     const unlisten = listen("recovery-details-requested", async () => {
-      setActionError(null);
+      const { ready, slotBusy } = detailsGate.current;
+      if (!ready || slotBusy) return;
       const fresh = await recoverySummary().catch(() => null);
-      if (fresh) setSummary(fresh);
-      if (fresh) setDetailsOpen(true);
-      else setView({ kind: "settings" });
+      // Cleared only once we know we are acting on the request. It used to be
+      // cleared on the way in, so a "Review details" press in the popover
+      // silently dismissed a failed rename in this window that the user had not
+      // read yet - and then, on the refused paths, did nothing else at all.
+      setActionError(null);
+      if (fresh) {
+        setSummary(fresh);
+        setDetailsOpen(true);
+      } else {
+        setView({ kind: "settings" });
+      }
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
@@ -3422,20 +3461,6 @@ const EMPTY_STATS: UsageStats = {
 /** The file Gate rewrites for one tool, for the drift review's copy. */
 function configLocationFor(tools: Tool[], slug: string): string | null {
   return tools.find((t) => t.slug === slug)?.config_location ?? null;
-}
-
-/** The teardown report's four buckets, with the same marks `reopenSubjects`
- *  puts on the reopen rows. The dialog listed Claude Code and Codex beside a
- *  generic glyph while every other surface drew their real marks. */
-function teardownSubjects(report: TeardownReport): DialogTeardownReport {
-  const marks = (tools: TeardownTool[]): DialogTeardownTool[] =>
-    tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
-  return {
-    defaults: marks(report.defaults),
-    still_gate: marks(report.still_gate),
-    awaiting_reopen: marks(report.awaiting_reopen),
-    failed: marks(report.failed),
-  };
 }
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {

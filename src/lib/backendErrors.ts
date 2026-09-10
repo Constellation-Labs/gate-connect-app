@@ -29,22 +29,36 @@ const ROUTING_DOWN_CONTEXTS = new Set([
 ]);
 
 /**
- * Drain the buffer. Every failure goes to analytics; the first routing-down one
- * is returned for display.
+ * Drain this window's buffer. The first routing-down failure is returned for
+ * display; whether the batch also goes to analytics is the caller's to say.
  *
  * The raw message is classified frontend-side like any invoke rejection, so only
  * the classified title ever goes over the wire - the message itself stays on this
  * machine.
  *
+ * `reportToAnalytics` is not a preference, it is a de-duplication, and it has to
+ * be decided by the caller because only the caller knows which shell it is. The
+ * Rust buffer queues a copy of every failure per webview label so the two shells
+ * cannot race over one take (`PENDING_BACKEND_ERRORS`), and both shells are
+ * mounted from launch - so a drain that always reported would emit two
+ * `error_shown` events and two `captureException` records per failure, one of
+ * them from a hidden webview where nothing was shown. Display wants both copies;
+ * analytics wants one. `main` is the reporter because it is always mounted,
+ * so nothing is lost by the tray staying quiet.
+ *
  * Returns `null` when the buffer was empty or held nothing worth interrupting
  * for, which is the common case.
  */
-export async function forwardBackendErrors(): Promise<ClassifiedError | null> {
+export async function forwardBackendErrors({
+  reportToAnalytics,
+}: {
+  reportToAnalytics: boolean;
+}): Promise<ClassifiedError | null> {
   const errs = await drainBackendErrors().catch(() => []);
   let surfaced: ClassifiedError | null = null;
   for (const e of errs) {
     const context = backendErrorContext(e.context);
-    trackError(e.message, context);
+    if (reportToAnalytics) trackError(e.message, context);
     if (!surfaced && ROUTING_DOWN_CONTEXTS.has(e.context)) {
       surfaced = classifyError(e.message, context);
     }

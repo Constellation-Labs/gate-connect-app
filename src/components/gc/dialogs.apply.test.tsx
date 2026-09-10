@@ -36,6 +36,17 @@ function renderOffer(tools: DialogReopenTool[] = [codex]) {
  * what ships, so the pair is gated on `import.meta.env.DEV` rather than deleted
  * - it is the fastest way to see which endpoint a tool is actually on while
  * debugging, and it is false in every `vite build`.
+ *
+ * **Pass `vi.stubEnv` a boolean, never a string.** `stubEnv` does reach
+ * `import.meta.env.DEV` - measured both ways on this tree, and a review that
+ * claimed otherwise was checked and rejected - but it writes the value it is
+ * given, and `import.meta.env` is not the `process.env` string coercion. So
+ * `vi.stubEnv("DEV", "false")` stores the *string* `"false"`, which is truthy,
+ * and the gate stays on: the "ships neither route" test below would then be
+ * asserting the dev build twice and passing for the wrong reason. The two tests
+ * are each other's check - they are mutually exclusive on one flag, so a stub
+ * that failed to bite could not leave both green - and that only holds while
+ * the values stay booleans.
  */
 describe("ApplyChangesDialog route pair", () => {
   it("names both routes in a development build", () => {

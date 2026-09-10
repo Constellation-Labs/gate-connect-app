@@ -995,9 +995,15 @@ export interface BackendError {
   message: string;
 }
 
-/** Hand over (and clear) the backend's buffered analytics errors. Called once
- * at mount to sweep failures that predate the webview, then again on each
- * `backend-error-pending` nudge. */
+/** Hand over (and clear) **the calling window's** buffered backend errors.
+ * Called once at mount to sweep failures that predate the webview, then again on
+ * each `backend-error-pending` nudge.
+ *
+ * The buffer is per webview label, so this drains only this window's copy and a
+ * second call in the same window gets nothing - the two shells cannot starve
+ * each other, and neither can re-read the other's. See `PENDING_BACKEND_ERRORS`
+ * in `src-tauri/src/lib.rs` for why, and `forwardBackendErrors` for which shell
+ * is allowed to forward the batch to analytics. */
 export const drainBackendErrors = () => invoke<BackendError[]>("drain_backend_errors");
 
 // ---- Diagnostics ----

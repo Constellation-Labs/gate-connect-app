@@ -583,6 +583,36 @@ file. A corrected `694:33002` would retire one of them.
 
 ---
 
+## 23. What does the topbar routing banner look like when nothing is routed on purpose?
+
+`RoutingBanner` is drawn in two variants - green "Gate Connect is protecting
+you" and amber "Gate Connect is partly routing your apps · Partly routed ·
+N of M Apps" (`228:85985`, `228:85990`). Both assume a non-empty denominator.
+
+The denominator is now what the user asked for rather than every row on the
+rail, which is the reading that lets the banner reach green at all (a chat row
+nobody switched on is not a gap). That makes **zero** reachable by an ordinary
+action: switch every app off and the drawn amber variant reads "partly routing
+your apps · Partly routed · 0 of 0 Apps", which reports a fault the user caused
+deliberately, with a fraction whose halves are both zero.
+
+We have changed the copy, because a sentence that says something untrue is not a
+question: it now reads "No apps are set to route through Gate Connect · None
+routed", with no fraction. **We have not changed the tile**, which stays amber,
+because there is no third `StatusTile` tone in the file and choosing one by eye
+is exactly what we are told not to do.
+
+So: is a deliberate nothing-routed state amber, or does it want a neutral tone
+(and a third variant of the banner)? Our reading is that amber is wrong here -
+it is the same tile the app uses for "something you asked for is not working" -
+but this is a drawn decision, not ours.
+
+Evidence: `src/components/gc/banners.tsx` (`RoutingBanner`),
+`src/components/gc/base.tsx` (`TILE_TONES` has green, amber and an undrawn red),
+`docs/review-ui-bug-sweep-correctness.md` finding M-3.
+
+---
+
 ## For information: things we found and fixed without asking
 
 So the list above is not mistaken for the whole audit. All of these were

@@ -1,6 +1,4 @@
 import type { JSX } from "react";
-import type { ReopenTool } from "../../lib/reopen";
-import type { DialogReopenTool } from "./dialogs";
 
 /**
  * Brand marks for the rail's app tiles and the app pane's header tile (Figma
@@ -110,21 +108,4 @@ const BRAND_BY_SLUG: Record<string, BrandName> = {
 export function brandMarkFor(slug: string): JSX.Element | undefined {
   const name = BRAND_BY_SLUG[slug];
   return name ? <BrandMark name={name} /> : undefined;
-}
-
-/**
- * The reopen flow's rows, with the product marks the shell holds.
- *
- * Lives here rather than in either shell because BOTH draw this flow, and the
- * window had it while the tray did not: `TrayApp` passed `runningApps.stage.tools`
- * straight through, so `toolIcon`'s cube fallback fired and the tray listed
- * Claude Code and Codex behind a generic glyph while the window - same flow, same
- * moment - drew their real marks.
- *
- * The model itself is `lib/reopen`'s and travels unchanged; only the mark is
- * added. A second copy of a row is how two surfaces come to disagree about one
- * tool, which is the whole reason `lib/reopen` exists.
- */
-export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
-  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
 }

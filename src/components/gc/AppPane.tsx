@@ -700,6 +700,21 @@ function RecentActivity({
 
       {pending ? (
         <PendingRows />
+      ) : unattributed ? (
+        // Ahead of the rows, not inside the empty arm. `unattributed` says
+        // nothing here is attributable to this app, which is a claim about the
+        // whole card - so a non-empty `activity` does not get to outvote it, and
+        // nesting this under `activity.length === 0` let it. `MessagesChart`
+        // resolves it the same way, its `unattributed` arm ahead of the bars,
+        // and this is the same invariant one card over: the flag belongs to the
+        // component that owns the reading, not to the caller's luck about
+        // whether the list came back empty.
+        //
+        // Ahead of `unavailable` too, for the reason the chart gives: no read
+        // was attempted, so none can have failed.
+        <EmptyNote>Recent activity isn&apos;t attributed to this app</EmptyNote>
+      ) : unavailable ? (
+        <EmptyNote>Recent activity couldn&apos;t be read</EmptyNote>
       ) : activity.length === 0 ? (
         // Deliberately NOT the chart's "in the last 24hrs". The entries outlive
         // the window they were sent in - the feed keeps the last messages even
@@ -707,15 +722,7 @@ function RecentActivity({
         // what this app last did - so borrowing the chart's sentence would state a
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
-        <EmptyNote>
-          {unattributed
-            ? // Ahead of `unavailable`, for the reason `MessagesChart` gives:
-              // no read was attempted, so none can have failed.
-              "Recent activity isn't attributed to this app"
-            : unavailable
-              ? "Recent activity couldn't be read"
-              : "No recent messages"}
-        </EmptyNote>
+        <EmptyNote>No recent messages</EmptyNote>
       ) : (
         <table className="mt-5 w-full">
           <thead>

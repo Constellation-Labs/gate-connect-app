@@ -165,7 +165,11 @@ export function StatTiles({
   // draws a skeleton, `N/A` means there is no reading behind this counter, and
   // a number - including zero - is a reading and prints as one.
   const count = (value: number | null) =>
-    pending ? null : unattributed || value === null ? UNAVAILABLE : value.toLocaleString();
+    pending
+      ? null
+      : unattributed || value === null
+        ? UNAVAILABLE
+        : value.toLocaleString();
   return (
     <Card className="flex" busy={pending}>
       {pending && <span className="sr-only">Loading your activity</span>}
@@ -289,6 +293,13 @@ export function MessagesChart({
   // A dense series is what the endpoint returns - an hour with no traffic is a
   // zero bar, not a missing one - so "nothing happened" is 24 zeroes rather than
   // an empty array. Both land here as a highest of zero.
+  //
+  // The three negated terms are belt and braces, not conditions: `empty` is
+  // only ever read from the fourth arm of the chain below, so `pending`,
+  // `unattributed` and `unavailable` have all been ruled out by the arms above
+  // it. Stated rather than trimmed, because what keeps them false is the ORDER
+  // of that chain, and a reader who deletes them here has to know that. If the
+  // arms are ever reordered, these are what keep this honest.
   const empty = !pending && !unavailable && !unattributed && highest === 0;
   return (
     <Card className="p-4" busy={pending}>

@@ -45,10 +45,11 @@ import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
-import { brandMarkFor, reopenSubjects } from "./components/gc/BrandMark";
+import { brandMarkFor } from "./components/gc/BrandMark";
 import { ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
+  reopenSubjects,
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
@@ -122,6 +123,29 @@ export function TrayApp() {
    *  figures stay on screen under the new org's name. */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
+  /**
+   * The buffered routing-down failure, held apart from `actionError`.
+   *
+   * Two different facts, so two different pieces of state. `actionError` is an
+   * *event*: the user pressed something and it failed, one second ago, and it
+   * stands until they dismiss it. This one is a *claim about routing state*
+   * drained out of the Rust buffer - `restore_routing`, `provider_restore`,
+   * `provider_reconcile`, all three of which describe how things ARE rather
+   * than something that just happened.
+   *
+   * Keeping them in one slot is what made the tray latch. The popover's webview
+   * is created hidden at launch and never destroyed, so it drains the startup
+   * auto-enable's failures before the user has opened anything, and nothing
+   * cleared them: a failure raised hours earlier, already reported and
+   * dismissed in the main window, sat in a banner over the first popover the
+   * user happened to open. A state claim has to be allowed to stop being true,
+   * which an action's error does not - so this one clears itself and that one
+   * does not.
+   */
+  const [routingError, setRoutingError] = useState<ClassifiedError | null>(null);
+  /** One banner, two sources. The action the user just took outranks a standing
+   *  claim about routing: it is newer, and it is the one they are waiting on. */
+  const shownError = actionError ?? routingError;
   const platform = usePlatform();
 
   /** What the last read put on screen, so an unchanged reading is dropped
@@ -152,6 +176,19 @@ export function TrayApp() {
     const v = await routingVerdicts().catch(() => null);
     verdictsRead.current = v !== null;
     if (v) setVerdicts(verdictsBySlug(v));
+    // A fresh sweep that reaches the engine and finds nothing complaining about
+    // the connection is evidence against a buffered "routing is down", so it
+    // retires it. This is the half of the latch that matters: clearing on hide
+    // alone would still show a stale failure once, on the first open, which is
+    // the moment it is least explicable. `connection_problem` is the one
+    // `VerdictReason` that means what the buffered contexts mean; the others
+    // (drift, reopen, access) are per-tool and do not contradict the claim.
+    //
+    // Deliberately not touching `actionError`: a probe cannot tell the user
+    // their own failed button did not happen.
+    if (v && !v.some((verdict) => verdict.reason === "connection_problem")) {
+      setRoutingError(null);
+    }
   }, []);
 
   /**
@@ -297,8 +334,14 @@ export function TrayApp() {
    */
   useEffect(() => {
     const sweep = () =>
-      void forwardBackendErrors().then((e) => {
-        if (e) setActionError(e);
+      // Display only. The window shell forwards the batch to analytics; both
+      // shells are handed their own copy of every failure so they cannot race
+      // over one take, and reporting from both would double every event with
+      // one of the two coming from a webview where nothing was shown.
+      void forwardBackendErrors({ reportToAnalytics: false }).then((e) => {
+        // `forwardBackendErrors` only ever returns a routing-down context, so
+        // everything it hands back belongs in the state-claim slot.
+        if (e) setRoutingError(e);
       });
     sweep();
     const unlisten = listen("backend-error-pending", sweep);
@@ -323,6 +366,11 @@ export function TrayApp() {
         // Hidden, not destroyed - so the menu would still be open over the
         // list on the next reveal, with rows clickable beside it.
         setMenuOpen(false);
+        // Same reasoning, one surface up: the routing banner has had its
+        // showing. It is a state claim, and the next reveal re-reads the state
+        // it was claiming, so carrying it across is how a failure the user
+        // already saw comes back undated over an unrelated visit.
+        setRoutingError(null);
         return;
       }
       void redetect();
@@ -888,8 +936,17 @@ export function TrayApp() {
               // answering `Some` says nothing about whether the *window* holds a
               // summary, and the window is what decides whether anything opens.
               // The tray cannot see that state, so it does not try to predict
-              // it - the window re-reads the summary on this event and routes to
-              // Settings when there is nothing to show.
+              // it - the window re-reads the summary for itself on this event.
+              //
+              // Which means the window can also decline: it refuses the request
+              // outright when it is still on setup, or when another dialog holds
+              // the slot, because arming a dialog it cannot draw is what pops one
+              // unprompted later (`NewUiApp.tsx`, the
+              // `recovery-details-requested` listener). So a press here is not a
+              // promise that something opens, and this side must not imply one.
+              // The card stays put either way, which is what makes a refusal
+              // survivable - the user's next press lands on a window that can
+              // answer it.
               onReview: () =>
                 void requestRecoveryDetails().catch((e) =>
                   setActionError(classifyError(e, "generic")),
@@ -921,16 +978,19 @@ export function TrayApp() {
       onMenuSelect={onMenuSelect}
       dialog={
         <>
-          {actionError && (
+          {shownError && (
             // The tray draws no notice slot; the banner sits over the list the
             // way the dialogs do, because a swallowed failure is worse than an
             // undrawn surface.
             <div className="absolute inset-x-4 top-20 z-20">
               <ErrorBanner
-                title={actionError.title}
-                hint={actionError.hint}
-                raw={actionError.raw}
-                onDismiss={() => setActionError(null)}
+                title={shownError.title}
+                hint={shownError.hint}
+                raw={shownError.raw}
+                onDismiss={() => {
+                  setActionError(null);
+                  setRoutingError(null);
+                }}
               />
             </div>
           )}

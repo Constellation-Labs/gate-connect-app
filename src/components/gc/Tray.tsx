@@ -182,7 +182,13 @@ export function Tray({
       // first Tab lands inside the popover, and -1 keeps it out of the tab order
       // itself so it is never a stop of its own.
       tabIndex={-1}
-      className="flex h-screen w-full flex-col bg-base-background tabular-nums outline-none"
+      // `relative` for `Modal`: its scrim is `absolute inset-0` and the panel's
+      // height cap is `max-h-full` against it, so the scrim needs a positioned
+      // ancestor to measure. Without one it resolved against the initial
+      // containing block, which in a popover happens to be the same box - right
+      // by coincidence rather than construction, and only until something wraps
+      // this. `AppShell` carries it for the same reason and says so.
+      className="relative flex h-screen w-full flex-col bg-base-background tabular-nums outline-none"
     >
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-base-border bg-base-card px-4">
         <span className="flex items-center gap-2.5">
@@ -290,10 +296,27 @@ export function Tray({
  * tile recipe on green or amber (`Connect/routing` 694:34185 vs
  * `Connect/partial` 694:34024). Counts derive from the rows so the card can
  * never disagree with the switches under it; "tools routing" is the drawn
- * phrase, and it counts every row - chat domains included.
+ * phrase.
+ *
+ * **The denominator is intent, not every row.** It counted every row, chat
+ * domains included, and that docstring read like a drawn decision - it predates
+ * the chat rows existing. They ship `enabled: false` and no family switch flips
+ * them (`groups.ts`, `cascadeTargets` returns false for a `chat` member), so
+ * counting them made green require routing a session-cookie surface nobody
+ * asked for: the card sat on amber "0 of 5 tools routing" forever, and after
+ * the topbar moved to an intent filter the two shells disagreed by exactly the
+ * switched-off chat rows - green "3 of 3 Apps" above, amber "0 of 5" under the
+ * same tray icon.
+ *
+ * Principle 2 applied to a fraction, the same way the topbar does it and the
+ * same way `Group.cascadeDesired` already did it for the family switch: `on` is
+ * what the user asked for, `protected` is what happened. A row nobody turned on
+ * is not a gap. An opted-in chat row still counts, and can still go green -
+ * `proxyMemberStatus` reports `protected` once it routes - so this hides
+ * nothing the user chose.
  */
 function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
-  const apps = groups.flatMap((g) => g.apps);
+  const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
   const routed = apps.filter((a) => a.status.kind === "protected").length;
   const all = apps.length > 0 && routed === apps.length;
   const { tone, icon, title } = all
@@ -314,7 +337,15 @@ function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
       <div className="flex min-w-0 flex-col gap-0.5">
         <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
         <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
-          {on ? "On" : "Off"} · {routed} of {apps.length} tools routing
+          {/* No fraction when the denominator is intent and the intent is
+            * nothing: "0 of 0 tools routing" reports a gap the user opened on
+            * purpose, with both halves of the ratio meaningless. Same call as
+            * the topbar banner's, and the same open question about the tone
+            * (question 23 in `docs/figma-questions-for-design.md`). */}
+          {on ? "On" : "Off"} ·{" "}
+          {apps.length === 0
+            ? "No apps set to route"
+            : `${routed} of ${apps.length} tools routing`}
         </p>
       </div>
     </div>
@@ -865,9 +896,18 @@ function SecurityCard({
           * first - with a scope on its own line it was the SCOPE that got cut at
           * large text scales, which is the wrong half to lose. */}
         <span className="min-w-0 text-sm font-medium leading-5 text-base-foreground">
-          {security.count === 0
-            ? "No recent security events"
-            : `${security.count} recent security event${security.count === 1 ? "" : "s"}`}
+          {/* Principle 6, the last step of it: an offline feed is not reading, so
+            * its zero is not a reading either. "No recent security events" beside
+            * an OFFLINE pill is the same overclaim as the two absolutes above,
+            * just quieter - it asserts a quiet machine when what happened is
+            * that nobody looked. A count that IS a reading still prints while
+            * reconnecting, because the buffer it counts is real and the pill
+            * beside it already says the stream is catching up. */}
+          {security.state === "offline"
+            ? "Security events unavailable"
+            : security.count === 0
+              ? "No recent security events"
+              : `${security.count} recent security event${security.count === 1 ? "" : "s"}`}
         </span>
       </span>
       <span

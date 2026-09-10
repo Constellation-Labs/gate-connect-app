@@ -1762,14 +1762,28 @@ struct BackendError {
 /// Two ways that showed. A resume failure raised in the popover could be taken
 /// by the hidden main window, leaving the tray to redraw an identical card and
 /// say nothing, which is the dead button this was meant to fix. And a startup
-/// failure could be taken by the hidden *tray*, where `actionError` is never
-/// cleared on hide, so it surfaced later as an unexplained banner over a popover
+/// failure could be taken by the hidden *tray*, where nothing cleared
+/// `actionError`, so it surfaced later as an unexplained banner over a popover
 /// the user had just opened while the foreground window showed nothing.
 ///
-/// A copy per label fixes both: each shell drains only what was queued for it,
-/// and neither can consume the other's. Keyed by label rather than by a cursor
-/// because the buffer evicts its oldest entry at the cap, and a per-shell index
-/// into a shifting `Vec` is a second thing to get wrong.
+/// A copy per label fixes **the first**: each shell drains only what was queued
+/// for it, and neither can consume the other's. Keyed by label rather than by a
+/// cursor because the buffer evicts its oldest entry at the cap, and a per-shell
+/// index into a shifting `Vec` is a second thing to get wrong.
+///
+/// It does not fix the second, and on its own it made it certain rather than
+/// intermittent: the hidden tray is now queued a copy of *every* routing-down
+/// failure by construction, where before it had to win a race for one. What
+/// closes that is the popover clearing its own banner when it hides
+/// (`TrayApp.tsx`, the `document.hidden` edge) - a display decision, made where
+/// the display is. This buffer's job is only to stop the two shells fighting
+/// over one `Vec`.
+///
+/// Analytics is deliberately NOT duplicated with the display copies. Both
+/// shells drain, but only `main` forwards to the analytics seam
+/// (`forwardBackendErrors`'s `reportToAnalytics`); a copy per label would
+/// otherwise emit two `error_shown` events per failure, one of them from a
+/// webview where nothing was shown.
 static PENDING_BACKEND_ERRORS: Mutex<Option<HashMap<String, Vec<BackendError>>>> = Mutex::new(None);
 
 /// The webviews that drain. A label not listed here queues nothing, which is
@@ -1823,24 +1837,34 @@ fn signal_session_changed() {
     }
 }
 
-/// Hand the calling window its buffered backend failures and clear ITS copy.
+/// Take one label's buffered failures, leaving every other label's alone.
 ///
-/// Scoped to `window.label()`: see [`PENDING_BACKEND_ERRORS`]. A drain from a
-/// label that queues nothing returns empty rather than stealing another
-/// shell's, which is the behaviour that matters if a third window ever calls
-/// this.
-#[tauri::command]
-fn drain_backend_errors(window: tauri::Window) -> Vec<BackendError> {
-    let label = window.label().to_string();
+/// Split out of [`drain_backend_errors`] so the test can exercise this exact
+/// code rather than a copy of it: a unit test cannot build a `tauri::Window`,
+/// and a local reimplementation of the take would stay green through a
+/// regression in the real command - a `mem::take` over the whole map, say.
+fn drain_for_label(label: &str) -> Vec<BackendError> {
     PENDING_BACKEND_ERRORS
         .lock()
         .ok()
         .and_then(|mut guard| {
             guard
                 .as_mut()
-                .and_then(|per_label| per_label.get_mut(&label).map(std::mem::take))
+                .and_then(|per_label| per_label.get_mut(label).map(std::mem::take))
         })
         .unwrap_or_default()
+}
+
+/// Hand the calling window its buffered backend failures and clear ITS copy.
+///
+/// Scoped to `window.label()`: see [`PENDING_BACKEND_ERRORS`]. A drain from a
+/// label that queues nothing returns empty rather than stealing another
+/// shell's, which is the behaviour that matters if a third window ever calls
+/// this. The label comes from the window tauri resolved for the invoke, not
+/// from the payload, so one webview cannot name another's.
+#[tauri::command]
+fn drain_backend_errors(window: tauri::Window) -> Vec<BackendError> {
+    drain_for_label(window.label())
 }
 
 /// Process names of the AI tools we're willing to close, each paired with the
@@ -5510,6 +5534,17 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that mutate [`PENDING_BACKEND_ERRORS`].
+    ///
+    /// libtest runs a binary's tests on several threads by default, and the
+    /// buffer is a process global that these tests reset and then count. One
+    /// such test is deterministic on its own; a second one added later would
+    /// flake in whichever direction the scheduler picked. Same reasoning as
+    /// `gate_connect_core::env`'s `path_env_lock`, and `into_inner` on a
+    /// poisoned lock for the same reason: a panic in one test should fail that
+    /// test, not cascade.
+    static BACKEND_ERROR_BUFFER_LOCK: Mutex<()> = Mutex::new(());
+
     /// One shell draining cannot starve the other.
     ///
     /// The buffer was a single `Vec` and the drain took it. That held while one
@@ -5520,22 +5555,20 @@ mod tests {
     /// the tray silent (the dead button this was fixing), and a startup failure
     /// taken by the hidden tray, surfacing later as an unexplained banner.
     ///
-    /// `drain_backend_errors` is keyed on the calling window's label, so this
-    /// exercises the buffer directly rather than through a `tauri::Window` a
-    /// unit test cannot build.
+    /// Calls [`drain_for_label`], which is what `drain_backend_errors` calls
+    /// with `window.label()` - a `tauri::Window` is not buildable in a unit
+    /// test, but the take itself is, and reimplementing it here would leave
+    /// this green through a regression in the real one.
+    ///
+    /// Serialised on [`BACKEND_ERROR_BUFFER_LOCK`]: this mutates a process
+    /// global and asserts exact counts, so it cannot share the buffer with a
+    /// concurrently running test.
     #[test]
     fn each_shell_drains_its_own_copy_of_a_failure() {
-        fn drain(label: &str) -> Vec<BackendError> {
-            PENDING_BACKEND_ERRORS
-                .lock()
-                .ok()
-                .and_then(|mut guard| {
-                    guard
-                        .as_mut()
-                        .and_then(|per| per.get_mut(label).map(std::mem::take))
-                })
-                .unwrap_or_default()
-        }
+        let _guard = BACKEND_ERROR_BUFFER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let drain = drain_for_label;
 
         if let Ok(mut guard) = PENDING_BACKEND_ERRORS.lock() {
             *guard = None;

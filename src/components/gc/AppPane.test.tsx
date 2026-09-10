@@ -310,10 +310,34 @@ describe("AppPane counters and chart", () => {
     // above the very note saying nothing could be attributed.
     render(pane({ unattributed: true, unavailable: { chart: true } }));
 
-    expect(screen.queryByText("0")).toBeNull();
-    expect(screen.queryByText("0%")).toBeNull();
-    expect(screen.queryByText("+$0.00")).toBeNull();
+    // `queryAllByText` with a length, not `queryByText`: the singular form
+    // THROWS on multiple matches rather than returning null, so when this
+    // regresses it reports "found multiple elements" instead of the assertion
+    // that was meant. It fails either way; only one of the two says why.
+    expect(screen.queryAllByText("0").length).toBe(0);
+    expect(screen.queryAllByText("0%").length).toBe(0);
+    expect(screen.queryAllByText("+$0.00").length).toBe(0);
     expect(screen.getAllByText("n/a").length).toBe(3);
+  });
+
+  /**
+   * The feed obeys the flag even when it has rows to draw.
+   *
+   * It used to honour `unattributed` only inside its own `activity.length === 0`
+   * arm, so a non-empty list outvoted the flag and the card printed rows under a
+   * pane note saying nothing here was attributable. Same invariant the chart
+   * already had the right way round, one card over. Load-bearing: move the
+   * `unattributed` arm back below `activity.length === 0` in `AppPane` and this
+   * fails on the row that reappears.
+   */
+  it("says the feed is unattributed even when entries are present", () => {
+    render(pane({ unattributed: true, activity: [entry] }));
+    const feed = card("Recent activity");
+
+    expect(
+      within(feed).getByText("Recent activity isn't attributed to this app"),
+    ).toBeTruthy();
+    expect(within(feed).queryByRole("table")).toBeNull();
   });
 
   it("says a chat domain's chart is unattributed rather than unreadable", () => {

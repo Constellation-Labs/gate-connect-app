@@ -248,8 +248,23 @@ pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
 ///
 /// [`opencode_config_dir`] already carried this exact guard for `XDG_CONFIG_HOME`,
 /// with the same reasoning written out. It was right; it was just applied to two
-/// variables instead of all eight. Every override goes through here now, so the
-/// next one added cannot forget it.
+/// variables instead of all eight. Every **tool-dir path** override goes through
+/// here now, and the test below covers all eight, so the next one added cannot
+/// forget it.
+///
+/// Two env-driven per-user inputs deliberately do not, and are worth naming so
+/// the sentence above is not read as wider than it is:
+///
+/// - `OPENCODE_CONFIG_CONTENT` (`integrations/opencode.rs`) is OpenCode's own
+///   variable and is read, never written - but an ambient value still colours
+///   what a test believes an administrator configured, under a set seam.
+/// - `ca_linux.rs`'s NSS database search reads bare `HOME` rather than
+///   [`home()`], so it is the one per-user path the seam does not redirect.
+///   Theoretical today, because the `certutil` override beside it is
+///   `#[cfg(test)]` and the one integration suite that reaches this area scopes
+///   `HOME` as well. Worth knowing before anyone writes a Linux CA-trust
+///   integration test that scopes only the seam: the write in question installs
+///   a MITM root into the developer's real browser trust store.
 fn tool_path_override(var: &str) -> Option<PathBuf> {
     if test_home_override().is_some() {
         return None;
