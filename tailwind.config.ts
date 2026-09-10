@@ -197,6 +197,14 @@ export default {
           // Two independent nodes agree on red/400: the legend swatch
           // (706:10090) and the tooltip component (744:37718). This was
           // red/500, one step too saturated.
+          // What neither pass read was the BAR: `706:10516` and `864:3513`,
+          // the blocked segment in both Overview generations, draw red/500
+          // #ef4444. So the file splits this one series between its bar and
+          // its key. Not flipped here, because only Blocked splits - bar and
+          // swatch agree on blue/400, amber/400 and violet/500 for the other
+          // three (`864:3597`) - which makes it one node's slip rather than a
+          // rule that bars run a step hot. Raised with design as question 19,
+          // alongside the violet/purple split below.
           flagged: "#fbbf24", // tailwind amber/400
           redacted: "#8b5cf6", // tailwind violet/500
           // The file disagrees with itself here and this stays put until a

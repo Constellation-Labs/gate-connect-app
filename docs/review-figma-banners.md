@@ -124,6 +124,24 @@ share it.
 3. `tailwind.config.ts:284` comment attributes `base-btn-sm` to the `sm`
    size; it is the shared `sm`/`xs` treatment. Cosmetic, comment only.
 
+   **CORRECTED 2026-09-10: they are not shared, and this was the wrong
+   conclusion from one instance.** Everything measured above is `xs`
+   (`744:37756`), and `xs` is the only variant this audit read. Two `sm`
+   instances that name their own variant - `267:5083`, the intro's locate
+   button, and `121:35058`, the Overview card footer - draw the white inset
+   blurred **4px**, not 6, at the same 40%. That is the only property
+   separating the two sizes. So the token was not mislabelled, it was holding
+   the wrong size's value: `base-btn-sm` now carries `sm`'s 4px and a new
+   `base-btn-xs` carries the 6px measured here. Not cosmetic - every `h-8`
+   button in the app was wearing the `xs` highlight.
+
+   The same two instances also draw radius **4px on a `base.border` line**
+   where `694:34124` (the tray footer), also `Size=sm`, draws 8px on
+   `base.input`. Item 2 above is therefore narrower than it reads: `xs` on
+   `base.input` at 4px is not a third combination in a tidy set, it is one of
+   several the `sm` and dialog instances contradict each other about. Raised
+   with design rather than resolved; see `docs/figma-questions-for-design.md`.
+
 ## 2. `Topbar.tsx` "the components were deleted" - stale, and already fixed
 
 The comment I was pointed at is **gone from disk as of this audit**: lines

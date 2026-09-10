@@ -246,12 +246,36 @@ Two of this repo's own records were corrected as part of the work: the stale
 sent the audit to a 720-tall viewport, and two new questions for design, 19 (the
 Blocked red) and 20 (the dialog body gap).
 
-**`CLAUDE.md` now has one stale claim as a result**, left for a person to change:
-its Button section says `shadow-base-btn-sm` "expands to exactly the three shadows
-above - so the token the config comment labels 'the sm size' is in fact the `xs`
-treatment. `sm` and `xs` evidently share it." They do not share it. The `xs`
-instance (`744:37756`) blurs the white inset 6px and the `sm` instances
-(`267:5083`, `121:35058`) blur it 4px, which is why the token is now split.
+**Stale claims this work created, all now updated.** Splitting the button shadow
+falsified a conclusion the repo had written down in four places, so they were
+corrected rather than left to be re-derived:
+
+- `docs/review-figma-banners.md:109` is where the "`sm` and `xs` evidently share
+  it" conclusion lives. It reasoned from the only variant that audit read, `xs`
+  (`744:37756`), which blurs the white inset 6px; the two `sm` instances
+  (`267:5083`, `121:35058`) blur it 4px. Corrected in place with the measurement,
+  rather than rewritten, since the file is an audit record. Its item 2 is narrowed
+  at the same time: `xs` at 4px on `base.input` is not a third combination in a
+  tidy set, because the same two `sm` instances draw 4px on `base.border` where
+  `694:34124`, also `Size=sm`, draws 8px on `base.input`.
+- `CLAUDE.md`'s Button section listed four elevation tokens and said `sm` is 8px
+  "on a `base.input` line" on the strength of the tray instance alone. It now
+  carries `-btn-xs`, the 4-versus-6 blur split, and `sm`'s radius and edge as an
+  open conflict to read per instance.
+- `CLAUDE.md`'s tracking bullet enumerated `label/copy-12/-14/-16` and
+  `heading/16` but not `heading/18` (-1%) or `heading/14` (**0%**), which is what
+  let the dialog title borrow `heading/20`'s value. Both are named now, with a
+  standing warning not to pick a heading tracking by size proximity.
+- `plans/new-app-ui-figma.md` recorded a tracking check as inconclusive because
+  "MCP exposes only the `Design docs` page, whose token export carries no
+  `letterSpacing` at all". True of the export, and misleading as a method: a node
+  inside an unlisted page resolves when asked for by id, and both readers return
+  the text style attached to it, tracking included. That is how `heading/18` and
+  `heading/14` were settled here without waiting for design.
+
+One more, in the code: `tailwind.config.ts`'s `chart.blocked` comment recorded the
+move from red/500 to red/400 on the swatch and the tooltip, and did not know the
+bar rectangles draw red/500. It now says so and points at question 19.
 
 ## Not fixed, and why
 
