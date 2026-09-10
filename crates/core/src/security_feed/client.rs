@@ -331,6 +331,43 @@ async fn wait(feed: &Feed, delay: Duration) {
     }
 }
 
+/// A response body, cut to one bounded line so it can ride in a log entry.
+///
+/// Returns the empty string when there is nothing worth appending, so a caller
+/// can interpolate it unconditionally rather than branching.
+///
+/// Two bounds, and both matter. Control characters become spaces because the log
+/// is line-oriented - `logging::log` writes one `\n`-terminated entry - and a
+/// body containing newlines would read back as several entries, one of them
+/// carrying no timestamp or level. And the length is capped because a body is
+/// whatever the far end felt like sending, while this file is something a user
+/// may be asked to send us.
+///
+/// Redaction is `logging::log`'s, applied to every message it writes. This does
+/// not add its own: the module note is explicit that the scrub is a backstop and
+/// not a licence to log anything, and what reaches here is an error body from
+/// our own gateway rather than user content.
+fn log_snippet(body: &str) -> String {
+    /// Enough for the gateway's `{"error":{"code":..,"message":..}}` shape,
+    /// which is the thing worth reading, and short enough that a runaway body
+    /// cannot flood the file.
+    const MAX_CHARS: usize = 300;
+
+    let flat: String = body
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.trim();
+    if flat.is_empty() {
+        return String::new();
+    }
+    let mut out: String = flat.chars().take(MAX_CHARS).collect();
+    if flat.chars().nth(MAX_CHARS).is_some() {
+        out.push('…');
+    }
+    format!(": {out}")
+}
+
 /// Fetch the events this client could not have received, and merge them.
 ///
 /// Exists because the stream has no replay: the server reports
@@ -414,9 +451,26 @@ async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
     };
     let status = resp.status();
     if !status.is_success() {
+        // The body, not just the status.
+        //
+        // A bare "400 Bad Request" is not diagnosable on this gateway, because
+        // it has no 404 for a path it does not route: the proxy's `@All("*")`
+        // catch-all swallows an unmatched path and drives it through the LLM
+        // pipeline, which rejects a bodiless GET carrying no `model`. So a 400
+        // here means either a genuinely bad request or a route this deployment
+        // has not shipped, and those want opposite responses - fix the client,
+        // or wait for the server. The status alone cannot tell them apart; the
+        // body can, and says so in as many words.
+        //
+        // Not hypothetical: the 400 seen against staging on 2026-09-09 was the
+        // second kind, and the status-only line left it unexplained.
+        let body = resp.text().await.unwrap_or_default();
         crate::logging::log(
             crate::logging::Level::Warn,
-            &format!("security feed: backfill answered {status}"),
+            &format!(
+                "security feed: backfill answered {status}{}",
+                log_snippet(&body)
+            ),
         );
         feed.set_history_ok(false, sink);
         return;
@@ -710,6 +764,45 @@ mod tests {
             feed.newest_at().as_deref(),
             Some("2026-09-02T13:05:00.000Z")
         );
+    }
+
+    #[test]
+    fn a_log_snippet_is_one_line_and_bounded() {
+        // The reason this helper exists: a status alone could not tell a real
+        // bad request from a route the deployment does not have, and the body
+        // is what separates them.
+        assert_eq!(
+            log_snippet(r#"{"error":{"message":"no model"}}"#),
+            r#": {"error":{"message":"no model"}}"#
+        );
+
+        // Nothing to append rather than a bare colon.
+        assert_eq!(log_snippet(""), "");
+        assert_eq!(log_snippet("   \n  "), "");
+
+        // The log writes one newline-terminated entry, so a body carrying its
+        // own newlines must not read back as several - the second of which
+        // would have no timestamp or level in front of it.
+        let flattened = log_snippet("first\nsecond\r\tthird");
+        assert!(
+            !flattened.contains('\n') && !flattened.contains('\r') && !flattened.contains('\t'),
+            "control characters survived: {flattened:?}"
+        );
+        assert_eq!(flattened, ": first second  third");
+    }
+
+    #[test]
+    fn a_long_log_snippet_is_cut_and_says_so() {
+        let long = "x".repeat(400);
+        let out = log_snippet(&long);
+        // 300 body chars, the ": " prefix, and the ellipsis that marks the cut.
+        assert_eq!(out.chars().count(), 2 + 300 + 1);
+        assert!(out.ends_with('…'), "a cut body must show that it was cut");
+
+        // Exactly at the bound is not a cut, so it carries no ellipsis.
+        let exact = log_snippet(&"y".repeat(300));
+        assert_eq!(exact.chars().count(), 2 + 300);
+        assert!(!exact.ends_with('…'));
     }
 
     #[test]
