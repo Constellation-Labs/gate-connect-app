@@ -23,14 +23,18 @@ use std::process::Command;
 /// `gsettings get` against the session's proxy schema - and neither hangs for a
 /// reason the app can see. A locked database, a stalled network mount, a dbus
 /// peer that does not answer: each of them blocks in the open, on a path where
-/// somebody is waiting on a switch. `ca_windows` grew a private version of this
-/// loop first and `ca_linux` a second one; this is that shape, once, so the
-/// third caller is not a third copy.
+/// somebody is waiting on a switch.
 ///
-/// **The child is reaped after the kill**, which the earlier copies do not do.
-/// `Child::kill` signals and `Child::drop` deliberately does not wait, so on
-/// Unix a killed child stays a zombie for the life of the parent - harmless
-/// once, and this is called per database per enable.
+/// Three private copies of this loop had grown before it: `ca_windows`,
+/// `ca_linux`, and `integrations::binaries`' version probe. This is that shape
+/// once, so the next caller is not a fourth.
+///
+/// **The child is reaped after the kill.** `Child::kill` signals and
+/// `Child::drop` deliberately does not wait, so on Unix a killed child stays a
+/// zombie for the life of the parent - harmless once, and the certutil caller
+/// reaches it per database per enable. Of the three copies only
+/// `integrations::binaries` got that right, and its comment says why; the two
+/// in `ca_*` did not.
 ///
 /// **Only for commands whose output is small.** stdout and stderr are piped and
 /// not read until the child exits, so a child that writes more than the pipe
@@ -42,7 +46,7 @@ pub fn output_bounded(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<Option<std::process::Output>> {
-    /// Gap between `try_wait` polls. Same value as the two copies this replaces.
+    /// Gap between `try_wait` polls. The value all three copies used.
     const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
     let mut child = cmd
@@ -396,6 +400,102 @@ fn simple_uuid_v4() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command that answers comes back whole.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_prompt_command_returns_its_output() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf hello"]);
+        let out = output_bounded(cmd, std::time::Duration::from_secs(5))
+            .expect("spawn")
+            .expect("not a timeout");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
+    }
+
+    /// One that does not is killed at the deadline, and does not take the
+    /// deadline's worth of patience plus the command's.
+    ///
+    /// The whole point of the helper: `certutil` against a locked database and
+    /// `gsettings` against a dbus peer that never answers both block in the call
+    /// rather than failing it, on a path where somebody is waiting on a switch.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_hanging_command_is_killed_at_the_deadline() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let started = std::time::Instant::now();
+        let out = output_bounded(cmd, std::time::Duration::from_millis(300)).expect("spawn");
+        let waited = started.elapsed();
+
+        assert!(out.is_none(), "a killed command has no output to report");
+        // Generously bounded: the assertion is "it did not wait for the child",
+        // not a claim about scheduler precision on a loaded runner.
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "waited {waited:?}, which means the deadline did not fire"
+        );
+    }
+
+    /// And it is reaped, not just signalled.
+    ///
+    /// `Child::kill` signals and `Child::drop` deliberately does not wait, so
+    /// the two hand-rolled copies this helper replaced left a zombie for the
+    /// life of the process - once per database per enable, on the path that
+    /// runs certutil.
+    ///
+    /// **The child reports its own pid**, rather than the test counting this
+    /// process's zombies. That first version passed alone and failed in the
+    /// suite: the count is process-wide, the harness runs tests in parallel, and
+    /// `integrations::binaries` has a test that abandons a child on purpose. A
+    /// pid is the only way to ask about *this* child.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_killed_command_is_reaped() {
+        // `TmpDir`, not a hand-built name: the first version interpolated
+        // `ThreadId(2)` into the path, and the unquoted parens made `sh` exit on
+        // a syntax error - so the child was gone before the deadline and the
+        // assertion below failed for a reason that had nothing to do with the
+        // reap. Quoted here as well.
+        let dir = TmpDir::new("reap");
+        let pidfile = dir.0.join("pid");
+        let mut cmd = Command::new("sh");
+        // `$$` is the shell's own pid, which is the child spawned below.
+        cmd.args([
+            "-c",
+            &format!("echo $$ > '{}'; sleep 30", pidfile.display()),
+        ]);
+
+        assert!(output_bounded(cmd, std::time::Duration::from_millis(500))
+            .expect("spawn")
+            .is_none());
+
+        let pid = fs::read_to_string(&pidfile)
+            .expect("the child wrote its pid before the deadline")
+            .trim()
+            .to_string();
+        let _ = fs::remove_file(&pidfile);
+
+        // Reaped means gone from the table entirely. The not-a-zombie branch is
+        // for the vanishingly unlikely case that the pid has been reused by the
+        // time we look - it must not read as a pass for a zombie either way.
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => {}
+            Ok(stat) => {
+                // `stat` is `pid (comm) state ...` and comm can hold spaces and
+                // parens, so the state is the field after the LAST ')'.
+                let state = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string));
+                assert_ne!(
+                    state.as_deref(),
+                    Some("Z"),
+                    "the killed child was left unreaped"
+                );
+            }
+        }
+    }
 
     /// Fresh, unique temp directory for one test; removed on drop.
     struct TmpDir(std::path::PathBuf);

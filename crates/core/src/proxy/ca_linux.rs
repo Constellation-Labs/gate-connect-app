@@ -380,12 +380,42 @@ impl std::fmt::Display for CertutilFailure {
     }
 }
 
+/// Test seam: the `certutil` to run, absent in every normal build.
+///
+/// A static rather than a `PATH` override, which is what the tests reached for
+/// first. `std::env::set_var` is not thread safe - `unsafe` as of edition 2024 -
+/// and `Command::spawn` reads the environment to build the child's, so a `PATH`
+/// mutation here races every other test that spawns. `env::path_env_lock`
+/// serialises the ones that take it, and several tests that spawn do not, which
+/// makes the lock an incomplete defence rather than a sufficient one.
+/// `env::APP_SUPPORT_OVERRIDE` exists for the same class of reason.
+///
+/// `#[cfg(test)]` so it is not compiled into a shipped build at all, which is
+/// stricter than the env seams elsewhere and costs nothing here: the only
+/// callers are in this file.
+#[cfg(test)]
+static CERTUTIL_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The binary [`certutil_output`] runs. `certutil` on `PATH` in every build
+/// that ships.
+fn certutil_program() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = CERTUTIL_OVERRIDE
+        .lock()
+        .expect("certutil override mutex poisoned")
+        .clone()
+    {
+        return path;
+    }
+    PathBuf::from("certutil")
+}
+
 /// One `certutil` invocation against a database, returning its stdout.
 /// Unprivileged by construction: these are per-user stores, and running them
 /// under the escalation the system anchor needs would write into root's HOME
 /// instead of the user's.
 fn certutil_output(db: &Path, args: &[&str]) -> std::result::Result<String, CertutilFailure> {
-    let mut cmd = Command::new("certutil");
+    let mut cmd = Command::new(certutil_program());
     cmd.arg("-d")
         // `sql:` selects the modern cert9.db format. Chromium has written that
         // format for years, and naming it explicitly avoids certutil falling
@@ -666,6 +696,132 @@ fn remove_ca_material() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in `certutil` that behaves however the test needs.
+    ///
+    /// Drives the real code path, which is the point: what wants testing is the
+    /// wiring from a killed call to the error the caller reports, and that is
+    /// Gate's code, not NSS's.
+    ///
+    /// Installed through [`CERTUTIL_OVERRIDE`] rather than by replacing `PATH`,
+    /// which is the version this started as: mutating the environment races
+    /// every other test that spawns, and the path lock only covers the ones that
+    /// take it. See the override's own note.
+    ///
+    /// Its own lock, because the override is process-global and the three tests
+    /// below run in parallel.
+    struct CertutilShim {
+        dir: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CertutilShim {
+        /// `script` is the body of a `sh` program installed as the stand-in.
+        /// `None` writes nothing and points the override at the path anyway,
+        /// which is how the missing-binary branch is reached: spawning something
+        /// that is not there yields the same `NotFound` a `certutil` that is not
+        /// installed does.
+        fn new(tag: &str, script: Option<&str>) -> Self {
+            static SHIM_LOCK: Mutex<()> = Mutex::new(());
+            let lock = SHIM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir()
+                .join(format!("gate-certutil-shim-{}-{tag}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("create shim dir");
+            let bin = dir.join("certutil");
+            if let Some(script) = script {
+                fs::write(&bin, format!("#!/bin/sh\n{script}\n")).expect("write shim");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755))
+                        .expect("chmod shim");
+                }
+            }
+            *CERTUTIL_OVERRIDE
+                .lock()
+                .expect("certutil override mutex poisoned") = Some(bin);
+            Self { dir, _lock: lock }
+        }
+    }
+
+    impl Drop for CertutilShim {
+        fn drop(&mut self) {
+            *CERTUTIL_OVERRIDE
+                .lock()
+                .expect("certutil override mutex poisoned") = None;
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A `certutil` that never returns is killed, and the caller is told that
+    /// rather than being left waiting on it.
+    ///
+    /// The path the branch bounded: a database another process holds locked, or
+    /// one on a stalled network mount, blocks in the open. This is the only test
+    /// that exercises the timeout through the real caller, so it also pins that
+    /// the message names the timeout rather than reading like a certutil error.
+    #[test]
+    fn a_certutil_that_hangs_is_killed_and_reported() {
+        let _shim = CertutilShim::new("hang", Some("sleep 30"));
+        let started = std::time::Instant::now();
+        let err = certutil_output(Path::new("/nonexistent/db"), &["-L"])
+            .expect_err("a killed call is a failure");
+        assert!(
+            started.elapsed() < CERTUTIL_TIMEOUT * 3,
+            "did not return near the deadline"
+        );
+        match &err {
+            CertutilFailure::Failed(msg) => {
+                assert!(msg.contains("did not finish"), "got {msg}");
+                assert!(msg.contains("was killed"), "got {msg}");
+            }
+            CertutilFailure::Missing => panic!("a hang is not a missing binary"),
+        }
+        // The half that matters downstream: a hang must not be prescribed a
+        // package install. `degrade` turns this into `WriteFailed`, not
+        // `ToolsMissing`.
+        assert_eq!(err.tools_hint(), "");
+        assert_eq!(
+            degrade(NssTrust::Trusted, &err),
+            NssTrust::WriteFailed,
+            "a timeout read as a missing package would send the user to install \
+             one they already have"
+        );
+    }
+
+    /// A `certutil` that is not there at all is the other branch, and it is the
+    /// one the package hint answers.
+    #[test]
+    fn an_absent_certutil_is_reported_as_missing() {
+        let _shim = CertutilShim::new("absent", None);
+        let err = certutil_output(Path::new("/nonexistent/db"), &["-L"])
+            .expect_err("no binary is a failure");
+        // `matches!` rather than `assert_eq!`: `CertutilFailure` carries no
+        // `PartialEq`, and deriving one so a test can use a nicer macro is the
+        // wrong way round.
+        assert!(
+            matches!(err, CertutilFailure::Missing),
+            "a binary that is not there is the Missing branch, not a failed call"
+        );
+        assert!(err.tools_hint().contains("libnss3-tools"));
+    }
+
+    /// A `certutil` that fails on its own terms is neither of the above: it
+    /// answered, so the exit status and its stderr are the report.
+    #[test]
+    fn a_failing_certutil_reports_its_own_words() {
+        let _shim = CertutilShim::new("fail", Some("echo 'SEC_ERROR_BAD_DATABASE' >&2; exit 255"));
+        let err = certutil_output(Path::new("/nonexistent/db"), &["-L"])
+            .expect_err("a non-zero exit is a failure");
+        match &err {
+            CertutilFailure::Failed(msg) => {
+                assert!(msg.contains("exited"), "got {msg}");
+                assert!(msg.contains("SEC_ERROR_BAD_DATABASE"), "got {msg}");
+            }
+            CertutilFailure::Missing => panic!("an exit status is not a missing binary"),
+        }
+    }
 
     fn debian_store() -> TrustStore {
         TrustStore {
