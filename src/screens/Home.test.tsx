@@ -4,10 +4,12 @@ import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
 import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
+import { openExternal } from "../lib/openExternal";
 import { Home } from "./Home";
 
 // The CA-trust card swaps the trust-store name by platform; drive it by
 // mocking usePlatform rather than the async Tauri lookup.
+vi.mock("../lib/openExternal", () => ({ openExternal: vi.fn(async () => {}) }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
   usePlatform: vi.fn(),
@@ -461,6 +463,15 @@ describe("Home ledger rows", () => {
     const host = screen.getByText("gateway.constellationgate.ai");
     expect(host.contains(link)).toBe(false);
     expect(link.contains(host)).toBe(false);
+  });
+
+  it("opens the console that reads the gateway it is pointed at", () => {
+    // Was a module constant pinned to production, which is precisely how a
+    // staging-routed app sent its user to a dashboard reading a different
+    // database.
+    renderHome({ dashboardUrl: "https://app-staging.constellationgate.ai/" });
+    fireEvent.click(screen.getByRole("button", { name: /Gate dashboard/ }));
+    expect(openExternal).toHaveBeenCalledWith("https://app-staging.constellationgate.ai/");
   });
 
   it("prints the host once when there is no org to name", () => {

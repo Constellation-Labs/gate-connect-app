@@ -785,7 +785,7 @@ export function Settings({
             {errorFor("server")}
             {confirmingServer && (
               <ConfirmPanel
-                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
+                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server. Each server has its own dashboard and its own data, so traffic you send after this will not appear on the other one.`}
                 confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
                 busy={submitting}
                 onConfirm={() => void switchServer(confirmingServer.url)}
