@@ -884,7 +884,10 @@ impl HttpHandler for GateHandler {
                 match apply_rewrite(
                     &mut req,
                     &self.gateway,
-                    &upstream_url,
+                    MatchedRoute {
+                        upstream_url: &upstream_url,
+                        slug: Some(slug.as_str()),
+                    },
                     &api_key,
                     oauth_token,
                     org_id,
@@ -1575,15 +1578,36 @@ fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) -> bool {
 /// Returns whether *our* OAuth bearer went on the request, which is what makes
 /// a 401 on the way back evidence about the session (see
 /// [`GateHandler::injected_oauth`]).
+/// The catalog entry a request resolved to, as `decide` returned it.
+///
+/// One parameter rather than two loose `&str`s because they are one fact - the
+/// entry that claimed this path - and they are read for different reasons: the
+/// upstream rewrites the URL, the slug says which entry it was. The slug is
+/// carried only for attribution today: the ChatGPT app identifies itself in a
+/// generically-named header, so believing it safely needs the routing decision
+/// rather than the request alone.
+#[derive(Clone, Copy)]
+pub(crate) struct MatchedRoute<'a> {
+    pub upstream_url: &'a str,
+    /// `None` where the caller has no decision to hand - the test seams, and
+    /// any path that rewrites without having matched an entry. Attribution that
+    /// depends on it declines rather than guessing.
+    pub slug: Option<&'a str>,
+}
+
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
-    upstream_url: &str,
+    route: MatchedRoute<'_>,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
     mode: BillingMode,
 ) -> Result<bool> {
+    let MatchedRoute {
+        upstream_url,
+        slug: domain,
+    } = route;
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
     parts.scheme = gw.scheme;
@@ -1610,8 +1634,14 @@ pub(crate) fn apply_rewrite<T>(
     // Credential first: `inject_gate_credential` is what stamps the model header
     // (through `inject_attribution`), so asking whether this request is served
     // before it runs would always answer no.
-    let injected_oauth =
-        super::inject_gate_credential(req.headers_mut(), api_key, oauth_token, org_id, mode)?;
+    let injected_oauth = super::inject_gate_credential(
+        req.headers_mut(),
+        api_key,
+        oauth_token,
+        org_id,
+        mode,
+        domain,
+    )?;
 
     // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
     // under the caller's own credential (BYOK), without it the gateway resolves
@@ -2935,7 +2965,10 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             None,
             None,
@@ -2975,7 +3008,10 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             Some("cognito-access-token"),
             Some("org-uuid-1"),
@@ -3022,7 +3058,10 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             None,
             None,
@@ -3067,7 +3106,10 @@ mod tests {
         apply_rewrite(
             &mut req,
             &gateway,
-            "https://api.anthropic.com",
+            MatchedRoute {
+                upstream_url: "https://api.anthropic.com",
+                slug: None,
+            },
             "sk-gw-test",
             None,
             None,
