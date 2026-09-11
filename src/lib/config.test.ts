@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 // widening the app's type surface to all of node just to read a file in a test
 // is the wrong trade. vite/client already declares `*?raw` as a string.
 import capabilitiesRaw from "../../src-tauri/capabilities/default.json?raw";
-import { consoleUrlFor, gatewayEnvLabel, GATEWAY_SERVERS } from "./config";
+import { consoleUrlFor, GATEWAY_SERVERS } from "./config";
 
 /** Translate a `glob::Pattern` (what tauri-plugin-opener matches with) into a
  * regex. Only the constructs the capability file uses: `*` for any run of
@@ -94,16 +94,5 @@ describe("the console follows the gateway", () => {
   it("falls back to production for a gateway no picker can produce", () => {
     expect(consoleUrlFor("https://gateway.example.com")).toBe("https://app.constellationgate.ai/");
     expect(consoleUrlFor(null)).toBe("https://app.constellationgate.ai/");
-  });
-});
-
-describe("the environment badge", () => {
-  it("names a non-default environment", () => {
-    expect(gatewayEnvLabel("https://gateway-staging.constellationgate.ai")).toBe("staging");
-  });
-
-  it("stays silent on production, so the badge means something when it appears", () => {
-    expect(gatewayEnvLabel("https://gateway.constellationgate.ai")).toBeNull();
-    expect(gatewayEnvLabel(undefined)).toBeNull();
   });
 });

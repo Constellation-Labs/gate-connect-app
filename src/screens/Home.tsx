@@ -25,7 +25,6 @@ import { openExternal } from "../lib/openExternal";
 export function Home({
   workspace,
   gatewayHost,
-  gatewayEnv,
   consoleUrl,
   proxyOn,
   caTrusted,
@@ -55,12 +54,6 @@ export function Home({
    * carries the org, so the identifier traffic actually leaves through needs a
    * line of its own rather than disappearing with it. */
   gatewayHost: string;
-  /** Short lowercase name for a non-default gateway ("staging"), or null on
-   * production. The host alone did not carry this: a user in Dev mode saw
-   * `gateway-staging.constellationgate.ai` in ink-3 and read it as the address,
-   * not as a different stack with a different database, then spent a session in
-   * front of an empty production dashboard. */
-  gatewayEnv: string | null;
   /** The console that reads this gateway's database. Derived per account
    * rather than fixed, because the fixed one sent staging users to production. */
   consoleUrl: string;
@@ -377,25 +370,11 @@ export function Home({
               // lying, so it gets a second line instead of an ellipsis.
               <div
                 title={gatewayHost}
-                className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pb-2.5${
+                className={`px-3.5 pb-2.5 font-mono text-gc-label text-gc-ink-3 [overflow-wrap:anywhere]${
                   showProxy ? "" : " pt-3.5"
                 }`}
               >
-                <span className="font-mono text-gc-label text-gc-ink-3 [overflow-wrap:anywhere]">
-                  {gatewayHost}
-                </span>
-                {/* Only when it isn't production. A badge on the default would
-                    be on screen for everyone forever, which is how a marker
-                    stops being read - and the whole failure this fixes is a
-                    marker nobody could read because there wasn't one.
-                    Warning skin, not error: routing to staging is a legitimate
-                    thing to be doing, it just has a consequence three surfaces
-                    away that nothing else on screen mentions. */}
-                {gatewayEnv && (
-                  <span className="inline-flex shrink-0 items-center rounded-gc-pill bg-gc-warning-wash px-2 py-0.5 font-mono text-gc-micro font-medium text-gc-ink-2 ring-1 ring-gc-warning-deep/45">
-                    {gatewayEnv}
-                  </span>
-                )}
+                {gatewayHost}
               </div>
             )}
 
