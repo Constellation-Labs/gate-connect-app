@@ -28,11 +28,15 @@ function hostOf(url: string): string {
  *  silent refresh failed). */
 export function FirstRun({
   onConnected,
+  onSwitchGateway,
   initialGateway,
   startOnKey,
   reauth = false,
 }: {
   onConnected: () => void;
+  /** Repoint an existing account at another environment. Relaunches on
+   *  success, so nothing after the call runs. */
+  onSwitchGateway: (url: string) => Promise<void>;
   initialGateway?: string;
   /** Open directly on the API-key form. */
   startOnKey?: boolean;
@@ -55,6 +59,26 @@ export function FirstRun({
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
 
+  // The picker has been moved off the environment the account is already on.
+  // That is a switch, not a URL edit: the selected org, the stored key, the
+  // managed tool configs and the running engine all belong to the old
+  // environment, and `saveAccount` preserves every one of them by design (it
+  // exists for URL-only edits). Signing in through it left a re-authenticating
+  // user on the new gateway still carrying the old environment's org id, with
+  // the engine up and pinned to the old gateway URL - the exact state
+  // `switch_gateway` exists to prevent. False on true first run: there is no
+  // account yet to switch away from.
+  const movingEnv = !!initialGateway && gateway !== initialGateway;
+  // The primary button relaunches rather than signing in when the environment
+  // is moving, so it has to say so.
+  const signInLabel = movingEnv
+    ? busy
+      ? "Switching…"
+      : "Switch and relaunch"
+    : signingIn
+      ? "Waiting for browser…"
+      : "Sign in with Constellation";
+
   // Bumped by Cancel so a stale sign-in attempt can't re-lock the screen or
   // surface its error after the user has moved on. There is no backend abort
   // for the pending browser flow; if the user does finish it in the browser,
@@ -67,6 +91,10 @@ export function FirstRun({
     setSigningIn(true);
     const attempt = ++signInAttempt.current;
     try {
+      if (movingEnv) {
+        await onSwitchGateway(gateway); // relaunches; nothing below runs
+        return;
+      }
       // Persist the gateway first (no key) so the account exists on disk; the
       // sign-in then records OAuth as the auth mode against it.
       await saveAccount(gateway, null);
@@ -91,6 +119,10 @@ export function FirstRun({
     setError(null);
     setSubmitting(true);
     try {
+      if (movingEnv) {
+        await onSwitchGateway(gateway); // relaunches; nothing below runs
+        return;
+      }
       await saveAccount(gateway, key.trim());
       // Choosing the key here answers the "would you rather sign in?" question.
       // Without this the one-time offer arrives on the next launch and reverses
@@ -129,9 +161,9 @@ export function FirstRun({
 
       <Button variant="accent" full className="mt-5" disabled={busy} onClick={signIn}>
         <Icon name="shieldCheck" size={15} />
-        {signingIn ? "Waiting for browser…" : "Sign in with Constellation"}
+        {signInLabel}
       </Button>
-      {signingIn && (
+      {signingIn && !movingEnv && (
         <div className="mt-2 flex flex-col items-center gap-1.5">
           <p className="text-center text-gc-micro text-gc-ink-3">
             Finish signing in on the page that just opened in your browser.
@@ -209,7 +241,7 @@ export function FirstRun({
             in your Gate dashboard.
           </p>
           <Button full className="mt-3" disabled={!canSubmitKey} onClick={connectWithKey}>
-            {submitting ? "Connecting…" : "Connect with key"}
+            {movingEnv ? signInLabel : submitting ? "Connecting…" : "Connect with key"}
           </Button>
         </div>
       )}
@@ -271,6 +303,18 @@ export function FirstRun({
               })}
             </div>
           </>
+        )}
+        {/* The consequence, said before the button that carries it out.
+            Settings puts this in a confirm panel; here the only other signal is
+            a button reading "Switch and relaunch", which does not say what gets
+            forgotten. Outside the picker's open/closed branch so collapsing it
+            with Hide cannot hide the warning while the button still switches. */}
+        {movingEnv && (
+          <p className="mt-2.5 text-gc-micro leading-snug text-gc-ink-3">
+            Switching forgets your stored key, disconnects your tools, and
+            relaunches Gate Connect. Each server has its own dashboard and its
+            own data.
+          </p>
         )}
       </div>
     </div>

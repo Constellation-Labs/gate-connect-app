@@ -1194,6 +1194,7 @@ export function App() {
     body = (
       <FirstRun
         onConnected={onConnected}
+        onSwitchGateway={switchGatewayServer}
         initialGateway={account?.gateway_base_url}
         startOnKey={startOnKey}
         // An existing OAuth account here means a prior session that's no longer
@@ -1243,6 +1244,7 @@ export function App() {
         onForget={forget}
         onSignOut={signOut}
         onSwitchOrg={switchOrg}
+        onSwitchGateway={switchGatewayServer}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}

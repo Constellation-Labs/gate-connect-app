@@ -42,9 +42,14 @@ function deferred<T>() {
 
 function renderFirstRun(props: Partial<React.ComponentProps<typeof FirstRun>> = {}) {
   const onConnected = vi.fn();
-  render(<FirstRun onConnected={onConnected} {...props} />);
+  render(
+    <FirstRun onConnected={onConnected} onSwitchGateway={onSwitchGateway} {...props} />,
+  );
   return onConnected;
 }
+
+/** Stands in for the App callback that repoints the account and relaunches. */
+const onSwitchGateway = vi.fn(async () => {});
 
 const signInButton = () => screen.getByRole("button", { name: /Sign in with Constellation/ });
 
@@ -56,6 +61,7 @@ afterEach(() => {
   // rejections would fake failures in every later test.
   (saveAccount as Mock).mockImplementation(async () => {});
   (oauthBeginLogin as Mock).mockImplementation(async () => {});
+  onSwitchGateway.mockImplementation(async () => {});
 });
 
 describe("FirstRun initial render", () => {
@@ -197,6 +203,42 @@ describe("FirstRun gateway picker", () => {
     await waitFor(() =>
       expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.constellationgate.ai", null),
     );
+  });
+
+  it("switches the environment rather than editing the URL under the account", async () => {
+    // `saveAccount` is a URL-only edit: it preserves the selected org, the
+    // stored key and the tool configs, all of which belong to the environment
+    // being left. Re-authenticating through it landed the user on the new
+    // gateway carrying the old environment's org id.
+    renderFirstRun({ initialGateway: "https://gateway-staging.constellationgate.ai" });
+    fireEvent.click(screen.getByRole("button", { name: /Production/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Switch and relaunch" }));
+    await waitFor(() =>
+      expect(onSwitchGateway).toHaveBeenCalledWith("https://gateway.constellationgate.ai"),
+    );
+    expect(saveAccount).not.toHaveBeenCalled();
+    expect(oauthBeginLogin).not.toHaveBeenCalled();
+  });
+
+  it("says what the switch costs before the button that does it", () => {
+    renderFirstRun({ initialGateway: "https://gateway-staging.constellationgate.ai" });
+    expect(screen.queryByText(/forgets your stored key/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Production/ }));
+    expect(screen.getByText(/forgets your stored key/)).toBeTruthy();
+    // Collapsing the picker must not take the warning with it: the button
+    // still switches.
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(screen.getByText(/forgets your stored key/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch and relaunch" })).toBeTruthy();
+  });
+
+  it("signs in normally when the picker has not moved off the account", async () => {
+    renderFirstRun({ initialGateway: "https://gateway-staging.constellationgate.ai" });
+    fireEvent.click(signInButton());
+    await waitFor(() =>
+      expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.constellationgate.ai", null),
+    );
+    expect(onSwitchGateway).not.toHaveBeenCalled();
   });
 
   it("starts in dev mode when pre-pointed at a non-default gateway", () => {
