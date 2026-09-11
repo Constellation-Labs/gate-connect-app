@@ -252,17 +252,22 @@ turning OpenCode on turns the channel on with it. `useRouting`'s `opencode-env`
 prompt says so before either write, and the row is what makes that promise
 checkable. Both controls call `proxy::set_env_export`, so they cannot disagree.
 
-**The harnesses are listed, each under its own heading.** OpenCode, OpenClaw and
-Hermes appear in the ledger, and so does the environment channel. They shared one
-"Other tools" group while that was the only heading `buildGroups` gave them;
-`LEFTOVER_GROUPS` in `src/lib/groups.ts` now splits them into **OpenClaw**,
-**Hermes** and **Experimental** (OpenCode + `env-proxy`). (That shared group was
-called "Agent harnesses" until the round-15 design pass, then "Other tools": it
-is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
-harness. It survives as the catch-all for a tool no heading claims, which in a
-shipped build should be none.)
+**The ledger groups by client, not by vendor.** Every row - a config tool or a
+proxy domain - answers `taxonomy::Client`, and `buildGroups` buckets on it. So
+OpenCode, OpenClaw and Hermes each head a group, Claude Code and Claude Desktop
+are two groups rather than one "Anthropic", and the environment channel sits
+with the host entries that also cover whatever happens to be running, under
+**Any app on this machine**.
 
-**Experimental also holds the `openai` domain.** api.openai.com belongs to no
+This replaced a vendor grouping plus four hand-added headings. A vendor heading
+cannot file a tool that routes whatever providers the user configured in it, so
+OpenClaw, Hermes and an "Experimental" pair were named one at a time in a
+`LEFTOVER_GROUPS` table, behind an `any-provider` catch-all whose whole job was
+to catch what the taxonomy could not place. There is no catch-all now: every row
+names its client, so nothing can fall off the ledger. (The shared group was
+called "Agent harnesses" until the round-15 design pass, then "Other tools".)
+
+**The machine-wide group holds the `openai` domain.** api.openai.com belongs to no
 OpenAI tool: Codex is config-routed through the relay, which resolves routes
 against the whole catalog (`relay.rs` builds from `default_domains()`, not the
 enabled set), so it routes whatever that switch says; the ChatGPT desktop app
@@ -275,11 +280,36 @@ is labelled **OpenAI API** - the host's role, with `api.openai.com` itself in th
 row's description rather than the label, since the popover already prints it in a
 mono identifier slot.
 
-The split is what makes the row labels work. Rows are named for the surface they
-cover - "App" for the desktop apps, "Web" for the browser tab, "CLI" for the
-terminal, "Proxy" where a family has one mechanism and no split - and a surface
-kind is only legible under a heading that names the vendor. The sentence
-explaining each row is UI copy, in `MEMBER_DESCRIPTIONS` beside the split.
+The grouping is what makes the row labels work. Rows are named for the surface
+they cover - "API" and "Chat" for the two surfaces of the Claude desktop app,
+"CLI" for a terminal tool - and a surface kind is only legible under a heading
+that names the program. The sentence explaining each row is UI copy, in
+`MEMBER_DESCRIPTIONS`.
+
+**Each row also carries a scope and a credential** (`taxonomy::Scope`,
+`taxonomy::Credential`), and both are rendered rather than implied:
+
+- `scope` is the blast radius. Every proxy domain is `host`, which means
+  flipping it intercepts those hosts for *every* proxy-honouring client on the
+  machine, not only the one the row is named for - `should_intercept_host`
+  matches on host alone at CONNECT, before any header exists, and the
+  per-request narrowing in `rules_for_client` decides only what is rewritten.
+  Config tools are `client`; the environment channel is `machine`. `scopeNote`
+  in `groups.ts` is the sentence.
+- `credential` is whose key rides the request, and it is the single thing that
+  decides whether a group switch may flip the row: `provider::cascade_domains`
+  filters on `Credential::Brokered`, and `cascadeTargets` does the same on the
+  frontend. The session surfaces (`claude-web`, `chatgpt-apps`, `chatgpt`) are
+  `Additive`, so they are listed under their client and reachable only from
+  their own switch.
+
+Those two used to be one `chat` boolean plus a second `chat_domain_slugs` array
+on each provider, which is why a row could be silently dropped from the ledger
+by an edit meant to keep it out of a cascade, and why the scope fact had nowhere
+to live at all. A support thread in 2026-09 turned on exactly that gap: `Chat`
+was labelled "Web" and described as the browser tab, so its owner concluded the
+Claude desktop app was uncovered when the row covers it, and covers it more
+fully than a browser.
 
 `hidden_in_ui` still exists; nothing uses it now that `env-proxy` is listed.
 Hiding is always a UI-boundary decision (`list_tools`), never removal from the

@@ -1,105 +1,49 @@
-import type { ProviderState, ProxyDomain, ProxyState, Tool, Verdict } from "./api";
+import type {
+  ClientId,
+  Credential,
+  ProxyDomain,
+  ProxyState,
+  Scope,
+  Tool,
+  Verdict,
+} from "./api";
 import { browserScopeNote, trustStoreName, type Platform } from "./platform";
 
 /**
- * Home's ledger groups everything routable by the model family it belongs to
- * (Claude, OpenAI, OpenRouter) instead of by mechanism (config file vs local
- * proxy), with the mechanism kept for the group detail where it actually helps.
+ * Home's ledger groups everything routable by the CLIENT it is aimed at - the
+ * program on the user's machine whose traffic the row exists to route - rather
+ * than by the vendor whose models that program talks to.
  *
- * Sizing note for the next reader: up to six rows. Three are the families
- * above; the rest come from `LEFTOVER_GROUPS` - OpenClaw, Hermes and
- * Experimental (OpenCode + the environment channel). Those three used to be
- * one "Other tools" row, and the group that built it survives now only as the
- * catch-all for a tool nothing has placed (see docs/routing-architecture.md).
+ * Grouping by vendor is what this file used to do, and the leftovers were the
+ * evidence against it. A vendor heading cannot file a tool that routes whatever
+ * providers the user configured in it, so OpenClaw, Hermes and an "Experimental"
+ * pair each grew a heading of their own, plus an `any-provider` catch-all whose
+ * whole job was to catch what the taxonomy could not place. Every row answers
+ * `client` now, so nothing can fall off the ledger and the catch-all is gone by
+ * construction.
  *
- * Membership comes from the backend provider catalog (`tool_slugs` +
- * `domain_slugs`), never from `Tool.upstream_provider_name`: that field is
- * display prose, and for OpenCode and OpenClaw it is literally "your existing
- * providers", because those tools route whatever providers the user has
- * configured rather than one model family. Tools the catalog claims for no
- * provider are exactly those multi-provider tools, so they get their own
- * group rather than being wedged into a family they don't belong to.
+ * Sizing note for the next reader: up to eight rows, one per `ClientId` that has
+ * a member. Two of them are Anthropic's (Claude Code and Claude Desktop) where
+ * there used to be one, which is the visible cost of the change and the point of
+ * it: those are two programs, they are switched on separately, and a heading
+ * reading "Anthropic" over both said otherwise.
+ *
+ * Membership comes from each row's own `client` field - `Tool.client` and
+ * `ProxyDomain.client`, both from the backend catalog. It does NOT come from
+ * `ProviderState`, which still exists for the vendor-shaped things that are
+ * genuinely vendor-shaped (`provider::enable`, the CLI), nor from
+ * `Tool.upstream_provider_name`, which is display prose and is literally "your
+ * existing providers" for the multi-provider tools.
  */
 
-/** The catch-all for a tool the catalog claims for no provider and
- * `LEFTOVER_GROUPS` below does not name either.
- *
- * It used to hold all of them under one "Other tools" heading. It no longer
- * does: OpenClaw, Hermes and the experimental pair are named groups now, so
- * this group builds only for a tool nobody has placed - a registry and a
- * catalog momentarily out of step, or an integration added without a heading.
- * Kept rather than deleted precisely because that tool still needs a row. */
-export const MULTI_PROVIDER_ID = "any-provider";
-
-/**
- * The leftover tools, split into headings of their own.
- *
- * These are the tools the provider catalog claims for nobody: their provider
- * set is decided by the user's config, not by the tool, so there is no model
- * family to file them under. That used to make them one undifferentiated
- * "Other tools" list. The split is better on the one screen that matters,
- * the rail: a heading per tool means the row beneath it can be named for the
- * surface ("CLI") the way the family rows are, instead of having to carry the
- * product name and the surface at once.
- *
- * Order is the order the headings render in. A slug listed here that is not
- * installed simply contributes no member, and a group with no members is
- * dropped, so this list is a layout, not a claim about what is on the machine.
- */
-const LEFTOVER_GROUPS: readonly {
-  id: string;
-  name: string;
-  /** The group's name inside `switchLabel`'s sentence. */
-  switchNoun: string;
-  slugs: readonly string[];
-  /** Proxy domains this heading claims, named one by one rather than swept.
-   *
-   * Sweeping every unclaimed domain would be wrong twice: the catalog carries
-   * entries with no row today (`opencode`, the Zen/Go host), and a domain slug
-   * can collide with a tool slug - `opencode` is both - which would put two
-   * members under one key in the same group. Naming them keeps the ledger a
-   * decision rather than a leftover of a leftover. */
-  domainSlugs?: readonly string[];
-  blurb?: string;
-}[] = [
-  { id: "openclaw", name: "OpenClaw", switchNoun: "OpenClaw", slugs: ["openclaw"] },
-  { id: "hermes", name: "Hermes", switchNoun: "Hermes", slugs: ["hermes"] },
-  {
-    id: "experimental",
-    name: "Experimental",
-    // Lower-case in the sentence: "experimental tools" is a common noun, the
-    // same rule "other tools" follows. The heading is a section, not a vendor.
-    switchNoun: "experimental tools",
-    // OpenCode and the environment channel travel together, and this is where
-    // that becomes visible. OpenCode has no gateway setting of its own, so Gate
-    // routes it with the machine's proxy variables - which is exactly what
-    // "Terminal tools" is. Turning OpenCode on turns that on, and the prompt
-    // that says so (`opencode-env` in `useRouting`) is only honest if the row it
-    // names is on screen beside it.
-    slugs: ["opencode", "env-proxy"],
-    // `openai` is api.openai.com, and it is here rather than under OpenAI
-    // because nothing OpenAI ships rides its switch. Codex is config-routed
-    // through the relay, which resolves against the whole catalog rather than
-    // the enabled set, so it routes whether this is on or off; the ChatGPT
-    // desktop app is on chatgpt.com. Flipping this intercepts that host for any
-    // system-proxy-honouring client, and the clients that depend on it are the
-    // harnesses beside it - OpenClaw and Hermes blind-tunnel anything outside
-    // the enabled catalog, so this switch is what lets Gate see their OpenAI
-    // calls. `provider.rs` no longer lists the slug, which is what frees it.
-    domainSlugs: ["openai"],
-    blurb:
-      "Routing here is still being proven out. Gate covers what it can and leaves everything else going where it always did.",
-  },
-];
 
 /**
  * What each row is, in one sentence.
  *
- * The row labels are surface kinds now - "App", "Web", "CLI", "Proxy" - which
- * is what makes a family readable at a glance and useless in isolation: "Web"
- * under "Anthropic" is only a word until something says it means the claude.ai
- * tab. This is that something, and it is the reason the labels could be
- * shortened at all.
+ * The row labels are surface kinds - "API", "Chat", "CLI" - which is what makes
+ * a group readable at a glance and useless in isolation: "Chat" under "Claude
+ * Desktop" is only a word until something says it means claude.ai. This is that
+ * something, and it is the reason the labels can be one word at all.
  *
  * Keyed by member key, so tool slugs and domain slugs share one namespace -
  * which they already do on the rail, where a row is one or the other and the
@@ -109,8 +53,14 @@ const LEFTOVER_GROUPS: readonly {
  * A slug with no entry gets no sentence rather than a placeholder.
  */
 export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  anthropic: "The Claude desktop app and Cowork.",
-  "claude-web": "Your Claude chats, in the browser tab.",
+  anthropic: "The Claude desktop app's model calls, on api.anthropic.com.",
+  // Both clients, because the row covers both and the heading above it now
+  // says "Claude Desktop". This line used to read "Your Claude chats, in the
+  // browser tab", which was wrong in the direction that cost a support thread:
+  // the entry is `claude.ai`, matched on host, so it covers the desktop app's
+  // chat turns AND a browser tab - and it covers the app MORE fully, since
+  // `rules_for_client` narrows only the browser to the completion path.
+  "claude-web": "Your Claude chats on claude.ai - in the desktop app, and in a browser tab.",
   "claude-code": "Claude Code in your terminal.",
   chatgpt: "Your ChatGPT Desktop App.",
   "chatgpt-apps":
@@ -299,19 +249,65 @@ export function browserTrustRestartAdvice(
  * surface: those are already covered by their own description and the host is
  * not a claim about someone's browser.
  */
-export function chatScopeNote(
+/**
+ * What a row's blast radius is, in one sentence, for every row that has one
+ * worth saying.
+ *
+ * The rendered half of {@link GroupMember.scope}, and the reason that field
+ * exists rather than being inferred from `kind`. A `host` row is named for one
+ * client and covers every client on its hosts, because interception is decided
+ * at CONNECT from the host alone and no header has been read yet. That is the
+ * sentence a user needed before flipping the switch, and the ledger had nowhere
+ * to put it: the surface label said "App" or "Web" and quietly implied the
+ * opposite.
+ *
+ * Undefined for a `client` row, where the row's own name already says it - a
+ * config tool covers that tool, which is not news. `machine` says its piece
+ * because "every program you start afterwards" is genuinely wider than the row
+ * it sits on.
+ *
+ * Distinct from {@link credentialScopeNote}, which answers "whose key is on
+ * this" and is only worth saying where Gate is not supplying it. A brokered
+ * host row - the API entries, OpenRouter - gets this note and not that one, and
+ * used to get neither.
+ */
+export function scopeNote(member: GroupMember): string | undefined {
+  if (member.scope === "machine") {
+    return "Covers every program started after your next login, not only AI tools.";
+  }
+  if (member.scope !== "host") return undefined;
+  const hosts = member.domain?.hosts.join(", ");
+  if (!hosts) return undefined;
+  // Browser-neutral for the same reason `credentialScopeNote` is: what Gate
+  // reaches in a browser depends on the platform's proxy channel, and this
+  // note has no reading of it.
+  return `Matched on host, so this covers everything on ${hosts} - whatever on this machine sends there, not only ${member.name}.`;
+}
+
+export function credentialScopeNote(
   member: GroupMember,
   platform: Platform,
   browserChannel: boolean,
 ): { title: string; body: string } | undefined {
-  if (!member.chat) return undefined;
+  if (member.credential === "brokered") return undefined;
   const hosts = member.domain?.hosts.join(", ");
   if (!hosts) return undefined;
+  // Two sentences from two fields, which is why they are two fields. The first
+  // is the credential: Gate is not supplying a key here. The second is the
+  // scope: the row is named for one client and reaches every client on the
+  // host. Saying only the first is what left a user reading "Web" and
+  // concluding their desktop app was not covered.
   return {
     title: "What this switch covers",
     body: [
       `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`,
-      `It is matched on host, so it covers everything on ${hosts}.`,
+      member.scope === "host"
+        // Deliberately browser-neutral. Whether Gate reaches a browser at all
+        // is the platform's answer and `browserScopeNote`'s to give - naming
+        // one here would claim it on a Linux session where Gate writes only
+        // environment variables a running browser never re-reads.
+        ? `It is matched on host, so it covers everything on ${hosts}, whatever sends it.`
+        : `It covers ${member.name} alone.`,
       browserScopeNote(platform, browserChannel),
     ]
       .filter(Boolean)
@@ -388,12 +384,26 @@ export interface GroupMember {
    * kind ("App", "Web", "CLI"), which says nothing on its own; this is the
    * half that names the thing on the user's machine. */
   description?: string;
-  /** A chat-protocol member: shown under its family, never flipped by the
-   * family switch. These intercept a session-cookie surface (claude.ai,
-   * chatgpt.com's conversation turn) instead of a key-brokered API, so
-   * switching one on stays a per-row act. Mirrors the backend's split between
-   * `chat_domain_slugs` and `proxy_domain_slugs`. */
-  chat?: boolean;
+  /** Which program this row is aimed at. The group's key, carried on the
+   * member too so a flat list of members can still say where each belongs. */
+  client: ClientId;
+  /** How much of the machine the row reaches when it is on.
+   *
+   * The field the old ledger had no room for, and the one that would have
+   * answered the question this taxonomy came from. A `host` row covers every
+   * client on its hosts, whatever the row is named for, because interception
+   * is decided at CONNECT from the host alone. */
+  scope: Scope;
+  /** Whose credential rides the traffic. */
+  credential: Credential;
+  /** Whether a group switch may flip this row.
+   *
+   * Derived from {@link GroupMember.credential}, never set by hand: only a
+   * brokered row cascades, because the others carry a credential the user is
+   * already signed in with and routing that is a deliberate per-row act. This
+   * replaces the `chat` boolean, which meant this and also meant "session
+   * surface" - two facts in one field, with a name that named neither. */
+  cascade: boolean;
 }
 
 export interface Group {
@@ -402,7 +412,11 @@ export interface Group {
   /** The group's name inside a sentence. Family names are proper nouns and
    * stay capitalised; "other tools" is a common noun and must not. */
   switchLabel: string;
-  /** What the family covers, shown under its name on the family panel, and
+  /** The vendor whose models this client talks to natively, or null where
+   * there isn't one. The rail's caption, and the ledger's sort within a
+   * vendor. */
+  vendor: string | null;
+  /** What the group covers, shown under its name on the family panel, and
    * only where the name does not already say it.
    *
    * Present for the multi-provider group alone. It carried a line for every
@@ -415,6 +429,17 @@ export interface Group {
    * reading "Anthropic" is the same fact twice. "Other tools" is the one family
    * named by exclusion, so it is the one that owes the user a sentence. */
   blurb?: string;
+  /** The group whose heading does not name its own contents, so the row has
+   * to list them.
+   *
+   * Exactly one group: "Any app on this machine". It used to be whichever
+   * heading was named by exclusion - "Other tools", then "Experimental" - and
+   * the roster rode `multiProvider`, which happened to coincide. It no longer
+   * does: OpenCode, OpenClaw and Hermes have no vendor either, and a roster
+   * reading "OpenCode" under a heading reading "OpenCode" is the same fact
+   * twice. Two facts, two fields.
+   */
+  namedByExclusion: boolean;
   /** This group's members route whatever providers the user configured in
    * them, so there is no one upstream vendor to caption it with.
    *
@@ -492,6 +517,20 @@ function memberFromTool(
               ? "unverified"
               : null,
     tool,
+    client: tool.client,
+    scope: tool.scope,
+    credential: tool.credential,
+    cascade: tool.credential === "brokered",
+    // A tool whose client has no vendor routes whatever providers the user
+    // configured in it, so `default_upstream_url` is a placeholder constant and
+    // naming it would claim a host the tool may never touch.
+    //
+    // Derived from the client now. It used to be set by the leftover pass -
+    // "whatever no provider claimed" - which happened to be the same set and
+    // said nothing about why. Domains never carry it, whatever their client:
+    // a domain names real hosts, and `any-app`'s entries are exactly the rows
+    // whose host IS the point.
+    coversAllProviders: vendorOf(tool.client) === null ? true : undefined,
   };
 }
 
@@ -515,27 +554,69 @@ function memberFromDomain(
         ? "master-off"
         : null,
     domain,
+    client: domain.client,
+    scope: domain.scope,
+    credential: domain.credential,
+    cascade: domain.credential === "brokered",
   };
 }
+
+/**
+ * The clients the ledger can draw, in the order it draws them.
+ *
+ * Mirrors `taxonomy::Client::ALL`, and the display copy is deliberately on this
+ * side of the wire for the same reason {@link MEMBER_DESCRIPTIONS} is: the
+ * backend names what it routes, the UI says what that is to the person reading.
+ * The backend keeps its own `display_name` for the CLI and the logs, which have
+ * no ledger to sit in.
+ *
+ * `vendor` is null where there genuinely isn't one. OpenCode, OpenClaw and
+ * Hermes route whatever providers the user configured in them, and `any-app` is
+ * not a program at all - which is exactly the case vendor-grouping could not
+ * represent, and the reason those three used to need headings invented for them
+ * one at a time.
+ */
+const CLIENTS: readonly { id: ClientId; name: string; vendor: string | null }[] = [
+  { id: "claude-code", name: "Claude Code", vendor: "Anthropic" },
+  { id: "claude-desktop", name: "Claude Desktop", vendor: "Anthropic" },
+  { id: "codex", name: "Codex", vendor: "OpenAI" },
+  { id: "chatgpt", name: "ChatGPT", vendor: "OpenAI" },
+  { id: "opencode", name: "OpenCode", vendor: null },
+  { id: "openclaw", name: "OpenClaw", vendor: null },
+  { id: "hermes", name: "Hermes", vendor: null },
+  {
+    id: "any-app",
+    name: "Any app on this machine",
+    vendor: null,
+  },
+];
+
+/** The vendor behind a client, or null where there isn't one. */
+function vendorOf(client: ClientId): string | null {
+  return CLIENTS.find((c) => c.id === client)?.vendor ?? null;
+}
+
+/** What the widest group covers, said in the group rather than left to its
+ *  rows. The other seven headings are a program the user installed and need no
+ *  definition; this one is the only group named by what it is not. */
+const ANY_APP_BLURB =
+  "Routes that cover whatever on this machine reaches them, rather than one app Gate configures. Anything else, including a local model, keeps going where it always did.";
 
 /**
  * Build the Home ledger. Not-installed tools and unsupported domains are left
  * out: the ledger lists what could actually route today.
  *
- * Membership comes from two catalog fields, and the difference between them is
- * the whole reason there are two. `provider.domain_slugs` is what the family
- * switch cascades over; `provider.chat_domain_slugs` is the family's
- * chat-protocol surfaces (`claude-web`, `chatgpt-apps`), which get a row and a
- * switch of their own here but must stay out of that cascade - they intercept
- * the user's session cookie rather than a brokered key, so enabling "Claude"
- * must never start routing claude.ai as a side effect. Visibility used to ride
- * on `domain_slugs` alone, which is why those two were invisible; giving
- * visibility its own field is what lets them be shown without joining the
- * cascade. `App.tsx`'s `setGroupRouted` and `FamilyPanel`'s switch both honour
- * the split via `GroupMember.chat` / `Group.cascadeDesired`.
+ * Membership is each row's own `client`, so this is a bucketing rather than the
+ * two-pass claim-and-sweep it replaced. There is no leftover pass and no
+ * catch-all: a row whose client has no entry in {@link CLIENTS} would vanish,
+ * which `every_client_is_drawn` in the test file pins, and the backend's own
+ * `all_holds_every_client` pins the other end.
+ *
+ * The order within a group is tools first, then domains, which is the order the
+ * old families drew and the order that reads best: the thing Gate configures,
+ * then the hosts it intercepts for it.
  */
 export function buildGroups(
-  providers: ProviderState[],
   tools: Tool[],
   domains: ProxyDomain[],
   opts: {
@@ -548,135 +629,32 @@ export function buildGroups(
 ): Group[] {
   const installed = tools.filter((t) => t.status.kind !== "not_installed");
   const routable = domains.filter((d) => d.supported);
-  const claimed = new Set<string>();
-  // Domains a family took, so a leftover heading naming the same slug cannot
-  // draw it a second row. Tracked separately from `claimed` because tool and
-  // domain slugs share no namespace guarantee - `opencode` is both.
-  const claimedDomains = new Set<string>();
 
-  const groups: Group[] = providers.map((provider) => {
-    const members: GroupMember[] = [];
-    for (const tool of installed) {
-      if (provider.tool_slugs.includes(tool.slug)) {
-        claimed.add(tool.slug);
-        members.push(memberFromTool(tool, opts));
-      }
-    }
-    for (const domain of routable) {
-      if (provider.domain_slugs.includes(domain.slug)) {
-        claimedDomains.add(domain.slug);
-        members.push(memberFromDomain(domain, opts));
-      }
-    }
-    // After the cascaded domains, so a family reads "what the switch governs,
-    // then the surface it deliberately leaves alone".
-    for (const domain of routable) {
-      if (provider.chat_domain_slugs.includes(domain.slug)) {
-        claimedDomains.add(domain.slug);
-        members.push({ ...memberFromDomain(domain, opts), chat: true });
-      }
-    }
+  const groups: Group[] = CLIENTS.map((client) => {
+    const members: GroupMember[] = [
+      ...installed.filter((t) => t.client === client.id).map((t) => memberFromTool(t, opts)),
+      ...routable.filter((d) => d.client === client.id).map((d) => memberFromDomain(d, opts)),
+    ];
     return {
-      id: provider.slug,
-      name: provider.display_name,
-      switchLabel: `Route ${provider.display_name} through Gate`,
+      id: client.id,
+      name: client.name,
+      vendor: client.vendor,
+      switchLabel: `Route ${client.name} through Gate`,
+      blurb: client.id === "any-app" ? ANY_APP_BLURB : undefined,
+      // The rail captions a group with its vendor where there is one. Without
+      // a vendor the group's own name has to stand in, which is what this
+      // flag has always meant - it is just derivable now instead of being set
+      // per heading.
+      multiProvider: client.vendor === null,
+      namedByExclusion: client.id === "any-app",
       members,
       routed: members.filter((m) => m.routed).length,
       desired: members.filter((m) => m.desired).length,
-      cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+      // Only the rows a group switch can flip. An additive row is on screen
+      // under this heading and answers to its own switch alone.
+      cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
     };
   });
-
-  // Whatever the catalog didn't claim: the tools that route every provider
-  // configured in them rather than one model family.
-  //
-  // These used to be one "Other tools" row. They are headings of their own now
-  // (`LEFTOVER_GROUPS`), for the reason the row labels changed at all: a rail
-  // row reading "CLI" is only legible under a heading that says whose CLI, and
-  // "Other tools" said the opposite - that the heading could not name it.
-  // Anything neither the catalog nor that list places still lands in the
-  // catch-all below, so no installed tool can fall off the ledger.
-  const leftovers = new Map(
-    installed
-      .filter((t) => !claimed.has(t.slug))
-      .map((t) => [
-        t.slug,
-        { ...memberFromTool(t, opts), coversAllProviders: true } as GroupMember,
-      ]),
-  );
-
-  for (const spec of LEFTOVER_GROUPS) {
-    const members: GroupMember[] = [];
-    for (const slug of spec.slugs) {
-      const member = leftovers.get(slug);
-      if (!member) continue;
-      leftovers.delete(slug);
-      members.push(member);
-    }
-    // Domains after the tools, the same order a family draws them in.
-    for (const slug of spec.domainSlugs ?? []) {
-      if (claimedDomains.has(slug)) continue;
-      const domain = routable.find((d) => d.slug === slug);
-      if (!domain) continue;
-      members.push(memberFromDomain(domain, opts));
-    }
-    if (members.length === 0) continue;
-    groups.push({
-      id: spec.id,
-      name: spec.name,
-      switchLabel: `Route ${spec.switchNoun} through Gate`,
-      blurb: spec.blurb,
-      multiProvider: true,
-      members,
-      routed: members.filter((m) => m.routed).length,
-      desired: members.filter((m) => m.desired).length,
-      // Nothing here is ever outside the cascade: these headings hold config
-      // tools and plain proxy domains, and only a chat member - a session-cookie
-      // surface, which belongs to a model family by definition - is excluded.
-      cascadeDesired: members.filter((m) => m.desired).length,
-    });
-  }
-
-  const unplaced = [...leftovers.values()];
-  if (unplaced.length > 0) {
-    groups.push({
-      id: MULTI_PROVIDER_ID,
-      // "Other tools", not "Agent harnesses". This is the label on a
-      // `filter(t => !claimed.has(t.slug))`, and it surfaced as a family name on
-      // the screen people read daily. PRODUCT.md's positioning says the UI's
-      // nouns are tools and apps; nobody installs a harness, and it was the one
-      // word on Home a first-timer could not map to anything on their machine.
-      // The blurb below is where the category actually gets explained, which is
-      // the right place for a definition the name should not have to carry.
-      //
-      // What reaches it has changed, and the name survived that: it is now the
-      // tools `LEFTOVER_GROUPS` did not name, which in a shipped build should be
-      // none. A tool arriving here is a heading someone forgot to add, and
-      // "Other tools" is exactly the right thing to call it until they do.
-      name: "Other tools",
-      switchLabel: "Route other tools through Gate",
-      // Which providers, and which not. The old line said these tools "route
-      // every provider you've set up in them", which is the reading the code
-      // does not support and the more alarming of the two a user might take: it
-      // promises Gate stands in front of everything they configured. It does
-      // not. OpenCode repoints only providers that are both on Gate's known
-      // list and covered by the proxy catalog, and skips the rest at connect
-      // time because the relay would 403 them; OpenClaw and Hermes do no
-      // provider discovery at all and let the enabled catalog domains decide
-      // what the engine intercepts, blind-tunnelling everything else. Three
-      // mechanisms, one user-visible boundary: Gate takes what it covers and
-      // leaves the rest alone. The second sentence is the one that matters to
-      // someone running a local model.
-      blurb:
-        "Tools that talk to several providers, not one model family. Gate routes the ones it covers; anything else, including a local model, keeps going where it always did.",
-      multiProvider: true,
-      members: unplaced,
-      routed: unplaced.filter((m) => m.routed).length,
-      desired: unplaced.filter((m) => m.desired).length,
-      // Config tools only, so nothing here is ever outside the cascade.
-      cascadeDesired: unplaced.filter((m) => m.desired).length,
-    });
-  }
 
   return groups.filter((g) => g.members.length > 0);
 }
@@ -773,7 +751,7 @@ export function groupSummary(group: Group): {
  * - **Chat members never ride a family switch.** They intercept a session-cookie
  *   surface (claude.ai, the ChatGPT app's own turn) rather than a key-brokered
  *   API, so routing one is a deliberate per-row act. This mirrors the backend,
- *   which keeps those slugs out of `proxy_domain_slugs` for the same reason.
+ *   which derives the same exclusion from the same credential.
  * - **A drifted member is never switched on by a family.** Its config was written
  *   by hand, and adopting it is a decision that belongs to the review dialog, not
  *   to a switch two levels up. Turning *off* is unaffected: disconnecting
@@ -788,7 +766,10 @@ export function groupSummary(group: Group): {
  */
 export function cascadeTargets(group: Group, on: boolean): GroupMember[] {
   return group.members.filter((m) => {
-    if (m.chat) return false;
+    // The credential decides, and it decides here for the same reason the
+    // backend's `cascade_domains` decides it there: an additive row carries
+    // the user's own session, and a group switch must never route that.
+    if (!m.cascade) return false;
     // An overridden member is left out for the same reason a drifted one is:
     // the family switch writes Gate's config, and here that config is already
     // written and already losing. Turning it on again is a no-op the user would

@@ -68,7 +68,8 @@ import type { ClassifiedError } from "./lib/errors";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  chatScopeNote,
+  credentialScopeNote,
+  scopeNote,
   describeMember,
   proxyReopenAdvice,
 } from "./lib/groups";
@@ -1249,7 +1250,7 @@ export function NewUiApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(providers, tools, proxy.domains, {
+        ? buildGroups(tools, proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
           })
@@ -1396,13 +1397,11 @@ export function NewUiApp() {
     const grouped: SidebarGroup[] = [];
     for (const g of groups) {
       const members: SidebarApp[] = [];
-      let vendor: string | null = null;
       for (const m of g.members) {
         if (m.kind === "config" && m.tool) {
           const app = bySlug.get(m.key);
           if (!app) continue;
           bySlug.delete(m.key);
-          vendor ??= m.tool.upstream_provider_name;
           members.push(app);
         } else if (m.kind === "proxy") {
           members.push({
@@ -1422,7 +1421,11 @@ export function NewUiApp() {
         // "Other tools" names itself; its members' vendor field is a sentence
         // fragment ("your existing providers"), not a caption.
         id: g.id,
-        label: g.multiProvider ? g.name : (vendor ?? g.name),
+        // The group's own name, always. It was the vendor where there was
+        // one - "Anthropic" over rows reading "CLI" and "App" - which is the
+        // grouping this ledger no longer uses: a heading is a program now, and
+        // its rows are that program's surfaces.
+        label: g.name,
         apps: members,
       });
     }
@@ -2422,9 +2425,31 @@ export function NewUiApp() {
       .flatMap((g) => g.members)
       .find((m) => m.key === view.slug);
     return member
-      ? chatScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
+      ? credentialScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
       : undefined;
   }, [view, groups, platform, proxy]);
+
+  /**
+   * How wide this row reaches, for the rows the note above does not cover.
+   *
+   * The brokered host entries - the API surfaces, OpenRouter - are matched on
+   * host exactly like the session ones, so flipping them intercepts that host
+   * for every client on the machine. They said nothing about it, because the
+   * only note in this position keyed on the credential and theirs is the
+   * ordinary one. Scope and credential are separate fields now, so each row
+   * gets whichever sentences are true of it: a session host row draws both, an
+   * API host row draws this one, a config tool draws neither.
+   */
+  const rowScope = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const member = groups
+      .flatMap((g) => g.members)
+      .find((m) => m.key === view.slug);
+    // Not beside the note above, which already opens with the same host
+    // sentence in its own words.
+    if (!member || chatScope) return undefined;
+    return scopeNote(member);
+  }, [view, groups, chatScope]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -3329,6 +3354,7 @@ export function NewUiApp() {
               {chatScope && (
                 <PaneNote title={chatScope.title} body={chatScope.body} />
               )}
+              {rowScope && <PaneNote title="What this switch covers" body={rowScope} />}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}

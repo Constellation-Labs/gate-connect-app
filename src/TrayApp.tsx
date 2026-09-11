@@ -521,7 +521,7 @@ export function TrayApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(providers, tools, proxy.domains, {
+        ? buildGroups(tools, proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
           })
@@ -659,13 +659,11 @@ export function TrayApp() {
     const grouped: SidebarGroup[] = [];
     for (const g of groups) {
       const members: SidebarApp[] = [];
-      let vendor: string | null = null;
       for (const m of g.members) {
         if (m.kind === "config" && m.tool) {
           const app = bySlug.get(m.key);
           if (!app) continue;
           bySlug.delete(m.key);
-          vendor ??= m.tool.upstream_provider_name;
           members.push(app);
         } else if (m.kind === "proxy") {
           members.push({
@@ -681,7 +679,11 @@ export function TrayApp() {
       if (members.length === 0) continue;
       grouped.push({
         id: g.id,
-        label: g.multiProvider ? g.name : (vendor ?? g.name),
+        // The group's own name, always. It was the vendor where there was
+        // one - "Anthropic" over rows reading "CLI" and "App" - which is the
+        // grouping this ledger no longer uses: a heading is a program now, and
+        // its rows are that program's surfaces.
+        label: g.name,
         apps: members,
       });
     }

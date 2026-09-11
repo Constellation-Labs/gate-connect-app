@@ -114,6 +114,13 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
+        // A test seam, never a ledger row: nothing groups it, and it must not
+        // ride a family switch if something ever does enumerate it. `AnyApp`
+        // plus `Observed` is the inert answer; `Client` is the relay's own hop,
+        // which touches no other program.
+        client: crate::taxonomy::Client::AnyApp,
+        credential: crate::taxonomy::Credential::Observed,
+        scope: crate::taxonomy::Scope::Client,
     })
 }
 

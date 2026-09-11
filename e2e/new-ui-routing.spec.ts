@@ -973,9 +973,9 @@ test.describe("new UI: the review names the file it will change", () => {
 /**
  * The rail as `Components / Sidenav` draws it (read 2026-08-23): proxy-routed
  * members are rows beside the config tools, every eyebrow carries its
- * protected-over-total counter, and the multi-provider tools share one
- * "Other tools" group. Hook tests cannot see whether a row's switch reaches
- * the right command, which is what the first of these pins.
+ * protected-over-total counter, and each group is one client. Hook tests
+ * cannot see whether a row's switch reaches the right command, which is what
+ * the first of these pins.
  */
 test.describe("new UI sidebar rail", () => {
   test.beforeEach(async ({ page }) => {
@@ -985,10 +985,10 @@ test.describe("new UI sidebar rail", () => {
   test("a proxy domain is a rail row whose switch routes it", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // The ChatGPT subscription endpoint is the OpenAI family's "App" row; the
-    // Claude desktop apps are Anthropic's, which is why the eyebrow is in the
-    // name.
-    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
+    // The ChatGPT subscription endpoint, under the ChatGPT client's heading.
+    // The eyebrow is in the name because "Subscription" alone would not say
+    // whose.
+    await app.page.getByRole("switch", { name: "ChatGPT Subscription" }).click();
 
     // A domain routes through the engine's flag, never a config write.
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
@@ -1004,23 +1004,23 @@ test.describe("new UI sidebar rail", () => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
     // Reached through its switch, which is the one thing on the row that names
-    // its family: "App" is the OpenAI family's ChatGPT row and the Anthropic
-    // family's desktop-apps row both, and a row button's name is its own text.
+    // its group: a row button's name is its own text, and "Subscription" is
+    // only unique once the group is in the name.
     await app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "OpenAI App" }) })
+      .filter({ has: app.page.getByRole("switch", { name: "ChatGPT Subscription" }) })
       .getByRole("button")
       .click();
 
     await expect(
-      app.page.getByRole("heading", { name: "App" }),
+      app.page.getByRole("heading", { name: "Subscription" }),
     ).toBeVisible();
     // The gateway attributes requests to config tools only, so the pane says
     // why its sections are empty rather than reporting a quiet day.
     await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
 
     // The pane's own switch routes the domain, same as the rail row's.
-    await app.page.getByRole("switch", { name: "Route App" }).click();
+    await app.page.getByRole("switch", { name: "Route Subscription" }).click();
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",
       enabled: true,
@@ -1031,20 +1031,19 @@ test.describe("new UI sidebar rail", () => {
   test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // OpenAI holds Codex (detected, off) plus the two chat domains, ChatGPT
-    // and ChatGPT-app-chat (both off). Three, not four: the `openai` domain is
-    // api.openai.com, which rides no OpenAI tool and sits under Experimental
-    // now. Read off this group's own eyebrow rather than by text: every group
-    // draws one, and the Anthropic group's happens to carry the same count.
-    const openAiEyebrow = app.page
-      .getByRole("heading", { name: "OpenAI", exact: true })
+    // ChatGPT holds its two chatgpt.com rows and nothing else: Codex is its
+    // own client now, and the `openai` domain is api.openai.com, which rides
+    // no OpenAI tool and sits under the machine-wide heading. Read off this
+    // group's own eyebrow rather than by text: every group draws one.
+    const chatGptEyebrow = app.page
+      .getByRole("heading", { name: "ChatGPT", exact: true })
       .locator("xpath=following-sibling::span");
-    await expect(openAiEyebrow).toHaveText("0 of 3");
+    await expect(chatGptEyebrow).toHaveText("0 of 2");
 
-    // Routing the ChatGPT subscription domain with the engine up and the
-    // certificate trusted makes it the group's one protected row.
-    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
-    await expect(openAiEyebrow).toHaveText("1 of 3");
+    // Routing the subscription domain with the engine up and the certificate
+    // trusted makes it the group's one protected row.
+    await app.page.getByRole("switch", { name: "ChatGPT Subscription" }).click();
+    await expect(chatGptEyebrow).toHaveText("1 of 2");
   });
 
   test("the multi-provider tools get an eyebrow each", async ({ boot }) => {
@@ -1067,32 +1066,37 @@ test.describe("new UI sidebar rail", () => {
           default_upstream_url: "https://openrouter.ai/api/v1",
           status: { kind: "detected" },
         },
-        // The environment channel, which is half of what makes Experimental a
-        // heading rather than a rename: OpenCode cannot route without it, and
-        // turning OpenCode on turns it on.
+        // The environment channel. It is the machine-wide row now rather than
+        // OpenCode's roommate: what it routes is every program started after
+        // the next login, which is a different client from the editor.
         {
           slug: "env-proxy",
           name: "Terminal tools",
           upstream_provider_name: "your existing providers",
           default_upstream_url: "https://openrouter.ai/api/v1",
           status: { kind: "detected" },
+          client: "any-app",
+          scope: "machine",
+          credential: "brokered",
         },
       ],
     });
 
-    // A heading per tool, which is what lets the row beneath it be named for a
-    // surface. They shared one "Other tools" eyebrow until `LEFTOVER_GROUPS`
-    // split them: the 2026-08-21 read drew the shared one, the Sidenav page
-    // reversed it, and naming the rows reversed it back.
+    // A heading per client, which is what lets the row beneath it be named for
+    // a surface. OpenClaw and OpenCode are two programs and two headings.
     await expect(app.page.getByRole("heading", { name: "OpenClaw" })).toBeVisible();
-    // OpenCode and the environment channel share the other one, which is the
-    // pairing the heading exists for.
-    const experimental = app.page
-      .getByRole("heading", { name: "Experimental" })
+    await expect(app.page.getByRole("heading", { name: "OpenCode" })).toBeVisible();
+    // The environment channel heads the machine-wide group with the host rows
+    // that also cover whatever happens to be running - four of them here, the
+    // channel plus the catalog's three `any-app` entries that this state
+    // leaves supported.
+    const anyApp = app.page
+      .getByRole("heading", { name: "Any app on this machine" })
       .locator("xpath=following-sibling::span");
-    await expect(experimental).toHaveText("0 of 3");
-    // "Other tools" is the catch-all for a tool no heading names. With the
-    // catalog and `LEFTOVER_GROUPS` in step, nothing reaches it.
+    await expect(anyApp).toHaveText("0 of 2");
+    // The catch-all is gone by construction: every row answers `client`, so
+    // there is nothing left for it to catch.
     await expect(app.page.getByRole("heading", { name: "Other tools" })).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Experimental" })).toHaveCount(0);
   });
 });

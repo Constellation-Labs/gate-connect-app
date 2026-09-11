@@ -748,7 +748,15 @@ fn print_proxy_state(state: &proxy::ProxyState) {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
-    println!("{:<12} {:<6} NAME", "PROVIDER", "STATE");
+    // Client, scope and credential beside the flag, for the same reason the
+    // diagnostics report carries them: on/off alone does not say who a row is
+    // for, what else flipping it touches, or whether Gate supplies the key.
+    // A `claude-web off` with none of that is what sent a support thread
+    // looking in the wrong place.
+    println!(
+        "{:<14} {:<6} {:<15} {:<8} {:<10} NAME",
+        "DOMAIN", "STATE", "CLIENT", "SCOPE", "CREDENTIAL"
+    );
     for d in domains {
         let state = if !d.supported {
             "n/a"
@@ -757,7 +765,40 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
         } else {
             "off"
         };
-        println!("{:<12} {:<6} {}", d.slug, state, d.display_name);
+        println!(
+            "{:<14} {:<6} {:<15} {:<8} {:<10} {}",
+            d.slug,
+            state,
+            d.client.slug(),
+            scope_word(d.scope),
+            credential_word(d.credential),
+            d.display_name
+        );
+    }
+}
+
+/// One word per [`Scope`], for the table above.
+///
+/// Spelled out here rather than derived from the serde name so the CLI's
+/// vocabulary is a deliberate choice: "host" is the one a reader has to
+/// understand, because it is the one that reaches past the row's own name.
+fn scope_word(scope: gate_connect_core::taxonomy::Scope) -> &'static str {
+    use gate_connect_core::taxonomy::Scope;
+    match scope {
+        Scope::Host => "host",
+        Scope::Client => "client",
+        Scope::Machine => "machine",
+    }
+}
+
+/// One word per [`Credential`]. `brokered` is also the answer to "will a
+/// provider switch turn this on".
+fn credential_word(credential: gate_connect_core::taxonomy::Credential) -> &'static str {
+    use gate_connect_core::taxonomy::Credential;
+    match credential {
+        Credential::Brokered => "brokered",
+        Credential::Additive => "additive",
+        Credential::Observed => "observed",
     }
 }
 

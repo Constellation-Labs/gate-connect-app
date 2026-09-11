@@ -115,7 +115,7 @@ const SCREEN_DEPTH: Record<Screen, number> = {
 // upstream hint. That stopped being true: OpenClaw's managed proxy mode sends
 // its ChatGPT-subscription model calls to the same host through the MITM
 // engine, and that switch is the only thing that lets Gate see them, so it is
-// something the user routes deliberately - see `provider::chat_domain_slugs`.
+// something the user routes deliberately - see `Credential::Additive`.
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -957,7 +957,7 @@ export function App() {
   const setGroupRouted = useCallback(
     async (id: string, on: boolean) => {
       if (proxyBusyRef.current) return;
-      const group = buildGroups(providers, tools, proxy?.domains ?? [], {
+      const group = buildGroups(tools, proxy?.domains ?? [], {
         proxyOn: proxy?.running ?? false,
         caTrusted: proxy?.ca_trusted ?? false,
         verdicts,
@@ -1212,7 +1212,7 @@ export function App() {
   const visibleDomains = proxy?.domains ?? [];
   // The ledger, grouped by model family; the group screen reads the same
   // shape Home renders so both stay in step after a toggle.
-  const groups = buildGroups(providers, tools, visibleDomains, {
+  const groups = buildGroups(tools, visibleDomains, {
     proxyOn,
     caTrusted: proxy?.ca_trusted ?? false,
     verdicts,
@@ -1356,7 +1356,6 @@ export function App() {
         // even where nothing visible currently depends on it.
         caTrusted={proxy?.ca_trusted ?? false}
         showProxy={showProxy}
-        providers={providers}
         tools={tools}
         domains={visibleDomains}
         verdicts={verdicts}

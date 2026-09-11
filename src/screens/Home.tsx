@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
+import type { Tool, ProxyDomain, Verdict } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
@@ -29,7 +29,6 @@ export function Home({
   proxyOn,
   caTrusted,
   showProxy,
-  providers,
   tools,
   domains,
   busy,
@@ -63,7 +62,6 @@ export function Home({
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
-  providers: ProviderState[];
   tools: Tool[];
   domains: ProxyDomain[];
   busy: boolean;
@@ -107,7 +105,7 @@ export function Home({
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
-  const groups = buildGroups(providers, tools, domains, {
+  const groups = buildGroups(tools, domains, {
     proxyOn,
     caTrusted,
     verdicts,
@@ -875,7 +873,7 @@ function FamilyRow({
   //
   // Suppressed by an exception for the same reason as before: that sentence
   // takes this slot and already names a member.
-  const roster = !exception && !!group.multiProvider && group.members.length > 0;
+  const roster = !exception && group.namedByExclusion && group.members.length > 0;
   const secondLine = !!exception || roster;
   return (
     <div

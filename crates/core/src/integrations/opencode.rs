@@ -219,6 +219,10 @@ impl Integration for OpenCode {
         "OpenCode"
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::OpenCode
+    }
+
     fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
         #[cfg(windows)]
         const NAMES: &[&str] = &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"];

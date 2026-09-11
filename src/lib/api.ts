@@ -16,6 +16,47 @@ export type Status =
   | { kind: "overridden"; source: string }
   | { kind: "error"; message: string };
 
+/** Whose credential rides a routed request, and therefore whether a family
+ *  switch may flip the row. Mirrors `taxonomy::Credential`.
+ *
+ *  `brokered`: Gate injects the key it holds in the OS keychain and the
+ *  caller's own credential is dropped on the rewrite path. The only kind a
+ *  family switch turns on.
+ *  `additive`: the caller's session cookie or subscription bearer stays and
+ *  Gate records and inspects alongside it. Always opt-in, per row.
+ *  `observed`: seen and audited, nothing changed about what authenticates it.
+ *  No row ships this today; it exists so "inspected" and "credential swapped"
+ *  are not forced to share a sentence. */
+export type Credential = "brokered" | "additive" | "observed";
+
+/** How much of the machine a row reaches when it is on. Mirrors
+ *  `taxonomy::Scope`.
+ *
+ *  `host`: every client on this machine that honours the system proxy and
+ *  talks to these hosts. Wider than the row's own name, always, because
+ *  interception is decided at CONNECT from the host alone - which is the fact
+ *  the old surface labels ("App", "Web") hid.
+ *  `client`: this program only, reached through something it reads itself.
+ *  `machine`: every program started after the next login. */
+export type Scope = "host" | "client" | "machine";
+
+/** The program a row is aimed at, and the ledger's grouping key. Mirrors
+ *  `taxonomy::Client`.
+ *
+ *  Not the per-request `ClientClass` the engine reads off headers: this is a
+ *  catalog fact, fixed when the entry is written. `any-app` is a real answer
+ *  rather than a leftover bin - some rows genuinely cover whatever on the
+ *  machine reaches their hosts. */
+export type ClientId =
+  | "claude-code"
+  | "claude-desktop"
+  | "codex"
+  | "chatgpt"
+  | "opencode"
+  | "openclaw"
+  | "hermes"
+  | "any-app";
+
 export interface Tool {
   slug: string;
   /** The ledger row's label, under a heading that already names the vendor:
@@ -33,6 +74,15 @@ export interface Tool {
    * showing it is the point. */
   config_location: string | null;
   status: Status;
+  /** Which program this row is aimed at - the ledger's grouping key, shared
+   *  with {@link ProxyDomain.client}. */
+  client: ClientId;
+  /** How far this row's routing reaches. `client` for every config tool;
+   *  `machine` for the environment channel. */
+  scope: Scope;
+  /** Whose credential rides it. `brokered` for every config tool, carried so
+   *  a row's credential is read the same way whatever kind of row it is. */
+  credential: Credential;
 }
 
 export type AuthMode = "api_key" | "oauth";
@@ -301,6 +351,15 @@ export interface ProxyDomain {
   /** Whether Gate can upstream this provider yet. Unsupported domains
    * render as disabled rows and can't be turned on. */
   supported: boolean;
+  /** Which program this entry exists to route - the ledger's grouping key.
+   *  Aim, not coverage: read it with {@link ProxyDomain.scope} beside it,
+   *  which is `host` for every shipped entry and therefore wider. */
+  client: ClientId;
+  /** Whose credential rides the request. `additive` on the session surfaces
+   *  (claude.ai, chatgpt.com), which is what keeps them off family switches. */
+  credential: Credential;
+  /** How much of the machine flipping this reaches. */
+  scope: Scope;
 }
 
 export interface ProxyState {
@@ -427,12 +486,10 @@ export interface ProviderState {
   /** Slugs of the proxy domains this provider covers. With `tool_slugs`,
    * a family's whole membership - what Home's ledger groups by. */
   domain_slugs: string[];
-  /** Slugs of this family's chat-protocol domains: listed under the family,
-   * excluded from its switch. Kept apart from `domain_slugs` rather than
-   * merged with a flag, because that field means "what the family switch
-   * flips" everywhere it is read, and these must never be flipped by it -
-   * they intercept a session-cookie surface, not a key-brokered one. */
-  chat_domain_slugs: string[];
+  /** The subset of `domain_slugs` this provider's switch actually flips, as
+   * the backend derives it from each domain's credential. Replaces the old
+   * `chat_domain_slugs`, which named the excluded half instead. */
+  cascade_domain_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");

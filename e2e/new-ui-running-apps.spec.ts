@@ -332,9 +332,9 @@ test.describe("new UI running apps", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    // The Anthropic family's "App" row: Claude Desktop and Cowork, routed by
-    // domain rather than by a config file of their own.
-    await app.page.getByRole("button", { name: "App" }).first().click();
+    // Claude Desktop's API row, routed by domain rather than by a config file
+    // of its own.
+    await app.page.getByRole("button", { name: "API" }).first().click();
 
     await expect(
       app.page.getByText("Apps already open may need reopening"),
@@ -351,7 +351,7 @@ test.describe("new UI running apps", () => {
         proxy: { running: true, ca_trusted: true },
       });
 
-      await app.page.getByRole("button", { name: "App" }).first().click();
+      await app.page.getByRole("button", { name: "API" }).first().click();
 
       await expect(
         app.page.getByText("Apps already open may need reopening"),

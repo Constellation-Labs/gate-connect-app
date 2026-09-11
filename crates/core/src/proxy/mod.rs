@@ -1580,6 +1580,49 @@ pub struct ProxyDomain {
     /// Whether Gate can actually upstream this provider today. Unsupported
     /// domains render as disabled rows in the UI and can't be enabled.
     pub supported: bool,
+    /// The program this entry exists to route. The ledger groups by it.
+    ///
+    /// Aim, not coverage: read it with [`ProxyDomain::scope`] beside it, which
+    /// is usually [`Scope::Host`] and therefore wider than this. Catalog-only,
+    /// like every field here except `enabled` - `config::load_domains` rebuilds
+    /// from [`default_domains`] and applies persisted flags, so none of these
+    /// need a migration.
+    #[serde(default = "default_client")]
+    pub client: crate::taxonomy::Client,
+    /// Whose credential rides the request, and therefore whether a family
+    /// switch may flip this row. See [`Credential::cascades`].
+    ///
+    /// [`Credential::cascades`]: crate::taxonomy::Credential::cascades
+    #[serde(default = "default_credential")]
+    pub credential: crate::taxonomy::Credential,
+    /// How much of the machine this row reaches when it is on.
+    ///
+    /// Not a constant even though most entries are [`Scope::Host`]: `chatgpt`
+    /// is reached by Codex through the loopback relay, which touches nothing
+    /// but Codex's own config. An entry that is only ever relayed is
+    /// [`Scope::Client`].
+    #[serde(default = "default_scope")]
+    pub scope: crate::taxonomy::Scope,
+}
+
+/// Serde fallbacks for the taxonomy fields.
+///
+/// Unreachable in practice - the persisted file holds enabled flags and nothing
+/// else, so every `ProxyDomain` in the process was built by the catalog. They
+/// exist because the struct is `Deserialize` and a bare `#[serde(default)]`
+/// would need `Default` impls on three enums that have no sensible default:
+/// guessing `Brokered` for an unknown row would let it ride a family switch.
+/// These name the safe answer instead - nobody's client, nothing cascaded.
+fn default_client() -> crate::taxonomy::Client {
+    crate::taxonomy::Client::AnyApp
+}
+
+fn default_credential() -> crate::taxonomy::Credential {
+    crate::taxonomy::Credential::Observed
+}
+
+fn default_scope() -> crate::taxonomy::Scope {
+    crate::taxonomy::Scope::Host
 }
 
 impl ProxyDomain {
@@ -2181,7 +2224,7 @@ pub fn rules_for_client(domains: &[ProxyDomain], client: ClientClass) -> Vec<Pro
 /// ignores the other's paths. Stopping at the first host match made the earlier
 /// entry silently swallow the later one's traffic as an unclaimed passthrough,
 /// so enabling both switches routed less than enabling one. Since both are now
-/// rows the user can toggle independently (`provider::chat_domain_slugs`), that
+/// rows the user can toggle independently (both `Credential::Additive`), that
 /// combination has to behave. A host-matching entry that claims neither the path
 /// nor its subtree simply abstains; only if nobody claims it does the request
 /// fall through to `Passthrough`.

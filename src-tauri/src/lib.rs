@@ -75,6 +75,19 @@ struct ToolDto {
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
     status: StatusDto,
+    /// The program this row is aimed at: the ledger's grouping key, shared
+    /// with `ProxyDomain::client` so a tool row and a domain row aimed at the
+    /// same program land under one heading.
+    client: gate_connect_core::taxonomy::Client,
+    /// How much of the machine this row reaches. `Client` for every config
+    /// tool; `Machine` for the environment channel, which is the one row here
+    /// whose reach is wider than the program it names.
+    scope: gate_connect_core::taxonomy::Scope,
+    /// Whose credential rides the traffic. `Brokered` for every config tool -
+    /// carried anyway so the UI reads one field whatever kind of row it has,
+    /// rather than knowing that tool rows are brokered and domain rows may not
+    /// be.
+    credential: gate_connect_core::taxonomy::Credential,
 }
 
 #[derive(Serialize)]
@@ -145,6 +158,9 @@ fn list_tools() -> Vec<ToolDto> {
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
+            client: integ.client(),
+            scope: integ.scope(),
+            credential: integ.credential(),
         })
         .collect()
 }
