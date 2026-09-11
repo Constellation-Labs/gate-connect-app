@@ -67,6 +67,16 @@ export interface ToolMessagesView {
   /** Slugs with a read in flight and nothing held yet, so a row can hold a place
    *  rather than draw a zero it has not measured. */
   pending: Set<string>;
+  /**
+   * The organization these readings belong to, or null before the first read.
+   *
+   * Carried here because the popover has no other sight of it: `account.org_name`
+   * is populated in OAuth mode only, so on an api-key account the tray footer
+   * had nothing to name and said "No organization" while the window, which has
+   * the live overview to fall back on, named it correctly. This comes off the
+   * same single disk read the rows do, so the footer costs no extra call.
+   */
+  orgName: string | null;
   /** Re-read whatever has gone stale. Idempotent and safe to call on every
    *  visibility edge; it does nothing when everything is fresh. */
   refresh: () => void;
@@ -93,6 +103,18 @@ function figure(text: string): ToolMessages | null {
   };
 }
 
+/**
+ * The organization a cached body was read for, if it names one.
+ *
+ * Separate from {@link figure} on purpose: that returns null when the counter
+ * is absent, and the org name is still perfectly good in a body with no message
+ * figure. Folding the two would have made the footer's name depend on whether
+ * the gateway happened to answer a counter.
+ */
+function orgNameOf(text: string): string | null {
+  return parseOverview(text)?.orgName ?? null;
+}
+
 export function useToolMessages(
   enabled: boolean,
   /** The tools with rows to fill. Compared by contents rather than identity, so a
@@ -109,6 +131,9 @@ export function useToolMessages(
 ): ToolMessagesView {
   const [byTool, setByTool] = useState<Map<string, ToolMessages>>(new Map());
   const [pending, setPending] = useState<Set<string>>(new Set());
+  /** The org these readings belong to, so the popover's footer can name it.
+   *  Comes off the same disk read the rows do, so it costs no extra call. */
+  const [orgName, setOrgName] = useState<string | null>(null);
   /**
    * When each slug was last *asked for*, for the staleness decision.
    *
@@ -163,10 +188,16 @@ export function useToolMessages(
       );
       if (!current()) return;
       const fromDisk = new Map<string, ToolMessages>();
+      let heldOrg: string | null = null;
       for (const [slug, text] of Object.entries(held)) {
         const one = figure(text);
         if (one) fromDisk.set(slug, one);
+        // Any body will do: the cache is scoped to one org at a time, which is
+        // the property `activity_cache.rs` maintains, so every reading under
+        // this scope names the same one.
+        heldOrg ??= orgNameOf(text);
       }
+      if (heldOrg) setOrgName(heldOrg);
       if (fromDisk.size > 0) {
         setByTool((prev) => new Map([...prev, ...fromDisk]));
         // Seeded from the reading's own age, which is the only clock a body off
@@ -238,5 +269,5 @@ export function useToolMessages(
     };
   }, [refresh]);
 
-  return { byTool, pending, refresh };
+  return { byTool, pending, orgName, refresh };
 }

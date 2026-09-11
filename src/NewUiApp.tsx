@@ -84,6 +84,7 @@ import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { brandMarkFor } from "./components/gc/BrandMark";
+import { orgLabel } from "./lib/orgLabel";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -2653,7 +2654,10 @@ export function NewUiApp() {
           />
         ) : (
           <ConnectedPane
-            workspace={account?.org_name ?? account?.gateway_base_url ?? "Gate"}
+            // The third spelling of this, now the same as the other two. It
+            // used to fall back to the gateway URL and then to "Gate", which
+            // reads as an answer to "which org" and is not one.
+            workspace={orgLabel(account, activity.view?.orgName)}
             offerRouting={!!proxy && !proxy.running}
             busy={setup.busy}
             onTurnOnRouting={() => void setup.turnOnRouting()}
@@ -2694,7 +2698,7 @@ export function NewUiApp() {
       routing={{ protectedCount, totalCount: desiredApps.length }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
-      orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
+      orgName={orgLabel(account, activity.view?.orgName)}
       onSwitchOrg={() => {
         setActionError(null);
         void settings.openSwitchOrg();
