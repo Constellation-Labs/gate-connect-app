@@ -216,7 +216,9 @@ export function Sidebar({
   inventory,
 }: {
   orgName: string;
-  onSwitchOrg: () => void;
+  /** Omitted when the account cannot switch organizations, which is every
+   *  API-key account. See `OrgSwitcher`. */
+  onSwitchOrg?: () => void;
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
   groups: SidebarGroup[];
@@ -340,7 +342,36 @@ export function Sidebar({
   );
 }
 
-function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
+/**
+ * The organization line, a control only when there is something to switch to.
+ *
+ * `onClick` is optional, and its absence is a real state rather than an
+ * oversight: `/v1/me/orgs` answers "which organizations may this *user* act
+ * on", which only a signed-in session can answer, and the gateway refuses an
+ * API key for it outright ("X-Gate-Authorization must be `Bearer
+ * <cognito-access-token>`"). An API key resolves to exactly one organization -
+ * AG-572's contract says so and the activity reading proves it - so for those
+ * accounts there is nothing to choose between.
+ *
+ * Without a handler this renders as the label the frame draws, chevron and all
+ * its button chrome dropped. `Tray`'s footer already works this way and states
+ * the rule: nothing here invents an affordance that leads nowhere. The window
+ * did invent one, and clicking it could only ever produce an error banner.
+ */
+function OrgSwitcher({ name, onClick }: { name: string; onClick?: () => void }) {
+  if (!onClick) {
+    return (
+      <span
+        className="flex w-full items-center gap-2 rounded-control border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
+        title={name}
+      >
+        <Icon name="usersRound" size={16} />
+        <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
+          {name}
+        </span>
+      </span>
+    );
+  }
   return (
     <button
       type="button"
