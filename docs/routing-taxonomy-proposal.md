@@ -132,15 +132,18 @@ the pane's description rather than replacing it, so a viewer that never shows a
 | Row | Hover |
 |---|---|
 | Claude Code > CLI | Claude Code CLI and IDE plugins |
-| Claude Desktop > API | Cowork and the Claude desktop app |
+| Claude Desktop > API | The Claude desktop app, Cowork included |
 | Claude Desktop > Chat | Chats in the Claude desktop app, and on claude.ai in a browser |
 | Codex > CLI | Codex CLI and IDE extension |
 | ChatGPT > Chat | Chats in the ChatGPT desktop app, and on chatgpt.com in a browser |
-| ChatGPT > Subscription | Work and the Codex desktop app, on your ChatGPT subscription |
+| ChatGPT > Subscription | Work in the ChatGPT app, and Codex, on your ChatGPT subscription |
 
-The names are **not** platform-branched: Anthropic's app is Cowork on both
-macOS and Windows, OpenAI's is Work on both, confirmed with the product on
-2026-09-11. The rows whose subject is a host rather than a product (`openai`,
+Cowork and Work are **modes inside** the Claude and ChatGPT desktop apps, not
+apps of their own, so each is named as part of its host app rather than beside
+it. Confirmed with the product on 2026-09-11, after two earlier readings - that
+the name varied by OS, then that each was a separate product - both turned out
+to be wrong; `fix/cowork-is-not-the-chatgpt-app` carries what the second one
+cost. The rows whose subject is a host rather than a product (`openai`,
 `openrouter`) deliberately get no hover - there is no program to name, and the
 description already says what they cover.
 
@@ -156,12 +159,16 @@ from the host alone: any such split still decrypts the client the user did not
 opt into, then declines to route it. The taxonomy now makes that constraint
 explicit rather than hiding it behind a surface label.
 
-## Open question carried, not resolved
+## Open question, since resolved elsewhere
 
-Cowork's client is unsettled in the tree already: `engine.rs:851` validates the
-`api.anthropic.com` rewrite "against a real Cowork generation", while
-`engine.rs`'s test fixture captures "Cowork's turn" as
-`chatgpt.com/backend-api/codex/responses`, and `src-tauri/src/lib.rs`'s
-`AGENT_PROCESSES` records that at least one of the two readings is wrong. The
-`chatgpt` entry keeps the client the ledger already drew it under rather than
-deciding that question here.
+This branch was written while Cowork's client was unsettled in the tree:
+`engine.rs` validated the `api.anthropic.com` rewrite "against a real Cowork
+generation" while its own test fixture captured "Cowork's turn" as
+`chatgpt.com/backend-api/codex/responses`, and `AGENT_PROCESSES` recorded that
+at least one of the two readings had to be wrong.
+
+Both were, in a way neither suspected. Cowork is a mode inside the Claude
+desktop app and Work is a mode inside the ChatGPT app; the mislabelled capture
+was Work's. `fix/cowork-is-not-the-chatgpt-app`, off the same base, corrects
+the fixture and the process table. The `chatgpt` entry keeps the client the
+ledger already drew it under, which that correction confirms.

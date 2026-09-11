@@ -53,7 +53,7 @@ import { browserScopeNote, trustStoreName, type Platform } from "./platform";
  * A slug with no entry gets no sentence rather than a placeholder.
  */
 export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  anthropic: "Model calls from Cowork and the Claude desktop app, on api.anthropic.com.",
+  anthropic: "Model calls from the Claude desktop app, Cowork included, on api.anthropic.com.",
   // Both clients, because the row covers both and the heading above it now
   // says "Claude Desktop". This line used to read "Your Claude chats, in the
   // browser tab", which was wrong in the direction that cost a support thread:
@@ -103,9 +103,12 @@ export function describeMember(key: string): string | undefined {
  * "Claude Desktop", and a user looking for Cowork by name finds nothing. Every
  * entry here names a product the user could go and open.
  *
- * Not platform-branched. The names were reported as varying by OS and do not:
- * Anthropic's is Cowork on both, OpenAI's is Work on both, confirmed with the
- * product on 2026-09-11.
+ * Cowork and Work are modes inside the Claude and ChatGPT desktop apps rather
+ * than apps of their own, so they are named as part of their host app rather
+ * than beside it. Confirmed with the product on 2026-09-11, after two earlier
+ * readings - that the name varied by OS, then that each was a separate
+ * product - both turned out to be wrong. `AGENT_PROCESSES` in
+ * `src-tauri/src/lib.rs` carries what that cost.
  *
  * Keyed by member key like the descriptions, so a slug with no entry gets no
  * hover rather than a placeholder - which is the right default for the rows
@@ -114,11 +117,11 @@ export function describeMember(key: string): string | undefined {
  */
 export const MEMBER_HINTS: Readonly<Record<string, string>> = {
   "claude-code": "Claude Code CLI and IDE plugins",
-  // Both desktop apps that reach api.anthropic.com. Claude Code reaches it too,
-  // but through its own route selector rather than this switch, so naming it
-  // here would promise something this row does not govern - see
+  // One app, named with the mode people look for. Claude Code reaches this host
+  // too, but through its own route selector rather than this switch, so naming
+  // it here would promise something this row does not govern - see
   // `claude_code_route_domain`.
-  anthropic: "Cowork and the Claude desktop app",
+  anthropic: "The Claude desktop app, Cowork included",
   // "Chats in", not "The": this row is one surface of that app, not the app.
   // The desktop app's model calls are the `anthropic` row sitting directly
   // above it, and a hover naming the whole product on both would say the two
@@ -130,9 +133,10 @@ export const MEMBER_HINTS: Readonly<Record<string, string>> = {
   // hover naming the whole product on both would say the two switches do the
   // same thing.
   "chatgpt-apps": "Chats in the ChatGPT desktop app, and on chatgpt.com in a browser",
-  // The two clients the catalog entry itself names: Codex through the relay,
-  // and Work, whose model calls ride the same subscription bearer.
-  chatgpt: "Work and the Codex desktop app, on your ChatGPT subscription",
+  // Work is a mode in the ChatGPT app rather than an app, so it is named inside
+  // it. Codex is the entry's other client, reaching the same endpoint through
+  // the relay on the same subscription bearer.
+  chatgpt: "Work in the ChatGPT app, and Codex, on your ChatGPT subscription",
 };
 
 /** The programs behind one row, or nothing where none are named. */

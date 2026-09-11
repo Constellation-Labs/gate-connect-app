@@ -333,7 +333,9 @@ describe("member hints", () => {
       ON,
     );
     const byKey = new Map(desktop.members.map((m) => [m.key, m.hint]));
-    expect(byKey.get("anthropic")).toContain("Cowork");
+    // Named inside its app, not beside it: Cowork is a mode in the Claude
+    // desktop app rather than a product of its own.
+    expect(byKey.get("anthropic")).toContain("Cowork included");
     expect(byKey.get("claude-web")).toContain("Claude desktop app");
   });
 
@@ -371,7 +373,10 @@ describe("member hints", () => {
     expect(byKey.get("chatgpt-apps")).toMatch(/^Chats in/);
     expect(byKey.get("chatgpt-apps")).toContain("ChatGPT desktop app");
     // Work, not Cowork: the two products are named per vendor, not per platform.
-    expect(byKey.get("chatgpt")).toContain("Work");
+    // Work, not Cowork: one letter apart, different vendors, and naming them as
+    // modes of their host app rather than as apps is the correction that cost
+    // a process row - see `AGENT_PROCESSES`.
+    expect(byKey.get("chatgpt")).toContain("Work in the ChatGPT app");
     expect(byKey.get("chatgpt")).not.toContain("Cowork");
   });
 
