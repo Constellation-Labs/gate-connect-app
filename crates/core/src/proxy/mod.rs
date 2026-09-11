@@ -1388,21 +1388,37 @@ pub mod testing {
     }
 }
 
-/// Guess which tool sent a request from its own `User-Agent`.
+/// Which client sent a request, for the gateway's `client_tool` column.
 ///
-/// A heuristic, and the honest ceiling of what either path can know: the relay
-/// is keyed by provider slug rather than by tool, and the MITM engine sees only
-/// a CONNECT to a host. Matching is substring-based because these agents append
-/// their own versions and platform strings, which we don't want to track.
+/// Two signals, in order of how much they can be trusted.
 ///
-/// Unrecognised is `None`, never a guess. A wrong slug is worse than no slug:
-/// it would attribute one tool's traffic to another in a view the user reads to
+/// **The vendor's own client header**, where there is one. Anthropic's desktop
+/// app declares itself in `anthropic-client-platform` / `anthropic-client-app`,
+/// which are namespaced to the vendor, so reading them is not a guess at all -
+/// it is the app saying what it is. This is what lets the desktop apps be
+/// attributed despite routing knowing nothing about them, and it is the reason
+/// `gateway_request.entity.ts`'s comment about the column being null for "every
+/// engine-routed desktop app" is no longer the ceiling.
+///
+/// **Otherwise the caller's `User-Agent`**, substring-matched because these
+/// agents append their own versions and platform strings. That half is a
+/// heuristic and always was.
+///
+/// Unrecognised is `None`, never a guess. A wrong slug is worse than no slug: it
+/// would attribute one tool's traffic to another in the view the user reads to
 /// find out what their machine is doing.
+///
+/// Slugs are [`crate::taxonomy::Client`] slugs, which the tool ones coincide
+/// with by construction - `Client::ClaudeCode` is `claude-code`. That is the
+/// same question this column asks ("which program on the machine sent this"),
+/// so the ledger and the attribution column now answer it in one vocabulary.
 fn client_tool(headers: &HeaderMap) -> Option<&'static str> {
+    if anthropic_desktop_app(headers) {
+        return Some(crate::taxonomy::Client::ClaudeDesktop.slug());
+    }
     let ua = headers.get(hyper::header::USER_AGENT)?.to_str().ok()?;
     let ua = ua.to_ascii_lowercase();
     // `claude-cli` is Claude Code's agent; the rest identify themselves by name.
-    // Slugs match `registry::ToolId::slug`, so one tool is one series.
     [
         ("claude-cli", "claude-code"),
         ("codex", "codex"),
@@ -1412,6 +1428,34 @@ fn client_tool(headers: &HeaderMap) -> Option<&'static str> {
     ]
     .into_iter()
     .find_map(|(needle, slug)| ua.contains(needle).then_some(slug))
+}
+
+/// Whether Anthropic's desktop app sent this, by its own account.
+///
+/// Both headers, because [`classify_client`] already keeps the second as a
+/// fallback for a build that drops the first, and the two must not disagree
+/// about the same request.
+///
+/// **Only the desktop app, not the website.** `web_claude_ai` is left
+/// unattributed on purpose: a browser tab is not a program Gate configures, and
+/// filing it under the desktop app's name would put someone's browsing in the
+/// figure they read to see what their app is doing. It stays `None`, which the
+/// column already treats as a first-class state.
+///
+/// **Anthropic only, for now.** The ChatGPT app's equivalent signal is
+/// `originator`, whose header NAME is generic - so reading it here, where the
+/// host is not known, would stamp `chatgpt` on anything that happened to send
+/// it to another vendor's host. Attributing one vendor's traffic to another is
+/// exactly what the rule above forbids, so that half waits until the matched
+/// entry is plumbed this far. See the note on [`classify_client`].
+fn anthropic_desktop_app(headers: &HeaderMap) -> bool {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    if header(ANTHROPIC_CLIENT_PLATFORM)
+        .is_some_and(|v| v.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM))
+    {
+        return true;
+    }
+    header("anthropic-client-app").is_some_and(|v| !v.trim().is_empty())
 }
 
 /// Inject the live Gate credential into `headers`, the single precedence rule
@@ -1966,6 +2010,9 @@ pub enum ClientClass {
 /// is the one routing keys on; the desktop value is here so the debug log can
 /// tell them apart, and Gate matches the same string for its `claude-desktop`
 /// platform.
+/// The header the two values above arrive on. Named once so `client_tool` and
+/// `classify_client` cannot read different headers for the same fact.
+const ANTHROPIC_CLIENT_PLATFORM: &str = "anthropic-client-platform";
 const ANTHROPIC_WEB_PLATFORM: &str = "web_claude_ai";
 const ANTHROPIC_DESKTOP_PLATFORM: &str = "desktop_app";
 
@@ -2119,7 +2166,7 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
     // value nothing had been told about, captured 2026-08-17 from claude.ai in
     // Chrome. Checked before the OpenAI signals only because it is decisive:
     // no inference, no prefix matching, the vendor simply says which it is.
-    if let Some(platform) = header("anthropic-client-platform").map(str::trim) {
+    if let Some(platform) = header(ANTHROPIC_CLIENT_PLATFORM).map(str::trim) {
         if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
             return ClientClass::Web;
         }
@@ -3847,6 +3894,79 @@ mod tests {
         assert_eq!(client_tool(&HeaderMap::new()), None);
         assert_eq!(tool("curl/8.7.1"), None);
         assert_eq!(tool("Mozilla/5.0 (Macintosh) Chrome/120"), None);
+    }
+
+    /// The Claude desktop app is attributed, by its own declaration.
+    ///
+    /// The gap this closes: routing knows nothing about a desktop app - the
+    /// engine sees a CONNECT to a host - so its traffic reached the gateway
+    /// with no `client_tool` and appeared in no per-tool reading. The app says
+    /// what it is in a vendor-namespaced header, which is better evidence than
+    /// the User-Agent substring the other five are matched on.
+    #[test]
+    fn the_claude_desktop_app_names_itself() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("desktop_app"),
+        );
+        assert_eq!(client_tool(&h), Some("claude-desktop"));
+
+        // The second signal on its own, for a build that drops the first -
+        // `classify_client` keeps the same fallback, and the two must not
+        // disagree about one request.
+        let mut only_app = HeaderMap::new();
+        only_app.insert(
+            HeaderName::from_static("anthropic-client-app"),
+            HeaderValue::from_static("com.anthropic.claudefordesktop"),
+        );
+        assert_eq!(client_tool(&only_app), Some("claude-desktop"));
+    }
+
+    /// The website is not the desktop app, and is left unattributed.
+    ///
+    /// Filing a browser tab under the desktop app's name would put someone's
+    /// browsing into the figure they read to see what their app is doing. `None`
+    /// is already a first-class state on that column.
+    #[test]
+    fn claude_ai_in_a_browser_is_not_the_desktop_app() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("web_claude_ai"),
+        );
+        assert_eq!(client_tool(&h), None);
+    }
+
+    /// A platform value nobody has seen is not read as the desktop app, for the
+    /// same reason `classify_client` refuses to read one as `App`: a future
+    /// first-party client may spell itself differently, and guessing would file
+    /// its traffic under a name that is not its own.
+    #[test]
+    fn an_unrecognised_anthropic_platform_is_not_attributed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("some_new_surface"),
+        );
+        assert_eq!(client_tool(&h), None);
+    }
+
+    /// The vendor's declaration outranks the User-Agent, which on this app is a
+    /// browser-shaped string its shell inherits and which would otherwise match
+    /// nothing at all.
+    #[test]
+    fn the_vendor_header_outranks_the_user_agent() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
+            HeaderValue::from_static("desktop_app"),
+        );
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("Mozilla/5.0 (Macintosh) Chrome/120"),
+        );
+        assert_eq!(client_tool(&h), Some("claude-desktop"));
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
