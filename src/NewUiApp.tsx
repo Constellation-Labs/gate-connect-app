@@ -2529,6 +2529,25 @@ export function NewUiApp() {
    * gets whichever sentences are true of it: a session host row draws both, an
    * API host row draws this one, a config tool draws neither.
    */
+  /**
+   * Whether the open section's figures cover less than its switch routes.
+   *
+   * True when the section has a config tool (so there IS a reading) and any
+   * member the gateway cannot attribute (so the reading is narrower than the
+   * heading). `client_tool` comes from the caller's own User-Agent, and the
+   * desktop apps send none the matcher places - see `proxy::client_tool` and
+   * the ceiling its doc describes.
+   */
+  const partialReading = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const section = groups.find((g) => g.id === view.slug);
+    const tool = section?.members.find((m) => m.kind === "config");
+    if (!section || !tool) return undefined;
+    return section.members.some((m) => m.kind === "proxy")
+      ? { covers: tool.tool?.product_name ?? tool.name }
+      : undefined;
+  }, [view, groups]);
+
   const rowScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
     // The widest host surface the section has. A section switch spans
@@ -3474,6 +3493,15 @@ export function NewUiApp() {
             events: unattributedMachine || toolEvents.failure !== null,
           }}
           unattributed={openDomain}
+          // A section spans surfaces the gateway attributes differently: its
+          // config tool sends a User-Agent `client_tool` recognises, its host
+          // surfaces do not. So the counters are the tool's, under a heading
+          // naming the whole app, and saying which is the difference between a
+          // measurement and a plausible number.
+          //
+          // Computed from the section rather than hardcoded, so it disappears
+          // per surface as attribution improves rather than needing a sweep.
+          partialReading={partialReading}
           alert={
             <>
               {reopenAlert}
