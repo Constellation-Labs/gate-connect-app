@@ -1413,50 +1413,103 @@ pub mod testing {
 /// same question this column asks ("which program on the machine sent this"),
 /// so the ledger and the attribution column now answer it in one vocabulary.
 fn client_tool(headers: &HeaderMap) -> Option<&'static str> {
-    if anthropic_desktop_app(headers) {
-        return Some(crate::taxonomy::Client::ClaudeDesktop.slug());
+    // Anthropic's own declaration first. The desktop app's User-Agent is a
+    // browser-shaped string its shell inherits, which matches nothing below, so
+    // nothing is lost by preferring the header - and the web value must be read
+    // here too or the UA would send a claude.ai tab through the allowlist.
+    if let Some(slug) = anthropic_client(headers) {
+        return Some(slug);
     }
-    let ua = headers.get(hyper::header::USER_AGENT)?.to_str().ok()?;
-    let ua = ua.to_ascii_lowercase();
+    let ua = headers
+        .get(hyper::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase());
     // `claude-cli` is Claude Code's agent; the rest identify themselves by name.
-    [
-        ("claude-cli", "claude-code"),
-        ("codex", "codex"),
-        ("opencode", "opencode"),
-        ("openclaw", "openclaw"),
-        ("hermes", "hermes"),
-    ]
-    .into_iter()
-    .find_map(|(needle, slug)| ua.contains(needle).then_some(slug))
+    if let Some(slug) = ua.as_deref().and_then(|ua| {
+        [
+            ("claude-cli", "claude-code"),
+            ("codex", "codex"),
+            ("opencode", "opencode"),
+            ("openclaw", "openclaw"),
+            ("hermes", "hermes"),
+        ]
+        .into_iter()
+        .find_map(|(needle, slug)| ua.contains(needle).then_some(slug))
+    }) {
+        return Some(slug);
+    }
+    // OpenAI's web markers come AFTER the allowlist, unlike Anthropic's above,
+    // and the asymmetry is deliberate. A Codex request naming itself in its
+    // User-Agent must stay `codex` even if it carries an `oai-` header; there is
+    // no such risk on the Anthropic side, where the two signals name different
+    // surfaces of different products.
+    openai_web(headers)
 }
 
-/// Whether Anthropic's desktop app sent this, by its own account.
+/// Which Anthropic surface sent this, by its own account, or `None`.
 ///
-/// Both headers, because [`classify_client`] already keeps the second as a
-/// fallback for a build that drops the first, and the two must not disagree
-/// about the same request.
+/// Both platform values, and both are worth having: the desktop app and the
+/// website route through the same catalog entries, and a single slug covering
+/// both would put someone's browsing in the figure they read to see what their
+/// app is doing.
 ///
-/// **Only the desktop app, not the website.** `web_claude_ai` is left
-/// unattributed on purpose: a browser tab is not a program Gate configures, and
-/// filing it under the desktop app's name would put someone's browsing in the
-/// figure they read to see what their app is doing. It stays `None`, which the
-/// column already treats as a first-class state.
+/// `anthropic-client-app` is kept as a second app signal for a build that drops
+/// the platform header - [`classify_client`] keeps the same fallback, and the
+/// two must not disagree about one request.
 ///
-/// **Anthropic only, for now.** The ChatGPT app's equivalent signal is
-/// `originator`, whose header NAME is generic - so reading it here, where the
-/// host is not known, would stamp `chatgpt` on anything that happened to send
-/// it to another vendor's host. Attributing one vendor's traffic to another is
-/// exactly what the rule above forbids, so that half waits until the matched
-/// entry is plumbed this far. See the note on [`classify_client`].
-fn anthropic_desktop_app(headers: &HeaderMap) -> bool {
+/// An unrecognised platform value is `None`, for the reason `classify_client`
+/// refuses to read one as `App`: a future first-party client may spell itself
+/// differently, and guessing files its traffic under a name that is not its own.
+fn anthropic_client(headers: &HeaderMap) -> Option<&'static str> {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    if header(ANTHROPIC_CLIENT_PLATFORM)
-        .is_some_and(|v| v.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM))
-    {
-        return true;
+    if let Some(platform) = header(ANTHROPIC_CLIENT_PLATFORM).map(str::trim) {
+        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM) {
+            return Some(crate::taxonomy::Client::ClaudeDesktop.slug());
+        }
+        if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
+            return Some(CLAUDE_WEB_CLIENT);
+        }
+        return None;
     }
-    header("anthropic-client-app").is_some_and(|v| !v.trim().is_empty())
+    header("anthropic-client-app")
+        .is_some_and(|v| !v.trim().is_empty())
+        .then_some(crate::taxonomy::Client::ClaudeDesktop.slug())
 }
+
+/// Whether chatgpt.com sent this from a browser, by OpenAI's own markers.
+///
+/// Safe to read without knowing the host, and that is the whole reason the web
+/// half of this vendor lands before the app half: every marker here is
+/// namespaced to OpenAI, so it can only mean one vendor. `originator`, which is
+/// what identifies the ChatGPT *app*, is a generic header name - reading it
+/// here would stamp a ChatGPT slug on anything that sent it to another vendor's
+/// host. That half waits for the matched entry to be plumbed this far.
+fn openai_web(headers: &HeaderMap) -> Option<&'static str> {
+    [
+        "oai-device-id",
+        "oai-client-version",
+        "x-openai-target-route",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
+    .then_some(CHATGPT_WEB_CLIENT)
+}
+
+/// The two website slugs, which are not [`crate::taxonomy::Client`] values and
+/// deliberately so.
+///
+/// `Client` answers "which program is a ledger row aimed at", and no row is
+/// aimed at a browser - the websites ride the rows aimed at their desktop apps.
+/// What separates them per request is [`ClientClass`], a different axis, and
+/// folding a class into the client enum would collapse the distinction
+/// `taxonomy.rs` exists to keep. So the attribution column carries a `Client`
+/// slug OR one of these, and the vocabulary is "who sent it", which is what the
+/// column has always meant.
+///
+/// Named per vendor rather than one `browser`: a tab could be on either site,
+/// and one slug for both would put two vendors' traffic in one series.
+const CLAUDE_WEB_CLIENT: &str = "claude-web";
+const CHATGPT_WEB_CLIENT: &str = "chatgpt-web";
 
 /// Inject the live Gate credential into `headers`, the single precedence rule
 /// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
@@ -3923,19 +3976,59 @@ mod tests {
         assert_eq!(client_tool(&only_app), Some("claude-desktop"));
     }
 
-    /// The website is not the desktop app, and is left unattributed.
+    /// The website is attributed too, and separately from the desktop app.
     ///
-    /// Filing a browser tab under the desktop app's name would put someone's
-    /// browsing into the figure they read to see what their app is doing. `None`
-    /// is already a first-class state on that column.
+    /// Separately is the point. Both ride the same catalog entries, so one slug
+    /// covering both would put someone's browsing into the figure they read to
+    /// see what their app is doing.
     #[test]
-    fn claude_ai_in_a_browser_is_not_the_desktop_app() {
+    fn claude_ai_in_a_browser_is_its_own_client() {
         let mut h = HeaderMap::new();
         h.insert(
             HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
             HeaderValue::from_static("web_claude_ai"),
         );
-        assert_eq!(client_tool(&h), None);
+        assert_eq!(client_tool(&h), Some("claude-web"));
+    }
+
+    /// chatgpt.com in a browser, by OpenAI's own markers.
+    ///
+    /// Readable without knowing the host because every marker is namespaced to
+    /// the vendor - which is why the web half of this vendor ships before the
+    /// app half, whose signal (`originator`) is a generic header name.
+    #[test]
+    fn chatgpt_com_in_a_browser_is_its_own_client() {
+        for name in [
+            "oai-device-id",
+            "oai-client-version",
+            "x-openai-target-route",
+        ] {
+            let mut h = HeaderMap::new();
+            h.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("x"),
+            );
+            assert_eq!(client_tool(&h), Some("chatgpt-web"), "{name}");
+        }
+    }
+
+    /// A Codex request stays Codex even carrying an OpenAI web marker.
+    ///
+    /// The reason the OpenAI check sits after the allowlist while Anthropic's
+    /// sits before it: here the two signals can name the same request, and the
+    /// tool naming itself is the better answer.
+    #[test]
+    fn a_named_tool_outranks_the_openai_web_markers() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("codex/1.2.3"),
+        );
+        h.insert(
+            HeaderName::from_static("oai-device-id"),
+            HeaderValue::from_static("x"),
+        );
+        assert_eq!(client_tool(&h), Some("codex"));
     }
 
     /// A platform value nobody has seen is not read as the desktop app, for the
