@@ -1908,7 +1908,7 @@ fn drain_backend_errors(window: tauri::Window) -> Vec<BackendError> {
 /// Naming them beside the process is the only place that cannot drift from the
 /// row it names.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, &str, Surface); 6] = [
+const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
     ("claude-code", "claude", "Claude Code", Surface::Cli),
     ("codex", "codex", "Codex", Surface::Cli),
     ("opencode", "opencode", "OpenCode", Surface::Cli),
@@ -1922,51 +1922,33 @@ const AGENT_PROCESSES: [(&str, &str, &str, Surface); 6] = [
     // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
     // them together. Confirmed with the product.
     ("anthropic", "Claude", "Claude Desktop", Surface::App),
-    // **Cowork is Anthropic's desktop app, and this row exists because a
-    // transcription error deleted it.**
+    // **This row covers Cowork too, and the ChatGPT row below covers Work.**
     //
-    // The history, because it is the kind of mistake that gets made twice.
-    // Cowork had a row here for one commit and was dropped again on the
-    // reading that "there is no Cowork process, the ChatGPT row is it". That
-    // reading came from `engine.rs`'s captured turn, which was labelled
-    // Cowork's and is a request to `chatgpt.com/backend-api/codex/responses`.
-    // From an Anthropic product apparently talking to chatgpt.com it followed
-    // that Cowork must BE the ChatGPT app.
+    // Cowork is a mode inside the Claude desktop app, not an app of its own -
+    // same process, same host, same switch - and Work is the same thing inside
+    // the ChatGPT app. So neither needs a row, and adding one would be adding a
+    // name no process ever answers to.
     //
-    // It is not. **Work** is OpenAI's desktop app; **Cowork** is Anthropic's,
-    // and the two names are one letter apart. The capture was Work's, written
-    // down as Cowork's - `engine.rs`'s fixture is `work_upgrade` now and says
-    // so. Both names confirmed with the product 2026-09-11.
+    // Spelled out because the tree has been wrong about this twice, in opposite
+    // directions, and the second error is the one that looks correct:
     //
-    // What the error cost: with no row, Gate could not offer to close Cowork,
-    // so quitting left it running against routing that had just been torn
-    // down. That is the defect this restores.
+    // - A Cowork row was added here once, on the reading that it was a separate
+    //   desktop app (a Windows spelling of Claude Desktop). It is not.
+    // - It was then deleted on the reading that Cowork *is* the ChatGPT app,
+    //   because `engine.rs` carried a captured turn to
+    //   `chatgpt.com/backend-api/codex/responses` labelled "Cowork's". That
+    //   capture is Work's, and Work belongs to ChatGPT - see `work_upgrade`,
+    //   which used to be `cowork_upgrade` and is the whole origin of the
+    //   confusion. So "there is no Cowork process" was right, and the reason
+    //   given for it was wrong, and it pointed at the wrong row.
     //
-    // It also settles the open question the old comment raised. `provider.rs`
-    // and `GroupMembers.tsx` label the *anthropic* switch "Claude Desktop /
-    // Cowork"; those were suspected of being the wrong half, and they are
-    // right. Two Anthropic desktop products, one host, one switch.
+    // The surviving consequence of that second error is worth knowing: it left
+    // a note claiming `provider.rs` and `GroupMembers.tsx` might be wrong to
+    // label the *anthropic* switch "Claude Desktop / Cowork". They are not.
+    // That is this row, and Cowork rides it.
     //
-    // **The process name is assumed, not confirmed** - the one thing here
-    // nobody has checked on a machine with Cowork installed. That is the same
-    // state it was in when it was first added, and the risk is bounded in the
-    // direction that matters: a name matching nothing means the row never
-    // fires, which is exactly where this table was yesterday. A name matching
-    // the WRONG process is what would hurt, and that is the `Claude`/`claude`
-    // near-collision this file's case-sensitivity note exists for. Confirm it
-    // with `ps -ax | grep -i cowork` on macOS, or Task Manager on Windows, and
-    // delete this paragraph.
-    ("anthropic", "Cowork", "Cowork", Surface::App),
     // `ChatGPT` on Windows too, where `.exe` is stripped before the match.
     // Confirmed with the product.
-    //
-    // **Work has no row here, deliberately.** It is a real ChatGPT-subscription
-    // desktop app and it belongs in this table, but its process name is
-    // unknown and the obvious guess is the English word "Work" - which is the
-    // generic-name case the doc above excludes `hermes` and `openclaw` for. A
-    // generic name is the one kind of wrong entry that does not fail silently:
-    // it matches something unrelated and offers to SIGTERM it. Add the row
-    // when someone has read the real name off a machine.
     ("chatgpt", "ChatGPT", "ChatGPT", Surface::App),
 ];
 
@@ -5669,14 +5651,13 @@ mod tests {
 
     /// The lookup returns *every* name a slug claims, not the first.
     ///
-    /// `anthropic` is that case, and it is a live one again: Claude Desktop and
-    /// Cowork are two Anthropic desktop apps on one host behind one switch.
-    /// This assertion read `vec!["Claude"]` for the period when Cowork's row
-    /// was deleted, so it recorded the deletion rather than the rule - which is
-    /// worth noticing, because a test that agrees with a bug is how the bug
-    /// survives a refactor.
+    /// No slug names two processes today, and now for a reason rather than by
+    /// accident: the two candidates were Cowork and Work, and both are modes
+    /// inside an app already listed rather than apps of their own. A slug could
+    /// still grow a second name - a vendor shipping a genuinely separate binary
+    /// on one platform would do it.
     ///
-    /// The guard matters because the shape that failed is a `find`, which drops
+    /// The guard is kept because the shape that failed is a `find`, which drops
     /// extra rows in silence: the dropped process reads as not running, so it is
     /// never marked stale, never offered for close and never reopened, with
     /// nothing on screen saying so.
@@ -5688,7 +5669,7 @@ mod tests {
                 "{slug} does not resolve back to {name}"
             );
         }
-        assert_eq!(agent_process_names("anthropic"), vec!["Claude", "Cowork"]);
+        assert_eq!(agent_process_names("anthropic"), vec!["Claude"]);
         assert!(agent_process_names("hermes").is_empty());
     }
 

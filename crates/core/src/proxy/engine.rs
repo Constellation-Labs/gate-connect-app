@@ -2366,17 +2366,19 @@ mod tests {
     /// Work's turn, as captured: a GET on a path the `chatgpt` entry claims,
     /// upgraded to a WebSocket.
     ///
-    /// **This was called `cowork_upgrade` and the name was a transcription
-    /// error with consequences.** Work is OpenAI's desktop app; Cowork is
-    /// Anthropic's, and the two are one letter apart. Reading this fixture as
-    /// Cowork's put an Anthropic product's traffic on chatgpt.com, and
-    /// `AGENT_PROCESSES` in `src-tauri/src/lib.rs` then deleted Cowork's
-    /// process row on the strength of it - so Gate stopped offering to close
-    /// Cowork at all. Both names confirmed with the product 2026-09-11.
+    /// **This was called `cowork_upgrade`, and that name sent a later change
+    /// looking in the wrong place.** Work is a mode inside the ChatGPT desktop
+    /// app; Cowork is a mode inside the Claude desktop app. The two names are
+    /// one letter apart and belong to different vendors, so reading this
+    /// capture as Cowork's put Anthropic traffic on chatgpt.com - and
+    /// `AGENT_PROCESSES` in `src-tauri/src/lib.rs` then recorded that Cowork
+    /// "is" the ChatGPT app, which is the wrong app for it. Both names
+    /// confirmed with the product 2026-09-11.
     ///
     /// Nothing about the request changed; only what it is understood to be.
-    /// The capture is still a real one and still exercises the upgrade path on
-    /// the entry that claims it.
+    /// The capture is still real and still exercises the upgrade path on the
+    /// entry that claims it - which is the right entry either way, since Work
+    /// is the ChatGPT app and this is its host.
     fn work_upgrade() -> Request<()> {
         Request::builder()
             .method("GET")
