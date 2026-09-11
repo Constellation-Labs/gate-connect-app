@@ -81,6 +81,47 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+/**
+ * The popover footer's organization name.
+ *
+ * It has no other sight of it: `account.org_name` is populated in OAuth mode
+ * only, so on an api-key account the tray said "No organization" while the
+ * window, which falls back to the activity reading, named it correctly. The
+ * name was already being parsed here and thrown away.
+ */
+describe("useToolMessages org name", () => {
+  it("reports the org off the same disk read the rows use", async () => {
+    disk.mockResolvedValue({ "claude-code": body(12) });
+    const h = harness();
+    await flush();
+
+    expect(h.last().orgName).toBe("Constellation Labs");
+    // And no second call was made to learn it.
+    expect(disk).toHaveBeenCalledTimes(1);
+  });
+
+  it("still reports the org when the body carries no message figure", async () => {
+    // `figure()` returns null here, which is what used to discard the body
+    // wholesale. The org name is perfectly good regardless of whether the
+    // gateway answered the counter.
+    disk.mockResolvedValue({ "claude-code": body(null) });
+    const h = harness();
+    await flush();
+
+    // `byTool` is not asserted here: the stale sweep fetches afterwards and
+    // fills it. What matters is that the name survived a body `figure()` drops.
+    expect(h.last().orgName).toBe("Constellation Labs");
+  });
+
+  it("is null before anything has been read, rather than guessing", async () => {
+    disk.mockResolvedValue({});
+    const h = harness();
+    await flush();
+
+    expect(h.last().orgName).toBeNull();
+  });
+});
+
 describe("useToolMessages", () => {
   it("opens on what is held on disk, in one read", async () => {
     disk.mockResolvedValue({ "claude-code": body(1032), codex: body(7) });
