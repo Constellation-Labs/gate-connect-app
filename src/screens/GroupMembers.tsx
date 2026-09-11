@@ -115,7 +115,10 @@ function explain({
     // only environment variables a running browser never re-reads - and the
     // host sentence has already bounded the scope without it. Sentences, not
     // clauses, so dropping one leaves the rest reading normally.
-    if (member.chat) {
+    // Keyed on the credential now, not on a `chat` flag: what makes this row
+    // want its own paragraph is that Gate is not supplying the key, and the
+    // protocol was only ever a proxy for that.
+    if (member.credential !== "brokered") {
       const hosts = member.domain?.hosts.join(", ") ?? "";
       const scope = browserScopeNote(platform, browserChannel);
       const covers = member.routed

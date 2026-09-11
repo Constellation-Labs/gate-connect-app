@@ -32,26 +32,22 @@ pub struct Provider {
     pub subtitle: &'static str,
     /// Config integrations to connect/disconnect (cross-platform).
     pub tool_ids: &'static [ToolId],
-    /// Proxy domains to flip when the proxy is running (macOS / Windows /
-    /// Linux, best-effort).
-    pub proxy_domain_slugs: &'static [&'static str],
-    /// Domains that belong to this family on the UI ledger but that this
-    /// provider's switch must NEVER flip.
+    /// Every proxy domain that belongs to this family, cascaded or not.
     ///
-    /// Two facts, one field, and they have to stay together. What these surfaces
-    /// share is the credential: a SESSION COOKIE (claude.ai, chatgpt.com's
-    /// conversation endpoint) or a SUBSCRIPTION BEARER (chatgpt.com's Codex
-    /// Responses endpoint) rather than a brokered API key. Routing someone's
-    /// signed-in identity is a deliberate per-domain act - which is why they are
-    /// not in `proxy_domain_slugs`, the list [`enable`] and [`disable`] cascade
-    /// over. They still belong to a model family for the user, though, so the
-    /// ledger needs a way to show the row under "Claude" or "OpenAI" without that
-    /// membership dragging them into the cascade. Visibility used to ride on
-    /// `proxy_domain_slugs`, which is exactly why they were invisible.
+    /// **One array, not two.** This used to be `proxy_domain_slugs` plus a
+    /// `chat_domain_slugs` beside it whose only job was to hold the surfaces
+    /// the family switch must never flip - a hand-kept exclusion list, with
+    /// paragraphs of comment warning that adding a slug to the wrong one would
+    /// route the user's signed-in identity the moment they enabled "Claude".
     ///
-    /// The name is historical: the first surfaces this served were chat ones.
-    /// The test of membership is the credential, not the protocol.
-    pub chat_domain_slugs: &'static [&'static str],
+    /// The fact that decides it was never a property of the family; it is a
+    /// property of the row. It lives on [`ProxyDomain::credential`] now, and
+    /// [`cascade_domains`] derives the exclusion from it, so the two cannot
+    /// drift and a new entry cannot join the cascade by being typed into the
+    /// wrong array.
+    ///
+    /// [`ProxyDomain::credential`]: crate::proxy::ProxyDomain::credential
+    pub domain_slugs: &'static [&'static str],
 }
 
 /// Built-in provider catalog. Claude leads, then OpenAI/Codex; both follow the
@@ -61,7 +57,7 @@ pub struct Provider {
 /// editing for reliable routing (Claude Code gets `HTTPS_PROXY`; Codex gets a
 /// model provider). Desktop apps that honor the system proxy (Cowork / Claude
 /// Desktop) ride the proxy domain instead, so they're covered by
-/// `proxy_domain_slugs` without per-tool config. That's why Cowork isn't in
+/// `domain_slugs` without per-tool config. That's why Cowork isn't in
 /// `tool_ids`. A provider with no native CLI integration (OpenRouter) is
 /// proxy-only: empty `tool_ids`, routed entirely through its proxy domain.
 pub fn providers() -> Vec<Provider> {
@@ -76,21 +72,23 @@ pub fn providers() -> Vec<Provider> {
             display_name: "Anthropic",
             subtitle: "Claude Code + Claude Desktop",
             tool_ids: &[ToolId::ClaudeCode],
-            // Only the api.anthropic.com domain. The `claude-web` chat domain is
-            // deliberately absent: `enable` below turns on EVERY domain a
-            // provider lists, so adding it here would start intercepting the
-            // user's claude.ai session the moment they enabled Claude. It rides
-            // `chat_domain_slugs` instead, which shows it on the ledger under
-            // Claude and leaves the flipping to its own switch.
-            proxy_domain_slugs: &["anthropic"],
-            chat_domain_slugs: &["claude-web"],
+            // Both domains, in one array, and `claude-web` is still excluded
+            // from the cascade - by its own `Credential::Additive` rather than
+            // by living in a second field. The invariant is unchanged and the
+            // way it is enforced is not: enabling "Claude" must never start
+            // intercepting the user's claude.ai session, and now the reason it
+            // does not is a property of that row instead of a slug someone
+            // remembered to type into the other array. See [`cascade_domains`].
+            domain_slugs: &["anthropic", "claude-web"],
         },
         Provider {
             slug: "openai",
             display_name: "OpenAI",
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
-            // Empty, and the `openai` domain's absence is the point.
+            // The `openai` domain's absence is the point, and it survives the
+            // collapse into one array: this family lists the two chat surfaces
+            // and nothing else.
             //
             // That entry is api.openai.com, and nothing in this family rides its
             // switch. Codex is config-routed: in API-key mode it points at the
@@ -104,27 +102,24 @@ pub fn providers() -> Vec<Provider> {
             //
             // Its real dependants are the multi-provider harnesses: OpenClaw and
             // Hermes blind-tunnel anything outside the enabled catalog, so this
-            // switch is what lets Gate see their OpenAI calls. It sits under
-            // Experimental with them now (`LEFTOVER_GROUPS` in
-            // `src/lib/groups.ts`), which is where its dependants are.
+            // switch is what lets Gate see their OpenAI calls. The entry now
+            // says so itself - it is `Client::AnyApp` in the catalog, and the
+            // ledger draws it under the machine-wide heading with the other
+            // rows that cover whatever happens to be running.
             //
-            // Consequence worth stating: this family's switch now governs Codex
-            // alone. That is what it was already doing in effect.
-            proxy_domain_slugs: &[],
-            // Same split as Claude above: a domain listed here gets a ledger row
-            // under OpenAI and a switch of its own, and the family switch's
-            // cascade never reaches it, because what these carry is the user's
-            // own signed-in credential rather than a key Gate brokers.
+            // Consequence worth stating: this family's switch governs Codex
+            // alone. Both domains listed below are `Credential::Additive`, so
+            // the cascade reaches neither.
             //
             // `chatgpt` is the ChatGPT-subscription Responses endpoint. It is
-            // wired now because OpenClaw's managed proxy mode sends its
+            // wired because OpenClaw's managed proxy mode sends its
             // subscription model calls to that host and this switch is the only
             // thing that lets Gate see them - `integrations/openclaw.rs` used to
             // flip the domain itself, which is what this row replaces.
             //
             // `chatgpt-apps` covers the ChatGPT app's own chat turn (a
             // session-cookie surface) alongside Codex's tool plane.
-            chat_domain_slugs: &["chatgpt", "chatgpt-apps"],
+            domain_slugs: &["chatgpt", "chatgpt-apps"],
         },
         Provider {
             slug: "openrouter",
@@ -134,16 +129,47 @@ pub fn providers() -> Vec<Provider> {
             // routes entirely through the proxy domain (requires the proxy to
             // be running, like Cowork).
             tool_ids: &[],
-            proxy_domain_slugs: &["openrouter"],
-            // No chat surface: OpenRouter is an API host, and there is no
-            // session-cookie product in front of it.
-            chat_domain_slugs: &[],
+            // One brokered domain and no session surface: OpenRouter is an API
+            // host, and there is no signed-in product in front of it.
+            domain_slugs: &["openrouter"],
         },
     ]
 }
 
 pub fn find(slug: &str) -> Option<Provider> {
     providers().into_iter().find(|p| p.slug == slug)
+}
+
+/// The family's domains that a family switch may actually flip.
+///
+/// This is the rule that used to be a second array on [`Provider`]. It is
+/// derived now, per row, from [`ProxyDomain::credential`]: a family switch
+/// flips brokered rows and nothing else, because the others carry a credential
+/// the user is already signed in with and routing that is a deliberate per-row
+/// act.
+///
+/// Reads the built-in catalog rather than the persisted one on purpose. The
+/// credential is a property of the entry, not of the user's state, so this
+/// needs no I/O and cannot be changed by what is on disk.
+///
+/// A slug the catalog does not know is excluded rather than included. That is
+/// the safe direction: the failure mode of including it is routing a surface
+/// nobody classified, and the failure mode of excluding it is a switch that
+/// leaves one row for the user to flip themselves.
+///
+/// [`ProxyDomain::credential`]: crate::proxy::ProxyDomain::credential
+pub fn cascade_domains(p: &Provider) -> Vec<&'static str> {
+    let catalog = crate::proxy::default_domains();
+    p.domain_slugs
+        .iter()
+        .copied()
+        .filter(|slug| {
+            catalog
+                .iter()
+                .find(|d| d.slug == *slug)
+                .is_some_and(|d| d.credential.cascades())
+        })
+        .collect()
 }
 
 /// UI snapshot of one provider.
@@ -171,12 +197,15 @@ pub struct ProviderState {
     /// `Integration::upstream_provider_name`, which is deliberately "your
     /// existing providers" for the multi-provider tools.
     pub domain_slugs: Vec<String>,
-    /// Slugs of this family's chat-protocol domains: shown on the ledger under
-    /// the family, excluded from its switch. Kept apart from `domain_slugs`
-    /// rather than merged with a flag, because every existing consumer of that
-    /// field means "what the family switch governs" and would be wrong about
-    /// these. See [`Provider::chat_domain_slugs`].
-    pub chat_domain_slugs: Vec<String>,
+    /// The subset of `domain_slugs` this provider's switch actually flips:
+    /// [`cascade_domains`]'s answer, reported rather than re-derived.
+    ///
+    /// Replaces the old `chat_domain_slugs`, which named the excluded half and
+    /// left the included half to be inferred. Naming the included half instead
+    /// means a consumer that wants "what does this switch do" reads it directly
+    /// and a consumer that wants the excluded rows takes the difference - and
+    /// neither has to know the credential rule.
+    pub cascade_domain_slugs: Vec<String>,
 }
 
 /// What [`enable`] should do, given the two facts that drive the locked
@@ -221,7 +250,8 @@ fn proxy_running() -> bool {
 /// subsystem.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn proxy_domains_enabled(p: &Provider) -> bool {
-    if p.proxy_domain_slugs.is_empty() {
+    let cascaded = cascade_domains(p);
+    if cascaded.is_empty() {
         return false;
     }
     crate::proxy::manager()
@@ -229,7 +259,7 @@ fn proxy_domains_enabled(p: &Provider) -> bool {
         .map(|s| {
             s.domains
                 .iter()
-                .any(|d| d.enabled && p.proxy_domain_slugs.contains(&d.slug.as_str()))
+                .any(|d| d.enabled && cascaded.contains(&d.slug.as_str()))
         })
         .unwrap_or(false)
 }
@@ -265,8 +295,8 @@ pub fn state(p: &Provider) -> ProviderState {
         enabled,
         available: any_detected || proxy_running(),
         tool_slugs: p.tool_ids.iter().map(|id| id.slug().to_string()).collect(),
-        domain_slugs: p.proxy_domain_slugs.iter().map(|s| s.to_string()).collect(),
-        chat_domain_slugs: p.chat_domain_slugs.iter().map(|s| s.to_string()).collect(),
+        domain_slugs: p.domain_slugs.iter().map(|s| s.to_string()).collect(),
+        cascade_domain_slugs: cascade_domains(p).iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -396,7 +426,7 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     // persist the flag directly. Mirrors [`disable`], which always persists the
     // off-intent regardless of proxy state.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    for domain in p.proxy_domain_slugs {
+    for domain in cascade_domains(&p) {
         if skipped(domain) {
             continue; // switched off before routing stopped; leave it off
         }
@@ -460,7 +490,7 @@ fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
     // immediately; otherwise persist the flag directly (the config-route tools
     // don't need the proxy running to be turned off).
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    for domain in p.proxy_domain_slugs {
+    for domain in cascade_domains(&p) {
         // Best-effort: an already-off or unknown domain isn't an error.
         let _ = if proxy_running() {
             crate::proxy::manager()
@@ -491,10 +521,11 @@ fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
 /// which reflects the live engine's current domain set.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn domains_enabled_persisted(p: &Provider) -> bool {
+    let cascaded = cascade_domains(p);
     crate::proxy::config::load_domains()
         .map(|ds| {
             ds.iter()
-                .any(|d| d.enabled && p.proxy_domain_slugs.contains(&d.slug.as_str()))
+                .any(|d| d.enabled && cascaded.contains(&d.slug.as_str()))
         })
         .unwrap_or(false)
 }
@@ -712,7 +743,7 @@ fn off_members(p: &Provider) -> Vec<String> {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     if let Ok(domains) = crate::proxy::config::load_domains() {
         for d in domains {
-            if p.proxy_domain_slugs.contains(&d.slug.as_str()) && !d.enabled {
+            if cascade_domains(p).contains(&d.slug.as_str()) && !d.enabled {
                 out.push(d.slug);
             }
         }
@@ -1627,15 +1658,19 @@ mod tests {
         // relay, which resolves against the whole catalog rather than the
         // enabled set, and the ChatGPT desktop app talks to chatgpt.com. What
         // the switch governs is generic interception of that host, whose real
-        // dependants are the multi-provider harnesses - so the row moved to
-        // Experimental with them.
+        // dependants are whatever else on the machine talks to that host, which
+        // is what `Client::AnyApp` now says in the catalog.
+        //
+        // Asserted against the DERIVED cascade rather than an array's contents:
+        // the family lists two domains now, and what must stay empty is the set
+        // the switch can flip.
         let p = find("openai").expect("openai provider present");
         assert_eq!(p.display_name, "OpenAI");
         assert!(p.tool_ids.contains(&ToolId::Codex));
         assert!(
-            p.proxy_domain_slugs.is_empty(),
-            "a domain here rejoins the family cascade, got {:?}",
-            p.proxy_domain_slugs
+            cascade_domains(&p).is_empty(),
+            "a brokered domain here rejoins the family cascade, got {:?}",
+            cascade_domains(&p)
         );
     }
 
@@ -1644,14 +1679,21 @@ mod tests {
         // Both chatgpt.com entries stay off this switch, because `enable` turns
         // on EVERY domain a provider lists: hanging them here would intercept
         // that host for every OpenAI user, including the API-key users who never
-        // call it. `chatgpt` reaches the user through `chat_domain_slugs`
-        // instead - its own row, its own switch, outside the cascade. Codex needs
-        // neither slug enabled: its embedded agent ignores the system proxy and
-        // routes via the relay, which resolves slugs off the catalog rather than
-        // off the enabled flags.
+        // call it. Both are `Credential::Additive`, so the derived cascade
+        // skips them while the family still lists them for the ledger - its own
+        // row, its own switch. Codex needs neither slug enabled: its embedded
+        // agent ignores the system proxy and routes via the relay, which
+        // resolves slugs off the catalog rather than off the enabled flags.
+        //
+        // This is the test that would have caught the old failure mode. Under
+        // two arrays it asserted a slug's absence from one of them; now it
+        // asserts the consequence, so moving an entry between arrays cannot
+        // pass it any more.
         let p = find("openai").expect("openai provider present");
-        assert!(!p.proxy_domain_slugs.contains(&"chatgpt"));
-        assert!(!p.proxy_domain_slugs.contains(&"chatgpt-apps"));
+        assert!(p.domain_slugs.contains(&"chatgpt"));
+        assert!(p.domain_slugs.contains(&"chatgpt-apps"));
+        assert!(!cascade_domains(&p).contains(&"chatgpt"));
+        assert!(!cascade_domains(&p).contains(&"chatgpt-apps"));
     }
 
     #[test]
@@ -1659,7 +1701,8 @@ mod tests {
         let p = find("anthropic").expect("anthropic provider present");
         assert_eq!(p.display_name, "Anthropic");
         assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
-        assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
+        assert_eq!(p.domain_slugs, &["anthropic", "claude-web"]);
+        assert_eq!(cascade_domains(&p), vec!["anthropic"]);
     }
 
     #[test]
@@ -1670,7 +1713,8 @@ mod tests {
             p.tool_ids.is_empty(),
             "OpenRouter has no CLI integration - it's proxy-only"
         );
-        assert_eq!(p.proxy_domain_slugs, &["openrouter"]);
+        assert_eq!(p.domain_slugs, &["openrouter"]);
+        assert_eq!(cascade_domains(&p), vec!["openrouter"]);
     }
 
     #[test]
@@ -1730,39 +1774,54 @@ mod tests {
     }
     #[test]
     fn claude_web_is_not_reachable_by_enabling_the_anthropic_provider() {
-        // `enable` flips every domain a provider lists. Attaching the chat
-        // domain here would route the user's claude.ai SESSION cookie as a side
-        // effect of enabling Claude, bypassing that domain's opt-in default.
+        // `enable` flips every domain [`cascade_domains`] returns. If that ever
+        // included the chat domain, enabling Claude would route the user's
+        // claude.ai SESSION cookie as a side effect, bypassing the opt-in
+        // default that is the only thing keeping it off.
+        //
+        // The family lists it - that is what puts it on the ledger - and the
+        // credential is what keeps it out of the cascade. Both halves asserted,
+        // because the bug this pins is exactly the two coming apart.
         let p = find("anthropic").expect("anthropic provider present");
-        assert!(!p.proxy_domain_slugs.contains(&"claude-web"));
-        assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
+        assert!(p.domain_slugs.contains(&"claude-web"));
+        assert!(!cascade_domains(&p).contains(&"claude-web"));
+        assert_eq!(cascade_domains(&p), vec!["anthropic"]);
     }
 
     #[test]
-    fn chat_domains_reach_the_ledger_without_reaching_the_cascade() {
+    fn session_domains_stay_listed_while_staying_out_of_the_cascade() {
         // The other half of the test above, and the half that keeps the fix in
-        // place: excluding these slugs from `proxy_domain_slugs` is also what
-        // used to hide them from Home, so the exclusion alone is indistinguishable
-        // from having dropped them. `chat_domain_slugs` is what `buildGroups`
-        // reads to give each one a row and a switch of its own; if it ever went
-        // empty, the domains would silently become CLI-only again - which is the
-        // state OpenClaw's connect used to paper over by flipping `chatgpt`
-        // unasked.
+        // place: a domain excluded from the cascade used to be excluded from
+        // the family's only array, which is also what hid it from Home - so
+        // "not cascaded" and "dropped" were indistinguishable. One array plus a
+        // derived rule separates them by construction, and this asserts both
+        // halves for every additive entry rather than for two named ones.
         let anthropic = find("anthropic").expect("anthropic provider present");
-        assert_eq!(anthropic.chat_domain_slugs, &["claude-web"]);
+        assert!(anthropic.domain_slugs.contains(&"claude-web"));
         let openai = find("openai").expect("openai provider present");
-        assert_eq!(openai.chat_domain_slugs, &["chatgpt", "chatgpt-apps"]);
-        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
-        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt-apps"));
-        // Every slug named must exist in the domain catalog, or the row is
-        // promised and never rendered.
+        assert_eq!(openai.domain_slugs, &["chatgpt", "chatgpt-apps"]);
+        assert!(cascade_domains(&openai).is_empty());
+
         let catalog = crate::proxy::default_domains();
         for p in providers() {
-            for slug in p.chat_domain_slugs {
-                assert!(
-                    catalog.iter().any(|d| d.slug == *slug),
-                    "{} names a chat domain no catalog entry provides: {slug}",
-                    p.slug
+            let cascaded = cascade_domains(&p);
+            for slug in p.domain_slugs {
+                // Every slug named must exist in the catalog, or the row is
+                // promised and never rendered.
+                let entry = catalog
+                    .iter()
+                    .find(|d| d.slug == *slug)
+                    .unwrap_or_else(|| panic!("{} names an unknown domain: {slug}", p.slug));
+                // And the derived rule must agree with the entry, in both
+                // directions: a brokered row the switch cannot reach is a dead
+                // switch, an additive row it can reach is the bug above.
+                assert_eq!(
+                    cascaded.contains(slug),
+                    entry.credential.cascades(),
+                    "{}'s {slug} cascades={} but its credential says {:?}",
+                    p.slug,
+                    cascaded.contains(slug),
+                    entry.credential
                 );
             }
         }

@@ -40,7 +40,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
+    await app.routeApp("Claude");
 
     // The config is already written; this is only about the running process.
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
@@ -58,7 +58,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: [],
     });
 
-    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
+    await app.routeApp("Claude");
 
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
       true,
@@ -73,7 +73,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
+    await app.routeApp("Claude");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     // Still nothing closed: this is the confirmation, not the action.
@@ -96,7 +96,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
+    await app.routeApp("Claude");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: "No, I will close later" }).click();
 
@@ -115,7 +115,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
+    await app.routeApp("Claude");
     await app.page.getByRole("button", { name: "No, I will reopen later" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -133,7 +133,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.routeApp("ChatGPT / Codex");
 
     await expect
       .poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool")))
@@ -148,7 +148,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude", "codex"],
     });
 
-    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.routeApp("ChatGPT / Codex");
 
     // The product name, not the rail's row label: both tools are a "CLI" there,
     // and a flat list of two CLIs names neither.
@@ -172,7 +172,7 @@ test.describe("new UI running apps", () => {
       staleAgents: 1,
     });
 
-    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.routeApp("ChatGPT / Codex");
 
     const dialog = app.page.getByRole("dialog");
     // Who reopens it, read off the backend rather than written into the copy -
@@ -192,7 +192,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     const dialog = app.page.getByRole("dialog");
@@ -210,7 +210,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
     await expect(app.page.getByRole("dialog")).toContainText("Waiting for you to reopen");
@@ -332,9 +332,9 @@ test.describe("new UI running apps", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    // The Anthropic family's "App" row: Claude Desktop and Cowork, routed by
-    // domain rather than by a config file of their own.
-    await app.page.getByRole("button", { name: "App" }).first().click();
+    // The Claude row. Its API surface is routed by domain rather than by a
+    // config file of its own, which is what the advice below is about.
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
 
     await expect(
       app.page.getByText("Apps already open may need reopening"),
@@ -351,7 +351,7 @@ test.describe("new UI running apps", () => {
         proxy: { running: true, ca_trusted: true },
       });
 
-      await app.page.getByRole("button", { name: "App" }).first().click();
+      await app.page.getByRole("button", { name: "Claude" }).first().click();
 
       await expect(
         app.page.getByText("Apps already open may need reopening"),
@@ -373,7 +373,9 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    await app.page.getByRole("button", { name: "CLI" }).first().click();
+    // Codex's row is the ChatGPT / Codex app row: one switch, and the config
+    // tool inside it is what a reopen is about.
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
 
     await expect(app.page.getByText(/Reopen .* to finish/)).toBeVisible();
     await expect(

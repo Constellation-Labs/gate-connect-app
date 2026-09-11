@@ -87,7 +87,7 @@ test.describe("new UI routing verdict", () => {
 
     // Waits for the sweep to have landed before reading the switch.
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
-    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
+    const sidebarSwitch = app.appSwitch("ChatGPT / Codex");
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
   });
 
@@ -155,7 +155,7 @@ test.describe("new UI routing verdict", () => {
     // now, and while disabled they read "Not routed" as well.
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "OpenAI CLI", exact: true }) });
+      .filter({ has: app.appSwitch("ChatGPT / Codex") });
     await expect(row.getByText("Not routed")).toBeVisible();
   });
 

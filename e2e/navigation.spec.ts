@@ -26,7 +26,7 @@ test.describe("navigation", () => {
   test("Escape steps back out of a family panel", async ({ boot }) => {
     const app = await boot();
 
-    await app.familyRow("Anthropic").click();
+    await app.familyRow("Claude").click();
     await expect(app.page.getByRole("switch", { name: /Route CLI/ })).toBeVisible();
 
     await app.page.keyboard.press("Escape");

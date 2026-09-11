@@ -106,6 +106,21 @@ export interface SidebarApp {
   /** 16px brand mark, rendered inside the tile. Falls back to the app's initial
    * while the marks are still being exported from Figma. */
   logo?: ReactNode;
+  /**
+   * The programs behind this row, shown on hover over its label.
+   *
+   * A row's visible text is a surface kind - "API", "Chat", "CLI" - which is
+   * legible under its heading and still does not name anything the user could
+   * go and open. That matters most for the rows with no config file behind
+   * them: nothing else in the app says the word "Cowork". `lib/groups.ts`
+   * carries the copy.
+   *
+   * A native `title`, like every other hover in this app (`AppPane`,
+   * `SettingsPane`, `banners`). It is a supplement, never the only place a
+   * fact lives - the pane draws the row's full description - so a viewer that
+   * never shows it loses nothing load-bearing.
+   */
+  hint?: string;
   /** A toggle is in flight: the switch ignores clicks but keeps focus. */
   busy?: boolean;
   /**
@@ -326,7 +341,6 @@ export function Sidebar({
                 <AppRow
                   key={app.slug}
                   app={app}
-                  groupLabel={group.label}
                   selected={view.kind === "app" && view.slug === app.slug}
                   onSelect={onSelectApp}
                   onToggle={onToggleApp}
@@ -507,14 +521,12 @@ function InventoryState({
 
 function AppRow({
   app,
-  groupLabel,
   selected,
   onSelect,
   onToggle,
 }: {
   app: SidebarApp;
   /** The eyebrow over this row, for the switch's accessible name alone. */
-  groupLabel: string;
   selected: boolean;
   onSelect: (slug: string) => void;
   onToggle: (slug: string, next: boolean) => void;
@@ -557,6 +569,7 @@ function AppRow({
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span
+            title={app.hint}
             className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
               selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
             }`}
@@ -571,15 +584,18 @@ function AppRow({
       </button>
       <BaseSwitch
         on={app.on}
-        // The eyebrow in front of the row label, which the visible text
-        // deliberately leaves out. Rows are named for the surface they cover
-        // now, so the rail carries three switches reading "CLI" and two each
-        // reading "App" and "Web"; on screen the eyebrow above them says which
-        // family is which, and this is how that reaches a screen reader, where
-        // the heading is a sibling rather than a parent. Empty for the
-        // unlabelled group the rail falls back to before the catalog loads, so
-        // the name stays the row's own.
-        label={groupLabel ? `${groupLabel} ${app.name}` : app.name}
+        // The row's own name, and nothing in front of it.
+        //
+        // This used to prefix the eyebrow, because rows were named for the
+        // surface they covered and the rail carried three switches reading
+        // "CLI" and two each reading "App" and "Web" - the eyebrow was the only
+        // thing saying which family each belonged to, and a screen reader
+        // cannot see it, being a sibling rather than a parent.
+        //
+        // A row is an app now and its name is unique on the rail, so the
+        // eyebrow is the band ("Apps", "Tools") and prefixing it would announce
+        // "Apps Claude" - noise in place of the disambiguation it used to be.
+        label={app.name}
         busy={app.busy}
         onClick={() => onToggle(app.slug, !app.on)}
       />

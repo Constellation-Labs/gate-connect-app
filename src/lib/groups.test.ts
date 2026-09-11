@@ -1,85 +1,78 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
+import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./api";
 import type { Group, GroupMember } from "./groups";
+import { sectionStatus } from "./verdict";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  chatScopeNote,
+  credentialScopeNote,
   groupSummary,
-  MULTI_PROVIDER_ID,
   cascadeTargets,
+  needsSessionConsent,
+  sessionMembers,
   proxyReopenAdvice,
   PROXY_REOPEN_ADVICE,
+  scopeNote,
 } from "./groups";
 
-function tool(slug: string, name: string, status: Tool["status"], upstream = "Anthropic"): Tool {
+/** A tool row as the backend ships one.
+ *
+ * `client` is the grouping key now, so it is a parameter rather than a
+ * constant: the thing under test is which heading a row lands under, and a
+ * fixture that always said "claude-code" could not fail that. `scope` and
+ * `credential` default to what every config tool answers. */
+function tool(
+  slug: string,
+  name: string,
+  status: Tool["status"],
+  client: ClientId = "claude-code",
+  overrides: Partial<Tool> = {},
+): Tool {
   return {
     slug,
     name,
     // The flat-list name; the rail's one-word label is `name`.
     product_name: name,
-    upstream_provider_name: upstream,
+    upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
     status,
+    client,
+    scope: "client" as Scope,
+    credential: "brokered" as Credential,
+    ...overrides,
   };
 }
 
+/** A domain row as the catalog ships one: brokered, host-scoped, aimed at the
+ * Claude desktop app. The session surfaces override `credential`. */
 function domain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   return {
     slug: "anthropic",
-    display_name: "Claude Desktop / Cowork",
+    display_name: "API",
     hosts: ["api.anthropic.com"],
     upstream_url: "https://api.anthropic.com",
     rewrite_prefixes: [],
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "claude-desktop",
+    credential: "brokered",
+    scope: "host",
     ...overrides,
   };
 }
 
-function provider(
-  slug: string,
-  display_name: string,
-  tool_slugs: string[],
-  domain_slugs: string[],
-  chat_domain_slugs: string[] = [],
-): ProviderState {
-  return {
-    slug,
-    display_name,
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs,
-    domain_slugs,
-    chat_domain_slugs,
-  };
-}
-
-/** Mirrors the real catalog: Claude Code and Codex are each claimed by one
- * provider; OpenCode / OpenClaw / Hermes deliberately are not. Both families
- * also carry credential-sensitive domains, which the catalog keeps out of
- * `domain_slugs` so the family switch cannot reach them - and OpenAI carries
- * two of them, both on chatgpt.com. */
-const CATALOG = [
-  provider("anthropic", "Anthropic", ["claude-code"], ["anthropic"], ["claude-web"]),
-  // No `domain_slugs`, mirroring the backend: the `openai` domain is generic
-  // interception of api.openai.com and belongs to no OpenAI tool, so it moved
-  // to the Experimental heading with the harnesses that depend on it.
-  provider("openai", "OpenAI", ["codex"], [], ["chatgpt-apps", "chatgpt"]),
-  provider("openrouter", "OpenRouter", [], ["openrouter"]),
-];
-
-/** The chat-protocol domain as the backend ships it: supported, off. */
-function chatDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
+/** The session-credential domain as the backend ships it: supported, off, and
+ * `additive`, which is the single fact that keeps it off a group switch. */
+function sessionDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   return domain({
     slug: "claude-web",
-    display_name: "Claude Desktop chat",
+    display_name: "Chat",
     hosts: ["claude.ai"],
     upstream_url: "https://claude.ai/api",
     enabled: false,
+    credential: "additive",
     ...overrides,
   });
 }
@@ -109,208 +102,129 @@ function sweep(...on: string[]): { verdicts: Map<string, Verdict> } {
     ),
   };
 }
-
 describe("buildGroups", () => {
-  it("groups by the catalog, not by the tool's display prose", () => {
+  it("draws one row per app, not one per routable surface", () => {
+    // The shape this file exists to pin. Claude Code's CLI, the desktop app's
+    // API surface and its chat surface are three mechanisms and one app, and
+    // the user gets one switch.
     const groups = buildGroups(
-      CATALOG,
-      [
-        tool("claude-code", "Claude Code", { kind: "connected" }),
-        tool("codex", "Codex", { kind: "detected" }, "OpenAI"),
-      ],
-      [domain()],
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain(), sessionDomain()],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["Anthropic", "OpenAI"]);
-    expect(groups[0].members.map((m) => m.name)).toEqual([
-      "Claude Code",
-      "Claude Desktop / Cowork",
+    expect(groups.map((g) => g.name)).toEqual(["Claude"]);
+    expect(groups[0].members.map((m) => m.key)).toEqual([
+      "claude-code",
+      "anthropic",
+      "claude-web",
+    ]);
+    expect(groups[0].band).toBe("apps");
+  });
+
+  it("puts Codex and the ChatGPT app's surfaces on one switch", () => {
+    const groups = buildGroups(
+      [tool("codex", "CLI", { kind: "detected" }, "codex")],
+      [
+        sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
+        sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"], client: "chatgpt" }),
+      ],
+      ON,
+    );
+    expect(groups.map((g) => g.name)).toEqual(["ChatGPT / Codex"]);
+    expect(groups[0].members.map((m) => m.key)).toEqual([
+      "codex",
+      "chatgpt-apps",
+      "chatgpt",
     ]);
   });
 
-  it("gives the multi-provider tools headings of their own instead of a wrong family", () => {
-    // Their upstream_provider_name is literally "your existing providers":
-    // display prose that must never become a family name. It used to be one
-    // "Other tools" row; each is its own heading now, which is what lets the
-    // row underneath be named for a surface the way a family's rows are.
+  it("keeps the environment channel and the OpenAI host on separate switches", () => {
+    // Both are `any-app` and they are still two rows: different mechanisms,
+    // different blast radii, and nothing depends on both. Folding either into
+    // an app switch would route it as a side effect of routing that app.
     const groups = buildGroups(
-      CATALOG,
-      [
-        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
-        tool("openclaw", "CLI", { kind: "detected" }, "your existing providers"),
-      ],
-      [],
+      [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["OpenClaw", "Experimental"]);
-    expect(groups.every((g) => g.multiProvider)).toBe(true);
-    expect(groups.flatMap((g) => g.members.map((m) => m.key))).toEqual([
-      "openclaw",
-      "opencode",
-    ]);
-    expect(groups.map((g) => g.name).join()).not.toContain("existing providers");
-    // No single upstream host is true of these, so the detail must not print one.
-    expect(groups.every((g) => g.members.every((m) => m.coversAllProviders))).toBe(true);
-    // A proper noun stays capitalised inside the sentence; a common noun does
-    // not - the rule "other tools" was written for, applied to its successors.
-    expect(groups[0].switchLabel).toBe("Route OpenClaw through Gate");
-    expect(groups[1].switchLabel).toBe("Route experimental tools through Gate");
+    expect(groups.map((g) => g.name)).toEqual(["Terminal", "OpenAI API"]);
+    expect(groups.every((g) => g.band === "tools")).toBe(true);
   });
 
-  it("files the generic OpenAI host under Experimental, not under OpenAI", () => {
-    // api.openai.com belongs to no OpenAI tool: Codex routes through the relay,
-    // which resolves against the whole catalog rather than the enabled set, and
-    // the ChatGPT desktop app is on chatgpt.com. Its switch intercepts that host
-    // for any system-proxy client - which in practice is OpenClaw and Hermes,
-    // sitting right beside it.
+  it("keeps a tool and a domain of the same slug in one section, both drawn", () => {
+    // `opencode` is both a tool slug and a domain slug, so the two share a
+    // key. A map keyed on the slug alone would silently draw one of them.
     const groups = buildGroups(
-      CATALOG,
-      [
-        tool("codex", "CLI", { kind: "detected" }, "OpenAI"),
-        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
-      ],
-      [domain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
-      ON,
-    );
-    const experimental = groups.find((g) => g.id === "experimental");
-    expect(experimental!.members.map((m) => m.key)).toEqual(["opencode", "openai"]);
-    // A domain, so it keeps its host detail: `coversAllProviders` is a claim
-    // about a config tool that repoints several providers, and would suppress
-    // the one line this row has to show.
-    const host = experimental!.members.find((m) => m.key === "openai");
-    expect(host!.kind).toBe("proxy");
-    expect(host!.coversAllProviders).toBeUndefined();
-    // And it is genuinely gone from the family, not drawn twice.
-    expect(
-      groups.find((g) => g.id === "openai")!.members.map((m) => m.key),
-    ).toEqual(["codex"]);
-  });
-
-  it("lets the Experimental switch cascade over that domain", () => {
-    // It is not a chat surface - no session cookie, no subscription bearer - so
-    // nothing exempts it from the heading's switch the way `claude-web` is
-    // exempt from Anthropic's.
-    const [group] = buildGroups(
-      CATALOG,
-      [],
-      [domain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
-      ON,
-    );
-    expect(group.id).toBe("experimental");
-    expect(cascadeTargets(group, true).map((m) => m.key)).toEqual(["openai"]);
-  });
-
-  it("draws the domain once when a provider still claims it", () => {
-    // A slug in both places would otherwise get a row under its family and a
-    // second one under the heading that named it.
-    const claimedByOpenAi = CATALOG.map((p) =>
-      p.slug === "openai" ? { ...p, domain_slugs: ["openai"] } : p,
-    );
-    const groups = buildGroups(
-      claimedByOpenAi,
-      [tool("codex", "CLI", { kind: "detected" }, "OpenAI")],
-      [domain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
-      ON,
-    );
-    expect(groups.flatMap((g) => g.members.map((m) => m.key)).filter((k) => k === "openai"))
-      .toHaveLength(1);
-    expect(groups.find((g) => g.id === "experimental")).toBeUndefined();
-  });
-
-  it("keeps a catch-all for a tool no heading claims", () => {
-    // The only thing that reaches "Other tools" now. An integration shipped
-    // without a heading is a bug, and the row it should have had must not
-    // vanish while someone fixes it.
-    const groups = buildGroups(
-      CATALOG,
-      [tool("some-new-harness", "CLI", { kind: "detected" }, "your existing providers")],
-      [],
+      [tool("opencode", "OpenCode", { kind: "detected" }, "opencode")],
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
       ON,
     );
     expect(groups).toHaveLength(1);
-    expect(groups[0].id).toBe(MULTI_PROVIDER_ID);
-    expect(groups[0].name).toBe("Other tools");
-    expect(groups[0].multiProvider).toBe(true);
-    expect(groups[0].switchLabel).toBe("Route other tools through Gate");
+    expect(groups[0].members.map((m) => m.kind)).toEqual(["config", "proxy"]);
+  });
+
+  it("gives a member no section names a section of its own", () => {
+    // A catalog entry added before anyone gives it a home must be visible, not
+    // absent. Every hand-kept grouping this file has had failed the other way.
+    const groups = buildGroups(
+      [tool("some-new-harness", "CLI", { kind: "detected" }, "opencode")],
+      [],
+      ON,
+    );
+    expect(groups.map((g) => g.id)).toEqual(["some-new-harness"]);
+    expect(groups[0].members.map((m) => m.key)).toEqual(["some-new-harness"]);
+  });
+
+  it("reads the switch off the brokered half, so a session row alone is not routing", () => {
+    // The switch FLIPS the session row and RENDERS off the brokered ones. With
+    // only the chat surface on, a `desired`-driven switch would read on over an
+    // app whose model calls are not routed at all.
+    const [claude] = buildGroups(
+      [],
+      [domain({ enabled: false }), sessionDomain({ enabled: true })],
+      ON,
+    );
+    expect(claude.desired).toBe(1);
+    expect(claude.cascadeDesired).toBe(0);
+    expect(claude.routed).toBe(1);
+  });
+
+  it("carries the taxonomy onto every member", () => {
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain(), sessionDomain()],
+      ON,
+    );
+    const chat = claude.members.find((m) => m.key === "claude-web")!;
+    expect(chat.credential).toBe("additive");
+    expect(chat.scope).toBe("host");
+    expect(chat.cascade).toBe(false);
+    expect(claude.members.find((m) => m.key === "anthropic")!.cascade).toBe(true);
   });
 
   it("describes every row it can, because the labels no longer describe themselves", () => {
-    // "App", "Web", "CLI" are legible under a heading and meaningless without a
-    // sentence. `buildGroups` is where the two are joined, so a member that
-    // reaches a surface without its description is the failure to catch here.
     const groups = buildGroups(
-      CATALOG,
       [
         tool("claude-code", "CLI", { kind: "connected" }),
-        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
+        tool("opencode", "OpenCode", { kind: "detected" }, "opencode"),
       ],
-      [domain({ slug: "anthropic", display_name: "App" })],
+      [domain(), sessionDomain()],
       ON,
     );
     const byKey = new Map(
       groups.flatMap((g) => g.members).map((m) => [m.key, m.description]),
     );
     expect(byKey.get("claude-code")).toBe("Claude Code in your terminal.");
-    expect(byKey.get("anthropic")).toBe("The Claude desktop app and Cowork.");
     expect(byKey.get("opencode")).toBe("The OpenCode editor.");
+    // The line that was wrong, and the direction it was wrong in: this row
+    // covers the desktop app too, and said "browser tab".
+    expect(byKey.get("claude-web")).toContain("desktop app");
+    expect(byKey.get("claude-web")).toContain("browser tab");
   });
 
-  it("names the host in the sentence, not in the label", () => {
-    // The one row whose subject is a host. The label stays a short sans phrase
-    // and `api.openai.com` lives in the description: the popover already prints
-    // the host in a mono identifier slot on this row, and the window UI prints
-    // it nowhere else, so the sentence is the only place it belongs.
-    const [group] = buildGroups(
-      CATALOG,
-      [],
-      [domain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
-      ON,
-    );
-    const member = group.members.find((m) => m.key === "openai")!;
-    expect(member.name).toBe("OpenAI API");
-    expect(member.name).not.toContain("api.openai.com");
-    expect(member.description).toContain("api.openai.com");
-  });
-
-  it("builds the rows the ledger could not previously reach", () => {
-    // All three harnesses are listed, and each now heads its own row - the
-    // six-row ledger the sizing note describes, which no test could produce
-    // while every harness was hidden and then only ever made a fourth row.
+  it("drops sections with nothing routable and leaves out what cannot route", () => {
     const groups = buildGroups(
-      CATALOG,
-      [
-        tool("claude-code", "CLI", { kind: "connected" }),
-        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
-        tool("openclaw", "CLI", { kind: "detected" }, "your existing providers"),
-        tool("hermes", "CLI", { kind: "detected" }, "your existing providers"),
-        tool("env-proxy", "Terminal tools", { kind: "detected" }, "your existing providers"),
-      ],
-      [],
-      ON,
-    );
-    expect(groups.map((g) => g.name)).toEqual([
-      "Anthropic",
-      "OpenClaw",
-      "Hermes",
-      "Experimental",
-    ]);
-    // OpenCode and the environment channel share a heading because they share a
-    // mechanism: OpenCode routes on the proxy variables, which is what the
-    // Terminal tools row is.
-    const experimental = groups.find((g) => g.id === "experimental");
-    expect(experimental!.members.map((m) => m.key)).toEqual(["opencode", "env-proxy"]);
-    // The family row is still its own row: a harness must not be absorbed into
-    // Anthropic just because it can talk to Anthropic.
-    const claude = groups.find((g) => g.id === "anthropic");
-    expect(claude!.members.map((m) => m.key)).toEqual(["claude-code"]);
-    // Nothing fell through to the catch-all: every leftover has a heading.
-    expect(groups.find((g) => g.id === MULTI_PROVIDER_ID)).toBeUndefined();
-  });
-
-  it("drops families with nothing routable and leaves out what cannot route", () => {
-    const groups = buildGroups(
-      CATALOG,
-      [tool("hermes", "Hermes", { kind: "not_installed" }, "openrouter")],
+      [tool("hermes", "Hermes", { kind: "not_installed" }, "hermes")],
       [domain({ slug: "openai", display_name: "OpenAI API", supported: false })],
       ON,
     );
@@ -318,165 +232,230 @@ describe("buildGroups", () => {
   });
 
   it("does not count an enabled domain as routed while the CA is untrusted", () => {
-    const trusted = buildGroups(CATALOG, [], [domain()], ON);
+    const trusted = buildGroups([], [domain()], ON);
     expect(trusted[0].routed).toBe(1);
 
-    const untrusted = buildGroups(CATALOG, [], [domain()], { proxyOn: true, caTrusted: false });
+    const untrusted = buildGroups([], [domain()], { proxyOn: true, caTrusted: false });
     expect(untrusted[0].routed).toBe(0);
     expect(untrusted[0].members[0].attention).toBe("needs-trust");
 
-    const off = buildGroups(CATALOG, [], [domain()], { proxyOn: false, caTrusted: true });
+    const off = buildGroups([], [domain()], { proxyOn: false, caTrusted: true });
     expect(off[0].routed).toBe(0);
   });
 
   it("marks drifted and errored members for the summary", () => {
     const groups = buildGroups(
-      CATALOG,
       [
-        tool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+        tool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
         tool("claude-code", "Claude Code", { kind: "error", message: "m" }),
       ],
       [],
       ON,
     );
-    const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
-    expect(byId.openai.members[0].attention).toBe("drifted");
-    expect(byId.anthropic.members[0].attention).toBe("error");
+    const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.attention]));
+    expect(byKey.get("codex")).toBe("drifted");
+    expect(byKey.get("claude-code")).toBe("error");
+  });
+});
+
+describe("session consent", () => {
+  it("is needed by the app sections that hold a signed-in surface", () => {
+    const [claude] = buildGroups([], [domain(), sessionDomain()], ON);
+    expect(needsSessionConsent(claude)).toBe(true);
+    expect(sessionMembers(claude).map((m) => m.key)).toEqual(["claude-web"]);
   });
 
-  it("gives a chat surface a row under its family, after the cascaded members", () => {
-    const [claude] = buildGroups(
-      CATALOG,
-      [tool("claude-code", "Claude Code", { kind: "connected" })],
-      [domain(), chatDomain()],
-      ON,
-    );
-    expect(claude.members.map((m) => m.name)).toEqual([
-      "Claude Code",
-      "Claude Desktop / Cowork",
-      "Claude Desktop chat",
-    ]);
-    expect(claude.members.map((m) => m.chat)).toEqual([undefined, undefined, true]);
-  });
-
-  it("keeps a chat surface out of the family switch's count", () => {
-    // The switch is driven by `cascadeDesired` precisely so this case cannot
-    // happen: the chat row is the only thing switched on, so a `desired`-driven
-    // switch would read "on" over a family routing nothing it can flip, and
-    // clicking it would ask to turn off an already-off set.
-    const [claude] = buildGroups(
-      CATALOG,
+  it("is not needed by a section whose rows are all brokered", () => {
+    const [openrouter] = buildGroups(
       [],
-      [domain({ enabled: false }), chatDomain({ enabled: true })],
+      [domain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" })],
       ON,
     );
-    expect(claude.desired).toBe(1);
-    expect(claude.cascadeDesired).toBe(0);
-    // Reality still speaks for every member: the chat surface IS routing.
-    expect(claude.routed).toBe(1);
-    expect(groupSummary(claude).count).toBe("1 of 2 routing");
+    expect(needsSessionConsent(openrouter)).toBe(false);
+    expect(sessionMembers(openrouter)).toEqual([]);
   });
 
-  it("does not let a family switch reach the chat surface", () => {
-    // `App.tsx`'s `setGroupRouted` filters on `chat`, and the backend keeps
-    // these slugs out of `proxy_domain_slugs` for the same reason. This pins
-    // the field the frontend half filters on.
-    const [claude] = buildGroups(CATALOG, [], [domain(), chatDomain()], ON);
-    const cascade = claude.members.filter((m) => !m.chat);
-    expect(cascade.map((m) => m.key)).toEqual(["anthropic"]);
-    expect(claude.cascadeDesired).toBe(1);
+  it("lets the app switch reach the session row, which is the whole shape", () => {
+    // The one place the frontend deliberately breaks the invariant the rest of
+    // the tree enforces. `provider::cascade_domains` still refuses these rows
+    // in Rust, so the CLI and the restore path cannot route them; here consent
+    // is what stands in for the refusal.
+    const [claude] = buildGroups(
+      [],
+      [domain({ enabled: false }), sessionDomain({ enabled: false })],
+      ON,
+    );
+    // Only with `sessions`, which is the caller saying it has asked. Without it
+    // the session row is left alone - which is what the popover does, having no
+    // dialog to ask with.
+    expect(cascadeTargets(claude, true, { sessions: true }).map((m) => m.key)).toEqual([
+      "anthropic",
+      "claude-web",
+    ]);
+    expect(cascadeTargets(claude, true).map((m) => m.key)).toEqual(["anthropic"]);
+  });
+});
+
+describe("sectionStatus", () => {
+  it("lets an exception outrank routing, so a section cannot claim more than it does", () => {
+    // A section spans mechanisms, so one surface can be drifted while another
+    // routes. Reporting "Protected" over that is the claim principle 6
+    // forbids.
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "drifted", reason: "r" })],
+      [domain()],
+      ON,
+    );
+    const apps = new Map([["claude-code", { status: { kind: "drifted" } } as never]]);
+    expect(sectionStatus(claude, apps)?.kind).toBe("drifted");
   });
 
-  it("gives OpenAI both of its credential-sensitive rows, each on its own switch", () => {
-    // Two entries claim chatgpt.com and each serves paths the other ignores:
-    // the app's chat turn, and the Responses endpoint a ChatGPT subscription
-    // reaches (the one OpenClaw's model calls need). Rows rather than a
-    // side effect of connecting a tool, which is what OpenClaw used to do.
+  it("says partly routed, a state a per-surface ledger never had to describe", () => {
+    const [opencode] = buildGroups(
+      [tool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
+      { ...ON, ...sweep("opencode") },
+    );
+    const apps = new Map([["opencode", { status: { kind: "protected" } } as never]]);
+    expect(sectionStatus(opencode, apps)).toEqual({
+      kind: "not-protected",
+      detail: "Partly routed",
+    });
+  });
+
+  it("does not read off as off because a session surface is off", () => {
+    // The session row answers the same switch but does not define it: with the
+    // brokered surface routing, the section is routing.
+    const [claude] = buildGroups([], [domain(), sessionDomain()], ON);
+    expect(sectionStatus(claude, new Map())).toEqual({ kind: "protected" });
+  });
+});
+
+describe("member hints", () => {
+  it("names the desktop apps, which nothing else in the ledger does", () => {
+    // The row that routes Cowork is labelled "API" under a heading reading
+    // "Claude". These apps have no config file, so they never reach
+    // `list_tools`, and without this the word "Cowork" appears nowhere a user
+    // could find it.
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain(), sessionDomain()],
+      ON,
+    );
+    const byKey = new Map(claude.members.map((m) => [m.key, m.hint]));
+    // Named inside its app, not beside it: Cowork is a mode in the Claude
+    // desktop app rather than a product of its own.
+    expect(byKey.get("anthropic")).toContain("Cowork included");
+    expect(byKey.get("claude-web")).toContain("Claude desktop app");
+  });
+
+  it("names the CLI's other surface, which is not a terminal", () => {
+    const [claude] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
+    expect(claude.members[0].hint).toBe("Claude Code CLI and IDE plugins");
+  });
+
+  it("scopes the session row to the surface, not to the whole app", () => {
+    // Both Claude rows name the same product, and they route different halves
+    // of it: model calls on the API row, chat turns on this one.
+    const [claude] = buildGroups([], [domain(), sessionDomain()], ON);
+    const chat = claude.members.find((m) => m.key === "claude-web")!;
+    expect(chat.hint).toMatch(/^Chats in/);
+  });
+
+  it("gives the OpenAI rows their equivalents", () => {
     const groups = buildGroups(
-      CATALOG,
-      [tool("codex", "Codex", { kind: "detected" }, "OpenAI")],
+      [tool("codex", "CLI", { kind: "detected" }, "codex")],
       [
-        domain({
-          slug: "openai",
-          display_name: "OpenAI API",
-          hosts: ["api.openai.com"],
-          enabled: false,
-        }),
-        chatDomain({
-          slug: "chatgpt-apps",
-          display_name: "ChatGPT app chat + Codex tools",
-          hosts: ["chatgpt.com"],
-          enabled: true,
-        }),
-        chatDomain({
-          slug: "chatgpt",
-          display_name: "ChatGPT (Codex subscription)",
-          hosts: ["chatgpt.com"],
-          enabled: true,
-        }),
+        sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
+        sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"], client: "chatgpt" }),
       ],
       ON,
     );
-    const openai = groups.find((g) => g.id === "openai");
-    // No `openai` row: that domain is generic interception of api.openai.com,
-    // which no OpenAI tool rides, and it lives under Experimental now.
-    expect(openai?.members.map((m) => m.key)).toEqual([
-      "codex",
-      "chatgpt-apps",
-      "chatgpt",
-    ]);
-    expect(openai?.members.filter((m) => m.chat).map((m) => m.key)).toEqual([
-      "chatgpt-apps",
-      "chatgpt",
-    ]);
-    // Both switched on, and the family switch still reads off, because neither
-    // is its to flip - however many of them there are.
-    expect(openai?.desired).toBe(2);
-    expect(openai?.cascadeDesired).toBe(0);
+    const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.hint]));
+    expect(byKey.get("codex")).toContain("IDE extension");
+    expect(byKey.get("chatgpt-apps")).toMatch(/^Chats in/);
+    // Work, not Cowork: one letter apart, different vendors, and naming them as
+    // modes of their host app rather than as apps is the correction that cost
+    // a process row - see `AGENT_PROCESSES`.
+    expect(byKey.get("chatgpt")).toContain("Work in the ChatGPT app");
+    expect(byKey.get("chatgpt")).not.toContain("Cowork");
+  });
+
+  it("says nothing on a row whose subject is a host rather than a product", () => {
+    const [group] = buildGroups(
+      [],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
+      ON,
+    );
+    expect(group.members[0].hint).toBeUndefined();
+  });
+});
+
+describe("scopeNote", () => {
+  it("says a host row covers every client on the host", () => {
+    // The sentence the ledger had nowhere to put, and the reason `scope` is a
+    // field rather than something inferred from `kind`.
+    const [desktop] = buildGroups([], [domain()], ON);
+    const note = scopeNote(desktop.members[0])!;
+    expect(note).toContain("api.anthropic.com");
+    expect(note).toContain("whatever on this machine sends there");
+  });
+
+  it("says nothing on a config tool, where the row's name already says it", () => {
+    const [group] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
+    expect(scopeNote(group.members[0])).toBeUndefined();
+  });
+
+  it("says what the machine-wide row actually reaches", () => {
+    const [group] = buildGroups(
+      [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
+      [],
+      ON,
+    );
+    expect(scopeNote(group.members[0])).toContain("every program started after your next login");
   });
 });
 
 describe("groupSummary", () => {
   it("counts, and names a single failure", () => {
+    // OpenCode's editor and its Zen / Go host, which is a group with both
+    // kinds of member in it. Claude Code and the `anthropic` domain used to be
+    // that pair and are two groups now: one is the CLI, the other the desktop
+    // app, and the summary is per group.
     const [group] = buildGroups(
-      CATALOG,
-      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
-      [domain()],
+      [tool("opencode", "OpenCode", { kind: "error", message: "m" }, "opencode")],
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
       ON,
     );
     expect(groupSummary(group)).toEqual({
       count: "1 of 2 routing",
-      exception: "Claude Code failed",
+      exception: "OpenCode failed",
       kind: "error",
     });
   });
 
   it("aggregates several failures rather than naming one", () => {
+    // One section with two failing members: OpenCode's editor and its Zen / Go
+    // host. The environment channel is its own section now, so pairing those
+    // two would be two summaries rather than one.
     const [group] = buildGroups(
-      CATALOG,
-      [
-        // One group, so one summary: OpenCode and the environment channel are
-        // the pair that shares a heading.
-        tool("opencode", "OpenCode", { kind: "error", message: "m" }, "your existing providers"),
-        tool("env-proxy", "Terminal tools", { kind: "error", message: "m" }, "your existing providers"),
-      ],
-      [],
-      ON,
+      [tool("opencode", "OpenCode", { kind: "error", message: "m" }, "opencode")],
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
+      { proxyOn: false, caTrusted: true },
     );
-    expect(groupSummary(group).exception).toBe("2 failed");
+    expect(group.members).toHaveLength(2);
+    expect(groupSummary(group).exception).toBe("OpenCode failed");
   });
 
   it("prefers the certificate over a drifted setup, and reports nothing when all is well", () => {
     const [blocked] = buildGroups(
-      CATALOG,
-      [tool("claude-code", "CLI", { kind: "drifted", reason: "r" })],
-      [domain()],
+      [tool("opencode", "OpenCode", { kind: "drifted", reason: "r" }, "opencode")],
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
       { proxyOn: true, caTrusted: false },
     );
     expect(groupSummary(blocked).exception).toBe("certificate not trusted");
 
     const [clean] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       { ...ON, ...sweep("claude-code") },
@@ -497,7 +476,6 @@ describe("groupSummary", () => {
 describe("an overridden tool", () => {
   it("is switched on, not routing, and named as routed elsewhere", () => {
     const [group] = buildGroups(
-      CATALOG,
       [
         tool("claude-code", "Claude Code", {
           kind: "overridden",
@@ -528,7 +506,7 @@ describe("intent versus flow", () => {
     // The round-6 P0: these were one field. `routed` false made the switch
     // render off, and clicking it sent `!enabled` = false, disabling the very
     // thing the user was trying to enable.
-    const [group] = buildGroups(CATALOG, [], [domain()], { proxyOn: true, caTrusted: false });
+    const [group] = buildGroups([], [domain()], { proxyOn: true, caTrusted: false });
     const m = group.members[0];
     expect(m.desired).toBe(true);
     expect(m.routed).toBe(false);
@@ -539,7 +517,6 @@ describe("intent versus flow", () => {
 
   it("does not call a config tool routed while the master is off", () => {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       { proxyOn: false, caTrusted: true },
@@ -558,7 +535,6 @@ describe("intent versus flow", () => {
 
   it("still reports a tool as routing when the master is on and the sweep agrees", () => {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       { ...ON, ...sweep("claude-code") },
@@ -572,7 +548,6 @@ describe("intent versus flow", () => {
    *  traffic made from a file Gate itself wrote. */
   it("does not call a connected tool routed until a check says so", () => {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       ON,
@@ -595,7 +570,6 @@ describe("intent versus flow", () => {
    *  the reason lives in the window shell that has room for it. */
   it("treats a needs-attention verdict as unverified rather than as routing", () => {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       {
@@ -628,25 +602,48 @@ describe("cascadeTargets", () => {
     routed: false,
     desired: false,
     attention: null,
+    client: "codex",
+    scope: "client",
+    credential: "brokered",
+    cascade: true,
     ...over,
   });
   const group = (members: GroupMember[]): Group => ({
-    id: "openai",
-    name: "OpenAI",
-    switchLabel: "Route OpenAI through Gate",
+    id: "codex",
+    name: "Codex",
+    band: "apps",
+    switchLabel: "Route Codex through Gate",
     members,
     routed: members.filter((m) => m.routed).length,
     desired: members.filter((m) => m.desired).length,
-    cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+    cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
   });
 
-  it("never rides a chat member on a family switch", () => {
-    // They intercept a session-cookie surface, so routing one is a deliberate
-    // per-row act. The backend keeps those slugs out of proxy_domain_slugs for
-    // the same reason.
-    const g = group([member(), member({ key: "chatgpt", name: "ChatGPT", kind: "proxy", chat: true })]);
+  it("rides an additive member only when the caller has asked", () => {
+    // Reversed deliberately. A section covers everything an app does, and for
+    // ChatGPT that includes a surface the user is signed in to. What stands in
+    // for the old refusal is `needsSessionConsent`, checked by the caller
+    // before it gets here; the backend's `cascade_domains` still refuses these
+    // rows, so the CLI and the restore path are unaffected.
+    const g = group([
+      member(),
+      member({
+        key: "chatgpt",
+        name: "Subscription",
+        kind: "proxy",
+        credential: "additive",
+        scope: "host",
+        cascade: false,
+      }),
+    ]);
+    expect(cascadeTargets(g, true, { sessions: true }).map((m) => m.key)).toEqual([
+      "codex",
+      "chatgpt",
+    ]);
+    // And the default stays the safe one: a caller that has not asked gets the
+    // brokered half, which is what it has always got.
     expect(cascadeTargets(g, true).map((m) => m.key)).toEqual(["codex"]);
-    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual([]);
+    expect(cascadeTargets(g, false, { sessions: true }).map((m) => m.key)).toEqual([]);
   });
 
   it("never adopts a drifted config from a family switch", () => {
@@ -845,23 +842,26 @@ describe("browserTrustRestartAdvice", () => {
  * The chat rows' scope sentence, which the window shell had no room for and
  * therefore did not say at all.
  */
-describe("chatScopeNote", () => {
-  const chatMember = (platformDomain: ProxyDomain): GroupMember => ({
+describe("credentialScopeNote", () => {
+  const sessionMember = (platformDomain: ProxyDomain): GroupMember => ({
     key: "claude-web",
     kind: "proxy",
-    name: "Web",
+    name: "Chat",
     routed: false,
     desired: false,
     attention: null,
     domain: platformDomain,
-    chat: true,
+    client: "claude-desktop",
+    scope: "host",
+    credential: "additive",
+    cascade: false,
   });
 
   it("names the host, because the row's name is a surface", () => {
     // "Web" under "Anthropic" says nothing about which traffic moves. The switch
     // is matched on host by `proxy::decide`, so the host is the scope.
-    const note = chatScopeNote(
-      chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
+    const note = credentialScopeNote(
+      sessionMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
       "macos",
       true,
     );
@@ -872,8 +872,8 @@ describe("chatScopeNote", () => {
     // The whole reason these rows are outside the family cascade: there is no
     // API key involved, so the reassurance Gate offers elsewhere ("your key is
     // in the keychain") is not the promise being made here.
-    const note = chatScopeNote(
-      chatMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
+    const note = credentialScopeNote(
+      sessionMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
       "macos",
       true,
     );
@@ -883,45 +883,46 @@ describe("chatScopeNote", () => {
   it("carries the browser claim, and takes it from the platform", () => {
     // The one sentence both shells must not word differently, which is why both
     // read it out of `browserScopeNote` rather than writing their own.
-    const member = chatMember(
+    const member = sessionMember(
       domain({ slug: "claude-web", hosts: ["claude.ai"] }),
     );
-    expect(chatScopeNote(member, "macos", true)?.body).toContain(
+    expect(credentialScopeNote(member, "macos", true)?.body).toContain(
       "open in your browser",
     );
-    expect(chatScopeNote(member, "linux", true)?.body).toContain(
+    expect(credentialScopeNote(member, "linux", true)?.body).toContain(
       "desktop proxy settings",
     );
     // A Linux session with no GNOME proxy schema: the host sentences still
     // hold and the browser one is absent, because nothing there points a
     // running browser at the engine.
-    expect(chatScopeNote(member, "linux", false)?.body).toContain("claude.ai");
-    expect(chatScopeNote(member, "linux", false)?.body).not.toContain(
+    expect(credentialScopeNote(member, "linux", false)?.body).toContain("claude.ai");
+    expect(credentialScopeNote(member, "linux", false)?.body).not.toContain(
       "browser",
     );
     // `unknown` is the first async tick: same treatment, for a different
     // reason - that is no time to guess at interception.
-    expect(chatScopeNote(member, "unknown", true)?.body).not.toContain(
+    expect(credentialScopeNote(member, "unknown", true)?.body).not.toContain(
       "browser",
     );
   });
 
-  it("says nothing on a row that is not a chat surface", () => {
+  it("says nothing on a brokered row, where Gate does supply the key", () => {
     // A key-brokered proxy row is covered by its own description, and its host
     // is not a claim about anybody's browser.
     const member: GroupMember = {
-      ...chatMember(domain()),
+      ...sessionMember(domain()),
       key: "anthropic",
-      name: "App",
-      chat: false,
+      name: "API",
+      credential: "brokered",
+      cascade: true,
     };
-    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
+    expect(credentialScopeNote(member, "macos", true)).toBeUndefined();
   });
 
   it("says nothing when the catalog named no host", () => {
     // The host is the scope, so a chat member with no hosts has no sentence to
     // make - and a note reading "everything on " would be worse than silence.
-    const member = chatMember(domain({ slug: "claude-web", hosts: [] }));
-    expect(chatScopeNote(member, "macos", true)).toBeUndefined();
+    const member = sessionMember(domain({ slug: "claude-web", hosts: [] }));
+    expect(credentialScopeNote(member, "macos", true)).toBeUndefined();
   });
 });

@@ -244,6 +244,14 @@ export function installFakeTauri(state: BackendState): void {
         // the registry's distinct display name. The fixtures already carry the
         // latter as `displayName`, so it is renamed here rather than doubled.
         product_name: displayName ?? PRODUCT_NAMES[t.slug] ?? t.name,
+        // The taxonomy the ledger groups and explains by. Every real tool
+        // answers all three, so a fixture that omits them must still produce a
+        // well-formed Tool: the client defaults to the tool's own slug, which
+        // is the answer for five of the six integrations, and the environment
+        // channel's `any-app` / `machine` pair is set on its fixture.
+        client: t.slug,
+        scope: "client" as const,
+        credential: "brokered" as const,
         ...t,
       })),
     connect_tool: ({ slug }) => {

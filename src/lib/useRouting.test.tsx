@@ -37,6 +37,9 @@ const tool = (slug: string, status: Status): Tool => ({
   name: slug,
   product_name: slug,
   upstream_provider_name: "Anthropic",
+  client: "claude-code",
+  scope: "client",
+  credential: "brokered",
   default_upstream_url: `https://gw.example/${slug}`,
   config_location: null,
   status,
@@ -422,13 +425,14 @@ describe("useRouting: removing the certificate", () => {
 });
 
 const group = (members: GroupMember[]): Group => ({
-  id: "anthropic",
-  name: "Anthropic",
-  switchLabel: "Route Anthropic through Gate",
+  id: "claude-code",
+  name: "Claude Code",
+  band: "apps",
+  switchLabel: "Route Claude Code through Gate",
   members,
   routed: members.filter((m) => m.routed).length,
   desired: members.filter((m) => m.desired).length,
-  cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+  cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
 });
 
 const configMember = (over: Partial<GroupMember> = {}): GroupMember => ({
@@ -438,6 +442,10 @@ const configMember = (over: Partial<GroupMember> = {}): GroupMember => ({
   routed: false,
   desired: false,
   attention: null,
+  client: "claude-code",
+  scope: "client",
+  credential: "brokered",
+  cascade: true,
   tool: tool("claude-code", { kind: "detected" }),
   ...over,
 });
@@ -548,6 +556,10 @@ describe("useRouting: the family cascade", () => {
         routed: false,
         desired: false,
         attention: null,
+        client: "claude-desktop",
+        scope: "host",
+        credential: "brokered",
+        cascade: true,
         domain: {
           slug: "anthropic-api",
           display_name: "Anthropic API",
@@ -555,6 +567,9 @@ describe("useRouting: the family cascade", () => {
           upstream_url: "https://gw.example/anthropic",
           rewrite_prefixes: [],
           passthrough_prefixes: [],
+          client: "claude-desktop",
+          credential: "brokered",
+          scope: "host",
           enabled: false,
           supported: true,
         },

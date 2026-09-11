@@ -383,7 +383,14 @@ function TrayGroup({
             <span className="flex min-w-0 flex-1 items-center gap-3">
               <AppTile name={app.name} logo={app.logo} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
+                {/* Same hover as the rail's rows, and for the same reason: the
+                    label is a surface kind, and the desktop apps behind these
+                    rows are named nowhere else in the app. `SidebarApp.hint`
+                    carries the copy. */}
+                <span
+                  title={app.hint}
+                  className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground"
+                >
                   {app.name}
                 </span>
                 <StatusLine app={app} />

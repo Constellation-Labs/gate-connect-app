@@ -255,6 +255,29 @@ describe("the group rows", () => {
     expect(screen.getByText("1 of 2")).toBeTruthy();
   });
 
+  it("carries the programs behind a row as a hover on its label", () => {
+    // A row's visible text is a surface kind, so the label alone never names
+    // anything the user could go and open - and for the desktop apps nothing
+    // else in the app does either. `lib/groups.ts` decides the copy; this is
+    // the wiring that gets it onto the element.
+    renderTray({
+      groups: [
+        {
+          ...GROUPS[0],
+          apps: [{ ...GROUPS[0].apps[0], hint: "Claude Code CLI and IDE plugins" }],
+        },
+      ],
+    });
+    expect(screen.getByText("Claude Code").getAttribute("title")).toBe(
+      "Claude Code CLI and IDE plugins",
+    );
+  });
+
+  it("leaves the label bare where no programs are named", () => {
+    renderTray();
+    expect(screen.getByText("Claude Code").getAttribute("title")).toBeNull();
+  });
+
   it("phrases a row as the coloured status plus grey qualifier", () => {
     renderTray();
     expect(screen.getByText("Protected")).toBeTruthy();

@@ -48,6 +48,13 @@ export interface ToolFixture {
       it; `list_tools` fills the default so nothing else has to. */
   config_location?: string | null;
   status: ToolStatus;
+  /** Which client this row is aimed at - the ledger's grouping key. Optional
+      so a fixture that does not care about grouping keeps reading cleanly;
+      `list_tools` fills `claude-code`'s value the way the real backend fills
+      every tool's. */
+  client?: string;
+  scope?: "host" | "client" | "machine";
+  credential?: "brokered" | "additive" | "observed";
 }
 
 /** One event as the gateway sends it. Mirrors `SecurityEvent` in `lib/api.ts`,
@@ -72,11 +79,12 @@ export interface ProviderFixture {
   enabled: boolean;
   available: boolean;
   tool_slugs: string[];
+  /** Every domain in the family, cascaded or not. One array now: what a family
+   *  switch may flip is derived from each domain's credential - see
+   *  `provider::cascade_domains`. */
   domain_slugs: string[];
-  /** The family's chat-protocol domains: listed under it on the ledger, never
-   *  flipped by its switch. Separate from `domain_slugs` for exactly that
-   *  reason - see `ProviderState` in src/lib/api.ts. */
-  chat_domain_slugs: string[];
+  /** The subset the family switch actually flips, as the backend derives it. */
+  cascade_domain_slugs: string[];
 }
 
 export interface DomainFixture {
@@ -88,6 +96,11 @@ export interface DomainFixture {
   passthrough_prefixes: string[];
   enabled: boolean;
   supported: boolean;
+  /** The ledger's grouping key, and the two fields that say what flipping this
+   *  row does: how wide it reaches, and whose credential rides it. */
+  client?: string;
+  scope?: "host" | "client" | "machine";
+  credential?: "brokered" | "additive" | "observed";
 }
 
 export interface ProxyFixture {
@@ -343,17 +356,26 @@ const ENV_PROXY: ToolFixture = {
   // channel: it writes the machine's proxy variables, not a config file.
   config_location: null,
   status: { kind: "detected" },
+  // The one tool that is not `client`-scoped: it writes the login environment,
+  // so what it routes is every program started afterwards. Grouped with the
+  // host rows that also cover whatever happens to be running.
+  client: "any-app",
+  scope: "machine",
+  credential: "brokered",
 };
 
 const ANTHROPIC_DOMAIN: DomainFixture = {
   slug: "anthropic",
-  display_name: "App",
+  display_name: "API",
   hosts: ["api.anthropic.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
   passthrough_prefixes: [],
   enabled: false,
   supported: true,
+  client: "claude-desktop",
+  credential: "brokered",
+  scope: "host",
 };
 
 /** Claude Desktop's chat surface. Off, supported, and reached only through its
@@ -370,13 +392,18 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
  *  `supported` to false in a spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
-  display_name: "Web",
+  display_name: "Chat",
   hosts: ["claude.ai"],
   upstream_url: "https://claude.ai/api",
   rewrite_prefixes: ["/organizations/"],
   passthrough_prefixes: [],
   enabled: false,
   supported: true,
+  // Same client as the API row above: two surfaces of one program.
+  client: "claude-desktop",
+  // The single field that keeps it off the group switch.
+  credential: "additive",
+  scope: "host",
 };
 
 const OPENAI_DOMAIN: DomainFixture = {
@@ -390,6 +417,9 @@ const OPENAI_DOMAIN: DomainFixture = {
   passthrough_prefixes: [],
   enabled: false,
   supported: true,
+  client: "any-app",
+  credential: "brokered",
+  scope: "host",
 };
 
 /** The ChatGPT-subscription Responses endpoint: off, supported, and reached only
@@ -398,32 +428,38 @@ const OPENAI_DOMAIN: DomainFixture = {
  *  model calls need, which its `connect` used to flip unasked. */
 export const CHATGPT_DOMAIN: DomainFixture = {
   slug: "chatgpt",
-  display_name: "App",
+  display_name: "Subscription",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com/backend-api",
   rewrite_prefixes: ["/codex/responses"],
   passthrough_prefixes: [],
   enabled: false,
   supported: true,
+  client: "chatgpt",
+  credential: "additive",
+  scope: "host",
 };
 
 /** The ChatGPT app's own chat turn plus Codex's tool plane, sharing chatgpt.com
  *  with the entry above under a different URL split. Same deal as the two rows
  *  above - off, supported, its own row - because the chat half carries the
  *  user's session cookie. Present here because the provider names it in
- *  `chat_domain_slugs`, and a slug named there with no domain to match is a row
- *  the ledger promises and never renders; `provider.rs`'s
- *  `chat_domains_reach_the_ledger_without_reaching_the_cascade` asserts the same
- *  pairing on the backend catalog. */
+ *  `domain_slugs`, and a slug named there with no domain to match is a row the
+ *  ledger promises and never renders; `provider.rs`'s
+ *  `session_domains_stay_listed_while_staying_out_of_the_cascade` asserts the
+ *  same pairing on the backend catalog. */
 export const CHATGPT_APPS_DOMAIN: DomainFixture = {
   slug: "chatgpt-apps",
-  display_name: "Web",
+  display_name: "Chat",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com",
   rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
   passthrough_prefixes: ["/backend-api/f/conversation/prepare"],
   enabled: false,
   supported: true,
+  client: "chatgpt",
+  credential: "additive",
+  scope: "host",
 };
 
 /** A signed-in OAuth account with an org picked, routing off, three installed
@@ -477,8 +513,8 @@ export function defaultState(): BackendState {
         enabled: false,
         available: true,
         tool_slugs: ["claude-code"],
-        domain_slugs: ["anthropic"],
-        chat_domain_slugs: ["claude-web"],
+        domain_slugs: ["anthropic", "claude-web"],
+        cascade_domain_slugs: ["anthropic"],
       },
       {
         slug: "openai",
@@ -487,11 +523,13 @@ export function defaultState(): BackendState {
         enabled: false,
         available: true,
         tool_slugs: ["codex"],
-        // Empty, mirroring `provider.rs`: the `openai` domain is generic
+        // No `openai` entry, mirroring `provider.rs`: that domain is generic
         // interception of api.openai.com, rides no OpenAI tool Gate configures,
-        // and sits under Experimental with the harnesses that depend on it.
-        domain_slugs: [],
-        chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
+        // and is `Client::AnyApp` in the catalog. Both listed domains are
+        // additive, so the derived cascade is empty and this family's switch
+        // governs Codex alone.
+        domain_slugs: ["chatgpt", "chatgpt-apps"],
+        cascade_domain_slugs: [],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },

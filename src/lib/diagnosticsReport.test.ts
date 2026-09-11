@@ -64,6 +64,9 @@ const proxy: ProxyState = {
       passthrough_prefixes: [],
       enabled: true,
       supported: true,
+      client: "claude-desktop",
+      credential: "brokered",
+      scope: "host",
     },
     {
       slug: "openrouter",
@@ -74,6 +77,9 @@ const proxy: ProxyState = {
       passthrough_prefixes: [],
       enabled: false,
       supported: false,
+      client: "any-app",
+      credential: "brokered",
+      scope: "host",
     },
   ],
 };
@@ -87,7 +93,7 @@ const providers: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code"],
     domain_slugs: ["anthropic"],
-    chat_domain_slugs: [],
+    cascade_domain_slugs: ["anthropic"],
   },
   {
     slug: "openai",
@@ -97,7 +103,7 @@ const providers: ProviderState[] = [
     available: false,
     tool_slugs: ["codex"],
     domain_slugs: ["chatgpt"],
-    chat_domain_slugs: [],
+    cascade_domain_slugs: [],
   },
 ];
 
@@ -110,6 +116,9 @@ const tools: Tool[] = [
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
     status: { kind: "connected" },
+    client: "claude-code",
+    scope: "client",
+    credential: "brokered",
   },
   {
     slug: "codex",
@@ -118,6 +127,9 @@ const tools: Tool[] = [
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
     config_location: null,
+    client: "codex",
+    scope: "client",
+    credential: "brokered",
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];

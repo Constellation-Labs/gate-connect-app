@@ -75,6 +75,19 @@ struct ToolDto {
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
     status: StatusDto,
+    /// The program this row is aimed at: the ledger's grouping key, shared
+    /// with `ProxyDomain::client` so a tool row and a domain row aimed at the
+    /// same program land under one heading.
+    client: gate_connect_core::taxonomy::Client,
+    /// How much of the machine this row reaches. `Client` for every config
+    /// tool; `Machine` for the environment channel, which is the one row here
+    /// whose reach is wider than the program it names.
+    scope: gate_connect_core::taxonomy::Scope,
+    /// Whose credential rides the traffic. `Brokered` for every config tool -
+    /// carried anyway so the UI reads one field whatever kind of row it has,
+    /// rather than knowing that tool rows are brokered and domain rows may not
+    /// be.
+    credential: gate_connect_core::taxonomy::Credential,
 }
 
 #[derive(Serialize)]
@@ -145,6 +158,9 @@ fn list_tools() -> Vec<ToolDto> {
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
+            client: integ.client(),
+            scope: integ.scope(),
+            credential: integ.credential(),
         })
         .collect()
 }
@@ -2384,6 +2400,13 @@ fn security_feed_retry() {
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
+/// Record that the person accepted one section's switch routing a signed-in
+/// surface. See `preferences::session_routing_accepted`.
+#[tauri::command]
+fn accept_session_routing(section: String) -> Result<(), String> {
+    gate_connect_core::preferences::accept_session_routing(&section).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
@@ -4345,6 +4368,7 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    accept_session_routing,
                     install_id,
                     device_name,
                     set_device_name,
@@ -4420,6 +4444,7 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    accept_session_routing,
                     install_id,
                     device_name,
                     set_device_name,

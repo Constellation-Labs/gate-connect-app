@@ -119,6 +119,10 @@ impl Integration for Hermes {
         DISPLAY_NAME
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::Hermes
+    }
+
     fn row_label(&self) -> &'static str {
         ROW_LABEL
     }
