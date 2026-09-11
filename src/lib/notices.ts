@@ -56,7 +56,10 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
         // The drawn copy (banner/alert/single-app, read 2026-08-23). "Routing"
         // is the master: the app is switched on and routing is not, which is
         // exactly the divergence this notice exists to explain.
-        title: `${name} isn't protected`,
+        // Typographic apostrophe, as drawn (`228:90612`, "Codex isn’t
+        // protected"). The file uses it throughout and `lib/errors.ts` already
+        // matches; this line and its plural below did not.
+        title: `${name} isn’t protected`,
         body: "Routing is set to off. Reconnect to restore protection.",
         switchLabel: "Turn routing on",
         action: { kind: "enable-routing" },
@@ -148,7 +151,7 @@ export function buildNotices(groups: Group[]): RoutingNotice[] {
                 id: kind,
                 title:
                   kind === "master-off"
-                    ? `${count} apps aren't protected`
+                    ? `${count} apps aren’t protected`
                     : `${count} apps need the Gate certificate`,
               }
             : notice,
