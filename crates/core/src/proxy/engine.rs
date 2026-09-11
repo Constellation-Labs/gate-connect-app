@@ -2363,9 +2363,21 @@ mod tests {
     use super::*;
     use crate::proxy::ClientClass;
 
-    /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
+    /// Work's turn, as captured: a GET on a path the `chatgpt` entry claims,
     /// upgraded to a WebSocket.
-    fn cowork_upgrade() -> Request<()> {
+    ///
+    /// **This was called `cowork_upgrade` and the name was a transcription
+    /// error with consequences.** Work is OpenAI's desktop app; Cowork is
+    /// Anthropic's, and the two are one letter apart. Reading this fixture as
+    /// Cowork's put an Anthropic product's traffic on chatgpt.com, and
+    /// `AGENT_PROCESSES` in `src-tauri/src/lib.rs` then deleted Cowork's
+    /// process row on the strength of it - so Gate stopped offering to close
+    /// Cowork at all. Both names confirmed with the product 2026-09-11.
+    ///
+    /// Nothing about the request changed; only what it is understood to be.
+    /// The capture is still a real one and still exercises the upgrade path on
+    /// the entry that claims it.
+    fn work_upgrade() -> Request<()> {
         Request::builder()
             .method("GET")
             .uri("https://chatgpt.com/backend-api/codex/responses")
@@ -2420,7 +2432,7 @@ mod tests {
 
     #[test]
     fn a_websocket_upgrade_is_recognised_whatever_the_casing() {
-        assert!(is_upgrade_request(&cowork_upgrade()));
+        assert!(is_upgrade_request(&work_upgrade()));
         // Real clients send `Connection: keep-alive, Upgrade`; the tokens are a
         // comma-separated, case-insensitive list.
         let multi = Request::builder()
@@ -2461,7 +2473,7 @@ mod tests {
             .filter(|d| d.slug == "chatgpt")
             .collect();
         relay[0].enabled = true;
-        let req = cowork_upgrade();
+        let req = work_upgrade();
         assert_eq!(
             decide(
                 &rules_for_client(&relay, ClientClass::App),
