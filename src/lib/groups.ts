@@ -53,7 +53,7 @@ import { browserScopeNote, trustStoreName, type Platform } from "./platform";
  * A slug with no entry gets no sentence rather than a placeholder.
  */
 export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  anthropic: "The Claude desktop app's model calls, on api.anthropic.com.",
+  anthropic: "Model calls from Cowork and the Claude desktop app, on api.anthropic.com.",
   // Both clients, because the row covers both and the heading above it now
   // says "Claude Desktop". This line used to read "Your Claude chats, in the
   // browser tab", which was wrong in the direction that cost a support thread:
@@ -85,6 +85,51 @@ export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
 /** The sentence for one row, or nothing where no copy exists for it. */
 export function describeMember(key: string): string | undefined {
   return MEMBER_DESCRIPTIONS[key];
+}
+
+/**
+ * The programs behind a row, named, for the hover on its label.
+ *
+ * Shorter and more concrete than {@link MEMBER_DESCRIPTIONS}, and it exists
+ * because the two answer different questions. A description says what the
+ * surface IS, and the pane has room to draw one. A rail row has room for one
+ * word - "API", "Chat", "CLI" - and the question a user actually arrives with
+ * is "which of the things on my machine is that", which a surface kind cannot
+ * answer however well it is chosen.
+ *
+ * The desktop apps are the reason this is worth its own table. They have no
+ * config file, so they never appear in `list_tools`, and the ledger names them
+ * nowhere: the row that routes Cowork is labelled "API" under a heading reading
+ * "Claude Desktop", and a user looking for Cowork by name finds nothing. Every
+ * entry here names a product the user could go and open.
+ *
+ * Not platform-branched. The names were reported as varying by OS and do not:
+ * Anthropic's is Cowork on both, OpenAI's is Work on both, confirmed with the
+ * product on 2026-09-11.
+ *
+ * Keyed by member key like the descriptions, so a slug with no entry gets no
+ * hover rather than a placeholder - which is the right default for the rows
+ * whose subject is a host rather than a product (`openai`, `openrouter`) and
+ * for the terminal tools, whose label is already their name.
+ */
+export const MEMBER_HINTS: Readonly<Record<string, string>> = {
+  "claude-code": "Claude Code CLI and IDE plugins",
+  // Both desktop apps that reach api.anthropic.com. Claude Code reaches it too,
+  // but through its own route selector rather than this switch, so naming it
+  // here would promise something this row does not govern - see
+  // `claude_code_route_domain`.
+  anthropic: "Cowork and the Claude desktop app",
+  "claude-web": "The Claude desktop app, and claude.ai in a browser",
+  codex: "Codex CLI and IDE extension",
+  "chatgpt-apps": "The ChatGPT desktop app, and chatgpt.com in a browser",
+  // The two clients the catalog entry itself names: Codex through the relay,
+  // and Work, whose model calls ride the same subscription bearer.
+  chatgpt: "Work and the Codex desktop app, on your ChatGPT subscription",
+};
+
+/** The programs behind one row, or nothing where none are named. */
+export function hintForMember(key: string): string | undefined {
+  return MEMBER_HINTS[key];
 }
 
 /**
@@ -384,6 +429,9 @@ export interface GroupMember {
    * kind ("App", "Web", "CLI"), which says nothing on its own; this is the
    * half that names the thing on the user's machine. */
   description?: string;
+  /** The programs behind this row, for the hover on a label with no room to
+   * say them. See {@link MEMBER_HINTS}. Absent where none are named. */
+  hint?: string;
   /** Which program this row is aimed at. The group's key, carried on the
    * member too so a flat list of members can still say where each belongs. */
   client: ClientId;
@@ -491,6 +539,7 @@ function memberFromTool(
     kind: "config",
     name: tool.name,
     description: describeMember(tool.slug),
+    hint: hintForMember(tool.slug),
     routed,
     // Intent, which is the config: this is the switch's half of the split, and
     // `lib/groups.ts`'s own header documents what happens when the two are
@@ -543,6 +592,7 @@ function memberFromDomain(
     kind: "proxy",
     name: domain.display_name,
     description: describeMember(domain.slug),
+    hint: hintForMember(domain.slug),
     // An enabled domain behind an untrusted certificate is not carrying
     // traffic, so it does not count as routed - same rule as the header's
     // "Partly routed".

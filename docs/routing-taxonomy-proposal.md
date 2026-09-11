@@ -115,6 +115,35 @@ One description changed on its own merits and is the fix for the support
 thread: `claude-web` read "Your Claude chats, in the browser tab" and now reads
 "Your Claude chats on claude.ai - in the desktop app, and in a browser tab."
 
+## The rows name the desktop apps on hover
+
+A row's visible text is a surface kind, and a surface kind never names anything
+the user could go and open. That is worst for the rows with no config file
+behind them: nothing in the app said the word "Cowork" at all, because the
+desktop apps have no `list_tools` entry and the row that routes them is
+labelled "API".
+
+`MEMBER_HINTS` in `groups.ts` gives each row the programs behind it, rendered as
+a native `title` on the label in both the rail and the tray - the same hover
+mechanism `AppPane`, `SettingsPane` and `banners` already use. It supplements
+the pane's description rather than replacing it, so a viewer that never shows a
+`title` loses nothing load-bearing.
+
+| Row | Hover |
+|---|---|
+| Claude Code > CLI | Claude Code CLI and IDE plugins |
+| Claude Desktop > API | Cowork and the Claude desktop app |
+| Claude Desktop > Chat | The Claude desktop app, and claude.ai in a browser |
+| Codex > CLI | Codex CLI and IDE extension |
+| ChatGPT > Chat | The ChatGPT desktop app, and chatgpt.com in a browser |
+| ChatGPT > Subscription | Work and the Codex desktop app, on your ChatGPT subscription |
+
+The names are **not** platform-branched: Anthropic's app is Cowork on both
+macOS and Windows, OpenAI's is Work on both, confirmed with the product on
+2026-09-11. The rows whose subject is a host rather than a product (`openai`,
+`openrouter`) deliberately get no hover - there is no program to name, and the
+description already says what they cover.
+
 ## What this does not do
 
 It does not change what is routed. No host, path, rewrite rule, cascade result

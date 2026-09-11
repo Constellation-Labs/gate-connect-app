@@ -31,7 +31,7 @@ import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { buildGroups, hintForMember } from "./lib/groups";
 import type { Group } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { openExternal } from "./lib/openExternal";
@@ -626,6 +626,7 @@ export function TrayApp() {
             t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          hint: hintForMember(t.slug),
           // A held figure outranks the pending state, so a look that re-reads
           // keeps the last number on the row instead of blanking it for the
           // length of a fetch. The skeleton is the first read only.
@@ -673,6 +674,9 @@ export function TrayApp() {
             on: m.desired,
             logo: brandMarkFor(m.key),
             busy: routingBusy,
+            // Carried from the member rather than looked up again: the ledger
+            // is where a row's copy is decided.
+            hint: m.hint,
           });
         }
       }

@@ -71,6 +71,7 @@ import {
   credentialScopeNote,
   scopeNote,
   describeMember,
+  hintForMember,
   proxyReopenAdvice,
 } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
@@ -1369,6 +1370,7 @@ export function NewUiApp() {
             t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          hint: hintForMember(t.slug),
         })),
     [tools, verdicts, routing.writeFailures, routingBusy],
   );
@@ -1413,6 +1415,9 @@ export function NewUiApp() {
             on: m.desired,
             logo: brandMarkFor(m.key),
             busy: routingBusy,
+            // Carried from the member rather than looked up again: the ledger
+            // is where a row's copy is decided.
+            hint: m.hint,
           });
         }
       }

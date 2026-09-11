@@ -321,6 +321,57 @@ describe("buildGroups", () => {
   });
 });
 
+describe("member hints", () => {
+  it("names the desktop apps, which nothing else in the ledger does", () => {
+    // The row that routes Cowork is labelled "API" under a heading reading
+    // "Claude Desktop". These apps have no config file, so they never reach
+    // `list_tools`, and without this the word "Cowork" appears nowhere a user
+    // could find it.
+    const [, desktop] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain(), sessionDomain()],
+      ON,
+    );
+    const byKey = new Map(desktop.members.map((m) => [m.key, m.hint]));
+    expect(byKey.get("anthropic")).toContain("Cowork");
+    expect(byKey.get("claude-web")).toContain("Claude desktop app");
+  });
+
+  it("names the CLI's other surface, which is not a terminal", () => {
+    const [cli] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
+    expect(cli.members[0].hint).toBe("Claude Code CLI and IDE plugins");
+  });
+
+  it("gives the OpenAI rows their equivalents", () => {
+    const groups = buildGroups(
+      [tool("codex", "CLI", { kind: "detected" }, "codex")],
+      [
+        sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
+        sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"], client: "chatgpt" }),
+      ],
+      ON,
+    );
+    const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.hint]));
+    expect(byKey.get("codex")).toContain("IDE extension");
+    expect(byKey.get("chatgpt-apps")).toContain("ChatGPT desktop app");
+    // Work, not Cowork: the two products are named per vendor, not per platform.
+    expect(byKey.get("chatgpt")).toContain("Work");
+    expect(byKey.get("chatgpt")).not.toContain("Cowork");
+  });
+
+  it("says nothing on a row whose subject is a host rather than a product", () => {
+    // `openai` and `openrouter` are hosts. A hover naming "programs behind this
+    // row" would have to invent one, and the row's description already says
+    // what it covers.
+    const [group] = buildGroups(
+      [],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
+      ON,
+    );
+    expect(group.members[0].hint).toBeUndefined();
+  });
+});
+
 describe("scopeNote", () => {
   it("says a host row covers every client on the host", () => {
     // The sentence the ledger had nowhere to put, and the reason `scope` is a

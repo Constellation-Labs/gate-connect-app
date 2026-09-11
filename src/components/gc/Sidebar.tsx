@@ -106,6 +106,21 @@ export interface SidebarApp {
   /** 16px brand mark, rendered inside the tile. Falls back to the app's initial
    * while the marks are still being exported from Figma. */
   logo?: ReactNode;
+  /**
+   * The programs behind this row, shown on hover over its label.
+   *
+   * A row's visible text is a surface kind - "API", "Chat", "CLI" - which is
+   * legible under its heading and still does not name anything the user could
+   * go and open. That matters most for the rows with no config file behind
+   * them: nothing else in the app says the word "Cowork". `lib/groups.ts`
+   * carries the copy.
+   *
+   * A native `title`, like every other hover in this app (`AppPane`,
+   * `SettingsPane`, `banners`). It is a supplement, never the only place a
+   * fact lives - the pane draws the row's full description - so a viewer that
+   * never shows it loses nothing load-bearing.
+   */
+  hint?: string;
   /** A toggle is in flight: the switch ignores clicks but keeps focus. */
   busy?: boolean;
   /**
@@ -557,6 +572,7 @@ function AppRow({
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span
+            title={app.hint}
             className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
               selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
             }`}
