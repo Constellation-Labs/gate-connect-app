@@ -18,7 +18,9 @@ const useNewUi = { gc: "gc.newUi" };
 
 const CLAUDE_CODE = {
   slug: "claude-code",
-  // The surface, not the product: the eyebrow over the row says "Anthropic".
+  // The tool's own row label. The rail draws a row per APP now, so this reaches
+  // the flat-list surfaces rather than the rail - see `displayName` below for
+  // the other half of that split.
   name: "CLI",
   // The product name, which is what `teardown_report` carries - that dialog has
   // no family heading, so the row label alone would name nothing there.
@@ -122,12 +124,14 @@ test.describe("new UI engine controls", () => {
     // to write intent and route nothing, with no control anywhere to start it.
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    // A chat surface, which is where this matters most: it has no config file to
-    // write, so the engine is the only thing that could route it.
-    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
+    // An app whose surfaces are all host-intercepted: no config file to write,
+    // so the engine is the only thing that could route it. OpenRouter rather
+    // than a session app, so no consent dialog stands between the click and the
+    // flag - that is tested on its own in the routing spec.
+    await app.page.getByRole("switch", { name: "OpenRouter" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "chatgpt",
+      slug: "openrouter",
       enabled: true,
     });
     const cmds = (await app.calls()).map((c) => c.cmd);
@@ -170,8 +174,9 @@ test.describe("new UI app pane", () => {
   test("the pane's own switch routes the app", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [CLAUDE_CODE] });
 
-    await app.page.getByRole("button", { name: "CLI" }).first().click();
-    await app.page.getByRole("switch", { name: "Route CLI" }).click();
+    // The rail row is the app; the pane it opens is the app's.
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await app.page.getByRole("switch", { name: "Route Claude" }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -190,12 +195,12 @@ test.describe("new UI app pane", () => {
       ],
     });
 
-    await app.page.getByRole("button", { name: "CLI" }).first().click();
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
 
     // The drift alert card inside the pane carries its own switch for the same
     // app, reading off - that one is the re-adopt path. This is the header's.
     await expect(
-      app.page.getByRole("switch", { name: "Route CLI" }),
+      app.page.getByRole("switch", { name: "Route Claude" }),
     ).toHaveAttribute("aria-checked", "true");
   });
 });

@@ -1268,7 +1268,10 @@ export function NewUiApp() {
    */
   const routeSection = useCallback(
     async (section: Group, next: boolean) => {
-      const targets = cascadeTargets(section, next);
+      // `sessions: true` because `toggleRailApp` has an accepted answer by the
+      // time it calls this - either recorded earlier or just given to the
+      // dialog. It is the only caller that passes it.
+      const targets = cascadeTargets(section, next, { sessions: true });
       const failed: string[] = [];
       for (const m of targets) {
         try {

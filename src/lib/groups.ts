@@ -971,22 +971,33 @@ export function groupSummary(group: Group): {
  * command: a config member's connect auto-enables the engine, and the system
  * dialog belongs ahead of the loop rather than sprung from member three.
  */
-export function cascadeTargets(group: Group, on: boolean): GroupMember[] {
+export function cascadeTargets(
+  group: Group,
+  on: boolean,
+  opts: { sessions?: boolean } = {},
+): GroupMember[] {
   return group.members.filter((m) => {
-    // Every member, including the additive ones. A section switch is an APP
-    // switch: it routes everything that app does, which is the whole point of
-    // the shape, and for Claude and ChatGPT that includes a surface the user is
-    // signed in to.
+    // Opt-in, and the default is the safe one. An additive row carries a
+    // credential the person is already signed in with, and only a caller that
+    // has ASKED may route it - which today is the window shell's app switch,
+    // after its confirmation. The popover has no such dialog, so it passes
+    // nothing and keeps the brokered-only cascade it has always had.
+    //
+    // A parameter rather than a property of the group, because it is a fact
+    // about the caller (did you ask?) and not about the section.
+    if (!m.cascade && !opts.sessions) return false;
+    // With `sessions`, every member - including the additive ones. A section
+    // switch is an APP switch: it routes everything that app does, and for
+    // Claude and ChatGPT that includes a surface the user is signed in to.
     //
     // This is the one place on the frontend where the invariant the rest of the
     // tree enforces is deliberately broken, so it is worth being exact about
     // what replaces it. `provider::cascade_domains` still refuses those rows in
     // Rust, so nothing the CLI or a restore does can route them. Here, consent
-    // does the work instead: `needsSessionConsent` below reports whether this
-    // section has such a member, and the caller must have an accepted answer
-    // before it flips one. The guarantee moves from "cannot happen" to "cannot
-    // happen without being told", which is the guarantee that was actually
-    // wanted - see docs/ui-app-switches-plan.md.
+    // does the work: `needsSessionConsent` reports whether a section has such a
+    // member, and only a caller holding an accepted answer passes `sessions`.
+    // The guarantee moves from "cannot happen" to "cannot happen without being
+    // told" - see docs/ui-app-switches-plan.md.
     // An overridden member is left out for the same reason a drifted one is:
     // the family switch writes Gate's config, and here that config is already
     // written and already losing. Turning it on again is a no-op the user would

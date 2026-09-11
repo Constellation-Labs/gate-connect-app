@@ -21,9 +21,9 @@ test.describe("tray popover", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    // The card's eyebrow in front of the row label: rows are named for the
-    // surface they cover, so "CLI" alone names Claude Code and Codex both.
-    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
+    // One switch per app. Claude holds a session surface, so `routeApp` answers
+    // the confirmation the switch raises before it routes anything.
+    await app.routeApp("Claude");
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -180,7 +180,7 @@ test.describe("tray popover", () => {
 
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }) });
+      .filter({ has: app.appSwitch("Claude") });
     await expect(row).toContainText("2 alerts");
 
     // And it moves without a reopen, because the popover is listening.
@@ -192,16 +192,18 @@ test.describe("tray popover", () => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
-    const row = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
+    // OpenCode, not Codex: the ChatGPT / Codex section draws from its domains
+    // with no tool installed, so it is never absent to begin with.
+    const row = app.appSwitch("OpenCode");
     await expect(row).toHaveCount(0);
 
     await app.patch({
       tools: [
         {
-          slug: "codex",
-          name: "CLI",
-          upstream_provider_name: "OpenAI",
-          default_upstream_url: "https://api.openai.com/v1",
+          slug: "opencode",
+          name: "OpenCode",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://opencode.ai",
           status: { kind: "detected" as const },
         },
       ],

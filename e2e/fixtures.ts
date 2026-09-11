@@ -56,9 +56,37 @@ export class App {
     return this.page.getByRole("switch", { name: "Route through Gate" });
   }
 
-  /** A family row on Home ("Claude", "OpenAI", "Other tools"). */
+  /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
   familyRow(name: string) {
     return this.page.getByRole("button", { name: `${name} details` });
+  }
+
+  /** The rail switch for one app section. */
+  appSwitch(name: string) {
+    return this.page.getByRole("switch", { name, exact: true });
+  }
+
+  /**
+   * Turn an app section ON, answering the consent dialog if it asks.
+   *
+   * A section switch routes every surface that app uses, and for Claude and
+   * ChatGPT / Codex that includes a surface the person is signed in to - so the
+   * switch asks once before it flips one. Most specs are about something else
+   * and should not each carry that step; the ones testing consent itself click
+   * the switch directly and assert on the dialog.
+   *
+   * Only for turning ON. Switching off needs no permission, and a helper that
+   * hid a confirmation on the way out would hide a bug.
+   */
+  async routeApp(name: string) {
+    await this.appSwitch(name).click();
+    if (!SESSION_SECTIONS.includes(name)) return;
+    // Asserted rather than probed. `isVisible()` does not auto-wait, so a probe
+    // would race the dialog's first paint and silently skip it; clicking waits.
+    // And if consent ever stops being asked for one of these, this is the line
+    // that should fail - that is the regression worth catching, not a helper
+    // quietly carrying on.
+    await this.page.getByRole("button", { name: `Route ${name}`, exact: true }).click();
   }
 
   openSettings() {
@@ -71,6 +99,16 @@ type Fixtures = {
    *  screen. `patch` is merged one level deep into the default state. */
   boot: (patch?: DeepPartial<BackendState>) => Promise<App>;
 };
+
+/**
+ * The sections whose switch asks before it routes, against the default catalog.
+ *
+ * They are the ones holding a `Credential::Additive` row - a surface the person
+ * is signed in to. Listed here rather than derived because a spec that overrides
+ * `proxy.domains` can change the answer, and such a spec should drive the switch
+ * itself rather than through `routeApp`.
+ */
+const SESSION_SECTIONS = ["Claude", "ChatGPT / Codex"];
 
 export const test = base.extend<Fixtures>({
   boot: async ({ page }, use) => {

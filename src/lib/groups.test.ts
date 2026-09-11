@@ -285,10 +285,14 @@ describe("session consent", () => {
       [domain({ enabled: false }), sessionDomain({ enabled: false })],
       ON,
     );
-    expect(cascadeTargets(claude, true).map((m) => m.key)).toEqual([
+    // Only with `sessions`, which is the caller saying it has asked. Without it
+    // the session row is left alone - which is what the popover does, having no
+    // dialog to ask with.
+    expect(cascadeTargets(claude, true, { sessions: true }).map((m) => m.key)).toEqual([
       "anthropic",
       "claude-web",
     ]);
+    expect(cascadeTargets(claude, true).map((m) => m.key)).toEqual(["anthropic"]);
   });
 });
 
@@ -615,7 +619,7 @@ describe("cascadeTargets", () => {
     cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
   });
 
-  it("rides an additive member too, because a section switch is an app switch", () => {
+  it("rides an additive member only when the caller has asked", () => {
     // Reversed deliberately. A section covers everything an app does, and for
     // ChatGPT that includes a surface the user is signed in to. What stands in
     // for the old refusal is `needsSessionConsent`, checked by the caller
@@ -632,8 +636,14 @@ describe("cascadeTargets", () => {
         cascade: false,
       }),
     ]);
-    expect(cascadeTargets(g, true).map((m) => m.key)).toEqual(["codex", "chatgpt"]);
-    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual([]);
+    expect(cascadeTargets(g, true, { sessions: true }).map((m) => m.key)).toEqual([
+      "codex",
+      "chatgpt",
+    ]);
+    // And the default stays the safe one: a caller that has not asked gets the
+    // brokered half, which is what it has always got.
+    expect(cascadeTargets(g, true).map((m) => m.key)).toEqual(["codex"]);
+    expect(cascadeTargets(g, false, { sessions: true }).map((m) => m.key)).toEqual([]);
   });
 
   it("never adopts a drifted config from a family switch", () => {
