@@ -119,7 +119,11 @@ export const MEMBER_HINTS: Readonly<Record<string, string>> = {
   // here would promise something this row does not govern - see
   // `claude_code_route_domain`.
   anthropic: "Cowork and the Claude desktop app",
-  "claude-web": "The Claude desktop app, and claude.ai in a browser",
+  // "Chats in", not "The": this row is one surface of that app, not the app.
+  // The desktop app's model calls are the `anthropic` row sitting directly
+  // above it, and a hover naming the whole product on both would say the two
+  // switches do the same thing.
+  "claude-web": "Chats in the Claude desktop app, and on claude.ai in a browser",
   codex: "Codex CLI and IDE extension",
   "chatgpt-apps": "The ChatGPT desktop app, and chatgpt.com in a browser",
   // The two clients the catalog entry itself names: Codex through the relay,

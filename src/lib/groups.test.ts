@@ -337,6 +337,19 @@ describe("member hints", () => {
     expect(byKey.get("claude-web")).toContain("Claude desktop app");
   });
 
+  it("scopes the session row to the surface, not to the whole app", () => {
+    // Both Claude Desktop rows name the same product, and they route different
+    // halves of it: model calls on the API row, chat turns on this one. A
+    // hover reading "The Claude desktop app" on both would say the two
+    // switches do the same thing.
+    // No tools, so Claude Desktop is the only group: both its rows are
+    // domains.
+    const [desktop] = buildGroups([], [domain(), sessionDomain()], ON);
+    const chat = desktop.members.find((m) => m.key === "claude-web")!;
+    expect(chat.hint).toMatch(/^Chats in/);
+    expect(chat.hint).not.toMatch(/^The Claude desktop app/);
+  });
+
   it("names the CLI's other surface, which is not a terminal", () => {
     const [cli] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
     expect(cli.members[0].hint).toBe("Claude Code CLI and IDE plugins");
