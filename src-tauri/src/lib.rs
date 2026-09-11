@@ -2412,38 +2412,60 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// Is a process for this one tool running that predates the last routing change,
-/// and is therefore still using whatever settings it loaded then?
+/// When this tool's configuration file was last written, in Unix seconds.
 ///
-/// This is `stale_agents_count` narrowed to one tool, which is what a per-tool
-/// verdict needs: the count answers "does anything need restarting", and cannot
-/// say *which* row to mark.
+/// The durable half of the reopen decision: the file is what the tool reads at
+/// startup, and its mtime survives restarts of Gate, reboots and reinstalls -
+/// which is the whole point, because the timestamps this used to compare
+/// against did not. See [`gate_connect_core::reopen`] for the defect this
+/// replaces.
 ///
-/// Two honest limits, both deliberate:
+/// `None` for a tool with no configuration file of its own (the environment
+/// channel), for one whose file does not exist yet, and on any filesystem that
+/// will not report a modification time. All three mean the same thing to the
+/// caller: no recorded change, so no claim.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn config_changed_at_unix(slug: &str) -> Option<u64> {
+    let integration = gate_connect_core::registry::ToolId::from_slug(slug)
+        .and_then(gate_connect_core::registry::find)?;
+    let path = integration.config_location()?;
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Is a process for this one tool running that predates the last change to that
+/// tool's configuration, and is therefore still using whatever it loaded then?
 ///
-/// - **A tool with no known process name returns `false`**, so it can still read
-///   `On`. The alternative - reporting every such tool unverifiable forever -
-///   would bury a real signal (the route probe) under a permanent warning. The
-///   cost is that OpenClaw and Hermes will not be told to reopen.
-/// - **No usable bound degrades to "running means stale"**, matching
-///   `stale_agents_count` rather than claiming freshness we cannot support.
+/// This is `stale_agents_count` narrowed to one tool *and* given a durable
+/// bound, which is what a per-tool verdict needs: the count answers "does
+/// anything need restarting" about the current session, and cannot say which
+/// row to mark, nor survive a restart of Gate.
+///
+/// The decision itself is [`gate_connect_core::reopen::reopen_pending`], which
+/// is pure and carries the reasoning. This function is only the three readings
+/// it is made from: the process names for the slug, their start times, and the
+/// configuration file's mtime.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn reopen_pending_for(slug: &str) -> bool {
     let wanted = agent_process_names(slug);
     if wanted.is_empty() {
+        // No process table walk for a tool the walk could not recognise, and
+        // no stat either. `process_names_known: false` below is the same
+        // answer, stated where the decision lives.
         return false;
     }
-    let bound = routing_bound_unix();
-    let mut pending = false;
-    for_each_agent_process(&wanted, |process| match bound {
-        Some(bound) => {
-            if process.start_time() < bound {
-                pending = true;
-            }
-        }
-        None => pending = true,
-    });
-    pending
+    let mut starts = Vec::new();
+    for_each_agent_process(&wanted, |process| starts.push(process.start_time()));
+    gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
+        process_names_known: true,
+        process_starts: &starts,
+        config_changed_at: config_changed_at_unix(slug),
+    })
 }
 
 /// One tool's routing verdict, flattened for the frontend.
@@ -2462,15 +2484,17 @@ struct VerdictDto {
     next_action: Option<&'static str>,
     /// Where this tool's traffic is going *now*, and where the config on disk
     /// asks it to go. Both `None` unless the reason is `reopen_required`, which
-    /// is the one verdict where those two answers differ: the process resolved
-    /// its route at launch and the file has changed under it since.
+    /// is the one verdict where those two answers can differ: the process
+    /// resolved its route at launch and the file has changed under it since.
     ///
-    /// Which way round they are depends on which change the process missed. A
-    /// managed config means Gate wrote the route and the tool has not picked it
-    /// up, so it is still going direct; an absent one means a disconnect landed
-    /// and the tool is still going through Gate. Deriving this from the config
-    /// state rather than from a stored intent is deliberate: intent is what the
-    /// switch says, and this line has to describe the world.
+    /// `requested_route` is read from the file. `route_in_use` is **always
+    /// `None`**: Gate cannot see inside another process, so there is no reading
+    /// to report, and it used to be derived from the config state instead - an
+    /// absent config was published as "the process is on the gateway". That is
+    /// a claim about the user's traffic with nothing behind it, and it was
+    /// false on the machine that reported it. See
+    /// [`gate_connect_core::reopen::ReopenRoutes`], which is where the pair is
+    /// built and where the reasoning lives.
     route_in_use: Option<String>,
     requested_route: Option<String>,
 }
@@ -2538,26 +2562,28 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
             });
             let reason = verdict.reason();
             recorded.push((slug.clone(), verdict));
-            // The two routes are only ever both present or both absent: a line
-            // that named one without the other would be half a comparison.
-            let (route_in_use, requested_route) =
-                if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
-                    let own = integ.default_upstream_url().to_string();
-                    if config == ConfigState::Managed {
-                        (Some(own), Some(gate_route.clone()))
-                    } else {
-                        (Some(gate_route.clone()), Some(own))
-                    }
-                } else {
-                    (None, None)
-                };
+            // Only the half that was read off disk. The surfaces draw the pair
+            // when both are present and omit it otherwise, so a reopen notice
+            // now names the action rather than an endpoint nobody measured.
+            let routes = if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
+                gate_connect_core::reopen::reopen_routes(
+                    config,
+                    &gate_route,
+                    integ.default_upstream_url(),
+                )
+            } else {
+                gate_connect_core::reopen::ReopenRoutes {
+                    in_use: None,
+                    requested: None,
+                }
+            };
             VerdictDto {
                 slug,
                 state: verdict.as_str(),
                 reason: reason.map(|r| r.as_str()),
                 next_action: reason.map(|r| r.next_action().as_str()),
-                route_in_use,
-                requested_route,
+                route_in_use: routes.in_use,
+                requested_route: routes.requested,
             }
         })
         .collect();

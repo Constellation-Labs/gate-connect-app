@@ -342,6 +342,20 @@ describe("the reopen notice", () => {
     expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
   });
 
+  it("falls back to the phrase when no route was measured", () => {
+    // What one waiting tool now looks like in practice: `route_in_use` is null
+    // on every verdict the backend sends, because nothing can read where a
+    // running process is pointed. The card keeps the `route` prop for a future
+    // reading, and must read correctly without one - naming an endpoint here
+    // from anything less than a measurement is a claim about the user's
+    // traffic.
+    renderTray({ reopen: { names: ["Claude Code"], route: null, onReopen: vi.fn() } });
+    expect(
+      screen.getByText(/Claude Code is on the route it started with/),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
+  });
+
   it("does not truncate the address it exists to name", () => {
     // At this width "Claude Code is still on " leaves roughly 26 characters, and
     // the relay routes we produce are longer - so `truncate` cut the one thing

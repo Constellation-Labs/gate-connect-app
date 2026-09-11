@@ -82,11 +82,12 @@ test.describe("tray popover", () => {
     });
 
     await expect(app.page.getByText("Reopen to finish")).toBeVisible();
-    // AG-584 asks a pending change to name the route in use, not to gesture at
-    // it. `default_upstream_url` is what the fake reports for a tool whose
-    // config is managed and whose process predates it: still going direct.
-    await expect(app.page.getByText(/Codex is still on/)).toBeVisible();
-    await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
+    // AG-584 asked a pending change to name the route in use, and the card can
+    // still print one - but nothing can read where another process is pointed,
+    // so the backend sends no `route_in_use` and the card falls back to the
+    // phrase. Naming an address here meant naming a guess.
+    await expect(app.page.getByText(/Codex is on the route it started with/)).toBeVisible();
+    await expect(app.page.getByText("https://gw.example/codex")).toHaveCount(0);
 
     await app.page.getByRole("button", { name: "Close tool" }).click();
 
