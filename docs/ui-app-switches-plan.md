@@ -1,6 +1,6 @@
 # One switch per app
 
-Status: agreed shape, not yet built. Follows `docs/routing-taxonomy-proposal.md`,
+Status: built. Follows `docs/routing-taxonomy-proposal.md`,
 which this deliberately hides rather than removes.
 
 ## Decision
@@ -81,11 +81,23 @@ which already does the right thing for a mixed section.
 `preferences.rs` is the natural home, keyed per section rather than globally, so
 consenting to Claude says nothing about ChatGPT.
 
-**The pane is the open question.** `AppPane` is per-tool today: its activity
-comes from the gateway attributed per tool, and a Claude row now spans a CLI, an
-API surface and a chat surface. It can aggregate, or it can list the surfaces
-with their own switches one level in. Aggregating is truer to "one app"; listing
-keeps a way to route the API surface without the chat one. **Not decided.**
+**The pane aggregates**, and it turned out to be nearly free. Every section has
+at most one config tool - a property of the sections rather than a coincidence,
+since each app has a single thing Gate writes a file for - and the gateway
+attributes nothing to a host, so there is no second reading to add in. The pane
+reads that one tool and says what it cannot attribute, which it already knew how
+to do.
+
+**`sectionStatus` is the new part.** A section spans mechanisms, so its one
+status line has to answer for all of them: an exception on any surface outranks
+everything, then routing if every governed surface is, then a "Partly routed"
+state a per-surface ledger never had to describe, then off. It reads the
+brokered half for on/off and every member for exceptions, so a section is not
+"off" because its session surface is.
+
+**The tray matches, and that is not cosmetic.** A tray still drawing
+per-surface rows would put a switch directly on the session surfaces - a way to
+route someone's sign-in without ever being asked.
 
 **Untouched:** the CLI, the diagnostics report, `taxonomy.rs`, and every Rust
 invariant. The session surfaces keep working as they do now; what changes is

@@ -45,6 +45,7 @@ import {
   recoverySummary,
   retryRestoreEntry,
   teardownReport,
+  acceptSessionRouting,
   getPreferences,
   setBlockedEventNotifications,
   setFlaggedEventNotifications,
@@ -69,14 +70,19 @@ import {
   browserTrustRestartAdvice,
   buildGroups,
   credentialScopeNote,
+  BAND_LABELS,
+  cascadeTargets,
+  needsSessionConsent,
+  sectionMemberKeys,
+  sessionMembers,
   scopeNote,
-  describeMember,
+  describeSection,
   hintForMember,
   proxyReopenAdvice,
 } from "./lib/groups";
-import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
-import type { Group } from "./lib/groups";
+import type { Band, Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
@@ -493,15 +499,30 @@ export function NewUiApp() {
    *  fire for a domain: filtering by its slug would return an empty reading,
    *  and the pane would report a quiet day over traffic it cannot see. A slug
    *  carried by an installed tool stays a tool. */
-  const openDomain =
-    view.kind === "app" &&
-    !tools.some((t) => t.slug === view.slug) &&
-    (proxy?.domains.some((d) => d.slug === view.slug) ?? false);
+  /**
+   * The one config tool in the open section, if it has one.
+   *
+   * At most one, and that is a property of the sections rather than a
+   * coincidence worth guarding: each app has a single thing Gate writes a
+   * config file for. It is what the per-tool activity read below is keyed on,
+   * which is the whole of "aggregate" - the section's other surfaces are hosts,
+   * and the gateway attributes nothing to a host, so there is no second reading
+   * to add in.
+   *
+   * Resolved from the section table rather than from the built ledger, which is
+   * declared further down: this sits above it because the reads it gates have
+   * to be set up before the first render.
+   */
+  const openSectionTool =
+    view.kind === "app"
+      ? (sectionMemberKeys(view.slug).find((key) => tools.some((t) => t.slug === key)) ?? null)
+      : null;
+  const openDomain = view.kind === "app" && openSectionTool === null;
   /** The tool whose pane is open, or null on any other view. Drives both per-tool
    *  reads below, and gating on it keeps them from firing for a pane nobody is
    *  looking at - this endpoint shares an address-keyed rate limit with every
    *  other control-plane route. */
-  const openTool = view.kind === "app" && !openDomain ? view.slug : null;
+  const openTool = openSectionTool;
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -983,6 +1004,14 @@ export function NewUiApp() {
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   /**
+   * The section whose switch is waiting on an answer about routing a signed-in
+   * surface, or null when nothing is being asked.
+   *
+   * Holds the whole section rather than its id so the dialog can name the
+   * surfaces it is about to route without going back to the ledger for them.
+   */
+  const [sessionConsent, setSessionConsent] = useState<Group | null>(null);
+  /**
    * Routing work that was recorded and did not finish, read from the provider
    * snapshots. Null until the first read; empty lists mean nothing outstanding,
    * which is the normal case.
@@ -1226,6 +1255,47 @@ export function NewUiApp() {
   );
 
   /**
+   * Route one whole section: every surface the app uses, in one click.
+   *
+   * `cascadeTargets` decides which members move - it skips the ones already in
+   * the target state, never adopts a drifted config, and since the app-switch
+   * change it includes the session surfaces, which is what the consent gate in
+   * `toggleRailApp` stands in front of.
+   *
+   * Failures are collected rather than aborting the rest: a section spans a
+   * config write and two host flags, and one failing must not leave the other
+   * two untouched with nothing on screen saying which is which.
+   */
+  const routeSection = useCallback(
+    async (section: Group, next: boolean) => {
+      const targets = cascadeTargets(section, next);
+      const failed: string[] = [];
+      for (const m of targets) {
+        try {
+          if (m.kind === "proxy") await routing.setDomainRouted(m.key, next);
+          else await routing.setAppRouted(m.key, next);
+        } catch {
+          failed.push(m.name);
+        }
+      }
+      // Only the tools that moved: their route is the one that changed, and a
+      // section's host surfaces have no process of their own to reopen.
+      const movedTools = targets
+        .filter((m: GroupMember) => m.kind === "config")
+        .map((m: GroupMember) => m.key);
+      if (next && movedTools.length > 0) await runningApps.offerAfterChange(movedTools);
+      if (failed.length > 0) {
+        setActionError({
+          title: `Couldn’t ${next ? "route" : "stop routing"} ${failed.join(", ")}`,
+          hint: `${section.name} is partly ${next ? "on" : "off"} - the rest of it moved. Try that surface again, or check the diagnostics report.`,
+          raw: "",
+        });
+      }
+    },
+    [routing, runningApps],
+  );
+
+  /**
    * Turn all routing on or off.
    *
    * Same follow-up as a config write: every routed tool is on its old route until
@@ -1260,21 +1330,22 @@ export function NewUiApp() {
   );
 
   /**
-   * The tools with no single model family, taken from `buildGroups`' own
-   * `multiProvider` groups rather than a slug list of our own - so the pane and
-   * the rail can never disagree about which tools those are.
+   * The rows with no single model family, taken from the members' own
+   * `coversAllProviders` rather than from a slug list here - so the pane and
+   * the ledger can never disagree about which they are.
    *
    * Today that is OpenCode, OpenClaw, Hermes and the environment channel. They
-   * get no model card; see `AppPane`'s `modelChoice`. Four groups rather than
-   * the one "Other tools" row this used to read, which is why the test is the
-   * flag and not an id.
+   * get no model card; see `AppPane`'s `modelChoice`. Read off the member
+   * rather than off the group, because a group is an app now and one app's
+   * surfaces do not have to answer this the same way.
    */
   const multiProviderSlugs = useMemo(
     () =>
       new Set(
         groups
-          .filter((g) => g.multiProvider)
-          .flatMap((g) => g.members.map((m) => m.key)),
+          .flatMap((g) => g.members)
+          .filter((m) => m.coversAllProviders)
+          .map((m) => m.key),
       ),
     [groups],
   );
@@ -1397,50 +1468,42 @@ export function NewUiApp() {
     }
     const bySlug = new Map(apps.map((a) => [a.slug, a]));
     const grouped: SidebarGroup[] = [];
+    // One rail row per section, and the eyebrow is the band rather than the
+    // section: a section IS the row now, so labelling each with its own name
+    // would print every name twice. The two bands are the question being asked
+    // - an app you use, or a mechanism you are opting into.
+    let band: Band | null = null;
     for (const g of groups) {
-      const members: SidebarApp[] = [];
-      for (const m of g.members) {
-        if (m.kind === "config" && m.tool) {
-          const app = bySlug.get(m.key);
-          if (!app) continue;
-          bySlug.delete(m.key);
-          members.push(app);
-        } else if (m.kind === "proxy") {
-          members.push({
-            slug: m.key,
-            name: m.name,
-            status: proxyMemberStatus(m),
-            // Intent, same as the tools: the switch says what the user asked
-            // for, the status line says what is happening.
-            on: m.desired,
-            logo: brandMarkFor(m.key),
-            busy: routingBusy,
-            // Carried from the member rather than looked up again: the ledger
-            // is where a row's copy is decided.
-            hint: m.hint,
-          });
-        }
+      // One SidebarApp per SECTION. Its status and its switch are the section's,
+      // and the surfaces underneath it are reached through the pane rather than
+      // through rows of their own.
+      const railStatus = sectionStatus(g, bySlug);
+      if (!railStatus) continue;
+      for (const m of g.members) bySlug.delete(m.key);
+      if (g.band !== band) {
+        band = g.band;
+        grouped.push({ id: `band:${band}`, label: BAND_LABELS[band], apps: [] });
       }
-      if (members.length === 0) continue;
-      grouped.push({
-        // "Other tools" names itself; its members' vendor field is a sentence
-        // fragment ("your existing providers"), not a caption.
-        id: g.id,
-        // The group's own name, always. It was the vendor where there was
-        // one - "Anthropic" over rows reading "CLI" and "App" - which is the
-        // grouping this ledger no longer uses: a heading is a program now, and
-        // its rows are that program's surfaces.
-        label: g.name,
-        apps: members,
+      grouped[grouped.length - 1].apps.push({
+        slug: g.id,
+        name: g.name,
+        status: railStatus,
+        // Intent, and the brokered half of it: what the switch renders is
+        // whether the app's own routing is on, not whether its session surface
+        // happens to be. `Group.cascadeDesired` carries that distinction.
+        on: g.cascadeDesired > 0,
+        logo: brandMarkFor(g.members[0]?.key ?? g.id),
+        busy: routingBusy,
+        hint: g.members.map((m) => m.hint).find(Boolean),
       });
     }
-    // A row the catalog did not claim keeps its place rather than vanishing.
-    // buildGroups sweeps leftovers into "Other tools", so this only catches a
-    // tool list and a catalog momentarily out of step with each other.
+    // A tool the ledger did not place keeps its place rather than vanishing.
+    // `buildGroups` gives such a member a section of its own, so this only
+    // catches a tool list and a catalog momentarily out of step.
     if (bySlug.size > 0) {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
-    return grouped;
+    return grouped.filter((g) => g.apps.length > 0);
   }, [groups, apps, routingBusy]);
 
   /** Every rail row flat, tools and domains together, for the pane header's
@@ -1455,6 +1518,22 @@ export function NewUiApp() {
    *  drift gate - the same dispatch the family panel's member switches use. */
   const toggleRailApp = useCallback(
     (slug: string, next: boolean) => {
+      const section = groups.find((g) => g.id === slug);
+      // A section switch routes every surface the app uses, so this is a
+      // cascade rather than one write - and for Claude and ChatGPT the cascade
+      // reaches a surface the person is signed in to. `needsSessionConsent`
+      // says so; an unanswered section asks before anything is flipped, and a
+      // decline leaves the switch where it was.
+      const accepted = prefs?.session_routing_accepted ?? [];
+      if (section && next && needsSessionConsent(section) && !accepted.includes(section.id)) {
+        setSessionConsent(section);
+        return;
+      }
+      if (section) {
+        setActionError(null);
+        void routeSection(section, next);
+        return;
+      }
       const member = groups
         .flatMap((g) => g.members)
         .find((m) => m.key === slug);
@@ -1470,7 +1549,7 @@ export function NewUiApp() {
         ? routing.setDomainRouted(slug, next)
         : routeApp(slug, next));
     },
-    [groups, routing.setDomainRouted, routeApp],
+    [groups, prefs, routeSection, routing.setDomainRouted, routeApp],
   );
 
   /**
@@ -2426,9 +2505,14 @@ export function NewUiApp() {
    */
   const chatScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
+    // The section's signed-in surface, if it has one. A section is an app and
+    // its rows are that app's surfaces, so the note is about whichever of them
+    // Gate does not hold a key for - which is the fact the switch's own
+    // confirmation is about, said again where it is standing rather than only
+    // at the moment of flipping.
     const member = groups
-      .flatMap((g) => g.members)
-      .find((m) => m.key === view.slug);
+      .find((g) => g.id === view.slug)
+      ?.members.find((m) => !m.cascade);
     return member
       ? credentialScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
       : undefined;
@@ -2447,9 +2531,12 @@ export function NewUiApp() {
    */
   const rowScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
+    // The widest host surface the section has. A section switch spans
+    // mechanisms, and the one worth saying out loud is interception: it reaches
+    // every client on those hosts, not only the app the row is named for.
     const member = groups
-      .flatMap((g) => g.members)
-      .find((m) => m.key === view.slug);
+      .find((g) => g.id === view.slug)
+      ?.members.find((m) => m.scope === "host" || m.scope === "machine");
     // Not beside the note above, which already opens with the same host
     // sentence in its own words.
     if (!member || chatScope) return undefined;
@@ -2866,6 +2953,52 @@ export function NewUiApp() {
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />
+        ) : sessionConsent ? (
+          // The one place an app switch is allowed to route a surface the
+          // person is signed in to. `provider::cascade_domains` still refuses
+          // these rows in Rust, so nothing the CLI or a restore does can flip
+          // them; here the refusal is replaced by an answer, which is what
+          // makes "one switch routes my whole app" honest rather than a
+          // credential routed behind someone's back.
+          //
+          // Initial focus on the secondary, per principle 5: the primary here
+          // starts routing a signed-in session, so the safe button is the one
+          // that receives the keyboard.
+          <Modal
+            tone="warning"
+            icon="shieldCheck"
+            title={`Route ${sessionConsent.name} through Gate?`}
+            subtitle={`This also routes ${sessionMembers(sessionConsent)
+              .map((m) => m.name.toLowerCase())
+              .join(" and ")}, which Gate sees on the account you are already signed in with.`}
+            secondary={{ label: "Not now", onClick: () => setSessionConsent(null) }}
+            primary={{
+              label: `Route ${sessionConsent.name}`,
+              onClick: () => {
+                const section = sessionConsent;
+                setSessionConsent(null);
+                // Recorded before the routing runs, not after: the answer is
+                // the person's and stands whether or not a config write then
+                // fails. Recording it on success would re-ask after a failure
+                // they have already answered for.
+                void acceptSessionRouting(section.id)
+                  .then(loadPreferences)
+                  .catch(() => {});
+                setActionError(null);
+                void routeSection(section, true);
+              },
+            }}
+            onDismiss={() => setSessionConsent(null)}
+          >
+            <p className="text-sm leading-5 text-neutral-600">
+              Gate records and inspects that traffic. It does not supply a key
+              for it, and it cannot read anything you are not sending anyway.
+            </p>
+            <p className="text-sm leading-5 text-neutral-600">
+              Asked once per app. Turning {sessionConsent.name} off later does
+              not bring this question back.
+            </p>
+          </Modal>
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and
           // connecting cannot proceed without one. Asking first matters because
@@ -3173,12 +3306,10 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          // The h1 is "App" / "Web" / "CLI" here. The rail's eyebrow supplies
-          // the vendor that makes those legible and the pane has no eyebrow, so
-          // the sentence has to travel with the name. Keyed by slug rather than
-          // read off the member, so a row the ledger has not placed yet still
-          // gets its description.
-          description={describeMember(view.slug)}
+          // The section's own sentence. The h1 is an app name now ("Claude"),
+          // which is legible on its own - but the switch under it covers three
+          // surfaces, and this is the only place that says which.
+          description={describeSection(view.slug)}
           logo={brandMarkFor(view.slug)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug

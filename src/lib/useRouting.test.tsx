@@ -427,8 +427,7 @@ describe("useRouting: removing the certificate", () => {
 const group = (members: GroupMember[]): Group => ({
   id: "claude-code",
   name: "Claude Code",
-  vendor: "Anthropic",
-  namedByExclusion: false,
+  band: "apps",
   switchLabel: "Route Claude Code through Gate",
   members,
   routed: members.filter((m) => m.routed).length,

@@ -1,6 +1,6 @@
 import type { Verdict, VerdictNextAction, VerdictReason } from "./api";
-import type { GroupMember } from "./groups";
-import type { AppStatus } from "../components/gc/Sidebar";
+import type { Group, GroupMember } from "./groups";
+import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
 
 /**
  * Turning a backend routing verdict into the status line the design draws.
@@ -117,4 +117,47 @@ export function proxyMemberStatus(m: GroupMember): AppStatus {
   return m.routed
     ? { kind: "protected" }
     : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+}
+
+/**
+ * The status line for a whole section, which is what a rail row is now.
+ *
+ * A section spans mechanisms - a config tool and two intercepted hosts under
+ * one switch - so its line has to answer for all of them at once. The rule is
+ * the strictest member wins, in the order a user would care:
+ *
+ * 1. Anything needing a human (an error, drift, an untrusted certificate) is
+ *    the line, because a section that says "Protected" while one of its
+ *    surfaces is drifted is making the claim principle 6 forbids.
+ * 2. Otherwise, routing if every member the switch governs is routing.
+ * 3. Otherwise "Partly routed" if some are, which is the state an app switch
+ *    makes reachable and a per-surface ledger never had to describe.
+ * 4. Otherwise off.
+ *
+ * Reads the SWITCH's members - the brokered half - for on/off, and every
+ * member for exceptions. A section is not "off" because its session surface is
+ * off; that surface answers the same switch but does not define it.
+ */
+export function sectionStatus(
+  group: Group,
+  appFor: Map<string, SidebarApp>,
+): AppStatus | null {
+  if (group.members.length === 0) return null;
+  // A config member's line is the sweep's, which the rail already computed; a
+  // proxy member's is its own state. Taking the tool's from `appFor` keeps the
+  // section and the tool it contains from ever disagreeing.
+  const lines = group.members.map((m) =>
+    m.kind === "config" ? appFor.get(m.key)?.status : proxyMemberStatus(m),
+  );
+  const known = lines.filter((l): l is AppStatus => l !== undefined);
+  if (known.length === 0) return null;
+
+  const exception = known.find((l) => l.kind === "drifted" || l.kind === "not-protected");
+  if (exception) return exception;
+
+  const governed = group.members.filter((m) => m.cascade);
+  const routing = governed.filter((m) => m.routed).length;
+  if (governed.length > 0 && routing === governed.length) return { kind: "protected" };
+  if (routing > 0) return { kind: "not-protected", detail: "Partly routed" };
+  return { kind: "not-routed", detail: group.cascadeDesired > 0 ? "Blocked" : "Off" };
 }

@@ -873,7 +873,11 @@ function FamilyRow({
   //
   // Suppressed by an exception for the same reason as before: that sentence
   // takes this slot and already names a member.
-  const roster = !exception && group.namedByExclusion && group.members.length > 0;
+  // No roster: every section is named for an app or a mechanism the user has,
+  // so the heading already says what is in it. This was for the one group named
+  // by exclusion ("Other tools", then "Experimental", then "Any app on this
+  // machine"), and there is no such group now.
+  const roster = false;
   const secondLine = !!exception || roster;
   return (
     <div

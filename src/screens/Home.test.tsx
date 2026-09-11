@@ -270,11 +270,11 @@ describe("Home ledger rows", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       onOpenFamily,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Claude Code details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
     // Four chevrons used to reach one panel that differed only by which family
     // arrived expanded. The id is the destination now, not a hint about where to
     // scroll once you get there.
-    expect(onOpenFamily).toHaveBeenCalledWith("claude-code");
+    expect(onOpenFamily).toHaveBeenCalledWith("claude");
   });
 
   it("keeps the rows off the routing card", () => {
@@ -284,7 +284,7 @@ describe("Home ledger rows", () => {
     });
     // The card is one control and its address; a list of the things it governs
     // is a different grain, so it gets its own surface.
-    const row = screen.getByRole("button", { name: "Claude Code details" });
+    const row = screen.getByRole("button", { name: "Claude details" });
     const master = screen.getByRole("switch", { name: "Route through Gate" });
     expect(master.closest(".shadow-border")!.contains(row)).toBe(false);
   });
@@ -310,8 +310,8 @@ describe("Home ledger rows", () => {
     });
     // The door printed "Claude, OpenAI" as one line of prose. A row per family
     // is what lets each carry its own pill, which is the point of the screen.
-    expect(screen.getByRole("button", { name: "Claude Code details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Codex details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "ChatGPT / Codex details" })).toBeTruthy();
     expect(screen.queryByText("Claude, OpenAI")).toBeNull();
   });
 
@@ -325,7 +325,7 @@ describe("Home ledger rows", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [],
     });
-    expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByText("Claude")).toBeTruthy();
     expect(screen.queryByText("waiting on routing")).toBeNull();
     // The master card keeps sole ownership of its own state.
     expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
@@ -341,7 +341,7 @@ describe("Home ledger rows", () => {
     });
     const note = screen.getByText("Claude Code failed");
     expect(note.className).toContain("text-gc-error-deep");
-    expect(screen.getByRole("button", { name: "Claude Code details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
   });
 
   it("floats the failure to the top and still shows the quieter exception", () => {
@@ -787,38 +787,24 @@ describe("Home command-line tools switch", () => {
 });
 
 describe("Home family roster", () => {
-  it("names the members of the group named by exclusion", () => {
+  it("draws no roster, because every section names what is in it", () => {
+    // There is no group named by exclusion any more. "Other tools", then
+    // "Experimental", then "Any app on this machine" each needed their contents
+    // listed; a section is an app or a mechanism the user has, and its heading
+    // is the answer.
     renderHome({
       tools: [makeTool("env-proxy", "Terminal tools", { kind: "connected" }, "any-app")],
       domains: [
         makeDomain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" }),
       ],
     });
-    // "Any app on this machine" is the one heading a first-timer cannot map to
-    // something on their own machine, so it is the one that must list what is
-    // in it. Every other heading is now a program they installed.
-    expect(screen.getByText("Any app on this machine")).toBeTruthy();
-    expect(screen.getByText("Terminal tools · OpenRouter")).toBeTruthy();
-  });
-
-  it("does not repeat a heading that already names its one member", () => {
-    // The roster used to ride `multiProvider`, which is true of OpenCode too
-    // now that it heads its own group - and "OpenCode" under "OpenCode" is the
-    // same fact twice. `namedByExclusion` is the field that separates them.
-    renderHome({
-      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
-    });
-    expect(screen.getAllByText("OpenCode")).toHaveLength(1);
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByText("OpenRouter")).toBeTruthy();
+    expect(screen.queryByText("Terminal tools · OpenRouter")).toBeNull();
   });
 
   it("has no catch-all heading left to reach", () => {
-    // "Other tools" is gone, and gone by construction rather than by being
-    // unreachable: every row answers `client`, so there is nothing for a
-    // catch-all to catch. A tool whose client is unknown cannot be built in
-    // Rust at all.
-    renderHome({
-      tools: [makeTool("hermes", "Hermes", { kind: "connected" }, "hermes")],
-    });
+    renderHome({ tools: [makeTool("hermes", "Hermes", { kind: "connected" }, "hermes")] });
     expect(screen.queryByText("Other tools")).toBeNull();
     expect(screen.queryByText("Experimental")).toBeNull();
     expect(screen.getByText("Hermes")).toBeTruthy();
@@ -839,11 +825,9 @@ describe("Home family roster", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // The two are separate groups now - the CLI and the desktop app - and
-    // neither heading owes the user a roster, because each names a program
-    // they installed.
-    expect(screen.getByText("Claude Code")).toBeTruthy();
-    expect(screen.getByText("Claude Desktop")).toBeTruthy();
+    // One section, named for the app: the CLI and the desktop app's API
+    // surface are two surfaces of Claude and ride one switch.
+    expect(screen.getByText("Claude")).toBeTruthy();
     expect(screen.queryByText(/Claude Code · /)).toBeNull();
   });
 

@@ -137,7 +137,7 @@ describe("FamilyPanel is about one family", () => {
     // families, which is the sentence Home still heads its rows with. Four
     // chevrons reaching one identically-titled screen is what made the
     // navigation read as a no-op.
-    expect(screen.getByRole("heading", { level: 1, name: "Claude Code" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Claude" })).toBeTruthy();
     expect(screen.queryByText("What routes through Gate")).toBeNull();
   });
 
@@ -161,9 +161,9 @@ describe("FamilyPanel is about one family", () => {
     });
     // `initialOpen` existed so a tapped row did not charge a second click for
     // the family just tapped. A panel about one family arrives open by being.
-    // The h1 names the client, the row names the surface - which is the
-    // pairing the real registry ships ("CLI" under "Claude Code").
-    expect(screen.getByRole("heading", { level: 1, name: "Claude Code" })).toBeTruthy();
+    // The h1 names the app, the rows name its surfaces - which is the pairing
+    // the section table ships ("CLI" and "API" under "Claude").
+    expect(screen.getByRole("heading", { level: 1, name: "Claude" })).toBeTruthy();
     expect(screen.getByText("CLI")).toBeTruthy();
     expect(screen.getByText("Claude Desktop / Cowork")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Claude Code details" })).toBeNull();
@@ -173,7 +173,7 @@ describe("FamilyPanel is about one family", () => {
     renderPanel({ tools: [makeTool("claude-code", "CLI", { kind: "connected" })] });
     // The h1 carries the name; the control row carries the control's own label.
     expect(screen.getByText("Route through Gate")).toBeTruthy();
-    expect(screen.getAllByRole("heading", { name: "Claude Code" })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "Claude" })).toHaveLength(1);
   });
 
   it("counts the members it is showing", () => {
@@ -208,8 +208,8 @@ describe("FamilyPanel is about one family", () => {
       { tools: [makeTool("claude-code", "CLI", { kind: "detected" })] },
       { onToggleGroup },
     );
-    fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
-    expect(onToggleGroup).toHaveBeenCalledWith("claude-code", true);
+    fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
+    expect(onToggleGroup).toHaveBeenCalledWith("claude", true);
   });
 
   it("gives the chat surface its own row and switch under the family", () => {
@@ -235,10 +235,10 @@ describe("FamilyPanel is about one family", () => {
       { domains: [makeDomain({ enabled: false }), makeChatDomain({ enabled: true })] },
       { onToggleGroup },
     );
-    const family = screen.getByRole("switch", { name: "Route Claude Code through Gate" });
+    const family = screen.getByRole("switch", { name: "Route Claude through Gate" });
     expect(family.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(family);
-    expect(onToggleGroup).toHaveBeenCalledWith("claude-code", true);
+    expect(onToggleGroup).toHaveBeenCalledWith("claude", true);
   });
 
   it("says what a credential-sensitive row routes, since it is not a brokered key", () => {
@@ -271,27 +271,25 @@ describe("FamilyPanel is about one family", () => {
   });
 });
 
-describe("FamilyPanel explains the group named by exclusion", () => {
+describe("FamilyPanel explains the sections that need a sentence", () => {
   /** The machine-wide group: the environment channel plus the hosts that cover
    * whatever reaches them. The only heading that does not name a program the
    * user installed, and so the only one that owes them a sentence. */
-  const anyApp = {
+  const terminal = {
     tools: [makeTool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app")],
   };
 
   it("renders the blurb that had never been rendered anywhere", () => {
-    renderPanel(anyApp);
+    renderPanel(terminal);
     // The field existed from the round that retired "Agent harnesses" and moved
     // the definition here; nothing displayed it, so the category's only
     // description in the UI was 18 characters in a truncating slot.
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Any app on this machine" }),
-    ).toBeTruthy();
-    expect(screen.getByText(/Routes that cover whatever on this machine/)).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Terminal" })).toBeTruthy();
+    expect(screen.getByText(/every program started after your next login/)).toBeTruthy();
   });
 
   it("names the boundary rather than promising Gate takes everything", () => {
-    renderPanel(anyApp);
+    renderPanel(terminal);
     // The half a user running a local model needs, and the half the old copy
     // got backwards.
     expect(
@@ -307,7 +305,7 @@ describe("FamilyPanel explains the group named by exclusion", () => {
       tools: [makeTool("openclaw", "CLI", { kind: "detected" }, "openclaw")],
     });
     expect(screen.getByRole("heading", { level: 1, name: "OpenClaw" })).toBeTruthy();
-    expect(screen.queryByText(/Routes that cover whatever on this machine/)).toBeNull();
+    expect(screen.queryByText(/every program started after your next login/)).toBeNull();
   });
 
   it("stays silent on a family whose name already says what it covers", () => {
@@ -347,8 +345,8 @@ describe("FamilyPanel accessibility", () => {
     renderPanel({ tools: [makeTool("claude-code", "CLI", { kind: "connected" })] });
     const live = document.querySelector('[aria-live="polite"]')!;
     expect(live.textContent).toBe("");
-    fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
-    expect(live.textContent).toContain("Claude Code");
+    fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
+    expect(live.textContent).toContain("Claude");
     expect(live.textContent).toContain("Routed");
   });
 
@@ -359,7 +357,7 @@ describe("FamilyPanel accessibility", () => {
       tools: [makeTool("claude-code", "CLI", { kind: "connected" })],
       proxyOn: false,
     });
-    const toggle = screen.getByRole("switch", { name: "Route Claude Code through Gate" });
+    const toggle = screen.getByRole("switch", { name: "Route Claude through Gate" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(toggle.getAttribute("aria-describedby")).toBe(`group-desc-${group.id}`);
     const sentence = document.getElementById(`group-desc-${group.id}`);

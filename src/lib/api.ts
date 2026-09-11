@@ -820,6 +820,10 @@ export interface Preferences {
    * why they see the onboarding step once - consent nobody was asked for is not
    * consent. `setShareDiagnostics` sets it from either caller. */
   share_diagnostics_recorded: boolean;
+  /** Ledger sections whose switch the person has accepted routes a surface
+   *  they are signed in to. Absent means never asked, which is not the same as
+   *  declined. */
+  session_routing_accepted: string[];
   /** The person's own name for this machine, or null when it follows the
    * hostname. Read {@link deviceName} to display it - this is the override, not
    * the resolved value.
@@ -895,6 +899,12 @@ export const DEVICE_NAME_MAX_LENGTH = 128;
 
 export const setRoutingHealthNotifications = (enabled: boolean) =>
   invoke<void>("set_routing_health_notifications", { enabled });
+
+/** Record that the person accepted one section's switch routing a surface they
+ *  are signed in to. Idempotent, and never un-recorded - see
+ *  `preferences::session_routing_accepted`. */
+export const acceptSessionRouting = (section: string) =>
+  invoke<void>("accept_session_routing", { section });
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });

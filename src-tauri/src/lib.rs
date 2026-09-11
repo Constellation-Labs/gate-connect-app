@@ -2400,6 +2400,13 @@ fn security_feed_retry() {
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
+/// Record that the person accepted one section's switch routing a signed-in
+/// surface. See `preferences::session_routing_accepted`.
+#[tauri::command]
+fn accept_session_routing(section: String) -> Result<(), String> {
+    gate_connect_core::preferences::accept_session_routing(&section).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
@@ -4335,6 +4342,7 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    accept_session_routing,
                     install_id,
                     device_name,
                     set_device_name,
@@ -4410,6 +4418,7 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    accept_session_routing,
                     install_id,
                     device_name,
                     set_device_name,

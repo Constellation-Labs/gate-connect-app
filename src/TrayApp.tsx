@@ -31,9 +31,9 @@ import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
-import { buildGroups, hintForMember } from "./lib/groups";
-import type { Group } from "./lib/groups";
-import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import { BAND_LABELS, buildGroups, hintForMember } from "./lib/groups";
+import type { Band, Group } from "./lib/groups";
+import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { openExternal } from "./lib/openExternal";
 import { GATE_DOCS_URL } from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
@@ -649,52 +649,48 @@ export function TrayApp() {
     ],
   );
 
-  // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: vendor
-  // captions from `upstream_provider_name`, proxy members as rows with the
-  // shared status derivation, one unlabelled group before the catalog loads.
+  // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: one row per
+  // section under a band eyebrow, with the section's status and its switch.
+  //
+  // Matching matters more than it looks. A tray drawing per-surface rows would
+  // put a switch on the session surfaces, which the window's app switch now
+  // owns and gates behind a confirmation - so the tray would be the way to
+  // route someone's signed-in session without ever being asked.
   const trayGroups = useMemo<SidebarGroup[]>(() => {
     if (groups.length === 0) {
       return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
     }
     const bySlug = new Map(apps.map((a) => [a.slug, a]));
     const grouped: SidebarGroup[] = [];
+    let band: Band | null = null;
     for (const g of groups) {
-      const members: SidebarApp[] = [];
-      for (const m of g.members) {
-        if (m.kind === "config" && m.tool) {
-          const app = bySlug.get(m.key);
-          if (!app) continue;
-          bySlug.delete(m.key);
-          members.push(app);
-        } else if (m.kind === "proxy") {
-          members.push({
-            slug: m.key,
-            name: m.name,
-            status: proxyMemberStatus(m),
-            on: m.desired,
-            logo: brandMarkFor(m.key),
-            busy: routingBusy,
-            // Carried from the member rather than looked up again: the ledger
-            // is where a row's copy is decided.
-            hint: m.hint,
-          });
-        }
+      const status = sectionStatus(g, bySlug);
+      if (!status) continue;
+      // The section's config tool carries the figures: the gateway attributes
+      // per tool, and a host surface has nothing of its own to report.
+      const tool = g.members.find((m) => m.kind === "config");
+      const figures = tool ? bySlug.get(tool.key) : undefined;
+      for (const m of g.members) bySlug.delete(m.key);
+      if (g.band !== band) {
+        band = g.band;
+        grouped.push({ id: `band:${band}`, label: BAND_LABELS[band], apps: [] });
       }
-      if (members.length === 0) continue;
-      grouped.push({
-        id: g.id,
-        // The group's own name, always. It was the vendor where there was
-        // one - "Anthropic" over rows reading "CLI" and "App" - which is the
-        // grouping this ledger no longer uses: a heading is a program now, and
-        // its rows are that program's surfaces.
-        label: g.name,
-        apps: members,
+      grouped[grouped.length - 1].apps.push({
+        slug: g.id,
+        name: g.name,
+        status,
+        on: g.cascadeDesired > 0,
+        logo: brandMarkFor(g.members[0]?.key ?? g.id),
+        busy: routingBusy,
+        hint: g.members.map((m) => m.hint).find(Boolean),
+        messages: figures?.messages,
+        alerts: figures?.alerts,
       });
     }
     if (bySlug.size > 0) {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
-    return grouped;
+    return grouped.filter((g) => g.apps.length > 0);
   }, [groups, apps, routingBusy]);
 
   const notInstalled = useMemo<TrayNotInstalledApp[]>(
