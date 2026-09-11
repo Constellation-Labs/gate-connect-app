@@ -512,11 +512,14 @@ export interface Verdict {
   state: "not_installed" | "on" | "off" | "needs_attention";
   reason: VerdictReason | null;
   next_action: VerdictNextAction | null;
-  /** Where the traffic is going now, and where the config on disk asks it to go.
-   *  Both set only when `reason` is `reopen_required` - the one verdict where a
-   *  running process and its own config file disagree, which is exactly what
-   *  makes the pair worth printing. Which way round they are depends on which
-   *  change the process missed, so neither is a fixed "Gate" slot. */
+  /** Where the traffic is going now, and where the config on disk asks it to
+   *  go. `requested_route` is set when `reason` is `reopen_required` and read
+   *  off the file; `route_in_use` is **always null today**, because nothing can
+   *  see inside another process. It was derived from the config state until it
+   *  was caught asserting that a tool with no Gate values anywhere was still on
+   *  the gateway. The surfaces draw the pair only when both are present, so
+   *  they omit it rather than printing half a comparison - do not fill this in
+   *  from anything short of a reading. */
   route_in_use: string | null;
   requested_route: string | null;
 }

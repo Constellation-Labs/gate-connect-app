@@ -570,15 +570,13 @@ export function installFakeTauri(state: BackendState): void {
           state: "needs_attention",
           reason,
           next_action,
-          // Only the reopen verdict carries the pair, and which way round it is
-          // depends on which change the process missed - a managed config means
-          // the tool is still going direct. Mirrors `routing_verdicts_now`.
-          route_in_use:
-            reason === "reopen_required"
-              ? t.status.kind === "connected"
-                ? t.default_upstream_url
-                : gateRoute()
-              : null,
+          // Only the reopen verdict names a route, and only the requested one:
+          // the backend cannot see inside a running process, so it publishes no
+          // `route_in_use` at all. Mirrors `routing_verdicts_now`, which builds
+          // the pair through `reopen::reopen_routes` - a fake that kept
+          // inventing the in-use half would let a spec assert a claim the real
+          // app has stopped making.
+          route_in_use: null,
           requested_route:
             reason === "reopen_required"
               ? t.status.kind === "connected"

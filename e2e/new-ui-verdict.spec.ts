@@ -105,11 +105,18 @@ test.describe("new UI routing verdict", () => {
   });
 
   /**
-   * AG-570's reopen requirement in full: the phrase, the two routes, and the
-   * action. The routes are the reason this is a card rather than a status line -
-   * "reopen required" on its own does not say what reopening would change.
+   * AG-570's reopen requirement, minus the half nothing measured.
+   *
+   * The card used to print "In use: <the tool's own upstream>" against a
+   * managed config, and "In use: <the gateway>" against an absent one, both
+   * inferred from the file rather than read off the process. Gate cannot see
+   * inside another process, and the inference was caught being wrong: a tool
+   * with no Gate values in its environment or its config for a week, under a
+   * card saying it was still on the gateway. The pair is drawn only when both
+   * halves are present, so the card now carries the phrase and the action and
+   * names no endpoint at all.
    */
-  test("the reopen card names the route in use, the requested route, and the action", async ({
+  test("the reopen card names the situation and the action, and claims no route", async ({
     boot,
   }) => {
     const app = await boot({
@@ -122,11 +129,11 @@ test.describe("new UI routing verdict", () => {
 
     await openApp(app, "CLI");
 
-    // Its own upstream, because the config is Gate's and the process has not
-    // picked it up - so it is still going direct.
-    await expect(app.page.getByText(/In use:/)).toBeVisible();
-    await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
-    await expect(app.page.getByText("https://gateway.constellationgate.ai")).toBeVisible();
+    await expect(
+      app.page.getByText(/It was already running when its configuration changed/),
+    ).toBeVisible();
+    await expect(app.page.getByText(/In use:/)).toHaveCount(0);
+    await expect(app.page.getByText("https://gw.example/codex")).toHaveCount(0);
 
     await app.page.getByRole("button", { name: "Close tool" }).click();
 
