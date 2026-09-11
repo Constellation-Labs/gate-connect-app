@@ -135,7 +135,7 @@ the pane's description rather than replacing it, so a viewer that never shows a
 | Claude Desktop > API | Cowork and the Claude desktop app |
 | Claude Desktop > Chat | Chats in the Claude desktop app, and on claude.ai in a browser |
 | Codex > CLI | Codex CLI and IDE extension |
-| ChatGPT > Chat | The ChatGPT desktop app, and chatgpt.com in a browser |
+| ChatGPT > Chat | Chats in the ChatGPT desktop app, and on chatgpt.com in a browser |
 | ChatGPT > Subscription | Work and the Codex desktop app, on your ChatGPT subscription |
 
 The names are **not** platform-branched: Anthropic's app is Cowork on both

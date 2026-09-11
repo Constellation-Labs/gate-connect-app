@@ -125,7 +125,11 @@ export const MEMBER_HINTS: Readonly<Record<string, string>> = {
   // switches do the same thing.
   "claude-web": "Chats in the Claude desktop app, and on claude.ai in a browser",
   codex: "Codex CLI and IDE extension",
-  "chatgpt-apps": "The ChatGPT desktop app, and chatgpt.com in a browser",
+  // Scoped to the surface for the same reason as `claude-web` above: the
+  // Subscription row beside this one routes that same app's model calls, so a
+  // hover naming the whole product on both would say the two switches do the
+  // same thing.
+  "chatgpt-apps": "Chats in the ChatGPT desktop app, and on chatgpt.com in a browser",
   // The two clients the catalog entry itself names: Codex through the relay,
   // and Work, whose model calls ride the same subscription bearer.
   chatgpt: "Work and the Codex desktop app, on your ChatGPT subscription",

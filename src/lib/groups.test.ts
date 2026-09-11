@@ -366,6 +366,9 @@ describe("member hints", () => {
     );
     const byKey = new Map(groups.flatMap((g) => g.members).map((m) => [m.key, m.hint]));
     expect(byKey.get("codex")).toContain("IDE extension");
+    // Surface first, not the product: the Subscription row beside it routes
+    // the same app's model calls. Same rule as `claude-web`.
+    expect(byKey.get("chatgpt-apps")).toMatch(/^Chats in/);
     expect(byKey.get("chatgpt-apps")).toContain("ChatGPT desktop app");
     // Work, not Cowork: the two products are named per vendor, not per platform.
     expect(byKey.get("chatgpt")).toContain("Work");
