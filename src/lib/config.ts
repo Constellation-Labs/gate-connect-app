@@ -76,19 +76,6 @@ export function consoleUrlFor(gatewayBaseUrl: string | null | undefined, path = 
   return `${server.consoleUrl}${path}`;
 }
 
-/** A short lowercase name for the environment, or null when it is production.
- *
- *  Null rather than "production" because the default needs no badge: marking
- *  it would make the marker background noise everywhere and teach people to
- *  stop reading it, which is exactly how the staging case went unnoticed. It
- *  is also null for an unrecognised gateway, where there is nothing truthful
- *  to say beyond the host itself, which is already on screen. */
-export function gatewayEnvLabel(gatewayBaseUrl: string | null | undefined): string | null {
-  const normalized = (gatewayBaseUrl ?? "").trim().replace(/\/+$/, "");
-  const index = GATEWAY_SERVERS.findIndex((s) => s.url === normalized);
-  return index > 0 ? GATEWAY_SERVERS[index].label.toLowerCase() : null;
-}
-
 /** Product documentation. Trailing slash for the same opener-allowlist reason
  *  as the console links above; `docs.constellationgate.ai` matches the
  *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.

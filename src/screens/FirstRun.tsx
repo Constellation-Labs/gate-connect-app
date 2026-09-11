@@ -18,6 +18,20 @@ function hostOf(url: string): string {
   }
 }
 
+/** Strip the differences that do not change which environment a URL names, so
+ *  a stored `.../` compares equal to the picker's canonical form. Nothing in
+ *  the UI writes a non-canonical URL, but nothing normalizes on the way to
+ *  disk either - the backend trims at each use site instead - so a
+ *  hand-edited account file or a `VITE_GATE_DEFAULT_BASE_URL` carrying a
+ *  slash reaches us intact. Compared raw, that left no row marked current and
+ *  turned "pick the environment I am already on" into a destructive switch.
+ *  Same normalization as `consoleUrlFor`. */
+function normalizeGateway(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+const DEFAULT_GATEWAY = normalizeGateway(DEFAULT_GATEWAY_BASE_URL);
+
 /** Welcome / sign-in. The primary path signs in through the Constellation
  *  (Cognito) Hosted UI in the browser; a secondary, collapsible path keeps the
  *  legacy "paste a Gate API key" flow. Either way the account's gateway URL is
@@ -28,11 +42,15 @@ function hostOf(url: string): string {
  *  silent refresh failed). */
 export function FirstRun({
   onConnected,
+  onSwitchGateway,
   initialGateway,
   startOnKey,
   reauth = false,
 }: {
   onConnected: () => void;
+  /** Repoint an existing account at another environment. Relaunches on
+   *  success, so nothing after the call runs. */
+  onSwitchGateway: (url: string) => Promise<void>;
   initialGateway?: string;
   /** Open directly on the API-key form. */
   startOnKey?: boolean;
@@ -46,14 +64,40 @@ export function FirstRun({
   // only path forward, and making them find the disclosure again is a tax.
   const [showKey, setShowKey] = useState(startOnKey ?? false);
   const [error, setError] = useState<ClassifiedError | null>(null);
-  const [devMode, setDevMode] = useState(
-    !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,
-  );
-  const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
+  // The account's gateway in the same shape the picker rows carry, so every
+  // comparison below is between canonical URLs.
+  const accountGateway = initialGateway ? normalizeGateway(initialGateway) : null;
+  const [devMode, setDevMode] = useState(!!accountGateway && accountGateway !== DEFAULT_GATEWAY);
+  const [gateway, setGateway] = useState(accountGateway ?? DEFAULT_GATEWAY);
   const platform = usePlatform();
 
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
+
+  // The picker has been moved off the environment the account is already on.
+  // That is a switch, not a URL edit: the selected org, the stored key, the
+  // managed tool configs and the running engine all belong to the old
+  // environment, and `saveAccount` preserves every one of them by design (it
+  // exists for URL-only edits). Signing in through it left a re-authenticating
+  // user on the new gateway still carrying the old environment's org id, with
+  // the engine up and pinned to the old gateway URL - the exact state
+  // `switch_gateway` exists to prevent. False on true first run: there is no
+  // account yet to switch away from.
+  const movingEnv = !!accountGateway && gateway !== accountGateway;
+  // Switching discards whatever is in the key field, so an empty one must not
+  // gate the button that carries the switch out. Leaving it gated left that
+  // button reading "Switch and relaunch" and inert until the user invented a
+  // key for the environment they were leaving.
+  const canPressKeyButton = movingEnv ? !busy : canSubmitKey;
+  // The primary button relaunches rather than signing in when the environment
+  // is moving, so it has to say so.
+  const signInLabel = movingEnv
+    ? busy
+      ? "Switching…"
+      : "Switch and relaunch"
+    : signingIn
+      ? "Waiting for browser…"
+      : "Sign in with Constellation";
 
   // Bumped by Cancel so a stale sign-in attempt can't re-lock the screen or
   // surface its error after the user has moved on. There is no backend abort
@@ -67,6 +111,10 @@ export function FirstRun({
     setSigningIn(true);
     const attempt = ++signInAttempt.current;
     try {
+      if (movingEnv) {
+        await onSwitchGateway(gateway); // relaunches; nothing below runs
+        return;
+      }
       // Persist the gateway first (no key) so the account exists on disk; the
       // sign-in then records OAuth as the auth mode against it.
       await saveAccount(gateway, null);
@@ -87,10 +135,14 @@ export function FirstRun({
   }
 
   async function connectWithKey() {
-    if (!canSubmitKey) return;
+    if (!canPressKeyButton) return;
     setError(null);
     setSubmitting(true);
     try {
+      if (movingEnv) {
+        await onSwitchGateway(gateway); // relaunches; nothing below runs
+        return;
+      }
       await saveAccount(gateway, key.trim());
       // Choosing the key here answers the "would you rather sign in?" question.
       // Without this the one-time offer arrives on the next launch and reverses
@@ -129,9 +181,9 @@ export function FirstRun({
 
       <Button variant="accent" full className="mt-5" disabled={busy} onClick={signIn}>
         <Icon name="shieldCheck" size={15} />
-        {signingIn ? "Waiting for browser…" : "Sign in with Constellation"}
+        {signInLabel}
       </Button>
-      {signingIn && (
+      {signingIn && !movingEnv && (
         <div className="mt-2 flex flex-col items-center gap-1.5">
           <p className="text-center text-gc-micro text-gc-ink-3">
             Finish signing in on the page that just opened in your browser.
@@ -208,8 +260,8 @@ export function FirstRun({
             </button>{" "}
             in your Gate dashboard.
           </p>
-          <Button full className="mt-3" disabled={!canSubmitKey} onClick={connectWithKey}>
-            {submitting ? "Connecting…" : "Connect with key"}
+          <Button full className="mt-3" disabled={!canPressKeyButton} onClick={connectWithKey}>
+            {movingEnv ? signInLabel : submitting ? "Connecting…" : "Connect with key"}
           </Button>
         </div>
       )}
@@ -271,6 +323,18 @@ export function FirstRun({
               })}
             </div>
           </>
+        )}
+        {/* The consequence, said before the button that carries it out.
+            Settings puts this in a confirm panel; here the only other signal is
+            a button reading "Switch and relaunch", which does not say what gets
+            forgotten. Outside the picker's open/closed branch so collapsing it
+            with Hide cannot hide the warning while the button still switches. */}
+        {movingEnv && (
+          <p className="mt-2.5 text-gc-micro leading-snug text-gc-ink-3">
+            Switching forgets your stored key, disconnects your tools, and
+            relaunches Gate Connect. Each server has its own dashboard and its
+            own data.
+          </p>
         )}
       </div>
     </div>

@@ -3,7 +3,7 @@ import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { gatewayEnvLabel, GATEWAY_SERVERS, GATE_DOCS_URL } from "../lib/config";
+import { GATEWAY_SERVERS, GATE_DOCS_URL } from "../lib/config";
 import { openExternal } from "../lib/openExternal";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -384,19 +384,8 @@ export function Settings({
           answers "am I pointed at production or staging?" rendered as
           "gateway.constellationga…". The dev-mode server cards already fit the
           full host at this size in the same 360px. */}
-      {/* The host was doing this job alone and could not: it answers the
-          question only for someone who already knows what the two hosts mean.
-          The badge says it in words, and only when the answer is not the
-          default, so it stays worth reading. */}
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pb-1">
-        <span className="font-mono text-gc-label text-gc-ink-3">
-          {hostOf(account.gateway_base_url)}
-        </span>
-        {gatewayEnvLabel(account.gateway_base_url) && (
-          <span className="inline-flex shrink-0 items-center rounded-gc-pill bg-gc-warning-wash px-2 py-0.5 font-mono text-gc-micro font-medium text-gc-ink-2 ring-1 ring-gc-warning-deep/45">
-            {gatewayEnvLabel(account.gateway_base_url)}
-          </span>
-        )}
+      <div className="px-3.5 pb-1 font-mono text-gc-label text-gc-ink-3">
+        {hostOf(account.gateway_base_url)}
       </div>
 
       {isOAuth && (

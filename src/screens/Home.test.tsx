@@ -88,7 +88,6 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
-      gatewayEnv={null}
       consoleUrl="https://app.constellationgate.ai/"
       proxyOn={true}
       caTrusted={true}
@@ -430,23 +429,6 @@ describe("Home ledger rows", () => {
     const host = screen.getByText("gateway.constellationgate.ai");
     expect(host.contains(link)).toBe(false);
     expect(link.contains(host)).toBe(false);
-  });
-
-  it("names a non-default gateway in words, not just by its host", () => {
-    // The host alone answers "production or staging?" only for someone who
-    // already knows what the hosts mean. A reporter on 0.2.0 read
-    // `gateway-staging…` as the address, spent a session in front of an empty
-    // production dashboard, and had nothing on any surface to pull on.
-    renderHome({
-      gatewayHost: "gateway-staging.constellationgate.ai",
-      gatewayEnv: "staging",
-    });
-    expect(screen.getByText("staging")).toBeTruthy();
-  });
-
-  it("shows no badge on production, so the badge means something when it appears", () => {
-    renderHome();
-    expect(screen.queryByText("staging")).toBeNull();
   });
 
   it("opens the console that reads the gateway it is pointed at", () => {
