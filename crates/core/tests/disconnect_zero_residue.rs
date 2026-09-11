@@ -31,11 +31,18 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 /// config path honors XDG (as OpenCode itself does), so leaving the ambient
 /// values in place would let a test escape its temp home and edit the
 /// developer's real `~/.config/opencode/opencode.json`.
+///
+/// And pins `GATE_CONNECT_TEST_HOME`, because `$HOME` redirects nothing on
+/// Windows: `dirs` reads Known Folders there, so `app_support_dir()` would
+/// resolve the runner's real `%LOCALAPPDATA%\Gate Connect` and let one test's
+/// seeded CA leak into the next. That seam is the portable override - see
+/// `env::test_home_override`.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
     prev_xdg_config: Option<String>,
     prev_xdg_data: Option<String>,
+    prev_test_home: Option<String>,
 }
 
 impl TempHome {
@@ -54,14 +61,17 @@ impl TempHome {
         let prev = std::env::var("HOME").ok();
         let prev_xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
+        let prev_test_home = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         std::env::set_var("HOME", &dir);
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         TempHome {
             dir,
             prev,
             prev_xdg_config,
             prev_xdg_data,
+            prev_test_home,
         }
     }
 }
@@ -77,6 +87,7 @@ impl Drop for TempHome {
         restore("HOME", &self.prev);
         restore("XDG_CONFIG_HOME", &self.prev_xdg_config);
         restore("XDG_DATA_HOME", &self.prev_xdg_data);
+        restore("GATE_CONNECT_TEST_HOME", &self.prev_test_home);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
