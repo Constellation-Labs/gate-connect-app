@@ -232,6 +232,52 @@ describe("FirstRun gateway picker", () => {
     expect(screen.getByRole("button", { name: "Switch and relaunch" })).toBeTruthy();
   });
 
+  it("switches from the key form without making the user invent a key", async () => {
+    // The key about to be typed belongs to the environment being left, and the
+    // switch discards it. Gating this button on a non-empty field left it
+    // reading "Switch and relaunch" and inert - the dead end lands on exactly
+    // the users sent here by `startOnKey`, who have no working sign-in to fall
+    // back to.
+    renderFirstRun({
+      initialGateway: "https://gateway-staging.constellationgate.ai",
+      startOnKey: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Production/ }));
+    const buttons = screen.getAllByRole("button", { name: "Switch and relaunch" });
+    // Both primary buttons carry the switch once the picker has moved; the
+    // second is the key form's.
+    expect(buttons).toHaveLength(2);
+    const keyFormButton = buttons[1] as HTMLButtonElement;
+    expect(keyFormButton.disabled).toBe(false);
+    fireEvent.click(keyFormButton);
+    await waitFor(() =>
+      expect(onSwitchGateway).toHaveBeenCalledWith("https://gateway.constellationgate.ai"),
+    );
+    expect(saveAccount).not.toHaveBeenCalled();
+  });
+
+  it("treats a trailing slash on the stored gateway as the same environment", async () => {
+    // Nothing in the UI writes one, but nothing normalizes on the way to disk
+    // either, so a hand-edited account file or a slashed
+    // `VITE_GATE_DEFAULT_BASE_URL` reaches the picker intact. Compared raw it
+    // marked no row current and turned picking the environment the account is
+    // already on into a switch that forgets the key and relaunches for nothing.
+    renderFirstRun({ initialGateway: "https://gateway.constellationgate.ai/" });
+    // Recognised as the default, so the picker stays collapsed rather than
+    // opening dev mode on an account that never left production.
+    fireEvent.click(screen.getByRole("button", { name: "change" }));
+    const production = screen.getByRole("button", { name: /Production/ }) as HTMLButtonElement;
+    expect(production.disabled).toBe(true);
+    fireEvent.click(production);
+    expect(screen.queryByText(/forgets your stored key/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Switch and relaunch" })).toBeNull();
+    fireEvent.click(signInButton());
+    await waitFor(() =>
+      expect(saveAccount).toHaveBeenCalledWith("https://gateway.constellationgate.ai", null),
+    );
+    expect(onSwitchGateway).not.toHaveBeenCalled();
+  });
+
   it("signs in normally when the picker has not moved off the account", async () => {
     renderFirstRun({ initialGateway: "https://gateway-staging.constellationgate.ai" });
     fireEvent.click(signInButton());

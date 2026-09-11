@@ -18,6 +18,20 @@ function hostOf(url: string): string {
   }
 }
 
+/** Strip the differences that do not change which environment a URL names, so
+ *  a stored `.../` compares equal to the picker's canonical form. Nothing in
+ *  the UI writes a non-canonical URL, but nothing normalizes on the way to
+ *  disk either - the backend trims at each use site instead - so a
+ *  hand-edited account file or a `VITE_GATE_DEFAULT_BASE_URL` carrying a
+ *  slash reaches us intact. Compared raw, that left no row marked current and
+ *  turned "pick the environment I am already on" into a destructive switch.
+ *  Same normalization as `consoleUrlFor`. */
+function normalizeGateway(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+const DEFAULT_GATEWAY = normalizeGateway(DEFAULT_GATEWAY_BASE_URL);
+
 /** Welcome / sign-in. The primary path signs in through the Constellation
  *  (Cognito) Hosted UI in the browser; a secondary, collapsible path keeps the
  *  legacy "paste a Gate API key" flow. Either way the account's gateway URL is
@@ -50,10 +64,11 @@ export function FirstRun({
   // only path forward, and making them find the disclosure again is a tax.
   const [showKey, setShowKey] = useState(startOnKey ?? false);
   const [error, setError] = useState<ClassifiedError | null>(null);
-  const [devMode, setDevMode] = useState(
-    !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,
-  );
-  const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
+  // The account's gateway in the same shape the picker rows carry, so every
+  // comparison below is between canonical URLs.
+  const accountGateway = initialGateway ? normalizeGateway(initialGateway) : null;
+  const [devMode, setDevMode] = useState(!!accountGateway && accountGateway !== DEFAULT_GATEWAY);
+  const [gateway, setGateway] = useState(accountGateway ?? DEFAULT_GATEWAY);
   const platform = usePlatform();
 
   const busy = submitting || signingIn;
@@ -68,7 +83,12 @@ export function FirstRun({
   // the engine up and pinned to the old gateway URL - the exact state
   // `switch_gateway` exists to prevent. False on true first run: there is no
   // account yet to switch away from.
-  const movingEnv = !!initialGateway && gateway !== initialGateway;
+  const movingEnv = !!accountGateway && gateway !== accountGateway;
+  // Switching discards whatever is in the key field, so an empty one must not
+  // gate the button that carries the switch out. Leaving it gated left that
+  // button reading "Switch and relaunch" and inert until the user invented a
+  // key for the environment they were leaving.
+  const canPressKeyButton = movingEnv ? !busy : canSubmitKey;
   // The primary button relaunches rather than signing in when the environment
   // is moving, so it has to say so.
   const signInLabel = movingEnv
@@ -115,7 +135,7 @@ export function FirstRun({
   }
 
   async function connectWithKey() {
-    if (!canSubmitKey) return;
+    if (!canPressKeyButton) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -240,7 +260,7 @@ export function FirstRun({
             </button>{" "}
             in your Gate dashboard.
           </p>
-          <Button full className="mt-3" disabled={!canSubmitKey} onClick={connectWithKey}>
+          <Button full className="mt-3" disabled={!canPressKeyButton} onClick={connectWithKey}>
             {movingEnv ? signInLabel : submitting ? "Connecting…" : "Connect with key"}
           </Button>
         </div>
