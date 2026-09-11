@@ -413,7 +413,8 @@ export function ReviewConfigDialog({
       tone="warning"
       icon="triangleAlert"
       title={`Review ${app.name} configuration`}
-      subtitle="Gate found settings that it didn't create. They will not be replaced without your approval"
+      // Typographic apostrophe, as drawn (`130:57448`).
+      subtitle="Gate found settings that it didn’t create. They will not be replaced without your approval"
       secondary={{ label: "Keep existing config", onClick: onKeep }}
       primary={{ label: "Replace config and protect", onClick: onReplace }}
       onDismiss={onKeep}
