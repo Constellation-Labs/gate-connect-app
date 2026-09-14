@@ -3504,9 +3504,9 @@ export function NewUiApp() {
               {/* One card, not two, and one source for it: `switchScopeNote`
                   composes the credential sentence with the section's remaining
                   hosts, because the second is worded against whether the first
-                  precedes it. This used to be two notes and a `join` here,
-                  which is how the Claude pane drew two cards headed "What this
-                  switch covers" one above the other. */}
+                  precedes it. This used to be two `PaneNote`s, which is how the
+                  Claude pane drew two cards headed "What this switch covers"
+                  one above the other. */}
               {scopeCard && (
                 <PaneNote title={scopeCard.title} body={scopeCard.body} />
               )}

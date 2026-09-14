@@ -317,38 +317,28 @@ export function browserTrustRestartAdvice(
 }
 
 /**
- * What a row's blast radius is, in one sentence, for every row that has one
- * worth saying.
+ * What the machine-wide row reaches, in one sentence.
  *
- * The rendered half of {@link GroupMember.scope}, and the reason that field
- * exists rather than being inferred from `kind`. A `host` row is named for one
- * client and covers every client on its hosts, because interception is decided
- * at CONNECT from the host alone and no header has been read yet. That is the
- * sentence a user needed before flipping the switch, and the ledger had nowhere
- * to put it: the surface label said "App" or "Web" and quietly implied the
- * opposite.
+ * The rendered half of `scope: "machine"`, and the reason {@link
+ * GroupMember.scope} is a field rather than something inferred from `kind`:
+ * "every program you start afterwards" is genuinely wider than the row it sits
+ * on, and nothing else on the ledger says so.
  *
- * Undefined for a `client` row, where the row's own name already says it - a
- * config tool covers that tool, which is not news. `machine` says its piece
- * because "every program you start afterwards" is genuinely wider than the row
- * it sits on.
+ * **This used to render the `host` sentence too, and no longer does.** The host
+ * half moved into {@link switchScopeNote}, which composes per SECTION, and the
+ * two then carried byte-identical copy differing only in its trailing subject -
+ * a member name here against the section's name there. Keeping both meant a copy
+ * edit to one silently diverging from the other, so the dead half went rather
+ * than the duplicate being maintained. The section is the right unit anyway: the
+ * sentence names every host the switch reaches, and one member never knew them
+ * all.
  *
- * Distinct from {@link credentialScopeNote}, which answers "whose key is on
- * this" and is only worth saying where Gate is not supplying it. A brokered
- * host row - the API entries, OpenRouter - gets this note and not that one, and
- * used to get neither.
+ * Undefined for `host` and `client` alike now. A `client` row covers that tool,
+ * which was never news; a `host` row gets its sentence from `switchScopeNote`.
  */
-export function scopeNote(member: GroupMember): string | undefined {
-  if (member.scope === "machine") {
-    return "Covers every program started after your next login, not only AI tools.";
-  }
-  if (member.scope !== "host") return undefined;
-  const hosts = member.domain?.hosts.join(", ");
-  if (!hosts) return undefined;
-  // Browser-neutral for the same reason `credentialScopeNote` is: what Gate
-  // reaches in a browser depends on the platform's proxy channel, and this
-  // note has no reading of it.
-  return `Matched on host, so this covers everything on ${hosts} - whatever on this machine sends there, not only ${member.name}.`;
+export function machineScopeNote(member: GroupMember): string | undefined {
+  if (member.scope !== "machine") return undefined;
+  return "Covers every program started after your next login, not only AI tools.";
 }
 
 /** The scope card's heading, in one place because two places is how the pane
@@ -445,7 +435,19 @@ export function switchScopeNote(
   const credential = additive
     ? credentialScopeNote(additive, platform, browserChannel)
     : undefined;
-  const rest = remainingScopeNote(group, Boolean(credential));
+  // What the sentence above actually NAMED, which is a set of hosts and not a
+  // member. Subtracting the member was the bug: `find` speaks for one additive
+  // surface and the remainder then dropped *every* additive member, so a second
+  // one on a different host was spoken for by nobody - the same "first match
+  // wins" failure this function's own neighbour documents as fixed. Three
+  // readings hung on it: a section with two additive surfaces on different hosts
+  // named one, a brokered member sharing a host with the additive one had it
+  // named twice, and a hostless first additive member took the whole card down
+  // with it. Hosts are the unit both notes are about, so hosts are what is
+  // subtracted. Empty exactly when `credential` is undefined, since
+  // `credentialScopeNote` returns nothing for a member with no hosts.
+  const spokenFor = new Set(credential ? (additive?.domain?.hosts ?? []) : []);
+  const rest = remainingScopeNote(group, spokenFor, Boolean(credential));
   if (!credential) {
     return rest ? { title: SWITCH_SCOPE_TITLE, body: rest } : undefined;
   }
@@ -458,9 +460,12 @@ export function switchScopeNote(
 /**
  * The hosts the credential note did not speak for, in one sentence.
  *
- * Every `host`-scoped member the section has, minus the additive ones. Taking
- * the FIRST matching member and stopping is what named one host of two, and a
- * section with two host members on different hosts said only one of them.
+ * Every host of every `host`-scoped member the section has, minus the hosts
+ * `spokenFor` already names. Both halves of that matter. Taking the FIRST
+ * matching member and stopping is what named one host of two; subtracting whole
+ * MEMBERS rather than their hosts is what let a second additive surface fall
+ * through the gap between the two notes. The set is deduplicated before
+ * subtraction, so two members sharing a host name it once.
  *
  * `afterCredential` is the position this will be drawn in, and it changes the
  * wording rather than whether there is any. Following the credential note it
@@ -475,20 +480,25 @@ export function switchScopeNote(
  *
  * The machine branch returns ahead of both, and can: no section mixes a
  * machine-scoped member with an additive one, since {@link SECTIONS} keeps
- * `env-proxy` alone under "Terminal". If one ever did, `scopeNote`'s
- * subjectless "Covers every program started after your next login" would need
- * rewording before it could follow a sentence rather than a title.
+ * `env-proxy` alone under "Terminal". If one ever did, {@link
+ * machineScopeNote}'s subjectless "Covers every program started after your next
+ * login" would need rewording before it could follow a sentence rather than a
+ * title.
  */
-function remainingScopeNote(group: Group, afterCredential: boolean): string | undefined {
+function remainingScopeNote(
+  group: Group,
+  spokenFor: ReadonlySet<string>,
+  afterCredential: boolean,
+): string | undefined {
   const machine = group.members.find((m) => m.scope === "machine");
-  if (machine) return scopeNote(machine);
+  if (machine) return machineScopeNote(machine);
   const hosts = [
     ...new Set(
       group.members
-        .filter((m) => m.scope === "host" && m.credential !== "additive")
+        .filter((m) => m.scope === "host")
         .flatMap((m) => m.domain?.hosts ?? []),
     ),
-  ];
+  ].filter((host) => !spokenFor.has(host));
   if (hosts.length === 0) return undefined;
   // The section's own name, because the switch is the app's: "not only Claude"
   // is the comparison a reader on this pane is making, and a member name

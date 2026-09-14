@@ -259,15 +259,17 @@ the Routing card, and is absent entirely on Linux (`env_export_separable`),
 where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
-It has a **row** now as well, "Terminal tools", under Experimental beside
-OpenCode. The two are there together because the channel carries what OpenCode's
-own config cannot: the `baseURL` rewrite covers the providers it found at connect
-time, the variables cover whatever else it sends, and turning OpenCode on turns
-the channel on with it. (This used to say the two "share a mechanism" and that
-the variables are "how it routes" - which contradicted the mechanism table in
-section 3, where OpenCode is relay. See the qualifier there.) `useRouting`'s `opencode-env`
-prompt says so before either write, and the row is what makes that promise
-checkable. Both controls call `proxy::set_env_export`, so they cannot disagree.
+It has a **row** now as well, "Terminal tools", in the Tools band beside
+OpenCode. (It was "Experimental" when this paragraph was written; `BAND_LABELS`
+in `groups.ts` draws Apps and Tools.) The two are there together because the
+channel carries what OpenCode's own config cannot: the `baseURL` rewrite covers
+the providers it found at connect time, the variables cover whatever else it
+sends, and turning OpenCode on turns the channel on with it. (This used to say
+the two "share a mechanism" and that the variables are "how it routes" - which
+contradicted the mechanism table in section 3, where OpenCode is relay. See the
+qualifier there.) `useRouting`'s `opencode-env` prompt says so before either
+write, and the row is what makes that promise checkable. Both controls call
+`proxy::set_env_export`, so they cannot disagree.
 
 **The ledger groups by client, not by vendor.** Every row - a config tool or a
 proxy domain - answers `taxonomy::Client`, and `buildGroups` buckets on it. So
@@ -311,8 +313,9 @@ that names the program. The sentence explaining each row is UI copy, in
   machine, not only the one the row is named for - `should_intercept_host`
   matches on host alone at CONNECT, before any header exists, and the
   per-request narrowing in `rules_for_client` decides only what is rewritten.
-  Config tools are `client`; the environment channel is `machine`. `scopeNote`
-  in `groups.ts` is the sentence.
+  Config tools are `client`; the environment channel is `machine`. The sentence
+  comes from `switchScopeNote` in `groups.ts` for a host section and
+  `machineScopeNote` for the environment channel.
 - `credential` is whose key rides the request, and it is the single thing that
   decides whether a group switch may flip the row: `provider::cascade_domains`
   filters on `Credential::Brokered`, and `cascadeTargets` does the same on the

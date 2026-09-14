@@ -13,7 +13,7 @@ import {
   sessionMembers,
   proxyReopenAdvice,
   PROXY_REOPEN_ADVICE,
-  scopeNote,
+  machineScopeNote,
   switchScopeNote,
 } from "./groups";
 
@@ -395,28 +395,29 @@ describe("member hints", () => {
   });
 });
 
-describe("scopeNote", () => {
-  it("says a host row covers every client on the host", () => {
-    // The sentence the ledger had nowhere to put, and the reason `scope` is a
-    // field rather than something inferred from `kind`.
-    const [desktop] = buildGroups([], [domain()], ON);
-    const note = scopeNote(desktop.members[0])!;
-    expect(note).toContain("api.anthropic.com");
-    expect(note).toContain("whatever on this machine sends there");
-  });
-
-  it("says nothing on a config tool, where the row's name already says it", () => {
-    const [group] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
-    expect(scopeNote(group.members[0])).toBeUndefined();
-  });
-
+describe("machineScopeNote", () => {
   it("says what the machine-wide row actually reaches", () => {
     const [group] = buildGroups(
       [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
       [],
       ON,
     );
-    expect(scopeNote(group.members[0])).toContain("every program started after your next login");
+    expect(machineScopeNote(group.members[0])).toContain(
+      "every program started after your next login",
+    );
+  });
+
+  it("says nothing on a host row, which `switchScopeNote` speaks for", () => {
+    // It used to render the host sentence here as well, in copy identical to
+    // `switchScopeNote`'s but for the trailing subject. One of the two had to
+    // go, and the section is the unit that knows every host the switch reaches.
+    const [desktop] = buildGroups([], [domain()], ON);
+    expect(machineScopeNote(desktop.members[0])).toBeUndefined();
+  });
+
+  it("says nothing on a config tool, where the row's name already says it", () => {
+    const [group] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
+    expect(machineScopeNote(group.members[0])).toBeUndefined();
   });
 });
 
@@ -1051,6 +1052,60 @@ describe("switchScopeNote", () => {
     expect(switchScopeNote(section, "macos", true)!.body).toContain(
       "every program started after your next login",
     );
+  });
+
+  it("names every remaining host, joined, and each of them once", () => {
+    // The join and the dedup had no fixture that reached them: every section
+    // above leaves exactly one host over. Two brokered hosts is the case the
+    // docstring cites as fixed, and a brokered member sitting on the additive
+    // one's host is the case that used to name it twice - the credential note
+    // speaks for claude.ai, so the remainder must not say it again.
+    const section = buildGroups(
+      [],
+      [
+        sessionDomain(),
+        // One catalog entry may name several hosts, and this one also names the
+        // additive member's. A section can only hold the slugs `SECTIONS` lists,
+        // so the multi-host case has to come from a member's own `hosts`.
+        domain({ hosts: ["api.anthropic.com", "cdn.anthropic.com", "claude.ai"] }),
+      ],
+      ON,
+    ).find((g) => g.id === "claude")!;
+    const body = switchScopeNote(section, "macos", true)!.body;
+    expect(body).toContain("api.anthropic.com, cdn.anthropic.com");
+    // claude.ai belongs to the credential sentence and appears there only.
+    expect(body.match(/claude\.ai/g)).toHaveLength(1);
+  });
+
+  it("speaks for a second signed-in surface the credential note did not name", () => {
+    // `credentialScopeNote` takes the FIRST additive member, and the remainder
+    // used to drop every additive member - so a second one on its own host was
+    // spoken for by nobody. Unreachable in the shipped catalog only because
+    // ChatGPT's two session surfaces share chatgpt.com.
+    const section = buildGroups(
+      [],
+      [
+        sessionDomain({ slug: "chatgpt-apps", display_name: "Chats", hosts: ["chatgpt.com"], client: "chatgpt" }),
+        sessionDomain({ slug: "chatgpt", display_name: "Subscription", hosts: ["sora.com"], client: "chatgpt" }),
+      ],
+      ON,
+    ).find((g) => g.id === "chatgpt")!;
+    const body = switchScopeNote(section, "macos", true)!.body;
+    expect(body).toContain("chatgpt.com");
+    expect(body).toContain("sora.com");
+  });
+
+  it("keeps the sentences in order when the browser claim is absent", () => {
+    // The order assertion above reads through "open in your browser", which is
+    // exactly the sentence `browserScopeNote` drops on a Linux session with no
+    // desktop proxy channel - and on `unknown`, the first async tick. So the
+    // one platform the project develops on had the order pinned by nothing.
+    for (const [platform, channel] of [["linux", false], ["unknown", true]] as const) {
+      const body = switchScopeNote(claude(), platform, channel)!.body;
+      expect(body).not.toContain("browser");
+      expect(body.indexOf("claude.ai")).toBeLessThan(body.indexOf("api.anthropic.com"));
+      expect(body.match(/matched on host/gi)).toHaveLength(1);
+    }
   });
 
   it("says nothing for a section that is one program's config file", () => {
