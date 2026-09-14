@@ -3413,3 +3413,47 @@ computed positions, jsdom having no layout. Its `columns()` helper also stopped
 selecting on `.w-5`; it keys on the stacking direction now, since `.w-8` would
 also match the placeholder's skeletons and quietly break the
 "no columns while loading" assertion.
+
+### The feed moved onto the Overview, and the rail lost an entry (AG-853)
+
+**The third rail entry is gone, and the 2026-08-31 note above is now history
+rather than description.** Joao asked on 2026-09-10 for the feed to sit below
+Token savings, so `Security events` is the Overview's last section and
+`SidebarView` is back to `overview` / `settings` / `app`.
+
+This puts the rail back on the frame it always drew. The entry was recorded
+above as an undrawn addition built from the `NavItem` set, with "if the designer
+draws it later, the frame wins" beside it; the designer answered by moving the
+content instead, and the nav block is once more the two items the Sidenav page
+(408:15625) draws. `docs/review-figma-sidenav.md`'s "three nav items in code, two
+in the frame" is closed by this, not by a redraw.
+
+What changed, and what deliberately did not:
+
+- `SecurityPane.tsx` is **`SecurityEvents.tsx`**, exporting `SecurityEvents` (a
+  section) and the unchanged `SecurityEventDialog`. The pane wrapper and its
+  `h1` are gone; the heading is an `h2` on `heading/16`, the line Policies and
+  Token savings above it draw.
+- **The feed's connection pill moved from the pane header into the card's**, on
+  the heading's baseline. It still reads `Live` / `Reconnecting` / `Offline` in
+  its own vocabulary, and it still reports the *stream* - not routing, and now
+  also not the 24-hour activity read the four cards above it draw. Those are
+  three different questions with three different failure modes, and the section
+  keeps its own `loading` / `unavailable` / `historyUnavailable` split rather
+  than borrowing the pane's `pending`.
+- The rows, columns, badges, empty/unavailable/loading states and the 512px
+  detail dialog are untouched. This was a placement change.
+- **Still undrawn.** No frame draws the section either, so it remains built from
+  the component set: `Overview`'s own `Card` at `p-4`, `AppPane`'s table, the
+  shared `BADGE_STYLES`.
+
+**Navigating to it is now an anchor, not a view.** `SECURITY_SECTION_ID`
+(`security-events`) sits on the section wrapper - above the partial-history
+notice, not on the card, so a jump lands before the one sentence saying the list
+is incomplete. The tray's security card used to call `expand`, which reveals the
+window wherever it was last left; `Tray`'s docstring admitted the card "does not
+open the security pane" and promised less because of it. It calls
+`request_security_events` now, the third of the bespoke tray intents beside
+`request_switch_org` and `request_recovery_details`: reveal, emit, and the window
+opens the Overview and scrolls. That was not expressible before this change,
+because the feed had no fixed address to send anyone to.

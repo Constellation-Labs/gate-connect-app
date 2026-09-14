@@ -145,6 +145,11 @@ pub fn system_program(program: &str) -> PathBuf {
 /// Creates parent dirs as needed. On Unix the file ends up with permissions
 /// `mode`; on Windows `mode` is ignored (Windows uses ACLs, and the file
 /// inherits its parent dir's ACL).
+/// Distinguishes two tempfiles created in the same nanosecond by the same
+/// process. See the note at its use site: without it, concurrent writers to one
+/// destination collided and lost both writes.
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     // If `path` is a symlink (e.g. ~/.claude/settings.json), resolve it so we
     // rewrite the real target and leave the link intact instead of replacing
@@ -198,8 +203,28 @@ pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    // A per-process sequence number, because the timestamp alone is not unique.
+    //
+    // `SystemTime::now()` is not guaranteed to advance between two calls, and on
+    // macOS it routinely does not: two writers landing in the same nanosecond
+    // built the SAME tempfile path. That was not a near-miss, it lost both
+    // writes. The second writer's `create_new` failed `EEXIST`, and the error
+    // path below removed "its" tempfile, which was actually the first writer's,
+    // so the first writer's rename then failed `ENOENT`. Two concurrent writers,
+    // zero successful writes, and the log line blamed whichever call reported
+    // first.
+    //
+    // Seen on every fresh launch: both webviews sweep verdicts at once and
+    // `record_sweep` writes from each, so the pair of messages
+    // ("creating tempfile ... File exists", then "rename ... No such file or
+    // directory", same pid, same nanos) was the startup signature.
+    //
+    // `pid` still separates processes, so `pid + seq` is unique everywhere and
+    // the timestamp is kept only because it makes a stranded tempfile
+    // self-describing.
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = parent.join(format!(
-        ".{file_name}.gate-connect.{pid}.{nanos}.tmp",
+        ".{file_name}.gate-connect.{pid}.{nanos}.{seq}.tmp",
         pid = std::process::id(),
     ));
 
@@ -469,6 +494,52 @@ fn simple_uuid_v4() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Two writers, one destination, and the loser used to take the winner down
+    /// with it.
+    ///
+    /// The tempfile name was `{file}.gate-connect.{pid}.{nanos}.tmp`. Two calls
+    /// in one process that land in the same nanosecond build the SAME path, and
+    /// `SystemTime::now()` is not nanosecond-unique on macOS. Then:
+    /// A creates it, B gets `EEXIST`, and B's error handler removes what it
+    /// thinks is its own tempfile but is actually A's, so A's rename then fails
+    /// `ENOENT` and BOTH writes are lost.
+    /// Observed on a fresh launch, where both webviews sweep verdicts at once:
+    /// "creating tempfile ... File exists" immediately followed by
+    /// "rename ... No such file or directory", same pid, same nanos.
+    #[test]
+    fn concurrent_writes_to_one_path_all_succeed() {
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("gate-atomic-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = Arc::new(dir.join("verdict-log.json"));
+
+        let failures = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let dest = Arc::clone(&dest);
+            let failures = Arc::clone(&failures);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..200 {
+                    let body = format!("{{\"t\":{t},\"i\":{i}}}");
+                    if let Err(e) = write_file(&dest, body.as_bytes(), 0o644) {
+                        failures.lock().unwrap().push(format!("{e:#}"));
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let failures = failures.lock().unwrap();
+        assert!(
+            failures.is_empty(),
+            "{} concurrent writes failed; first: {}",
+            failures.len(),
+            failures.first().map(String::as_str).unwrap_or("")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     /// A command that answers comes back whole.

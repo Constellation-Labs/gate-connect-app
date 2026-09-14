@@ -5,22 +5,37 @@ import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 
 /**
- * The live security-event feed (AG-578).
+ * The live security-event feed (AG-578), as the last section of the Overview
+ * pane (AG-853).
  *
  * A chronological list of the requests Gate blocked or flagged, arriving while
- * the app is open. Everything the pane can show is on the row: what happened, what
- * category fired, which tool, which model, when, and a way through to the
- * dashboard. Everything it *cannot* show is the point of the screen - no prompt,
- * no response, no matched secret, no evidence. Those fields are omitted by the
+ * the app is open. Everything the section can show is on the row: what happened,
+ * what category fired, which tool, which model, when, and a way through to the
+ * dashboard. Everything it *cannot* show is the point of it - no prompt, no
+ * response, no matched secret, no evidence. Those fields are omitted by the
  * gateway rather than hidden here, so there is nothing on the client to leak.
  *
- * **Undrawn in Figma.** The Sidenav frame (408:15625) draws Overview and Settings
- * only, and no frame draws this pane. It is built from the component set, which
- * is what CLAUDE.md asks for where no frame draws the thing: the pane layout is
- * `Overview`'s, the table is `AppPane`'s recent-activity table, and the badges are
- * the shared `BADGE_STYLES` pair. Recorded as a deviation in
- * `plans/new-app-ui-figma.md`.
+ * **It was its own pane and its own rail entry until 2026-09-14.** AG-853 moved
+ * it below Token savings and removed the entry, which also puts the rail back to
+ * the two items the Sidenav frame (408:15625) actually draws - the third was
+ * recorded as an undrawn addition at the time. What arrived from the pane is the
+ * feed's own connection pill, which moved from a pane header into this card's,
+ * and the partial-history notice, which still sits above the rows rather than
+ * annotating each one.
+ *
+ * **Still undrawn.** No frame draws the section either, so it is built from the
+ * component set, which is what CLAUDE.md asks for where no frame draws the thing:
+ * the card is `Overview`'s own `Card`, the table is `AppPane`'s recent-activity
+ * table, and the badges are the shared `BADGE_STYLES` pair. Recorded as a
+ * deviation in `plans/new-app-ui-figma.md`.
  */
+
+/** Anchor for anything that navigates *to* the feed rather than to the pane
+ *  it now lives on - today the tray's security card, through
+ *  `security-events-requested`. The
+ *  Token savings section above it carries the same kind of target for the same
+ *  kind of caller; see `Overview`'s `SAVINGS_SECTION_ID`. */
+export const SECURITY_SECTION_ID = "security-events";
 
 /** What the feed's own connection is doing, in the design's words.
  *
@@ -34,7 +49,7 @@ const FEED_LABEL: Record<FeedState, { label: string; className: string }> = {
   offline: { label: "Offline", className: "bg-gray-100 text-neutral-700" },
 };
 
-/** The gateway's verb, in the pane's vocabulary - the same mapping
+/** The gateway's verb, in the section's vocabulary - the same mapping
  *  `lib/toolEvents.ts` makes, and for the same reason: the gateway records what a
  *  policy *did*, the pills read as what happened to the request. */
 const ACTION_LABEL = {
@@ -100,15 +115,22 @@ function PendingRows() {
   );
 }
 
-export function SecurityPane({
-  events,
-  state,
-  loading,
-  unavailable,
-  historyUnavailable,
-  onRetry,
-  onOpenEvent,
-}: {
+/**
+ * Everything the section draws, which is everything `useSecurityFeed` holds plus
+ * the two callbacks the shell owns.
+ *
+ * Named and exported because `Overview` now passes it straight through: the feed
+ * is one read among the pane's several, and spreading its seven fields into
+ * `Overview`'s own signature would leave nothing saying which of them belong
+ * together.
+ *
+ * **Not `SecurityFeedView`**, which is the hook's own return type
+ * (`lib/securityFeed.ts`). The two agree on five fields and differ on the rest -
+ * `retry` there against `onRetry` and `onOpenEvent` here - so a name shared
+ * between them is one an editor's auto-import picks wrong, with the type error
+ * landing at whichever call site is furthest from the mistake.
+ */
+export interface SecurityEventsProps {
   /** Oldest first, as the feed buffers them. The table reverses for display. */
   events: SecurityEvent[];
   state: FeedState;
@@ -123,27 +145,29 @@ export function SecurityPane({
   historyUnavailable?: boolean;
   onRetry: () => void;
   onOpenEvent: (event: SecurityEvent) => void;
-}) {
+}
+
+export function SecurityEvents({
+  events,
+  state,
+  loading,
+  unavailable,
+  historyUnavailable,
+  onRetry,
+  onOpenEvent,
+}: SecurityEventsProps) {
   const feed = FEED_LABEL[state];
   // Newest first on screen: a feed is read from the top, and the event a user
-  // opened the pane for is the one that just happened.
+  // scrolled down here for is the one that just happened.
   const rows = [...events].reverse();
 
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
-          Security events
-        </h1>
-        <div className="flex items-center gap-3">
-          {/* The feed's own connection, never routing's. `role="status"` so a
-              screen reader hears the transition without the table moving. */}
-          <span role="status" aria-label={`Event feed ${feed.label}`}>
-            <Pill className={feed.className}>{feed.label}</Pill>
-          </span>
-        </div>
-      </header>
-
+    // The pane's own `gap-4` separated the notice from the card while this was a
+    // screen; as a section it has to carry that itself, so the two arrive as one
+    // child of the pane. The id and `scroll-mt-6` are on the wrapper rather than
+    // the card so a jump from the tray lands above the notice, not past it -
+    // that notice is the one thing on screen saying the list is incomplete.
+    <div id={SECURITY_SECTION_ID} className="flex scroll-mt-6 flex-col gap-4">
       {/* Rows on screen and a failed catch-up is not the empty case, so it does
         * not belong in the table's empty cell - but the list is still partial
         * and nothing else in the app would mention it. Said once, above the
@@ -165,7 +189,62 @@ export function SecurityPane({
 
       <Card className="p-4" busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
-        <table className="w-full">
+        {/* `heading/16`, the same line the Policies and Token savings cards
+          * above draw. The pill sits on it because it qualifies the rows
+          * underneath - it was in the pane header for the same reason, and the
+          * card header is where that header's job went. `items-baseline` so the
+          * uppercase pill sits on the heading's baseline rather than centring
+          * against a taller line box. */}
+        <div className="flex items-baseline justify-between gap-3">
+          <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+            Security events
+          </h2>
+          {/* The feed's own connection, never routing's - and never the
+              Overview's activity read either, which is a different question
+              answered by a different backend. `role="status"` so a screen
+              reader hears the transition without the table moving.
+
+              Held back until the seed lands, like the rows beside it. The hook
+              starts `state` at `"offline"` because it has to start somewhere,
+              so an unguarded pill spends the first read telling the user their
+              security feed is down - on the pane the window opens on, every
+              cold launch. A pill is a reading and there is no reading yet,
+              which is the same rule the empty cell below follows when it
+              refuses to say "No security events" before the answer is in. The
+              tray's card already declines the claim by hiding itself while
+              loading; this is that, at window size.
+
+              The region stays mounted through both states and only its contents
+              swap. A live region that appears with its text already in it is the
+              case assistive tech handles least consistently; the announcement
+              this role is here for is the one an unmounted wrapper would lose.
+              `aria-label` waits with the pill, because a region named while
+              loading reports the very connection the guard above refuses to
+              claim. */}
+          <span
+            role="status"
+            aria-label={loading ? undefined : `Event feed ${feed.label}`}
+            // Sized to the pill it replaces, and *placed* on it too. The row is
+            // `items-baseline` and `Skeleton` is a block with no text, so it has
+            // no baseline of its own and the synthesized one is its bottom edge:
+            // matching the pill's height alone hangs the placeholder off the
+            // heading's baseline instead of sitting on it, which pushed the
+            // header to 30px and the heading 6px down for as long as the read
+            // took. Measured in Chromium against both markups - the 2px puts the
+            // placeholder on exactly the pill's own box, so header and card are
+            // 26px and 106px either way and nothing moves when the reading
+            // lands. Same concern as the stat tile's `my-1` in `metrics.tsx`.
+            className={loading ? "mt-0.5 shrink-0 self-start" : undefined}
+          >
+            {loading ? (
+              <Skeleton className="h-6 w-20 rounded-control" />
+            ) : (
+              <Pill className={feed.className}>{feed.label}</Pill>
+            )}
+          </span>
+        </div>
+        {/* 20px under the heading, as on both cards above. */}
+        <table className="mt-5 w-full">
           <thead>
             <tr>
               <Th>Time</Th>
@@ -274,7 +353,7 @@ export function SecurityPane({
  * the summary to stay visible "until the matching dashboard detail opens", and
  * opening a browser is a thing that can fail: the opener returns a classified
  * error rather than throwing, so on a failure the user is left looking at the
- * event they asked about instead of at an empty pane behind a banner. The caller
+ * event they asked about instead of at the pane behind a banner. The caller
  * closes it once the open succeeded.
  *
  * Nothing here is content. The fields are the same six the row draws, which is

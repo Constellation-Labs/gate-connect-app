@@ -327,6 +327,17 @@ export const requestSwitchOrg = () => invoke<void>("request_switch_org");
 export const requestRecoveryDetails = () =>
   invoke<void>("request_recovery_details");
 
+/** Ask the main window to open the Overview at its Security events section,
+ *  from the tray's security card (AG-853).
+ *
+ *  Same hand-over as the two above. The card used to call `revealMainWindow`,
+ *  which surfaces the window wherever it was last left - so the one surface with
+ *  the events on it was a click away from the click that asked for them. The
+ *  feed had no fixed address to send anyone to until it became a section of the
+ *  Overview; now it has one. */
+export const requestSecurityEvents = () =>
+  invoke<void>("request_security_events");
+
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the
  *  window along with the copy telling the user what to click. Always paired
@@ -571,11 +582,14 @@ export interface Verdict {
   state: "not_installed" | "on" | "off" | "needs_attention";
   reason: VerdictReason | null;
   next_action: VerdictNextAction | null;
-  /** Where the traffic is going now, and where the config on disk asks it to go.
-   *  Both set only when `reason` is `reopen_required` - the one verdict where a
-   *  running process and its own config file disagree, which is exactly what
-   *  makes the pair worth printing. Which way round they are depends on which
-   *  change the process missed, so neither is a fixed "Gate" slot. */
+  /** Where the traffic is going now, and where the config on disk asks it to
+   *  go. `requested_route` is set when `reason` is `reopen_required` and read
+   *  off the file; `route_in_use` is **always null today**, because nothing can
+   *  see inside another process. It was derived from the config state until it
+   *  was caught asserting that a tool with no Gate values anywhere was still on
+   *  the gateway. The surfaces draw the pair only when both are present, so
+   *  they omit it rather than printing half a comparison - do not fill this in
+   *  from anything short of a reading. */
   route_in_use: string | null;
   requested_route: string | null;
 }

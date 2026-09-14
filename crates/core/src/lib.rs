@@ -37,6 +37,9 @@ pub mod proxy;
 /// can be explained and not merely retried.
 pub mod recovery;
 pub mod registry;
+/// Whether a running tool still holds the configuration it started with, and
+/// what a reopen notice may honestly say about its route.
+pub mod reopen;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod routing;
 /// What a tool is *doing*, as opposed to what its config says. Kept separate

@@ -351,7 +351,10 @@ is a bug someone already hit:
   (types, dedupe, backoff, credentials), `client.rs` (the connection and its
   state machine), `notify.rs` (notification grouping).
 - `src/lib/securityFeed.ts`, `src/components/gc/SecurityPane.tsx`, a third
-  sidebar entry, a tray card, three Settings switches.
+  sidebar entry, a tray card, three Settings switches. (AG-853 has since moved
+  the feed onto the Overview: the file is `SecurityEvents.tsx` and the sidebar
+  entry is gone. Left as shipped above, because this section records what AG-578
+  landed.)
 - `Pill` and `BADGE_STYLES` lifted from `AppPane` into `base.tsx`, because two
   surfaces draw them now.
 

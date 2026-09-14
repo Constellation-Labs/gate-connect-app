@@ -792,7 +792,7 @@ function RecentActivity({
                 {/* Type. The frame draws a 20px glyph 8px from the label, both at
                   `base/foreground` - the downloaded asset's own stroke is
                   #030712, and the glyph takes it from this span. Spelled as the
-                  gateway spelled it, like `SecurityPane` does with the same
+                  gateway spelled it, like `SecurityEvents` does with the same
                   field: a display vocabulary for values only the gateway knows
                   would be invented here. */}
                 <td className="py-[1.125rem] pr-4">
