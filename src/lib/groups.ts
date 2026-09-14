@@ -351,6 +351,12 @@ export function scopeNote(member: GroupMember): string | undefined {
   return `Matched on host, so this covers everything on ${hosts} - whatever on this machine sends there, not only ${member.name}.`;
 }
 
+/** The scope card's heading, in one place because two places is how the pane
+ *  came to draw it twice. Both paths that can head that card - the credential
+ *  note below and {@link switchScopeNote}'s standalone sentence - read it from
+ *  here. */
+const SWITCH_SCOPE_TITLE = "What this switch covers";
+
 /**
  * What a row whose credential Gate does not broker covers, for the pane that
  * opens on it.
@@ -388,7 +394,7 @@ export function credentialScopeNote(
   // host. Saying only the first is what left a user reading "Web" and
   // concluding their desktop app was not covered.
   return {
-    title: "What this switch covers",
+    title: SWITCH_SCOPE_TITLE,
     body: [
       `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`,
       member.scope === "host"
@@ -403,6 +409,93 @@ export function credentialScopeNote(
       .filter(Boolean)
       .join(" "),
   };
+}
+
+/**
+ * Everything the open section's switch covers, as the one card its pane draws.
+ *
+ * One card rather than two, because both sentences answer the same question
+ * about the same switch: a section's switch routes every surface its app has.
+ * Claude is the section with both a signed-in surface (claude.ai) and a
+ * brokered host (api.anthropic.com), so it drew two cards headed
+ * "What this switch covers" one above the other, which reads as a rendering
+ * fault rather than as two facts.
+ *
+ * Two SOURCES all the same. {@link credentialScopeNote} speaks for the additive
+ * member's hosts only, so the section's other host entries still need a
+ * sentence of their own: suppressing it whenever the credential note fired is
+ * what left api.anthropic.com unmentioned on the one screen that exists to
+ * explain the switch.
+ *
+ * Composed here rather than in the pane that draws it, because the second
+ * sentence is only correct in the position the first one puts it in - it is
+ * worded against whether a credential note precedes it, and two strings that
+ * have to stay true of each other belong in one function with one test.
+ */
+export function switchScopeNote(
+  group: Group,
+  platform: Platform,
+  browserChannel: boolean,
+): { title: string; body: string } | undefined {
+  // The section's signed-in surface, if it has one. A section is an app and its
+  // members are that app's surfaces, so this speaks for whichever of them Gate
+  // holds no key for - the fact the switch's own confirmation is about, said
+  // again where it is standing rather than only at the moment of flipping.
+  const additive = group.members.find((m) => m.credential === "additive");
+  const credential = additive
+    ? credentialScopeNote(additive, platform, browserChannel)
+    : undefined;
+  const rest = remainingScopeNote(group, Boolean(credential));
+  if (!credential) {
+    return rest ? { title: SWITCH_SCOPE_TITLE, body: rest } : undefined;
+  }
+  return {
+    title: credential.title,
+    body: [credential.body, rest].filter(Boolean).join(" "),
+  };
+}
+
+/**
+ * The hosts the credential note did not speak for, in one sentence.
+ *
+ * Every `host`-scoped member the section has, minus the additive ones. Taking
+ * the FIRST matching member and stopping is what named one host of two, and a
+ * section with two host members on different hosts said only one of them.
+ *
+ * `afterCredential` is the position this will be drawn in, and it changes the
+ * wording rather than whether there is any. Following the credential note it
+ * must not restate the mechanism - "matched on host" twice over was the
+ * repetition, and the two HOSTS were never the problem - and it must not open
+ * with a backward-pointing "the same" either: `browserScopeNote` closes that
+ * note with the browser claim, so "the same applies to api.anthropic.com" reads
+ * as calling a brokered API host a site somebody browses. It names the switch
+ * instead, which is what the card's own title is about. Standalone - a section
+ * whose only host member is brokered - it is the whole explanation and says the
+ * mechanism itself.
+ *
+ * The machine branch returns ahead of both, and can: no section mixes a
+ * machine-scoped member with an additive one, since {@link SECTIONS} keeps
+ * `env-proxy` alone under "Terminal". If one ever did, `scopeNote`'s
+ * subjectless "Covers every program started after your next login" would need
+ * rewording before it could follow a sentence rather than a title.
+ */
+function remainingScopeNote(group: Group, afterCredential: boolean): string | undefined {
+  const machine = group.members.find((m) => m.scope === "machine");
+  if (machine) return scopeNote(machine);
+  const hosts = [
+    ...new Set(
+      group.members
+        .filter((m) => m.scope === "host" && m.credential !== "additive")
+        .flatMap((m) => m.domain?.hosts ?? []),
+    ),
+  ];
+  if (hosts.length === 0) return undefined;
+  // The section's own name, because the switch is the app's: "not only Claude"
+  // is the comparison a reader on this pane is making, and a member name
+  // ("API") is not.
+  return afterCredential
+    ? `This switch also covers everything on ${hosts.join(", ")}: anything on this machine that sends there, not only ${group.name}.`
+    : `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${group.name}.`;
 }
 
 export type MemberAttention =
