@@ -59,12 +59,17 @@ export type RoutingPrompt =
     }
   /** Turning OpenCode on turns the shell-environment channel on with it.
    *
-   * Not a warning bolted onto a switch: it is the only way OpenCode routes.
-   * OpenCode has no gateway setting Gate can rely on, so the proxy variables
-   * are the mechanism - and those are machine-wide, reaching git, curl and npm
-   * as much as OpenCode. That is a large enough change to ask about, which is
-   * the same reason `env_proxy.rs` made the channel declinable in the first
-   * place.
+   * Not a warning bolted onto a switch. This used to call the variables "the
+   * only way OpenCode routes", which is wrong and was wrong when it was
+   * written: `integrations/opencode.rs` rewrites
+   * `provider.<id>.options.baseURL` to the loopback relay, needing neither a
+   * variable nor the CA. What that rewrite cannot do is cover what it never
+   * saw - it is a snapshot taken at connect over a fixed allowlist, so a
+   * provider added later, one outside it, or one skipped as local has no entry,
+   * and the environment is what carries that traffic. Hence both, and hence the
+   * prompt: the variables are machine-wide, reaching git, curl and npm as much
+   * as OpenCode, which is a large enough change to ask about - the same reason
+   * `env_proxy.rs` made the channel declinable in the first place.
    *
    * Only raised when the channel is actually off. A dialog announcing a
    * side effect that already happened is noise, and it would fire on every

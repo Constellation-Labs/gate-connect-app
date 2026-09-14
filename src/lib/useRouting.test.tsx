@@ -717,9 +717,9 @@ describe("useRouting: remembering a failed write", () => {
 
 describe("useRouting: OpenCode and the environment channel", () => {
   it("asks before turning the machine-wide variables on with it", async () => {
-    // OpenCode has no gateway setting Gate can rely on, so the proxy variables
-    // are how it routes - and those reach git, curl and npm too. The click does
-    // two things, so it has to say so before it does either.
+    // OpenCode's own rewrite covers the providers it found at connect; the
+    // variables cover whatever else it sends - and those reach git, curl and npm
+    // too. The click does two things, so it has to say so before it does either.
     const { api } = harness(
       [tool("opencode", { kind: "detected" })],
       proxyState({ env_export_opted_in: false }),
