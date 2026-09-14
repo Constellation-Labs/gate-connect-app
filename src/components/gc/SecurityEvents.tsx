@@ -202,10 +202,26 @@ export function SecurityEvents({
           {/* The feed's own connection, never routing's - and never the
               Overview's activity read either, which is a different question
               answered by a different backend. `role="status"` so a screen
-              reader hears the transition without the table moving. */}
-          <span role="status" aria-label={`Event feed ${feed.label}`}>
-            <Pill className={feed.className}>{feed.label}</Pill>
-          </span>
+              reader hears the transition without the table moving.
+
+              Held back until the seed lands, like the rows beside it. The hook
+              starts `state` at `"offline"` because it has to start somewhere,
+              so an unguarded pill spends the first read telling the user their
+              security feed is down - on the pane the window opens on, every
+              cold launch. A pill is a reading and there is no reading yet,
+              which is the same rule the empty cell below follows when it
+              refuses to say "No security events" before the answer is in. The
+              tray's card already declines the claim by hiding itself while
+              loading; this is that, at window size. */}
+          {loading ? (
+            // Sized to the pill it replaces so the heading's baseline does not
+            // shift when the real one arrives.
+            <Skeleton className="h-6 w-20 rounded-control" />
+          ) : (
+            <span role="status" aria-label={`Event feed ${feed.label}`}>
+              <Pill className={feed.className}>{feed.label}</Pill>
+            </span>
+          )}
         </div>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">

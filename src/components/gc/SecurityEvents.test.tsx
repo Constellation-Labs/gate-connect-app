@@ -82,6 +82,17 @@ describe("the feed's own connection state", () => {
     expect(screen.getByRole("status", { name: `Event feed ${label}` })).toBeTruthy();
   });
 
+  it("makes no claim about the connection until the first read answers", () => {
+    // `useSecurityFeed` seeds `state` to "offline" because it has to seed it to
+    // something, so an unguarded pill spends every cold launch telling the user
+    // their security feed is down - on the pane the window now opens on. A pill
+    // is a reading and there is no reading yet, which is the same rule the empty
+    // cell follows when it refuses to say "No security events" too early.
+    render(section({ loading: true, state: "offline" }));
+    expect(screen.queryByRole("status", { name: /^Event feed/ })).toBeNull();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
   it("keeps showing the events it has while reconnecting", () => {
     // A feed having a bad minute is not an empty feed, and blanking the table
     // would lose what the user was reading.

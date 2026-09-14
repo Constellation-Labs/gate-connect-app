@@ -479,6 +479,11 @@ export function NewUiApp() {
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
   const activity = useActivity(canRead, installFilter, credential);
+  /** The 24-hour read has not answered yet, either way. Drives the Overview's
+   *  skeletons, and named here because the tray's jump to the security section
+   *  needs the same fact: the anchor's position is not final until the cards
+   *  above it stop being placeholders. */
+  const activityPending = activity.view === null && activity.failure === null;
   const {
     installations,
     current: currentInstallId,
@@ -1805,9 +1810,11 @@ export function NewUiApp() {
    * the user will be when they close it.
    */
   const [securityRequests, setSecurityRequests] = useState(0);
+  const securityScrollArmed = useRef(false);
   useEffect(() => {
     const unlisten = listen("security-events-requested", () => {
       setView({ kind: "overview" });
+      securityScrollArmed.current = true;
       setSecurityRequests((n) => n + 1);
     });
     return () => {
@@ -1815,7 +1822,7 @@ export function NewUiApp() {
     };
   }, []);
   useEffect(() => {
-    if (securityRequests === 0) return;
+    if (!securityScrollArmed.current) return;
     // Same jump the Tokens saved counter makes, and the same reasoning: a
     // `scrollIntoView` rather than a hash link, which would leave a fragment in
     // the URL of a window that has no address bar to show it.
@@ -1823,7 +1830,18 @@ export function NewUiApp() {
       behavior: "smooth",
       block: "start",
     });
-  }, [securityRequests]);
+    // One scroll is not enough when the pane mounts unread. The four cards above
+    // the anchor are skeletons at that point and every one of them is shorter
+    // than the rows it will be replaced by, so the anchor moves down after the
+    // jump has already stopped - and the press that asked for the events leaves
+    // the user looking at Token savings, which is the bug this whole path
+    // replaces, one step smaller. So the request stays armed across the read and
+    // scrolls again when the real heights land. It disarms on the first pass
+    // that had them, which a warm pane reaches immediately; `pending` goes false
+    // on a failed read too, so an account the gateway will not answer for still
+    // disarms rather than re-scrolling on some unrelated refetch weeks later.
+    if (!activityPending) securityScrollArmed.current = false;
+  }, [securityRequests, activityPending]);
 
   /**
    * The one-time OAuth offer, for an account still on a pasted key.
@@ -3468,7 +3486,7 @@ export function NewUiApp() {
           // asked and were refused. Neither is true while the answer is on its
           // way. A held reading from the cache clears this on the first frame,
           // so the placeholders are only ever seen by an account that has none.
-          pending={activity.view === null && activity.failure === null}
+          pending={activityPending}
           // With no view at all - loading, or a failure with nothing held -
           // every section is unread, which is what the fallback says. Once
           // there is one, it names its own gaps.
