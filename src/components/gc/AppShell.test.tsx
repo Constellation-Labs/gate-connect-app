@@ -46,37 +46,6 @@ const noticeWrapper = () => screen.getByText("a notice").closest("div");
  * sharpest case was `ReopenBanner`, whose "Close tool" button sat on top of the
  * close-apps dialog that button opens.
  */
-/**
- * The organization line is a control only when it can act.
- *
- * `/v1/me/orgs` answers "which organizations may this *user* act on", so it
- * needs a Cognito bearer; the gateway refuses an API key for it outright. And an
- * API key resolves to exactly one organization (AG-572's contract), so there is
- * nothing to choose between either way. The window offered the button to every
- * account regardless, and on an API key clicking it could only raise an error
- * banner. The tray had this right already.
- */
-describe("AppShell organization line", () => {
-  it("is a button when the account can switch", () => {
-    const onSwitchOrg = vi.fn();
-    render(shell({ orgName: "Acme Engineering", onSwitchOrg }));
-
-    const control = screen.getByText("Acme Engineering").closest("button");
-    expect(control).not.toBeNull();
-    control?.click();
-    expect(onSwitchOrg).toHaveBeenCalledTimes(1);
-  });
-
-  it("is a plain label when it cannot, and still names the org", () => {
-    render(shell({ orgName: "Acme Engineering", onSwitchOrg: undefined }));
-
-    // The name must survive: this line is the only place the window says which
-    // organization the traffic belongs to.
-    expect(screen.getByText("Acme Engineering")).toBeTruthy();
-    expect(screen.getByText("Acme Engineering").closest("button")).toBeNull();
-  });
-});
-
 describe("AppShell notice elevation", () => {
   it("leaves a notice under the dialog scrim by default", () => {
     render(shell({ notice: <p>a notice</p> }));
@@ -88,5 +57,44 @@ describe("AppShell notice elevation", () => {
     render(shell({ notice: <p>a notice</p>, noticeAboveDialog: true }));
 
     expect(noticeWrapper()?.className ?? "").toContain("z-30");
+  });
+});
+
+/**
+ * The organization line is a control only when it can act.
+ *
+ * `/v1/me/orgs` answers "which organizations may this *user* act on", so it
+ * needs a Cognito bearer; the gateway refuses an API key for it outright. And an
+ * API key resolves to exactly one organization (AG-572's contract), so there is
+ * nothing to choose between either way. The window offered the button to every
+ * account regardless, and on an API key clicking it could only raise an error
+ * banner. The tray had this right already.
+ *
+ * These cover the prop contract only - that `AppShell` forwards the handler and
+ * that the sidebar draws each state. Whether the *right* accounts get a handler
+ * is decided in `NewUiApp` and guarded in `e2e/new-ui-settings.spec.ts`, which
+ * is where the bug actually was.
+ */
+describe("AppShell organization line", () => {
+  it("is a button when the account can switch", () => {
+    const onSwitchOrg = vi.fn();
+    render(shell({ orgName: "Acme Engineering", onSwitchOrg }));
+
+    // Named for a screen reader, which gets the label and the action in one
+    // string: the visible text is only the org name, so "Acme Engineering" on
+    // its own says nothing about being able to change it.
+    screen
+      .getByRole("button", { name: /Organization: Acme Engineering\. Switch organization/ })
+      .click();
+    expect(onSwitchOrg).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a plain label when it cannot, and still names the org", () => {
+    render(shell({ orgName: "Acme Engineering", onSwitchOrg: undefined }));
+
+    // The name must survive: this line is the only place the window says which
+    // organization the traffic belongs to.
+    expect(screen.getByText("Acme Engineering")).toBeTruthy();
+    expect(screen.getByText("Acme Engineering").closest("button")).toBeNull();
   });
 });
