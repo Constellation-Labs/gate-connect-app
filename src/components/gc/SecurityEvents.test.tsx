@@ -82,6 +82,19 @@ describe("the feed's own connection state", () => {
     expect(screen.getByRole("status", { name: `Event feed ${label}` })).toBeTruthy();
   });
 
+  it("reports no connection at all until the first read answers", () => {
+    // `useSecurityFeed` seeds `state` to "offline" and replaces it when the
+    // mount read lands, so a pill drawn unguarded says the feed is offline when
+    // what actually happened is that nobody has looked yet. Rare while this was
+    // a pane behind a rail entry; every cold launch now that it is on the pane
+    // the window opens on. Principle 6, applied to the one figure on this card
+    // that is not a row.
+    render(section({ loading: true, state: "offline" }));
+
+    expect(screen.queryByRole("status", { name: /^Event feed/ })).toBeNull();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
   it("keeps showing the events it has while reconnecting", () => {
     // A feed having a bad minute is not an empty feed, and blanking the table
     // would lose what the user was reading.

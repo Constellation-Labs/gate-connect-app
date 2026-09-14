@@ -202,10 +202,25 @@ export function SecurityEvents({
           {/* The feed's own connection, never routing's - and never the
               Overview's activity read either, which is a different question
               answered by a different backend. `role="status"` so a screen
-              reader hears the transition without the table moving. */}
-          <span role="status" aria-label={`Event feed ${feed.label}`}>
-            <Pill className={feed.className}>{feed.label}</Pill>
-          </span>
+              reader hears the transition without the table moving.
+            *
+            * **A pill is a reading too**, which is why it waits. `state` is
+            * seeded `"offline"` and replaced when the mount read answers
+            * (`useSecurityFeed`), so an unguarded pill reports a connection
+            * nobody has checked yet - and since the feed moved onto the pane the
+            * window opens on, that is every cold launch rather than the rare
+            * glimpse it was behind a rail entry. Principle 6's "a value still in
+            * flight draws a `Skeleton`", applied to the one figure on this card
+            * that is not a row. The tray refuses the same claim by hiding its
+            * card outright while loading; this card is the section, so it cannot
+            * leave, and draws the placeholder instead. */}
+          {loading ? (
+            <Skeleton className="h-6 w-20 shrink-0" />
+          ) : (
+            <span role="status" aria-label={`Event feed ${feed.label}`}>
+              <Pill className={feed.className}>{feed.label}</Pill>
+            </span>
+          )}
         </div>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">
