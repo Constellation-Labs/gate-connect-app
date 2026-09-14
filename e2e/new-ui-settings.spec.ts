@@ -116,6 +116,32 @@ test.describe("new UI settings", () => {
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
+  /**
+   * The defect the two tests above could not see, because both sign in through
+   * the browser.
+   *
+   * The rail offered the switcher to every account. An API key cannot answer
+   * `/v1/me/orgs` - the gateway refuses it outright - so on those accounts the
+   * button's only possible outcome was an error banner, every time. The
+   * component test in `AppShell.test.tsx` proves the sidebar CAN draw a label;
+   * this is the one that proves the right accounts get one, because the choice
+   * is made in `NewUiApp` and nothing below it knows what `auth_mode` is.
+   */
+  test("an API-key account gets the organization as a label, not a button", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      account: { has_api_key: true, auth_mode: "api_key", org_id: null, org_name: null },
+    });
+
+    // The name still shows: this line is the only place the window says which
+    // organization the usage belongs to. An API-key account holds no org
+    // locally and this fixture serves no reading either, so the label is the
+    // fallback - present, and not a control.
+    await expect(app.page.getByText("No organization")).toBeVisible();
+    await expect(app.page.getByRole("button", { name: /Switch organization/ })).toHaveCount(0);
+  });
+
   test("replaying the tutorial opens the onboarding window", async ({ boot }) => {
     const app = await boot({});
 

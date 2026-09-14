@@ -50,7 +50,9 @@ export function AppShell({
   update?: { version: string; onUpdate: () => void; onDismiss: () => void };
   routing: { protectedCount: number; totalCount: number };
   orgName: string;
-  onSwitchOrg: () => void;
+  /** Omitted when the account cannot switch organizations. Passed straight
+   *  through to the sidebar, which then draws the org line as a label. */
+  onSwitchOrg?: () => void;
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
   /** The rail's app rows, grouped under their family eyebrows. */

@@ -2699,10 +2699,19 @@ export function NewUiApp() {
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={orgLabel(account, activity.view?.orgName)}
-      onSwitchOrg={() => {
-        setActionError(null);
-        void settings.openSwitchOrg();
-      }}
+      // Offered only to an account that can act on more than one organization,
+      // which is the same gate the tray footer uses. `/v1/me/orgs` needs a
+      // Cognito bearer and the gateway refuses an API key for it, and an API key
+      // resolves to exactly one org anyway (AG-572's contract), so on those
+      // accounts this button could only ever raise an error banner. It did.
+      onSwitchOrg={
+        account?.auth_mode === "oauth"
+          ? () => {
+              setActionError(null);
+              void settings.openSwitchOrg();
+            }
+          : undefined
+      }
       view={view}
       onNavigate={setView}
       appGroups={sidebarGroups}
