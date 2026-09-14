@@ -212,16 +212,36 @@ export function SecurityEvents({
               which is the same rule the empty cell below follows when it
               refuses to say "No security events" before the answer is in. The
               tray's card already declines the claim by hiding itself while
-              loading; this is that, at window size. */}
-          {loading ? (
-            // Sized to the pill it replaces so the heading's baseline does not
-            // shift when the real one arrives.
-            <Skeleton className="h-6 w-20 rounded-control" />
-          ) : (
-            <span role="status" aria-label={`Event feed ${feed.label}`}>
+              loading; this is that, at window size.
+
+              The region stays mounted through both states and only its contents
+              swap. A live region that appears with its text already in it is the
+              case assistive tech handles least consistently; the announcement
+              this role is here for is the one an unmounted wrapper would lose.
+              `aria-label` waits with the pill, because a region named while
+              loading reports the very connection the guard above refuses to
+              claim. */}
+          <span
+            role="status"
+            aria-label={loading ? undefined : `Event feed ${feed.label}`}
+            // Sized to the pill it replaces, and *placed* on it too. The row is
+            // `items-baseline` and `Skeleton` is a block with no text, so it has
+            // no baseline of its own and the synthesized one is its bottom edge:
+            // matching the pill's height alone hangs the placeholder off the
+            // heading's baseline instead of sitting on it, which pushed the
+            // header to 30px and the heading 6px down for as long as the read
+            // took. Measured in Chromium against both markups - the 2px puts the
+            // placeholder on exactly the pill's own box, so header and card are
+            // 26px and 106px either way and nothing moves when the reading
+            // lands. Same concern as the stat tile's `my-1` in `metrics.tsx`.
+            className={loading ? "mt-0.5 shrink-0 self-start" : undefined}
+          >
+            {loading ? (
+              <Skeleton className="h-6 w-20 rounded-control" />
+            ) : (
               <Pill className={feed.className}>{feed.label}</Pill>
-            </span>
-          )}
+            )}
+          </span>
         </div>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">

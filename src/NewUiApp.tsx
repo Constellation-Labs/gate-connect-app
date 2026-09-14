@@ -1805,9 +1805,18 @@ export function NewUiApp() {
    * Unconditional, unlike the recovery-details request beside it. That one
    * arms a *dialog* and has to refuse when the slot is taken or the window is
    * still on setup, because a dialog armed now and drawn later pops unprompted.
-   * This only navigates: on setup there is no anchor and `?.` does nothing, and
-   * with a dialog open the pane it scrolls is the one behind it, which is where
-   * the user will be when they close it.
+   * This only navigates: with a dialog open the pane it scrolls is the one
+   * behind it, which is where the user will be when they close it.
+   *
+   * **On setup the request is held rather than dropped.** It used to be neither:
+   * a tick fired into a pane with no anchor, `?.` did nothing and that was the
+   * end of it. Now it stays armed, because `useActivity` is disabled until there
+   * is an account and so sets neither `view` nor `failure` - `activityPending`
+   * cannot go false and nothing disarms. The scroll lands on the first commit
+   * after the shell mounts and its reading arrives, which is the cold-launch
+   * path this whole intent is for, a few seconds later than it reads. The right
+   * outcome, and not the old one, so it is written down rather than left to be
+   * rediscovered.
    */
   const [securityRequests, setSecurityRequests] = useState(0);
   const securityScrollArmed = useRef(false);
