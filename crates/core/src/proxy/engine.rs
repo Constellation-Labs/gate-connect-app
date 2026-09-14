@@ -1557,6 +1557,23 @@ fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) -> bool {
     true
 }
 
+/// The catalog entry a request resolved to, as `decide` returned it.
+///
+/// One parameter rather than two loose `&str`s because they are one fact - the
+/// entry that claimed this path - and they are read for different reasons: the
+/// upstream rewrites the URL, the slug says which entry it was. The slug is
+/// carried only for attribution today: the ChatGPT app identifies itself in a
+/// generically-named header, so believing it safely needs the routing decision
+/// rather than the request alone.
+#[derive(Clone, Copy)]
+pub(crate) struct MatchedRoute<'a> {
+    pub upstream_url: &'a str,
+    /// `None` where the caller has no decision to hand - the test seams, and
+    /// any path that rewrites without having matched an entry. Attribution that
+    /// depends on it declines rather than guessing.
+    pub slug: Option<&'a str>,
+}
+
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, strip the upstream's own path prefix, and inject the Gate
 /// headers. In BYOK the app's own auth header (bearer / `x-api-key`) is left
@@ -1578,23 +1595,6 @@ fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) -> bool {
 /// Returns whether *our* OAuth bearer went on the request, which is what makes
 /// a 401 on the way back evidence about the session (see
 /// [`GateHandler::injected_oauth`]).
-/// The catalog entry a request resolved to, as `decide` returned it.
-///
-/// One parameter rather than two loose `&str`s because they are one fact - the
-/// entry that claimed this path - and they are read for different reasons: the
-/// upstream rewrites the URL, the slug says which entry it was. The slug is
-/// carried only for attribution today: the ChatGPT app identifies itself in a
-/// generically-named header, so believing it safely needs the routing decision
-/// rather than the request alone.
-#[derive(Clone, Copy)]
-pub(crate) struct MatchedRoute<'a> {
-    pub upstream_url: &'a str,
-    /// `None` where the caller has no decision to hand - the test seams, and
-    /// any path that rewrites without having matched an entry. Attribution that
-    /// depends on it declines rather than guessing.
-    pub slug: Option<&'a str>,
-}
-
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,

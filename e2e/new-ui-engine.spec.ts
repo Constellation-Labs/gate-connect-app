@@ -124,14 +124,14 @@ test.describe("new UI engine controls", () => {
     // to write intent and route nothing, with no control anywhere to start it.
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    // An app whose surfaces are all host-intercepted: no config file to write,
-    // so the engine is the only thing that could route it. OpenRouter rather
-    // than a session app, so no consent dialog stands between the click and the
-    // flag - that is tested on its own in the routing spec.
-    await app.page.getByRole("switch", { name: "OpenRouter" }).click();
+    // A row whose surfaces are all host-intercepted: no config file to write, so
+    // the engine is the only thing that could route it. The OpenAI API row
+    // rather than a session app, so no consent dialog stands between the click
+    // and the flag - that is tested on its own in the routing spec.
+    await app.page.getByRole("switch", { name: "OpenAI API" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "openrouter",
+      slug: "openai",
       enabled: true,
     });
     const cmds = (await app.calls()).map((c) => c.cmd);
@@ -177,6 +177,9 @@ test.describe("new UI app pane", () => {
     // The rail row is the app; the pane it opens is the app's.
     await app.page.getByRole("button", { name: "Claude" }).first().click();
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
+    // The pane's switch is the section's switch, so it asks the same question
+    // the rail's does before it routes a surface the person is signed in to.
+    await app.page.getByRole("button", { name: "Route Claude", exact: true }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",

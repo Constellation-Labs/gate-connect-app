@@ -45,7 +45,6 @@ import {
   recoverySummary,
   retryRestoreEntry,
   teardownReport,
-  acceptSessionRouting,
   getPreferences,
   setBlockedEventNotifications,
   setFlaggedEventNotifications,
@@ -56,6 +55,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import type { ReopenAction } from "./lib/reopen";
 import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -71,8 +71,7 @@ import {
   buildGroups,
   credentialScopeNote,
   BAND_LABELS,
-  cascadeTargets,
-  needsSessionConsent,
+  sectionHint,
   sectionMemberKeys,
   sessionMembers,
   scopeNote,
@@ -82,7 +81,7 @@ import {
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
-import type { Band, Group, GroupMember } from "./lib/groups";
+import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
@@ -91,7 +90,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
-import { brandMarkFor } from "./components/gc/BrandMark";
+import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -150,6 +149,7 @@ import {
   ReplaceApiKeyDialog,
   ResetGateConnectDialog,
   ReviewConfigDialog,
+  SessionConsentDialog,
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
@@ -491,14 +491,6 @@ export function NewUiApp() {
     current: currentInstallId,
     resolved: installsResolved,
   } = useInstallations(canRead, credential);
-  /** The open pane belongs to a proxy domain rather than a config tool. The
-   *  gateway attributes requests to config tools only - `client_tool` is
-   *  derived from each tool's own user agent, and traffic from these surfaces
-   *  arrives unattributed on purpose, because a guessed slug would file one
-   *  app's traffic under another's name. So the per-tool reads below must not
-   *  fire for a domain: filtering by its slug would return an empty reading,
-   *  and the pane would report a quiet day over traffic it cannot see. A slug
-   *  carried by an installed tool stays a tool. */
   /**
    * The one config tool in the open section, if it has one.
    *
@@ -513,16 +505,29 @@ export function NewUiApp() {
    * declared further down: this sits above it because the reads it gates have
    * to be set up before the first render.
    */
-  const openSectionTool =
+  const openTool =
     view.kind === "app"
-      ? (sectionMemberKeys(view.slug).find((key) => tools.some((t) => t.slug === key)) ?? null)
+      ? (sectionMemberKeys(view.slug).find((key) =>
+          // The same filter `buildGroups` applies, and it has to be the same:
+          // `list_tools` carries the not-installed ones too, so without it a
+          // Claude pane on a machine with no Claude Code resolved to
+          // `claude-code`, fired every per-tool read against a tool that cannot
+          // have traffic, and drew zeroes with no caveat - `openDomain` false so
+          // no unattributed marker, `partialReading` undefined because IT reads
+          // the built ledger. A number with nothing behind it, in the one place
+          // principle 6 names.
+          tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
+        ) ?? null)
       : null;
-  const openDomain = view.kind === "app" && openSectionTool === null;
-  /** The tool whose pane is open, or null on any other view. Drives both per-tool
-   *  reads below, and gating on it keeps them from firing for a pane nobody is
-   *  looking at - this endpoint shares an address-keyed rate limit with every
-   *  other control-plane route. */
-  const openTool = openSectionTool;
+  /** The open pane belongs to a proxy domain rather than a config tool. The
+   *  gateway attributes requests to config tools only - `client_tool` is
+   *  derived from each tool's own user agent, and traffic from these surfaces
+   *  arrives unattributed on purpose, because a guessed slug would file one
+   *  app's traffic under another's name. So the per-tool reads below must not
+   *  fire for a domain: filtering by its slug would return an empty reading,
+   *  and the pane would report a quiet day over traffic it cannot see. A slug
+   *  carried by an installed tool stays a tool. */
+  const openDomain = openTool === null && view.kind === "app";
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -1004,14 +1009,6 @@ export function NewUiApp() {
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   /**
-   * The section whose switch is waiting on an answer about routing a signed-in
-   * surface, or null when nothing is being asked.
-   *
-   * Holds the whole section rather than its id so the dialog can name the
-   * surfaces it is about to route without going back to the ledger for them.
-   */
-  const [sessionConsent, setSessionConsent] = useState<Group | null>(null);
-  /**
    * Routing work that was recorded and did not finish, read from the provider
    * snapshots. Null until the first read; empty lists mean nothing outstanding,
    * which is the normal case.
@@ -1255,50 +1252,6 @@ export function NewUiApp() {
   );
 
   /**
-   * Route one whole section: every surface the app uses, in one click.
-   *
-   * `cascadeTargets` decides which members move - it skips the ones already in
-   * the target state, never adopts a drifted config, and since the app-switch
-   * change it includes the session surfaces, which is what the consent gate in
-   * `toggleRailApp` stands in front of.
-   *
-   * Failures are collected rather than aborting the rest: a section spans a
-   * config write and two host flags, and one failing must not leave the other
-   * two untouched with nothing on screen saying which is which.
-   */
-  const routeSection = useCallback(
-    async (section: Group, next: boolean) => {
-      // `sessions: true` because `toggleRailApp` has an accepted answer by the
-      // time it calls this - either recorded earlier or just given to the
-      // dialog. It is the only caller that passes it.
-      const targets = cascadeTargets(section, next, { sessions: true });
-      const failed: string[] = [];
-      for (const m of targets) {
-        try {
-          if (m.kind === "proxy") await routing.setDomainRouted(m.key, next);
-          else await routing.setAppRouted(m.key, next);
-        } catch {
-          failed.push(m.name);
-        }
-      }
-      // Only the tools that moved: their route is the one that changed, and a
-      // section's host surfaces have no process of their own to reopen.
-      const movedTools = targets
-        .filter((m: GroupMember) => m.kind === "config")
-        .map((m: GroupMember) => m.key);
-      if (next && movedTools.length > 0) await runningApps.offerAfterChange(movedTools);
-      if (failed.length > 0) {
-        setActionError({
-          title: `Couldn’t ${next ? "route" : "stop routing"} ${failed.join(", ")}`,
-          hint: `${section.name} is partly ${next ? "on" : "off"} - the rest of it moved. Try that surface again, or check the diagnostics report.`,
-          raw: "",
-        });
-      }
-    },
-    [routing, runningApps],
-  );
-
-  /**
    * Turn all routing on or off.
    *
    * Same follow-up as a config write: every routed tool is on its old route until
@@ -1327,9 +1280,20 @@ export function NewUiApp() {
         ? buildGroups(tools, proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
+            // The sweep, which a section's rendered state cannot do without.
+            // A member's `routed` is what `sectionStatus` counts to decide
+            // whether the app is protected, and without this every config
+            // member falls back to the conservative "not verified" - so a
+            // connected, swept tool read "Not routed - Blocked" for as long as
+            // its row was a section. The popover passed it from the start
+            // (`App.tsx`); this shell never needed it until a row stopped being
+            // a tool.
+            verdicts,
           })
         : [],
-    [providers, tools, proxy],
+    // Not `providers`: `buildGroups` stopped taking them, and leaving the poll's
+    // result in here rebuilt the whole ledger every time it landed.
+    [tools, proxy, verdicts],
   );
 
   /**
@@ -1493,11 +1457,13 @@ export function NewUiApp() {
         status: railStatus,
         // Intent, and the brokered half of it: what the switch renders is
         // whether the app's own routing is on, not whether its session surface
-        // happens to be. `Group.cascadeDesired` carries that distinction.
-        on: g.cascadeDesired > 0,
-        logo: brandMarkFor(g.members[0]?.key ?? g.id),
+        // happens to be. `Group.switchOn` carries that distinction, and reads
+        // every governing member rather than any one of them - see its doc for
+        // the two ways `cascadeDesired > 0` got this wrong at once.
+        on: g.switchOn,
+        logo: brandMarkForSection(g.id, sectionMemberKeys(g.id)),
         busy: routingBusy,
-        hint: g.members.map((m) => m.hint).find(Boolean),
+        hint: sectionHint(g),
       });
     }
     // A tool the ledger did not place keeps its place rather than vanishing.
@@ -1516,44 +1482,31 @@ export function NewUiApp() {
     [sidebarGroups],
   );
 
-  /** Route or unroute one rail row. The rail mixes tools and proxy domains
-   *  now: a domain routes through `setDomainRouted` - no config file, so no
-   *  drift gate - the same dispatch the family panel's member switches use. */
-  const toggleRailApp = useCallback(
-    (slug: string, next: boolean) => {
-      const section = groups.find((g) => g.id === slug);
-      // A section switch routes every surface the app uses, so this is a
-      // cascade rather than one write - and for Claude and ChatGPT the cascade
-      // reaches a surface the person is signed in to. `needsSessionConsent`
-      // says so; an unanswered section asks before anything is flipped, and a
-      // decline leaves the switch where it was.
-      const accepted = prefs?.session_routing_accepted ?? [];
-      if (section && next && needsSessionConsent(section) && !accepted.includes(section.id)) {
-        setSessionConsent(section);
-        return;
-      }
-      if (section) {
-        setActionError(null);
-        void routeSection(section, next);
-        return;
-      }
-      const member = groups
-        .flatMap((g) => g.members)
-        .find((m) => m.key === slug);
-      // Cleared here rather than in each branch, because only one branch used
-      // to do it. `routeApp` clears on the way in; `setDomainRouted` never did,
-      // so a proxy row that failed and was then retried successfully turned the
-      // switch on and left "Could not connect" on screen above it - the switch
-      // and the banner asserting opposite things about the same click. The
-      // click is the moment the last failure stops being the current answer,
-      // whichever kind of row it lands on.
-      setActionError(null);
-      void (member?.kind === "proxy"
-        ? routing.setDomainRouted(slug, next)
-        : routeApp(slug, next));
-    },
-    [groups, prefs, routeSection, routing.setDomainRouted, routeApp],
-  );
+  /**
+   * The app switch, for the rail and the pane header both.
+   *
+   * A row is a section, so a click is a cascade with a consent gate and a single
+   * certificate gate in front of it - `lib/useSectionRouting.ts` owns all three,
+   * because the tray draws the same rows and needs the same three. The `routeApp`
+   * fallback below it is for a catalog entry no section has claimed yet, which is
+   * empty in a shipped build.
+   */
+  const section = useSectionRouting({
+    groups,
+    routing,
+    runningApps,
+    prefs,
+    onPrefsChanged: () => void loadPreferences(),
+    // The click is the moment the last failure stops being the current answer,
+    // whichever kind of row it lands on. `routeApp` clears on its own way in;
+    // the cascade never did, so a row that failed and was then retried
+    // successfully turned the switch on and left "Could not connect" on screen
+    // above it - the switch and the banner asserting opposite things about the
+    // same click.
+    onBeforeRoute: () => setActionError(null),
+    routeApp: (slug, next) => void routeApp(slug, next),
+  });
+  const toggleRailApp = section.toggle;
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2319,7 +2272,17 @@ export function NewUiApp() {
   const paneNotice = useMemo(
     () =>
       view.kind === "app"
-        ? (notices.find((n) => n.memberKey === view.slug) ?? null)
+        ? // Any member of the open section, not the pane's own slug: a notice is
+          // keyed on the member it is about, and the pane is a section now.
+          //
+          // One caveat worth knowing rather than fixing here: `buildNotices`
+          // collapses master-off and needs-trust into ONE notice carrying the
+          // first affected member's key, so only the section owning that member
+          // draws the card even though the cause is true of every section at
+          // once. That predates the sections - the lookup used to be on the
+          // member key directly and had the same hole - and the fix belongs in
+          // `lib/notices.ts`, where the collapsing happens.
+          (notices.find((n) => sectionMemberKeys(view.slug).includes(n.memberKey)) ?? null)
         : null,
     [notices, view],
   );
@@ -2397,9 +2360,13 @@ export function NewUiApp() {
         // Not the tool whose pane is open: `ReopenAlert` is already sitting on
         // it with the same two routes and the same button, and one fact drawn
         // twice on one screen reads as two problems.
-        .filter((v) => !(view.kind === "app" && view.slug === v.slug))
+        //
+        // `openTool`, not the pane's slug: verdicts are keyed per tool and the
+        // pane is a section, so comparing the two suppressed nothing and drew
+        // the card twice.
+        .filter((v) => v.slug !== openTool)
         .map((v) => ({ slug: v.slug, name: toolName(v.slug) ?? v.slug })),
-    [verdicts, toolName, view],
+    [verdicts, toolName, openTool],
   );
 
   /**
@@ -2515,23 +2482,12 @@ export function NewUiApp() {
     // at the moment of flipping.
     const member = groups
       .find((g) => g.id === view.slug)
-      ?.members.find((m) => !m.cascade);
+      ?.members.find((m) => m.credential === "additive");
     return member
       ? credentialScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
       : undefined;
   }, [view, groups, platform, proxy]);
 
-  /**
-   * How wide this row reaches, for the rows the note above does not cover.
-   *
-   * The brokered host entries - the API surfaces, OpenRouter - are matched on
-   * host exactly like the session ones, so flipping them intercepts that host
-   * for every client on the machine. They said nothing about it, because the
-   * only note in this position keyed on the credential and theirs is the
-   * ordinary one. Scope and credential are separate fields now, so each row
-   * gets whichever sentences are true of it: a session host row draws both, an
-   * API host row draws this one, a config tool draws neither.
-   */
   /**
    * Whether the open section's figures cover less than its switch routes.
    *
@@ -2544,26 +2500,54 @@ export function NewUiApp() {
   const partialReading = useMemo(() => {
     if (view.kind !== "app") return undefined;
     const section = groups.find((g) => g.id === view.slug);
-    const tool = section?.members.find((m) => m.kind === "config");
-    if (!section || !tool) return undefined;
+    const configMember = section?.members.find((m) => m.kind === "config");
+    if (!section || !configMember) return undefined;
     return section.members.some((m) => m.kind === "proxy")
-      ? { covers: tool.tool?.product_name ?? tool.name }
+      ? { covers: configMember.tool?.product_name ?? configMember.name }
       : undefined;
   }, [view, groups]);
 
+  /**
+   * How wide this row reaches, for every host it reaches on.
+   *
+   * The brokered host entries - the API surfaces, OpenRouter - are matched on
+   * host exactly like the session ones, so flipping them intercepts that host
+   * for every client on the machine. They said nothing about it, because the
+   * only note in this position keyed on the credential and theirs is the
+   * ordinary one. Scope and credential are separate fields now, so each row
+   * gets whichever sentences are true of it.
+   *
+   * Two things this used to get wrong, both by taking the FIRST matching member
+   * and stopping. It was suppressed entirely whenever `chatScope` was set, on
+   * the reasoning that the credential note "already opens with the same host
+   * sentence" - it does not: that note names the additive member's hosts only,
+   * so on the Claude pane it said claude.ai and the section's OTHER host entry,
+   * api.anthropic.com, went unmentioned on the one screen that exists to explain
+   * the switch. And a section with two host members on different hosts named one
+   * of them. Both are the same fix: every `host`-scoped member the section has,
+   * minus the ones the credential note already spoke for.
+   */
   const rowScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
-    // The widest host surface the section has. A section switch spans
-    // mechanisms, and the one worth saying out loud is interception: it reaches
-    // every client on those hosts, not only the app the row is named for.
-    const member = groups
-      .find((g) => g.id === view.slug)
-      ?.members.find((m) => m.scope === "host" || m.scope === "machine");
-    // Not beside the note above, which already opens with the same host
-    // sentence in its own words.
-    if (!member || chatScope) return undefined;
-    return scopeNote(member);
-  }, [view, groups, chatScope]);
+    const members = groups.find((g) => g.id === view.slug)?.members ?? [];
+    const machine = members.find((m) => m.scope === "machine");
+    if (machine) return scopeNote(machine);
+    // Not the additive ones: `chatScope` says the same thing about those, in
+    // the words that also name the credential.
+    const hosts = [
+      ...new Set(
+        members
+          .filter((m) => m.scope === "host" && m.credential !== "additive")
+          .flatMap((m) => m.domain?.hosts ?? []),
+      ),
+    ];
+    if (hosts.length === 0) return undefined;
+    // The section's own name, because the row is the app: "not only Claude" is
+    // the comparison a reader on this pane is making, and a member name ("API")
+    // is not.
+    const named = railApps.find((a) => a.slug === view.slug)?.name ?? "this app";
+    return `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${named}.`;
+  }, [view, groups, railApps]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -2575,9 +2559,29 @@ export function NewUiApp() {
    */
   const proxyAdvice = useMemo(() => {
     if (view.kind !== "app") return undefined;
-    const member = groups.flatMap((g) => g.members).find((m) => m.key === view.slug);
-    return member ? proxyReopenAdvice(member.kind, platform) : undefined;
-  }, [view, groups, platform]);
+    // Asked of the SECTION, because a row is one now. The pane's slug is a
+    // section id and matches no member key at all, so the old lookup found
+    // nothing and the note stopped being drawn.
+    //
+    // Any host member is enough: the advice is about what interception cannot
+    // reach into a running process, and a section that has one has a surface
+    // that behaves that way - whether or not it also has a config tool. The
+    // Claude row is both at once, which is what the per-surface ledger never had
+    // to reconcile.
+    const member = groups
+      .find((g) => g.id === view.slug)
+      ?.members.find((m) => m.kind === "proxy");
+    if (!member) return undefined;
+    // Except beside a measurement. A reopen verdict is measured, this is not,
+    // and putting a guess next to a reading invites the reader to weigh the two
+    // - so the tool's own card speaks for the app and this stays quiet while it
+    // is up. `ReopenAlert`'s own condition, asked here rather than shared,
+    // because it is declared below this.
+    const measured =
+      openTool !== null && verdicts.get(openTool)?.reason === "reopen_required";
+    if (measured) return undefined;
+    return proxyReopenAdvice(member.kind, platform);
+  }, [view, groups, openTool, verdicts, platform]);
 
   /**
    * The open app's reopen card, when its verdict says a process is holding older
@@ -2589,20 +2593,23 @@ export function NewUiApp() {
    * verdict, so the card cannot name a route the sweep did not establish.
    */
   const reopenAlert = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const verdict = verdicts.get(view.slug);
+    // The section's config tool, not the pane's slug. A verdict is measured per
+    // tool and a reopen is a process reopening, so both are the tool's - the
+    // section id matched neither map and the card stopped being drawn at all.
+    if (view.kind !== "app" || openTool === null) return undefined;
+    const verdict = verdicts.get(openTool);
     if (verdict?.reason !== "reopen_required") return undefined;
-    const app = appFor(apps, view.slug);
+    const app = appFor(apps, openTool);
     if (!app) return undefined;
     return (
       <ReopenAlert
         name={app.name}
         routeInUse={verdict.route_in_use}
         requestedRoute={verdict.requested_route}
-        onReopen={() => void runningApps.offerAfterChange([view.slug])}
+        onReopen={() => void runningApps.offerAfterChange([openTool])}
       />
     );
-  }, [view, verdicts, apps, runningApps]);
+  }, [view, openTool, verdicts, apps, runningApps]);
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -2975,52 +2982,13 @@ export function NewUiApp() {
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />
-        ) : sessionConsent ? (
-          // The one place an app switch is allowed to route a surface the
-          // person is signed in to. `provider::cascade_domains` still refuses
-          // these rows in Rust, so nothing the CLI or a restore does can flip
-          // them; here the refusal is replaced by an answer, which is what
-          // makes "one switch routes my whole app" honest rather than a
-          // credential routed behind someone's back.
-          //
-          // Initial focus on the secondary, per principle 5: the primary here
-          // starts routing a signed-in session, so the safe button is the one
-          // that receives the keyboard.
-          <Modal
-            tone="warning"
-            icon="shieldCheck"
-            title={`Route ${sessionConsent.name} through Gate?`}
-            subtitle={`This also routes ${sessionMembers(sessionConsent)
-              .map((m) => m.name.toLowerCase())
-              .join(" and ")}, which Gate sees on the account you are already signed in with.`}
-            secondary={{ label: "Not now", onClick: () => setSessionConsent(null) }}
-            primary={{
-              label: `Route ${sessionConsent.name}`,
-              onClick: () => {
-                const section = sessionConsent;
-                setSessionConsent(null);
-                // Recorded before the routing runs, not after: the answer is
-                // the person's and stands whether or not a config write then
-                // fails. Recording it on success would re-ask after a failure
-                // they have already answered for.
-                void acceptSessionRouting(section.id)
-                  .then(loadPreferences)
-                  .catch(() => {});
-                setActionError(null);
-                void routeSection(section, true);
-              },
-            }}
-            onDismiss={() => setSessionConsent(null)}
-          >
-            <p className="text-sm leading-5 text-neutral-600">
-              Gate records and inspects that traffic. It does not supply a key
-              for it, and it cannot read anything you are not sending anyway.
-            </p>
-            <p className="text-sm leading-5 text-neutral-600">
-              Asked once per app. Turning {sessionConsent.name} off later does
-              not bring this question back.
-            </p>
-          </Modal>
+        ) : section.consent ? (
+          <SessionConsentDialog
+            name={section.consent.name}
+            surfaces={sessionMembers(section.consent)}
+            onDismiss={section.dismissConsent}
+            onConfirm={section.confirmConsent}
+          />
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and
           // connecting cannot proceed without one. Asking first matters because
@@ -3114,13 +3082,13 @@ export function NewUiApp() {
             // says in words - the design draws eleven `gate/...` ids, and
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
-            appName={
-              appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
-              "This app"
-            }
+            // The tool's name, resolved through the section: a model choice is
+            // per tool and `apps` is keyed that way, so the pane's own section
+            // id found nothing here and every dialog read "This app".
+            appName={appFor(apps, openTool ?? "")?.name ?? "This app"}
             // The slug, not the display name: compatibility is keyed on the tool
             // the preferences use, and two apps can share a name.
-            appSlug={view.kind === "app" ? view.slug : null}
+            appSlug={openTool}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
@@ -3135,11 +3103,7 @@ export function NewUiApp() {
           />
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
-            app={{
-              name:
-                appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
-                "this app",
-            }}
+            app={{ name: appFor(apps, openTool ?? "")?.name ?? "this app" }}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
             vendor={modelOverlay.modelIds[0].split("/")[0]}
@@ -3332,7 +3296,7 @@ export function NewUiApp() {
           // which is legible on its own - but the switch under it covers three
           // surfaces, and this is the only place that says which.
           description={describeSection(view.slug)}
-          logo={brandMarkFor(view.slug)}
+          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
@@ -3385,7 +3349,7 @@ export function NewUiApp() {
           // header is never sent and the gateway never overrides the model.
           // Offering the choice let the user pick a Gate model, accept the paid
           // confirmation, and be served their own model anyway.
-          {...(multiProviderSlugs.has(view.slug) || openDomain
+          {...((openTool !== null && multiProviderSlugs.has(openTool)) || openDomain
             ? {}
             : {
                 modelChoice: openModelChoice,

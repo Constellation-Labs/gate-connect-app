@@ -100,6 +100,15 @@ pub struct Preferences {
     /// simply leaves the switch off, and the question comes back the next time
     /// the person reaches for it. An install predating the field reads as never
     /// asked, which is right: consent nobody was asked for is not consent.
+    ///
+    /// The ids are the frontend's section ids (`SECTIONS` in
+    /// `src/lib/groups.ts`) and nothing here can validate one: this file records
+    /// the answer, and the shells are what act on it. Two consequences worth
+    /// knowing before editing that table - renaming a section id silently
+    /// discards every consent recorded under the old one and asks again, which
+    /// is the safe direction; and the answer is per section rather than per
+    /// surface, so adding an additive member to a section somebody already
+    /// accepted does not re-ask.
     #[serde(default)]
     pub session_routing_accepted: Vec<String>,
     /// Notify when a request is **blocked**.

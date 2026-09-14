@@ -195,7 +195,15 @@ export function useRouting({
     }
   }, [resync]);
 
-  /** Trust the CA if it is not trusted yet, asking first. */
+  /** Trust the CA if it is not trusted yet, asking first.
+   *
+   * The state it reads is `proxy.ca_trusted` and nothing else. A session-long
+   * memo of "we installed it" was tried here, to stop a cascade's later members
+   * re-asking before the prop caught up, and it turned out to guard nothing the
+   * cascade's own single gate does not already handle - while being able to
+   * outlive the certificate itself, since a CA can go away by a reset, a
+   * `certutil -D` or another window. If a repeated prompt ever does appear, the
+   * fix is the gate in `useSectionRouting`, not a belief cached here. */
   const ensureCaTrusted = useCallback(async () => {
     // Null on a platform with no proxy subsystem: nothing to trust, and nothing
     // to interrupt the user with.
@@ -211,6 +219,33 @@ export function useRouting({
     await proxyTrustCa();
     logInfo("routing: CA installed");
   }, [proxy, ask]);
+
+  /**
+   * The same gate, asked once for a whole cascade and answered with whether to
+   * go on.
+   *
+   * `setFamilyRouted` makes the same call for the same reason - "the dialog
+   * belongs before the first command rather than sprung from member three" - but
+   * the window shell's app switch cascades outside this hook, so it needs the
+   * gate on its own. Declining used to abandon only the member that raised it,
+   * leaving the next member's dialog on screen: the person said no and was asked
+   * again, about the same certificate.
+   *
+   * False means do not proceed. A declined gate is an answer and reports
+   * nothing; a failed install is reported here, where `onError` lives.
+   */
+  const confirmCaTrusted = useCallback(async (): Promise<boolean> => {
+    try {
+      await ensureCaTrusted();
+      return true;
+    } catch (e) {
+      if (!(e instanceof Declined)) {
+        trackError(e, "trust_ca");
+        onError?.(e, "trust_ca");
+      }
+      return false;
+    }
+  }, [ensureCaTrusted, onError]);
 
   /**
    * Start the engine if it is not running.
@@ -369,25 +404,33 @@ export function useRouting({
   /**
    * Route or unroute one proxy domain. No drift gate: a domain has no
    * hand-written config to preserve, only an enabled flag.
+   *
+   * Reports whether the flag actually moved, like `setAppRouted` - false for a
+   * declined gate and for a failure, both of which have already been handled
+   * here. A section cascade needs it: it follows up on what moved, and it has no
+   * other way to find out, because nothing in this hook throws to its caller.
    */
   const setDomainRouted = useCallback(
-    async (slug: string, routed: boolean) => {
-      if (busy) return;
+    async (slug: string, routed: boolean): Promise<boolean> => {
+      if (busy) return false;
       setBusy(true);
+      let changed = false;
       try {
         if (routed) {
           await ensureCaTrusted();
           await ensureEngineRunning();
         }
         await proxySetDomain(slug, routed);
+        changed = true;
         track("domain_toggled", { domain: slug, routed });
       } catch (e) {
-        if (e instanceof Declined) return;
+        if (e instanceof Declined) return false;
         trackError(e, "provider_toggle", { domain: slug, routed });
         onError?.(e, "domain");
       } finally {
         await settle();
       }
+      return changed;
     },
     [busy, ensureCaTrusted, ensureEngineRunning, resync, onError],
   );
@@ -484,6 +527,7 @@ export function useRouting({
     busy,
     prompt,
     resolvePrompt,
+    confirmCaTrusted,
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,

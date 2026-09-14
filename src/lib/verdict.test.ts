@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Verdict, VerdictReason } from "./api";
 import { NEXT_ACTION_LABEL, verdictStatus, verdictsBySlug } from "./verdict";
 
+// `sectionStatus` is tested in `groups.test.ts`, against a real `buildGroups`
+// ledger: what it answers is a question about a section's members, and this
+// file has no fixtures for those.
+
+
 function verdict(overrides: Partial<Verdict> = {}): Verdict {
   return {
     slug: "claude-code",

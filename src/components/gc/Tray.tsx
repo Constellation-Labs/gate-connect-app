@@ -401,10 +401,14 @@ function TrayGroup({
             </span>
             <BaseSwitch
               on={app.on}
-              // The card's eyebrow in front of the row label, same as the
-              // rail's rows: "CLI" alone names three of these, and the heading
-              // that separates them is a sibling rather than a parent.
-              label={group.label ? `${group.label} ${app.name}` : app.name}
+              // The row's own name, same as the rail's rows (`Sidebar.tsx`).
+              // The eyebrow used to be a vendor and a row used to be a surface,
+              // so "CLI" alone named three of these and the heading was what
+              // told them apart. A row is an app now and its name is already
+              // unique, while the heading above it is a band - so prefixing it
+              // named the switch "Apps Claude", which is not a thing on anyone's
+              // machine.
+              label={app.name}
               busy={app.busy}
               onClick={() => onToggleApp(app.slug, !app.on)}
             />

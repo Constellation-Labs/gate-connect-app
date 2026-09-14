@@ -742,8 +742,12 @@ fn off_members(p: &Provider) -> Vec<String> {
     }
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     if let Ok(domains) = crate::proxy::config::load_domains() {
+        // Hoisted, like the two other callers: `cascade_domains` rebuilds the
+        // whole catalog to answer, and inside the loop that was once per
+        // persisted domain.
+        let cascaded = cascade_domains(p);
         for d in domains {
-            if cascade_domains(p).contains(&d.slug.as_str()) && !d.enabled {
+            if cascaded.contains(&d.slug.as_str()) && !d.enabled {
                 out.push(d.slug);
             }
         }

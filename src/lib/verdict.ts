@@ -1,4 +1,5 @@
 import type { Verdict, VerdictNextAction, VerdictReason } from "./api";
+import { governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
 
@@ -123,31 +124,42 @@ export function proxyMemberStatus(m: GroupMember): AppStatus {
  * The status line for a whole section, which is what a rail row is now.
  *
  * A section spans mechanisms - a config tool and two intercepted hosts under
- * one switch - so its line has to answer for all of them at once. The rule is
- * the strictest member wins, in the order a user would care:
+ * one switch - so its line has to answer for all of them at once:
  *
- * 1. Anything needing a human (an error, drift, an untrusted certificate) is
- *    the line, because a section that says "Protected" while one of its
- *    surfaces is drifted is making the claim principle 6 forbids.
+ * 1. The first member with a line that is not plain routing, in DRAW order. A
+ *    section that says "Protected" while one of its surfaces is drifted is
+ *    making the claim principle 6 forbids, so anything drifted or not-protected
+ *    outranks the count below it.
  * 2. Otherwise, routing if every member the switch governs is routing.
  * 3. Otherwise "Partly routed" if some are, which is the state an app switch
  *    makes reachable and a per-surface ledger never had to describe.
  * 4. Otherwise off.
  *
- * Reads the SWITCH's members - the brokered half - for on/off, and every
- * member for exceptions. A section is not "off" because its session surface is
- * off; that surface answers the same switch but does not define it.
+ * Rule 1 is draw order and not a severity ladder, which the doc here used to
+ * claim: a member still being swept reads `not-protected / "Checking"`, so drawn
+ * first it speaks over a sibling that is genuinely drifted. `groupSummary` in
+ * `lib/groups.ts` has the explicit ladder for callers that need one. Rule 1 also
+ * never sees an untrusted certificate on a proxy member, which
+ * `proxyMemberStatus` reports as `not-routed / "Blocked"` rather than as an
+ * exception - that is a row nobody has managed to route yet, not a row that has
+ * gone wrong.
+ *
+ * Reads {@link governingMembers} for on/off and every member for exceptions: a
+ * section is not "off" because its session surface is off, and a section that
+ * has nothing but session surfaces is described by them, because otherwise it is
+ * described by nothing and reports "Off" over traffic it is carrying.
  */
 export function sectionStatus(
   group: Group,
-  appFor: Map<string, SidebarApp>,
+  statusBySlug: Map<string, SidebarApp>,
 ): AppStatus | null {
   if (group.members.length === 0) return null;
   // A config member's line is the sweep's, which the rail already computed; a
-  // proxy member's is its own state. Taking the tool's from `appFor` keeps the
-  // section and the tool it contains from ever disagreeing.
+  // proxy member's is its own state. Taking the tool's from the map keeps the
+  // section and the tool it contains from ever disagreeing. Named for what it
+  // is rather than `appFor`, which is a lookup FUNCTION in both shells.
   const lines = group.members.map((m) =>
-    m.kind === "config" ? appFor.get(m.key)?.status : proxyMemberStatus(m),
+    m.kind === "config" ? statusBySlug.get(m.key)?.status : proxyMemberStatus(m),
   );
   const known = lines.filter((l): l is AppStatus => l !== undefined);
   if (known.length === 0) return null;
@@ -155,9 +167,12 @@ export function sectionStatus(
   const exception = known.find((l) => l.kind === "drifted" || l.kind === "not-protected");
   if (exception) return exception;
 
-  const governed = group.members.filter((m) => m.cascade);
+  const governed = governingMembers(group.members);
   const routing = governed.filter((m) => m.routed).length;
   if (governed.length > 0 && routing === governed.length) return { kind: "protected" };
+  // Reachable only when no member's own line is already `not-protected` - the
+  // exception above returns those - so in practice this is the mixed state where
+  // every member is either routing or plainly off.
   if (routing > 0) return { kind: "not-protected", detail: "Partly routed" };
-  return { kind: "not-routed", detail: group.cascadeDesired > 0 ? "Blocked" : "Off" };
+  return { kind: "not-routed", detail: group.switchDesired > 0 ? "Blocked" : "Off" };
 }

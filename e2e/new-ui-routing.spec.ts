@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import { OPENCLAW } from "./backend";
 
 /**
  * The new window UI's routing actions, against the same fake backend the
@@ -159,7 +160,10 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.routeApp("Claude");
+    // The switch directly, not `routeApp`: this one is turning the app OFF, and
+    // the helper only answers the consent dialog an ON raises. That nothing is
+    // asked here is the assertion below.
+    await app.appSwitch("Claude").click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
@@ -271,13 +275,17 @@ test.describe("new UI drift repair", () => {
       failures: { connect_tool: "failed to write ~/.codex/config.toml" },
     });
 
-    const sidebarSwitch = app.appSwitch("ChatGPT / Codex");
-    await sidebarSwitch.click();
+    // Through the helper: this section holds a session surface, so its switch
+    // asks before it routes. The answer is recorded, which is why the retry
+    // below is a plain click.
+    await app.routeApp("ChatGPT / Codex");
 
     // The rail row keeps the phrase and drops the reason, which does not fit
     // 250px. The pane header is the surface with room for the sentence, and it
     // outlives the banner - which is the half of this that still matters.
-    await app.page.getByRole("button", { name: "CLI" }).first().click();
+    //
+    // Opened by the section's name: the row is the app, and Codex is inside it.
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
   });
 
@@ -288,13 +296,15 @@ test.describe("new UI drift repair", () => {
       failures: { connect_tool: "failed to write ~/.codex/config.toml" },
     });
 
-    const sidebarSwitch = app.appSwitch("ChatGPT / Codex");
-    await sidebarSwitch.click();
+    // Through the helper: this section holds a session surface, so its switch
+    // asks before it routes. The answer is recorded, which is why the retry
+    // below is a plain click.
+    await app.routeApp("ChatGPT / Codex");
 
     // Opened before the retry, not after: with the pane closed the reason is
     // nowhere on the page and the count below would pass without the retry ever
     // having cleared anything.
-    await app.page.getByRole("button", { name: "CLI" }).first().click();
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.
@@ -303,7 +313,7 @@ test.describe("new UI drift repair", () => {
     await app.page.evaluate(() => {
       window.__GATE_E2E__.state.failures = {};
     });
-    await sidebarSwitch.click();
+    await app.appSwitch("ChatGPT / Codex").click();
 
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
@@ -370,24 +380,19 @@ test.describe("new UI: refreshing the inventory", () => {
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
-    // OpenCode rather than Codex, because a section exists as soon as anything
-    // in it does: ChatGPT / Codex draws from its two chatgpt.com domains with no
-    // tool installed at all, so it could never test "appears when a tool does".
-    // Nothing in the default catalog belongs to the OpenCode section.
-    const row = app.appSwitch("OpenCode");
+    // OpenClaw, because a section exists as soon as anything in it does: every
+    // other section draws from a catalog domain with no tool installed at all -
+    // ChatGPT / Codex from its two chatgpt.com rows, OpenCode from its own Zen
+    // and Go host - so none of them could test "appears when a tool does".
+    // OpenClaw and Hermes are the two whose only member is the tool.
+    const row = app.appSwitch("OpenClaw");
     await expect(row).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
     // Installed behind the window's back, exactly as a terminal would.
     await app.patch({
       tools: [
-        {
-          slug: "opencode",
-          name: "OpenCode",
-          upstream_provider_name: "your existing providers",
-          default_upstream_url: "https://gw.example/opencode",
-          status: { kind: "detected" },
-        },
+        { ...OPENCLAW },
       ],
     });
     // Nothing until the backend says so, which is the whole difference from the
@@ -1003,6 +1008,10 @@ test.describe("new UI sidebar rail", () => {
           .sort(),
       )
       .toEqual(["chatgpt", "chatgpt-apps"]);
+    // And the third member, which is the half this used to leave out: the
+    // section spans two mechanisms, so asserting only the domains would stay
+    // green if the config write stopped firing entirely.
+    await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({ slug: "codex" });
   });
 
   test("an app switch asks before it routes a surface you are signed in to", async ({
@@ -1020,8 +1029,93 @@ test.describe("new UI sidebar rail", () => {
     ).toBeVisible();
 
     await app.page.getByRole("button", { name: "Not now" }).click();
+    // Settled on a positive fact first. Two empty call logs read immediately
+    // after a click pass while the click is still in flight, so they would go
+    // green on a decline that actually routed - the one thing this test is for.
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
     expect(await callsFor(app.page, "proxy_set_domain")).toEqual([]);
     expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+  });
+
+  test("the consent answer is recorded, so the question is asked once", async ({
+    boot,
+  }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    // The recording is the whole mechanism - `accept_session_routing`, read back
+    // through `get_preferences` - and it had no test at any level, so a
+    // regression that routed but never recorded would have shipped as a dialog
+    // returning on every click.
+    await app.routeApp("Claude");
+    await expect.poll(() => app.lastCall("accept_session_routing")).toMatchObject({
+      section: "claude",
+    });
+
+    // Off and on again: no dialog the second time, and the cascade runs.
+    await app.appSwitch("Claude").click();
+    await expect(app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
+    await app.appSwitch("Claude").click();
+
+    await expect(
+      app.page.getByRole("heading", { name: "Route Claude through Gate?" }),
+    ).toHaveCount(0);
+    await expect
+      .poll(async () =>
+        (await app.state()).proxy.domains
+          .filter((d) => d.enabled)
+          .map((d) => d.slug)
+          .sort(),
+      )
+      .toEqual(["anthropic", "claude-web"]);
+  });
+
+  test("one certificate question for a whole section, not one per surface", async ({
+    boot,
+  }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: false }, tools: [] });
+
+    // Two members, two writes, and the gate belongs in front of both: asked per
+    // member, declining the first left the second one's dialog on screen - the
+    // person saying no and being asked again about the same certificate. The
+    // decline half is the test above; this is the accept half, and what it pins
+    // is that one answer covers the cascade.
+    await app.routeApp("Claude");
+    await app.page.getByRole("button", { name: "Trust certificate" }).click();
+
+    await expect
+      .poll(async () =>
+        (await app.state()).proxy.domains
+          .filter((d) => d.enabled)
+          .map((d) => d.slug)
+          .sort(),
+      )
+      .toEqual(["anthropic", "claude-web"]);
+    // One prompt for the cascade, and it is gone.
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    expect(await callsFor(app.page, "proxy_trust_ca")).toHaveLength(1);
+  });
+
+  test("a section made only of session surfaces can be switched back off", async ({
+    boot,
+  }) => {
+    // ChatGPT / Codex with no Codex CLI on the machine is two additive rows and
+    // nothing else. Its switch used to count the brokered half, which is empty
+    // here, so it read off however the two hosts were set: the click routed
+    // them, the switch snapped back to off, and the next click did nothing at
+    // all because everything it would flip was already on. The person could turn
+    // their signed-in session on and then had no way to turn it off.
+    const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
+
+    await app.routeApp("ChatGPT / Codex");
+    await expect(app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "true");
+
+    await app.appSwitch("ChatGPT / Codex").click();
+
+    await expect(app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "false");
+    await expect
+      .poll(async () => (await app.state()).proxy.domains.filter((d) => d.enabled).length)
+      .toBe(0);
   });
 
   test("a row opens a pane that says what its counters measured", async ({
@@ -1039,7 +1133,10 @@ test.describe("new UI sidebar rail", () => {
       .click();
 
     await expect(app.page.getByRole("heading", { name: "Claude" })).toBeVisible();
-    await expect(app.page.getByText(/These counts cover/)).toBeVisible();
+    // Named, not just present: which surface the figures measured IS the
+    // sentence. `/These counts cover/` alone passes on a caveat that names
+    // nothing, which is the state it exists to replace.
+    await expect(app.page.getByText(/These counts cover Claude Code/)).toBeVisible();
   });
 
   test("a row with nothing attributable says so instead of reporting a quiet day", async ({
@@ -1066,10 +1163,19 @@ test.describe("new UI sidebar rail", () => {
     // The eyebrow is the band now rather than a vendor, because a row is an app
     // and labelling each row's own group would print every name twice. Read off
     // the band's own counter rather than by text: both bands draw one.
-    const tools = app.page
-      .getByRole("heading", { name: "Tools", exact: true })
+    const apps = app.page
+      .getByRole("heading", { name: "Apps", exact: true })
       .locator("xpath=following-sibling::span");
-    await expect(tools).toHaveText(/of \d+$/);
+    // An exact count, and then the same count after a row moves. `/of \d+$/`
+    // passes for "0 of 0", so it went green on a rail that drew no rows at all -
+    // and a counter that never changes is not a counter.
+    // Three: Claude, ChatGPT / Codex and OpenRouter, which the default catalog
+    // draws whether or not a tool is installed.
+    await expect(apps).toHaveText("0 of 3");
+
+    await app.routeApp("ChatGPT / Codex");
+
+    await expect(apps).toHaveText("1 of 3");
   });
 
   test("the multi-provider tools each get a switch, under one band", async ({ boot }) => {

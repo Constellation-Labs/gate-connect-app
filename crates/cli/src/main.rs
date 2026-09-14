@@ -696,6 +696,25 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
             }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
+            // The GUI raises a dialog before this exact act, because a row whose
+            // credential does not cascade carries the session the operator is
+            // already signed in with rather than a key Gate brokers. The CLI
+            // cannot ask - the toggle has happened by the time anything could -
+            // so it says what it did. The table below carries the same two facts
+            // in its columns, and somebody toggling one domain by name never
+            // reads it.
+            if enabled {
+                if let Some(d) = st.domains.iter().find(|d| d.slug == slug) {
+                    if !d.credential.cascades() {
+                        println!(
+                            "note: {slug} carries the credential you are already signed in with, \
+                             not a key Gate brokers. Gate now records and inspects that traffic \
+                             on {}.",
+                            d.hosts.join(", ")
+                        );
+                    }
+                }
+            }
             print_proxy_domains(&st.domains);
         }
         ProxyCmd::TrustCa { system_trust } => {

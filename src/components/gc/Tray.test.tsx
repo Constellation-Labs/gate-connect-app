@@ -301,9 +301,10 @@ describe("the group rows", () => {
       ],
       onToggleApp,
     });
-    // The card's eyebrow in front of the row label: "CLI" and its siblings name
-    // a surface, and the heading is what says whose.
-    screen.getByRole("switch", { name: "Anthropic Codex" }).click();
+    // The row's own name. A row is an app now, so the heading above it is a
+    // band ("Apps") rather than a vendor, and prefixing it named the switch
+    // after the band.
+    screen.getByRole("switch", { name: "Codex" }).click();
     expect(onToggleApp).toHaveBeenCalledWith("codex", false);
   });
 });

@@ -50,9 +50,13 @@ pub enum Credential {
     /// per row, never by cascade.
     Additive,
     /// Gate sees the request and writes it to the audit trail without changing
-    /// what authenticates it. No entry ships this today; it exists because
-    /// "inspected" and "credential swapped" are different promises, and a row
-    /// that only watches must be able to say so rather than borrowing
+    /// what authenticates it. No CATALOG entry ships this - it is what the
+    /// serde fallback answers for a row nobody classified
+    /// (`proxy::default_credential`) and what the relay's test seam carries,
+    /// both for the same reason: it is the inert value, cascading nothing and
+    /// claiming nothing. It exists as a variant because "inspected" and
+    /// "credential swapped" are different promises, and a row that only watches
+    /// must be able to say so rather than borrowing
     /// [`Credential::Additive`]'s sentence.
     Observed,
 }
@@ -113,6 +117,17 @@ pub enum Scope {
 /// existed precisely to catch what the taxonomy could not place. Every row has
 /// exactly one client, so nothing can fall off the ledger and the catch-all is
 /// gone by construction.
+/// The wire name is [`Client::slug`] for every variant, and the per-variant
+/// `rename` attributes below are what make that true. `rename_all =
+/// "kebab-case"` is not enough: it splits a variant on its internal capitals, so
+/// `ChatGpt`, `OpenCode` and `OpenClaw` went over the wire as `"chat-gpt"`,
+/// `"open-code"` and `"open-claw"` while `slug()` answered `"chatgpt"`,
+/// `"opencode"` and `"openclaw"`. The frontend was written against `slug()`, so
+/// `MULTI_PROVIDER_CLIENTS` in `src/lib/groups.ts` silently stopped matching the
+/// two multi-provider tools, and the diagnostics report printed `open-code` to
+/// whoever was reading it. Nothing was red: every fixture hardcodes the `slug()`
+/// spelling, and the CLI prints `slug()` directly. `wire_names_are_the_slugs`
+/// below is what stops it coming back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Client {
@@ -124,8 +139,11 @@ pub enum Client {
     ClaudeDesktop,
     Codex,
     /// The ChatGPT desktop app, and the browser tab beside it on the same host.
+    #[serde(rename = "chatgpt")]
     ChatGpt,
+    #[serde(rename = "opencode")]
     OpenCode,
+    #[serde(rename = "openclaw")]
     OpenClaw,
     Hermes,
     /// Not one program: rows that cover whatever on the machine happens to talk
@@ -151,8 +169,15 @@ impl Client {
         }
     }
 
-    /// The group heading. A product name, because that is what the user
-    /// recognises on their own machine; the rows underneath carry the surface.
+    /// The group heading this client would carry.
+    ///
+    /// Not what the shipped rail draws: `SECTIONS` in `src/lib/groups.ts` is a
+    /// hand-kept table with its own ids, names and order, and it only passes
+    /// `client` through rather than grouping by it. So this and [`Client::vendor`]
+    /// are the Rust-side answer for the CLI and for whatever groups by client
+    /// next, and the module header's "it is what the ledger groups by" describes
+    /// the intent rather than today's frontend. Kept because the facts are
+    /// right and the duplication is the frontend's to retire, not this file's.
     pub const fn display_name(self) -> &'static str {
         match self {
             Client::ClaudeCode => "Claude Code",
@@ -210,6 +235,36 @@ mod tests {
         assert!(Credential::Brokered.cascades());
         assert!(!Credential::Additive.cascades());
         assert!(!Credential::Observed.cascades());
+    }
+
+    /// The wire name and [`Client::slug`] are one string, asserted per variant.
+    ///
+    /// They were two for three variants, and nothing caught it: the CLI prints
+    /// `slug()`, every fixture hardcodes `slug()`, and the frontend's own
+    /// `ClientId` union is a type assertion that `tsc` cannot check against a
+    /// running backend. So the only place the disagreement existed was a real
+    /// machine, where it silently dropped `coversAllProviders` for OpenCode and
+    /// OpenClaw. Serialized rather than compared to a literal table, so this
+    /// fails if anyone changes the derive or the container attribute.
+    #[test]
+    fn wire_names_are_the_slugs() {
+        for client in Client::ALL {
+            let wire = serde_json::to_string(&client).expect("serializes");
+            assert_eq!(
+                wire,
+                format!("\"{}\"", client.slug()),
+                "{} serializes to something other than its slug",
+                client.slug()
+            );
+            let back: Client =
+                serde_json::from_str(&format!("\"{}\"", client.slug())).expect("round-trips");
+            assert_eq!(
+                back,
+                client,
+                "{} does not deserialize from its slug",
+                client.slug()
+            );
+        }
     }
 
     /// Slugs are ids - they reach config, the CLI and the ledger's group keys -

@@ -6,6 +6,7 @@ import {
   browserTrustRestartAdvice,
   buildGroups,
   credentialScopeNote,
+  describeMember,
   groupSummary,
   cascadeTargets,
   needsSessionConsent,
@@ -203,23 +204,15 @@ describe("buildGroups", () => {
   });
 
   it("describes every row it can, because the labels no longer describe themselves", () => {
-    const groups = buildGroups(
-      [
-        tool("claude-code", "CLI", { kind: "connected" }),
-        tool("opencode", "OpenCode", { kind: "detected" }, "opencode"),
-      ],
-      [domain(), sessionDomain()],
-      ON,
-    );
-    const byKey = new Map(
-      groups.flatMap((g) => g.members).map((m) => [m.key, m.description]),
-    );
-    expect(byKey.get("claude-code")).toBe("Claude Code in your terminal.");
-    expect(byKey.get("opencode")).toBe("The OpenCode editor.");
+    // Asked of `describeMember` rather than of a member's own field: the field
+    // was carried on every member and read by nothing - the pane describes the
+    // SECTION now - so it went, and this is where the copy lives.
+    expect(describeMember("claude-code")).toBe("Claude Code in your terminal.");
+    expect(describeMember("opencode")).toBe("The OpenCode editor.");
     // The line that was wrong, and the direction it was wrong in: this row
     // covers the desktop app too, and said "browser tab".
-    expect(byKey.get("claude-web")).toContain("desktop app");
-    expect(byKey.get("claude-web")).toContain("browser tab");
+    expect(describeMember("claude-web")).toContain("desktop app");
+    expect(describeMember("claude-web")).toContain("browser tab");
   });
 
   it("drops sections with nothing routable and leaves out what cannot route", () => {
@@ -296,6 +289,16 @@ describe("session consent", () => {
   });
 });
 
+/**
+ * `sectionStatus` lives in `./verdict`, and its tests live here on purpose.
+ *
+ * What they exercise is the status line over a REAL ledger - `buildGroups`'
+ * output, with this file's tool, domain and sweep fixtures behind it - because
+ * the questions they ask are about member composition: a drifted sibling, a
+ * section that is partly routed, a session surface that must not define the
+ * line. Moved next to the function, they would need those fixtures copied, and
+ * a copy of a fixture is how two files come to disagree about what a section is.
+ */
 describe("sectionStatus", () => {
   it("lets an exception outrank routing, so a section cannot claim more than it does", () => {
     // A section spans mechanisms, so one surface can be drifted while another
@@ -617,6 +620,12 @@ describe("cascadeTargets", () => {
     routed: members.filter((m) => m.routed).length,
     desired: members.filter((m) => m.desired).length,
     cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
+    // The app switch's own predicate, spelled out rather than imported so a
+    // change to it fails these tests loudly instead of quietly rewriting what
+    // they assert. `governingMembers`' fallback included: a section with no
+    // brokered member is described by the members it has.
+    switchOn: governing(members).some(isIntended),
+    switchDesired: governing(members).filter(isIntended).length,
   });
 
   it("rides an additive member only when the caller has asked", () => {
@@ -926,3 +935,11 @@ describe("credentialScopeNote", () => {
     expect(credentialScopeNote(member, "macos", true)).toBeUndefined();
   });
 });
+
+/** `governingMembers`' rule, restated for the fixtures above. */
+const governing = (members: GroupMember[]): GroupMember[] => {
+  const brokered = members.filter((m) => m.cascade);
+  return brokered.length > 0 ? brokered : members;
+};
+/** `intended`'s rule: asked for, or drifted while asked for. */
+const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";

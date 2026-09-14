@@ -109,3 +109,52 @@ export function brandMarkFor(slug: string): JSX.Element | undefined {
   const name = BRAND_BY_SLUG[slug];
   return name ? <BrandMark name={name} /> : undefined;
 }
+
+/**
+ * Sections whose mark is not their first member's.
+ *
+ * Both multi-surface sections, and for one reason: their first member is a CLI,
+ * so the row named for a whole app wore its terminal tool's mark - Claude the
+ * Claude Code chevrons, ChatGPT / Codex the Codex knot. A row is the app now, so
+ * it takes the app's mark and the CLI keeps its own inside the pane.
+ *
+ * The member walk below answers for every other section, where the app's own
+ * tool is the first member and its mark is already the right one - OpenCode,
+ * OpenClaw, OpenRouter - or where there is no mark to find and a letter tile
+ * stands in (Terminal).
+ *
+ * Keyed by section id and kept here rather than on `SECTIONS`, so the branding
+ * tables stay in the branding file and `lib/groups.ts` owes nothing to a
+ * component.
+ */
+const BRAND_BY_SECTION: Record<string, BrandName> = {
+  claude: "claude",
+  chatgpt: "openai",
+};
+
+/**
+ * The mark for a whole section, which is what a row is.
+ *
+ * One resolution for the rail and the pane, because they had two and drew
+ * different marks for the same row: the rail took `members[0].key` and the pane
+ * took the section id, so the Claude pane fell back to a letter tile while its
+ * rail row carried the Claude Code mark, and the ChatGPT pane landed on the
+ * OpenAI knot only because that section's id happens to equal a catalog domain
+ * slug. The rail's own expression was unstable besides - `members[0]` is the
+ * first SURVIVING member, so uninstalling Claude Code silently changed the row's
+ * icon.
+ *
+ * Section order, not member order: `SECTIONS` lists the app's own tool first, so
+ * the Claude row keeps the Claude Code mark whether or not the CLI is installed.
+ * Falls back to the id so a section synthesised from an unplaced member (whose
+ * id IS its member key) still resolves.
+ */
+export function brandMarkForSection(
+  id: string,
+  memberKeys: readonly string[],
+): JSX.Element | undefined {
+  const named = BRAND_BY_SECTION[id];
+  if (named) return <BrandMark name={named} />;
+  const key = [...memberKeys, id].find((k) => BRAND_BY_SLUG[k]);
+  return key ? brandMarkFor(key) : undefined;
+}

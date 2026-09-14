@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import { OPENCLAW } from "./backend";
 
 /**
  * The tray popover (window label `tray`, Figma `Flows / Tray`, built
@@ -192,20 +193,15 @@ test.describe("tray popover", () => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
-    // OpenCode, not Codex: the ChatGPT / Codex section draws from its domains
-    // with no tool installed, so it is never absent to begin with.
-    const row = app.appSwitch("OpenCode");
+    // OpenClaw: every other section draws from a catalog domain with no tool
+    // installed, so it is never absent to begin with - OpenCode included, which
+    // has its own Zen / Go host row.
+    const row = app.appSwitch("OpenClaw");
     await expect(row).toHaveCount(0);
 
     await app.patch({
       tools: [
-        {
-          slug: "opencode",
-          name: "OpenCode",
-          upstream_provider_name: "your existing providers",
-          default_upstream_url: "https://opencode.ai",
-          status: { kind: "detected" as const },
-        },
+        { ...OPENCLAW },
       ],
     });
     await expect(row).toHaveCount(0);

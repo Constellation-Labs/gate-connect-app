@@ -487,8 +487,10 @@ export interface ProviderState {
    * a family's whole membership - what Home's ledger groups by. */
   domain_slugs: string[];
   /** The subset of `domain_slugs` this provider's switch actually flips, as
-   * the backend derives it from each domain's credential. Replaces the old
-   * `chat_domain_slugs`, which named the excluded half instead. */
+   * the backend derives it from each domain's credential
+   * (`provider::cascade_domains`). It names the INCLUDED half, so a consumer
+   * asking "what does this switch do" reads it directly and one asking for the
+   * session rows takes the difference. */
   cascade_domain_slugs: string[];
 }
 

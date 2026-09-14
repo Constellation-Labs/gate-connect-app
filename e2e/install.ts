@@ -73,13 +73,21 @@ export function installFakeTauri(state: BackendState): void {
   }
 
   /** Recompute a provider's headline from its members, the way the Rust
-   *  provider layer does: on when at least one member is routed. */
+   *  provider layer does: on when at least one member is routed.
+   *
+   *  `cascade_domain_slugs`, not `domain_slugs`. The two split apart on the
+   *  taxonomy branch: the first is what the family switch may flip, the second
+   *  is everything in the family including the session surfaces it must never
+   *  touch (`provider::cascade_domains`, and `proxy_domains_enabled` which reads
+   *  only the cascade). Reading the wide one here made the fake say `openai` was
+   *  enabled because someone had turned on the ChatGPT chat row, which the real
+   *  provider cannot do - its cascade is empty. */
   function syncProvider(slug: string) {
     const p = provider(slug);
     const toolsOn = p.tool_slugs.some(
       (s) => state.tools.find((t) => t.slug === s)?.status.kind === "connected",
     );
-    const domainsOn = p.domain_slugs.some(
+    const domainsOn = p.cascade_domain_slugs.some(
       (s) => state.proxy.domains.find((d) => d.slug === s)?.enabled,
     );
     p.enabled = toolsOn || domainsOn;
@@ -423,8 +431,15 @@ export function installFakeTauri(state: BackendState): void {
       }
       // Proxy domains only follow when the engine is already running -
       // enabling a provider never starts it.
+      //
+      // And only the CASCADE, which is the invariant this whole branch is about:
+      // `provider::enable` iterates `cascade_domains`, so enabling the anthropic
+      // family cannot reach `claude-web` and enabling openai cannot reach either
+      // chatgpt row. Iterating `domain_slugs` here made the fake do exactly what
+      // `claude_web_is_not_reachable_by_enabling_the_anthropic_provider` exists
+      // to forbid, so the suite modelled the opposite of the rule.
       if (state.proxy.running) {
-        for (const s of p.domain_slugs) {
+        for (const s of p.cascade_domain_slugs) {
           const d = state.proxy.domains.find((x) => x.slug === s);
           if (d) d.enabled = true;
         }
@@ -438,7 +453,7 @@ export function installFakeTauri(state: BackendState): void {
         if (t && t.status.kind === "connected") t.status = { kind: "detected" };
       }
       if (state.proxy.running) {
-        for (const s of p.domain_slugs) {
+        for (const s of p.cascade_domain_slugs) {
           const d = state.proxy.domains.find((x) => x.slug === s);
           if (d) d.enabled = false;
         }
@@ -492,6 +507,16 @@ export function installFakeTauri(state: BackendState): void {
       // Answering is what the real command records too, and it is what dismisses
       // the onboarding step.
       state.preferences.share_diagnostics_recorded = true;
+      return null;
+    },
+    // Idempotent and never un-recorded, like `preferences::accept_session_routing`:
+    // turning the section off is not a withdrawal of the explanation, so a spec
+    // that clicks a session app's switch twice is asked once.
+    accept_session_routing: ({ section }) => {
+      const id = section as string;
+      if (!state.preferences.session_routing_accepted.includes(id)) {
+        state.preferences.session_routing_accepted.push(id);
+      }
       return null;
     },
 

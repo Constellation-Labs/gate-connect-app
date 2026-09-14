@@ -155,6 +155,28 @@ export function hintForMember(key: string): string | undefined {
 }
 
 /**
+ * The programs behind a whole section, for the hover on a row that is an app.
+ *
+ * Every member's hint, not the first one's. Both shells took
+ * `members.map(m => m.hint).find(Boolean)`, and members are drawn tools first,
+ * so the Claude row hovered "Claude Code CLI and IDE plugins" and the ChatGPT
+ * row "Codex CLI and IDE extension" - the four entries in {@link MEMBER_HINTS}
+ * that exist to name Cowork and Work reached nobody, which was their whole
+ * stated purpose. A row that says "Claude" and hovers only its CLI is the
+ * surface-vs-app confusion the sections were drawn to end.
+ *
+ * Sentence-joined and lower-cased after the first, because these are noun
+ * phrases rather than sentences and a tooltip is one line.
+ */
+export function sectionHint(group: Group): string | undefined {
+  const hints = [...new Set(group.members.map((m) => m.hint).filter(Boolean))] as string[];
+  if (hints.length === 0) return undefined;
+  return hints
+    .map((h, i) => (i === 0 ? h : h.charAt(0).toLowerCase() + h.slice(1)))
+    .join("; ");
+}
+
+/**
  * What a proxy-routed surface cannot promise about an app that is already open.
  *
  * **Linux only, and the platform gate is the substance rather than caution.**
@@ -295,28 +317,6 @@ export function browserTrustRestartAdvice(
 }
 
 /**
- * What a chat row's switch covers, for the pane that opens on it.
- *
- * The window shell draws a row's copy as one sentence (`describeMember`, through
- * `AppPane`'s `description`), which is enough for "App" and "CLI" and not enough
- * for these: the switch inspects a credential the user is already signed in with
- * and it matches on HOST rather than on the app that made the request, so it
- * covers clients the row does not name. The popover said this on the row itself
- * (`screens/GroupMembers.tsx`' `explain`) and the window said it nowhere, which
- * left the fact in the shell that is no longer the default - and the browser
- * half, which is the part a user most needs before flipping a switch that reads
- * a session cookie, reaching nobody.
- *
- * Not shared with that `explain`: its wording turns on `routed` and ends with a
- * sentence about the family switch above it, and there is no family switch above
- * anything on a pane. The one thing both shells must not say differently is the
- * browser claim, and both take that from `browserScopeNote`.
- *
- * Undefined for every other row, including a proxy row that is not a chat
- * surface: those are already covered by their own description and the host is
- * not a claim about someone's browser.
- */
-/**
  * What a row's blast radius is, in one sentence, for every row that has one
  * worth saying.
  *
@@ -351,6 +351,29 @@ export function scopeNote(member: GroupMember): string | undefined {
   return `Matched on host, so this covers everything on ${hosts} - whatever on this machine sends there, not only ${member.name}.`;
 }
 
+/**
+ * What a row whose credential Gate does not broker covers, for the pane that
+ * opens on it.
+ *
+ * The window shell draws a row's copy as one sentence (`describeMember`, through
+ * `AppPane`'s `description`), which is enough for "App" and "CLI" and not enough
+ * for these: the switch inspects a credential the user is already signed in with
+ * and it matches on HOST rather than on the app that made the request, so it
+ * covers clients the row does not name. The popover said this on the row itself
+ * (`screens/GroupMembers.tsx`' `explain`) and the window said it nowhere, which
+ * left the fact in the shell that is no longer the default - and the browser
+ * half, which is the part a user most needs before flipping a switch that reads
+ * a session cookie, reaching nobody.
+ *
+ * Not shared with that `explain`: its wording turns on `routed` and ends with a
+ * sentence about the family switch above it, and there is no family switch above
+ * anything on a pane. The one thing both shells must not say differently is the
+ * browser claim, and both take that from `browserScopeNote`.
+ *
+ * Undefined for every other row, including a proxy row that is not a chat
+ * surface: those are already covered by their own description and the host is
+ * not a claim about someone's browser.
+ */
 export function credentialScopeNote(
   member: GroupMember,
   platform: Platform,
@@ -443,14 +466,6 @@ export interface GroupMember {
   /** This tool routes every provider configured in it, so there is no one
    * upstream host to name for it. */
   coversAllProviders?: boolean;
-  /** What this row is, in one sentence - `describeMember`'s answer, carried
-   * on the member so the rail, the pane and the family panel cannot disagree
-   * about it. Absent where no copy exists for the slug.
-   *
-   * Load-bearing rather than decoration. The label beside it is a surface
-   * kind ("App", "Web", "CLI"), which says nothing on its own; this is the
-   * half that names the thing on the user's machine. */
-  description?: string;
   /** The programs behind this row, for the hover on a label with no room to
    * say them. See {@link MEMBER_HINTS}. Absent where none are named. */
   hint?: string;
@@ -472,7 +487,12 @@ export interface GroupMember {
    * brokered row cascades, because the others carry a credential the user is
    * already signed in with and routing that is a deliberate per-row act. This
    * replaces the `chat` boolean, which meant this and also meant "session
-   * surface" - two facts in one field, with a name that named neither. */
+   * surface" - two facts in one field, with a name that named neither.
+   *
+   * One caller breaks it on purpose and is the reason to read this as "may a
+   * FAMILY switch flip this" rather than as an invariant: an app switch routes
+   * every surface its app uses, additive rows included, after
+   * {@link needsSessionConsent} has been answered. See {@link cascadeTargets}. */
   cascade: boolean;
 }
 
@@ -511,6 +531,47 @@ export interface Group {
    * leaving the switch stuck on. Reality (`routed`) and the count still speak
    * for every member, including the chat ones. */
   cascadeDesired: number;
+  /** Whether the APP switch renders on - the window shell's rail and the tray,
+   * as opposed to the popover's family switch above.
+   *
+   * ANY governing member, like `cascadeDesired` before it, and the change is
+   * which members govern rather than how they are counted. Any, because the
+   * switch states an intent and the next click's meaning: the person has asked
+   * for some of this app, so the click that follows means stop. Reading it as
+   * ALL was tried and is wrong - it renders off over a routed tool, which is
+   * observation leaking into a switch, and it does not even buy reachability:
+   * from a partly-on section both readings need the same two clicks to get
+   * everywhere, just in the opposite order.
+   *
+   * What was actually broken is {@link governingMembers}' empty case. A section
+   * with no brokered member - ChatGPT / Codex on any machine without the Codex
+   * CLI, where both chatgpt.com rows are additive - counted nothing, so the
+   * switch read off however the two hosts were set, every click asked for "on",
+   * and once they were on {@link cascadeTargets} returned nothing, which made
+   * the off-cascade unreachable from the new shell entirely. The fallback is
+   * what gives that section members to be described by. */
+  switchOn: boolean;
+  /** How many governing members the person has asked for, which separates
+   * "asked for and blocked" from "off". Drives the status line's qualifier. */
+  switchDesired: number;
+}
+
+/**
+ * The members that define a section's switch and its status line.
+ *
+ * The brokered half, as it always was - a section is not "off" because its
+ * session surface is off, and a section whose session surface alone is on does
+ * not get to claim it is routing. The fallback is the new part: a section with
+ * NO brokered member has to be described by the members it does have, or it
+ * describes nothing at all and the switch that flips them can never move.
+ *
+ * Exported because {@link sectionStatus} answers the same question about the
+ * same rows, and the switch and the line beside it disagreeing is the whole
+ * class of bug this file exists to prevent.
+ */
+export function governingMembers(members: GroupMember[]): GroupMember[] {
+  const brokered = members.filter((m) => m.cascade);
+  return brokered.length > 0 ? brokered : members;
 }
 
 function memberFromTool(
@@ -537,7 +598,6 @@ function memberFromTool(
     key: tool.slug,
     kind: "config",
     name: tool.name,
-    description: describeMember(tool.slug),
     hint: hintForMember(tool.slug),
     routed,
     // Intent, which is the config: this is the switch's half of the split, and
@@ -590,7 +650,6 @@ function memberFromDomain(
     key: domain.slug,
     kind: "proxy",
     name: domain.display_name,
-    description: describeMember(domain.slug),
     hint: hintForMember(domain.slug),
     // An enabled domain behind an untrusted certificate is not carrying
     // traffic, so it does not count as routed - same rule as the header's
@@ -644,9 +703,12 @@ const SECTIONS: readonly {
   members: readonly string[];
   /** What this app is, in one sentence, for the pane that opens on it.
    *
-   * A section's own line rather than its first member's: the heading is an app
-   * now, and "Claude Code in your terminal." under a heading reading "Claude"
-   * describes a third of what the switch does. */
+   * A section's own line rather than its first member's, WHERE THE TWO DIFFER:
+   * the heading is an app now, and "Claude Code in your terminal." under a
+   * heading reading "Claude" describes a third of what the switch does. Omit it
+   * on a single-surface section and {@link describeSection} falls through to the
+   * member's own line - four sections used to carry a copy of it instead, which
+   * is two places to edit and one to forget. */
   description?: string;
   blurb?: string;
 }[] = [
@@ -680,14 +742,12 @@ const SECTIONS: readonly {
     name: "OpenClaw",
     band: "tools",
     members: ["openclaw"],
-    description: "OpenClaw in your terminal.",
   },
   {
     id: "hermes",
     name: "Hermes",
     band: "tools",
     members: ["hermes"],
-    description: "Hermes in your terminal.",
   },
   {
     id: "opencode",
@@ -701,7 +761,6 @@ const SECTIONS: readonly {
     name: "Terminal",
     band: "tools",
     members: ["env-proxy"],
-    description: "Command line tools that follow your proxy settings.",
     blurb:
       "Routes every program started after your next login, not only AI tools. Anything else, including a local model, keeps going where it always did.",
   },
@@ -717,8 +776,6 @@ const SECTIONS: readonly {
     // catalog. Folding it into the app switch would mean routing every script
     // on the machine as a side effect of routing ChatGPT.
     members: ["openai"],
-    description:
-      "Anything on this machine that calls api.openai.com directly. Gate intercepts that host, so apps with no gateway setting of their own still route.",
   },
 ];
 
@@ -807,6 +864,7 @@ function group(
   members: GroupMember[],
   blurb?: string,
 ): Group {
+  const governs = governingMembers(members);
   return {
     id,
     name,
@@ -821,14 +879,54 @@ function group(
     // see `cascadeTargets`, which an app switch calls with consent. Keeping the
     // rendered state on the brokered half means a section whose session
     // surface alone is on does not claim to be routing.
-    cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
+    cascadeDesired: members.filter((m) => m.cascade && intended(m)).length,
+    switchOn: governs.some(intended),
+    switchDesired: governs.filter(intended).length,
   };
 }
 
-/** What a section is, in one sentence, or nothing for a synthesised one -
- *  whose id is its member key, so the member's own description answers. */
+/**
+ * Whether the app switch should read this member as ON - the section's half of
+ * the intent-vs-flow split.
+ *
+ * `desired` alone is not it, and the gap is a drifted tool. `memberFromTool`
+ * sets `desired` from the config being Gate's, which a drifted one's is not -
+ * something else rewrote it. But the person still asked for this app to route,
+ * and principle 2 is explicit about what happens when a switch is driven by
+ * anything else: the switch renders off, and clicking it turns off the setting
+ * they were trying to turn on. The rail said so in its own words before the rows
+ * became sections ("a drifted tool is still one the user asked to route"), and
+ * the sections have to carry it now that the row is built from the ledger.
+ *
+ * Deliberately NOT folded into `GroupMember.desired`, which the popover's
+ * `toggleMember` reads for the opposite purpose: there, a drifted member's
+ * `desired: false` is what raises the re-adopt confirmation. Two questions, two
+ * answers - "did the person ask for this" and "is Gate's config in place".
+ */
+function intended(m: GroupMember): boolean {
+  return m.desired || m.attention === "drifted";
+}
+
+/**
+ * What a section is, in one sentence.
+ *
+ * A section carries its own line only where it needs one, which is where it
+ * holds more than one surface: "Claude Code in your terminal" under a heading
+ * reading "Claude" describes a third of what the switch does. A single-surface
+ * section falls through to its member's description instead of repeating it -
+ * four of them used to carry a byte-identical copy, one of them 137 characters
+ * long, where editing one and not the other was silent.
+ *
+ * Through {@link sectionMemberKeys} rather than the id, because three of those
+ * four ids are not their member's key (`terminal` holds `env-proxy`,
+ * `openai-api` holds `openai`). An id no section owns is a section
+ * `buildGroups` synthesised for an unplaced member, whose id IS its member key,
+ * which the same lookup answers.
+ */
 export function describeSection(id: string): string | undefined {
-  return SECTIONS.find((s) => s.id === id)?.description ?? describeMember(id);
+  const section = SECTIONS.find((s) => s.id === id);
+  if (section?.description) return section.description;
+  return describeMember(sectionMemberKeys(id)[0] ?? id);
 }
 
 /** The member keys a section claims, in draw order, or empty for an id no
@@ -858,12 +956,22 @@ export function sectionMemberKeys(id: string): readonly string[] {
  * doing something.
  */
 export function needsSessionConsent(group: Group): boolean {
-  return group.members.some((m) => !m.cascade);
+  return sessionMembers(group).length > 0;
 }
 
-/** The surfaces that answer for it, for the sentence that asks. */
+/**
+ * The surfaces that answer for it, for the sentence that asks.
+ *
+ * `credential === "additive"`, not `!cascade`. The two coincide today and mean
+ * different things: `cascade` is "may a family switch flip this", which is false
+ * for `observed` too - a row Gate watches without changing what authenticates
+ * it. Naming such a row in this dialog would tell the person Gate is about to
+ * route a credential they are signed in with, which is the one claim it does not
+ * make. Nothing ships `observed` yet; the variant exists precisely so the two
+ * sentences are not forced to be one.
+ */
 export function sessionMembers(group: Group): GroupMember[] {
-  return group.members.filter((m) => !m.cascade);
+  return group.members.filter((m) => m.credential === "additive");
 }
 
 /** Which kind of exception `groupSummary` found, so a row can give the sentence
@@ -992,17 +1100,28 @@ export function cascadeTargets(
     //
     // This is the one place on the frontend where the invariant the rest of the
     // tree enforces is deliberately broken, so it is worth being exact about
-    // what replaces it. `provider::cascade_domains` still refuses those rows in
-    // Rust, so nothing the CLI or a restore does can route them. Here, consent
-    // does the work: `needsSessionConsent` reports whether a section has such a
-    // member, and only a caller holding an accepted answer passes `sessions`.
+    // what replaces it - and about how much the Rust layer is actually holding.
+    // `provider::cascade_domains` refuses these rows to a FAMILY switch, so no
+    // cascade in Rust and none from the CLI's `provider enable` can reach them.
+    // It is not a check on routing them: `proxy_set_domain` will enable any row
+    // it is handed, which is what the CLI's `proxy domain claude-web on` and the
+    // popover's own per-surface switch both do, deliberately. So the thing
+    // standing in front of THIS path is consent and nothing else:
+    // `needsSessionConsent` reports whether a section has such a member, and
+    // only a caller holding an accepted answer passes `sessions`.
     // The guarantee moves from "cannot happen" to "cannot happen without being
     // told" - see docs/ui-app-switches-plan.md.
     // An overridden member is left out for the same reason a drifted one is:
     // the family switch writes Gate's config, and here that config is already
     // written and already losing. Turning it on again is a no-op the user would
     // read as a fix.
-    if (on) return !m.desired && m.attention !== "drifted" && m.attention !== "overridden";
-    return m.desired;
+    //
+    // `intended`, not `desired`, on BOTH branches - the same predicate the
+    // switch renders from, or the two disagree about one click. Turning a
+    // section off has to disconnect its drifted tool: the switch reads on
+    // because the person asked for that app, so an off-cascade that skipped the
+    // member would leave the switch on after the click that turned it off.
+    if (on) return !intended(m) && m.attention !== "overridden";
+    return intended(m);
   });
 }

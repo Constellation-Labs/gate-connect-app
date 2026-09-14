@@ -79,8 +79,15 @@ export class App {
    * hid a confirmation on the way out would hide a bug.
    */
   async routeApp(name: string) {
+    const section = SESSION_SECTIONS[name];
+    // Asked once per install, so a second ON in the same test gets no dialog and
+    // waiting for one would hang. Read from the fake backend's own recording
+    // rather than guessed, which is the same thing the app reads.
+    const asked =
+      section !== undefined &&
+      !(await this.state()).preferences.session_routing_accepted.includes(section);
     await this.appSwitch(name).click();
-    if (!SESSION_SECTIONS.includes(name)) return;
+    if (!asked) return;
     // Asserted rather than probed. `isVisible()` does not auto-wait, so a probe
     // would race the dialog's first paint and silently skip it; clicking waits.
     // And if consent ever stops being asked for one of these, this is the line
@@ -101,14 +108,19 @@ type Fixtures = {
 };
 
 /**
- * The sections whose switch asks before it routes, against the default catalog.
+ * The sections whose switch asks before it routes, against the default catalog,
+ * and the section id each one records its answer under.
  *
  * They are the ones holding a `Credential::Additive` row - a surface the person
  * is signed in to. Listed here rather than derived because a spec that overrides
  * `proxy.domains` can change the answer, and such a spec should drive the switch
- * itself rather than through `routeApp`.
+ * itself rather than through `routeApp`. The id is what lets the helper tell a
+ * first ON from a later one, since the question is asked once per install.
  */
-const SESSION_SECTIONS = ["Claude", "ChatGPT / Codex"];
+const SESSION_SECTIONS: Record<string, string> = {
+  Claude: "claude",
+  "ChatGPT / Codex": "chatgpt",
+};
 
 export const test = base.extend<Fixtures>({
   boot: async ({ page }, use) => {

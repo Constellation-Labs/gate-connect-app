@@ -150,8 +150,9 @@ test.describe("new UI running apps", () => {
 
     await app.routeApp("ChatGPT / Codex");
 
-    // The product name, not the rail's row label: both tools are a "CLI" there,
-    // and a flat list of two CLIs names neither.
+    // The product name, not the section's name: the dialog lists tools, and
+    // "ChatGPT / Codex" is the row they sit under rather than a program anyone
+    // can close.
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toContainText("Codex");
     await expect(dialog).not.toContainText("Claude Code");
