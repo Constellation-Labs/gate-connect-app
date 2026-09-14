@@ -364,7 +364,15 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     lines.push("none");
   } else {
     for (const tool of tools) {
-      lines.push(row(tool.slug, `${toolStatusLine(tool.status)}${versionSuffix(tool.slug, versions)}`));
+      // Same three facts as the domain rows below, in the same order, so the
+      // two sections can be read against each other - which is the whole point
+      // of a tool row and a domain row sharing a client.
+      lines.push(
+        row(
+          tool.slug,
+          `${toolStatusLine(tool.status)}${versionSuffix(tool.slug, versions)} - ${tool.client}, ${tool.scope}, ${tool.credential}`,
+        ),
+      );
     }
   }
 
@@ -374,9 +382,17 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
       lines.push("none");
     } else {
       for (const domain of proxy.domains) {
-        lines.push(
-          row(domain.slug, domain.supported ? onOff(domain.enabled) : `${onOff(domain.enabled)} (unsupported)`),
-        );
+        const state = domain.supported
+          ? onOff(domain.enabled)
+          : `${onOff(domain.enabled)} (unsupported)`;
+        // The taxonomy beside the flag, because on/off alone is what sent the
+        // report that prompted this: a reader saw `claude-web off` and could
+        // not tell from the report whether that meant their desktop app was
+        // uncovered, whether anything else was covering the host, or what
+        // turning it on would touch. Client, scope and credential answer all
+        // three, and they cost one line each in a report that is already read
+        // by whoever is debugging it.
+        lines.push(row(domain.slug, `${state} - ${domain.client}, ${domain.scope}, ${domain.credential}`));
       }
     }
   }

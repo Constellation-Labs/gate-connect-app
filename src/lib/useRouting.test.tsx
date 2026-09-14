@@ -37,6 +37,9 @@ const tool = (slug: string, status: Status): Tool => ({
   name: slug,
   product_name: slug,
   upstream_provider_name: "Anthropic",
+  client: "claude-code",
+  scope: "client",
+  credential: "brokered",
   default_upstream_url: `https://gw.example/${slug}`,
   config_location: null,
   status,
@@ -421,14 +424,72 @@ describe("useRouting: removing the certificate", () => {
   });
 });
 
+describe("useRouting: the certificate gate a cascade asks once", () => {
+  it("answers true without asking when the CA is already trusted", async () => {
+    const { api } = harness([], proxyState({ ca_trusted: true }));
+
+    let answered: boolean | undefined;
+    await act(async () => {
+      answered = await api.current!.confirmCaTrusted();
+    });
+
+    expect(answered).toBe(true);
+    expect(api.current!.prompt).toBeNull();
+    expect(proxyTrustCa).not.toHaveBeenCalled();
+  });
+
+  it("answers false when the person declines, and writes nothing", async () => {
+    // False is what abandons the cascade. Answering true would run the members
+    // anyway, and each would raise its own copy of the dialog just declined -
+    // which is the bug this exists to fix, seen from the other side.
+    const { api, onError } = harness([], proxyState({ ca_trusted: false }));
+
+    let answered: Promise<boolean> | undefined;
+    await act(async () => {
+      answered = api.current!.confirmCaTrusted();
+    });
+    expect(api.current!.prompt).toEqual({ kind: "trust" });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+    });
+
+    expect(await answered!).toBe(false);
+    expect(proxyTrustCa).not.toHaveBeenCalled();
+    // A declined gate is an answer, not a failure.
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("installs once and answers true when the person accepts", async () => {
+    const { api } = harness([], proxyState({ ca_trusted: false }));
+
+    let answered: Promise<boolean> | undefined;
+    await act(async () => {
+      answered = api.current!.confirmCaTrusted();
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+    });
+
+    expect(await answered!).toBe(true);
+    expect(proxyTrustCa).toHaveBeenCalledTimes(1);
+  });
+});
+
 const group = (members: GroupMember[]): Group => ({
-  id: "anthropic",
-  name: "Anthropic",
-  switchLabel: "Route Anthropic through Gate",
+  id: "claude-code",
+  name: "Claude Code",
+  band: "apps",
+  switchLabel: "Route Claude Code through Gate",
   members,
   routed: members.filter((m) => m.routed).length,
   desired: members.filter((m) => m.desired).length,
-  cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+  cascadeDesired: members.filter((m) => m.desired && m.cascade).length,
+  // The app switch's own predicate, spelled out rather than imported so a
+  // change to it fails these tests loudly instead of quietly rewriting what
+  // they assert. `governingMembers`' fallback included: a section with no
+  // brokered member is described by the members it has.
+  switchOn: governing(members).some(isIntended),
+  switchDesired: governing(members).filter(isIntended).length,
 });
 
 const configMember = (over: Partial<GroupMember> = {}): GroupMember => ({
@@ -438,6 +499,10 @@ const configMember = (over: Partial<GroupMember> = {}): GroupMember => ({
   routed: false,
   desired: false,
   attention: null,
+  client: "claude-code",
+  scope: "client",
+  credential: "brokered",
+  cascade: true,
   tool: tool("claude-code", { kind: "detected" }),
   ...over,
 });
@@ -548,6 +613,10 @@ describe("useRouting: the family cascade", () => {
         routed: false,
         desired: false,
         attention: null,
+        client: "claude-desktop",
+        scope: "host",
+        credential: "brokered",
+        cascade: true,
         domain: {
           slug: "anthropic-api",
           display_name: "Anthropic API",
@@ -555,6 +624,9 @@ describe("useRouting: the family cascade", () => {
           upstream_url: "https://gw.example/anthropic",
           rewrite_prefixes: [],
           passthrough_prefixes: [],
+          client: "claude-desktop",
+          credential: "brokered",
+          scope: "host",
           enabled: false,
           supported: true,
         },
@@ -747,3 +819,11 @@ describe("useRouting: OpenCode and the environment channel", () => {
     expect(proxySetEnvExport).not.toHaveBeenCalled();
   });
 });
+
+/** `governingMembers`' rule, restated for the fixtures above. */
+const governing = (members: GroupMember[]): GroupMember[] => {
+  const brokered = members.filter((m) => m.cascade);
+  return brokered.length > 0 ? brokered : members;
+};
+/** `intended`'s rule: asked for, or drifted while asked for. */
+const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";

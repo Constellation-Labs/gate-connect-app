@@ -66,6 +66,22 @@ impl Integration for EnvProxy {
         DISPLAY_NAME
     }
 
+    /// Not a program, so not a client of its own: this row is the machine
+    /// itself, and it shares the heading with the host entries that also cover
+    /// whatever happens to be running.
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::AnyApp
+    }
+
+    /// The one integration that is not [`Scope::Client`]. It writes the login
+    /// environment, so what it routes is every program started afterwards -
+    /// `git` and `curl` included, not only AI tools.
+    ///
+    /// [`Scope::Client`]: crate::taxonomy::Scope::Client
+    fn scope(&self) -> crate::taxonomy::Scope {
+        crate::taxonomy::Scope::Machine
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }

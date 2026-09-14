@@ -185,7 +185,10 @@ test.describe("routing", () => {
         domains: [
           {
             slug: "anthropic",
-            display_name: "App",
+            display_name: "API",
+            client: "claude-desktop",
+            credential: "brokered",
+            scope: "host",
             hosts: ["api.anthropic.com"],
             upstream_url: "https://gateway.constellationgate.ai",
             rewrite_prefixes: ["/v1"],
@@ -217,7 +220,7 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Anthropic").click();
+    await app.familyRow("Claude").click();
     const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await expect(member).toHaveAttribute("aria-checked", "false");
 
@@ -243,15 +246,16 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Anthropic").click();
-    await app.page.getByRole("switch", { name: "Route App through Gate" }).click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("switch", { name: "Route API through Gate" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
       slug: "anthropic",
       enabled: true,
     });
-    // The catalog only maps Claude Code to Anthropic, so the UI drives members
-    // one at a time and must never reach for the provider shortcut.
+    // The UI drives members one at a time and must never reach for the
+    // provider shortcut - the ledger groups by client, and `provider_enable`
+    // is a vendor-shaped command the renderer has no handle on.
     expect(await app.lastCall("provider_enable")).toBeNull();
   });
 
@@ -259,31 +263,33 @@ test.describe("family panel", () => {
     boot,
   }) => {
     // chatgpt.com's Responses endpoint is reached with the user's ChatGPT
-    // subscription bearer rather than a brokered key, so it is the one member the
-    // family switch must leave where it is. The backend enforces the same rule by
-    // keeping the slug out of the provider's `proxy_domain_slugs`; this is the
-    // frontend half of it. It is also the switch OpenClaw's subscription traffic
-    // depends on, which its `connect` used to flip unasked.
+    // subscription bearer rather than a brokered key, so this shell's group
+    // switch leaves it where it is. `cascadeTargets` reaches such a row only
+    // for a caller that passes `sessions`, meaning it has asked - which the
+    // window shell's app switch does, after a confirmation, and this popover
+    // does not, having no dialog to ask with. `provider::cascade_domains`
+    // refuses them in Rust either way.
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("OpenAI").click();
-    const subscription = app.page.getByRole("switch", { name: "Route App through Gate" });
-    const apps = app.page.getByRole("switch", { name: "Route Web through Gate" });
+    await app.familyRow("ChatGPT / Codex").click();
+    const subscription = app.page.getByRole("switch", {
+      name: "Route Subscription through Gate",
+    });
+    const apps = app.page.getByRole("switch", { name: "Route Chat through Gate" });
     await expect(subscription).toHaveAttribute("aria-checked", "false");
     await expect(apps).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Codex routes and neither of these rows moves. No
-    // domain is cascaded at all - `openai` left this family for Experimental,
-    // so `proxy_domain_slugs` is empty and the switch governs the tool alone.
-    const family = app.page.getByRole("switch", { name: "Route OpenAI through Gate" });
+    // The whole group on: neither of these rows moves, and nothing else in this
+    // section is brokered, so the switch reaches nothing at all here.
+    const family = app.page.getByRole("switch", { name: "Route ChatGPT / Codex through Gate" });
     await family.click();
     // The family switch reads its own state back from `proxy_status`, which
     // `setGroupRouted` calls after the member loop - so "checked" is the point
     // where every member has been attempted and the call log below is final.
-    // Waiting on the domain state alone would not be: chat rows sort last, so a
-    // regression's stray call arrives after the cascaded one has already landed.
+    // Waiting on the domain state alone would not be: a regression's stray
+    // call can arrive after the cascaded one has already landed.
     await expect(family).toHaveAttribute("aria-checked", "true");
     expect(
       (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
@@ -314,13 +320,13 @@ test.describe("family panel", () => {
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Anthropic").click();
-    const chat = app.page.getByRole("switch", { name: "Route Web through Gate" });
+    await app.familyRow("Claude").click();
+    const chat = app.page.getByRole("switch", { name: "Route Chat through Gate" });
     await expect(chat).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Claude Code and Claude apps route, the chat row does
-    // not move. Same completion signal as the test above.
-    const family = app.page.getByRole("switch", { name: "Route Anthropic through Gate" });
+    // The whole group on: the API surface routes, the chat row does not move.
+    // Same completion signal as the test above.
+    const family = app.page.getByRole("switch", { name: "Route Claude through Gate" });
     await family.click();
     await expect(family).toHaveAttribute("aria-checked", "true");
     expect(
@@ -345,7 +351,7 @@ test.describe("family panel", () => {
       failures: { connect_tool: "permission denied writing ~/.claude/settings.json" },
     });
 
-    await app.familyRow("Anthropic").click();
+    await app.familyRow("Claude").click();
     const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await member.click();
 

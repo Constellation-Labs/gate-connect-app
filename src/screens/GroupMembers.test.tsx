@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { ProviderState, ProxyDomain, Tool, Verdict } from "../lib/api";
+import type { ProxyDomain, Tool, Verdict } from "../lib/api";
 import { buildGroups } from "../lib/groups";
 import { GroupMembers } from "./GroupMembers";
 
@@ -19,7 +19,12 @@ vi.mock("../lib/platform", async (importOriginal) => ({
   usePlatform: () => platformMock.current,
 }));
 
-function tool(slug: string, name: string, status: Tool["status"]): Tool {
+function tool(
+  slug: string,
+  name: string,
+  status: Tool["status"],
+  client: Tool["client"] = "claude-code",
+): Tool {
   return {
     slug,
     name,
@@ -29,6 +34,13 @@ function tool(slug: string, name: string, status: Tool["status"]): Tool {
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
     status,
+    // One client for every fixture tool, so these suites keep rendering ONE
+    // group with several rows in it. That used to come from a synthetic
+    // provider catalog claiming three tool slugs; membership is the row's own
+    // client now, so the fixture says it here instead.
+    client,
+    scope: "client",
+    credential: "brokered",
   };
 }
 
@@ -41,20 +53,10 @@ const domain: ProxyDomain = {
   passthrough_prefixes: [],
   enabled: true,
   supported: true,
+  client: "claude-code",
+  credential: "brokered",
+  scope: "host",
 };
-
-const CATALOG: ProviderState[] = [
-  {
-    slug: "anthropic",
-    display_name: "Claude",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["claude-code", "openclaw", "codex"],
-    domain_slugs: ["anthropic"],
-    chat_domain_slugs: [],
-  },
-];
 
 /** A sweep that confirms every connected tool.
  *
@@ -86,7 +88,7 @@ function renderDetail(
   domains: ProxyDomain[] = [domain],
   props: Partial<React.ComponentProps<typeof GroupMembers>> = {},
 ) {
-  const [group] = buildGroups(CATALOG, tools, domains, {
+  const [group] = buildGroups(tools, domains, {
     proxyOn: true,
     caTrusted: true,
     verdicts: sweep(tools),
@@ -131,7 +133,9 @@ describe("GroupMembers", () => {
     // OpenCode is claimed by no provider and its default_upstream_url is the
     // constant api.anthropic.com, which is wrong the moment the user has
     // OpenAI configured in it.
-    renderDetail([tool("opencode", "OpenCode", { kind: "detected" })], []);
+    // Its own client, which is what makes it a multi-provider tool: the
+    // client has no vendor, so the row must not name an upstream host.
+    renderDetail([tool("opencode", "OpenCode", { kind: "detected" }, "opencode")], []);
     expect(screen.getByText("the providers Gate routes")).toBeTruthy();
     expect(screen.queryByText("https://api.anthropic.com")).toBeNull();
   });
@@ -278,7 +282,7 @@ describe("GroupMembers inline expansion", () => {
 describe("GroupMembers intent versus flow", () => {
   /** Routing on, certificate untrusted: the state that produced the round-6 P0. */
   function renderUntrusted(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
-    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    const [group] = buildGroups([], [domain], { proxyOn: true, caTrusted: false });
     render(
       <GroupMembers
         group={group}
@@ -360,7 +364,6 @@ describe("GroupMembers master-off remedy", () => {
   /** Switched on, engine down: the state round 6 introduced with prose only. */
   function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       { proxyOn: false, caTrusted: true },
@@ -408,7 +411,7 @@ describe("GroupMembers master-off remedy", () => {
 
 describe("GroupMembers certificate failure", () => {
   it("shows a failed trust next to the button that failed", async () => {
-    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    const [group] = buildGroups([], [domain], { proxyOn: true, caTrusted: false });
     render(
       <GroupMembers
         group={group}
@@ -440,11 +443,11 @@ describe("GroupMembers chat row scope", () => {
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "claude-code",
+    // The one field that puts this row outside the group switch.
+    credential: "additive",
+    scope: "host",
   };
-
-  const CHAT_CATALOG: ProviderState[] = [
-    { ...CATALOG[0], chat_domain_slugs: ["claude-web"] },
-  ];
 
   beforeEach(() => {
     platformMock.current = "linux";
@@ -454,7 +457,7 @@ describe("GroupMembers chat row scope", () => {
   });
 
   function renderChat(browserChannel: boolean) {
-    const [group] = buildGroups(CHAT_CATALOG, [], [domain, CHAT_DOMAIN], {
+    const [group] = buildGroups([], [domain, CHAT_DOMAIN], {
       proxyOn: true,
       caTrusted: true,
     });

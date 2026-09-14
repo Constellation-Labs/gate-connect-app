@@ -51,9 +51,8 @@
 //! proxied client on the machine - `chatgpt.com` is a browser-reachable host, so
 //! that included web traffic nobody asked to route - and it did so from a toggle
 //! whose label says "OpenClaw". The domain has a row and a switch of its own on
-//! the ledger now, under OpenAI and outside its cascade
-//! (`provider::chat_domain_slugs`), so the note below names something the user
-//! can act on.
+//! the ledger now, under OpenAI and outside its cascade (an additive row with
+//! its own switch), so the note below names something the user can act on.
 //!
 //! Codex hits the same auth-mode split and solves it the other way - a
 //! `base_url` rewrite onto the relay (`integrations/codex.rs`) - because its
@@ -163,6 +162,10 @@ impl Integration for OpenClaw {
 
     fn display_name(&self) -> &'static str {
         "OpenClaw"
+    }
+
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::OpenClaw
     }
 
     /// The row label. Rows sit under a family heading that already names the

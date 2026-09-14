@@ -48,9 +48,16 @@ const catalogue = [
 
 const base = { proxy: { running: true, ca_trusted: true }, tools };
 
-/** Open one app's pane, which is where model selection lives. */
+/**
+ * Open one app's pane, which is where model selection lives.
+ *
+ * By the section's name, not the tool's: the rail draws one row per app now, so
+ * the button is "Claude" and the `claude-code` tool behind it is what the pane
+ * resolves to (`sectionMemberKeys` in `NewUiApp`). The tool's own `name` is no
+ * longer drawn anywhere the rail can be clicked.
+ */
 async function openApp(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "CLI" }).first().click();
+  await app.page.getByRole("button", { name: "Claude" }).first().click();
 }
 
 test.describe("new UI model picker", () => {

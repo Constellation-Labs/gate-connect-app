@@ -135,6 +135,44 @@ pub trait Integration: Send + Sync {
         self.display_name()
     }
 
+    /// Which client this integration's row is aimed at - the ledger's grouping
+    /// key, shared with the proxy catalog so a tool row and a domain row aimed
+    /// at the same program land under one heading.
+    ///
+    /// No default, deliberately. Every other optional method here has an answer
+    /// that is right for an integration which has not thought about it; this
+    /// one does not, and a wrong guess files a tool under someone else's
+    /// heading. Making it required costs each integration one line and makes
+    /// the ledger's "no row can fall off" property hold by construction, which
+    /// is what retires the `any-provider` catch-all.
+    fn client(&self) -> crate::taxonomy::Client;
+
+    /// How much of the machine this integration's routing reaches.
+    ///
+    /// [`Scope::Client`] for every config-file tool, which is the default:
+    /// Gate writes a file that one program reads, and nothing else changes.
+    /// The environment channel overrides it - it writes machine-wide settings
+    /// that reach `git` and `curl`, which is the one honest difference between
+    /// it and the tools beside it.
+    ///
+    /// [`Scope::Client`]: crate::taxonomy::Scope::Client
+    fn scope(&self) -> crate::taxonomy::Scope {
+        crate::taxonomy::Scope::Client
+    }
+
+    /// Whose credential rides the traffic this integration routes.
+    ///
+    /// [`Credential::Brokered`] for all of them, and unlikely to change: a
+    /// config-routed tool is pointed at Gate precisely so Gate can put its own
+    /// key on the request. The method exists so a row's credential is answered
+    /// in one place whatever kind of row it is, rather than the UI knowing that
+    /// tool rows are brokered and domain rows are not.
+    ///
+    /// [`Credential::Brokered`]: crate::taxonomy::Credential::Brokered
+    fn credential(&self) -> crate::taxonomy::Credential {
+        crate::taxonomy::Credential::Brokered
+    }
+
     /// Where this tool's executable might be, and what it is called.
     ///
     /// `(well_known, names)`: the absolute paths a packaged install lands on,

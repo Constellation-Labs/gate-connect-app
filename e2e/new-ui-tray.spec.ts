@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import { OPENCLAW } from "./backend";
 
 /**
  * The tray popover (window label `tray`, Figma `Flows / Tray`, built
@@ -21,9 +22,9 @@ test.describe("tray popover", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    // The card's eyebrow in front of the row label: rows are named for the
-    // surface they cover, so "CLI" alone names Claude Code and Codex both.
-    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
+    // One switch per app. Claude holds a session surface, so `routeApp` answers
+    // the confirmation the switch raises before it routes anything.
+    await app.routeApp("Claude");
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -181,7 +182,7 @@ test.describe("tray popover", () => {
 
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }) });
+      .filter({ has: app.appSwitch("Claude") });
     await expect(row).toContainText("2 alerts");
 
     // And it moves without a reopen, because the popover is listening.
@@ -213,18 +214,15 @@ test.describe("tray popover", () => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
-    const row = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
+    // OpenClaw: every other section draws from a catalog domain with no tool
+    // installed, so it is never absent to begin with - OpenCode included, which
+    // has its own Zen / Go host row.
+    const row = app.appSwitch("OpenClaw");
     await expect(row).toHaveCount(0);
 
     await app.patch({
       tools: [
-        {
-          slug: "codex",
-          name: "CLI",
-          upstream_provider_name: "OpenAI",
-          default_upstream_url: "https://api.openai.com/v1",
-          status: { kind: "detected" as const },
-        },
+        { ...OPENCLAW },
       ],
     });
     await expect(row).toHaveCount(0);

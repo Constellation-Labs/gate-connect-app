@@ -27,6 +27,9 @@ function tool(slug: string, status: Status): Tool {
     upstream_provider_name: "anthropic",
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
+    client: "claude-code",
+    scope: "client",
+    credential: "brokered",
     status,
   };
 }

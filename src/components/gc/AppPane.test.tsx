@@ -81,6 +81,33 @@ describe("AppPane header", () => {
   });
 });
 
+describe("AppPane partial reading", () => {
+  it("says which surface the counters measured, because the heading names more", () => {
+    // A row is an app, and its switch spans surfaces the gateway attributes
+    // differently. The counters are the config tool's; the desktop app sends no
+    // User-Agent `client_tool` places, so its traffic is in no per-tool read.
+    // A plausible number under a heading naming the whole app is the failure
+    // principle 6 rules out, and it is worse than an absent one.
+    render(pane({ name: "Claude", partialReading: { covers: "Claude Code" } }));
+    const note = screen.getByText(/These counts cover Claude Code/);
+    expect(note.textContent).toContain("not attributed to an app");
+  });
+
+  it("says nothing when the figures cover the whole row", () => {
+    render(pane({ name: "Claude" }));
+    expect(screen.queryByText(/These counts cover/)).toBeNull();
+  });
+
+  it("yields to the row that has no reading at all", () => {
+    // `unattributed` already explains that per-app activity does not exist for
+    // this row. Drawing both would caveat a reading that is not there.
+    render(
+      pane({ name: "OpenRouter", unattributed: true, partialReading: { covers: "Codex" } }),
+    );
+    expect(screen.queryByText(/These counts cover/)).toBeNull();
+  });
+});
+
 describe("AppPane model card", () => {
   it("draws the model card when the app has one model family", () => {
     render(pane());

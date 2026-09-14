@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   Account,
   PendingRestore,
-  ProviderState,
+  Preferences,
   ProxyState,
   Tool,
   Verdict,
@@ -12,7 +12,7 @@ import type {
 import {
   getAccount,
   getAccountKeyPrefix,
-  listProviders,
+  getPreferences,
   listTools,
   pendingRestore,
   proxyStatus,
@@ -32,9 +32,17 @@ import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
-import type { Group } from "./lib/groups";
-import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import {
+  BAND_LABELS,
+  buildGroups,
+  hintForMember,
+  sectionHint,
+  sectionMemberKeys,
+  sessionMembers,
+} from "./lib/groups";
+import type { Band, Group } from "./lib/groups";
+import { useSectionRouting } from "./lib/useSectionRouting";
+import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { openExternal } from "./lib/openExternal";
 import { GATE_DOCS_URL } from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
@@ -47,7 +55,7 @@ import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
-import { brandMarkFor } from "./components/gc/BrandMark";
+import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
 import { ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
@@ -58,6 +66,7 @@ import {
   OpenCodeEnvDialog,
   ReopenProgressDialog,
   ReviewConfigDialog,
+  SessionConsentDialog,
 } from "./components/gc/dialogs";
 
 /** A whole reading, compared by value: every read builds fresh objects. */
@@ -100,7 +109,6 @@ function messageFigure(
  */
 export function TrayApp() {
   const [tools, setTools] = useState<Tool[]>([]);
-  const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
   /** What an interrupted restore still owes. Empty in the normal case, and the
@@ -124,6 +132,10 @@ export function TrayApp() {
    *  gateway leaves every scope string byte-identical and the previous org's
    *  figures stay on screen under the new org's name. */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
+  /** Read for one field: `session_routing_accepted`. The tray draws no
+   *  preference controls, but its app switches ask the same question the rail's
+   *  do, and the recorded answer is what decides whether to ask again. */
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   /**
    * The buffered routing-down failure, held apart from `actionError`.
@@ -173,6 +185,13 @@ export function TrayApp() {
    *  machine one failure at first load persisted until something moved. This
    *  surface has no refresh affordance, so nothing the user could do fixed it. */
   const verdictsRead = useRef(false);
+
+  /** Re-read the recorded consents. Called at load and after one is given, so
+   *  the switch that asked stops asking without waiting for a reopen. */
+  const loadPreferences = useCallback(async () => {
+    const p = await getPreferences().catch(() => null);
+    if (p) setPrefs(p);
+  }, []);
 
   const refreshVerdicts = useCallback(async () => {
     const v = await routingVerdicts().catch(() => null);
@@ -295,9 +314,11 @@ export function TrayApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct, prefix] = await Promise.all([
+      // No `list_providers`: the tray draws sections from the ledger, which
+      // `buildGroups` builds from tools and domains alone. The family catalog
+      // reached this shell only through a dependency array.
+      const [t, px, acct, prefix] = await Promise.all([
         listTools().catch(() => null),
-        listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         // The wrapper distinguishes "the read failed" from "there is no
         // account": both arrive as null otherwise, and only the first should
@@ -306,9 +327,13 @@ export function TrayApp() {
           .then((a) => ({ read: true, account: a }))
           .catch(() => ({ read: false, account: null as Account | null })),
         getAccountKeyPrefix().catch(() => null),
+        // Not awaited into a variable: a failed read leaves `prefs` null, and
+        // null means "nothing recorded", so the switch asks. That is the safe
+        // direction - an unreadable preferences file must not be able to route
+        // somebody's sign-in on the grounds that it might have said yes.
+        loadPreferences(),
       ]);
       setTools(t ?? []);
-      setProviders(p);
       setProxy(px);
       setAccount(acct.account);
       setAccountUnread(!acct.read);
@@ -317,7 +342,7 @@ export function TrayApp() {
       void loadRecovery();
       setLoaded(true);
     })();
-  }, [refreshVerdicts, loadRecovery]);
+  }, [refreshVerdicts, loadRecovery, loadPreferences]);
 
   /**
    * Drain the backend's buffered failures, exactly as the window shell does.
@@ -523,12 +548,23 @@ export function TrayApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(providers, tools, proxy.domains, {
+        ? buildGroups(tools, proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
+            // The sweep, which a section's rendered state cannot do without.
+            // A member's `routed` is what `sectionStatus` counts to decide
+            // whether the app is protected, and without this every config
+            // member falls back to the conservative "not verified" - so a
+            // connected, swept tool read "Not routed - Blocked" for as long as
+            // its row was a section. The popover passed it from the start
+            // (`App.tsx`); this shell never needed it until a row stopped being
+            // a tool.
+            verdicts,
           })
         : [],
-    [providers, tools, proxy],
+    // Not `providers`: `buildGroups` stopped taking them, and leaving the poll's
+    // result in here rebuilt the whole ledger every time it landed.
+    [tools, proxy, verdicts],
   );
 
   /** Whose readings these are. Identical in shape to `NewUiApp`'s, key prefix
@@ -632,6 +668,7 @@ export function TrayApp() {
             t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          hint: hintForMember(t.slug),
           // A held figure outranks the pending state, so a look that re-reads
           // keeps the last number on the row instead of blanking it for the
           // length of a fetch. The skeleton is the first read only.
@@ -654,47 +691,48 @@ export function TrayApp() {
     ],
   );
 
-  // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: vendor
-  // captions from `upstream_provider_name`, proxy members as rows with the
-  // shared status derivation, one unlabelled group before the catalog loads.
+  // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: one row per
+  // section under a band eyebrow, with the section's status and its switch.
+  //
+  // Matching matters more than it looks. A tray drawing per-surface rows would
+  // put a switch on the session surfaces, which the window's app switch now
+  // owns and gates behind a confirmation - so the tray would be the way to
+  // route someone's signed-in session without ever being asked.
   const trayGroups = useMemo<SidebarGroup[]>(() => {
     if (groups.length === 0) {
       return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
     }
     const bySlug = new Map(apps.map((a) => [a.slug, a]));
     const grouped: SidebarGroup[] = [];
+    let band: Band | null = null;
     for (const g of groups) {
-      const members: SidebarApp[] = [];
-      let vendor: string | null = null;
-      for (const m of g.members) {
-        if (m.kind === "config" && m.tool) {
-          const app = bySlug.get(m.key);
-          if (!app) continue;
-          bySlug.delete(m.key);
-          vendor ??= m.tool.upstream_provider_name;
-          members.push(app);
-        } else if (m.kind === "proxy") {
-          members.push({
-            slug: m.key,
-            name: m.name,
-            status: proxyMemberStatus(m),
-            on: m.desired,
-            logo: brandMarkFor(m.key),
-            busy: routingBusy,
-          });
-        }
+      const status = sectionStatus(g, bySlug);
+      if (!status) continue;
+      // The section's config tool carries the figures: the gateway attributes
+      // per tool, and a host surface has nothing of its own to report.
+      const tool = g.members.find((m) => m.kind === "config");
+      const figures = tool ? bySlug.get(tool.key) : undefined;
+      for (const m of g.members) bySlug.delete(m.key);
+      if (g.band !== band) {
+        band = g.band;
+        grouped.push({ id: `band:${band}`, label: BAND_LABELS[band], apps: [] });
       }
-      if (members.length === 0) continue;
-      grouped.push({
-        id: g.id,
-        label: g.multiProvider ? g.name : (vendor ?? g.name),
-        apps: members,
+      grouped[grouped.length - 1].apps.push({
+        slug: g.id,
+        name: g.name,
+        status,
+        on: g.switchOn,
+        logo: brandMarkForSection(g.id, sectionMemberKeys(g.id)),
+        busy: routingBusy,
+        hint: sectionHint(g),
+        messages: figures?.messages,
+        alerts: figures?.alerts,
       });
     }
     if (bySlug.size > 0) {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
-    return grouped;
+    return grouped.filter((g) => g.apps.length > 0);
   }, [groups, apps, routingBusy]);
 
   const notInstalled = useMemo<TrayNotInstalledApp[]>(
@@ -705,17 +743,24 @@ export function TrayApp() {
     [tools],
   );
 
-  /** Route or unroute one row - a domain through `setDomainRouted`, a tool
-   * through the drift-gated config write. Same dispatch as the rail. */
-  const toggleApp = useCallback(
-    (slug: string, next: boolean) => {
-      const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
-      void (member?.kind === "proxy"
-        ? routing.setDomainRouted(slug, next)
-        : routeApp(slug, next));
-    },
-    [groups, routing.setDomainRouted, routeApp],
-  );
+  /**
+   * The app switch, the same one the rail draws.
+   *
+   * `lib/useSectionRouting.ts` owns the consent gate, the single certificate
+   * gate and the cascade. The tray had its own copy of all three for about a
+   * week and they had already drifted; the shells share `useRouting` and
+   * `lib/groups.ts` for the same reason.
+   */
+  const section = useSectionRouting({
+    groups,
+    routing,
+    runningApps,
+    prefs,
+    onPrefsChanged: () => void loadPreferences(),
+    onBeforeRoute: () => setActionError(null),
+    routeApp: (slug, next) => void routeApp(slug, next),
+  });
+  const toggleApp = section.toggle;
 
   /** Reveal the full window and step aside. `getCurrentWindow` throws outside
    * Tauri (plain-browser dev), where there is nothing to hide anyway. */
@@ -764,7 +809,16 @@ export function TrayApp() {
    *   on this surface where the user approves a destructive write.
    */
   const popoverHeld =
-    !loaded || routing.prompt !== null || runningApps.stage !== null || routingBusy;
+    !loaded ||
+    routing.prompt !== null ||
+    // The third bullet above, reached by a different route: this dialog is
+    // raised before any routing call, so `routing.prompt` is still null while
+    // it is on screen. Without it a click anywhere else blur-dismisses the
+    // popover mid-question, and the answer the next click gives is to a
+    // question nobody is being shown.
+    section.consent !== null ||
+    runningApps.stage !== null ||
+    routingBusy;
   useEffect(() => {
     // Best-effort on both sides: a failed pin must not break the flow it was
     // protecting, and a failed unpin leaves a popover that needs the tray icon
@@ -1037,6 +1091,13 @@ export function TrayApp() {
             <OpenCodeEnvDialog
               onCancel={() => routing.resolvePrompt(false)}
               onConfirm={() => routing.resolvePrompt(true)}
+            />
+          ) : section.consent ? (
+            <SessionConsentDialog
+              name={section.consent.name}
+              surfaces={sessionMembers(section.consent)}
+              onDismiss={section.dismissConsent}
+              onConfirm={section.confirmConsent}
             />
           ) : routing.prompt?.kind === "trust" ? (
             // Same dialog as the window shell, for the same reason: the OS

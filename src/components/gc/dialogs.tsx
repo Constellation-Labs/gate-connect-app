@@ -19,6 +19,7 @@ import type {
   TeardownReport,
   TeardownTool,
 } from "../../lib/api";
+import type { GroupMember } from "../../lib/groups";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenTool } from "../../lib/reopen";
 import {
@@ -1684,6 +1685,93 @@ export function OpenCodeEnvDialog({
         OpenCode has no gateway setting of its own, so Gate routes it with your
         machine&apos;s proxy variables. Those apply to every command line tool
         that reads them. That includes git, curl and npm.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * The one place an app switch is allowed to route a surface the person is
+ * signed in to.
+ *
+ * `provider::cascade_domains` refuses these rows to a family switch in Rust, so
+ * no cascade there and none from `provider enable` can reach them; here that
+ * refusal is replaced by an answer, which is what makes "one switch routes my
+ * whole app" honest rather than a credential routed behind someone's back. What
+ * it is not is a check on routing them at all - `proxy_set_domain` enables any
+ * row it is handed - so this dialog is the guard on this path rather than a
+ * second opinion about one.
+ *
+ * One component for both shells rather than the same Modal written twice. The
+ * tray raises this from the same switch the rail does, and the question a person
+ * is asked before their sign-in is routed is the last thing that should be able
+ * to say two different things on two surfaces.
+ *
+ * Initial focus on the secondary, per principle 5: the primary here starts
+ * routing a signed-in session, so the safe button is the one that receives the
+ * keyboard.
+ */
+export function SessionConsentDialog({
+  name,
+  surfaces,
+  onDismiss,
+  onConfirm,
+}: {
+  /** The section's name, which is the app the switch is named for. */
+  name: string;
+  /** The signed-in surfaces this switch would also route: `sessionMembers`'
+   *  members, not their names. The members, because the two facts this dialog
+   *  owes the reader are on them - the HOSTS, which is the only part of a
+   *  surface they can recognise on their own machine, and the SCOPE, which says
+   *  the switch reaches past the app it is named for. */
+  surfaces: GroupMember[];
+  onDismiss: () => void;
+  onConfirm: () => void;
+}) {
+  // The hosts, deduplicated and in draw order. Named rather than the surface
+  // labels: those are the rail's one-word names, so the ChatGPT dialog read
+  // "This also routes chat and subscription", which names nothing a person has
+  // ever seen. "chatgpt.com" they have.
+  const hosts = [...new Set(surfaces.flatMap((m) => m.domain?.hosts ?? []))];
+  // "a", "a and b", "a, b and c". Both shipping sections have at most two, so
+  // the third arm is for whoever adds the next one rather than for today.
+  const hostList =
+    hosts.length > 2
+      ? `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`
+      : hosts.join(" and ");
+  // The taxonomy's whole point, and the tray's only chance to hear it: a
+  // `host`-scoped row is matched at CONNECT, before any header exists, so it
+  // covers every client on the machine that talks to those hosts. The window's
+  // pane says this beside the switch; the tray has no pane, and this dialog is
+  // the one surface both shells raise.
+  const wide = surfaces.some((m) => m.scope === "host") && hosts.length > 0;
+  return (
+    <Modal
+      tone="warning"
+      icon="shieldCheck"
+      title={`Route ${name} through Gate?`}
+      subtitle={
+        hostList
+          ? `This also routes ${hostList}, which Gate sees on the account you are already signed in with.`
+          : `This also routes a surface Gate sees on the account you are already signed in with.`
+      }
+      secondary={{ label: "Not now", onClick: onDismiss }}
+      primary={{ label: `Route ${name}`, onClick: onConfirm }}
+      onDismiss={onDismiss}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Gate records and inspects that traffic. It does not supply a key for it,
+        and it cannot read anything you are not sending anyway.
+      </p>
+      {wide && (
+        <p className="text-sm leading-5 text-neutral-600">
+          It is matched on host, so it covers everything on this machine that
+          sends to {hostList} - not only {name}.
+        </p>
+      )}
+      <p className="text-sm leading-5 text-neutral-600">
+        Asked once per app. Turning {name} off later does not bring this question
+        back.
       </p>
     </Modal>
   );

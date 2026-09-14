@@ -114,6 +114,13 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
+        // A test seam, never a ledger row: nothing groups it, and it must not
+        // ride a family switch if something ever does enumerate it. `AnyApp`
+        // plus `Observed` is the inert answer; `Client` is the relay's own hop,
+        // which touches no other program.
+        client: crate::taxonomy::Client::AnyApp,
+        credential: crate::taxonomy::Credential::Observed,
+        scope: crate::taxonomy::Scope::Client,
     })
 }
 
@@ -535,7 +542,7 @@ async fn proxy(
     let target = match route {
         Route::Rewrite => {
             let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
-            inject_credential(&mut headers, state, mode).map_err(|e| {
+            inject_credential(&mut headers, state, mode, &routed.slug).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("injecting Gate credential: {e:#}"),
@@ -679,7 +686,12 @@ async fn proxy(
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
 /// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
 /// same helper also strips the tool's own upstream credential.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingMode) -> Result<()> {
+fn inject_credential(
+    headers: &mut HeaderMap,
+    state: &RelayState,
+    mode: BillingMode,
+    domain: &str,
+) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
@@ -688,7 +700,7 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingM
     let org_id = (!org.is_empty()).then(|| org.as_ref());
     // The relay has no response hook to feed, so what was injected is not
     // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode).map(|_| ())
+    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode, Some(domain)).map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM

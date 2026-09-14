@@ -82,6 +82,7 @@ export function AppPane({
   onLoadMore,
   unavailable,
   unattributed,
+  partialReading,
   alert,
 }: {
   name: string;
@@ -201,6 +202,26 @@ export function AppPane({
    *  exist directly above two cards claiming it could not be read - a fault
    *  report over a permanent, intended shape of the data. */
   unattributed?: boolean;
+  /**
+   *  The figures cover only part of what this row's switch routes, and this
+   *  names the part.
+   *
+   *  A row is an app now, and an app's switch spans surfaces the gateway
+   *  attributes differently: `client_tool` is derived from the caller's own
+   *  User-Agent, so Claude Code is attributed and the desktop app - which sends
+   *  no User-Agent the matcher places - is not. The counters below are one
+   *  surface's, under a heading naming all of them.
+   *
+   *  Distinct from `unattributed`, which says there is no reading at all and
+   *  never will be. This says there IS one and it is narrower than the heading
+   *  implies, which is the more dangerous of the two: the number is plausible,
+   *  so nothing prompts the reader to doubt it. Principle 6 is about exactly
+   *  that - a figure is a measurement, or the card says what it measured.
+   *
+   *  Absent where the figures cover the whole row. Goes away per surface as
+   *  attribution improves rather than all at once.
+   */
+  partialReading?: { covers: string };
   /** Slot for an `AlertBanner` when this app has drifted. */
   alert?: ReactNode;
 }) {
@@ -249,6 +270,15 @@ export function AppPane({
 
       {alert}
 
+      {/* Above the tiles, not below them: a caveat under a number is read after
+          the number has already been believed. */}
+      {partialReading && !unattributed && (
+        <p className="text-base-xs leading-4 text-base-muted-foreground">
+          These counts cover {partialReading.covers}. Gate routes more than that
+          for this app, and the rest is not attributed to an app, so it is not
+          counted here.
+        </p>
+      )}
       <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
       <MessagesChart
         buckets={buckets}

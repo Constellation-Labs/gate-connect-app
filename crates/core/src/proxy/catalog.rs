@@ -6,6 +6,7 @@
 //! `forwarded_paths_avoid_gate_reserved_prefixes`).
 
 use super::ProxyDomain;
+use crate::taxonomy::{Client, Credential, Scope};
 
 /// The built-in domain catalog. All entries ship `supported:true` (Anthropic
 /// is also `enabled` by default; the rest are opt-in). New providers can be
@@ -15,23 +16,24 @@ pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
             slug: "anthropic".into(),
-            // Named for the SURFACE it covers, not for the vendor. Every row
-            // sits under a family heading that already says "Anthropic", so the
-            // label's whole job is to separate the desktop apps from the browser
-            // tab and the terminal - "App", "Web", "CLI". The sentence that
-            // spells each one out lives with the UI copy (`src/lib/groups.ts`),
-            // because it is a description of the surface rather than a fact the
-            // catalog knows.
+            // Named for the SURFACE, under a heading that names the CLIENT.
+            // The heading is "Claude Desktop" now rather than "Anthropic", so
+            // the label separates that one program's two surfaces - "API" here,
+            // "Chat" on the claude.ai entry below - instead of separating the
+            // desktop apps from the browser tab, which is a distinction this
+            // entry never made. The sentence spelling each one out lives with
+            // the UI copy (`src/lib/groups.ts`), because it describes the
+            // surface rather than stating a fact the catalog knows.
             //
-            // The old vendor-shaped name was wrong for a second reason worth
-            // keeping: this entry is the system-proxy route for the desktop
-            // apps, and its switch is theirs alone. Claude Code reaches the same
-            // host, but through its own configured proxy URL, whose route
-            // selector makes the engine apply this entry whatever the switch
-            // says (see `claude_code_route_domain`) - so a vendor name here
-            // would read as a promise this switch does not make. The host line
-            // carries api.anthropic.com.
-            display_name: "App".into(),
+            // A vendor-shaped name was wrong for a second reason worth keeping:
+            // this entry is the system-proxy route for the desktop apps, and
+            // its switch is theirs alone. Claude Code reaches the same host,
+            // but through its own configured proxy URL, whose route selector
+            // makes the engine apply this entry whatever the switch says (see
+            // `claude_code_route_domain`) - so a vendor name would read as a
+            // promise this switch does not make. The host line carries
+            // api.anthropic.com.
+            display_name: "API".into(),
             // Inference for Claude Code, Claude Desktop, and Cowork all goes
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
             // confirmed against a real Cowork generation. a-api.anthropic.com
@@ -78,6 +80,14 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
+            // Aimed at the desktop app. Claude Code reaches this same
+            // entry through its own proxy URL's route selector
+            // (`claude_code_route_domain`), which is a client-scoped route
+            // rather than anything this row's switch governs. Brokered: the
+            // rewrite injects Gate's credential and drops the caller's.
+            client: Client::ClaudeDesktop,
+            credential: Credential::Brokered,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "claude-web".into(),
@@ -88,7 +98,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // the conversation history server-side. Gate recognises it as the
             // `claude-web-chat` surface and treats it as inspection + audit, not
             // as key-brokered routing: there is no API key involved at all.
-            display_name: "Web".into(),
+            display_name: "Chat".into(),
             hosts: vec!["claude.ai".into()],
             // The `/api` MUST ride in the upstream URL, not the forwarded path,
             // for the same reason it does on OpenRouter below: Gate's ALB routes
@@ -130,16 +140,20 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // rather than an API key, so it should never start intercepting
             // without a deliberate toggle.
             //
-            // Deliberately NOT attached to the `anthropic` provider's
-            // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
-            // on every domain a provider lists, so attaching it would route the
-            // session surface the moment someone enabled "Claude" - defeating
-            // the opt-in above. It rides that provider's `chat_domain_slugs`
-            // instead, which is how it reaches the Home ledger: `buildGroups`
-            // (src/lib/groups.ts) gives it a row and a switch under Claude, and
-            // `setGroupRouted` filters it out of the family cascade, so the only
-            // thing that can enable it is that row's own switch (or
-            // `proxy domain claude-web on` from the CLI).
+            // The `credential` below is what keeps it out of every cascade:
+            // `provider::cascade_domains` filters on it, so `provider::enable`
+            // cannot route the session surface as a side effect of someone
+            // enabling "Claude". The family still LISTS the slug, which is how
+            // it reaches the ledger - `buildGroups` (src/lib/groups.ts) gives
+            // it a row and a switch under Claude Desktop, and `cascadeTargets`
+            // filters it out by the same field - so the only thing that can
+            // enable it is that row's own switch (or `proxy domain claude-web
+            // on` from the CLI).
+            //
+            // This used to be enforced by keeping the slug out of a second
+            // array. Two arrays meant "not cascaded" and "not on the ledger"
+            // were one edit apart, and the rows were invisible for a while
+            // because of exactly that.
             //
             // `supported: true` in both environments. This entry was gated to
             // the staging gateway while the gateway-side classification for the
@@ -148,6 +162,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // above is the only thing keeping it off.
             enabled: false,
             supported: true,
+            // The same client as the entry above, which is the whole reason
+            // to name a client rather than a surface: these are two surfaces of
+            // one program, and a user who asks for "my Claude app routed" means
+            // both. Additive because the request carries their own claude.ai
+            // session cookie and Gate supplies no key for it - which is also
+            // what keeps this row off the family switch, now derived from this
+            // field instead of from a second slug array.
+            client: Client::ClaudeDesktop,
+            credential: Credential::Additive,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "openai".into(),
@@ -174,9 +198,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // this does is intercept api.openai.com for any system-proxy-
             // honouring client - which in practice means the multi-provider
             // harnesses, since OpenClaw and Hermes blind-tunnel anything outside
-            // the enabled catalog. So the row sits under Experimental with them
-            // (`LEFTOVER_GROUPS` in `src/lib/groups.ts`), and `provider.rs` no
-            // longer lists this slug.
+            // the enabled catalog. So the row is `Client::AnyApp`, which puts
+            // it under "Any app on this machine" with the other entries that
+            // cover whatever reaches them, and `provider.rs` does not list it.
             //
             // Not on the family's surface-kind scheme ("App" there means the
             // ChatGPT desktop app) because it is not in that family and not a
@@ -205,10 +229,19 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
+            // Nothing OpenAI ships rides this switch - Codex is config-routed
+            // through the relay, the desktop app is on chatgpt.com - so what
+            // actually depends on it is whatever else on the machine talks to
+            // api.openai.com, which is what `AnyApp` says out loud. It is also
+            // why this row no longer needs an "Experimental" heading to live
+            // under.
+            client: Client::AnyApp,
+            credential: Credential::Brokered,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "chatgpt-apps".into(),
-            display_name: "Web".into(),
+            display_name: "Chat".into(),
             // Codex Desktop's TOOL traffic, which is a separate route from the
             // `chatgpt` entry below even though both name chatgpt.com.
             //
@@ -290,13 +323,13 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // one - a hazard that mattered the moment either became togglable
             // without reading this file.
             //
-            // Like `claude-web` above, this slug is in no provider's
-            // `proxy_domain_slugs` and rides `chat_domain_slugs` instead: it
-            // gets a Home ledger row and a switch under OpenAI, and the family
-            // switch's cascade skips it, so the chat half of this entry
-            // (`/backend-api/f/conversation`, a session-cookie surface) can only
-            // be enabled from its own row or from `proxy domain chatgpt-apps
-            // on`. Whatever else exposes this entry must keep that property.
+            // Like `claude-web` above, this entry is `Credential::Additive`:
+            // it gets a ledger row and a switch under ChatGPT, and every
+            // cascade skips it, so the chat half of this entry
+            // (`/backend-api/f/conversation`, a session-cookie surface) can
+            // only be enabled from its own row or from `proxy domain
+            // chatgpt-apps on`. Whatever else exposes this entry must keep
+            // that property.
             //
             // And, like `claude-web`, offered in both environments: the staging
             // gate both entries carried is gone now that the gateway classifies
@@ -304,10 +337,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // this one off until its own switch says otherwise.
             enabled: false,
             supported: true,
+            // The app's own chat turn, plus the browser tab sharing the host;
+            // `rules_for_client` narrows only the browser. Additive for the
+            // same reason as claude-web: a session cookie, not a brokered key.
+            client: Client::ChatGpt,
+            credential: Credential::Additive,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "chatgpt".into(),
-            display_name: "App".into(),
+            display_name: "Subscription".into(),
             // The Responses API a ChatGPT-subscription login talks to:
             // chatgpt.com/backend-api/codex/responses, bearer = the user's
             // ChatGPT OAuth token, passed through. TWO clients arrive here by
@@ -319,9 +358,10 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // - OpenClaw, via the MITM engine. Managed proxy mode honours the
             //   proxy, so `decide` matches this entry on HOST and the engine
             //   rewrites the call - provided this domain is on, which is the
-            //   user's own switch to flip (`provider::chat_domain_slugs` gives
-            //   it a row under OpenAI). `integrations/openclaw.rs` prints a note
-            //   naming this slug rather than enabling it.
+            //   user's own switch to flip (it is `Credential::Additive`, so it
+            //   gets a row under ChatGPT and no cascade reaches it).
+            //   `integrations/openclaw.rs` prints a note naming this slug
+            //   rather than enabling it.
             //
             // Both routes work off one split because `engine::apply_rewrite`
             // strips the upstream's own path from the forwarded path exactly as
@@ -346,13 +386,31 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
+            // Host, not Client, even though Codex arrives through the relay:
+            // the OpenClaw route documented above is plain interception, so
+            // flipping this decrypts chatgpt.com for every proxy-honouring
+            // client on the machine. Additive - the bearer is the user's own
+            // ChatGPT subscription token, passed through untouched.
+            //
+            // Which client this is *aimed* at is entangled with the unsettled
+            // Cowork question (`src-tauri/src/lib.rs`'s `AGENT_PROCESSES` notes
+            // two contradictory captures and says at least one reading is
+            // wrong). `ChatGpt` keeps the row where the ledger already drew it,
+            // under the app whose host it shares, rather than deciding that
+            // question here.
+            client: Client::ChatGpt,
+            credential: Credential::Additive,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "openrouter".into(),
-            display_name: "Proxy".into(),
-            // "Proxy", not a vendor name: this family has exactly one row and
-            // the heading over it already reads "OpenRouter", so the label says
-            // by what mechanism it routes. OpenRouter has no Gate Connect
+            display_name: "OpenRouter".into(),
+            // The vendor name, because the heading no longer carries it: this
+            // row sits under "Any app on this machine" with the other entries
+            // that cover whatever happens to reach their hosts, so "Proxy" -
+            // which said by what mechanism it routes, under a heading that
+            // already read "OpenRouter" - would now name nothing at all.
+            // OpenRouter has no Gate Connect
             // integration and no chat surface, so unlike the families above
             // there is no App/Web/CLI split to make.
             //
@@ -374,10 +432,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
+            // Any app the user has pointed at OpenRouter, which is what this
+            // family's blurb already said in prose and no field could hold.
+            client: Client::AnyApp,
+            credential: Credential::Brokered,
+            scope: Scope::Host,
         },
         ProxyDomain {
             slug: "opencode".into(),
-            display_name: "OpenCode Zen / Go".into(),
+            display_name: "Zen / Go".into(),
             // Zen (`/zen/v1/*`) and Go (`/zen/go/v1/*`) are the same host and
             // the same upstream, separated only by path, so they are ONE entry:
             // `decide` returns on the first host match, so a second entry
@@ -406,6 +469,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
+            // Zen and Go are OpenCode's own hosted models, so the row belongs
+            // with the editor rather than under a vendor heading of its own.
+            client: Client::OpenCode,
+            credential: Credential::Brokered,
+            scope: Scope::Host,
         },
     ]
 }

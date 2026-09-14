@@ -55,6 +55,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import type { ReopenAction } from "./lib/reopen";
 import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -68,13 +69,19 @@ import type { ClassifiedError } from "./lib/errors";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  chatScopeNote,
-  describeMember,
+  credentialScopeNote,
+  BAND_LABELS,
+  sectionHint,
+  sectionMemberKeys,
+  sessionMembers,
+  scopeNote,
+  describeSection,
+  hintForMember,
   proxyReopenAdvice,
 } from "./lib/groups";
-import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
-import type { Group } from "./lib/groups";
+import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
 import { NO_DASHBOARD, dashboardLinks } from "./lib/dashboard";
@@ -83,7 +90,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
-import { brandMarkFor } from "./components/gc/BrandMark";
+import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
 import { orgLabel } from "./lib/orgLabel";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
@@ -143,6 +150,7 @@ import {
   ReplaceApiKeyDialog,
   ResetGateConnectDialog,
   ReviewConfigDialog,
+  SessionConsentDialog,
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
@@ -489,6 +497,34 @@ export function NewUiApp() {
     current: currentInstallId,
     resolved: installsResolved,
   } = useInstallations(canRead, credential);
+  /**
+   * The one config tool in the open section, if it has one.
+   *
+   * At most one, and that is a property of the sections rather than a
+   * coincidence worth guarding: each app has a single thing Gate writes a
+   * config file for. It is what the per-tool activity read below is keyed on,
+   * which is the whole of "aggregate" - the section's other surfaces are hosts,
+   * and the gateway attributes nothing to a host, so there is no second reading
+   * to add in.
+   *
+   * Resolved from the section table rather than from the built ledger, which is
+   * declared further down: this sits above it because the reads it gates have
+   * to be set up before the first render.
+   */
+  const openTool =
+    view.kind === "app"
+      ? (sectionMemberKeys(view.slug).find((key) =>
+          // The same filter `buildGroups` applies, and it has to be the same:
+          // `list_tools` carries the not-installed ones too, so without it a
+          // Claude pane on a machine with no Claude Code resolved to
+          // `claude-code`, fired every per-tool read against a tool that cannot
+          // have traffic, and drew zeroes with no caveat - `openDomain` false so
+          // no unattributed marker, `partialReading` undefined because IT reads
+          // the built ledger. A number with nothing behind it, in the one place
+          // principle 6 names.
+          tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
+        ) ?? null)
+      : null;
   /** The open pane belongs to a proxy domain rather than a config tool. The
    *  gateway attributes requests to config tools only - `client_tool` is
    *  derived from each tool's own user agent, and traffic from these surfaces
@@ -497,15 +533,7 @@ export function NewUiApp() {
    *  fire for a domain: filtering by its slug would return an empty reading,
    *  and the pane would report a quiet day over traffic it cannot see. A slug
    *  carried by an installed tool stays a tool. */
-  const openDomain =
-    view.kind === "app" &&
-    !tools.some((t) => t.slug === view.slug) &&
-    (proxy?.domains.some((d) => d.slug === view.slug) ?? false);
-  /** The tool whose pane is open, or null on any other view. Drives both per-tool
-   *  reads below, and gating on it keeps them from firing for a pane nobody is
-   *  looking at - this endpoint shares an address-keyed rate limit with every
-   *  other control-plane route. */
-  const openTool = view.kind === "app" && !openDomain ? view.slug : null;
+  const openDomain = openTool === null && view.kind === "app";
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -1255,30 +1283,42 @@ export function NewUiApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(providers, tools, proxy.domains, {
+        ? buildGroups(tools, proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
+            // The sweep, which a section's rendered state cannot do without.
+            // A member's `routed` is what `sectionStatus` counts to decide
+            // whether the app is protected, and without this every config
+            // member falls back to the conservative "not verified" - so a
+            // connected, swept tool read "Not routed - Blocked" for as long as
+            // its row was a section. The popover passed it from the start
+            // (`App.tsx`); this shell never needed it until a row stopped being
+            // a tool.
+            verdicts,
           })
         : [],
-    [providers, tools, proxy],
+    // Not `providers`: `buildGroups` stopped taking them, and leaving the poll's
+    // result in here rebuilt the whole ledger every time it landed.
+    [tools, proxy, verdicts],
   );
 
   /**
-   * The tools with no single model family, taken from `buildGroups`' own
-   * `multiProvider` groups rather than a slug list of our own - so the pane and
-   * the rail can never disagree about which tools those are.
+   * The rows with no single model family, taken from the members' own
+   * `coversAllProviders` rather than from a slug list here - so the pane and
+   * the ledger can never disagree about which they are.
    *
    * Today that is OpenCode, OpenClaw, Hermes and the environment channel. They
-   * get no model card; see `AppPane`'s `modelChoice`. Four groups rather than
-   * the one "Other tools" row this used to read, which is why the test is the
-   * flag and not an id.
+   * get no model card; see `AppPane`'s `modelChoice`. Read off the member
+   * rather than off the group, because a group is an app now and one app's
+   * surfaces do not have to answer this the same way.
    */
   const multiProviderSlugs = useMemo(
     () =>
       new Set(
         groups
-          .filter((g) => g.multiProvider)
-          .flatMap((g) => g.members.map((m) => m.key)),
+          .flatMap((g) => g.members)
+          .filter((m) => m.coversAllProviders)
+          .map((m) => m.key),
       ),
     [groups],
   );
@@ -1374,6 +1414,7 @@ export function NewUiApp() {
             t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          hint: hintForMember(t.slug),
         })),
     [tools, verdicts, routing.writeFailures, routingBusy],
   );
@@ -1400,45 +1441,44 @@ export function NewUiApp() {
     }
     const bySlug = new Map(apps.map((a) => [a.slug, a]));
     const grouped: SidebarGroup[] = [];
+    // One rail row per section, and the eyebrow is the band rather than the
+    // section: a section IS the row now, so labelling each with its own name
+    // would print every name twice. The two bands are the question being asked
+    // - an app you use, or a mechanism you are opting into.
+    let band: Band | null = null;
     for (const g of groups) {
-      const members: SidebarApp[] = [];
-      let vendor: string | null = null;
-      for (const m of g.members) {
-        if (m.kind === "config" && m.tool) {
-          const app = bySlug.get(m.key);
-          if (!app) continue;
-          bySlug.delete(m.key);
-          vendor ??= m.tool.upstream_provider_name;
-          members.push(app);
-        } else if (m.kind === "proxy") {
-          members.push({
-            slug: m.key,
-            name: m.name,
-            status: proxyMemberStatus(m),
-            // Intent, same as the tools: the switch says what the user asked
-            // for, the status line says what is happening.
-            on: m.desired,
-            logo: brandMarkFor(m.key),
-            busy: routingBusy,
-          });
-        }
+      // One SidebarApp per SECTION. Its status and its switch are the section's,
+      // and the surfaces underneath it are reached through the pane rather than
+      // through rows of their own.
+      const railStatus = sectionStatus(g, bySlug);
+      if (!railStatus) continue;
+      for (const m of g.members) bySlug.delete(m.key);
+      if (g.band !== band) {
+        band = g.band;
+        grouped.push({ id: `band:${band}`, label: BAND_LABELS[band], apps: [] });
       }
-      if (members.length === 0) continue;
-      grouped.push({
-        // "Other tools" names itself; its members' vendor field is a sentence
-        // fragment ("your existing providers"), not a caption.
-        id: g.id,
-        label: g.multiProvider ? g.name : (vendor ?? g.name),
-        apps: members,
+      grouped[grouped.length - 1].apps.push({
+        slug: g.id,
+        name: g.name,
+        status: railStatus,
+        // Intent, and the brokered half of it: what the switch renders is
+        // whether the app's own routing is on, not whether its session surface
+        // happens to be. `Group.switchOn` carries that distinction, and reads
+        // every governing member rather than any one of them - see its doc for
+        // the two ways `cascadeDesired > 0` got this wrong at once.
+        on: g.switchOn,
+        logo: brandMarkForSection(g.id, sectionMemberKeys(g.id)),
+        busy: routingBusy,
+        hint: sectionHint(g),
       });
     }
-    // A row the catalog did not claim keeps its place rather than vanishing.
-    // buildGroups sweeps leftovers into "Other tools", so this only catches a
-    // tool list and a catalog momentarily out of step with each other.
+    // A tool the ledger did not place keeps its place rather than vanishing.
+    // `buildGroups` gives such a member a section of its own, so this only
+    // catches a tool list and a catalog momentarily out of step.
     if (bySlug.size > 0) {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
-    return grouped;
+    return grouped.filter((g) => g.apps.length > 0);
   }, [groups, apps, routingBusy]);
 
   /** Every rail row flat, tools and domains together, for the pane header's
@@ -1448,28 +1488,31 @@ export function NewUiApp() {
     [sidebarGroups],
   );
 
-  /** Route or unroute one rail row. The rail mixes tools and proxy domains
-   *  now: a domain routes through `setDomainRouted` - no config file, so no
-   *  drift gate - the same dispatch the family panel's member switches use. */
-  const toggleRailApp = useCallback(
-    (slug: string, next: boolean) => {
-      const member = groups
-        .flatMap((g) => g.members)
-        .find((m) => m.key === slug);
-      // Cleared here rather than in each branch, because only one branch used
-      // to do it. `routeApp` clears on the way in; `setDomainRouted` never did,
-      // so a proxy row that failed and was then retried successfully turned the
-      // switch on and left "Could not connect" on screen above it - the switch
-      // and the banner asserting opposite things about the same click. The
-      // click is the moment the last failure stops being the current answer,
-      // whichever kind of row it lands on.
-      setActionError(null);
-      void (member?.kind === "proxy"
-        ? routing.setDomainRouted(slug, next)
-        : routeApp(slug, next));
-    },
-    [groups, routing.setDomainRouted, routeApp],
-  );
+  /**
+   * The app switch, for the rail and the pane header both.
+   *
+   * A row is a section, so a click is a cascade with a consent gate and a single
+   * certificate gate in front of it - `lib/useSectionRouting.ts` owns all three,
+   * because the tray draws the same rows and needs the same three. The `routeApp`
+   * fallback below it is for a catalog entry no section has claimed yet, which is
+   * empty in a shipped build.
+   */
+  const section = useSectionRouting({
+    groups,
+    routing,
+    runningApps,
+    prefs,
+    onPrefsChanged: () => void loadPreferences(),
+    // The click is the moment the last failure stops being the current answer,
+    // whichever kind of row it lands on. `routeApp` clears on its own way in;
+    // the cascade never did, so a row that failed and was then retried
+    // successfully turned the switch on and left "Could not connect" on screen
+    // above it - the switch and the banner asserting opposite things about the
+    // same click.
+    onBeforeRoute: () => setActionError(null),
+    routeApp: (slug, next) => void routeApp(slug, next),
+  });
+  const toggleRailApp = section.toggle;
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2294,7 +2337,17 @@ export function NewUiApp() {
   const paneNotice = useMemo(
     () =>
       view.kind === "app"
-        ? (notices.find((n) => n.memberKey === view.slug) ?? null)
+        ? // Any member of the open section, not the pane's own slug: a notice is
+          // keyed on the member it is about, and the pane is a section now.
+          //
+          // One caveat worth knowing rather than fixing here: `buildNotices`
+          // collapses master-off and needs-trust into ONE notice carrying the
+          // first affected member's key, so only the section owning that member
+          // draws the card even though the cause is true of every section at
+          // once. That predates the sections - the lookup used to be on the
+          // member key directly and had the same hole - and the fix belongs in
+          // `lib/notices.ts`, where the collapsing happens.
+          (notices.find((n) => sectionMemberKeys(view.slug).includes(n.memberKey)) ?? null)
         : null,
     [notices, view],
   );
@@ -2372,9 +2425,13 @@ export function NewUiApp() {
         // Not the tool whose pane is open: `ReopenAlert` is already sitting on
         // it with the same two routes and the same button, and one fact drawn
         // twice on one screen reads as two problems.
-        .filter((v) => !(view.kind === "app" && view.slug === v.slug))
+        //
+        // `openTool`, not the pane's slug: verdicts are keyed per tool and the
+        // pane is a section, so comparing the two suppressed nothing and drew
+        // the card twice.
+        .filter((v) => v.slug !== openTool)
         .map((v) => ({ slug: v.slug, name: toolName(v.slug) ?? v.slug })),
-    [verdicts, toolName, view],
+    [verdicts, toolName, openTool],
   );
 
   /**
@@ -2483,13 +2540,79 @@ export function NewUiApp() {
    */
   const chatScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
+    // The section's signed-in surface, if it has one. A section is an app and
+    // its rows are that app's surfaces, so the note is about whichever of them
+    // Gate does not hold a key for - which is the fact the switch's own
+    // confirmation is about, said again where it is standing rather than only
+    // at the moment of flipping.
     const member = groups
-      .flatMap((g) => g.members)
-      .find((m) => m.key === view.slug);
+      .find((g) => g.id === view.slug)
+      ?.members.find((m) => m.credential === "additive");
     return member
-      ? chatScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
+      ? credentialScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
       : undefined;
   }, [view, groups, platform, proxy]);
+
+  /**
+   * Whether the open section's figures cover less than its switch routes.
+   *
+   * True when the section has a config tool (so there IS a reading) and any
+   * member the gateway cannot attribute (so the reading is narrower than the
+   * heading). `client_tool` comes from the caller's own User-Agent, and the
+   * desktop apps send none the matcher places - see `proxy::client_tool` and
+   * the ceiling its doc describes.
+   */
+  const partialReading = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const section = groups.find((g) => g.id === view.slug);
+    const configMember = section?.members.find((m) => m.kind === "config");
+    if (!section || !configMember) return undefined;
+    return section.members.some((m) => m.kind === "proxy")
+      ? { covers: configMember.tool?.product_name ?? configMember.name }
+      : undefined;
+  }, [view, groups]);
+
+  /**
+   * How wide this row reaches, for every host it reaches on.
+   *
+   * The brokered host entries - the API surfaces, OpenRouter - are matched on
+   * host exactly like the session ones, so flipping them intercepts that host
+   * for every client on the machine. They said nothing about it, because the
+   * only note in this position keyed on the credential and theirs is the
+   * ordinary one. Scope and credential are separate fields now, so each row
+   * gets whichever sentences are true of it.
+   *
+   * Two things this used to get wrong, both by taking the FIRST matching member
+   * and stopping. It was suppressed entirely whenever `chatScope` was set, on
+   * the reasoning that the credential note "already opens with the same host
+   * sentence" - it does not: that note names the additive member's hosts only,
+   * so on the Claude pane it said claude.ai and the section's OTHER host entry,
+   * api.anthropic.com, went unmentioned on the one screen that exists to explain
+   * the switch. And a section with two host members on different hosts named one
+   * of them. Both are the same fix: every `host`-scoped member the section has,
+   * minus the ones the credential note already spoke for.
+   */
+  const rowScope = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const members = groups.find((g) => g.id === view.slug)?.members ?? [];
+    const machine = members.find((m) => m.scope === "machine");
+    if (machine) return scopeNote(machine);
+    // Not the additive ones: `chatScope` says the same thing about those, in
+    // the words that also name the credential.
+    const hosts = [
+      ...new Set(
+        members
+          .filter((m) => m.scope === "host" && m.credential !== "additive")
+          .flatMap((m) => m.domain?.hosts ?? []),
+      ),
+    ];
+    if (hosts.length === 0) return undefined;
+    // The section's own name, because the row is the app: "not only Claude" is
+    // the comparison a reader on this pane is making, and a member name ("API")
+    // is not.
+    const named = railApps.find((a) => a.slug === view.slug)?.name ?? "this app";
+    return `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${named}.`;
+  }, [view, groups, railApps]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -2501,9 +2624,29 @@ export function NewUiApp() {
    */
   const proxyAdvice = useMemo(() => {
     if (view.kind !== "app") return undefined;
-    const member = groups.flatMap((g) => g.members).find((m) => m.key === view.slug);
-    return member ? proxyReopenAdvice(member.kind, platform) : undefined;
-  }, [view, groups, platform]);
+    // Asked of the SECTION, because a row is one now. The pane's slug is a
+    // section id and matches no member key at all, so the old lookup found
+    // nothing and the note stopped being drawn.
+    //
+    // Any host member is enough: the advice is about what interception cannot
+    // reach into a running process, and a section that has one has a surface
+    // that behaves that way - whether or not it also has a config tool. The
+    // Claude row is both at once, which is what the per-surface ledger never had
+    // to reconcile.
+    const member = groups
+      .find((g) => g.id === view.slug)
+      ?.members.find((m) => m.kind === "proxy");
+    if (!member) return undefined;
+    // Except beside a measurement. A reopen verdict is measured, this is not,
+    // and putting a guess next to a reading invites the reader to weigh the two
+    // - so the tool's own card speaks for the app and this stays quiet while it
+    // is up. `ReopenAlert`'s own condition, asked here rather than shared,
+    // because it is declared below this.
+    const measured =
+      openTool !== null && verdicts.get(openTool)?.reason === "reopen_required";
+    if (measured) return undefined;
+    return proxyReopenAdvice(member.kind, platform);
+  }, [view, groups, openTool, verdicts, platform]);
 
   /**
    * The open app's reopen card, when its verdict says a process is holding older
@@ -2515,20 +2658,23 @@ export function NewUiApp() {
    * verdict, so the card cannot name a route the sweep did not establish.
    */
   const reopenAlert = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const verdict = verdicts.get(view.slug);
+    // The section's config tool, not the pane's slug. A verdict is measured per
+    // tool and a reopen is a process reopening, so both are the tool's - the
+    // section id matched neither map and the card stopped being drawn at all.
+    if (view.kind !== "app" || openTool === null) return undefined;
+    const verdict = verdicts.get(openTool);
     if (verdict?.reason !== "reopen_required") return undefined;
-    const app = appFor(apps, view.slug);
+    const app = appFor(apps, openTool);
     if (!app) return undefined;
     return (
       <ReopenAlert
         name={app.name}
         routeInUse={verdict.route_in_use}
         requestedRoute={verdict.requested_route}
-        onReopen={() => void runningApps.offerAfterChange([view.slug])}
+        onReopen={() => void runningApps.offerAfterChange([openTool])}
       />
     );
-  }, [view, verdicts, apps, runningApps]);
+  }, [view, openTool, verdicts, apps, runningApps]);
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -2913,6 +3059,13 @@ export function NewUiApp() {
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />
+        ) : section.consent ? (
+          <SessionConsentDialog
+            name={section.consent.name}
+            surfaces={sessionMembers(section.consent)}
+            onDismiss={section.dismissConsent}
+            onConfirm={section.confirmConsent}
+          />
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and
           // connecting cannot proceed without one. Asking first matters because
@@ -3006,13 +3159,13 @@ export function NewUiApp() {
             // says in words - the design draws eleven `gate/...` ids, and
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
-            appName={
-              appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
-              "This app"
-            }
+            // The tool's name, resolved through the section: a model choice is
+            // per tool and `apps` is keyed that way, so the pane's own section
+            // id found nothing here and every dialog read "This app".
+            appName={appFor(apps, openTool ?? "")?.name ?? "This app"}
             // The slug, not the display name: compatibility is keyed on the tool
             // the preferences use, and two apps can share a name.
-            appSlug={view.kind === "app" ? view.slug : null}
+            appSlug={openTool}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
@@ -3027,11 +3180,7 @@ export function NewUiApp() {
           />
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
-            app={{
-              name:
-                appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
-                "this app",
-            }}
+            app={{ name: appFor(apps, openTool ?? "")?.name ?? "this app" }}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
             vendor={modelOverlay.modelIds[0].split("/")[0]}
@@ -3210,13 +3359,11 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          // The h1 is "App" / "Web" / "CLI" here. The rail's eyebrow supplies
-          // the vendor that makes those legible and the pane has no eyebrow, so
-          // the sentence has to travel with the name. Keyed by slug rather than
-          // read off the member, so a row the ledger has not placed yet still
-          // gets its description.
-          description={describeMember(view.slug)}
-          logo={brandMarkFor(view.slug)}
+          // The section's own sentence. The h1 is an app name now ("Claude"),
+          // which is legible on its own - but the switch under it covers three
+          // surfaces, and this is the only place that says which.
+          description={describeSection(view.slug)}
+          logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
@@ -3269,7 +3416,7 @@ export function NewUiApp() {
           // header is never sent and the gateway never overrides the model.
           // Offering the choice let the user pick a Gate model, accept the paid
           // confirmation, and be served their own model anyway.
-          {...(multiProviderSlugs.has(view.slug) || openDomain
+          {...((openTool !== null && multiProviderSlugs.has(openTool)) || openDomain
             ? {}
             : {
                 modelChoice: openModelChoice,
@@ -3380,6 +3527,15 @@ export function NewUiApp() {
             events: unattributedMachine || toolEvents.failure !== null,
           }}
           unattributed={openDomain}
+          // A section spans surfaces the gateway attributes differently: its
+          // config tool sends a User-Agent `client_tool` recognises, its host
+          // surfaces do not. So the counters are the tool's, under a heading
+          // naming the whole app, and saying which is the difference between a
+          // measurement and a plausible number.
+          //
+          // Computed from the section rather than hardcoded, so it disappears
+          // per surface as attribution improves rather than needing a sweep.
+          partialReading={partialReading}
           alert={
             <>
               {reopenAlert}
@@ -3396,6 +3552,7 @@ export function NewUiApp() {
               {chatScope && (
                 <PaneNote title={chatScope.title} body={chatScope.body} />
               )}
+              {rowScope && <PaneNote title="What this switch covers" body={rowScope} />}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}

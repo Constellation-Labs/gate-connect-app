@@ -23,6 +23,8 @@ const useNewUi = { gc: "gc.newUi" };
  * phrase reads the row; one that wants the reason opens the pane.
  */
 async function openApp(app: { page: import("@playwright/test").Page }, name: string) {
+  // The section's name: the rail draws one row per app, so Codex is reached
+  // through "ChatGPT / Codex" rather than through a row of its own.
   await app.page.getByRole("button", { name }).first().click();
 }
 
@@ -70,7 +72,7 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
 
-    await openApp(app, "CLI");
+    await openApp(app, "ChatGPT / Codex");
     await expect(app.page.getByText("Connection problem")).toBeVisible();
   });
 
@@ -87,7 +89,7 @@ test.describe("new UI routing verdict", () => {
 
     // Waits for the sweep to have landed before reading the switch.
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
-    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
+    const sidebarSwitch = app.appSwitch("ChatGPT / Codex");
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
   });
 
@@ -100,7 +102,7 @@ test.describe("new UI routing verdict", () => {
       staleAgents: 1,
     });
 
-    await openApp(app, "CLI");
+    await openApp(app, "ChatGPT / Codex");
     await expect(app.page.getByText("Reopen required")).toBeVisible();
   });
 
@@ -127,7 +129,7 @@ test.describe("new UI routing verdict", () => {
       runningAgentNames: ["codex"],
     });
 
-    await openApp(app, "CLI");
+    await openApp(app, "ChatGPT / Codex");
 
     await expect(
       app.page.getByText(/It was already running when its configuration changed/),
@@ -155,7 +157,7 @@ test.describe("new UI routing verdict", () => {
     // now, and while disabled they read "Not routed" as well.
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "OpenAI CLI", exact: true }) });
+      .filter({ has: app.appSwitch("ChatGPT / Codex") });
     await expect(row.getByText("Not routed")).toBeVisible();
   });
 

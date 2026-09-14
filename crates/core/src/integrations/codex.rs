@@ -214,6 +214,10 @@ impl Integration for Codex {
         "Codex"
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::Codex
+    }
+
     /// The row label. Rows sit under a family heading that already names the
     /// vendor, so the label separates the surfaces inside that family: "App" for
     /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
