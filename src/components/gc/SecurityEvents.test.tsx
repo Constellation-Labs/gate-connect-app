@@ -93,6 +93,11 @@ describe("the feed's own connection state", () => {
 
     expect(screen.queryByRole("status", { name: /^Event feed/ })).toBeNull();
     expect(screen.queryByText("Offline")).toBeNull();
+    // Unnamed, but still there: the pill has to arrive as a content change
+    // inside a live region that was already mounted, not as a live region
+    // appearing with its text already in it - which is the case assistive tech
+    // handles least consistently, and the announcement is what the role is for.
+    expect(screen.getByRole("status")).toBeTruthy();
   });
 
   it("keeps showing the events it has while reconnecting", () => {

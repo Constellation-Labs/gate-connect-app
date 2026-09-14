@@ -1799,22 +1799,42 @@ export function NewUiApp() {
    * The feed is a section of the Overview now, not a pane, so reaching it is two
    * moves rather than one: open the pane, then put the section in view. The
    * scroll cannot happen in the listener - the pane is not mounted yet at that
-   * point - so the request is recorded as a flag and the effect below does it
+   * point - so the request is recorded as a count and the effect below does it
    * after the render it asked for has committed, and again once that render
    * stops being placeholders.
+   *
+   * **A count rather than a flag, and served out of a ref**, because the second
+   * press has to scroll too. A flag is already `true` for the whole window
+   * between the press and the reading, so raising it again is a no-op React
+   * bails out of: the effect's deps do not change and no scroll is issued. That
+   * is a press doing visibly nothing until the network answers, which is the
+   * dead end below reached from the other side - and pressing the card again is
+   * exactly what someone does when the first press landed short.
    *
    * Unconditional, unlike the recovery-details request beside it. That one
    * arms a *dialog* and has to refuse when the slot is taken or the window is
    * still on setup, because a dialog armed now and drawn later pops unprompted.
-   * This only navigates: on setup there is no anchor and `?.` does nothing, and
-   * with a dialog open the pane it scrolls is the one behind it, which is where
-   * the user will be when they close it.
+   * This only navigates: with a dialog open the pane it scrolls is the one
+   * behind it, which is where the user will be when they close it.
+   *
+   * **On setup the request is held rather than dropped**, which is a change from
+   * when this was a tick: `useActivity` is disabled until there is an account,
+   * so it sets neither `view` nor `failure`, `activityPending` cannot go false
+   * and the count is never served. The scroll then happens on the first commit
+   * after the shell mounts and its reading lands. That is the right outcome - it
+   * is the cold-launch path this whole intent is for, arriving a few seconds
+   * later - but it is no longer the "`?.` does nothing" this comment used to
+   * promise, so it is written down rather than left to be rediscovered.
    */
-  const [securityRequested, setSecurityRequested] = useState(false);
+  const [securityRequests, setSecurityRequests] = useState(0);
+  /** The count the effect below has finished serving. A ref because advancing it
+   *  must not itself re-render, and because the effect that writes it is the
+   *  only thing that reads it. */
+  const securityServed = useRef(0);
   useEffect(() => {
     const unlisten = listen("security-events-requested", () => {
       setView({ kind: "overview" });
-      setSecurityRequested(true);
+      setSecurityRequests((n) => n + 1);
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
@@ -1831,14 +1851,14 @@ export function NewUiApp() {
    * and leaves the section below the fold. Which is the dead end this whole
    * intent exists to remove, arriving by a different route.
    *
-   * So the request is not cleared until `activityPending` is false. Scrolling
-   * immediately as well is deliberate: the read can be slow, and a press that
-   * visibly does nothing until the network answers is that same dead end again.
-   * The user asked to be here moments ago, so putting them here again when the
-   * layout settles is what they asked for rather than a yank.
+   * So the request is not marked served until `activityPending` is false.
+   * Scrolling immediately as well is deliberate: the read can be slow, and a
+   * press that visibly does nothing until the network answers is that same dead
+   * end again. The user asked to be here moments ago, so putting them here again
+   * when the layout settles is what they asked for rather than a yank.
    */
   useEffect(() => {
-    if (!securityRequested) return;
+    if (securityRequests === securityServed.current) return;
     // Same jump the Tokens saved counter makes, and the same reasoning: a
     // `scrollIntoView` rather than a hash link, which would leave a fragment in
     // the URL of a window that has no address bar to show it.
@@ -1847,8 +1867,8 @@ export function NewUiApp() {
       block: "start",
     });
     if (activityPending) return;
-    setSecurityRequested(false);
-  }, [securityRequested, activityPending]);
+    securityServed.current = securityRequests;
+  }, [securityRequests, activityPending]);
 
   /**
    * The one-time OAuth offer, for an account still on a pasted key.

@@ -213,14 +213,37 @@ export function SecurityEvents({
             * flight draws a `Skeleton`", applied to the one figure on this card
             * that is not a row. The tray refuses the same claim by hiding its
             * card outright while loading; this card is the section, so it cannot
-            * leave, and draws the placeholder instead. */}
-          {loading ? (
-            <Skeleton className="h-6 w-20 shrink-0" />
-          ) : (
-            <span role="status" aria-label={`Event feed ${feed.label}`}>
+            * leave, and draws the placeholder instead.
+            *
+            * The region itself stays mounted through both states, and only its
+            * contents swap. A live region inserted with its text already in
+            * place is the case assistive tech handles least consistently - the
+            * announcement that "hears the transition" above is the one an
+            * unmounted wrapper would lose, which is the whole reason the role is
+            * here. `aria-label` waits with the pill: named while loading, the
+            * region would report the connection the label names, which is the
+            * claim this guard exists to refuse.
+            *
+            * `self-start` and the 2px because `Skeleton` is a block with no text
+            * and so has no baseline of its own: this row is `items-baseline`,
+            * and a synthesized one is the box's bottom edge, which hangs the
+            * placeholder off the heading's baseline and pushes the heading 6px
+            * down for as long as the read takes. Measured: the offset puts the
+            * placeholder on exactly the pill's own box (2..26 in the row), so
+            * the header is 26px and the card 106px in both states and nothing
+            * moves when the reading lands. Same concern as the stat tile's
+            * `my-1` in `metrics.tsx`, same arithmetic. */}
+          <span
+            role="status"
+            aria-label={loading ? undefined : `Event feed ${feed.label}`}
+            className={loading ? "mt-0.5 shrink-0 self-start" : undefined}
+          >
+            {loading ? (
+              <Skeleton className="h-6 w-20" />
+            ) : (
               <Pill className={feed.className}>{feed.label}</Pill>
-            </span>
-          )}
+            )}
+          </span>
         </div>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">
