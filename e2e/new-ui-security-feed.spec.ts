@@ -3,10 +3,17 @@ import { test, expect } from "./fixtures";
 /**
  * The live security-event feed (AG-578), end to end through the real window.
  *
- * What this covers that `SecurityPane.test.tsx` cannot: that the pane is reachable
- * from the rail at all, that the window is actually *listening* for pushed events
- * rather than only rendering props, that a window opening mid-session recovers the
- * buffer it missed, and that the dashboard link is built from the event.
+ * What this covers that `SecurityEvents.test.tsx` cannot: that the feed is on the
+ * Overview the window opens on, that the window is actually *listening* for
+ * pushed events rather than only rendering props, that a window opening
+ * mid-session recovers the buffer it missed, and that the dashboard link is built
+ * from the event.
+ *
+ * **The navigation step is gone as of AG-853.** Every test here used to open the
+ * feed by clicking a `Security events` rail entry; the feed is the last section
+ * of the Overview now, and the Overview is where the window lands, so there is
+ * nothing to click. The one thing that still navigates to it is the tray's card,
+ * covered in `new-ui-tray.spec.ts`.
  *
  * The fake backend stands in for the connection: the real one holds an SSE stream
  * open in Rust and emits `security-event` / `security-feed-state`, and here a test
@@ -14,6 +21,19 @@ import { test, expect } from "./fixtures";
  * the whole reason the transport lives behind an event boundary.
  */
 const useNewUi = { gc: "gc.newUi" };
+
+/**
+ * The feed's section on the Overview, and every assertion below is scoped to it.
+ *
+ * Required rather than tidy, since AG-853. The pane it shares now draws
+ * "Blocked" and "Flagged" of its own - the Messages chart's legend and the
+ * screen-reader table behind it - so an unscoped `getByText("Blocked")` matches
+ * three nodes and fails on strict mode rather than on the feed. Scoping also
+ * asserts the thing the move was for: these rows are on the Overview, under the
+ * anchor the tray's card navigates to.
+ */
+const feed = (page: import("@playwright/test").Page) =>
+  page.locator("#security-events");
 
 /** One event, in the wire shape. Note what is not here - no prompt, no response,
  *  no matched value. The gateway omits them; there is nothing to hide. */
@@ -33,19 +53,56 @@ test.describe("new UI security feed", () => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
+  test("the feed is the Overview's last section, and the rail has lost its entry", async ({
+    boot,
+  }) => {
+    // AG-853's first two criteria, which are about placement rather than about
+    // the feed: it reads after Token savings, and the standalone way in is gone.
+    const app = await boot({});
+
+    const rail = app.page.getByRole("navigation", { name: "Main" });
+    await expect(rail.getByRole("button", { name: "Security events" })).toHaveCount(0);
+    await expect(rail.getByRole("button", { name: "Overview" })).toHaveCount(1);
+    await expect(rail.getByRole("button", { name: "Settings" })).toHaveCount(1);
+
+    // `~` is "a later sibling of", so this matches only while the feed's section
+    // really does come after Token savings in the pane. Source order rather than
+    // a pixel offset: it is what a keyboard and a screen reader follow down the
+    // page, and it does not move when the pane scrolls.
+    await expect(app.page.locator("#token-savings ~ #security-events")).toHaveCount(1);
+  });
+
+  test("a request from the tray lands on the section, from whatever pane", async ({
+    boot,
+  }) => {
+    // The receiving half of AG-853's entry point. `new-ui-tray.spec.ts` proves
+    // the card invokes `request_security_events`; this proves the invocation
+    // arrives somewhere, which is the half the old bug lived in - the press used
+    // to reveal the window on whatever pane it was last on and open nothing, and
+    // a test of the sending side alone would not have caught that.
+    const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
+
+    // Somewhere that is deliberately not the Overview, so the assertion cannot
+    // pass on the window's default pane.
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await expect(feed(app.page)).toHaveCount(0);
+
+    await app.emit("security-events-requested", null);
+
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+  });
+
   test("an empty feed says so, rather than saying nothing", async ({ boot }) => {
     const app = await boot({});
 
-    await app.page.getByRole("button", { name: "Security events" }).click();
-
-    await expect(app.page.getByText("No security events")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toBeVisible();
     // A loaded-and-empty feed is a real answer and must not read as a failure.
-    await expect(app.page.getByText("Unavailable")).toHaveCount(0);
+    await expect(feed(app.page).getByText("Unavailable")).toHaveCount(0);
   });
 
   test("a failed catch-up is not reported as an empty feed", async ({ boot }) => {
     // The case that produced the original defect: the stream is Live, so the
-    // pane looks healthy, but the catch-up that would have answered "is there
+    // card looks healthy, but the catch-up that would have answered "is there
     // history?" was refused. Saying "No security events" here is a claim about
     // the user's traffic made by a screen whose question was never answered -
     // the same mistake the whole-feed `Unavailable` state exists to prevent,
@@ -54,20 +111,18 @@ test.describe("new UI security feed", () => {
       securityFeed: { state: "live", events: [], historyOk: false },
     });
 
-    await app.page.getByRole("button", { name: "Security events" }).click();
-
     await expect(
-      app.page.getByText("Earlier events couldn’t be loaded"),
+      feed(app.page).getByText("Earlier events couldn’t be loaded"),
     ).toBeVisible();
-    await expect(app.page.getByText("No security events")).toHaveCount(0);
+    await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
     // The feed itself is fine, and the pill must go on saying so: the stream
     // and its history fail independently.
-    await expect(app.page.getByText("Live")).toBeVisible();
+    await expect(feed(app.page).getByText("Live")).toBeVisible();
     // Deliberately no recovery action. `retry_now` only wakes the backoff
     // between connection attempts and the catch-up runs once per connection,
     // so while the stream is Live a retry issues no request at all. A control
     // that reliably does nothing teaches the user the feature is broken.
-    await expect(app.page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    await expect(feed(app.page).getByRole("button", { name: "Try again" })).toHaveCount(0);
   });
 
   test("a partial history says so above the rows it does have", async ({ boot }) => {
@@ -77,31 +132,28 @@ test.describe("new UI security feed", () => {
       securityFeed: { state: "live", events: [blocked], historyOk: false },
     });
 
-    await app.page.getByRole("button", { name: "Security events" }).click();
-
     await expect(
-      app.page.getByText("Showing events from this session only."),
+      feed(app.page).getByText("Showing events from this session only."),
     ).toBeVisible();
-    await expect(app.page.getByText("Blocked")).toBeVisible();
-    await expect(app.page.getByText("No security events")).toHaveCount(0);
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
   });
 
-  test("an event pushed while the pane is open appears on it", async ({ boot }) => {
+  test("an event pushed while the Overview is open appears on it", async ({ boot }) => {
     const app = await boot({});
-    await app.page.getByRole("button", { name: "Security events" }).click();
-    await expect(app.page.getByText("No security events")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toBeVisible();
 
     await app.emit("security-event", blocked);
 
-    await expect(app.page.getByText("Blocked")).toBeVisible();
-    await expect(app.page.getByText("credential")).toBeVisible();
-    await expect(app.page.getByText("claude-code")).toBeVisible();
-    await expect(app.page.getByText("No security events")).toHaveCount(0);
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+    await expect(feed(app.page).getByText("credential")).toBeVisible();
+    await expect(feed(app.page).getByText("claude-code")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
   });
 
   test("a window opened after the fact recovers the events it missed", async ({ boot }) => {
     // Tauri events only reach a window that is already listening. Without the
-    // buffer read on mount this pane would say "No security events" about a
+    // buffer read on mount this section would say "No security events" about a
     // session that had two, which is a claim about the user's traffic rather
     // than about this window's uptime.
     const app = await boot({
@@ -111,10 +163,8 @@ test.describe("new UI security feed", () => {
       },
     });
 
-    await app.page.getByRole("button", { name: "Security events" }).click();
-
-    await expect(app.page.getByText("Blocked")).toBeVisible();
-    await expect(app.page.getByText("Flagged")).toBeVisible();
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+    await expect(feed(app.page).getByText("Flagged")).toBeVisible();
   });
 
   test("the feed reports its own connection, and routing keeps working", async ({ boot }) => {
@@ -122,16 +172,15 @@ test.describe("new UI security feed", () => {
     // must not touch it, because the two are unrelated and conflating them is
     // what makes a user turn routing off to fix a network blip.
     const app = await boot({});
-    await app.page.getByRole("button", { name: "Security events" }).click();
-    await expect(app.page.getByRole("status", { name: "Event feed Live" })).toBeVisible();
+    await expect(feed(app.page).getByRole("status", { name: "Event feed Live" })).toBeVisible();
 
     const routingBefore = await app.state().then((s) => s.proxy.running);
 
     await app.emit("security-feed-state", "reconnecting");
-    await expect(app.page.getByRole("status", { name: "Event feed Reconnecting" })).toBeVisible();
+    await expect(feed(app.page).getByRole("status", { name: "Event feed Reconnecting" })).toBeVisible();
 
     await app.emit("security-feed-state", "offline");
-    await expect(app.page.getByRole("status", { name: "Event feed Offline" })).toBeVisible();
+    await expect(feed(app.page).getByRole("status", { name: "Event feed Offline" })).toBeVisible();
 
     // Routing is untouched by any of that. Asserted as "unchanged" rather than
     // as a fixed value: the invariant is that the feed cannot move it, and a
@@ -143,22 +192,19 @@ test.describe("new UI security feed", () => {
 
   test("events already on screen survive a reconnect", async ({ boot }) => {
     const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
-    await app.page.getByRole("button", { name: "Security events" }).click();
-    await expect(app.page.getByText("Blocked")).toBeVisible();
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
 
     await app.emit("security-feed-state", "reconnecting");
 
     // A feed having a bad minute is not an empty feed; blanking the table would
     // lose what the user was reading.
-    await expect(app.page.getByText("Blocked")).toBeVisible();
-    await expect(app.page.getByText("No security events")).toHaveCount(0);
+    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
   });
 
   test("opening an event offers the dashboard and keeps the summary up", async ({ boot }) => {
     const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
-    await app.page.getByRole("button", { name: "Security events" }).click();
-
-    await app.page.getByRole("button", { name: /View/ }).click();
+    await feed(app.page).getByRole("button", { name: /View/ }).click();
 
     // AC7: the summary is what stays visible until the dashboard has the event.
     await expect(app.page.getByRole("heading", { name: "Blocked request" })).toBeVisible();
@@ -175,8 +221,7 @@ test.describe("new UI security feed", () => {
     // the app runs and every render walks it. 200 matches the backend buffer, so
     // this window shows the same depth of history as one opened a moment ago.
     const app = await boot({});
-    await app.page.getByRole("button", { name: "Security events" }).click();
-    await expect(app.page.getByText("No security events")).toBeVisible();
+    await expect(feed(app.page).getByText("No security events")).toBeVisible();
 
     for (let i = 0; i < 205; i++) {
       await app.emit("security-event", {
@@ -187,10 +232,10 @@ test.describe("new UI security feed", () => {
       });
     }
 
-    await expect.poll(() => app.page.getByText("cat-204").count()).toBe(1);
+    await expect.poll(() => feed(app.page).getByText("cat-204").count()).toBe(1);
     // The oldest five fell off rather than accumulating.
-    expect(await app.page.getByText("cat-0", { exact: true }).count()).toBe(0);
-    expect(await app.page.getByText("cat-5", { exact: true }).count()).toBe(1);
+    expect(await feed(app.page).getByText("cat-0", { exact: true }).count()).toBe(0);
+    expect(await feed(app.page).getByText("cat-5", { exact: true }).count()).toBe(1);
   });
 
   test("the notification switches reach the backend", async ({ boot }) => {

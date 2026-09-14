@@ -3963,6 +3963,24 @@ fn request_recovery_details(app: tauri::AppHandle) {
     }
 }
 
+/// Hand a "show me the security events" request from the tray's security card to
+/// the main window, which is the only surface that holds the feed's rows.
+///
+/// The third of the bespoke intents, and the one the card went without for
+/// longest: it was wired to `expand`, so it revealed the window on whatever pane
+/// the user was last on and the sentence in `Tray.tsx` had to promise less than
+/// a click. AG-853 gave the feed a fixed home - the last section of the Overview
+/// - which is what made a destination expressible at all.
+#[tauri::command]
+fn request_security_events(app: tauri::AppHandle) {
+    reveal_popover_window(&app);
+    let _ = app.emit("security-events-requested", ());
+    if let Some(tray) = app.get_webview_window("tray") {
+        let _ = tray.hide();
+        POPOVER_VISIBLE.store(false, Ordering::Release);
+    }
+}
+
 /// Position the tray popover centered horizontally on the tray icon and just
 /// above or below it, whichever side has room on the icon's monitor - macOS's
 /// menu bar is at the top so the popover lands below, Windows' taskbar is
@@ -4326,6 +4344,7 @@ pub fn run() {
                     open_onboarding_window,
                     reveal_popover,
                     request_recovery_details,
+                    request_security_events,
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,
@@ -4410,6 +4429,7 @@ pub fn run() {
                     open_onboarding_window,
                     reveal_popover,
                     request_recovery_details,
+                    request_security_events,
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,

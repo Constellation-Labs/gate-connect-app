@@ -4,6 +4,8 @@ import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
+import { SecurityEvents } from "./SecurityEvents";
+import type { SecurityEventsProps } from "./SecurityEvents";
 
 /**
  * The Overview pane (Figma `Flows / Overview`): a 24-hour summary of what Gate
@@ -12,6 +14,17 @@ import type { MessagesBucket, UsageStats } from "./metrics";
  *
  * Presentational. The 24-hour backend is still being built, so every number
  * arrives as a prop and nothing here talks to `lib/api`.
+ *
+ * **The live security feed is the last section of it** (AG-853), below Token
+ * savings, where it used to be a pane of its own behind a third rail entry. The
+ * four summaries above it and the feed answer the same question at two
+ * resolutions - what Gate did with this traffic, in aggregate and event by
+ * event - and the pane scrolls, so the feed costs the summaries nothing.
+ *
+ * It is a required prop rather than a `ReactNode` slot like `alert` and `scope`
+ * below. Those two are genuinely optional chrome; this is the section the pane
+ * is now the only home for, and a caller that could omit it could lose the
+ * feed entirely with nothing failing to say so.
  */
 
 /**
@@ -77,6 +90,7 @@ export function Overview({
   savings,
   onManagePolicies,
   onManageSavings,
+  security,
   alert,
   period = "Last 24 hours",
   scope,
@@ -89,6 +103,11 @@ export function Overview({
   savings: Saving[];
   onManagePolicies: () => void;
   onManageSavings: () => void;
+  /** The live security-event feed, passed straight through to the section that
+   *  draws it. Its own read, with its own loading and failure states: `pending`
+   *  and `unavailable` below describe the 24-hour activity read and say nothing
+   *  about the feed. */
+  security: SecurityEventsProps;
   /** First load has not landed. Passed down so every card draws a placeholder
    *  rather than an answer it does not have yet; see `Skeleton`. */
   pending?: boolean;
@@ -152,6 +171,10 @@ export function Overview({
         unavailable={unavailable?.savings}
         onManage={onManageSavings}
       />
+      {/* Last, and after Token savings by name: the summaries above are the
+        * period's totals and this is the period's detail, so it reads in the
+        * order a user asks the questions in. */}
+      <SecurityEvents {...security} />
     </div>
   );
 }

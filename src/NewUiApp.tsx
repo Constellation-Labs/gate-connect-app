@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { SecurityEventDialog, SecurityPane } from "./components/gc/SecurityPane";
+import { SECURITY_SECTION_ID, SecurityEventDialog } from "./components/gc/SecurityEvents";
 import { useSecurityFeed } from "./lib/securityFeed";
 import type { SecurityEvent } from "./lib/api";
 import type {
@@ -1789,6 +1789,43 @@ export function NewUiApp() {
   }, []);
 
   /**
+   * "Show me the security events", from the tray's card (AG-853).
+   *
+   * The feed is a section of the Overview now, not a pane, so reaching it is two
+   * moves rather than one: open the pane, then put the section in view. The
+   * scroll cannot happen in the listener - the pane is not mounted yet at that
+   * point - so the request is recorded as a tick and the effect below does it
+   * after the render it asked for has committed.
+   *
+   * Unconditional, unlike the recovery-details request beside it. That one
+   * arms a *dialog* and has to refuse when the slot is taken or the window is
+   * still on setup, because a dialog armed now and drawn later pops unprompted.
+   * This only navigates: on setup there is no anchor and `?.` does nothing, and
+   * with a dialog open the pane it scrolls is the one behind it, which is where
+   * the user will be when they close it.
+   */
+  const [securityRequests, setSecurityRequests] = useState(0);
+  useEffect(() => {
+    const unlisten = listen("security-events-requested", () => {
+      setView({ kind: "overview" });
+      setSecurityRequests((n) => n + 1);
+    });
+    return () => {
+      void unlisten.then((off) => off()).catch(() => {});
+    };
+  }, []);
+  useEffect(() => {
+    if (securityRequests === 0) return;
+    // Same jump the Tokens saved counter makes, and the same reasoning: a
+    // `scrollIntoView` rather than a hash link, which would leave a fragment in
+    // the URL of a window that has no address bar to show it.
+    document.getElementById(SECURITY_SECTION_ID)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [securityRequests]);
+
+  /**
    * The one-time OAuth offer, for an account still on a pasted key.
    *
    * Raised here rather than in `useSetup`, and only from inside the app shell:
@@ -3134,16 +3171,6 @@ export function NewUiApp() {
     >
       {view.kind === "settings" ? (
         <SettingsPane sections={settingsSections} />
-      ) : view.kind === "security" ? (
-        <SecurityPane
-          events={securityFeed.events}
-          state={securityFeed.state}
-          loading={securityFeed.loading}
-          unavailable={securityFeed.unavailable}
-          historyUnavailable={securityFeed.historyUnavailable}
-          onRetry={securityFeed.retry}
-          onOpenEvent={setOpenEvent}
-        />
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
@@ -3424,6 +3451,18 @@ export function NewUiApp() {
           savings={activity.view?.savings ?? []}
           onManagePolicies={() => openDashboard((d) => d.policies)}
           onManageSavings={() => openDashboard((d) => d.savings)}
+          // The feed's own read, beside but not part of the activity read the
+          // rest of the pane draws: `pending` and `unavailable` below are that
+          // read's states and say nothing about the stream.
+          security={{
+            events: securityFeed.events,
+            state: securityFeed.state,
+            loading: securityFeed.loading,
+            unavailable: securityFeed.unavailable,
+            historyUnavailable: securityFeed.historyUnavailable,
+            onRetry: securityFeed.retry,
+            onOpenEvent: setOpenEvent,
+          }}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we
           // asked and were refused. Neither is true while the answer is on its

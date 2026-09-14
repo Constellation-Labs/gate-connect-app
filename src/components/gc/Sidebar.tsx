@@ -13,12 +13,18 @@ import type { IconName } from "./Icon";
  * data fetching. Nothing here talks to `lib/api`.
  */
 
+/**
+ * Overview and Settings, and that is the whole nav block - which is what the
+ * Sidenav frame (408:15625) has always drawn.
+ *
+ * A third entry, `security`, sat between them from AG-578 until AG-853 moved the
+ * live feed onto the Overview pane. It was recorded as an undrawn addition at
+ * the time; removing it puts the rail back on the frame rather than away from
+ * it. Anything that used to navigate here goes to the Overview's
+ * `SECURITY_SECTION_ID` instead.
+ */
 export type SidebarView =
   | { kind: "overview" }
-  /** The live security-event feed (AG-578). Undrawn: the Sidenav frame
-   *  (408:15625) draws Overview and Settings only, so this entry is built from
-   *  the `NavItem` component set rather than copied from a frame. */
-  | { kind: "security" }
   | { kind: "settings" }
   /** An app row is selected and its detail pane is open. */
   | { kind: "app"; slug: string };
@@ -130,8 +136,8 @@ export interface SidebarApp {
    * Absent where the feed has no attribution to give: it keys events on the tool
    * slug, and a chat domain's traffic arrives unattributed on purpose -
    * `NewUiApp`'s `openDomain` note has the reason - so those rows have no
-   * reading, permanently. An unreadable feed is the same case, and the Security
-   * events pane is the surface that says so.
+   * reading, permanently. An unreadable feed is the same case, and the Overview's
+   * Security events section is the surface that says so.
    */
   alerts?: RowCount;
 }
@@ -269,12 +275,6 @@ export function Sidebar({
           label="Overview"
           active={view.kind === "overview"}
           onClick={() => onNavigate({ kind: "overview" })}
-        />
-        <NavItem
-          icon="shieldCheck"
-          label="Security events"
-          active={view.kind === "security"}
-          onClick={() => onNavigate({ kind: "security" })}
         />
         <NavItem
           icon="settings2"
