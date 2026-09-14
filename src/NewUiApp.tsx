@@ -2591,6 +2591,11 @@ export function NewUiApp() {
    * the switch. And a section with two host members on different hosts named one
    * of them. Both are the same fix: every `host`-scoped member the section has,
    * minus the ones the credential note already spoke for.
+   *
+   * Both sentences now share one card rather than two identically titled ones,
+   * so this one is phrased against whether `chatScope` precedes it. Suppressing
+   * it again would reintroduce exactly the omission described above: the answer
+   * to the two reading as one repeated thought is the wording, not the scope.
    */
   const rowScope = useMemo(() => {
     if (view.kind !== "app") return undefined;
@@ -2611,8 +2616,21 @@ export function NewUiApp() {
     // the comparison a reader on this pane is making, and a member name ("API")
     // is not.
     const named = railApps.find((a) => a.slug === view.slug)?.name ?? "this app";
-    return `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${named}.`;
-  }, [view, groups, railApps]);
+    // Second sentence in the same card when `chatScope` drew the first, so it
+    // must not restate the mechanism: "matched on host" twice over was the
+    // repetition, and the two HOSTS were never the problem. Standalone - a
+    // section whose only host row is brokered - it is the whole explanation and
+    // says the mechanism itself.
+    //
+    // Why this is the sentence that gives way rather than the credential note's:
+    // `browserScopeNote` ends that note with "the same site", which needs
+    // claude.ai named in the clause before it. Merging both hosts into one
+    // "matched on host" sentence would leave that pronoun pointing at
+    // api.anthropic.com, which is not a site anybody browses.
+    return chatScope
+      ? `The same applies to ${hosts.join(", ")}: anything on this machine that sends there is covered, not only ${named}.`
+      : `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${named}.`;
+  }, [view, groups, railApps, chatScope]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -3549,10 +3567,22 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {chatScope && (
-                <PaneNote title={chatScope.title} body={chatScope.body} />
+              {/* One card, not two. Both sentences answer the same question
+                  about the same switch - a section's switch routes every
+                  surface the app has - and the Claude pane is the section that
+                  has both a signed-in surface and a brokered host, so it drew
+                  two cards headed "What this switch covers" one above the
+                  other. That reads as a rendering fault rather than as two
+                  facts. They stay two SOURCES for the reason `rowScope`
+                  documents: the credential note speaks only for the additive
+                  member's hosts, so the section's other host entry still needs
+                  its own sentence. */}
+              {(chatScope || rowScope) && (
+                <PaneNote
+                  title={chatScope?.title ?? "What this switch covers"}
+                  body={[chatScope?.body, rowScope].filter(Boolean).join(" ")}
+                />
               )}
-              {rowScope && <PaneNote title="What this switch covers" body={rowScope} />}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
