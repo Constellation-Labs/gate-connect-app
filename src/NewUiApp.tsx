@@ -479,6 +479,11 @@ export function NewUiApp() {
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
   const activity = useActivity(canRead, installFilter, credential);
+  /** The Overview's cards are drawing placeholders rather than readings.
+   *
+   *  Hoisted out of the pane's props because the scroll below has to wait on the
+   *  same fact: skeleton cards are not the height the real ones will be. */
+  const activityPending = activity.view === null && activity.failure === null;
   const {
     installations,
     current: currentInstallId,
@@ -1794,8 +1799,9 @@ export function NewUiApp() {
    * The feed is a section of the Overview now, not a pane, so reaching it is two
    * moves rather than one: open the pane, then put the section in view. The
    * scroll cannot happen in the listener - the pane is not mounted yet at that
-   * point - so the request is recorded as a tick and the effect below does it
-   * after the render it asked for has committed.
+   * point - so the request is recorded as a flag and the effect below does it
+   * after the render it asked for has committed, and again once that render
+   * stops being placeholders.
    *
    * Unconditional, unlike the recovery-details request beside it. That one
    * arms a *dialog* and has to refuse when the slot is taken or the window is
@@ -1804,18 +1810,35 @@ export function NewUiApp() {
    * with a dialog open the pane it scrolls is the one behind it, which is where
    * the user will be when they close it.
    */
-  const [securityRequests, setSecurityRequests] = useState(0);
+  const [securityRequested, setSecurityRequested] = useState(false);
   useEffect(() => {
     const unlisten = listen("security-events-requested", () => {
       setView({ kind: "overview" });
-      setSecurityRequests((n) => n + 1);
+      setSecurityRequested(true);
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
     };
   }, []);
+  /**
+   * Scroll now, and once more when the cards above stop being placeholders.
+   *
+   * `scrollIntoView` resolves its target when it is called, and an animated one
+   * keeps travelling to that offset while the page reflows underneath. With no
+   * cached reading the four cards above the anchor are skeletons at this point -
+   * a fixed three `PendingRows` each - and they change height when the activity
+   * read lands, so a scroll issued against the placeholder layout stops short
+   * and leaves the section below the fold. Which is the dead end this whole
+   * intent exists to remove, arriving by a different route.
+   *
+   * So the request is not cleared until `activityPending` is false. Scrolling
+   * immediately as well is deliberate: the read can be slow, and a press that
+   * visibly does nothing until the network answers is that same dead end again.
+   * The user asked to be here moments ago, so putting them here again when the
+   * layout settles is what they asked for rather than a yank.
+   */
   useEffect(() => {
-    if (securityRequests === 0) return;
+    if (!securityRequested) return;
     // Same jump the Tokens saved counter makes, and the same reasoning: a
     // `scrollIntoView` rather than a hash link, which would leave a fragment in
     // the URL of a window that has no address bar to show it.
@@ -1823,7 +1846,9 @@ export function NewUiApp() {
       behavior: "smooth",
       block: "start",
     });
-  }, [securityRequests]);
+    if (activityPending) return;
+    setSecurityRequested(false);
+  }, [securityRequested, activityPending]);
 
   /**
    * The one-time OAuth offer, for an account still on a pasted key.
@@ -3468,7 +3493,7 @@ export function NewUiApp() {
           // asked and were refused. Neither is true while the answer is on its
           // way. A held reading from the cache clears this on the first frame,
           // so the placeholders are only ever seen by an account that has none.
-          pending={activity.view === null && activity.failure === null}
+          pending={activityPending}
           // With no view at all - loading, or a failure with nothing held -
           // every section is unread, which is what the fallback says. Once
           // there is one, it names its own gaps.
