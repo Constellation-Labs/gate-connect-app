@@ -90,7 +90,23 @@ test.describe("new UI security feed", () => {
     await app.emit("security-events-requested", null);
 
     await expect(feed(app.page).getByText("Blocked")).toBeVisible();
+    // The half `toBeVisible` does not cover, and the half this path exists for.
+    // `toBeVisible` is "in the DOM with a box", so it passes on the pane switch
+    // alone: delete the `scrollIntoView` and the row is still visible, three
+    // screens below the fold, which is the dead end the tray card used to be.
+    // `toBeInViewport` is the assertion that can tell those apart, and it
+    // retries, so the smooth scroll settles under it rather than racing it.
+    await expect(feed(app.page)).toBeInViewport();
   });
+
+  // The cold-mount half of that jump - the one where the cards above the anchor
+  // are still skeletons when the scroll fires, and reflow pushes the section
+  // past where it stopped - has no e2e here, deliberately. `install.ts` answers
+  // no `activity_overview` at all, so the read fails on the first tick and the
+  // pane never spends a frame pending: a test written against `gc.slowActivity`
+  // passes identically with the re-arm in `NewUiApp` and with it deleted, which
+  // is a test that asserts nothing. Covering it needs the fake backend to serve
+  // an activity body first.
 
   test("an empty feed says so, rather than saying nothing", async ({ boot }) => {
     const app = await boot({});

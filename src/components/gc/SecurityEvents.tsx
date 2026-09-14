@@ -203,43 +203,41 @@ export function SecurityEvents({
               Overview's activity read either, which is a different question
               answered by a different backend. `role="status"` so a screen
               reader hears the transition without the table moving.
-            *
-            * **A pill is a reading too**, which is why it waits. `state` is
-            * seeded `"offline"` and replaced when the mount read answers
-            * (`useSecurityFeed`), so an unguarded pill reports a connection
-            * nobody has checked yet - and since the feed moved onto the pane the
-            * window opens on, that is every cold launch rather than the rare
-            * glimpse it was behind a rail entry. Principle 6's "a value still in
-            * flight draws a `Skeleton`", applied to the one figure on this card
-            * that is not a row. The tray refuses the same claim by hiding its
-            * card outright while loading; this card is the section, so it cannot
-            * leave, and draws the placeholder instead.
-            *
-            * The region itself stays mounted through both states, and only its
-            * contents swap. A live region inserted with its text already in
-            * place is the case assistive tech handles least consistently - the
-            * announcement that "hears the transition" above is the one an
-            * unmounted wrapper would lose, which is the whole reason the role is
-            * here. `aria-label` waits with the pill: named while loading, the
-            * region would report the connection the label names, which is the
-            * claim this guard exists to refuse.
-            *
-            * `self-start` and the 2px because `Skeleton` is a block with no text
-            * and so has no baseline of its own: this row is `items-baseline`,
-            * and a synthesized one is the box's bottom edge, which hangs the
-            * placeholder off the heading's baseline and pushes the heading 6px
-            * down for as long as the read takes. Measured: the offset puts the
-            * placeholder on exactly the pill's own box (2..26 in the row), so
-            * the header is 26px and the card 106px in both states and nothing
-            * moves when the reading lands. Same concern as the stat tile's
-            * `my-1` in `metrics.tsx`, same arithmetic. */}
+
+              Held back until the seed lands, like the rows beside it. The hook
+              starts `state` at `"offline"` because it has to start somewhere,
+              so an unguarded pill spends the first read telling the user their
+              security feed is down - on the pane the window opens on, every
+              cold launch. A pill is a reading and there is no reading yet,
+              which is the same rule the empty cell below follows when it
+              refuses to say "No security events" before the answer is in. The
+              tray's card already declines the claim by hiding itself while
+              loading; this is that, at window size.
+
+              The region stays mounted through both states and only its contents
+              swap. A live region that appears with its text already in it is the
+              case assistive tech handles least consistently; the announcement
+              this role is here for is the one an unmounted wrapper would lose.
+              `aria-label` waits with the pill, because a region named while
+              loading reports the very connection the guard above refuses to
+              claim. */}
           <span
             role="status"
             aria-label={loading ? undefined : `Event feed ${feed.label}`}
+            // Sized to the pill it replaces, and *placed* on it too. The row is
+            // `items-baseline` and `Skeleton` is a block with no text, so it has
+            // no baseline of its own and the synthesized one is its bottom edge:
+            // matching the pill's height alone hangs the placeholder off the
+            // heading's baseline instead of sitting on it, which pushed the
+            // header to 30px and the heading 6px down for as long as the read
+            // took. Measured in Chromium against both markups - the 2px puts the
+            // placeholder on exactly the pill's own box, so header and card are
+            // 26px and 106px either way and nothing moves when the reading
+            // lands. Same concern as the stat tile's `my-1` in `metrics.tsx`.
             className={loading ? "mt-0.5 shrink-0 self-start" : undefined}
           >
             {loading ? (
-              <Skeleton className="h-6 w-20" />
+              <Skeleton className="h-6 w-20 rounded-control" />
             ) : (
               <Pill className={feed.className}>{feed.label}</Pill>
             )}

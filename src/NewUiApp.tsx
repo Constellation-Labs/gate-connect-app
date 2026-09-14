@@ -479,10 +479,10 @@ export function NewUiApp() {
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
   const activity = useActivity(canRead, installFilter, credential);
-  /** The Overview's cards are drawing placeholders rather than readings.
-   *
-   *  Hoisted out of the pane's props because the scroll below has to wait on the
-   *  same fact: skeleton cards are not the height the real ones will be. */
+  /** The 24-hour read has not answered yet, either way. Drives the Overview's
+   *  skeletons, and named here because the tray's jump to the security section
+   *  needs the same fact: the anchor's position is not final until the cards
+   *  above it stop being placeholders. */
   const activityPending = activity.view === null && activity.failure === null;
   const {
     installations,
@@ -1799,17 +1799,8 @@ export function NewUiApp() {
    * The feed is a section of the Overview now, not a pane, so reaching it is two
    * moves rather than one: open the pane, then put the section in view. The
    * scroll cannot happen in the listener - the pane is not mounted yet at that
-   * point - so the request is recorded as a count and the effect below does it
-   * after the render it asked for has committed, and again once that render
-   * stops being placeholders.
-   *
-   * **A count rather than a flag, and served out of a ref**, because the second
-   * press has to scroll too. A flag is already `true` for the whole window
-   * between the press and the reading, so raising it again is a no-op React
-   * bails out of: the effect's deps do not change and no scroll is issued. That
-   * is a press doing visibly nothing until the network answers, which is the
-   * dead end below reached from the other side - and pressing the card again is
-   * exactly what someone does when the first press landed short.
+   * point - so the request is recorded as a tick and the effect below does it
+   * after the render it asked for has committed.
    *
    * Unconditional, unlike the recovery-details request beside it. That one
    * arms a *dialog* and has to refuse when the slot is taken or the window is
@@ -1817,48 +1808,30 @@ export function NewUiApp() {
    * This only navigates: with a dialog open the pane it scrolls is the one
    * behind it, which is where the user will be when they close it.
    *
-   * **On setup the request is held rather than dropped**, which is a change from
-   * when this was a tick: `useActivity` is disabled until there is an account,
-   * so it sets neither `view` nor `failure`, `activityPending` cannot go false
-   * and the count is never served. The scroll then happens on the first commit
-   * after the shell mounts and its reading lands. That is the right outcome - it
-   * is the cold-launch path this whole intent is for, arriving a few seconds
-   * later - but it is no longer the "`?.` does nothing" this comment used to
-   * promise, so it is written down rather than left to be rediscovered.
+   * **On setup the request is held rather than dropped.** It used to be neither:
+   * a tick fired into a pane with no anchor, `?.` did nothing and that was the
+   * end of it. Now it stays armed, because `useActivity` is disabled until there
+   * is an account and so sets neither `view` nor `failure` - `activityPending`
+   * cannot go false and nothing disarms. The scroll lands on the first commit
+   * after the shell mounts and its reading arrives, which is the cold-launch
+   * path this whole intent is for, a few seconds later than it reads. The right
+   * outcome, and not the old one, so it is written down rather than left to be
+   * rediscovered.
    */
   const [securityRequests, setSecurityRequests] = useState(0);
-  /** The count the effect below has finished serving. A ref because advancing it
-   *  must not itself re-render, and because the effect that writes it is the
-   *  only thing that reads it. */
-  const securityServed = useRef(0);
+  const securityScrollArmed = useRef(false);
   useEffect(() => {
     const unlisten = listen("security-events-requested", () => {
       setView({ kind: "overview" });
+      securityScrollArmed.current = true;
       setSecurityRequests((n) => n + 1);
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
     };
   }, []);
-  /**
-   * Scroll now, and once more when the cards above stop being placeholders.
-   *
-   * `scrollIntoView` resolves its target when it is called, and an animated one
-   * keeps travelling to that offset while the page reflows underneath. With no
-   * cached reading the four cards above the anchor are skeletons at this point -
-   * a fixed three `PendingRows` each - and they change height when the activity
-   * read lands, so a scroll issued against the placeholder layout stops short
-   * and leaves the section below the fold. Which is the dead end this whole
-   * intent exists to remove, arriving by a different route.
-   *
-   * So the request is not marked served until `activityPending` is false.
-   * Scrolling immediately as well is deliberate: the read can be slow, and a
-   * press that visibly does nothing until the network answers is that same dead
-   * end again. The user asked to be here moments ago, so putting them here again
-   * when the layout settles is what they asked for rather than a yank.
-   */
   useEffect(() => {
-    if (securityRequests === securityServed.current) return;
+    if (!securityScrollArmed.current) return;
     // Same jump the Tokens saved counter makes, and the same reasoning: a
     // `scrollIntoView` rather than a hash link, which would leave a fragment in
     // the URL of a window that has no address bar to show it.
@@ -1866,8 +1839,17 @@ export function NewUiApp() {
       behavior: "smooth",
       block: "start",
     });
-    if (activityPending) return;
-    securityServed.current = securityRequests;
+    // One scroll is not enough when the pane mounts unread. The four cards above
+    // the anchor are skeletons at that point and every one of them is shorter
+    // than the rows it will be replaced by, so the anchor moves down after the
+    // jump has already stopped - and the press that asked for the events leaves
+    // the user looking at Token savings, which is the bug this whole path
+    // replaces, one step smaller. So the request stays armed across the read and
+    // scrolls again when the real heights land. It disarms on the first pass
+    // that had them, which a warm pane reaches immediately; `pending` goes false
+    // on a failed read too, so an account the gateway will not answer for still
+    // disarms rather than re-scrolling on some unrelated refetch weeks later.
+    if (!activityPending) securityScrollArmed.current = false;
   }, [securityRequests, activityPending]);
 
   /**

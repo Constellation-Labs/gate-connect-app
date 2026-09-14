@@ -82,15 +82,13 @@ describe("the feed's own connection state", () => {
     expect(screen.getByRole("status", { name: `Event feed ${label}` })).toBeTruthy();
   });
 
-  it("reports no connection at all until the first read answers", () => {
-    // `useSecurityFeed` seeds `state` to "offline" and replaces it when the
-    // mount read lands, so a pill drawn unguarded says the feed is offline when
-    // what actually happened is that nobody has looked yet. Rare while this was
-    // a pane behind a rail entry; every cold launch now that it is on the pane
-    // the window opens on. Principle 6, applied to the one figure on this card
-    // that is not a row.
+  it("makes no claim about the connection until the first read answers", () => {
+    // `useSecurityFeed` seeds `state` to "offline" because it has to seed it to
+    // something, so an unguarded pill spends every cold launch telling the user
+    // their security feed is down - on the pane the window now opens on. A pill
+    // is a reading and there is no reading yet, which is the same rule the empty
+    // cell follows when it refuses to say "No security events" too early.
     render(section({ loading: true, state: "offline" }));
-
     expect(screen.queryByRole("status", { name: /^Event feed/ })).toBeNull();
     expect(screen.queryByText("Offline")).toBeNull();
     // Unnamed, but still there: the pill has to arrive as a content change
