@@ -277,6 +277,17 @@ export const requestSwitchOrg = () => invoke<void>("request_switch_org");
 export const requestRecoveryDetails = () =>
   invoke<void>("request_recovery_details");
 
+/** Ask the main window to open the Overview at its Security events section,
+ *  from the tray's security card (AG-853).
+ *
+ *  Same hand-over as the two above. The card used to call `revealMainWindow`,
+ *  which surfaces the window wherever it was last left - so the one surface with
+ *  the events on it was a click away from the click that asked for them. The
+ *  feed had no fixed address to send anyone to until it became a section of the
+ *  Overview; now it has one. */
+export const requestSecurityEvents = () =>
+  invoke<void>("request_security_events");
+
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the
  *  window along with the copy telling the user what to click. Always paired

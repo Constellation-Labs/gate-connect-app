@@ -20,6 +20,7 @@ import {
   requestQuit,
   resumeRestore,
   requestRecoveryDetails,
+  requestSecurityEvents,
   requestSwitchOrg,
   revealMainWindow,
   unpinPopover,
@@ -597,7 +598,7 @@ export function TrayApp() {
    * early, which is why the account is checked here too.
    *
    * The buffer is what this popover has seen (200 events), the same depth the
-   * window's Security events pane lists.
+   * window's Security events section lists.
    */
   const alertCounts = useMemo<Map<string, number> | null>(() => {
     if (account === null || securityFeed.loading || securityFeed.unavailable) {
@@ -920,10 +921,17 @@ export function TrayApp() {
           : {
               state: securityFeed.state,
               count: securityFeed.events.length,
-              // The popover has room for a count, not a feed. Expanding is the
-              // whole affordance: the pane it opens has the detail this card
-              // deliberately does not try to fit.
-              onOpen: expand,
+              // The popover has room for a count, not a feed, so the card hands
+              // over - and since AG-853 it hands over to somewhere in
+              // particular. `expand` alone was the same bug the recovery card's
+              // Review details had: it revealed the window on whatever pane the
+              // user was last on, so a press asking for the events opened
+              // anything but them. The feed is the Overview's last section now,
+              // which is a destination the reveal can carry.
+              onOpen: () =>
+                void requestSecurityEvents().catch((e) =>
+                  setActionError(classifyError(e, "generic")),
+                ),
             }
       }
       recovery={

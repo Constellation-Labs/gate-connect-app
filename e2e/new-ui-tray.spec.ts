@@ -189,6 +189,26 @@ test.describe("tray popover", () => {
     await expect(row).toContainText("3 alerts");
   });
 
+  test("the security card sends the window to the events themselves", async ({ boot }) => {
+    // AG-853's last criterion: an entry point into the feed must not be a dead
+    // end. This card used to call the bare `reveal_popover`, which surfaces the
+    // window on whatever pane it was last on - so the press that asked for the
+    // events opened anything but them, and with the window already up behind the
+    // popover the only visible effect was the tray closing. The feed has a fixed
+    // address now (the Overview's last section), which is what made a
+    // destination expressible.
+    const app = await boot({
+      windowLabel: "tray",
+      securityFeed: { state: "live", events: [] },
+    });
+
+    await app.page.getByText("No recent security events").click();
+
+    await expect
+      .poll(() => app.lastCall("request_security_events"))
+      .not.toBeNull();
+  });
+
   test("the popover re-reads on tools-changed rather than on a timer", async ({ boot }) => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.

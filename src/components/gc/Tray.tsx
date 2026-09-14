@@ -715,24 +715,6 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
   );
 }
 
-/** The security feed, at popover size.
- *
- * A count and a connection state, and a way into the full window. Deliberately
- * not a list: at 400px a row would have to drop either the category or the
- * tool, and an event that cannot say what fired or where is not worth the
- * space.
- *
- * **It does not open the security pane.** `onOpen` is the header's `expand`:
- * `reveal_popover_window` shows the main window wherever it was last left and
- * takes no pane argument, so the user lands on whatever pane they were on. The
- * sentence here used to say the full feed was one click away, which is one
- * click plus finding it. Wiring it properly needs the reveal to carry a
- * destination; until then this card promises less.
- *
- * The count is "this session", not "today". The feed buffers what it has received
- * since the app started, and calling that a daily total would be a claim about
- * traffic the app was not running for.
- */
 /**
  * The interrupted-routing notice at tray width.
  *
@@ -863,6 +845,25 @@ function ReopenCard({
   );
 }
 
+/** The security feed, at popover size.
+ *
+ * A count and a connection state, and a way into the full window. Deliberately
+ * not a list: at 400px a row would have to drop either the category or the
+ * tool, and an event that cannot say what fired or where is not worth the
+ * space.
+ *
+ * **`onOpen` lands on the events themselves** (AG-853). It used to be the
+ * header's `expand`: `reveal_popover_window` shows the main window wherever it
+ * was last left and takes no destination, so the card that asked for the feed
+ * revealed whatever pane the user happened to be on. `request_security_events`
+ * carries the destination, and the feed now has one to carry - the last section
+ * of the Overview, rather than a pane behind a rail entry that could have been
+ * anywhere.
+ *
+ * The count is "this session", not "today". The feed buffers what it has received
+ * since the app started, and calling that a daily total would be a claim about
+ * traffic the app was not running for.
+ */
 function SecurityCard({
   security,
 }: {
@@ -922,8 +923,8 @@ function SecurityCard({
 }
 
 /** Same three states and the same colours the pane draws. Duplicated as a
- *  constant rather than imported from `SecurityPane`, which would pull the whole
- *  window pane into the tray bundle for three strings. */
+ *  constant rather than imported from `SecurityEvents`, which would pull the
+ *  window's whole feed section into the tray bundle for three strings. */
 const FEED_LABEL: Record<FeedState, { label: string; className: string }> = {
   live: { label: "Live", className: "bg-green-100 text-green-900" },
   reconnecting: { label: "Reconnecting", className: "bg-amber-100 text-amber-900" },

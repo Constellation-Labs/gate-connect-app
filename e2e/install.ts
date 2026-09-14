@@ -634,6 +634,11 @@ export function installFakeTauri(state: BackendState): void {
     // tray's "Review details" used the bare reveal and so opened nothing, and a
     // spec can only tell the two apart if the fake backend can.
     request_recovery_details: () => null,
+    // The third of them (AG-853): reveal plus "open the Overview at its Security
+    // events section". Same reason it has to be its own entry - the tray card
+    // used the bare reveal too, and a spec can only tell that apart from a
+    // destination if the fake backend can.
+    request_security_events: () => null,
     request_app_quit: () => null,
     pending_quit_tools: () => {
       const pending = state.pendingQuitTools;

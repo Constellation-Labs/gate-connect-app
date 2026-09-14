@@ -34,7 +34,7 @@ export interface ActivityEntry {
    *
    * The frame's Type column (`table/recent-activity` on `Flows / App`) draws
    * this beside a 20px glyph. Rendered as the gateway spelled it, the same way
-   * `SecurityPane` renders the same field: relabelling it here would invent a
+   * `SecurityEvents` renders the same field: relabelling it here would invent a
    * display vocabulary for values only the gateway knows.
    */
   category: string | null;
