@@ -1922,21 +1922,33 @@ const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
     // `claude` above is the CLI, and `agent_name_of` deliberately does not fold
     // them together. Confirmed with the product.
     ("anthropic", "Claude", "Claude Desktop", Surface::App),
+    // **This row covers Cowork too, and the ChatGPT row below covers Work.**
+    //
+    // Cowork is a mode inside the Claude desktop app, not an app of its own -
+    // same process, same host, same switch - and Work is the same thing inside
+    // the ChatGPT app. So neither needs a row, and adding one would be adding a
+    // name no process ever answers to.
+    //
+    // Spelled out because the tree has been wrong about this twice, in opposite
+    // directions, and the second error is the one that looks correct:
+    //
+    // - A Cowork row was added here once, on the reading that it was a separate
+    //   desktop app (a Windows spelling of Claude Desktop). It is not.
+    // - It was then deleted on the reading that Cowork *is* the ChatGPT app,
+    //   because `engine.rs` carried a captured turn to
+    //   `chatgpt.com/backend-api/codex/responses` labelled "Cowork's". That
+    //   capture is Work's, and Work belongs to ChatGPT - see `work_upgrade`,
+    //   which used to be `cowork_upgrade` and is the whole origin of the
+    //   confusion. So "there is no Cowork process" was right, and the reason
+    //   given for it was wrong, and it pointed at the wrong row.
+    //
+    // The surviving consequence of that second error is worth knowing: it left
+    // a note claiming `provider.rs` and `GroupMembers.tsx` might be wrong to
+    // label the *anthropic* switch "Claude Desktop / Cowork". They are not.
+    // That is this row, and Cowork rides it.
+    //
     // `ChatGPT` on Windows too, where `.exe` is stripped before the match.
     // Confirmed with the product.
-    //
-    // **There is no Cowork process, and this row is it.** Cowork had a row of
-    // its own here for one commit, under `anthropic`, on the reading that it was
-    // a separate Windows desktop app; it is not. `engine.rs`'s captured Cowork
-    // turn is a request to `chatgpt.com/backend-api/codex/responses` - a path
-    // the `chatgpt` entry claims - so Cowork's traffic and its process are both
-    // this one.
-    //
-    // Worth knowing because the name is used loosely elsewhere in the tree:
-    // `provider.rs` and `GroupMembers.tsx` both label the *anthropic* switch
-    // "Claude Desktop / Cowork". Those are about which switch routes the
-    // traffic, not about a process to close, and at least one of the two
-    // readings is wrong - see the note raised with this change.
     ("chatgpt", "ChatGPT", "ChatGPT", Surface::App),
 ];
 
@@ -5665,13 +5677,16 @@ mod tests {
 
     /// The lookup returns *every* name a slug claims, not the first.
     ///
-    /// No slug names two processes today - the one that briefly did, Cowork
-    /// under `anthropic`, turned out not to be a separate app at all. The guard
-    /// is kept anyway because the shape that failed is a `find`, which drops
+    /// No slug names two processes today, and now for a reason rather than by
+    /// accident: the two candidates were Cowork and Work, and both are modes
+    /// inside an app already listed rather than apps of their own. A slug could
+    /// still grow a second name - a vendor shipping a genuinely separate binary
+    /// on one platform would do it.
+    ///
+    /// The guard is kept because the shape that failed is a `find`, which drops
     /// extra rows in silence: the dropped process reads as not running, so it is
     /// never marked stale, never offered for close and never reopened, with
-    /// nothing on screen saying so. A table this cheap to add a row to should
-    /// not have a lookup that punishes it.
+    /// nothing on screen saying so.
     #[test]
     fn the_lookup_returns_every_name_a_slug_claims() {
         for (slug, name, _, _) in AGENT_PROCESSES {

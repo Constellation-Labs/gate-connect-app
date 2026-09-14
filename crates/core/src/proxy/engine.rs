@@ -2363,9 +2363,23 @@ mod tests {
     use super::*;
     use crate::proxy::ClientClass;
 
-    /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
+    /// Work's turn, as captured: a GET on a path the `chatgpt` entry claims,
     /// upgraded to a WebSocket.
-    fn cowork_upgrade() -> Request<()> {
+    ///
+    /// **This was called `cowork_upgrade`, and that name sent a later change
+    /// looking in the wrong place.** Work is a mode inside the ChatGPT desktop
+    /// app; Cowork is a mode inside the Claude desktop app. The two names are
+    /// one letter apart and belong to different vendors, so reading this
+    /// capture as Cowork's put Anthropic traffic on chatgpt.com - and
+    /// `AGENT_PROCESSES` in `src-tauri/src/lib.rs` then recorded that Cowork
+    /// "is" the ChatGPT app, which is the wrong app for it. Both names
+    /// confirmed with the product 2026-09-11.
+    ///
+    /// Nothing about the request changed; only what it is understood to be.
+    /// The capture is still real and still exercises the upgrade path on the
+    /// entry that claims it - which is the right entry either way, since Work
+    /// is the ChatGPT app and this is its host.
+    fn work_upgrade() -> Request<()> {
         Request::builder()
             .method("GET")
             .uri("https://chatgpt.com/backend-api/codex/responses")
@@ -2420,7 +2434,7 @@ mod tests {
 
     #[test]
     fn a_websocket_upgrade_is_recognised_whatever_the_casing() {
-        assert!(is_upgrade_request(&cowork_upgrade()));
+        assert!(is_upgrade_request(&work_upgrade()));
         // Real clients send `Connection: keep-alive, Upgrade`; the tokens are a
         // comma-separated, case-insensitive list.
         let multi = Request::builder()
@@ -2461,7 +2475,7 @@ mod tests {
             .filter(|d| d.slug == "chatgpt")
             .collect();
         relay[0].enabled = true;
-        let req = cowork_upgrade();
+        let req = work_upgrade();
         assert_eq!(
             decide(
                 &rules_for_client(&relay, ClientClass::App),
