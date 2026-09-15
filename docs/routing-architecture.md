@@ -120,12 +120,26 @@ routed can still resume.
 `env-proxy` is not a tool. It models the *mechanism* - the variables the system
 proxy exports - because some tools cannot be configured at all. OpenCode has no
 proxy or CA setting anywhere in its config schema and loads no dotenv, so those
-variables are the only way to route it; an OpenCode-shaped proxy integration
-would be a fiction, since nothing tool-specific happens. The same export covers
-anything else that reads `HTTPS_PROXY`.
+variables are the only way its sockets reach the *engine*; an OpenCode-shaped
+proxy integration would be a fiction, since nothing tool-specific happens. The
+same export covers anything else that reads `HTTPS_PROXY`.
+
+That qualifier is load-bearing, and this sentence used to drop it and read "the
+only way to route it". The variables are not the only way OpenCode routes:
+`integrations::opencode` rewrites `provider.<id>.options.baseURL` to the relay,
+which needs neither a variable nor the CA, and it predates this section. Without
+the qualifier the sentence denies the relay half outright, which is how it came
+to contradict both the table above and section 6 below.
 
 **OpenCode's own integration is therefore relay-only**, and stays that way. It
 writes `baseURL` and nothing else. The env coverage belongs to `env-proxy`.
+
+Neither mechanism subsumes the other, which is why both are wired. The rewrite
+is a snapshot taken at connect time over `KNOWN_PROVIDERS`, so a provider the
+user adds afterwards, one outside that allowlist, or one the `looks_local` guard
+skips has no rewrite and is the environment's to carry. Going the other way, the
+rewrite routes without the CA and without touching the machine, which is the
+whole reason it is not simply deleted in favour of the channel.
 
 It is a *choice*, not a side effect, because the variables are machine-wide:
 `HTTPS_PROXY` redirects git, curl and npm too. `manager.enable()` consults
@@ -245,12 +259,17 @@ the Routing card, and is absent entirely on Linux (`env_export_separable`),
 where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
-It has a **row** now as well, "Terminal tools", under Experimental beside
-OpenCode. The two are there together because they share a mechanism: OpenCode
-has no gateway setting Gate can rely on, so the variables are how it routes, and
-turning OpenCode on turns the channel on with it. `useRouting`'s `opencode-env`
-prompt says so before either write, and the row is what makes that promise
-checkable. Both controls call `proxy::set_env_export`, so they cannot disagree.
+It has a **row** now as well, "Terminal tools", in the Tools band beside
+OpenCode. (It was "Experimental" when this paragraph was written; `BAND_LABELS`
+in `groups.ts` draws Apps and Tools.) The two are there together because the
+channel carries what OpenCode's own config cannot: the `baseURL` rewrite covers
+the providers it found at connect time, the variables cover whatever else it
+sends, and turning OpenCode on turns the channel on with it. (This used to say
+the two "share a mechanism" and that the variables are "how it routes" - which
+contradicted the mechanism table in section 3, where OpenCode is relay. See the
+qualifier there.) `useRouting`'s `opencode-env` prompt says so before either
+write, and the row is what makes that promise checkable. Both controls call
+`proxy::set_env_export`, so they cannot disagree.
 
 **The ledger groups by client, not by vendor.** Every row - a config tool or a
 proxy domain - answers `taxonomy::Client`, and `buildGroups` buckets on it. So
@@ -294,8 +313,9 @@ that names the program. The sentence explaining each row is UI copy, in
   machine, not only the one the row is named for - `should_intercept_host`
   matches on host alone at CONNECT, before any header exists, and the
   per-request narrowing in `rules_for_client` decides only what is rewritten.
-  Config tools are `client`; the environment channel is `machine`. `scopeNote`
-  in `groups.ts` is the sentence.
+  Config tools are `client`; the environment channel is `machine`. The sentence
+  comes from `switchScopeNote` in `groups.ts` for a host section and
+  `machineScopeNote` for the environment channel.
 - `credential` is whose key rides the request, and it is the single thing that
   decides whether a group switch may flip the row: `provider::cascade_domains`
   filters on `Credential::Brokered`, and `cascadeTargets` does the same on the

@@ -11,13 +11,24 @@
 //! ```
 //!
 //! Why it is its own entry rather than per-tool code. Some tools cannot be
-//! configured at all: OpenCode has no proxy or CA setting anywhere in its
-//! config schema and loads no dotenv, so these variables are the *only* way to
-//! route it. Writing an OpenCode-shaped integration for that would be a
-//! fiction - nothing tool-specific happens. The same export simultaneously
-//! covers anything else that reads `HTTPS_PROXY`, which is most of the
-//! Node/Bun/Python ecosystem. One mechanism, many beneficiaries, so it is
+//! *proxied* by their own config: OpenCode has no proxy or CA setting anywhere
+//! in its config schema and loads no dotenv, so these variables are the only way
+//! its sockets reach the engine. Writing an OpenCode-shaped proxy integration
+//! for that would be a fiction - nothing tool-specific happens. The same export
+//! simultaneously covers anything else that reads `HTTPS_PROXY`, which is most
+//! of the Node/Bun/Python ecosystem. One mechanism, many beneficiaries, so it is
 //! modelled once.
+//!
+//! **These variables are not the only way OpenCode routes**, which is what this
+//! doc used to say. [`crate::integrations::opencode`] rewrites
+//! `provider.<id>.options.baseURL` to the loopback relay, needing neither a
+//! variable nor the CA, and it predates this module. The two cover different
+//! sets and neither subsumes the other: the rewrite is a snapshot taken at
+//! connect time over that module's `KNOWN_PROVIDERS`, so a provider the user
+//! adds afterwards, one outside the allowlist, or one its `looks_local` guard
+//! skips has no rewrite and is this channel's to carry. That is why turning
+//! OpenCode on also turns this channel on rather than either standing alone -
+//! see `useRouting`'s `opencode-env` prompt.
 //!
 //! Why it is a *choice*. These variables are machine-wide: `HTTPS_PROXY`
 //! redirects git, curl, npm and everything else, not just the AI tools. That is

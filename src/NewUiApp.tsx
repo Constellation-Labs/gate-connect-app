@@ -69,12 +69,11 @@ import type { ClassifiedError } from "./lib/errors";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  credentialScopeNote,
+  switchScopeNote,
   BAND_LABELS,
   sectionHint,
   sectionMemberKeys,
   sessionMembers,
-  scopeNote,
   describeSection,
   hintForMember,
   proxyReopenAdvice,
@@ -2531,25 +2530,20 @@ export function NewUiApp() {
   }, [proxy]);
 
   /**
-   * What a chat row's switch covers, on the pane that opens on it.
+   * What the open section's switch covers, on the pane that opens on it.
    *
    * Same shape as the advice below and a different kind of thing: this is a
-   * description of the surface, true on every platform and whether or not the
-   * row is on, and it is here because the window shell draws a row's copy as one
-   * sentence and these rows need three. `groups.ts` carries them.
+   * description of the surfaces, true on every platform and whether or not the
+   * section is on, and it is here because the window shell draws a row's copy as
+   * one sentence and these sections need three or four. `groups.ts` carries the
+   * copy, composes the credential sentence with the section's remaining hosts,
+   * and documents why that composition is not this file's to do.
    */
-  const chatScope = useMemo(() => {
+  const scopeCard = useMemo(() => {
     if (view.kind !== "app") return undefined;
-    // The section's signed-in surface, if it has one. A section is an app and
-    // its rows are that app's surfaces, so the note is about whichever of them
-    // Gate does not hold a key for - which is the fact the switch's own
-    // confirmation is about, said again where it is standing rather than only
-    // at the moment of flipping.
-    const member = groups
-      .find((g) => g.id === view.slug)
-      ?.members.find((m) => m.credential === "additive");
-    return member
-      ? credentialScopeNote(member, platform, proxy?.browser_proxy_channel ?? false)
+    const group = groups.find((g) => g.id === view.slug);
+    return group
+      ? switchScopeNote(group, platform, proxy?.browser_proxy_channel ?? false)
       : undefined;
   }, [view, groups, platform, proxy]);
 
@@ -2571,48 +2565,6 @@ export function NewUiApp() {
       ? { covers: configMember.tool?.product_name ?? configMember.name }
       : undefined;
   }, [view, groups]);
-
-  /**
-   * How wide this row reaches, for every host it reaches on.
-   *
-   * The brokered host entries - the API surfaces, OpenRouter - are matched on
-   * host exactly like the session ones, so flipping them intercepts that host
-   * for every client on the machine. They said nothing about it, because the
-   * only note in this position keyed on the credential and theirs is the
-   * ordinary one. Scope and credential are separate fields now, so each row
-   * gets whichever sentences are true of it.
-   *
-   * Two things this used to get wrong, both by taking the FIRST matching member
-   * and stopping. It was suppressed entirely whenever `chatScope` was set, on
-   * the reasoning that the credential note "already opens with the same host
-   * sentence" - it does not: that note names the additive member's hosts only,
-   * so on the Claude pane it said claude.ai and the section's OTHER host entry,
-   * api.anthropic.com, went unmentioned on the one screen that exists to explain
-   * the switch. And a section with two host members on different hosts named one
-   * of them. Both are the same fix: every `host`-scoped member the section has,
-   * minus the ones the credential note already spoke for.
-   */
-  const rowScope = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const members = groups.find((g) => g.id === view.slug)?.members ?? [];
-    const machine = members.find((m) => m.scope === "machine");
-    if (machine) return scopeNote(machine);
-    // Not the additive ones: `chatScope` says the same thing about those, in
-    // the words that also name the credential.
-    const hosts = [
-      ...new Set(
-        members
-          .filter((m) => m.scope === "host" && m.credential !== "additive")
-          .flatMap((m) => m.domain?.hosts ?? []),
-      ),
-    ];
-    if (hosts.length === 0) return undefined;
-    // The section's own name, because the row is the app: "not only Claude" is
-    // the comparison a reader on this pane is making, and a member name ("API")
-    // is not.
-    const named = railApps.find((a) => a.slug === view.slug)?.name ?? "this app";
-    return `Matched on host, so this covers everything on ${hosts.join(", ")} - whatever on this machine sends there, not only ${named}.`;
-  }, [view, groups, railApps]);
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -3549,10 +3501,15 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {chatScope && (
-                <PaneNote title={chatScope.title} body={chatScope.body} />
+              {/* One card, not two, and one source for it: `switchScopeNote`
+                  composes the credential sentence with the section's remaining
+                  hosts, because the second is worded against whether the first
+                  precedes it. This used to be two `PaneNote`s, which is how the
+                  Claude pane drew two cards headed "What this switch covers"
+                  one above the other. */}
+              {scopeCard && (
+                <PaneNote title={scopeCard.title} body={scopeCard.body} />
               )}
-              {rowScope && <PaneNote title="What this switch covers" body={rowScope} />}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
