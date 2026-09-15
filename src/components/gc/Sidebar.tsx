@@ -351,6 +351,10 @@ export function Sidebar({
             </ul>
           </div>
         ))}
+
+        {master?.envExport && (
+          <ShellEnvCard envExport={master.envExport} busy={master.busy} />
+        )}
       </div>
     </nav>
   );
@@ -451,7 +455,7 @@ function NavItem({
 }
 
 /**
- * The engine's switch and its shell-environment sub-setting.
+ * The engine's switch.
  *
  * Laid out label-over-description rather than the pane's label-beside-switch:
  * the rail is 256px, and the certificate warning is a sentence, not a phrase.
@@ -479,26 +483,43 @@ function MasterCard({ master }: { master: MasterRouting }) {
             : "The local engine is running"
           : "Everything below stays off until this is on"}
       </p>
+    </div>
+  );
+}
 
-      {master.envExport && (
-        <div className="flex flex-col gap-2 border-t border-base-border pt-2">
-          <div className="flex items-start justify-between gap-2">
-            <p className="min-w-0 text-base-xs leading-4 text-base-foreground">
-              Also set shell environment variables
-            </p>
-            <BaseSwitch
-              on={master.envExport.on}
-              label="Also set shell environment variables"
-              busy={master.busy}
-              onClick={() => master.envExport?.onToggle(!master.envExport.on)}
-            />
-          </div>
-          <p className="text-base-2xs leading-4 text-base-muted-foreground">
-            Routes command-line tools too. Machine-wide: it reaches git and curl, not
-            only your AI tools.
-          </p>
-        </div>
-      )}
+/**
+ * The master's shell-environment sub-setting, at the foot of the rail.
+ *
+ * Below the app groups rather than inside `MasterCard`: the switch above
+ * governs the rows that follow it, and this one is about the tools that are
+ * *not* in that list - `git`, `curl`, anything on the command line. Reading it
+ * after the inventory is reading it as "and also everything else", which is
+ * what it does.
+ */
+function ShellEnvCard({
+  envExport,
+  busy,
+}: {
+  envExport: NonNullable<MasterRouting["envExport"]>;
+  busy?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-base-xs font-medium leading-4 text-base-foreground">
+          Also set shell environment variables
+        </p>
+        <BaseSwitch
+          on={envExport.on}
+          label="Also set shell environment variables"
+          busy={busy}
+          onClick={() => envExport.onToggle(!envExport.on)}
+        />
+      </div>
+      <p className="text-base-2xs leading-4 text-base-muted-foreground">
+        Routes command-line tools too. Machine-wide: it reaches git and curl, not only
+        your AI tools.
+      </p>
     </div>
   );
 }
