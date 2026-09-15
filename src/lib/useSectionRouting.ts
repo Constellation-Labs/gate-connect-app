@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { acceptSessionRouting } from "./api";
 import type { Preferences } from "./api";
-import { cascadeTargets, needsSessionConsent } from "./groups";
+import { cascadeTargets, hostReloadAdvice, needsSessionConsent } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { useRouting } from "./useRouting";
 import type { useRunningApps } from "./useRunningApps";
@@ -34,6 +34,7 @@ export function useSectionRouting({
   prefs,
   onPrefsChanged,
   onBeforeRoute,
+  onHostsRouted,
   routeApp,
 }: {
   groups: Group[];
@@ -47,6 +48,21 @@ export function useSectionRouting({
   /** Clear whatever the last failure put on screen. The click is the moment the
    *  last failure stops being the current answer. */
   onBeforeRoute: () => void;
+  /**
+   * A cascade just put a browser surface behind Gate, with the advice to show
+   * for it.
+   *
+   * The host half of what a section switch does. `offerAfterChange` below
+   * covers the config half and can only ever cover it: closing a program is a
+   * thing Gate can offer to do, and reloading someone's tab is not, so this is
+   * a sentence rather than an action - which is also why it is a callback and
+   * not a stage of this hook. Each shell has its own notice surface and its own
+   * precedence chain to put it in, exactly as `onBeforeRoute` does for failures.
+   *
+   * The COPY is not the caller's: `hostReloadAdvice` composes it here, so the
+   * window and the tray cannot come to say this differently.
+   */
+  onHostsRouted?: (advice: { title: string; body: string }) => void;
   /** The per-tool path, for a row that is not a section - a catalog entry no
    *  section has claimed yet. Keeps the drift gate and the OpenCode env
    *  coupling, which only `setAppRouted` raises. */
@@ -108,6 +124,18 @@ export function useSectionRouting({
         // Gate relay URL until it restarts either way. A section turned off with
         // no offer leaves the tool pointed at a route the person just switched
         // off, with nothing on screen saying so.
+        // Before the offer, not after: `offerAfterChange` opens a dialog and
+        // awaits it, and a note about the user's browser that appears only once
+        // they have finished answering a question about their CLI arrives as a
+        // second event about a click they have stopped thinking about.
+        //
+        // ON only. `hostReloadAdvice` says why: the off direction has not been
+        // measured, and the popover's own hint has always been gated on the
+        // flip having produced routing.
+        if (next) {
+          const advice = hostReloadAdvice(moved);
+          if (advice) onHostsRouted?.(advice);
+        }
         const movedTools = moved.filter((m) => m.kind === "config").map((m) => m.key);
         if (movedTools.length > 0) await runningApps.offerAfterChange(movedTools);
         // No failure summary is built here. `useRouting` reports each member's
@@ -121,7 +149,7 @@ export function useSectionRouting({
         inFlight.current = false;
       }
     },
-    [routing, runningApps],
+    [routing, runningApps, onHostsRouted],
   );
 
   /**

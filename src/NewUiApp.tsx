@@ -1488,6 +1488,20 @@ export function NewUiApp() {
   );
 
   /**
+   * What a page open across a section's flip cannot know yet.
+   *
+   * `lib/useSectionRouting.ts` raises it and composes the sentence; this holds
+   * it until the user dismisses it. Its own state rather than a second writer of
+   * `browserRestart`: the two can be raised by one click (trusting the
+   * certificate on the first enable, and routing claude.ai in the same cascade),
+   * and sharing the slot would mean whichever landed second erased the other.
+   */
+  const [reloadNote, setReloadNote] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
+
+  /**
    * The app switch, for the rail and the pane header both.
    *
    * A row is a section, so a click is a cascade with a consent gate and a single
@@ -1509,6 +1523,7 @@ export function NewUiApp() {
     // above it - the switch and the banner asserting opposite things about the
     // same click.
     onBeforeRoute: () => setActionError(null),
+    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   const toggleRailApp = section.toggle;
@@ -2959,6 +2974,17 @@ export function NewUiApp() {
             title={browserRestart.title}
             body={browserRestart.body}
             onDismiss={() => setBrowserRestart(null)}
+          />
+        ) : reloadNote ? (
+          // Under the trust note, which is the same kind of advice about the
+          // same browser and the larger remedy: quitting it and opening it again
+          // reloads every page by definition, so showing both would ask for one
+          // thing twice. Reloading a tab does NOT satisfy the trust note, so the
+          // precedence only runs this way.
+          <NoteBanner
+            title={reloadNote.title}
+            body={reloadNote.body}
+            onDismiss={() => setReloadNote(null)}
           />
         ) : undefined
       }

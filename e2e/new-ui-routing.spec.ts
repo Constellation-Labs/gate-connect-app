@@ -169,6 +169,64 @@ test.describe("new UI routing", () => {
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
   });
 
+  test("routing an app with a browser surface says the open page is still going around Gate", async ({
+    boot,
+  }) => {
+    // The window offers to close what it can close - a CLI holds its route until
+    // it restarts - and until now said nothing at all about the other half of
+    // the same click. A section switch routes claude.ai in the same cascade, and
+    // a page that was already open keeps the connection it opened before the PAC
+    // named the host, so it goes around Gate for as long as that tab lives. The
+    // popover has told its user this since the chat rows got their own hint;
+    // this shell is the default one.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+
+    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
+    await expect(note).toBeVisible();
+    // The host, because it is the only part of this the person can recognise on
+    // their own machine, and the consequence, because "reload" on its own reads
+    // as housekeeping rather than as traffic escaping.
+    await expect(note).toContainText("claude.ai");
+    await expect(note).toContainText("go around Gate");
+  });
+
+  test("an app with nothing but config rows gets no such notice", async ({ boot }) => {
+    // The other half of the reading. OpenCode routes by config file and has no
+    // host anybody browses, so a notice here would tell the user to reload a
+    // page that does not exist - which is the mirror of the bug this fixes.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          slug: "opencode",
+          name: "CLI",
+          upstream_provider_name: "OpenCode",
+          default_upstream_url: "https://gw.example/opencode",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("OpenCode");
+
+    await expect(
+      app.page.getByRole("status").filter({ hasText: "Pages already open" }),
+    ).toHaveCount(0);
+  });
+
   test("a failed write says why instead of failing silently", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },

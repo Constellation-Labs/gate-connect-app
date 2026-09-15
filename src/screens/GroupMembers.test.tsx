@@ -615,3 +615,75 @@ describe("GroupMembers chat-row reload hint", () => {
     expect(onSetDomain).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("GroupMembers subscription row", () => {
+  // The row that reads as a chat surface on every field the ledger carries and
+  // is not one: `chatgpt` is `additive`, `host` and `Client::ChatGpt`, exactly
+  // like `chatgpt-apps` beside it, and what talks to it is Codex through the
+  // relay and the ChatGPT app's Work mode. Told to reload chatgpt.com, its user
+  // has no tab to reload; told to "Close Subscription", they have nothing by
+  // that name to close either.
+  const subscription: ProxyDomain = {
+    slug: "chatgpt",
+    display_name: "Subscription",
+    hosts: ["chatgpt.com"],
+    upstream_url: "https://chatgpt.com",
+    rewrite_prefixes: ["/backend-api/codex/responses"],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+    client: "chatgpt",
+    credential: "additive",
+    scope: "host",
+  };
+
+  function renderSubscription({ expand = true } = {}) {
+    const onSetDomain = vi.fn(() => Promise.resolve());
+    const [group] = buildGroups([], [subscription], { proxyOn: true, caTrusted: true });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={onSetDomain}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn
+        browserChannel={true}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    if (expand) fireEvent.click(screen.getByRole("button", { name: "Subscription details" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Route Subscription through Gate" }));
+    return onSetDomain;
+  }
+
+  it("names the programs to close, not the row", async () => {
+    const onSetDomain = renderSubscription();
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    const hint = await screen.findByText(/the next time you open them/);
+    expect(hint.textContent).toContain("Close the ChatGPT app and Codex");
+    // The row's own name is a mode rather than an application, which is what
+    // made the generic sentence unusable here.
+    expect(screen.queryByText(/Close Subscription/)).toBeNull();
+  });
+
+  it("does not tell the user to reload a tab that does not exist", async () => {
+    const onSetDomain = renderSubscription();
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    await screen.findByText(/the next time you open them/);
+    expect(screen.queryByText(/keeps the connection it had before/)).toBeNull();
+    expect(screen.queryByText(/Reload/)).toBeNull();
+  });
+
+  it("keeps the hint inside the disclosure, where the other closeable rows have it", async () => {
+    // Not an oversight, and the one behaviour that moves with this row's
+    // reading. The hint is drawn outside the disclosure only for the browser
+    // surfaces, on the argument that a tab outlives a flip by a month while a
+    // program gets quit in the ordinary course of a week. Codex and the ChatGPT
+    // app are programs, so this row belongs with the rows that say "close".
+    const onSetDomain = renderSubscription({ expand: false });
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    expect(screen.queryByText(/the next time you open them/)).toBeNull();
+  });
+});

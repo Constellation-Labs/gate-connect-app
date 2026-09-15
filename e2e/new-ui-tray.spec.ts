@@ -31,6 +31,24 @@ test.describe("tray popover", () => {
     });
   });
 
+  test("the tray says the open page is still going around Gate, as the window does", async ({
+    boot,
+  }) => {
+    // Same switch, same cascade, same hook - so the same thing left unsaid. The
+    // tray routes claude.ai here exactly as the rail does, and a surface that
+    // acts and says nothing is what this notice exists to stop.
+    const app = await boot({
+      windowLabel: "tray",
+      proxy: { running: true, ca_trusted: true },
+    });
+
+    await app.routeApp("Claude");
+
+    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
+    await expect(note).toBeVisible();
+    await expect(note).toContainText("claude.ai");
+  });
+
   /**
    * AG-570 AC 4: the recovery action stays reachable from Overview, tool detail
    * *and* the tray. The tray gets the action, not just the fact - a surface that

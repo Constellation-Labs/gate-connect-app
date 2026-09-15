@@ -56,7 +56,7 @@ import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
-import { ErrorBanner } from "./components/gc/banners";
+import { ErrorBanner, NoteBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
   reopenSubjects,
@@ -160,6 +160,19 @@ export function TrayApp() {
   /** One banner, two sources. The action the user just took outranks a standing
    *  claim about routing: it is newer, and it is the one they are waiting on. */
   const shownError = actionError ?? routingError;
+  /**
+   * What a page open across a section's flip cannot know yet, composed by
+   * `lib/useSectionRouting.ts`.
+   *
+   * The tray draws the same section switches as the window and cascades through
+   * the same hook, so a flip here routes claude.ai exactly as a flip there does.
+   * A surface that acts and says nothing is the gap this whole change is about,
+   * and it would be a strange fix that closed it in one shell only.
+   */
+  const [reloadNote, setReloadNote] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
   const platform = usePlatform();
 
   /** What the last read put on screen, so an unchanged reading is dropped
@@ -758,6 +771,7 @@ export function TrayApp() {
     prefs,
     onPrefsChanged: () => void loadPreferences(),
     onBeforeRoute: () => setActionError(null),
+    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   const toggleApp = section.toggle;
@@ -1050,7 +1064,7 @@ export function TrayApp() {
       onMenuSelect={onMenuSelect}
       dialog={
         <>
-          {shownError && (
+          {shownError ? (
             // The tray draws no notice slot; the banner sits over the list the
             // way the dialogs do, because a swallowed failure is worse than an
             // undrawn surface.
@@ -1065,7 +1079,19 @@ export function TrayApp() {
                 }}
               />
             </div>
-          )}
+          ) : reloadNote ? (
+            // The same borrowed spot, and never both at once: this window is
+            // 360px of list and two stacked banners would cover the rows the
+            // person came here to flip. A failure outranks advice, which is the
+            // window's precedence too.
+            <div className="absolute inset-x-4 top-20 z-20">
+              <NoteBanner
+                title={reloadNote.title}
+                body={reloadNote.body}
+                onDismiss={() => setReloadNote(null)}
+              />
+            </div>
+          ) : null}
           {routing.prompt?.kind === "drift" ? (
             <ReviewConfigDialog
               app={{ name: routing.prompt.name }}
