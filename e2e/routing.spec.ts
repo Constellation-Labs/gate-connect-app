@@ -53,15 +53,26 @@ test.describe("routing", () => {
       .toBe(true);
   });
 
-  test("with nothing running, the toggle is silent", async ({ boot }) => {
+  test("with nothing running, the toggle says so without offering to close it", async ({
+    boot,
+  }) => {
     const app = await boot({ runningAgents: 0, proxy: { ca_trusted: true } });
 
     await app.routingSwitch.click();
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
 
-    // Nothing to close means no takeover: the popover stays on Home.
+    // Nothing to close means no takeover: the popover stays on Home, and the
+    // close route is absent because it would close nothing.
     await expect(app.page.getByRole("button", { name: "Close them…" })).toHaveCount(0);
     await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
+
+    // But it is NOT silent, which is what this asserted until the probe stopped
+    // deciding whether to speak. `running_agents_count` only knows
+    // claude/codex/opencode, so a browser-routed user probes zero here while
+    // having a page open that is still bypassing Gate - the exact case the
+    // notice exists for, and the one that used to get nothing.
+    await expect(app.page.getByText(/Routing is on\./)).toBeVisible();
+    await expect(app.page.getByText(/Reload any pages you have open\./)).toBeVisible();
   });
 
   test("a failed enable says why and re-syncs the switch", async ({ boot }) => {
