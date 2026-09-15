@@ -411,6 +411,13 @@ export function TrayApp() {
         // it was claiming, so carrying it across is how a failure the user
         // already saw comes back undated over an unrelated visit.
         setRoutingError(null);
+        // And the reload advice, which is the same kind of thing in the same
+        // borrowed slot: advice about a click, shown once. This popover is
+        // hidden rather than destroyed, so without this the banner is still
+        // sitting over the rows on a later reveal, describing a flip the person
+        // has long since forgotten - and unlike the window's, it has no
+        // persistent chrome around it to make sense of.
+        setReloadNote(null);
         return;
       }
       void redetect();
@@ -770,7 +777,12 @@ export function TrayApp() {
     runningApps,
     prefs,
     onPrefsChanged: () => void loadPreferences(),
-    onBeforeRoute: () => setActionError(null),
+    onBeforeRoute: () => {
+      setActionError(null);
+      // See the window: a routing click retires the previous click's advice,
+      // which is what keeps the banner from outliving the claim it makes.
+      setReloadNote(null);
+    },
     onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });

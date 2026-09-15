@@ -49,6 +49,36 @@ test.describe("tray popover", () => {
     await expect(note).toContainText("claude.ai");
   });
 
+  test("the reload notice does not come back on a later reveal", async ({ boot }) => {
+    // The popover is hidden, not destroyed, so anything left in state is still
+    // there the next time the tray is opened - which is why the handler beside
+    // this one clears the routing banner on hide. This notice is advice about
+    // one click, shown once; carried across it sits over the rows somebody came
+    // back to flip, describing a flip they have long since forgotten.
+    const app = await boot({
+      windowLabel: "tray",
+      proxy: { running: true, ca_trusted: true },
+    });
+
+    await app.routeApp("Claude");
+    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
+    await expect(note).toBeVisible();
+
+    // What the OS does to this window: hidden on blur, shown again later. The
+    // app sees only `visibilitychange`, so that is what the test sends.
+    await app.page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { value: true, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect(note).toHaveCount(0);
+
+    await app.page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { value: false, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect(note).toHaveCount(0);
+  });
+
   /**
    * AG-570 AC 4: the recovery action stays reachable from Overview, tool detail
    * *and* the tray. The tray gets the action, not just the fact - a surface that

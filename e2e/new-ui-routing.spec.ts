@@ -203,28 +203,133 @@ test.describe("new UI routing", () => {
     await expect(note).toContainText("go around Gate");
   });
 
-  test("an app with nothing but config rows gets no such notice", async ({ boot }) => {
-    // The other half of the reading. OpenCode routes by config file and has no
-    // host anybody browses, so a notice here would tell the user to reload a
-    // page that does not exist - which is the mirror of the bug this fixes.
+  test("a host row nobody browses gets no such notice", async ({ boot }) => {
+    // The other half of the reading, and deliberately a PROXY row rather than a
+    // config one: every proxy row intercepts a host, and if that were the test
+    // an OpenRouter user would be told to reload a page they have never had
+    // open. `openrouter` is brokered, and nothing arrives on it from a tab.
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.appSwitch("OpenRouter").click();
+
+    // The write first. This section raises no consent, so `routeApp` would
+    // return the moment the click dispatched, and a bare `toHaveCount(0)` is
+    // satisfied on the first poll - before the cascade has written anything,
+    // which would make this pass whether or not the regression it guards
+    // exists.
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
+      slug: "openrouter",
+      enabled: true,
+    });
+    await expect(
+      app.page.getByRole("status").filter({ hasText: "Pages already open" }),
+    ).toHaveCount(0);
+  });
+
+  test("the notice goes when the same switch is turned back off", async ({ boot }) => {
+    // It is a claim about where this person's traffic is going. Left standing
+    // over a row that has just been switched off, it tells them to reload a page
+    // for routing that is no longer there.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [
         {
-          slug: "opencode",
+          slug: "claude-code",
           name: "CLI",
-          upstream_provider_name: "OpenCode",
-          default_upstream_url: "https://gw.example/opencode",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
           status: { kind: "detected" },
         },
       ],
     });
 
-    await app.routeApp("OpenCode");
+    await app.routeApp("Claude");
+    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
+    await expect(note).toBeVisible();
 
+    // The switch directly: turning off raises no consent, and `routeApp` only
+    // answers a dialog an ON would put up.
+    await app.appSwitch("Claude").click();
+
+    await expect(note).toHaveCount(0);
+  });
+
+  test("it is drawn beside the reopen banner, not behind it", async ({ boot }) => {
+    // The case the advice exists for is also the case that fills the reopen
+    // banner: a CLI running while its section is switched on. Ranked below it,
+    // the browser half of one click lost to the CLI half, and then appeared on
+    // its own once the reopen cleared - a second event about a click the person
+    // had stopped thinking about. They are two remedies for two things the
+    // person owns, and both belong on screen.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      // A CLI that is running on the route it started with, which is what fills
+      // the reopen banner - and what a real user in this case has.
+      staleAgents: 1,
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+
+    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
     await expect(
       app.page.getByRole("status").filter({ hasText: "Pages already open" }),
-    ).toHaveCount(0);
+    ).toBeVisible();
+  });
+
+  test("a surface the engine starts intercepting says so, even though nothing wrote it", async ({
+    boot,
+  }) => {
+    // `cascadeTargets` skips a row that is already `desired`, and for a domain
+    // that word means `enabled` alone - it knows nothing about whether the
+    // engine is up. So a `claude-web` enabled on its own while routing was off
+    // is not in `moved`, and this click is still the one that starts
+    // intercepting it, because connecting a tool brings the engine up.
+    const app = await boot({
+      proxy: {
+        running: false,
+        ca_trusted: true,
+        domains: [
+          {
+            slug: "claude-web",
+            display_name: "Chat",
+            client: "claude-desktop",
+            credential: "additive",
+            scope: "host",
+            hosts: ["claude.ai"],
+            upstream_url: "https://claude.ai/api",
+            rewrite_prefixes: ["/organizations/"],
+            passthrough_prefixes: [],
+            // Asked for already, and not carrying anything: the engine is off.
+            enabled: true,
+            supported: true,
+          },
+        ],
+      },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+
+    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
+    await expect(note).toBeVisible();
+    await expect(note).toContainText("claude.ai");
   });
 
   test("a failed write says why instead of failing silently", async ({ boot }) => {

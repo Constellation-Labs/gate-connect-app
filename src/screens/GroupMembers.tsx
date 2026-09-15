@@ -180,9 +180,12 @@ function explain({
  * than an application, and "Close Subscription" asks for something nobody can
  * do.
  *
- * Read off `MEMBER_HINTS` in `lib/groups.ts`, which already answers "the programs behind
- * this row" for exactly these rows, rather than composed here - two tables
- * naming the same programs is how they come to name different ones.
+ * The READING comes from `MEMBER_HINTS` in `lib/groups.ts`, which already
+ * answers "the programs behind this row"; the wording is this sentence's own,
+ * because the hint is a noun phrase for a hover ("Work in the ChatGPT app, and
+ * Codex, on your ChatGPT subscription") and does not slot into "Close …". So
+ * this is a second table, deliberately, and the thing to check when either
+ * moves is that they still name the same programs.
  * `proxy/catalog.rs` says OpenClaw reaches this entry too, through the engine
  * rather than the relay, and the hint does not name it; the hint is the UI's
  * one answer and this follows it rather than inventing a second.

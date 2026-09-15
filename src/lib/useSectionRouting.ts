@@ -132,8 +132,27 @@ export function useSectionRouting({
         // ON only. `hostReloadAdvice` says why: the off direction has not been
         // measured, and the popover's own hint has always been gated on the
         // flip having produced routing.
-        if (next) {
-          const advice = hostReloadAdvice(moved);
+        if (next && moved.length > 0) {
+          // Newly INTERCEPTED, which is not the same set as newly written.
+          //
+          // `cascadeTargets` skips a member that is already `intended`, and for
+          // a proxy row `desired` is just `domain.enabled` - it knows nothing
+          // about whether the engine is up or the certificate is trusted. So a
+          // `claude-web` enabled on its own while routing was off is skipped
+          // here, and yet this click is the one that starts intercepting it:
+          // `connect_tool` enables the engine (`src-tauri/src/lib.rs`), and the
+          // certificate gate above has just been answered. The row goes from
+          // asked-for to actually carrying traffic without appearing in `moved`,
+          // and the tab open on it is exactly as stale as one on a row that did.
+          //
+          // A row that was already routing is not included, which is the half
+          // that keeps this from crying wolf: nothing changed for its tab.
+          // `moved` members are disjoint from these by construction - they were
+          // not `desired` a moment ago, or they would not have been targets.
+          const intercepted = section.members.filter(
+            (m) => moved.includes(m) || (m.desired && !m.routed),
+          );
+          const advice = hostReloadAdvice(intercepted);
           if (advice) onHostsRouted?.(advice);
         }
         const movedTools = moved.filter((m) => m.kind === "config").map((m) => m.key);
