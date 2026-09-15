@@ -374,13 +374,6 @@ export function hasBrowserSurface(member: GroupMember): boolean {
  * it goes to the provider. The connection survives the switch; the routing does
  * not, and there is nothing to tell the user to reload.
  *
- * What that test does NOT cover, so that nobody reads more into it than was
- * run: a tunnel that was MITM'd stays MITM'd, because the intercept decision is
- * taken once at CONNECT. Gate therefore goes on terminating TLS for that page
- * until the socket closes, while routing none of it. That is a reading of
- * `engine.rs`, not a measurement, and if it is ever worth saying to the user it
- * is a different sentence from this one.
- *
  * Undefined when nothing that moved has a browser surface, which is every
  * section whose members are config rows and the `chatgpt` row on its own.
  */
