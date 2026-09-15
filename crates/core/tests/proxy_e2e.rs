@@ -1106,3 +1106,135 @@ async fn crl_endpoint_serves_a_der_crl() {
 
     engine.stop();
 }
+
+/// What happens to a connection that was ALREADY OPEN when its row goes off.
+///
+/// The question the UI could not answer by reading itself. Gate Connect tells a
+/// user whose page was open across a switch-ON that the page keeps the
+/// connection it had and goes around Gate until it is reloaded; whether the
+/// mirror of that is true - a page open across a switch-OFF still going THROUGH
+/// Gate - decides whether the same notice is owed in the other direction, and
+/// the frontend cannot see a socket.
+///
+/// Measured rather than reasoned about, on the same handler a MITM'd tunnel
+/// uses: `handle_request` is what hudsucker calls for a proxied plain request
+/// and for a request inside an intercepted session alike, and the rule lookup
+/// under test is the one in it. Plain HTTP keeps the test hermetic - no CA, no
+/// DNS, two loopback mocks - and keeps the connection provably single, which is
+/// the whole point: one socket, two requests, the row switched off between
+/// them.
+#[tokio::test]
+async fn a_row_switched_off_stops_rewriting_a_connection_already_open() {
+    let _serial = SERIAL.lock().await;
+    // Where a rewritten request lands, and where an unrewritten one does. Two
+    // captures rather than one and an absence: "it stopped being routed" and
+    // "it went to the provider instead" are different findings, and only the
+    // second one says what the user's traffic is actually doing.
+    let gateway = start_mock_gateway().await;
+    let upstream = start_mock_gateway().await;
+    let upstream_port = upstream.base_url.rsplit(':').next().unwrap().to_string();
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let mut domain = default_domains()
+        .into_iter()
+        .find(|d| d.slug == "anthropic")
+        .expect("catalog ships anthropic");
+    // The provider, played by a loopback mock: the host is what `decide`
+    // matches on and what an unrewritten request is forwarded to, so pointing
+    // both at 127.0.0.1 is what keeps this test off the network.
+    domain.hosts = vec!["127.0.0.1".into()];
+    domain.upstream_url = format!("http://127.0.0.1:{upstream_port}");
+    domain.rewrite_prefixes = vec!["/v1/".into()];
+    domain.enabled = true;
+    let on = vec![domain.clone()];
+    let mut off_domain = domain.clone();
+    off_domain.enabled = false;
+    let off = vec![off_domain];
+
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            billing_mode: Default::default(),
+            org_id: String::new(),
+            domains: on,
+            ca_cert_pem,
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", engine.port()))
+        .await
+        .expect("the engine should accept a proxy connection");
+
+    // One request, written by hand in absolute-form, which is what a client
+    // sends a forward proxy. Keep-alive is the HTTP/1.1 default and is the
+    // property under test, so it is not asked for explicitly.
+    async fn send(sock: &mut tokio::net::TcpStream, port: &str, path: &str) -> String {
+        let req = format!(
+            "POST http://127.0.0.1:{port}{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        sock.flush().await.unwrap();
+        // Headers only: both mocks answer with an empty body and a
+        // content-length of zero, so the response ends at the blank line.
+        let mut seen = Vec::new();
+        let mut byte = [0u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            let n = sock.read(&mut byte).await.unwrap();
+            assert_ne!(n, 0, "the engine closed the connection mid-response");
+            seen.push(byte[0]);
+        }
+        String::from_utf8_lossy(&seen).to_string()
+    }
+
+    let first = send(&mut sock, &upstream_port, "/v1/messages").await;
+    assert!(first.starts_with("HTTP/1.1 200"), "first response: {first}");
+    assert_eq!(
+        gateway.captured.lock().unwrap().len(),
+        1,
+        "with the row on, the request is rewritten to the gateway"
+    );
+    assert_eq!(
+        upstream.captured.lock().unwrap().len(),
+        0,
+        "and does not reach the provider directly"
+    );
+
+    // The switch. Live, on the running engine - the same call
+    // `proxy_set_domain` makes when somebody turns the row off.
+    engine.update_domains(&off);
+    assert_eq!(engine.intercepting(), 0);
+
+    let second = send(&mut sock, &upstream_port, "/v1/messages").await;
+    assert!(
+        second.starts_with("HTTP/1.1 200"),
+        "second response: {second}"
+    );
+
+    let to_gateway = gateway.captured.lock().unwrap().len();
+    let to_upstream = upstream.captured.lock().unwrap().len();
+    engine.stop();
+
+    // The finding, and the reason the off-direction notice is not owed: the
+    // rule set is re-read per REQUEST, not per connection, so the very next
+    // request on a socket that was already open is no longer routed. The
+    // connection survives the switch; the routing does not.
+    assert_eq!(
+        to_gateway, 1,
+        "a row switched off must not keep routing an open connection"
+    );
+    assert_eq!(
+        to_upstream, 1,
+        "the unrouted request goes to the provider instead"
+    );
+}

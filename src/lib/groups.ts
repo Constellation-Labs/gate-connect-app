@@ -365,11 +365,21 @@ export function hasBrowserSurface(member: GroupMember): boolean {
  * keeps browsing on the connection they had, past Gate, with nothing on screen
  * saying so.
  *
- * ON only, and the caller enforces it. The off direction is likely symmetric -
- * a connection established while the row was on does not re-evaluate either -
- * but nothing here has measured that, and the popover's hint has always been
- * gated on the flip having produced routing. An unverified claim about the
- * user's own traffic is the one thing this app does not make.
+ * ON only, and the caller enforces it. The off direction was assumed symmetric
+ * and is not: measured in
+ * `crates/core/tests/proxy_e2e.rs::a_row_switched_off_stops_rewriting_a_connection_already_open`,
+ * one socket carrying two requests with the row switched off between them. The
+ * engine re-reads its rule set per REQUEST rather than per connection, so the
+ * very next request on a connection that was already open is no longer routed -
+ * it goes to the provider. The connection survives the switch; the routing does
+ * not, and there is nothing to tell the user to reload.
+ *
+ * What that test does NOT cover, so that nobody reads more into it than was
+ * run: a tunnel that was MITM'd stays MITM'd, because the intercept decision is
+ * taken once at CONNECT. Gate therefore goes on terminating TLS for that page
+ * until the socket closes, while routing none of it. That is a reading of
+ * `engine.rs`, not a measurement, and if it is ever worth saying to the user it
+ * is a different sentence from this one.
  *
  * Undefined when nothing that moved has a browser surface, which is every
  * section whose members are config rows and the `chatgpt` row on its own.

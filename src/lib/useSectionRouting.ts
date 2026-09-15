@@ -129,9 +129,9 @@ export function useSectionRouting({
         // they have finished answering a question about their CLI arrives as a
         // second event about a click they have stopped thinking about.
         //
-        // ON only. `hostReloadAdvice` says why: the off direction has not been
-        // measured, and the popover's own hint has always been gated on the
-        // flip having produced routing.
+        // ON only, and `hostReloadAdvice` carries the measurement: switching a
+        // row OFF stops the routing on the very next request, open connection
+        // or not, so the mirror of this notice would be advice about nothing.
         if (next && moved.length > 0) {
           // Newly INTERCEPTED, which is not the same set as newly written.
           //
