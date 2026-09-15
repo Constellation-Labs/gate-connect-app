@@ -286,6 +286,10 @@ export function App() {
     dir: "on" | "off";
     confirming: boolean;
   } | null>(null);
+  // Whether the last routing change found nothing it could offer to close, so
+  // the banner reporting it can pick the remedy that applies. See `toggleProxy`
+  // for why the agent count decides the remedy rather than the silence.
+  const [nothingToClose, setNothingToClose] = useState(false);
   // Whether the update panel's startup takeover is currently mounted, so the
   // background can go aria-hidden while any takeover is up.
   const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
@@ -825,20 +829,38 @@ export function App() {
         // The takeover and the inline hints say the same thing ("restart your
         // agents"), so show one or the other, never both.
         if (takeover) {
-          // Nothing running means nothing to close: skip the takeover
-          // entirely; a failed probe defaults to showing. After the first
-          // acknowledged takeover this session, degrade to the inline hint -
-          // both carry the same "restart your agents" advice.
+          // A failed probe defaults to showing.
           const agents = await runningAgentsCount().catch(() => 1);
-          if (agents > 0) {
-            if (!hasSeenRoutingTakeover()) {
-              markRoutingTakeoverSeen();
-              setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
-            } else {
-              setChangeNotice(next.running ? "on" : "off");
-            }
+          // Nothing running means nothing to CLOSE, which is not the same as
+          // nothing to say - and conflating the two is what left a whole class
+          // of user with no notice at all. `AGENT_PROCESS_NAMES` is
+          // `claude`/`codex`/`opencode`, so a user whose routed clients are a
+          // browser tab and a desktop app probes 0 every time, and this branch
+          // used to answer that by rendering nothing: the one user who most
+          // needs telling that an already-open page is still bypassing Gate was
+          // the one user told nothing. The count cannot simply be widened to
+          // fix that, because the same set drives `close_running_agents`, and
+          // an app that offers to close your browser is a worse bug than the
+          // one being fixed.
+          //
+          // So the count decides the REMEDY, not whether to speak. With
+          // something to close, the takeover (or, once acknowledged, the inline
+          // hint) offers to close it. With nothing to close, the inline hint
+          // carries the advice that does apply - reload what you have open -
+          // and drops the close action, exactly as the `pending` banner already
+          // drops it for the same reason.
+          setNothingToClose(agents === 0);
+          if (agents > 0 && !hasSeenRoutingTakeover()) {
+            markRoutingTakeoverSeen();
+            setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
+          } else {
+            setChangeNotice(next.running ? "on" : "off");
           }
         } else {
+          // The Routing screen's own toggle never probed, and its banner has
+          // always offered the close route. Unchanged: assuming there is
+          // something to close is this path's existing behaviour.
+          setNothingToClose(false);
           setChangeNotice(next.running ? "on" : "off");
         }
         // The backend owns the routed set across a master toggle: turning off
@@ -1363,6 +1385,7 @@ export function App() {
         busy={proxyBusy}
         error={providerError}
         changeNotice={changeNotice}
+        canCloseAgents={!nothingToClose}
         onDismissChangeNotice={() => setChangeNotice(null)}
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click

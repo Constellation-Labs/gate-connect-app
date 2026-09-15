@@ -170,6 +170,57 @@ function explain({
   }
 }
 
+/** The band that tells the user their flip has not reached the thing it is
+ * about yet. Shown only when the change actually put traffic in flight:
+ * closing and reopening anything changes nothing while the engine is down, so
+ * the advice would be busywork.
+ *
+ * Two copies, because the two member kinds are stale for different reasons and
+ * only one of them is fixed by closing an app. A config-routed tool reads its
+ * settings at launch, so the instruction is to close it. A chat row is a HOST
+ * the engine intercepts, and what goes stale is a connection: a page already
+ * open when the row was switched on keeps the one it opened before the PAC
+ * named that host, and Chrome will reuse it for every later request to the
+ * same origin. Reloading is what forces a new one. Telling that user to
+ * "close ChatGPT app chat + Codex tools" names nothing they can close.
+ *
+ * The host is the mono half, per the design system's rule that mono marks an
+ * identifier and nothing else - it is also the only part of the sentence that
+ * tells the user WHICH tab to reload. */
+function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: () => void }) {
+  const hosts = member.domain?.hosts.join(", ") ?? "";
+  return (
+    <div
+      role="status"
+      className="mt-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border"
+    >
+      <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
+      <div className="min-w-0 flex-1 text-gc-caption-lg font-medium leading-snug text-gc-ink">
+        {member.chat ? (
+          <>
+            <span className="font-semibold">
+              Reload <span className="font-mono">{hosts}</span>
+            </span>{" "}
+            in any tab that was already open; until you do, it keeps the
+            connection it had before.
+          </>
+        ) : (
+          <>
+            <span className="font-semibold">Close {member.name}</span> to apply the
+            change; it picks this up the next time you open it.
+          </>
+        )}
+      </div>
+      <IconButton
+        icon="x"
+        size={13}
+        onClick={onDismiss}
+        aria-label={member.chat ? "Dismiss reload hint" : "Dismiss restart hint"}
+      />
+    </div>
+  );
+}
+
 /** The raw payload worth showing: a failure's whole message, or the evidence
  * behind a drift verdict. */
 function rawDetail(member: GroupMember): string | null {
@@ -738,27 +789,37 @@ export function GroupMembers({
                     <ErrorNote error={error} className="mt-2 bg-gc-surface shadow-border" />
                   )}
 
-                  {/* Only when the change actually put traffic in flight.
-                      Closing and reopening the app changes nothing while the
-                      engine is down, so the advice would be busywork. */}
-                  {changed === member.key && !error && member.routed && (
-                    <div
-                      role="status"
-                      className="mt-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border"
-                    >
-                      <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
-                      <div className="min-w-0 flex-1 text-gc-caption-lg font-medium leading-snug text-gc-ink">
-                        <span className="font-semibold">Close {member.name}</span> to
-                        apply the change; it picks this up the next time you open it.
-                      </div>
-                      <IconButton
-                        icon="x"
-                        size={13}
-                        onClick={() => setChanged(null)}
-                        aria-label="Dismiss restart hint"
-                      />
-                    </div>
+                  {/* Inside the disclosure, where it has always been, for
+                      the members it has always served. The chat rows take the
+                      copy outside it instead - see below. */}
+                  {changed === member.key && !error && member.routed && !member.chat && (
+                    <RestartHint member={member} onDismiss={() => setChanged(null)} />
                   )}
+                </div>
+              )}
+
+              {/* OUTSIDE the disclosure, and only for the chat rows. The hint
+                  above renders inside `open`, so a user who flips a switch
+                  without also expanding the row never sees it - survivable for a
+                  config tool, whose own launch is the next thing that applies
+                  the change anyway, and not survivable here.
+
+                  Not because these are the only rows that go stale. EVERY proxy
+                  row intercepts a host, so every one of them misses a client
+                  that was already running - `anthropic` included. What is
+                  particular to these two is what the client IS. A desktop app
+                  gets quit and reopened in the ordinary course of a week, so its
+                  buried hint is a convenience. A browser tab outlives that by a
+                  month, and for the whole month it keeps the connection it
+                  opened before the PAC named the host, bypassing Gate and saying
+                  nothing. The flip is the only moment the advice reliably lands,
+                  so on these rows it has to be visible at the flip.
+
+                  Its own padded band rather than the disclosure's `px-3.5 pb-3`,
+                  since collapsed rows have no such wrapper to sit in. */}
+              {changed === member.key && !error && member.routed && member.chat && (
+                <div className="px-3.5 pb-3">
+                  <RestartHint member={member} onDismiss={() => setChanged(null)} />
                 </div>
               )}
             </div>

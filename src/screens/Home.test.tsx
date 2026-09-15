@@ -494,6 +494,34 @@ describe("Home routing-change notice", () => {
     expect(onCloseAgents).toHaveBeenCalled();
   });
 
+  it("still speaks when there is nothing it can offer to close", () => {
+    // `AGENT_PROCESS_NAMES` is claude/codex/opencode, so a user whose only
+    // routed client is a browser tab probes zero every time. The toggle used to
+    // answer that by rendering no notice at all, which left the one user who
+    // most needs telling that an already-open page is bypassing Gate with
+    // nothing on screen.
+    const onCloseAgents = vi.fn();
+    renderHome({
+      changeNotice: "on",
+      canCloseAgents: false,
+      onCloseAgents,
+      domains: [makeDomain()],
+    });
+    expect(screen.getByText(/Routing is on\./)).toBeTruthy();
+    // The remedy that does apply, in place of the one that does not.
+    expect(screen.getByText(/Reload any pages you have open\./)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    expect(onCloseAgents).not.toHaveBeenCalled();
+  });
+
+  it("keeps the close route when something is actually running", () => {
+    // The default, and the path every existing caller takes: an absent
+    // `canCloseAgents` must read exactly as it did before the prop existed.
+    renderHome({ changeNotice: "on", domains: [makeDomain()] });
+    expect(screen.getByRole("button", { name: "Close them…" })).toBeTruthy();
+    expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
+  });
+
   it("shows one notice at a time, so a fast flip can't stack them", () => {
     // The regression this replaced: three independent hint booleans, so the
     // "on" notice stayed up over the "off" one after an on/off flip.
