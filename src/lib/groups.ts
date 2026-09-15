@@ -317,6 +317,81 @@ export function browserTrustRestartAdvice(
 }
 
 /**
+ * The rows a browser tab can arrive on.
+ *
+ * Keyed by member key, like {@link MEMBER_HINTS} and for the same reason: no
+ * catalog field carries this. `chatgpt-apps` and `chatgpt` are both
+ * `Client::ChatGpt`, both `Credential::Additive` and both `Scope::Host`
+ * (`proxy/catalog.rs`), so the taxonomy cannot tell them apart, and the slug is
+ * the only thing that can. A field on `ProxyDomain` is the real answer and this
+ * table is a stand-in for it; adding one is a catalog change and wants the
+ * backend, so it is raised rather than done here.
+ *
+ * The distinction is worth having because the REMEDY turns on it. A page keeps
+ * the connection it opened before the PAC named the host, so it bypasses Gate
+ * until it is reloaded; a program reads its route at launch, so it has to be
+ * closed. Telling one user the other's remedy names something they cannot do.
+ *
+ * Every entry here is `additive`. That is not the rule - `anthropic` is a host
+ * row too and nobody browses `api.anthropic.com` - it is what happens to be
+ * true of the two surfaces a person visits in a browser.
+ */
+const BROWSER_SURFACE_ROWS: ReadonlySet<string> = new Set([
+  // claude.ai, and the Claude desktop app's chat sharing that host.
+  "claude-web",
+  // chatgpt.com, and the ChatGPT desktop app's chat turn.
+  "chatgpt-apps",
+]);
+
+/**
+ * Whether a browser tab can be sitting on this row's hosts right now.
+ *
+ * The one row this exists to exclude is `chatgpt` ("Subscription"), whose
+ * clients are Codex through the relay and the ChatGPT app's Work mode - two
+ * programs, no tab. It reads as a chat surface on every field the ledger
+ * carries, which is exactly why the answer is written down rather than derived.
+ */
+export function hasBrowserSurface(member: GroupMember): boolean {
+  return BROWSER_SURFACE_ROWS.has(member.key);
+}
+
+/**
+ * What an open page cannot know yet, for the shell that just routed its host.
+ *
+ * The same fact `RestartHint` puts on a popover row, for the surfaces that have
+ * no row: a section switch routes up to three members at once, and the window
+ * and tray report the config half of that through the close-and-reopen dialog
+ * and the host half nowhere. A person who turns Claude on with claude.ai open
+ * keeps browsing on the connection they had, past Gate, with nothing on screen
+ * saying so.
+ *
+ * ON only, and the caller enforces it. The off direction was assumed symmetric
+ * and is not: measured in
+ * `crates/core/tests/proxy_e2e.rs::a_row_switched_off_stops_rewriting_a_connection_already_open`,
+ * one socket carrying two requests with the row switched off between them. The
+ * engine re-reads its rule set per REQUEST rather than per connection, so the
+ * very next request on a connection that was already open is no longer routed -
+ * it goes to the provider. The connection survives the switch; the routing does
+ * not, and there is nothing to tell the user to reload.
+ *
+ * Undefined when nothing that moved has a browser surface, which is every
+ * section whose members are config rows and the `chatgpt` row on its own.
+ */
+export function hostReloadAdvice(
+  moved: GroupMember[],
+): { title: string; body: string } | undefined {
+  // Deduplicated and in draw order, the same treatment `SessionConsentDialog`
+  // gives them: two members can name one host, and a banner that says
+  // "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
+  const hosts = [...new Set(moved.filter(hasBrowserSurface).flatMap((m) => m.domain?.hosts ?? []))];
+  if (hosts.length === 0) return undefined;
+  return {
+    title: "Pages already open need reloading",
+    body: `Gate now routes ${hosts.join(", ")}. A page that was already open keeps the connection it opened before, so its requests go around Gate until you reload it.`,
+  };
+}
+
+/**
  * What the machine-wide row reaches, in one sentence.
  *
  * The rendered half of `scope: "machine"`, and the reason {@link

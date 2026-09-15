@@ -1488,6 +1488,20 @@ export function NewUiApp() {
   );
 
   /**
+   * What a page open across a section's flip cannot know yet.
+   *
+   * `lib/useSectionRouting.ts` raises it and composes the sentence; this holds
+   * it until the user dismisses it. Its own state rather than a second writer of
+   * `browserRestart`: the two can be raised by one click (trusting the
+   * certificate on the first enable, and routing claude.ai in the same cascade),
+   * and sharing the slot would mean whichever landed second erased the other.
+   */
+  const [reloadNote, setReloadNote] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
+
+  /**
    * The app switch, for the rail and the pane header both.
    *
    * A row is a section, so a click is a cascade with a consent gate and a single
@@ -1508,7 +1522,18 @@ export function NewUiApp() {
     // successfully turned the switch on and left "Could not connect" on screen
     // above it - the switch and the banner asserting opposite things about the
     // same click.
-    onBeforeRoute: () => setActionError(null),
+    onBeforeRoute: () => {
+      setActionError(null);
+      // And the reload advice, for the same reason one line up: it is a claim
+      // about where this person's traffic is going, and the click in progress
+      // is what stops it being the current answer. Turning the section back off
+      // is the case that makes this a bug rather than clutter - the banner went
+      // on saying "Gate now routes claude.ai" over a row that had just been
+      // switched off, and telling someone to reload a page for routing that is
+      // no longer there is worse than saying nothing.
+      setReloadNote(null);
+    },
+    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   const toggleRailApp = section.toggle;
@@ -2843,6 +2868,100 @@ export function NewUiApp() {
     );
   }
 
+  /**
+   * The one notice the shell draws, ranked: a failed action, then an
+   * interrupted restore, then tools waiting to be reopened, then the
+   * certificate's browser note.
+   *
+   * Lifted out of the `AppShell` call so the reload note below can be stacked
+   * beside it rather than ranked inside it. Unchanged otherwise.
+   */
+  const noticeChain =
+    actionError ? (
+      <ErrorBanner
+        title={actionError.title}
+        hint={actionError.hint}
+        raw={actionError.raw}
+        onDismiss={() => setActionError(null)}
+      />
+    ) : recoveryNames.length > 0 && !recoveryHidden ? (
+      // Below the error banner: a failure that just happened outranks a
+      // recorded one that can still be resumed.
+      <RecoveryBanner
+        names={recoveryNames}
+        rows={recoveryRowList}
+        progress={resumeProgress ?? undefined}
+        busy={resuming}
+        onResume={() => void resumeNow()}
+        onAction={(slug, step) => {
+          // Retry is this notice's own action; a reopen hands over to the
+          // close-apps conversation, which is the only thing that can act on
+          // a running process. Sign-in is neither - it is a different screen -
+          // so the row names it and offers no control.
+          if (step === "retry") void retryOne(slug);
+          if (step === "reopen_tool") void runningApps.offerAfterChange([slug]);
+        }}
+        onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
+        onFinishLater={() => setRecoveryHidden(true)}
+      />
+    ) : reopenPending.length > 0 && !reopenHidden ? (
+      // Last of the three: an unfinished operation and a failure both
+      // outrank a change that landed and is waiting on the user to open a
+      // window they were told about.
+      <ReopenBanner
+        tools={reopenPending}
+        onReopen={(slug) => void runningApps.offerAfterChange([slug])}
+        onDismiss={() => setReopenHidden(true)}
+      />
+    ) : browserRestart ? (
+      // Bottom of the chain, and neutral where the three above are amber or
+      // red: each of those names something still to be fixed in Gate's own
+      // routing, while this is a step outside the app that the user may
+      // already have taken. It must never displace one of them.
+      <NoteBanner
+        title={browserRestart.title}
+        body={browserRestart.body}
+        onDismiss={() => setBrowserRestart(null)}
+      />
+    ) : undefined;
+
+  /**
+   * The reload advice, stacked under whatever else is up rather than queued
+   * behind it.
+   *
+   * It was the fifth arm of the chain and that was wrong in both directions.
+   * Routing a section while its CLI is running is the case this advice exists
+   * for, and it is exactly the case that fills `reopenPending` - so the banner
+   * about the browser lost to the banner about the CLI, and then appeared on
+   * its own minutes later, once the reopen cleared, as a second event about a
+   * click the person had stopped thinking about. The two are remedies for two
+   * halves of ONE click, on two different things the person owns; neither
+   * replaces the other and both belong on screen.
+   *
+   * The trust note is the one exception and keeps its rank: quitting a browser
+   * and opening it again reloads every page by definition, so drawing both
+   * would ask for one thing twice. That subsumption runs one way only, which is
+   * why this is a suppression here rather than an ordering.
+   */
+  const reloadBanner =
+    reloadNote && !browserRestart ? (
+      <NoteBanner
+        title={reloadNote.title}
+        body={reloadNote.body}
+        onDismiss={() => setReloadNote(null)}
+      />
+    ) : null;
+
+  /** Both, when there are both. `undefined` rather than an empty fragment when
+   *  there is neither, so `AppShell` draws no notice region at all. */
+  const noticeStack =
+    noticeChain || reloadBanner ? (
+      <>
+        {noticeChain}
+        {reloadBanner}
+      </>
+    ) : undefined;
+
   return (
     <AppShell
       menuOpen={menuOpen}
@@ -2913,55 +3032,7 @@ export function NewUiApp() {
       // the rest of the chrome rather than floating over it. Leaving them lifted
       // put a "Close tool" button on top of the close-apps dialog it opens.
       noticeAboveDialog={actionError !== null}
-      notice={
-        actionError ? (
-          <ErrorBanner
-            title={actionError.title}
-            hint={actionError.hint}
-            raw={actionError.raw}
-            onDismiss={() => setActionError(null)}
-          />
-        ) : recoveryNames.length > 0 && !recoveryHidden ? (
-          // Below the error banner: a failure that just happened outranks a
-          // recorded one that can still be resumed.
-          <RecoveryBanner
-            names={recoveryNames}
-            rows={recoveryRowList}
-            progress={resumeProgress ?? undefined}
-            busy={resuming}
-            onResume={() => void resumeNow()}
-            onAction={(slug, step) => {
-              // Retry is this notice's own action; a reopen hands over to the
-              // close-apps conversation, which is the only thing that can act on
-              // a running process. Sign-in is neither - it is a different screen -
-              // so the row names it and offers no control.
-              if (step === "retry") void retryOne(slug);
-              if (step === "reopen_tool") void runningApps.offerAfterChange([slug]);
-            }}
-            onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
-            onFinishLater={() => setRecoveryHidden(true)}
-          />
-        ) : reopenPending.length > 0 && !reopenHidden ? (
-          // Last of the three: an unfinished operation and a failure both
-          // outrank a change that landed and is waiting on the user to open a
-          // window they were told about.
-          <ReopenBanner
-            tools={reopenPending}
-            onReopen={(slug) => void runningApps.offerAfterChange([slug])}
-            onDismiss={() => setReopenHidden(true)}
-          />
-        ) : browserRestart ? (
-          // Bottom of the chain, and neutral where the three above are amber or
-          // red: each of those names something still to be fixed in Gate's own
-          // routing, while this is a step outside the app that the user may
-          // already have taken. It must never displace one of them.
-          <NoteBanner
-            title={browserRestart.title}
-            body={browserRestart.body}
-            onDismiss={() => setBrowserRestart(null)}
-          />
-        ) : undefined
-      }
+      notice={noticeStack}
       onToggleApp={toggleRailApp}
       dialog={
         // A pending quit decision outranks every other overlay: the user asked

@@ -5,6 +5,8 @@ import { sectionStatus } from "./verdict";
 import {
   browserTrustRestartAdvice,
   buildGroups,
+  hasBrowserSurface,
+  hostReloadAdvice,
   credentialScopeNote,
   describeMember,
   groupSummary,
@@ -727,6 +729,85 @@ describe("proxyReopenAdvice", () => {
     // Principle 6 in the other direction: this is the one routing line with
     // nothing behind it, so it has to admit that in its own words.
     expect(PROXY_REOPEN_ADVICE.body).toContain("advice rather than a reading");
+  });
+});
+
+/**
+ * Which rows a browser tab can be sitting on, and what to say when one is
+ * routed. The taxonomy cannot answer the first question - see
+ * `BROWSER_SURFACE_ROWS` - so these are the tests that hold the answer in place.
+ */
+describe("hasBrowserSurface", () => {
+  const members = (...domains: ProxyDomain[]) =>
+    buildGroups([], domains, ON).flatMap((g) => g.members);
+
+  it("is true for the two surfaces a person opens in a browser", () => {
+    const [claudeWeb] = members(sessionDomain());
+    const [chatgptApps] = members(
+      sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
+    );
+    expect(hasBrowserSurface(claudeWeb)).toBe(true);
+    expect(hasBrowserSurface(chatgptApps)).toBe(true);
+  });
+
+  it("is false for the subscription row, which is two programs and no tab", () => {
+    // The row this table exists for. `chatgpt` is `Client::ChatGpt`,
+    // `Credential::Additive` and `Scope::Host` - identical to `chatgpt-apps` on
+    // every field the ledger carries - and what actually talks to it is Codex
+    // through the relay and the ChatGPT app's Work mode. Told to reload a tab,
+    // its user has nothing to reload.
+    const [subscription] = members(
+      sessionDomain({ slug: "chatgpt", display_name: "Subscription", hosts: ["chatgpt.com"] }),
+    );
+    expect(subscription.credential).toBe("additive");
+    expect(hasBrowserSurface(subscription)).toBe(false);
+  });
+
+  it("is false for a brokered host row, which is an API nobody browses", () => {
+    const [api] = members(domain());
+    expect(hasBrowserSurface(api)).toBe(false);
+  });
+});
+
+describe("hostReloadAdvice", () => {
+  const cascade = (...domains: ProxyDomain[]) =>
+    buildGroups([], domains, ON).flatMap((g) => g.members);
+
+  it("names the host, because that is the only part the user can recognise", () => {
+    const advice = hostReloadAdvice(cascade(sessionDomain()));
+    expect(advice?.body).toContain("claude.ai");
+  });
+
+  it("says what is wrong with the open page, not just that it is open", () => {
+    // The whole reason the notice exists: the page is not merely stale, it is
+    // bypassing Gate, and a sentence that only said "reload" would read as
+    // housekeeping.
+    const advice = hostReloadAdvice(cascade(sessionDomain()));
+    expect(advice?.body).toContain("go around Gate");
+  });
+
+  it("says nothing when what moved has no browser surface", () => {
+    // A section of config rows, and the subscription row on its own. Both would
+    // otherwise get a notice telling them to reload a page that does not exist.
+    expect(hostReloadAdvice(cascade(domain()))).toBeUndefined();
+    expect(
+      hostReloadAdvice(
+        cascade(sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"] })),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("names one host once when two surfaces share it", () => {
+    // `chatgpt-apps` and `chatgpt` are both chatgpt.com, and a section switch
+    // moves them together. "chatgpt.com, chatgpt.com" reads as a bug in the
+    // sentence rather than as two surfaces.
+    const advice = hostReloadAdvice(
+      cascade(
+        sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
+        sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"], client: "chatgpt" }),
+      ),
+    );
+    expect(advice?.body.match(/chatgpt\.com/g)).toHaveLength(1);
   });
 });
 

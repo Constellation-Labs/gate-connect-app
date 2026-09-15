@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { hasBrowserSurface } from "../lib/groups";
 import type { Group, GroupMember } from "../lib/groups";
 import type { AuthMode } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
@@ -170,20 +171,28 @@ function explain({
   }
 }
 
-/** The rows this file used to read off `GroupMember.chat`: a host the engine
- * intercepts for a surface the user is already signed in to - `claude-web` and
- * `chatgpt-apps` today.
+/**
+ * What to close for a row whose NAME is not a program.
  *
- * That boolean is gone; it meant "session surface" and "out of the family
- * cascade" at once, and the ledger split it into `credential` and `cascade`.
- * The half this file wants is the credential: `!member.cascade` would also
- * catch an `observed` row, which changes nothing about what authenticates the
- * traffic and so has no browser session to reload. Same reading, and the same
- * reason for it, as `sessionMembers` in `lib/groups.ts`.
+ * Every other row in the ledger is named for the thing you quit - "Claude Code",
+ * "Claude Desktop / Cowork" - so the generic sentence below names `member.name`
+ * and is right. `chatgpt` is not: it is drawn as "Subscription", a mode rather
+ * than an application, and "Close Subscription" asks for something nobody can
+ * do.
+ *
+ * The READING comes from `MEMBER_HINTS` in `lib/groups.ts`, which already
+ * answers "the programs behind this row"; the wording is this sentence's own,
+ * because the hint is a noun phrase for a hover ("Work in the ChatGPT app, and
+ * Codex, on your ChatGPT subscription") and does not slot into "Close …". So
+ * this is a second table, deliberately, and the thing to check when either
+ * moves is that they still name the same programs.
+ * `proxy/catalog.rs` says OpenClaw reaches this entry too, through the engine
+ * rather than the relay, and the hint does not name it; the hint is the UI's
+ * one answer and this follows it rather than inventing a second.
  */
-function isSessionSurface(member: GroupMember): boolean {
-  return member.credential === "additive";
-}
+const PROGRAMS_TO_CLOSE: Readonly<Record<string, string>> = {
+  chatgpt: "the ChatGPT app and Codex",
+};
 
 /** The band that tells the user their flip has not reached the thing it is
  * about yet. Shown only when the change actually put traffic in flight:
@@ -204,6 +213,7 @@ function isSessionSurface(member: GroupMember): boolean {
  * tells the user WHICH tab to reload. */
 function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: () => void }) {
   const hosts = member.domain?.hosts.join(", ") ?? "";
+  const programs = PROGRAMS_TO_CLOSE[member.key];
   return (
     <div
       role="status"
@@ -211,13 +221,18 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
     >
       <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
       <div className="min-w-0 flex-1 text-gc-caption-lg font-medium leading-snug text-gc-ink">
-        {isSessionSurface(member) ? (
+        {hasBrowserSurface(member) ? (
           <>
             <span className="font-semibold">
               Reload <span className="font-mono">{hosts}</span>
             </span>{" "}
             in any tab that was already open; until you do, it keeps the
             connection it had before.
+          </>
+        ) : programs ? (
+          <>
+            <span className="font-semibold">Close {programs}</span> to apply the
+            change; they pick this up the next time you open them.
           </>
         ) : (
           <>
@@ -230,7 +245,7 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
         icon="x"
         size={13}
         onClick={onDismiss}
-        aria-label={isSessionSurface(member) ? "Dismiss reload hint" : "Dismiss restart hint"}
+        aria-label={hasBrowserSurface(member) ? "Dismiss reload hint" : "Dismiss restart hint"}
       />
     </div>
   );
@@ -805,15 +820,19 @@ export function GroupMembers({
                   )}
 
                   {/* Inside the disclosure, where it has always been, for
-                      the members it has always served. The chat rows take the
-                      copy outside it instead - see below. */}
-                  {changed === member.key && !error && member.routed && !isSessionSurface(member) && (
+                      the members it has always served - the rows whose remedy is
+                      closing a program, `chatgpt` now included. The rows a
+                      browser tab sits on take the copy outside it instead - see
+                      below. */}
+                  {changed === member.key && !error && member.routed && !hasBrowserSurface(member) && (
                     <RestartHint member={member} onDismiss={() => setChanged(null)} />
                   )}
                 </div>
               )}
 
-              {/* OUTSIDE the disclosure, and only for the chat rows. The hint
+              {/* OUTSIDE the disclosure, and only for the rows a browser tab can
+                  be sitting on - which is not the same set as the signed-in
+                  ones, see `hasBrowserSurface`. The hint
                   above renders inside `open`, so a user who flips a switch
                   without also expanding the row never sees it - survivable for a
                   config tool, whose own launch is the next thing that applies
@@ -830,9 +849,13 @@ export function GroupMembers({
                   nothing. The flip is the only moment the advice reliably lands,
                   so on these rows it has to be visible at the flip.
 
+                  Which is why `chatgpt` is not here despite reading as a chat
+                  row on every field: what talks to it is Codex and the ChatGPT
+                  app's Work mode, and both are programs that get closed.
+
                   Its own padded band rather than the disclosure's `px-3.5 pb-3`,
                   since collapsed rows have no such wrapper to sit in. */}
-              {changed === member.key && !error && member.routed && isSessionSurface(member) && (
+              {changed === member.key && !error && member.routed && hasBrowserSurface(member) && (
                 <div className="px-3.5 pb-3">
                   <RestartHint member={member} onDismiss={() => setChanged(null)} />
                 </div>
