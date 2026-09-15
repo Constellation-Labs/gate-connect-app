@@ -21,3 +21,12 @@
 /test-results/
 /playwright-report/
 /blob-report/
+
+.figma-mcp/.env
+.figma-mcp/assets/
+
+# TypeScript incremental build stamp (tsc -b). Machine-local, never reviewable.
+/*.tsbuildinfo
+
+# Planning notes for future sessions. Working documents, not part of the app.
+feature-plans/

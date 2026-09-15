@@ -27,6 +27,16 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  /** Opening a link in the user's browser failed: an opener-ACL miss, no
+   *  browser, a sandbox refusal. Its own context because the remedy is nothing
+   *  to do with Gate - the user can still copy the address - and because it used
+   *  to vanish into a console nobody reads. */
+  | "open_external"
+  /** The re-read that follows a routing write. Its own context because a failed
+   *  resync is not a failed write - the write landed, and only the view of it is
+   *  stale. It used to be invisible: thrown from a `finally` into a `void` call
+   *  site, where it took every switch in the app down with it. */
+  | "resync"
   | "provider_disable"
   | "provider_reconcile"
   | "routing_intent"
@@ -250,7 +260,15 @@ export function classifyError(
 
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
-    sign_in: "Couldn’t save your account",
+    // The write already succeeded; only the re-read of it failed, so this says
+    // the rows may be stale rather than implying the change did not land.
+    resync: "Couldn’t refresh what’s on screen",
+    open_external: "Couldn’t open that link",
+    // Three of the four `sign_in` call sites are browser flows, not writes:
+    // the OAuth offer, Settings’ switch to a Gate account, and first run’s
+    // sign-in. "Couldn’t save your account" described the fourth and read as
+    // a non sequitur after a Cognito round-trip that never saved anything.
+    sign_in: "Couldn’t complete sign-in",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",
     forget: "Couldn’t reset Gate Connect",

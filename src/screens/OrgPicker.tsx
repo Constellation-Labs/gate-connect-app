@@ -16,22 +16,24 @@ import { Icon } from "../components/gc/Icon";
  *  header back button (the Settings switch flow); the post-login flow omits it
  *  since an org must be chosen to route. */
 export function OrgPicker({
-  consoleUrl,
   onDone,
   onBack,
   onReauth,
   onUseApiKey,
+  dashboardUrl,
 }: {
-  /** The console for the account's gateway. Was a module constant pinned to
-   * production, which pointed a staging-signed-in user at an org list from a
-   * different database. */
-  consoleUrl: string;
   onDone: () => void;
   onBack?: () => void;
   onReauth: () => void;
   /** Fall back to the API-key path. The only route forward for a user with no
    * organization and no admin to ask. */
   onUseApiKey?: () => void;
+  /** Where "Create an organization" goes, for the gateway this account signed
+   *  into. Null when that gateway has no dashboard - see `lib/dashboard.ts`.
+   *  Without it this screen sent an OAuth user signed into staging to the
+   *  production dashboard to create an org that the staging session would never
+   *  see, which is a dead end dressed as the way forward. */
+  dashboardUrl: string | null;
 }) {
   const [orgs, setOrgs] = useState<Org[] | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
@@ -162,15 +164,17 @@ export function OrgPicker({
               Gate dashboard, or use a Gate API key instead.
             </p>
             <div className="flex w-full flex-col gap-2">
-              <Button
-                variant="accent"
-                full
-                onClick={() => {
-                  void openExternal(consoleUrl);
-                }}
-              >
-                Create an organization
-              </Button>
+              {dashboardUrl && (
+                <Button
+                  variant="accent"
+                  full
+                  onClick={() => {
+                    void openExternal(dashboardUrl);
+                  }}
+                >
+                  Create an organization
+                </Button>
+              )}
               {onUseApiKey && (
                 <Button variant="secondary" full onClick={onUseApiKey}>
                   Use a Gate API key instead

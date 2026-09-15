@@ -134,6 +134,9 @@ export function Diagnostics({
         platform,
         analyticsId: analyticsId(),
         backend,
+        // The popover does not probe versions: this screen is the old shell
+        // and the probe spawns a process per tool.
+        versions: null,
         account,
         oauth,
         proxy,

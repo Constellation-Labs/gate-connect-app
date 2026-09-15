@@ -1,0 +1,44 @@
+# `cargo audit` config, read by the "Dependency advisories" job in
+# .github/workflows/ci.yml.
+#
+# Every entry below was present before the job existed - the job was added
+# alongside the keyring backend swap, and none of these come from the crates
+# that change brought in. They are ignored so the gate blocks anything NEW
+# rather than being permanently red on inherited debt, which is the only way it
+# does any work. Ignoring is not accepting: three of the four crates are fixed
+# by a plain patch bump that resolves inside the existing semver range, and
+# those are the ones to clear first.
+#
+# Deliberately NOT set: `informational_warnings`. Unmaintained and yanked
+# crates stay warnings, so a real vulnerability is the only thing that fails
+# the build.
+
+[advisories]
+ignore = [
+  # h2 0.4.14 -> hyper -> hudsucker, gate-connect-core, reqwest.
+  # Unbounded empty DATA frames: an h2 peer can make the server allocate
+  # without bound. This one is genuinely reachable - the relay is an h2 server
+  # and `hudsucker`'s `http2` feature is why it speaks h2 at all - though only
+  # to a loopback listener, so the caller is already the same user.
+  # Fixed by >= 0.4.16, semver-compatible. Clear this one first.
+  "RUSTSEC-2026-0258",
+
+  # time 0.3.45 -> asn1-rs / x509-parser (certificate parsing, which the CA
+  # and trust paths do use) and cookie -> tauri.
+  # Stack exhaustion, 6.8 medium. Fixed by >= 0.3.47, semver-compatible.
+  "RUSTSEC-2026-0009",
+
+  # crossbeam-epoch 0.9.18 -> moka -> hudsucker.
+  # Invalid pointer dereference in the `fmt::Pointer` impl for `Atomic` and
+  # `Shared`. Only reachable by debug-formatting one of those, which nothing
+  # here does. Fixed by >= 0.9.20, semver-compatible.
+  "RUSTSEC-2026-0204",
+
+  # quick-xml 0.38.4 -> plist -> tauri-utils, both entries below.
+  # Quadratic attribute scan (7.5 high) and unbounded namespace allocation
+  # (7.5 high). The input is our own Info.plist at bundle time, not anything a
+  # user supplies. The only fix is >= 0.41.0, which crosses a semver boundary
+  # `plist` pins, so this one waits on tauri-utils rather than on us.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

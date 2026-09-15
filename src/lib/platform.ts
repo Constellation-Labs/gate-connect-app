@@ -70,6 +70,33 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
   }
 }
 
+/** Where the app lives when its window is not on screen, as a noun phrase ready
+ *  to drop after "in" / "to".
+ *
+ *  Carries the determiner for the same reason [`secretStoreName`] does: these
+ *  are the OS's own names for the thing, and every string that points the user
+ *  at it has to use the right one. Windows puts it in the system tray at the
+ *  bottom right; GNOME calls its equivalent the top bar; macOS the menu bar.
+ *
+ *  Hardcoding "menu bar" is the failure this exists to prevent. The quit
+ *  chooser did exactly that and told Windows users to minimize the app to a
+ *  menu bar their OS does not have, while the onboarding step two files away
+ *  had already been naming all three correctly.
+ *
+ *  `unknown` answers "the menu bar", preserving what the onboarding step said
+ *  before this was shared. It is only reachable during the first async tick of
+ *  `fetchPlatform`, before any of these surfaces has drawn. */
+export function trayLocationName(p: Platform): string {
+  switch (p) {
+    case "windows":
+      return "the system tray";
+    case "linux":
+      return "the top bar";
+    default:
+      return "the menu bar";
+  }
+}
+
 /** Whether a host-scoped row also covers the same site in a browser, as a
  *  sentence to append - or the empty string where there is nothing to claim.
  *
@@ -80,27 +107,49 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
  *  inspects a session cookie. macOS and Windows are that case: the system proxy
  *  is the browser's proxy and the system trust store is its trust store.
  *
- *  Linux says nothing, deliberately, and the empty string is the whole point -
- *  not an oversight to fill in later. The browser is genuinely not covered
- *  there, twice over: Gate wires the proxy through environment variables
- *  (`system_proxy_linux.rs` writes `~/.config/environment.d/gate-proxy.conf`,
- *  and there is no PAC on Linux at all) while browsers take their proxy from
- *  the desktop's own settings, which Gate never writes; and the CA goes into
- *  the system trust store (`ca_linux.rs`), which is not where Chromium keeps
- *  user-added roots. But spelling that out costs three clauses in a 360px
- *  popover to explain a mechanism the user cannot act on, and the sentence
- *  before it has already bounded the scope by naming the host. Saying less is
- *  not the same as claiming more: the copy never promises the browser, so
- *  silence here is accurate. If Linux ever grows NSS trust and desktop proxy
- *  settings, this returns the same sentence macOS does and nothing else moves.
+ *  Linux is that case too now, and it gets a narrower sentence rather than the
+ *  same one. This used to return the empty string, on the argument that the
+ *  browser was not covered there twice over: the proxy was environment
+ *  variables a browser never reads, and the CA went somewhere Chromium does not
+ *  look. Both halves have since landed - `system_proxy_linux.rs` also writes
+ *  GNOME's `org.gnome.system.proxy` keys, which anything on GLib's proxy
+ *  resolver re-reads live (#203), and `ca_linux.rs` installs the CA into the
+ *  per-user NSS databases Chromium reads as well as the system store (#215) -
+ *  and this comment's own escape clause said that when they did, Linux would
+ *  return what macOS returns.
+ *
+ *  It does not, because coverage here is conditional in a way it is not there,
+ *  and `browserChannel` is the condition. Only GNOME's keys are re-read by a
+ *  running browser; the `environment.d` drop-in reaches a process at launch.
+ *  On a session with no `org.gnome.system.proxy` schema - KDE, a bare WM - Gate
+ *  writes the drop-in alone, so nothing points a browser already running at the
+ *  engine and there is no browser claim to make. Keying that on the OS alone
+ *  was the bug: it made the sentence a claim about interception with nothing
+ *  behind it, on the one screen a user would check it on. It comes from
+ *  `ProxyState.browser_proxy_channel`, which is a reading.
+ *
+ *  Even where it is true, the sentence stops at "follows your desktop proxy
+ *  settings" rather than promising every browser, because a browser started
+ *  from a shell took the other channel and Gate cannot see which. That
+ *  launch-time half is advice with something the user can act on, and it lives
+ *  where there is room for it: `groups.ts`' `PROXY_REOPEN_ADVICE` for the proxy
+ *  pointer and `browserTrustRestartAdvice` for the trust store.
  *
  *  Empty on `unknown` for the same reason it is empty on Linux, plus one: that
  *  value is the first async tick, and a claim about interception is the last
  *  thing to guess at. */
-export function browserScopeNote(p: Platform): string {
-  return p === "macos" || p === "windows"
-    ? "That includes the same site open in your browser."
-    : "";
+export function browserScopeNote(p: Platform, browserChannel: boolean): string {
+  switch (p) {
+    case "macos":
+    case "windows":
+      return "That includes the same site open in your browser.";
+    case "linux":
+      return browserChannel
+        ? "That includes the same site in a browser that follows your desktop proxy settings."
+        : "";
+    default:
+      return "";
+  }
 }
 
 /** The platform's own name for the accelerator modifier, for copy that teaches a
