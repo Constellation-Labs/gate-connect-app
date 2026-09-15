@@ -35,6 +35,7 @@ export function Home({
   busy,
   error,
   changeNotice,
+  canCloseAgents = true,
   onDismissChangeNotice,
   onCloseAgents,
   onEnableRouting,
@@ -68,6 +69,13 @@ export function Home({
   /** What the last routing change actually resulted in, or null once
    * dismissed. */
   changeNotice: ChangeNotice;
+  /** Whether the last routing change found anything the app could offer to
+   * close. False when the probe came back empty, which is the ordinary case
+   * for a user whose routed clients are a browser tab and a desktop app:
+   * `AGENT_PROCESS_NAMES` covers `claude`/`codex`/`opencode` and nothing else.
+   * Optional, defaulting to the answer that keeps the close route, so the one
+   * caller that never probes reads exactly as it always did. */
+  canCloseAgents?: boolean;
   onDismissChangeNotice: () => void;
   onCloseAgents: () => void;
   /** Turn the master on from the pending banner: the remedy belongs on the
@@ -548,10 +556,18 @@ export function Home({
           </div>
         )}
 
-        {/* One notice for every routing change, worded by direction. Both
-            directions carry the same remedy - close what's already open - so
-            both offer the same action, rather than the close route existing
-            only for the notice raised at startup. */}
+        {/* One notice for every routing change, worded by direction. On and off
+            carry the same remedy - close what's already open - so both offer
+            the same action, rather than the close route existing only for the
+            notice raised at startup.
+
+            The remedy, not the notice, is what varies. `pending` swaps it for
+            "Turn on routing", and `canCloseAgents === false` moves it into the
+            sentence, because a probe that found nothing to close means the
+            stale thing is a page and the fix is a reload. The notice itself is
+            shown in every one of those cases: whether Gate can offer to close
+            something is a fact about the remedy, never a reason to say
+            nothing. */}
         {banner === "change" && (
           <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
             <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
@@ -563,6 +579,14 @@ export function Home({
                   : changeNotice === "on"
                     ? "Routing is on. Anything already open isn’t routing through Gate yet."
                     : "Routing is off. Anything already open still points at Gate."}
+              {/* The remedy moves into the sentence when there is no button to
+                  carry it. A page is the thing that is stale in this case, and
+                  reloading is the whole fix - the banner would otherwise state
+                  a problem and offer nothing, which is the state this notice
+                  exists to prevent. */}
+              {!canCloseAgents && changeNotice !== "pending" && (
+                <> Reload any pages you have open.</>
+              )}
             </div>
             {/* Pending has a different remedy: there is nothing running to
                 close, so offering "Close them…" would be busywork. The
@@ -579,7 +603,7 @@ export function Home({
               >
                 Turn on routing
               </button>
-            ) : (
+            ) : !canCloseAgents ? null : (
               <button
                 type="button"
                 onClick={onCloseAgents}
