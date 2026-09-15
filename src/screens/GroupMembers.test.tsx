@@ -429,3 +429,81 @@ describe("GroupMembers row hit target", () => {
     await waitFor(() => expect(live.textContent).toContain("Claude Code"));
   });
 });
+
+describe("GroupMembers chat-row reload hint", () => {
+  // A chat row is a HOST the engine intercepts, not a config it writes, so the
+  // stale thing after a flip is a connection rather than a process. These
+  // cover the two ways the generic hint failed that case: it named something
+  // uncloseable, and it only rendered inside the disclosure.
+  const chatDomain: ProxyDomain = {
+    slug: "chatgpt-apps",
+    display_name: "ChatGPT app chat + Codex tools",
+    hosts: ["chatgpt.com"],
+    upstream_url: "https://chatgpt.com",
+    rewrite_prefixes: ["/backend-api/f/conversation"],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+  };
+
+  const OPENAI: ProviderState[] = [
+    {
+      slug: "openai",
+      display_name: "OpenAI",
+      subtitle: "",
+      enabled: false,
+      available: true,
+      tool_slugs: [],
+      domain_slugs: [],
+      chat_domain_slugs: ["chatgpt-apps"],
+    },
+  ];
+
+  function renderChat(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
+    const [group] = buildGroups(OPENAI, [], [chatDomain], { proxyOn: true, caTrusted: true });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn
+        onEnableRouting={vi.fn()}
+        {...props}
+      />,
+    );
+  }
+
+  it("tells the user to reload the host, without expanding the row", async () => {
+    // The row is never opened here on purpose: the generic hint lives inside
+    // the disclosure, so a user who only flips the switch never saw it, and
+    // for these rows the flip is the one moment the advice lands.
+    const onSetDomain = vi.fn(() => Promise.resolve());
+    renderChat({ onSetDomain });
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Route ChatGPT app chat + Codex tools through Gate" }),
+    );
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    const hint = await screen.findByText(/keeps the connection it had before/);
+    expect(hint.textContent).toContain("Reload");
+    expect(hint.textContent).toContain("chatgpt.com");
+    // The instruction that would be wrong here: there is no such app to close.
+    expect(screen.queryByText(/Close ChatGPT app chat/)).toBeNull();
+  });
+
+  it("dismisses the hint without touching the switch", async () => {
+    const onSetDomain = vi.fn(() => Promise.resolve());
+    renderChat({ onSetDomain });
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Route ChatGPT app chat + Codex tools through Gate" }),
+    );
+    await screen.findByText(/keeps the connection it had before/);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss reload hint" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/keeps the connection it had before/)).toBeNull(),
+    );
+    expect(onSetDomain).toHaveBeenCalledTimes(1);
+  });
+});
