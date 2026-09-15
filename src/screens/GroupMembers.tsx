@@ -170,6 +170,21 @@ function explain({
   }
 }
 
+/** The rows this file used to read off `GroupMember.chat`: a host the engine
+ * intercepts for a surface the user is already signed in to - `claude-web` and
+ * `chatgpt-apps` today.
+ *
+ * That boolean is gone; it meant "session surface" and "out of the family
+ * cascade" at once, and the ledger split it into `credential` and `cascade`.
+ * The half this file wants is the credential: `!member.cascade` would also
+ * catch an `observed` row, which changes nothing about what authenticates the
+ * traffic and so has no browser session to reload. Same reading, and the same
+ * reason for it, as `sessionMembers` in `lib/groups.ts`.
+ */
+function isSessionSurface(member: GroupMember): boolean {
+  return member.credential === "additive";
+}
+
 /** The band that tells the user their flip has not reached the thing it is
  * about yet. Shown only when the change actually put traffic in flight:
  * closing and reopening anything changes nothing while the engine is down, so
@@ -196,7 +211,7 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
     >
       <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
       <div className="min-w-0 flex-1 text-gc-caption-lg font-medium leading-snug text-gc-ink">
-        {member.chat ? (
+        {isSessionSurface(member) ? (
           <>
             <span className="font-semibold">
               Reload <span className="font-mono">{hosts}</span>
@@ -215,7 +230,7 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
         icon="x"
         size={13}
         onClick={onDismiss}
-        aria-label={member.chat ? "Dismiss reload hint" : "Dismiss restart hint"}
+        aria-label={isSessionSurface(member) ? "Dismiss reload hint" : "Dismiss restart hint"}
       />
     </div>
   );
@@ -792,7 +807,7 @@ export function GroupMembers({
                   {/* Inside the disclosure, where it has always been, for
                       the members it has always served. The chat rows take the
                       copy outside it instead - see below. */}
-                  {changed === member.key && !error && member.routed && !member.chat && (
+                  {changed === member.key && !error && member.routed && !isSessionSurface(member) && (
                     <RestartHint member={member} onDismiss={() => setChanged(null)} />
                   )}
                 </div>
@@ -817,7 +832,7 @@ export function GroupMembers({
 
                   Its own padded band rather than the disclosure's `px-3.5 pb-3`,
                   since collapsed rows have no such wrapper to sit in. */}
-              {changed === member.key && !error && member.routed && member.chat && (
+              {changed === member.key && !error && member.routed && isSessionSurface(member) && (
                 <div className="px-3.5 pb-3">
                   <RestartHint member={member} onDismiss={() => setChanged(null)} />
                 </div>

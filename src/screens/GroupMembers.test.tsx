@@ -556,23 +556,16 @@ describe("GroupMembers chat-row reload hint", () => {
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "chatgpt",
+    // The field that makes this the row the reload hint is for, now that
+    // membership is the row's own taxonomy rather than a provider catalog
+    // listing it under `chat_domain_slugs`.
+    credential: "additive",
+    scope: "host",
   };
 
-  const OPENAI: ProviderState[] = [
-    {
-      slug: "openai",
-      display_name: "OpenAI",
-      subtitle: "",
-      enabled: false,
-      available: true,
-      tool_slugs: [],
-      domain_slugs: [],
-      chat_domain_slugs: ["chatgpt-apps"],
-    },
-  ];
-
   function renderChat(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
-    const [group] = buildGroups(OPENAI, [], [chatDomain], { proxyOn: true, caTrusted: true });
+    const [group] = buildGroups([], [chatDomain], { proxyOn: true, caTrusted: true });
     render(
       <GroupMembers
         group={group}
@@ -582,6 +575,9 @@ describe("GroupMembers chat-row reload hint", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
         proxyOn
+        // Inert for this suite: the hint is about a stale connection, not about
+        // the scope sentence the flag drives.
+        browserChannel={true}
         onEnableRouting={vi.fn()}
         {...props}
       />,
