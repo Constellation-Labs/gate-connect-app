@@ -611,6 +611,54 @@ export function NewUiApp() {
     currentInstallId,
     credential,
   );
+
+  /** When the activity surfaces were last re-read on our own initiative, for
+   *  the focus edge's guard below. Starts at mount, which is when the hooks
+   *  above do their first read. */
+  const activityReadAt = useRef(Date.now());
+  /**
+   * Re-read the activity surfaces because the relay saw traffic.
+   *
+   * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
+   * better information. The Overview's org-wide read refreshes on any of it;
+   * the open pane's per-tool reads only when its tool is among the senders, so
+   * Codex traffic does not re-read the Claude pane. The feed is left alone
+   * once the user has paged into it: `reload` puts page one back, and taking
+   * pages away from someone reading them is worse than a stale first page.
+   * Each hook's `reload` is a no-op while that hook is disabled.
+   */
+  const refreshActivity = (tools: (string | null)[] | null) => {
+    activityReadAt.current = Date.now();
+    activity.reload();
+    if (openTool !== null && (tools === null || tools.includes(openTool))) {
+      toolActivity.reload();
+      if (!toolEvents.paged) toolEvents.reload();
+    }
+  };
+  // Latest-callback ref so the listener registers once: the hooks hand back a
+  // fresh `reload` closure every render, so there is nothing stable to memoise
+  // on, and re-subscribing each render would race Tauri's async `off()` against
+  // the next `listen()`.
+  const refreshActivityRef = useRef(refreshActivity);
+  refreshActivityRef.current = refreshActivity;
+
+  // The relay saw routed traffic leave for the gateway (`proxy::note_traffic`):
+  // the one signal that says these reads are stale for certain. They never
+  // poll - `useActivity` says why - so this is how the pane keeps up with a
+  // terminal beside it. Already coalesced in the core to one report per tool
+  // per 30s, after its burst has gone quiet, so nothing is debounced here.
+  // A hidden window skips it: the focus edge below re-reads on the way back,
+  // and a minimised window refreshing every 30s would be spending the shared
+  // budget on a screen nobody is looking at.
+  useEffect(() => {
+    const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
+      if (document.hidden) return;
+      refreshActivityRef.current(e.payload);
+    });
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
   // A write failure belongs to the pane it happened on. Without this, refusing a
   // change on Codex would keep saying so over Claude Code's pane, blaming the
   // wrong app for a refusal that had nothing to do with it.
@@ -1010,6 +1058,15 @@ export function NewUiApp() {
     // condition for the reason the interval above is - the sweep costs two
     // network probes, and there is nothing to learn from it otherwise.
     if (reopenWaiting) void refreshVerdicts();
+    // The same edge for the activity reads: it is also the likeliest moment for
+    // the numbers to have moved, and it covers what the relay's signal cannot
+    // reach - a window that was hidden when it fired, and Linux, where the
+    // engine runs in the helper daemon and the signal never reaches this
+    // process. Guarded by age so alt-tabbing back and forth is not a read each
+    // time.
+    if (Date.now() - activityReadAt.current >= ACTIVITY_REOPEN_MIN_MS) {
+      refreshActivityRef.current(null);
+    }
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
@@ -3768,6 +3825,10 @@ export function NewUiApp() {
 
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
+/** How old the activity reads have to be before the window being focused again
+ *  re-reads them. The same spacing the relay's traffic reports keep. */
+const ACTIVITY_REOPEN_MIN_MS = 30_000;
+
 const ALL_MISSING = { chart: true, policies: true, savings: true };
 
 /** Shown before the first load lands, and on the per-app pane whose own reading
