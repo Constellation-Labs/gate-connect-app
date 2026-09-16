@@ -1423,13 +1423,27 @@ pub mod testing {
 /// would attribute one tool's traffic to another in the view the user reads to
 /// find out what their machine is doing.
 ///
-/// **Display only, and caller-steerable.** Every signal here is a header the
-/// sender chose, so any local process whose traffic is intercepted can file its
-/// requests under another app's name. `inject_attribution` strips
+/// **Caller-steerable, and not display-only.** Every header signal here is one
+/// the sender chose, so any local process whose traffic is intercepted can file
+/// its requests under another app's name. `inject_attribution` strips
 /// [`GATE_CLIENT_HEADER`] before stamping, so a caller cannot set the value
-/// outright - only steer which branch fires - and nothing in routing, credential
-/// injection or the cascade rule reads the result. Keep it that way: this is a
-/// label on a counter, never an authorization input.
+/// outright - only steer which branch fires.
+///
+/// This doc used to say "nothing in routing, credential injection or the cascade
+/// rule reads the result", and that is **false**: [`inject_model_choice`] takes
+/// this value and stamps [`GATE_MODEL_HEADER`] only for a positively identified
+/// tool, and that header rewrites the served model and decides what the user is
+/// billed for. So identifying a tool better does not only move a number on a
+/// chart - it can start honouring a Gate-model choice that was stored but never
+/// applied, because the tool was going unrecognised. That is the intended
+/// reading of the feature (the user picked that model for that tool, and it was
+/// silently not being used), and it is a billing-visible consequence that
+/// belongs written down rather than discovered.
+///
+/// It remains **never an authorization input**: nothing here decides whether a
+/// request is served, only which stored intent is applied to it. Keep that half
+/// true. The ceiling on the steerable case is that a forged agent can only reach
+/// a model the user themselves chose for the tool it is impersonating.
 ///
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
 /// `chatgpt-web` - have no [`crate::registry::ToolId`], and the activity queries

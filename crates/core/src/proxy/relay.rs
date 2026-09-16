@@ -961,10 +961,14 @@ pub const HEALTH_PATH: &str = "/__gate/health";
 /// the segment the catalog cannot claim.
 ///
 /// It does not make attribution *trustworthy* - any process on the loopback
-/// interface can call any path, exactly as it can send any `User-Agent`. The
-/// headers this feeds are documented as self-asserted and authorize nothing
-/// (`GATE_CLIENT_HEADER`). What it buys is that the honest case stops depending
-/// on a string nobody here owns.
+/// interface can call any path, exactly as it can send any `User-Agent`. What it
+/// buys is that the honest case stops depending on a string nobody here owns.
+///
+/// Worth knowing before treating this as cosmetic: attribution authorizes
+/// nothing, but it is not inert either. `client_tool`'s result also gates
+/// `inject_model_choice`, so naming a tool correctly can start applying a
+/// Gate-model choice the user stored and the tool was too anonymous to receive.
+/// That is the intent; `client_tool`'s doc has the full note.
 pub(crate) const TOOL_PATH_PREFIX: &str = "/__gate/t/";
 
 /// 204, no body. The prober only cares that something Gate-shaped answered on
