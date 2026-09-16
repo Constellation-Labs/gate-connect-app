@@ -1045,8 +1045,10 @@ run_tool() {
     ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     ckpt "[$label/$mode] asserting capture"
+    # `$slug` is both the CLI's tool name and the `x-gate-client` value the
+    # gateway should record, so the same argument asserts the attribution.
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" \
-      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context"; then
+      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$slug"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
     else

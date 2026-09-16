@@ -269,6 +269,28 @@ impl Integration for Codex {
         Ok(env::codex_config_dir()?.exists())
     }
 
+    fn config_is_managed(&self) -> Result<bool> {
+        // Codex's config is TOML with no schema policing it, so unlike OpenCode
+        // - which needs a sidecar plus a loopback check because opencode.json
+        // rejects unknown keys - the marker can live in the file it describes
+        // and cannot go stale against it.
+        //
+        // The connect keys are the marker, not the `[model_providers.gate]`
+        // block: `connect` adopts a hand-written block under that name and
+        // `disconnect` deletes it, so the block's presence says nothing about
+        // who wrote it. One of the two keys is always recorded, including when
+        // there was no prior `model_provider` to stash.
+        //
+        // The stub `disconnect` leaves behind carries its own key and is
+        // excluded: it routes nowhere near Gate on purpose, and reapplying over
+        // it would reconnect a tool the user disconnected.
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        Ok(is_connected_marker(&read_doc(&path)?))
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -745,6 +767,24 @@ fn passthrough_stub(mode: AuthMode) -> Table {
 }
 
 /// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
+/// Whether `doc` carries the marker `connect` leaves, i.e. this is a config
+/// Gate Connect wrote and has not disconnected.
+///
+/// Split out from [`Integration::config_is_managed`] so it can be tested on a
+/// parsed document like the rest of this module, rather than needing a config
+/// directory on disk.
+fn is_connected_marker(doc: &DocumentMut) -> bool {
+    if is_passthrough_stub(doc) {
+        return false;
+    }
+    doc.get("_gate_connect")
+        .and_then(|i| i.as_table_like())
+        .is_some_and(|t| {
+            t.contains_key("previous_model_provider")
+                || t.contains_key("previous_model_provider_absent")
+        })
+}
+
 fn is_passthrough_stub(doc: &DocumentMut) -> bool {
     doc.get("_gate_connect")
         .and_then(|i| i.as_table_like())
@@ -832,6 +872,64 @@ model_provider = "openai"
         .parse()
         .unwrap();
         assert_eq!(active_profile_override(&doc, "config.toml"), None);
+    }
+
+    /// The marker gates auto-reapply, so it has to say yes exactly when the
+    /// config is a connected one we wrote.
+    ///
+    /// The stale-shape case is the one that matters: a base URL written by an
+    /// older build is drift `reconcile_enabled` should fix silently, and
+    /// without this the user is left re-running connect by hand.
+    #[test]
+    fn the_marker_tracks_connect_and_disconnect_not_the_provider_block() {
+        let managed =
+            |toml: &str| is_connected_marker(&toml.parse::<DocumentMut>().expect("valid TOML"));
+
+        // An empty config is nobody's.
+        assert!(!managed(""));
+
+        // A hand-written `gate` block is not ours until we adopt it. The block
+        // name alone proves nothing, which is why the marker keys are what get
+        // checked and not the block - `connect` adopts one under that name and
+        // `disconnect` deletes it.
+        assert!(!managed(
+            r#"model_provider = "gate"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+"#
+        ));
+
+        // Connected over a config that had no `model_provider`, and carrying a
+        // base URL from an older build: ours, so reapplied.
+        assert!(managed(
+            r#"model_provider = "gate"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+
+[_gate_connect]
+previous_model_provider_absent = true
+"#
+        ));
+
+        // The other connect key, from a config that did have one.
+        assert!(managed(
+            r#"[_gate_connect]
+previous_model_provider = "openai"
+"#
+        ));
+
+        // Disconnected: the stub is not something to reconnect behind the
+        // user's back, even though `disconnect` leaves the block in place.
+        assert!(!managed(
+            r#"[model_providers.gate]
+base_url = "https://api.openai.com/v1"
+
+[_gate_connect]
+passthrough_stub = true
+"#
+        ));
     }
 
     #[test]
