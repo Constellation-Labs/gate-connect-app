@@ -38,15 +38,18 @@ const WRITE_FAILED_DETAIL = "Configuration update failed";
 
 /** The grey suffix for a reason: the ticket's own name for it, verbatim.
  *
- * `configuration_changed` is absent on purpose - it maps to the design's own
- * "Config drifted" phrase, so repeating it as a suffix would print the same
- * fact twice. */
-const REASON_SUFFIX: Record<Exclude<VerdictReason, "configuration_changed">, string> = {
+ * Two of `VerdictReason`'s five are absent on purpose, because each maps to a
+ * coloured phrase of its own and repeating it as a suffix would print the same
+ * fact twice: `configuration_changed` is the design's "Config drifted", and
+ * `reopen_required` is "Reopen to finish". */
+const REASON_SUFFIX: Record<
+  Exclude<VerdictReason, "configuration_changed" | "reopen_required">,
+  string
+> = {
   // Deliberately not "Config drifted": the file Gate wrote is intact, and
   // sending someone to re-apply it would be sending them to fix the one thing
   // that is already right.
   configuration_overridden: "Configuration overridden",
-  reopen_required: "Reopen required",
   connection_problem: "Connection problem",
   access_problem: "Access problem",
   verification_failed: "Verification failed",
@@ -91,6 +94,10 @@ export function verdictStatus(
       return { kind: "not-routed", detail: "Off" };
     case "needs_attention":
       if (verdict.reason === "configuration_changed") return { kind: "drifted" };
+      // Its own phrase rather than an amber negative. The configuration landed;
+      // what has not happened is a process restart, and this is the one
+      // `needs_attention` reason where nothing has gone wrong at all.
+      if (verdict.reason === "reopen_required") return { kind: "reopen" };
       return {
         kind: "not-protected",
         detail: verdict.reason ? REASON_SUFFIX[verdict.reason] : undefined,
@@ -128,12 +135,18 @@ export function proxyMemberStatus(m: GroupMember): AppStatus {
  *
  * 1. The first member with a line that is not plain routing, in DRAW order. A
  *    section that says "Protected" while one of its surfaces is drifted is
- *    making the claim principle 6 forbids, so anything drifted or not-protected
- *    outranks the count below it.
+ *    making the claim principle 6 forbids, so anything drifted, not-protected
+ *    or mid-reopen outranks the count below it.
  * 2. Otherwise, routing if every member the switch governs is routing.
- * 3. Otherwise "Partly routed" if some are, which is the state an app switch
- *    makes reachable and a per-surface ledger never had to describe.
+ * 3. Otherwise "Partly protected - 2 of 3" if some are, which is the state an
+ *    app switch makes reachable and a per-surface ledger never had to describe.
  * 4. Otherwise off.
+ *
+ * A mid-reopen member joining rule 1 is what makes the common case legible: a
+ * group switch writes one config and enables two hosts, the hosts route at once
+ * and the tool waits on a restart, so the honest line is the one naming the
+ * restart rather than the count. It outranks rule 3 by sitting in rule 1 at all,
+ * which is also why this is not a severity ladder - see below.
  *
  * Rule 1 is draw order and not a severity ladder, which the doc here used to
  * claim: a member still being swept reads `not-protected / "Checking"`, so drawn
@@ -158,21 +171,41 @@ export function sectionStatus(
   // proxy member's is its own state. Taking the tool's from the map keeps the
   // section and the tool it contains from ever disagreeing. Named for what it
   // is rather than `appFor`, which is a lookup FUNCTION in both shells.
-  const lines = group.members.map((m) =>
-    m.kind === "config" ? statusBySlug.get(m.key)?.status : proxyMemberStatus(m),
+  const lines = group.members.map((m) => ({
+    member: m,
+    status: m.kind === "config" ? statusBySlug.get(m.key)?.status : proxyMemberStatus(m),
+  }));
+  const known = lines.filter(
+    (l): l is { member: GroupMember; status: AppStatus } => l.status !== undefined,
   );
-  const known = lines.filter((l): l is AppStatus => l !== undefined);
   if (known.length === 0) return null;
 
-  const exception = known.find((l) => l.kind === "drifted" || l.kind === "not-protected");
-  if (exception) return exception;
+  const exception = known.find(
+    (l) =>
+      l.status.kind === "drifted" ||
+      l.status.kind === "not-protected" ||
+      l.status.kind === "reopen",
+  );
+  if (exception) {
+    // A section's heading is the app and a reopen is one program inside it, so
+    // the suffix says which one to reopen - "Reopen to finish - Claude Code".
+    // Dropped on a single-member section, where it would print the row's own
+    // label a second time.
+    if (exception.status.kind === "reopen" && group.members.length > 1) {
+      return { kind: "reopen", detail: exception.member.name };
+    }
+    return exception.status;
+  }
 
   const governed = governingMembers(group.members);
   const routing = governed.filter((m) => m.routed).length;
   if (governed.length > 0 && routing === governed.length) return { kind: "protected" };
-  // Reachable only when no member's own line is already `not-protected` - the
-  // exception above returns those - so in practice this is the mixed state where
-  // every member is either routing or plainly off.
-  if (routing > 0) return { kind: "not-protected", detail: "Partly routed" };
+  // Reachable only when no member's own line is already an exception - the find
+  // above returns those - so in practice this is the mixed state where every
+  // member is either routing or plainly off. The count is the useful half: it
+  // tells the user how much of the app is covered, which "partly" alone does
+  // not, and it is a reading rather than an adverb.
+  if (routing > 0)
+    return { kind: "partly-protected", detail: `${routing} of ${governed.length}` };
   return { kind: "not-routed", detail: group.switchDesired > 0 ? "Blocked" : "Off" };
 }
