@@ -625,6 +625,240 @@ pub fn gate_auth_check_finished() {
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
 }
 
+/// Observer the desktop shell registers to hear that routed traffic left this
+/// machine for the gateway, and from which tools. It is handed the tools whose
+/// traffic is being reported in this batch - `None` for a sender
+/// [`client_tool`] could not name.
+///
+/// This is what the window's activity reads refresh on. They cannot poll: the
+/// activity endpoint sits in a throttle bucket keyed on the source address, so a
+/// timer in every window would spend a budget shared with everyone behind the
+/// same egress (see `useActivity`). The relay is the one component that knows
+/// for certain a new request exists, so a read it triggers is never wasted and
+/// an idle machine costs nothing.
+///
+/// Fed from [`inject_attribution`], which every gateway-bound request passes
+/// through on both paths - the MITM engine and the loopback relay - so neither
+/// needs a hook of its own. Not cfg-gated, like the auth observer above: on
+/// Linux the engine lives in the helper daemon, which registers no observer, so
+/// [`note_traffic`] is a no-op there and the window falls back to re-reading
+/// when it is focused again.
+static TRAFFIC_OBSERVER: std::sync::OnceLock<TrafficObserver> = std::sync::OnceLock::new();
+
+/// See [`TRAFFIC_OBSERVER`].
+type TrafficObserver = Box<dyn Fn(&[Option<&'static str>]) + Send + Sync>;
+
+/// One [`TrafficMark`] per tool, keyed as [`client_tool`] names them.
+type TrafficSeen = std::collections::BTreeMap<Option<&'static str>, TrafficMark>;
+
+/// How long a tool's traffic has to be quiet before it is reported. A turn is
+/// rarely one request, and the gateway's activity view lags ingestion by a
+/// moment, so reporting the first request would re-read numbers that do not
+/// yet include it. Reporting the *lull* after a burst reads once, late enough
+/// to see all of it.
+const TRAFFIC_QUIET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The most often one tool is reported, and the cadence while its traffic never
+/// goes quiet - a long agent run should still move the counters. Each report
+/// costs the window up to three throttled reads, so this is what bounds the
+/// spend: two reports a minute per active tool.
+const TRAFFIC_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the sweeper looks for a tool that has gone quiet. Cheap: it walks
+/// a map with one entry per tool that has sent anything this run.
+const TRAFFIC_SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the sweeper knows about one tool's traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrafficMark {
+    /// The newest request seen.
+    last_seen: std::time::Instant,
+    /// The oldest request not yet reported; `None` once everything seen has
+    /// been.
+    pending_since: Option<std::time::Instant>,
+    /// When this tool was last reported; `None` until it has been.
+    last_reported: Option<std::time::Instant>,
+}
+
+/// Per-tool marks. A `BTreeMap` because `HashMap::new` is not `const`, and the
+/// map holds a handful of entries.
+static TRAFFIC_SEEN: std::sync::Mutex<TrafficSeen> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Register the traffic observer and start the sweeper that feeds it. First
+/// registration wins; later calls are ignored (the shell registers exactly once
+/// at setup), and only the winning one starts a thread.
+///
+/// The thread starts here rather than on the first request seen, and that is
+/// a data-plane decision: `thread::spawn` panics when the OS refuses a thread,
+/// and a `Once` that panicked stays poisoned, so a spawn on the request path
+/// would have turned one refused thread into a panic on every gateway-bound
+/// request for the rest of the process. Here a refusal costs the refresh signal
+/// and nothing else; the window still re-reads on its focus edge. The thread
+/// itself is a 1s tick over a map with one entry per tool that has sent
+/// anything, so a shell that never routes (the Linux GUI, whose engine lives in
+/// the daemon) pays for a sleep and an empty walk.
+pub fn set_traffic_observer(observer: impl Fn(&[Option<&'static str>]) + Send + Sync + 'static) {
+    if TRAFFIC_OBSERVER.set(Box::new(observer)).is_err() {
+        return;
+    }
+    let sweep = std::thread::Builder::new()
+        .name("gate-traffic-sweeper".into())
+        .spawn(|| {
+            // Set above, before this thread existed; the `else` is unreachable
+            // and keeps the loop from asking again on every tick.
+            let Some(observer) = TRAFFIC_OBSERVER.get() else {
+                return;
+            };
+            loop {
+                std::thread::sleep(TRAFFIC_SWEEP_TICK);
+                let due = match TRAFFIC_SEEN.lock() {
+                    Ok(mut seen) => traffic_due(&mut seen, std::time::Instant::now()),
+                    // Poisoned by a panic elsewhere. Stop sweeping rather than
+                    // spin; the window still re-reads on its focus edge.
+                    Err(_) => return,
+                };
+                if due.is_empty() {
+                    continue;
+                }
+                if engine::debug_log() {
+                    eprintln!("[gate-proxy] traffic observed from {due:?}");
+                }
+                observer(&due);
+            }
+        });
+    if let Err(e) = sweep {
+        eprintln!("[gate-proxy] traffic sweeper could not start; activity reads will refresh on focus only: {e}");
+    }
+}
+
+/// Record that a gateway-bound request from `tool` is leaving now. Called by
+/// [`inject_attribution`] on every such request; a no-op unless a shell has
+/// registered to hear about it. One map update under the lock, no I/O.
+fn note_traffic(tool: Option<&'static str>) {
+    if TRAFFIC_OBSERVER.get().is_none() {
+        return;
+    }
+    if let Ok(mut seen) = TRAFFIC_SEEN.lock() {
+        mark_traffic(&mut seen, tool, std::time::Instant::now());
+    }
+}
+
+/// The recording step of [`note_traffic`]: `tool` sent a request at `now`.
+/// Separate so the tests drive the same step the request path does.
+fn mark_traffic(seen: &mut TrafficSeen, tool: Option<&'static str>, now: std::time::Instant) {
+    let mark = seen.entry(tool).or_insert(TrafficMark {
+        last_seen: now,
+        pending_since: None,
+        last_reported: None,
+    });
+    mark.last_seen = now;
+    mark.pending_since.get_or_insert(now);
+}
+
+/// Which tools are due a report at `now`, marking them reported.
+///
+/// A tool is due when it has unreported traffic, it has not been reported
+/// within [`TRAFFIC_REPORT_INTERVAL`], and either it has been quiet for
+/// [`TRAFFIC_QUIET`] or its unreported traffic is [`TRAFFIC_REPORT_INTERVAL`]
+/// old - the second so continuous traffic is reported on a cadence rather than
+/// never. Pure, so the timing is testable without a thread.
+fn traffic_due(seen: &mut TrafficSeen, now: std::time::Instant) -> Vec<Option<&'static str>> {
+    let mut due = Vec::new();
+    for (tool, mark) in seen.iter_mut() {
+        let Some(pending_since) = mark.pending_since else {
+            continue;
+        };
+        let spaced = mark
+            .last_reported
+            .is_none_or(|at| now.duration_since(at) >= TRAFFIC_REPORT_INTERVAL);
+        let quiet = now.duration_since(mark.last_seen) >= TRAFFIC_QUIET;
+        let overdue = now.duration_since(pending_since) >= TRAFFIC_REPORT_INTERVAL;
+        if spaced && (quiet || overdue) {
+            mark.pending_since = None;
+            mark.last_reported = Some(now);
+            due.push(*tool);
+        }
+    }
+    due
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::{mark_traffic, traffic_due, TrafficSeen, TRAFFIC_QUIET, TRAFFIC_REPORT_INTERVAL};
+    use std::time::{Duration, Instant};
+
+    const TOOL: Option<&str> = Some("claude-code");
+
+    /// A map with one tool whose requests landed at each of `at` (offsets from
+    /// `t0`), none reported yet. Recorded the way the request path records.
+    fn seen(t0: Instant, at: &[u64]) -> TrafficSeen {
+        let mut map = TrafficSeen::new();
+        for &secs in at {
+            mark_traffic(&mut map, TOOL, t0 + Duration::from_secs(secs));
+        }
+        map
+    }
+
+    #[test]
+    fn a_burst_is_reported_once_it_goes_quiet_and_then_not_again() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0, 1, 2]);
+        // Still inside the quiet window after the last request: nothing yet.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET / 2).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET),
+            vec![TOOL]
+        );
+        // Reported, and with nothing new there is nothing to say.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(600)).is_empty());
+    }
+
+    #[test]
+    fn continuous_traffic_is_reported_on_the_interval_rather_than_never() {
+        let t0 = Instant::now();
+        // A request every second, so it is never quiet.
+        let at: Vec<u64> = (0..=60).collect();
+        let mut map = seen(t0, &at);
+        let interval = TRAFFIC_REPORT_INTERVAL.as_secs();
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(interval - 1)).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(interval)),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn a_report_is_never_closer_than_the_interval_to_the_last_one() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        // A second burst straight after the report goes quiet well before the
+        // interval is up: it waits for the interval, then lands.
+        let again = t0 + TRAFFIC_QUIET + Duration::from_secs(1);
+        mark_traffic(&mut map, TOOL, again);
+        assert!(traffic_due(&mut map, again + TRAFFIC_QUIET).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + TRAFFIC_QUIET + TRAFFIC_REPORT_INTERVAL),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn tools_are_reported_independently() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        let late = t0 + Duration::from_secs(3);
+        mark_traffic(&mut map, Some("codex"), late);
+        // Only the first has been quiet long enough.
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        assert_eq!(
+            traffic_due(&mut map, late + TRAFFIC_QUIET),
+            vec![Some("codex")]
+        );
+    }
+}
+
 /// The last `cf_clearance` a solve captured, kept for the life of the
 /// process so an engine restart does not throw it away.
 ///
@@ -1231,6 +1465,9 @@ fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
     let tool = client_tool(headers, domain);
+    // Every gateway-bound request comes through here, on both paths, which is
+    // what makes this the one place the window can be told traffic happened.
+    note_traffic(tool);
     headers.remove(GATE_CLIENT_HEADER);
     if let Some(slug) = tool {
         headers.insert(

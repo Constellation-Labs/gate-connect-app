@@ -4690,6 +4690,22 @@ pub fn run() {
                 });
             });
 
+            // Routed traffic left for the gateway, from these tools. The
+            // window's activity reads refresh on this and on nothing else
+            // periodic: the endpoint is throttled per source address, so a
+            // poll would spend a budget shared with everyone behind the same
+            // egress, while this fires only when a read is certain to find
+            // something new. Already coalesced in the core - at most one
+            // report per tool every 30s, and only once its burst has gone
+            // quiet - so the emit is as-is. Payload: the tools' slugs, `null`
+            // for a sender the relay could not name. Not gated behind a
+            // window, like `tools-changed` below; on Linux it never fires,
+            // for the reason the auth observer above never does.
+            let traffic_handle = app.handle().clone();
+            gate_connect_core::proxy::set_traffic_observer(move |tools| {
+                let _ = traffic_handle.emit("traffic-observed", tools);
+            });
+
             // Detection is the one reading a window cannot be told about. A tool
             // installed while the app is open happens entirely outside it, so
             // both shells used to poll `list_tools` every five seconds to

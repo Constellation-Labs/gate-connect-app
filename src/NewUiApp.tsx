@@ -611,6 +611,74 @@ export function NewUiApp() {
     currentInstallId,
     credential,
   );
+
+  /** When the activity surfaces were last re-read on our own initiative, for
+   *  the focus edge's guard below. Starts at mount, which is when the hooks
+   *  above do their first read. */
+  const activityReadAt = useRef(Date.now());
+  /**
+   * Re-read the activity surfaces because the relay saw traffic.
+   *
+   * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
+   * better information. The Overview's org-wide read refreshes on any of it;
+   * the open pane's per-tool reads only when its tool is among the senders, so
+   * Codex traffic does not re-read the Claude pane. The feed is left alone
+   * once the user has paged into it: `reload` puts page one back, and taking
+   * pages away from someone reading them is worse than a stale first page.
+   * Each hook's `reload` is a no-op while that hook is disabled.
+   */
+  const refreshActivity = (tools: (string | null)[] | null) => {
+    activityReadAt.current = Date.now();
+    activity.reload();
+    if (openTool !== null && (tools === null || tools.includes(openTool))) {
+      toolActivity.reload();
+      if (!toolEvents.paged) toolEvents.reload();
+    }
+  };
+  // Latest-callback ref so the listener registers once: the hooks hand back a
+  // fresh `reload` closure every render, so there is nothing stable to memoise
+  // on, and re-subscribing each render would race Tauri's async `off()` against
+  // the next `listen()`.
+  const refreshActivityRef = useRef(refreshActivity);
+  refreshActivityRef.current = refreshActivity;
+  /** Senders reported while the window was hidden, not yet read for. Null when
+   *  nothing was missed. The focus edge drains it. */
+  const missedWhileHidden = useRef<(string | null)[] | null>(null);
+
+  // The relay saw routed traffic leave for the gateway (`proxy::note_traffic`):
+  // the one signal that says these reads are stale for certain. They never
+  // poll - `useActivity` says why - so this is how the pane keeps up with a
+  // terminal beside it. Already coalesced in the core to one report per tool
+  // per 30s, after its burst has gone quiet, so nothing is debounced here.
+  // A hidden window does not read - a minimised one refreshing every 30s would
+  // be spending the shared budget on a screen nobody is looking at - but it
+  // remembers who sent, so the focus edge below reads for exactly them on the
+  // way back. Remembering matters: on macOS a window fully behind a terminal
+  // counts as hidden, and that terminal is where the traffic comes from.
+  useEffect(() => {
+    const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
+      if (document.hidden) {
+        missedWhileHidden.current = [...(missedWhileHidden.current ?? []), ...e.payload];
+        return;
+      }
+      refreshActivityRef.current(e.payload);
+    });
+    // Becoming visible is not the same edge as being focused: a window
+    // uncovered by moving the terminal aside is looked at without being
+    // clicked, and the focus edge never fires. Drain here too; whichever of the
+    // two runs first takes the list and the other finds nothing.
+    const onVisible = () => {
+      const missed = missedWhileHidden.current;
+      if (document.hidden || !missed) return;
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
   // A write failure belongs to the pane it happened on. Without this, refusing a
   // change on Codex would keep saying so over Claude Code's pane, blaming the
   // wrong app for a refusal that had nothing to do with it.
@@ -1010,6 +1078,19 @@ export function NewUiApp() {
     // condition for the reason the interval above is - the sweep costs two
     // network probes, and there is nothing to learn from it otherwise.
     if (reopenWaiting) void refreshVerdicts();
+    // The same edge for the activity reads. A report that arrived while the
+    // window was hidden is read for now, whatever the age: it is a certain
+    // signal that was only deferred, not a guess. Otherwise this covers what
+    // the relay's signal cannot reach - Linux, where the engine runs in the
+    // helper daemon and the signal never reaches this process - and is guarded
+    // by age so alt-tabbing back and forth is not a read each time.
+    const missed = missedWhileHidden.current;
+    if (missed) {
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    } else if (Date.now() - activityReadAt.current >= ACTIVITY_REOPEN_MIN_MS) {
+      refreshActivityRef.current(null);
+    }
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
@@ -3765,6 +3846,10 @@ export function NewUiApp() {
     </AppShell>
   );
 }
+
+/** How old the activity reads have to be before the window being focused again
+ *  re-reads them. The same spacing the relay's traffic reports keep. */
+const ACTIVITY_REOPEN_MIN_MS = 30_000;
 
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
