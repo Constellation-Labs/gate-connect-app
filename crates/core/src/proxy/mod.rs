@@ -4289,7 +4289,9 @@ mod tests {
                 hyper::header::USER_AGENT,
                 HeaderValue::from_str(ua).unwrap(),
             );
-            client_tool(&h, None)
+            // No established tool: this table is about the fallback guess, which
+            // is the only thing OpenClaw and anything on the system proxy have.
+            client_tool(&h, None, None)
         };
 
         // (user-agent, what this side stamps, what the gateway registry makes
@@ -4654,17 +4656,24 @@ mod tests {
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
-    /// The route outranks the `User-Agent`, and the header the caller sent
-    /// outranks neither.
+    /// What routing established outranks the `User-Agent`, and the header the
+    /// caller sent outranks neither.
     ///
-    /// The three-way distinction is the point. A base URL carrying a tool marker
-    /// is something *Gate Connect wrote*, from inside the integration that knows
-    /// which tool it was configuring, so it is better evidence than a substring
-    /// of a string the tool picks for itself. An `x-gate-client` the caller set
-    /// is not evidence at all and stays overwritten either way - otherwise any
-    /// local process could file its spend under another tool's name.
+    /// The three-way distinction is the point, and the middle rank is one thing
+    /// reached two ways: a relay base URL carrying a tool marker, or a CONNECT
+    /// carrying a route selector. Both are values *Gate Connect wrote* - the
+    /// first from inside the integration that knows which tool it is
+    /// configuring, the second into a proxy URL only that tool reads - so both
+    /// are better evidence than a substring of a string the tool picks for
+    /// itself. This test does not care which transport supplied it, because
+    /// `client_tool` does not either; that is what makes them one rule rather
+    /// than two.
+    ///
+    /// An `x-gate-client` the caller set is not evidence at all and stays
+    /// overwritten either way - otherwise any local process could file its spend
+    /// under another tool's name.
     #[test]
-    fn a_routed_tool_outranks_the_user_agent_but_a_claimed_header_outranks_nothing() {
+    fn what_routing_established_outranks_the_user_agent_and_a_claimed_header_outranks_nothing() {
         let attributed = |ua: Option<&str>, routed: Option<&'static str>| {
             let mut h = HeaderMap::new();
             if let Some(ua) = ua {
@@ -4685,15 +4694,22 @@ mod tests {
                 .map(str::to_string)
         };
 
-        // The marker is the whole reason this change exists: a User-Agent that
-        // no longer names the tool - a runtime banner in front of the token is
-        // enough - still attributes correctly when the route named it.
+        // The relay marker's case, and the whole reason it exists: a User-Agent
+        // that no longer names the tool - a runtime banner in front of the token
+        // is enough - still attributes correctly when the route named it.
         assert_eq!(
             attributed(Some("Bun/1.2.3 opencode/0.4.2"), Some("opencode")),
             Some("opencode".to_string())
         );
         // And with no User-Agent at all, which is where the guess has nothing.
         assert_eq!(attributed(None, Some("codex")), Some("codex".to_string()));
+        // The engine selector's case, which is Hermes: Python's HTTP client
+        // names itself and never Hermes, so the guess cannot succeed here at
+        // all and the selector is the only thing that names the tool.
+        assert_eq!(
+            attributed(Some("python-httpx/0.27"), Some("hermes")),
+            Some("hermes".to_string())
+        );
 
         // No marker: the guess still runs, so nothing that works today stops.
         assert_eq!(
