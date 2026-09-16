@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
+import { providerMarkFor } from "./ProviderMark";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
@@ -49,8 +50,6 @@ export interface GateModel {
    * belongs to the first one's.
    */
   ids: string[];
-  /** Vendor mark, 16px. Drawn only for a set of one. */
-  logo?: ReactNode;
 }
 
 
@@ -347,20 +346,20 @@ function AppStatusLine({
 /**
  * The upstream's mark beside the model (Figma 272:3282).
  *
- * A monogram, not a brand asset: this repo carries no provider logos - the sidebar
- * falls back to a letter for the same reason - and drawing someone else's mark
- * badly from memory is worse than not drawing it. Swap this for the real SVGs when
- * they land; the shape and size are already what the design asks for.
+ * The real brand mark now that `ProviderMark` carries them; this used to be a
+ * one-letter monogram because the repo held no provider logos. Unmapped vendors
+ * fall back to the cube, which is the `Icon / Boxes` the frames draw in the same
+ * slot - a letter tile read as a different kind of thing entirely.
  *
- * Renders nothing when the provider is unknown, rather than a question mark: the
- * model name beside it already carries the row, and an empty slot keeps the column
- * aligned.
+ * Renders an empty slot when the provider is unknown, rather than a question
+ * mark: the model name beside it already carries the row, and the spacer keeps
+ * the column aligned.
  *
  * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
  * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
- * element is reachable by mouse and by nothing else, which for a one-letter
- * monogram means the provider is the one thing on the row a screen reader could
- * not get at. The tooltip stays for pointer users.
+ * element is reachable by mouse and by nothing else, which would make the
+ * provider the one thing on the row a screen reader could not get at. The
+ * tooltip stays for pointer users.
  */
 function VendorMark({ provider }: { provider: string | null }) {
   if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
@@ -369,9 +368,9 @@ function VendorMark({ provider }: { provider: string | null }) {
       <span
         aria-hidden
         title={provider}
-        className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+        className="flex size-4 shrink-0 items-center justify-center text-base-muted-foreground"
       >
-        {provider.charAt(0)}
+        {providerMarkFor(provider) ?? <Icon name="cube" size={16} />}
       </span>
       <span className="sr-only">{provider}</span>
     </>
@@ -537,7 +536,7 @@ function ModelSelection({
                 // No mark for a set: see `GateModel.ids`.
                 icon={
                   gateModel.ids.length === 1
-                    ? (gateModel.logo ?? <Icon name="cube" size={16} />)
+                    ? (providerMarkFor(gateModel.vendor) ?? <Icon name="cube" size={16} />)
                     : undefined
                 }
                 actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
@@ -563,38 +562,46 @@ function ModelSelection({
               </InfoRow>
             )}
           </div>
+
+          {/* Only while Gate is the source, for the same reason as the row
+            * above. A balance is what the Gate branch spends: under App default
+            * this app sends Gate nothing to bill, so naming the balance here
+            * describes a relationship it is not in, and "Add credits" /
+            * "Manage billing" are actions on an account it is not using. The
+            * card was drawing all three unconditionally, directly beneath the
+            * radio that had just said Gate is not serving this app. */}
+          <div className="mt-2 flex flex-col gap-2">
+            <InfoRow
+              icon={<Icon name="creditCard" size={20} />}
+              actions={[
+                // AG-592 asks for Manage billing "when available to the account".
+                // Availability is answered by the gateway naming a destination: no
+                // URL, no button. A disabled one would be a control the user has to
+                // click to learn is not for them.
+                ...(onManageBilling
+                  ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
+                  : []),
+                { label: "Add credits", onClick: onAddCredits, external: true },
+              ]}
+            >
+              {/* AG-592 asks the tool detail to show the plan alongside the
+               *  balance. Drawn only when the gateway named one: a plan is the
+               *  thing a reader would act on, by upgrading, and naming the wrong
+               *  one sends them to change something they may already have. */}
+              {plan && (
+                <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                  {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
+                </p>
+              )}
+              <p className="text-sm leading-5 text-base-foreground">
+                <span className="text-neutral-600">Gate credits: </span>
+                {credits ?? "N/A"}
+              </p>
+            </InfoRow>
+          </div>
         </>
       )}
 
-      <div className="mt-2 flex flex-col gap-2">
-        <InfoRow
-          icon={<Icon name="creditCard" size={20} />}
-          actions={[
-            // AG-592 asks for Manage billing "when available to the account".
-            // Availability is answered by the gateway naming a destination: no
-            // URL, no button. A disabled one would be a control the user has to
-            // click to learn is not for them.
-            ...(onManageBilling
-              ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
-              : []),
-            { label: "Add credits", onClick: onAddCredits, external: true },
-          ]}
-        >
-          {/* AG-592 asks the tool detail to show the plan alongside the
-           *  balance. Drawn only when the gateway named one: a plan is the
-           *  thing a reader would act on, by upgrading, and naming the wrong
-           *  one sends them to change something they may already have. */}
-          {plan && (
-            <p className="text-base-2xs leading-4 text-base-muted-foreground">
-              {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
-            </p>
-          )}
-          <p className="text-sm leading-5 text-base-foreground">
-            <span className="text-neutral-600">Gate credits: </span>
-            {credits ?? "N/A"}
-          </p>
-        </InfoRow>
-      </div>
     </Card>
   );
 }

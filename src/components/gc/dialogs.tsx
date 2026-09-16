@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import { providerMarkFor } from "./ProviderMark";
 import { ErrorDetails } from "./banners";
 import { Skeleton } from "./base";
 import {
@@ -896,8 +897,6 @@ export interface GateModelOption {
   /** Who makes the model, for the glyph, the provider filter and grouping in the
    *  reader's head. */
   vendor: string;
-  /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
-  logo?: ReactNode;
   /** Capabilities the gateway advertises; `modelCompatibility` reads them. */
   tags: string[];
 }
@@ -1117,7 +1116,7 @@ export function ModelPickerDialog({
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-          {model.logo ?? <Icon name="cube" size={16} />}
+          {providerMarkFor(model.vendor) ?? <Icon name="cube" size={16} />}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
           {model.id}
@@ -1427,7 +1426,6 @@ export function UseGateModelDialog({
   modelIds,
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
-  vendorLogo,
   onKeepAppDefault,
   onUseGateCredits,
 }: {
@@ -1447,7 +1445,6 @@ export function UseGateModelDialog({
    */
   modelIds: string[];
   credits: string;
-  vendorLogo?: ReactNode;
   onKeepAppDefault: () => void;
   onUseGateCredits: () => void;
 }) {
@@ -1467,7 +1464,9 @@ export function UseGateModelDialog({
     >
       {single ? (
         <ModalSubject
-          icon={vendorLogo ?? <Icon name="cube" size={16} />}
+          // 20px, not the 16 the other marks take: 130:48325 draws this one
+          // larger inside its wrapper.
+          icon={providerMarkFor(vendor, 20) ?? <Icon name="cube" size={20} />}
           title={vendor}
           description={modelIds[0]}
           variant="identity"

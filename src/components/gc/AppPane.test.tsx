@@ -502,8 +502,56 @@ describe("AppPane model selection", () => {
 
   it("reads N/A for a credit balance nothing reports", () => {
     // Not a dash: a dash reads as a value. No endpoint returns a Gate balance.
-    render(pane({ credits: null }));
+    // On the Gate branch, which is the only one that draws a balance at all.
+    render(pane({ modelChoice: "gate", gateModel: model, credits: null }));
     expect(within(card("Model selection")).getByText("N/A")).toBeTruthy();
+  });
+
+  it("names the balance only while Gate is the source", () => {
+    // Under App default this app sends Gate nothing to bill, so a balance here
+    // describes a relationship it is not in - and it sat directly beneath the
+    // radio that had just said Gate is not serving this app.
+    render(pane({ modelChoice: "app", gateModel: model, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).queryByText(/Gate credits/)).toBeNull();
+    expect(within(card_).queryByText("$10.25 available")).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
+  });
+
+  it("withholds the balance from a failed read rather than guessing the branch", () => {
+    // `null` is not App default and not Gate - it is no reading. Principle 2:
+    // nothing here may be drawn from a reading that never landed.
+    render(pane({ modelChoice: null, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).queryByText(/Gate credits/)).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
+  });
+
+  it("draws the balance once Gate is the source", () => {
+    render(pane({ modelChoice: "gate", gateModel: model, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(/Gate credits/)).toBeTruthy();
+    expect(within(card_).getByRole("button", { name: "Add credits" })).toBeTruthy();
+  });
+
+  it("marks the current model with its provider's brand, not a letter", () => {
+    // The row drew a cube for every vendor until `ProviderMark` landed, and a
+    // grey monogram before that.
+    const { container } = render(pane({ modelChoice: "gate", gateModel: model }));
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy();
+  });
+
+  it("falls back to the cube for a vendor with no published mark", () => {
+    // sao10k and thirteen others publish none; a cube is the `Icon / Boxes` the
+    // frames draw in the same slot.
+    const { container } = render(
+      pane({ modelChoice: "gate", gateModel: { vendor: "sao10k", ids: ["sao10k/l3-euryale"] } }),
+    );
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
+    expect(within(card("Model selection")).getByText("sao10k")).toBeTruthy();
   });
 
   it("chooses through the callback rather than deciding locally", async () => {
