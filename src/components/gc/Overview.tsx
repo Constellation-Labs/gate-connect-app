@@ -115,8 +115,8 @@ export function Overview({
    *  traffic instead of reporting it as empty. `ActivityView.missing` is where
    *  this comes from and why the two are separate facts. */
   unavailable?: { chart?: boolean; policies?: boolean; savings?: boolean };
-  /** Slot above the stat tiles for notices about the reading itself. The
-   *  routing `AlertBanner` used to sit here too; it now belongs to the app pane. */
+  /** Slot for an `AlertBanner`, which the design places above the stat tiles.
+   *  Whole-machine routing causes only; a tool's own card is on its pane. */
   alert?: ReactNode;
   period?: string;
   /** Slot for the installation picker, beside the period label: both say what
