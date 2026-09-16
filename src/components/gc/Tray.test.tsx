@@ -203,14 +203,13 @@ describe("the master status card", () => {
  * inline comment three lines below it.
  */
 describe("the security card", () => {
-  it("scopes an empty count rather than claiming none ever", () => {
+  it("draws nothing at all when there is nothing to report", () => {
+    // The card is an undrawn addition (AG-578) and its zero state was the least
+    // defensible part of it: a row reading "No recent security events" is
+    // furniture on a 400px surface, and its absence says the same thing.
     renderTray({ security: { state: "live", count: 0, onOpen: noop } });
 
-    expect(screen.getByText("No recent security events")).toBeTruthy();
-    // Not an absolute, and not a run-length claim either: the buffer is capped
-    // and is emptied on a credential change, so "since Gate Connect started"
-    // would be its own overclaim.
-    expect(screen.queryByText(/Since Gate Connect started/)).toBeNull();
+    expect(screen.queryByText(/recent security event/)).toBeNull();
   });
 
   it("scopes a non-empty count the same way", () => {
@@ -229,6 +228,8 @@ describe("the security card", () => {
   it("says the feed is unavailable rather than reporting none while offline", () => {
     renderTray({ security: { state: "offline", count: 0, onOpen: noop } });
 
+    // Still drawn, unlike the quiet case above: this one is not a quiet machine
+    // but a broken reading, which is the difference principle 6 is about.
     expect(screen.getByText("Security events unavailable")).toBeTruthy();
     expect(screen.queryByText(/No recent security events/)).toBeNull();
   });

@@ -225,7 +225,16 @@ export function Tray({
           {/* Below the recovery card: an operation that did not finish outranks
             * one that finished and is waiting on the user. */}
           {reopen && <ReopenCard reopen={reopen} />}
-          {security && <SecurityCard security={security} />}
+          {/* Nothing to report draws nothing. The card is an undrawn addition
+            * (AG-578; no frame on the Tray page carries it), and its zero state
+            * was the least defensible part of it - a row that says "No recent
+            * security events" is furniture on a 400px surface, and the reader
+            * learns the same thing from its absence. An OFFLINE feed still
+            * draws, because that one is not a quiet machine but a broken
+            * reading, and principle 6 is about exactly that difference. */}
+          {security && (security.state === "offline" || security.count > 0) && (
+            <SecurityCard security={security} />
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
             {groups.map((group) => (
