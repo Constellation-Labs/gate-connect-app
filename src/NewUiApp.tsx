@@ -95,7 +95,6 @@ import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
-import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
 import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
@@ -422,15 +421,6 @@ export function NewUiApp() {
   >(null);
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
-  // Which installation the Overview's *filter* covers; `null` is the whole org,
-  // and stays the default because traffic sent before attribution existed has no
-  // installation at all. Selecting one refetches - the gateway narrows every
-  // section server-side, so there is nothing to slice here.
-  //
-  // Named for the filter rather than the id on purpose: `installId` above is this
-  // machine's own identity, which is a different fact. The two were briefly the
-  // same name and the compiler caught it.
-  const [installFilter, setInstallFilter] = useState<string | null>(null);
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
   // can switch org without the window remounting.
@@ -485,17 +475,22 @@ export function NewUiApp() {
   // there is nothing to authenticate with, so a fetch could only fail, and the
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
-  const activity = useActivity(canRead, installFilter, credential);
+  // Org-wide, always. The Overview carried an installation filter (AG-572 AC 1,
+  // "shows ... selected installation") that no frame draws - the drawn header
+  // `116:26487` has exactly two children, "Overview" and "Last 24 hours" - so it
+  // came out on 2026-09-16. `null` was already its default, because traffic sent
+  // before attribution existed has no installation at all and scoping by default
+  // would quietly drop it out of totals the user could already see.
+  const activity = useActivity(canRead, null, credential);
   /** The 24-hour read has not answered yet, either way. Drives the Overview's
    *  skeletons, and named here because the tray's jump to the security section
    *  needs the same fact: the anchor's position is not final until the cards
    *  above it stop being placeholders. */
   const activityPending = activity.view === null && activity.failure === null;
-  const {
-    installations,
-    current: currentInstallId,
-    resolved: installsResolved,
-  } = useInstallations(canRead, credential);
+  const { current: currentInstallId, resolved: installsResolved } = useInstallations(
+    canRead,
+    credential,
+  );
   /**
    * The one config tool in the open section, if it has one.
    *
@@ -693,12 +688,6 @@ export function NewUiApp() {
       })),
     [toolEvents.view, dash, openLink],
   );
-
-  // A machine id belongs to the org it sent traffic to, so a filter selected
-  // before an org switch cannot be honoured after it.
-  useEffect(() => {
-    setInstallFilter(null);
-  }, [credential]);
 
   const loadLaunchAtLogin = useCallback(async () => {
     const launch = await launchAtLoginStatus().catch(() => null);
@@ -3695,26 +3684,6 @@ export function NewUiApp() {
           // there is one, it names its own gaps.
           unavailable={activity.view?.missing ?? ALL_MISSING}
           period={activity.view?.period ?? "Last 24 hours"}
-          scope={
-            <InstallationPicker
-              installations={installations}
-              // What the user asked for, not what the gateway echoed. This is a
-              // control, and driving a control from observed state is the bug
-              // CLAUDE.md's second principle documents: selecting an installation
-              // clears the view, so the echo was `null` for the whole round trip
-              // and the picker snapped back to "All installations" - contradicting
-              // the click that caused it, for three seconds under
-              // `gcSlowActivity(3000)`.
-              //
-              // The old comment argued the label had to agree with numbers that
-              // were "still the previous scope's". They are not: the effect below
-              // clears them, so it agreed with nothing. The figures are skeletons
-              // while this is pending, which is what says the numbers are not the
-              // new scope's yet.
-              value={installFilter}
-              onChange={setInstallFilter}
-            />
-          }
           alert={
             <>
               {notice && (

@@ -203,7 +203,7 @@ shipped dialog is materially taller than the drawn 418px.
 
 | state | code | reachable |
 | --- | --- | --- |
-| **`InstallationPicker`** in the header's `scope` slot | `Overview.tsx:102-104`, filled at `NewUiApp.tsx:2444` | **always.** The drawn header `116:26487` has exactly two children - `116:26488` "Overview" and `116:26489` "Last 24 hours". Grepping the whole 595KB metadata dump for `install`, `machine` or `picker` returns **zero** hits, so this control is drawn nowhere on the canvas. It is the largest undrawn element on the pane. |
+| ~~**`InstallationPicker`** in the header's `scope` slot~~ | **REMOVED 2026-09-16** | The drawn header `116:26487` has exactly two children - `116:26488` "Overview" and `116:26489` "Last 24 hours". Grepping the whole 595KB metadata dump for `install`, `machine` or `picker` returned **zero** hits, so the control was drawn nowhere on the canvas, and it was the largest undrawn element on the pane. Product's call: not needed until it is asked for. The Overview now reads org-wide always, which was already the picker's default. `useInstallations` stays - `current` and `resolved` are what scope the App pane and the tray to this machine. AG-572 AC 1 ("Overview shows ... selected installation") is knowingly unmet. |
 | `ActivityGaps` in the alert slot | `NewUiApp.tsx:2503-2510` | on any partial or failed activity read |
 | "Policies couldn't be read" / "No policies configured" | `Overview.tsx:178-180` | unreadable section / empty org |
 | "Token savings couldn't be read" / "No savings configured" | `Overview.tsx:260-262` | same |

@@ -93,7 +93,6 @@ export function Overview({
   security,
   alert,
   period = "Last 24 hours",
-  scope,
   pending,
   unavailable,
 }: {
@@ -118,9 +117,6 @@ export function Overview({
   /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
   alert?: ReactNode;
   period?: string;
-  /** Slot for the installation picker, beside the period label: both say what
-   *  the numbers below cover, so they belong on the same line. */
-  scope?: ReactNode;
 }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
@@ -134,7 +130,6 @@ export function Overview({
           Overview
         </h1>
         <div className="flex items-center gap-3">
-          {scope}
           {/* `copy/14`, not `copy/12`: the period label is a 20px-tall text
             * node in both Overview generations (`864:3477`, `121:34782`'s
             * parent), which is 14px type. */}
