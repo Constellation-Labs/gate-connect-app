@@ -505,7 +505,9 @@ test.describe("new UI model card credits", () => {
       "true",
     );
     await expect(app.page.getByText("$10.25 available")).toHaveCount(0);
-    await expect(app.page.getByText(/Gate credits/)).toHaveCount(0);
+    await expect(app.page.getByText(/Gate credits:/)).toHaveCount(0);
+    // And the App-default branch says what it does instead (408:25491).
+    await expect(app.page.getByText(/Using .* model/)).toBeVisible();
     await expect(app.page.getByRole("button", { name: "Add credits" })).toHaveCount(0);
 
     // And it comes back with the branch that spends it.

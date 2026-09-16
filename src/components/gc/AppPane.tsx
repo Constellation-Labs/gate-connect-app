@@ -81,7 +81,6 @@ export function AppPane({
   onLoadMore,
   unavailable,
   unattributed,
-  partialReading,
   alert,
 }: {
   name: string;
@@ -201,26 +200,6 @@ export function AppPane({
    *  exist directly above two cards claiming it could not be read - a fault
    *  report over a permanent, intended shape of the data. */
   unattributed?: boolean;
-  /**
-   *  The figures cover only part of what this row's switch routes, and this
-   *  names the part.
-   *
-   *  A row is an app now, and an app's switch spans surfaces the gateway
-   *  attributes differently: `client_tool` is derived from the caller's own
-   *  User-Agent, so Claude Code is attributed and the desktop app - which sends
-   *  no User-Agent the matcher places - is not. The counters below are one
-   *  surface's, under a heading naming all of them.
-   *
-   *  Distinct from `unattributed`, which says there is no reading at all and
-   *  never will be. This says there IS one and it is narrower than the heading
-   *  implies, which is the more dangerous of the two: the number is plausible,
-   *  so nothing prompts the reader to doubt it. Principle 6 is about exactly
-   *  that - a figure is a measurement, or the card says what it measured.
-   *
-   *  Absent where the figures cover the whole row. Goes away per surface as
-   *  attribution improves rather than all at once.
-   */
-  partialReading?: { covers: string };
   /** Slot for an `AlertBanner` when this app has drifted. */
   alert?: ReactNode;
 }) {
@@ -269,15 +248,6 @@ export function AppPane({
 
       {alert}
 
-      {/* Above the tiles, not below them: a caveat under a number is read after
-          the number has already been believed. */}
-      {partialReading && !unattributed && (
-        <p className="text-base-xs leading-4 text-base-muted-foreground">
-          These counts cover {partialReading.covers}. Gate routes more than that
-          for this app, and the rest is not attributed to an app, so it is not
-          counted here.
-        </p>
-      )}
       <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
       <MessagesChart
         buckets={buckets}
@@ -289,6 +259,7 @@ export function AppPane({
       {onChooseModel && onChangeModel && onAddCredits && (
         <ModelSelection
           appName={name}
+          appLogo={logo}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
@@ -405,6 +376,7 @@ function VendorMark({ provider }: { provider: string | null }) {
  */
 function ModelSelection({
   appName,
+  appLogo,
   choice,
   pending,
   busy,
@@ -418,6 +390,10 @@ function ModelSelection({
   onManageBilling,
 }: {
   appName: string;
+  /** The app's own brand mark, for the App-default row. The section's mark, the
+   *  same one the pane header wears - this row is about the app, not about a
+   *  provider, so `ProviderMark` is the wrong family here. */
+  appLogo?: ReactNode;
   choice: ModelChoice | null;
   pending?: boolean;
   busy?: boolean;
@@ -511,6 +487,32 @@ function ModelSelection({
           <Icon name="triangleAlert" size={16} className="mt-0.5 shrink-0" />
           <span>{attention}</span>
         </p>
+      )}
+
+      {/* The App-default branch's own row (`408:25491`), below the divider the
+        * frame draws at `408:25490`. The card had nothing here at all: choosing
+        * App default left the radios and then the credits row, so the branch
+        * that is actually serving the user said less about itself than the one
+        * that was not. It is the same slot the Gate branch fills, and it
+        * answers the same question - what is serving this app, and what does it
+        * cost. Nothing, is the answer, and the frame says so out loud. */}
+      {choice === "app" && (
+        <>
+          <div className="mt-4 border-t border-base-border" />
+          <div className="mt-4">
+            <InfoRow icon={appLogo ?? <Icon name="cube" size={20} />}>
+              {/* `heading/14`, the one named heading step with no tracking at
+                * all, so it overrides `text-sm`'s own -0.14px. */}
+              <p className="text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
+                Using {appName} model
+              </p>
+              <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+                Gate protects requests, then leaves model choice to {appName}. No
+                Gate credits used.
+              </p>
+            </InfoRow>
+          </div>
+        </>
       )}
 
       {/* Only while Gate is the source. Under App default there is no current

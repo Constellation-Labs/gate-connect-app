@@ -81,33 +81,6 @@ describe("AppPane header", () => {
   });
 });
 
-describe("AppPane partial reading", () => {
-  it("says which surface the counters measured, because the heading names more", () => {
-    // A row is an app, and its switch spans surfaces the gateway attributes
-    // differently. The counters are the config tool's; the desktop app sends no
-    // User-Agent `client_tool` places, so its traffic is in no per-tool read.
-    // A plausible number under a heading naming the whole app is the failure
-    // principle 6 rules out, and it is worse than an absent one.
-    render(pane({ name: "Claude", partialReading: { covers: "Claude Code" } }));
-    const note = screen.getByText(/These counts cover Claude Code/);
-    expect(note.textContent).toContain("not attributed to an app");
-  });
-
-  it("says nothing when the figures cover the whole row", () => {
-    render(pane({ name: "Claude" }));
-    expect(screen.queryByText(/These counts cover/)).toBeNull();
-  });
-
-  it("yields to the row that has no reading at all", () => {
-    // `unattributed` already explains that per-app activity does not exist for
-    // this row. Drawing both would caveat a reading that is not there.
-    render(
-      pane({ name: "OpenRouter", unattributed: true, partialReading: { covers: "Codex" } }),
-    );
-    expect(screen.queryByText(/These counts cover/)).toBeNull();
-  });
-});
-
 describe("AppPane model card", () => {
   it("draws the model card when the app has one model family", () => {
     render(pane());
@@ -514,9 +487,35 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "app", gateModel: model, credits: "$10.25 available" }));
     const card_ = card("Model selection");
 
-    expect(within(card_).queryByText(/Gate credits/)).toBeNull();
+    // The balance line specifically, with its colon: the App-default row below
+    // says "No Gate credits used", which is the opposite claim and must stay.
+    expect(within(card_).queryByText(/Gate credits:/)).toBeNull();
     expect(within(card_).queryByText("$10.25 available")).toBeNull();
     expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
+  });
+
+  it("says what App default means, which the card used to leave blank", () => {
+    // `408:25491`. The branch that is actually serving the user said less about
+    // itself than the one that was not: choosing App default left the radios and
+    // then a credits row about an account it is not using.
+    render(pane({ name: "Claude Desktop", modelChoice: "app" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText("Using Claude Desktop model")).toBeTruthy();
+    expect(
+      within(card_).getByText(/leaves model choice to Claude Desktop/),
+    ).toBeTruthy();
+  });
+
+  it("keeps that row off the Gate branch, where it would be false", () => {
+    render(pane({ modelChoice: "gate", gateModel: model }));
+    expect(within(card("Model selection")).queryByText(/^Using /)).toBeNull();
+  });
+
+  it("draws no App-default row from a failed read", () => {
+    // Principle 2: `null` is not App default, so nothing may claim it is.
+    render(pane({ modelChoice: null }));
+    expect(within(card("Model selection")).queryByText(/^Using /)).toBeNull();
   });
 
   it("withholds the balance from a failed read rather than guessing the branch", () => {
@@ -525,7 +524,7 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: null, credits: "$10.25 available" }));
     const card_ = card("Model selection");
 
-    expect(within(card_).queryByText(/Gate credits/)).toBeNull();
+    expect(within(card_).queryByText(/Gate credits:/)).toBeNull();
     expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
   });
 
@@ -533,7 +532,7 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "gate", gateModel: model, credits: "$10.25 available" }));
     const card_ = card("Model selection");
 
-    expect(within(card_).getByText(/Gate credits/)).toBeTruthy();
+    expect(within(card_).getByText(/Gate credits:/)).toBeTruthy();
     expect(within(card_).getByRole("button", { name: "Add credits" })).toBeTruthy();
   });
 

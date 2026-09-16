@@ -1281,27 +1281,6 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("a row opens a pane that says what its counters measured", async ({
-    boot,
-  }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
-
-    // A row is an app, so its pane covers several surfaces the gateway
-    // attributes differently. The counters are the config tool's; saying so is
-    // the difference between a measurement and a plausible number.
-    await app.page
-      .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Claude", exact: true }) })
-      .getByRole("button")
-      .click();
-
-    await expect(app.page.getByRole("heading", { name: "Claude" })).toBeVisible();
-    // Named, not just present: which surface the figures measured IS the
-    // sentence. `/These counts cover/` alone passes on a caveat that names
-    // nothing, which is the state it exists to replace.
-    await expect(app.page.getByText(/These counts cover Claude Code/)).toBeVisible();
-  });
-
   test("a row with nothing attributable says so instead of reporting a quiet day", async ({
     boot,
   }) => {

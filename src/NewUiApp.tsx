@@ -69,7 +69,6 @@ import type { ClassifiedError } from "./lib/errors";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  switchScopeNote,
   BAND_LABELS,
   sectionHint,
   sectionMemberKeys,
@@ -103,6 +102,7 @@ import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
 import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
+import type { GapNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
 import {
   SettingsPane,
@@ -2544,43 +2544,6 @@ export function NewUiApp() {
   }, [proxy]);
 
   /**
-   * What the open section's switch covers, on the pane that opens on it.
-   *
-   * Same shape as the advice below and a different kind of thing: this is a
-   * description of the surfaces, true on every platform and whether or not the
-   * section is on, and it is here because the window shell draws a row's copy as
-   * one sentence and these sections need three or four. `groups.ts` carries the
-   * copy, composes the credential sentence with the section's remaining hosts,
-   * and documents why that composition is not this file's to do.
-   */
-  const scopeCard = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const group = groups.find((g) => g.id === view.slug);
-    return group
-      ? switchScopeNote(group, platform, proxy?.browser_proxy_channel ?? false)
-      : undefined;
-  }, [view, groups, platform, proxy]);
-
-  /**
-   * Whether the open section's figures cover less than its switch routes.
-   *
-   * True when the section has a config tool (so there IS a reading) and any
-   * member the gateway cannot attribute (so the reading is narrower than the
-   * heading). `client_tool` comes from the caller's own User-Agent, and the
-   * desktop apps send none the matcher places - see `proxy::client_tool` and
-   * the ceiling its doc describes.
-   */
-  const partialReading = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const section = groups.find((g) => g.id === view.slug);
-    const configMember = section?.members.find((m) => m.kind === "config");
-    if (!section || !configMember) return undefined;
-    return section.members.some((m) => m.kind === "proxy")
-      ? { covers: configMember.tool?.product_name ?? configMember.name }
-      : undefined;
-  }, [view, groups]);
-
-  /**
    * The standing note a proxy-routed row carries on Linux.
    *
    * Not a verdict and not drawn like one: `reopen_required` is measured per tool
@@ -3547,7 +3510,6 @@ export function NewUiApp() {
           //
           // Computed from the section rather than hardcoded, so it disappears
           // per surface as attribution improves rather than needing a sweep.
-          partialReading={partialReading}
           alert={
             <>
               {reopenAlert}
@@ -3561,15 +3523,6 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {/* One card, not two, and one source for it: `switchScopeNote`
-                  composes the credential sentence with the section's remaining
-                  hosts, because the second is worded against whether the first
-                  precedes it. This used to be two `PaneNote`s, which is how the
-                  Claude pane drew two cards headed "What this switch covers"
-                  one above the other. */}
-              {scopeCard && (
-                <PaneNote title={scopeCard.title} body={scopeCard.body} />
-              )}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
@@ -3934,7 +3887,11 @@ function ActivityGaps({
   const notices = mergeNotices(
     failure
       ? [failureNotice(failure)]
-      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason)),
+      : (view?.gaps ?? [])
+          .map((g) => sectionNotice(g.section, g.reason))
+          // `not_configured` raises none: the section's own card says it in the
+          // place the reader is looking.
+          .filter((n): n is GapNotice => n !== undefined),
   ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 
