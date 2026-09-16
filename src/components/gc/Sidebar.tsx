@@ -371,28 +371,38 @@ export function Sidebar({
  * AG-572's contract says so and the activity reading proves it - so for those
  * accounts there is nothing to choose between.
  *
- * Without a handler the chevron goes and so does the chrome - no line, no
- * ground, no elevation. `Tray`'s footer does exactly this in the same state
- * and states the rule: nothing here invents an affordance that leads nowhere.
- * Dropping the chevron alone would not have honoured it, because this column
- * already reads chrome as pressability on its own terms - `NavItem` draws a
- * border, a fill and `shadow/2xs` when it is the active destination and
- * nothing at all otherwise, so a bordered, elevated box that cannot be pressed
- * would be the one thing in the rail claiming to be a control and lying. The
- * window used to claim it outright, and clicking it could only ever produce an
- * error banner.
+ * **The box is drawn either way**, which is the newer call (2026-09-16). It
+ * used to drop the line, the ground and the elevation with the chevron, on the
+ * argument that a bordered, elevated box that cannot be pressed is the one
+ * thing in the rail claiming to be a control and lying. The frame draws the
+ * box (`691:29773`: white, 1px `base/input`, 4px, 6/8, `shadow/2xs`) and an
+ * account with one organization is a list of one, not an absence - so the row
+ * reports the same fact in the same shape whichever account is signed in, and
+ * a reader stops having to learn that the rail looks different on an API key.
+ *
+ * The CHEVRON still tracks pressability, because that is the part that says
+ * "there is another one of these". Nothing here invents an affordance that
+ * leads nowhere; it just stops the container from being the affordance.
  */
 function OrgSwitcher({ name, onClick }: { name: string; onClick?: () => void }) {
-  if (!onClick) {
-    return (
-      <span className="flex w-full min-w-0 items-center gap-2 px-1.5 py-2" title={name}>
-        <Icon name="usersRound" size={16} />
-        <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
-          {name}
-        </span>
+  // Same box in both states; see above. Only the element and the chevron differ.
+  const box =
+    "flex w-full min-w-0 items-center justify-between gap-2 rounded-control border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs";
+  // The rail is 256px wide and an organization name is not, so the name
+  // truncates in BOTH states. It used to do so in neither, and then in only the
+  // label, which made how a long name renders depend on which account was
+  // signed in rather than on how long the name is.
+  const line = (
+    <span className="flex min-w-0 items-center gap-2" title={name}>
+      <Icon name="usersRound" size={16} />
+      <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
+        {name}
       </span>
-    );
-  }
+    </span>
+  );
+
+  if (!onClick) return <span className={box}>{line}</span>;
+
   return (
     <button
       type="button"
@@ -401,21 +411,9 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick?: () => void }) 
       // is the organization name alone, which says nothing about being able to
       // change it, and the chevron that does say so is decorative.
       aria-label={`Organization: ${name}. Switch organization`}
-      // Radius 4 (`rounded-control`) on a `base/input` line, drawn by all three
-      // set variants. Padding is 6/8 per the settings and app variants; the
-      // overview one draws p-8 and loses 2 to 1.
-      className="flex w-full items-center justify-between gap-2 rounded-control border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
+      className={box}
     >
-      {/* The rail is 256px wide and an organization name is not, so the name
-          truncates in BOTH states. It used to do so in neither, and then in
-          only the label, which made how a long name renders depend on which
-          account was signed in rather than on how long the name is. */}
-      <span className="flex min-w-0 items-center gap-2" title={name}>
-        <Icon name="usersRound" size={16} />
-        <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
-          {name}
-        </span>
-      </span>
+      {line}
       <Icon name="chevronsUpDown" size={16} />
     </button>
   );
