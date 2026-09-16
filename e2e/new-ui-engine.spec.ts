@@ -139,31 +139,6 @@ test.describe("new UI engine controls", () => {
     expect(cmds.indexOf("proxy_enable")).toBeLessThan(cmds.indexOf("proxy_set_domain"));
   });
 
-  test("the shell-environment channel is its own choice", async ({ boot }) => {
-    // It never starts or stops the engine: it decides whether the proxy is also
-    // written into the user's environment, which reaches git and curl.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true, env_export_separable: true },
-    });
-
-    await app.page
-      .getByRole("switch", { name: "Also set shell environment variables" })
-      .click();
-
-    await expect.poll(() => app.lastCall("proxy_set_env_export")).toEqual({ enabled: true });
-    expect(await app.lastCall("proxy_disable")).toBeNull();
-  });
-
-  test("Linux is not offered a choice it cannot make", async ({ boot }) => {
-    // There the variables *are* the system proxy, so the switch must not render.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true, env_export_separable: false },
-    });
-
-    await expect(
-      app.page.getByRole("switch", { name: "Also set shell environment variables" }),
-    ).toHaveCount(0);
-  });
 });
 
 test.describe("new UI app pane", () => {

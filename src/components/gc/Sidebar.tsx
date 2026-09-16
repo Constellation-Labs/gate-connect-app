@@ -178,10 +178,14 @@ export interface SidebarGroup {
  * Not in the Figma, and the omission is load-bearing: with routing off, a family
  * switch can still start the engine (a config member's connect does it
  * implicitly) but a chat domain cannot, so the window could reach a state it had
- * no control for. `envExport` is the master's sub-setting - whether the proxy
- * also goes into the shell environment, which reaches `git` and `curl` and not
- * just the AI tools - and is absent on Linux, where those variables *are* the
- * system proxy and cannot be declined separately.
+ * no control for.
+ *
+ * The shell-environment sub-setting used to sit at the foot of the rail, as a
+ * second card. No frame draws it - the drawn sidebar (`440:953`) is the org
+ * header, Overview/Settings and the app groups, and nothing else - so it came
+ * out on 2026-09-16. `proxy.env_export_opted_in` is untouched by the removal:
+ * the backend still honours whatever it holds, there is just no control for it
+ * in the window.
  */
 export interface MasterRouting {
   on: boolean;
@@ -191,7 +195,6 @@ export interface MasterRouting {
    * inspects nothing, so the card says so rather than leaving the switch to
    * imply otherwise. */
   caTrusted?: boolean;
-  envExport?: { on: boolean; onToggle: (next: boolean) => void };
 }
 
 export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
@@ -352,9 +355,6 @@ export function Sidebar({
           </div>
         ))}
 
-        {master?.envExport && (
-          <ShellEnvCard envExport={master.envExport} busy={master.busy} />
-        )}
       </div>
     </nav>
   );
@@ -482,43 +482,6 @@ function MasterCard({ master }: { master: MasterRouting }) {
             ? "Running, but the certificate is not trusted - nothing is being inspected"
             : "The local engine is running"
           : "Everything below stays off until this is on"}
-      </p>
-    </div>
-  );
-}
-
-/**
- * The master's shell-environment sub-setting, at the foot of the rail.
- *
- * Below the app groups rather than inside `MasterCard`: the switch above
- * governs the rows that follow it, and this one is about the tools that are
- * *not* in that list - `git`, `curl`, anything on the command line. Reading it
- * after the inventory is reading it as "and also everything else", which is
- * what it does.
- */
-function ShellEnvCard({
-  envExport,
-  busy,
-}: {
-  envExport: NonNullable<MasterRouting["envExport"]>;
-  busy?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-base-xs font-medium leading-4 text-base-foreground">
-          Also set shell environment variables
-        </p>
-        <BaseSwitch
-          on={envExport.on}
-          label="Also set shell environment variables"
-          busy={busy}
-          onClick={() => envExport.onToggle(!envExport.on)}
-        />
-      </div>
-      <p className="text-base-2xs leading-4 text-base-muted-foreground">
-        Routes command-line tools too. Machine-wide: it reaches git and curl, not only
-        your AI tools.
       </p>
     </div>
   );

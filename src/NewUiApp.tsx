@@ -2959,17 +2959,6 @@ export function NewUiApp() {
               busy: routingBusy,
               caTrusted: proxy.ca_trusted,
               onToggle: (next) => void toggleMaster(next),
-              // Absent on Linux, where these variables *are* the system proxy
-              // and cannot be declined without turning routing off.
-              envExport: proxy.env_export_separable
-                ? {
-                    on: proxy.env_export_opted_in,
-                    onToggle: (next) => {
-                      setActionError(null);
-                      void routing.setEnvExport(next);
-                    },
-                  }
-                : undefined,
             }
           : undefined
       }
