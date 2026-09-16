@@ -663,8 +663,20 @@ export function NewUiApp() {
       }
       refreshActivityRef.current(e.payload);
     });
+    // Becoming visible is not the same edge as being focused: a window
+    // uncovered by moving the terminal aside is looked at without being
+    // clicked, and the focus edge never fires. Drain here too; whichever of the
+    // two runs first takes the list and the other finds nothing.
+    const onVisible = () => {
+      const missed = missedWhileHidden.current;
+      if (document.hidden || !missed) return;
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       void unlisten.then((f) => f()).catch(() => {});
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
   // A write failure belongs to the pane it happened on. Without this, refusing a
