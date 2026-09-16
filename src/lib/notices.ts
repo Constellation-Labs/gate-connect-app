@@ -1,7 +1,8 @@
 import type { Group, GroupMember } from "./groups";
 
 /**
- * Routing notices for the Overview pane (AG-572).
+ * Routing notices for the app pane (AG-572). They were drawn on Overview
+ * until 2026-09-16; a warning about one tool now appears only on that tool.
  *
  * A tool can stop carrying traffic without anyone deciding it should: a tool
  * update rewrites its own config, the certificate stops being trusted, or

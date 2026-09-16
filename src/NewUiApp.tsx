@@ -1335,20 +1335,7 @@ export function NewUiApp() {
   }, [tools, proxy]);
 
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
-  const [noticePage, setNoticePage] = useState(0);
   const [noticeBusy, setNoticeBusy] = useState(false);
-
-  const notices = useMemo(
-    () => buildNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
-    [groups, dismissedNotices],
-  );
-  // Clamped rather than reset when the list shrinks: fixing the tool on the last
-  // page removes its notice, and a page index left pointing past the end would
-  // blank the banner while notices remain.
-  const notice =
-    notices.length > 0
-      ? notices[Math.min(noticePage, notices.length - 1)]
-      : null;
 
   /** Perform a notice's action, then re-read state so it clears itself. */
   const runNoticeAction = useCallback(
@@ -2355,26 +2342,32 @@ export function NewUiApp() {
    * about - only on Overview. Both halves are the same mistake: the pane was
    * not asking about itself.
    *
-   * No paging: this card is one app's, and the drawn chevrons belong to the
-   * multiple-apps variant on Overview.
+   * Overview draws none of these now (2026-09-16): a warning about one tool
+   * belongs on that tool's pane, so this is the only surface that shows them.
+   *
+   * Built from the open section's own members rather than picked out of a
+   * machine-wide list. `buildNotices` collapses master-off and needs-trust into
+   * ONE notice carrying the first affected member's key, so a lookup by member
+   * key on the whole list drew that card on the section owning that member and
+   * on no other, even though the cause is true of every section at once. Now
+   * that Overview no longer carries the collapsed card, every affected pane
+   * has to draw its own, which is what scoping the input to the section does.
+   *
+   * No paging: this card is one section's, and the drawn chevrons belong to the
+   * multiple-apps variant that Overview used to draw.
    */
-  const paneNotice = useMemo(
-    () =>
-      view.kind === "app"
-        ? // Any member of the open section, not the pane's own slug: a notice is
-          // keyed on the member it is about, and the pane is a section now.
-          //
-          // One caveat worth knowing rather than fixing here: `buildNotices`
-          // collapses master-off and needs-trust into ONE notice carrying the
-          // first affected member's key, so only the section owning that member
-          // draws the card even though the cause is true of every section at
-          // once. That predates the sections - the lookup used to be on the
-          // member key directly and had the same hole - and the fix belongs in
-          // `lib/notices.ts`, where the collapsing happens.
-          (notices.find((n) => sectionMemberKeys(view.slug).includes(n.memberKey)) ?? null)
-        : null,
-    [notices, view],
-  );
+  const paneNotice = useMemo(() => {
+    if (view.kind !== "app") return null;
+    const keys = sectionMemberKeys(view.slug);
+    const section = groups.map((g) => ({
+      ...g,
+      members: g.members.filter((m) => keys.includes(m.key)),
+    }));
+    return (
+      buildNotices(section).find((n) => !dismissedNotices.includes(n.id)) ??
+      null
+    );
+  }, [groups, dismissedNotices, view]);
   /**
    * One row of the reopen flow, acted on alone.
    *
@@ -3715,41 +3708,12 @@ export function NewUiApp() {
               onChange={setInstallFilter}
             />
           }
+          // Routing notices are not drawn here: a warning about a tool
+          // belongs on that tool's pane (`paneNotice`), not on a screen about
+          // the organisation's traffic. What remains is about the reading
+          // itself.
           alert={
             <>
-              {notice && (
-                <AlertBanner
-                  // Keyed so switching pages remounts rather than animating one
-                  // card's text into another's.
-                  key={notice.id}
-                  title={notice.title}
-                  body={notice.body}
-                  switchLabel={notice.switchLabel}
-                  // The switch reflects the state being fixed, which is always
-                  // "not routing". Toggling it performs the action.
-                  on={false}
-                  // Both flags, because either path writes: `routingBusy` covers
-                  // the reconnect that goes through `useRouting`, `noticeBusy`
-                  // the two whole-machine actions that do not.
-                  busy={noticeBusy || routingBusy}
-                  onToggle={() => void runNoticeAction(notice.action)}
-                  onDismiss={() =>
-                    setDismissedNotices((d) => [...d, notice.id])
-                  }
-                  paging={
-                    notices.length > 1
-                      ? {
-                          onPrev: () =>
-                            setNoticePage(
-                              (p) => (p - 1 + notices.length) % notices.length,
-                            ),
-                          onNext: () =>
-                            setNoticePage((p) => (p + 1) % notices.length),
-                        }
-                      : undefined
-                  }
-                />
-              )}
               <ActivityGaps
                 view={activity.view}
                 failure={activity.failure}
