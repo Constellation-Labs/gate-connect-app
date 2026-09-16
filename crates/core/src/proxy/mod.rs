@@ -4258,6 +4258,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The cross-repo agreement table for tool attribution.
+    ///
+    /// Two matchers, in two repositories, answer "which tool sent this" and
+    /// neither compares notes with the other: [`client_tool`] here, and the
+    /// per-platform `detect` in the gateway's
+    /// `apps/gateway-proxy/src/utils/platform-registry.ts`. They disagreed for
+    /// months on any agent whose own token is not the first thing in its
+    /// `User-Agent` - the gateway anchored its `opencode` regex, this side uses
+    /// a case-insensitive `contains` - and nothing caught it, because each
+    /// side's tests were written against its own rule.
+    ///
+    /// Disagreement is worse than either side being wrong alone. This side
+    /// stamps `x-gate-client: opencode` while the gateway writes
+    /// `agent_framework: direct-api`, so one row carries two confident and
+    /// contradictory claims and neither surface reads as "unknown".
+    ///
+    /// So the table records BOTH answers per sample rather than one shared one.
+    /// The columns are not expected to be equal - where they differ the row says
+    /// why, and that visibility is the point. **The same table is mirrored in
+    /// the gateway**, in `tests/utils/agent-ua-samples.test.ts`; this test
+    /// asserts the `connect` column and that one asserts `registry`. A sample
+    /// added here goes there too. Nothing but this comment enforces that, so a
+    /// row with no counterpart proves half of what it looks like it proves.
+    #[test]
+    fn the_user_agent_table_agrees_with_the_gateway_registry() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h, None)
+        };
+
+        // (user-agent, what this side stamps, what the gateway registry makes
+        // of the same string on its own).
+        let samples: &[(&str, Option<&str>, Option<&str>)] = &[
+            // Agreed: what each tool sends today, backed by real captures.
+            (
+                "claude-cli/2.1.222 (external, cli)",
+                Some("claude-code"),
+                Some("claude-code"),
+            ),
+            ("codex_cli_rs/0.55.0", Some("codex"), Some("codex")),
+            ("opencode/0.4.2", Some("opencode"), Some("opencode")),
+            // The shape that split the two matchers, and the reason the `^`
+            // anchor came off the gateway's `opencode` detector: the token is
+            // present but not first, as it would be with a runtime or wrapper
+            // banner in front of it.
+            (
+                "Bun/1.2.3 opencode/0.4.2",
+                Some("opencode"),
+                Some("opencode"),
+            ),
+            // Case is the tool's business, not ours - one tool has to be one
+            // series.
+            ("Codex/1.0", Some("codex"), Some("codex")),
+            // DIVERGENT, and not a regex disagreement: the two sides read
+            // different evidence. This side matches `openclaw` in the
+            // User-Agent; the gateway detects OpenClaw from body markers and
+            // has no UA signal at all, so a UA-only sample is genuinely `None`
+            // there. Routed traffic is still attributed, because the gateway
+            // now prefers `x-gate-client` - which is to say, this side's answer
+            // - over its own detector.
+            ("openclaw/1.4.0", Some("openclaw"), None),
+            // Not agents. A wrong slug here would file somebody else's traffic
+            // under a tool's name in the very view a user opens to find out
+            // what their machine is doing, which is worse than the honest
+            // blank.
+            ("curl/8.7.1", None, None),
+            ("Mozilla/5.0 (Macintosh) Chrome/120", None, None),
+        ];
+
+        for (ua, connect, _registry) in samples {
+            assert_eq!(tool(ua), *connect, "user-agent {ua:?}");
+        }
+    }
+
     /// The `User-Agent` guess is the only tool signal either path has, so its
     /// misses matter as much as its hits.
     #[test]
