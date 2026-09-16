@@ -42,9 +42,8 @@ describe("verdictStatus", () => {
     expect(status).toEqual({ kind: "drifted" });
   });
 
-  it.each<[Exclude<VerdictReason, "configuration_changed">, string]>([
+  it.each<[Exclude<VerdictReason, "configuration_changed" | "reopen_required">, string]>([
     ["configuration_overridden", "Configuration overridden"],
-    ["reopen_required", "Reopen required"],
     ["connection_problem", "Connection problem"],
     ["access_problem", "Access problem"],
     ["verification_failed", "Verification failed"],
@@ -53,6 +52,24 @@ describe("verdictStatus", () => {
       kind: "not-protected",
       detail,
     });
+  });
+
+  /**
+   * The one `needs_attention` reason where nothing has gone wrong: the write
+   * landed and a process has to restart. It used to render as a bare amber
+   * "Not protected" - the rail drops a `not-protected` detail - which is the
+   * off state's own reading printed on a switch the user had just turned on.
+   */
+  it("gives a pending reopen its own phrase rather than an amber negative", () => {
+    expect(
+      verdictStatus(
+        verdict({
+          state: "needs_attention",
+          reason: "reopen_required",
+          next_action: "reopen_tool",
+        }),
+      ),
+    ).toEqual({ kind: "reopen" });
   });
 
   /**

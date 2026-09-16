@@ -279,7 +279,12 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    // Scoped to the banner, like the sibling assertion below it: the rail row
+    // for this tool now carries the same phrase, so a bare text match resolves
+    // to two elements.
+    await expect(
+      app.page.getByRole("status").filter({ hasText: "Reopen to finish" }),
+    ).toBeVisible();
     await expect(
       app.page.getByRole("status").filter({ hasText: "Pages already open" }),
     ).toBeVisible();

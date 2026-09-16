@@ -33,14 +33,46 @@ export type SidebarView =
  * What is actually happening to this app's traffic. The design draws four:
  * "Protected - 2m ago", "Not protected", "Config drifted", "Not routed - Off".
  * Each renders as a coloured phrase plus an optional grey suffix.
+ *
+ * Two more are added below, and the Figma draws neither - the same inference the
+ * loading and failure states already run on (CLAUDE.md principle 6). Both exist
+ * because `not-protected` was answering for states it describes wrongly: a row
+ * mid-reopen and a section carrying a mix both drew a bare amber "Not protected"
+ * with their reason dropped by {@link statusSuffix}, which is the off state's
+ * reading printed on a switch that is on.
  */
 export type AppStatus =
   | { kind: "protected"; since?: string }
-  /** `detail` carries the routing verdict's reason ("Reopen required",
-   * "Connection problem"), which is what turns an amber phrase into something
-   * the user can act on. See `lib/verdict.ts`. */
+  /** `detail` carries the routing verdict's reason ("Connection problem",
+   * "Configuration update failed"), which is what turns an amber phrase into
+   * something the user can act on. See `lib/verdict.ts`. */
   | { kind: "not-protected"; detail?: string }
   | { kind: "drifted" }
+  /**
+   * The configuration is written and the process that was running when that
+   * happened is still up, so its traffic is still on the old route.
+   *
+   * **Not `not-protected`, which is what it used to be.** That phrase is the
+   * right answer everywhere else it is drawn and the wrong one here: this is
+   * the single state where the user's click *did* land, and an amber "Not
+   * protected" on the row they just switched on reads as a failure Gate
+   * invented. Everything is saved; one program has to be reopened.
+   *
+   * The phrase is `ReopenAlert`'s own, so the row and the card the pane draws
+   * beside it cannot phrase one fact two ways. `detail` names which program,
+   * for a section whose heading is the app rather than the program - see
+   * `sectionStatus`.
+   */
+  | { kind: "reopen"; detail?: string }
+  /**
+   * Some of a section's surfaces are routing and the rest are plainly off.
+   *
+   * Reachable only since a rail row became an app rather than a surface: a
+   * per-surface ledger had nothing to be partly anything about. `detail` is the
+   * count rather than the word "partly" on its own, because the row has space
+   * for a reading and principle 6 prefers one.
+   */
+  | { kind: "partly-protected"; detail?: string }
   | { kind: "not-routed"; detail?: string };
 
 /**
@@ -198,21 +230,30 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
   protected: { label: "Protected", className: "text-green-600" },
   "not-protected": { label: "Not protected", className: "text-amber-600" },
   drifted: { label: "Config drifted", className: "text-amber-600" },
+  reopen: { label: "Reopen to finish", className: "text-amber-600" },
+  "partly-protected": { label: "Partly protected", className: "text-amber-600" },
   "not-routed": { label: "Not routed", className: "text-amber-600" },
 };
 
 /**
- * The grey suffix a rail row draws: "2m ago", "Off", "Blocked" - the short ones
- * the design draws inside 250px.
+ * The grey suffix a rail row draws: "2m ago", "Off", "Blocked", "Claude Code",
+ * "2 of 3" - the short ones the design draws inside 250px.
  *
- * A "Not protected" detail is deliberately not among them. Those are the
- * verdict's reasons ("Configuration update failed", "Verification failed"), and
- * at rail width they truncate mid-word, which turns an actionable sentence into
- * an ellipsis. The row keeps the coloured phrase and the app pane's header
- * carries the reason in full - see `statusDetail`.
+ * A `not-protected` detail is deliberately not among them. Those are the
+ * verdict's remaining reasons ("Configuration update failed", "Verification
+ * failed"), and at rail width they truncate mid-word, which turns an actionable
+ * sentence into an ellipsis. The row keeps the coloured phrase and the app
+ * pane's header carries the reason in full - see `statusDetail`.
+ *
+ * `reopen` and `partly-protected` are not in that bucket and keep their
+ * suffixes. Both carry a short noun rather than a sentence - a program's name
+ * and a count - and the reason they are separate phrases at all is that
+ * "Not protected" with its detail dropped said nothing the off state below it
+ * did not already say.
  */
 function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
+  if (status.kind === "reopen" || status.kind === "partly-protected") return status.detail;
   if (status.kind === "not-routed") return status.detail;
   return undefined;
 }

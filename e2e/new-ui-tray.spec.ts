@@ -130,7 +130,9 @@ test.describe("tray popover", () => {
       runningAgentNames: ["codex"],
     });
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    // The card's heading. The tray's own app row carries the phrase now too, so
+    // this names the element rather than the string.
+    await expect(app.page.getByRole("heading", { name: "Reopen to finish" })).toBeVisible();
     // AG-584 asked a pending change to name the route in use, and the card can
     // still print one - but nothing can read where another process is pointed,
     // so the backend sends no `route_in_use` and the card falls back to the

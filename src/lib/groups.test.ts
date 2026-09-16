@@ -316,17 +316,37 @@ describe("sectionStatus", () => {
     expect(sectionStatus(claude, apps)?.kind).toBe("drifted");
   });
 
-  it("says partly routed, a state a per-surface ledger never had to describe", () => {
+  it("says partly protected, a state a per-surface ledger never had to describe", () => {
     const [opencode] = buildGroups(
       [tool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
       [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
       { ...ON, ...sweep("opencode") },
     );
     const apps = new Map([["opencode", { status: { kind: "protected" } } as never]]);
+    // The count, not the adverb: "partly" does not say how much of the app is
+    // covered, and this line used to render as a bare "Not protected" because
+    // the rail drops a `not-protected` detail.
     expect(sectionStatus(opencode, apps)).toEqual({
-      kind: "not-protected",
-      detail: "Partly routed",
+      kind: "partly-protected",
+      detail: "1 of 2",
     });
+  });
+
+  /**
+   * The common shape of a group switch: it writes one config and enables the
+   * hosts beside it, the hosts route immediately, and the tool waits on a
+   * restart. The honest line names the restart rather than counting, and it
+   * names WHICH program - the heading is the app ("Claude"), and the thing to
+   * reopen is Claude Code.
+   */
+  it("names the program to reopen, because the heading is the app", () => {
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain()],
+      ON,
+    );
+    const apps = new Map([["claude-code", { status: { kind: "reopen" } } as never]]);
+    expect(sectionStatus(claude, apps)).toEqual({ kind: "reopen", detail: "CLI" });
   });
 
   it("does not read off as off because a session surface is off", () => {
