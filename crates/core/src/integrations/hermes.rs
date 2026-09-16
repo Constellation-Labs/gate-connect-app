@@ -187,6 +187,10 @@ impl Integration for Hermes {
                 ("NO_PROXY", NO_PROXY_VALUE.to_string()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
+            // What a previous connect wrote, so this one may bring it up to
+            // date. The port moves; without this the file keeps whatever the
+            // first connect saw and re-connect repairs nothing.
+            &state.added_vars,
         )?;
 
         // Nothing added AND nothing we ever added: the variables are the user's
@@ -196,6 +200,14 @@ impl Integration for Hermes {
         // alone failed with a message about settings that were Gate's own - and
         // re-connect is how a drifted Hermes is meant to be repaired, including
         // by `provider::reconcile_unmapped_tools`, which does it unattended.
+        //
+        // That last sentence was false for as long as `add_vars` could only
+        // add. Every key was already present, so a re-connect wrote nothing,
+        // reported success and left a stale port in place; the unattended
+        // repair ran every launch and fixed nothing, and only toggling the
+        // master switch - disconnect, clean file, connect - actually worked.
+        // `add_vars` now refreshes the keys the sidecar says are ours, which
+        // is what makes the claim true.
         if applied.added.is_empty() && state.added_vars.is_empty() {
             anyhow::bail!(
                 "Hermes already has its own proxy settings in ~/.hermes/.env -- Gate left them \
@@ -212,7 +224,23 @@ impl Integration for Hermes {
         }
         save_state(&state)?;
 
-        eprintln!("note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up.");
+        // Naming what moved matters more on a repair than on a first connect.
+        // A refreshed key means the file was pointing somewhere Gate no longer
+        // listens - a moved loopback port is the case that happens - and until
+        // Hermes is restarted it is still using the old value, so a bare "we
+        // wrote your config" would be telling the user the half that is already
+        // true and omitting the half they have to act on.
+        if applied.refreshed.is_empty() {
+            eprintln!(
+                "note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up."
+            );
+        } else {
+            eprintln!(
+                "note: updated {} in ~/.hermes/.env -- Hermes reads that file at startup, so \
+                 restart it or it keeps using the old value.",
+                applied.refreshed.join(", ")
+            );
+        }
         // A correct `.env` is only half of being seen: the engine MITMs a host
         // only while an enabled catalog domain claims it, and Hermes' own
         // default upstream ships off. Which hosts Gate inspects is the user's

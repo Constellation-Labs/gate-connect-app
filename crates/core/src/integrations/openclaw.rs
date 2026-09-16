@@ -253,6 +253,14 @@ impl Integration for OpenClaw {
                 CA_ENV_KEY,
                 crate::proxy::ca_cert_path()?.display().to_string(),
             )],
+            // Ours only if a previous connect wrote it. The path is stable in
+            // practice, so this is about not having a second rule rather than
+            // about a value known to move.
+            &if state.ca_env_added {
+                vec![CA_ENV_KEY.to_string()]
+            } else {
+                Vec::new()
+            },
         )?;
         // Only record a fresh write; a re-connect must keep the first answer,
         // or disconnect would leave behind a line we did add.

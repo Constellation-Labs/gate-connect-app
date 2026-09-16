@@ -14,6 +14,12 @@
 //!    also what stops disconnect from deleting it later.
 //! 2. **Only lines we added come back out.** [`remove_vars`] takes the exact
 //!    key list [`add_vars`] reported, not the full set we would have written.
+//!
+//! Rule 1 is about *ownership*, not about never writing twice, and conflating
+//! the two is what made re-connect a no-op: a key we wrote ourselves is ours to
+//! refresh, and the caller says which those are by passing back the list from
+//! its sidecar. Without that, a value Gate needs to change - the loopback port
+//! is the one that moves - stayed at whatever the first connect wrote, forever.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -22,8 +28,14 @@ use std::path::Path;
 /// What [`add_vars`] actually changed, for the caller's sidecar.
 #[derive(Debug, Default)]
 pub(crate) struct Applied {
-    /// Keys we wrote. Keys the user already had are absent.
+    /// Keys we wrote for the first time. Keys the user already had are absent,
+    /// and so are keys we merely refreshed - the sidecar already lists those,
+    /// and re-recording them would let a later connect claim credit for a line
+    /// an earlier one put there.
     pub added: Vec<String>,
+    /// Keys that were already ours and whose value we brought up to date.
+    /// Reported so a caller can tell a real repair from a no-op.
+    pub refreshed: Vec<String>,
     /// Whether the file itself did not exist before this call.
     pub file_created: bool,
 }
@@ -40,7 +52,7 @@ fn assigns(line: &str, key: &str) -> bool {
 
 /// Add each `(key, value)` that the file does not already define. Returns which
 /// keys were added so disconnect can remove exactly those.
-pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)]) -> Result<Applied> {
+pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[String]) -> Result<Applied> {
     let file_created = !path.exists();
     let mut body = if file_created {
         String::new()
@@ -49,20 +61,39 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)]) -> Result<Applied> 
     };
 
     let mut added = Vec::new();
+    let mut refreshed = Vec::new();
     for (key, value) in vars {
+        let line = format!("{key}={value}");
         if body.lines().any(|l| assigns(l, key)) {
+            // Present already. Ours to correct, or the user's to leave alone -
+            // and `ours` is the only thing that can tell those apart, since the
+            // line itself looks identical either way.
+            if !ours.iter().any(|k| k == key) {
+                continue;
+            }
+            if body.lines().any(|l| l == line) {
+                continue;
+            }
+            body = body
+                .lines()
+                .map(|l| if assigns(l, key) { line.as_str() } else { l })
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push('\n');
+            refreshed.push((*key).to_string());
             continue;
         }
         if !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
-        body.push_str(&format!("{key}={value}\n"));
+        body.push_str(&format!("{line}\n"));
         added.push((*key).to_string());
     }
 
-    if added.is_empty() {
+    if added.is_empty() && refreshed.is_empty() {
         return Ok(Applied {
             added,
+            refreshed,
             file_created: false,
         });
     }
@@ -75,6 +106,7 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)]) -> Result<Applied> 
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(Applied {
         added,
+        refreshed,
         file_created,
     })
 }
@@ -150,6 +182,9 @@ mod tests {
                 ("HTTPS_PROXY", "http://127.0.0.1:9977".into()),
                 ("NO_PROXY", "localhost,127.0.0.1".into()),
             ],
+            // Nothing is ours yet: a first connect over a file we have never
+            // touched, which is the case rule 1 exists for.
+            &[],
         )
         .unwrap();
 
@@ -171,10 +206,89 @@ mod tests {
         assert!(!after.contains("NO_PROXY"));
     }
 
+    /// A value of ours that has gone stale is brought up to date; the same
+    /// value belonging to the user is still not.
+    ///
+    /// This is the migration case, and it was broken in the quiet way. The
+    /// loopback port moves, so the `HTTPS_PROXY` a first connect wrote stops
+    /// being the right one - and `add_vars` could only ever add, so a
+    /// re-connect found the key present, skipped it, and reported success
+    /// having changed nothing. `status` went on saying Drifted, and
+    /// `reconcile_unmapped_tools` re-ran the same no-op on every launch. Only
+    /// toggling the master switch repaired it, because disconnect removes the
+    /// lines first.
+    ///
+    /// Ownership is the whole distinction, and it cannot be read off the file:
+    /// `HTTPS_PROXY=http://127.0.0.1:9977` looks the same whether Gate wrote it
+    /// or the user did. The caller's sidecar is the only record of which, which
+    /// is why it has to be passed in rather than inferred here.
+    #[test]
+    fn a_stale_value_of_ours_is_refreshed_and_the_users_is_not() {
+        let path = tmp();
+        fs::write(
+            &path,
+            "OPENROUTER_API_KEY=sk-user\nHTTPS_PROXY=http://127.0.0.1:9977\nHERMES_CA_BUNDLE=/old/ca.pem\n",
+        )
+        .unwrap();
+
+        // The port moved. Both keys below are ours per the sidecar.
+        let ours = vec!["HTTPS_PROXY".to_string(), "HERMES_CA_BUNDLE".to_string()];
+        let applied = add_vars(
+            &path,
+            &[
+                ("HTTPS_PROXY", "http://127.0.0.1:45981".into()),
+                ("HERMES_CA_BUNDLE", "/old/ca.pem".into()),
+            ],
+            &ours,
+        )
+        .unwrap();
+
+        // Refreshed, not added: re-recording it would let this connect claim
+        // credit for a line the first one wrote, and disconnect reads that list.
+        assert_eq!(applied.added, Vec::<String>::new());
+        assert_eq!(applied.refreshed, vec!["HTTPS_PROXY".to_string()]);
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("HTTPS_PROXY=http://127.0.0.1:45981"),
+            "the stale port must be corrected: {body}"
+        );
+        assert!(!body.contains("9977"), "the old value must be gone: {body}");
+        assert!(
+            body.contains("OPENROUTER_API_KEY=sk-user"),
+            "unrelated lines must survive: {body}"
+        );
+        // Already correct, so not reported as a change - otherwise every
+        // unattended re-connect would look like a repair.
+        assert!(!applied.refreshed.contains(&"HERMES_CA_BUNDLE".to_string()));
+
+        // The same staleness on a key the user owns is left alone.
+        let path = tmp();
+        fs::write(&path, "HTTPS_PROXY=http://corp:3128\n").unwrap();
+        let applied = add_vars(
+            &path,
+            &[("HTTPS_PROXY", "http://127.0.0.1:45981".into())],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(applied.added, Vec::<String>::new());
+        assert_eq!(applied.refreshed, Vec::<String>::new());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "HTTPS_PROXY=http://corp:3128\n",
+            "a corporate proxy the user set is never ours to correct"
+        );
+    }
+
     #[test]
     fn a_file_we_created_is_removed_again() {
         let path = tmp();
-        let applied = add_vars(&path, &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())]).unwrap();
+        let applied = add_vars(
+            &path,
+            &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
+            &[],
+        )
+        .unwrap();
         assert!(applied.file_created);
         assert!(path.exists());
 
@@ -188,7 +302,12 @@ mod tests {
     #[test]
     fn a_file_we_created_survives_if_the_user_added_to_it() {
         let path = tmp();
-        let applied = add_vars(&path, &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())]).unwrap();
+        let applied = add_vars(
+            &path,
+            &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
+            &[],
+        )
+        .unwrap();
         fs::write(
             &path,
             format!("{}USER_KEY=value\n", fs::read_to_string(&path).unwrap()),
@@ -206,7 +325,12 @@ mod tests {
         let path = tmp();
         fs::write(&path, "export HTTPS_PROXY=\"http://corp:3128\"\n").unwrap();
         // `export`-prefixed counts as already set.
-        let applied = add_vars(&path, &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())]).unwrap();
+        let applied = add_vars(
+            &path,
+            &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
+            &[],
+        )
+        .unwrap();
         assert!(applied.added.is_empty());
         assert_eq!(
             read_var(&path, "HTTPS_PROXY").unwrap().as_deref(),
