@@ -117,7 +117,7 @@ test.describe("new UI model picker", () => {
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
-    await expect(app.page.getByRole("heading", { name: "Choose Gate models" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
     await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(2);
   });
 
