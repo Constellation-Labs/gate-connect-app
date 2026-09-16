@@ -811,9 +811,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     integ.connect(&connect_input(9977)).unwrap();
 
     let env_body = fs::read_to_string(&envfile).unwrap();
+    // With the route selector in the userinfo. That is the only thing on the
+    // wire that says "Hermes": it is a Python process, so its User-Agent is
+    // `httpx`'s, and `proxy::client_tool` would otherwise have nothing to name
+    // it by. See `proxy::HERMES_PROXY_AUTH`.
     assert!(
-        env_body.contains("HTTPS_PROXY=http://127.0.0.1:9977"),
-        "the proxy must be set in .env: {env_body}"
+        env_body.contains("HTTPS_PROXY=http://gate-hermes:route@127.0.0.1:9977"),
+        "the proxy must be set in .env, with the selector: {env_body}"
     );
     assert!(
         env_body.contains("NO_PROXY=localhost,127.0.0.1,::1"),

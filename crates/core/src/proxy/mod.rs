@@ -1213,7 +1213,11 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// and only when a tool was positively identified. An unrecognised tool sends no
 /// override at all rather than a best guess, because guessing here would serve -
 /// and charge for - a model chosen for a different tool.
-fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
+fn inject_attribution(
+    headers: &mut HeaderMap,
+    domain: Option<&str>,
+    selector: Option<&'static str>,
+) {
     headers.remove(GATE_INSTALL_ID_HEADER);
     if let Some(id) = crate::primitives::install_id_cached() {
         if let Ok(value) = HeaderValue::from_str(id) {
@@ -1230,7 +1234,7 @@ fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
     {
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
-    let tool = client_tool(headers, domain);
+    let tool = client_tool(headers, domain, selector);
     headers.remove(GATE_CLIENT_HEADER);
     if let Some(slug) = tool {
         headers.insert(
@@ -1331,7 +1335,7 @@ pub mod testing {
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
-        super::inject_attribution(headers, None);
+        super::inject_attribution(headers, None, None);
     }
 
     /// Whether the injection decided Gate serves this request.
@@ -1374,6 +1378,7 @@ pub mod testing {
             super::engine::MatchedRoute {
                 upstream_url,
                 slug: None,
+                selector: None,
             },
             api_key,
             None,
@@ -1430,7 +1435,20 @@ pub mod testing {
 /// with by construction - `Client::ClaudeCode` is `claude-code`. That is the
 /// same question this column asks ("which program on the machine sent this"),
 /// so the ledger and the attribution column now answer it in one vocabulary.
-fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str> {
+fn client_tool(
+    headers: &HeaderMap,
+    domain: Option<&str>,
+    selector: Option<&'static str>,
+) -> Option<&'static str> {
+    // The route selector outranks every header below, because it is the one
+    // signal Gate itself wrote: it arrives because the engine matched a value
+    // this app put in a config file that only that tool reads, rather than
+    // because a string the caller composed looked right. It is still not an
+    // authorization input - see this function's doc - it is simply better
+    // evidence of the same display-only fact.
+    if let Some(slug) = selector {
+        return Some(slug);
+    }
     // Anthropic's own declaration first. The desktop app's User-Agent is a
     // browser-shaped string its shell inherits, which matches nothing below, so
     // nothing is lost by preferring the header - and the web value must be read
@@ -1447,6 +1465,14 @@ fn client_tool(headers: &HeaderMap, domain: Option<&str>) -> Option<&'static str
     // this function's doc says the two vocabularies "coincide by construction",
     // and three hand-typed literals were what made that false the last time a
     // wire name and a slug came apart.
+    //
+    // **`hermes` is unverified and is not what names Hermes.** Hermes is Python,
+    // so the User-Agent on its requests is `httpx`'s or `requests`', and nobody
+    // has captured one carrying its own name - `harnesses.json` in the gate repo
+    // records the consequence, that Hermes traffic lands under the OpenAI SDK.
+    // Its route selector is what identifies it now (see `HERMES_PROXY_AUTH`),
+    // and this needle is kept only so a future Hermes that does name itself is
+    // picked up rather than missed. Do not read it as evidence that it fires.
     if let Some(slug) = ua.as_deref().and_then(|ua| {
         use crate::taxonomy::Client;
         [
@@ -1626,8 +1652,9 @@ pub(crate) fn inject_gate_credential(
     org_id: Option<&str>,
     mode: BillingMode,
     domain: Option<&str>,
+    selector: Option<&'static str>,
 ) -> Result<bool> {
-    inject_attribution(headers, domain);
+    inject_attribution(headers, domain, selector);
     if mode == BillingMode::Payg {
         strip_client_auth(headers);
     }
@@ -2061,6 +2088,57 @@ pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool
 /// Claude Code session blind-tunnel around Gate.
 pub(crate) const CLAUDE_CODE_PROXY_AUTH: &str = "Basic Z2F0ZS1jbGF1ZGUtY29kZTpyb3V0ZQ==";
 
+/// The userinfo Gate writes into Claude Code's proxy URL, which is the other
+/// spelling of [`CLAUDE_CODE_PROXY_AUTH`]: a client base64s `user:pass` into the
+/// `Proxy-Authorization` the engine reads. `a_selector_header_is_its_userinfo`
+/// pins the pair, because the two are written out separately and a drift between
+/// them is silent - the CONNECT simply stops matching and the client goes
+/// unattributed.
+pub(crate) const CLAUDE_CODE_PROXY_USERINFO: &str = "gate-claude-code:route";
+
+/// The same pair for Hermes, and the reason this mechanism is now a table.
+///
+/// Hermes is Python: `agent/process_bootstrap.py` builds `httpx` / `requests`
+/// clients, so its User-Agent is the library's (`python-httpx/…`) and never
+/// contains its own name. [`client_tool`]'s UA pass therefore cannot see it, and
+/// widening that pass to the library would file every Python script on the
+/// machine under Hermes - the "a wrong slug is worse than no slug" trade this
+/// module refuses everywhere. Hermes is Nous Research's, so it cannot be asked
+/// to send a header of its own either.
+///
+/// What Gate does control is the proxy URL it writes into `~/.hermes/.env`. A
+/// selector there is the same trick Claude Code has shipped with since the
+/// Desktop switch needed one, and it is strictly better evidence than a
+/// User-Agent: Gate put the value in a file only Hermes reads, rather than
+/// pattern-matching a string the caller composed.
+pub(crate) const HERMES_PROXY_AUTH: &str = "Basic Z2F0ZS1oZXJtZXM6cm91dGU=";
+pub(crate) const HERMES_PROXY_USERINFO: &str = "gate-hermes:route";
+
+/// Every route selector Gate writes, and the client each one names.
+///
+/// Keyed by the header value rather than the userinfo, because the header is
+/// what arrives: the engine reads `Proxy-Authorization` off the CONNECT and
+/// never sees the URL the client was configured with.
+const PROXY_SELECTORS: [(&str, &str); 2] = [
+    (
+        CLAUDE_CODE_PROXY_AUTH,
+        crate::taxonomy::Client::ClaudeCode.slug(),
+    ),
+    (HERMES_PROXY_AUTH, crate::taxonomy::Client::Hermes.slug()),
+];
+
+/// Which client a CONNECT's `Proxy-Authorization` names, if any.
+///
+/// Exact match, never a prefix or a case fold: these are values Gate itself
+/// wrote, so anything that does not match one exactly did not come from us and
+/// is not evidence of anything.
+pub(crate) fn selector_client(proxy_auth: &str) -> Option<&'static str> {
+    PROXY_SELECTORS
+        .iter()
+        .find(|(header, _)| *header == proxy_auth)
+        .map(|(_, slug)| *slug)
+}
+
 /// The catalog entry Claude Code's selector forces on, already `enabled`.
 ///
 /// Built once: the forced path would otherwise rebuild the whole catalog per
@@ -2081,10 +2159,30 @@ pub(crate) fn claude_code_route_domain() -> &'static ProxyDomain {
 
 /// Add the Claude Code route selector to an engine URL.
 pub(crate) fn claude_code_proxy_url(engine_url: &str) -> Result<String> {
+    proxy_url_with_selector(engine_url, CLAUDE_CODE_PROXY_USERINFO)
+}
+
+/// Add the Hermes route selector to an engine URL.
+///
+/// Hermes reads `HTTPS_PROXY` through `httpx` and `requests`, both of which
+/// take credentials from a proxy URL's userinfo and send them as
+/// `Proxy-Authorization`. That is the whole mechanism: nothing Hermes-specific
+/// happens beyond writing this instead of a bare engine URL.
+pub(crate) fn hermes_proxy_url(engine_url: &str) -> Result<String> {
+    proxy_url_with_selector(engine_url, HERMES_PROXY_USERINFO)
+}
+
+/// The engine URL with `userinfo@` spliced in.
+///
+/// One builder rather than a `format!` per integration, so a selector cannot be
+/// written into a config file in a spelling [`selector_client`] does not
+/// recognise - which fails silently, as an unattributed client rather than an
+/// error.
+fn proxy_url_with_selector(engine_url: &str, userinfo: &str) -> Result<String> {
     let authority = engine_url
         .strip_prefix("http://")
-        .context("Claude Code proxy URL must use http://")?;
-    Ok(format!("http://gate-claude-code:route@{authority}"))
+        .context("a Gate proxy URL must use http://")?;
+    Ok(format!("http://{userinfo}@{authority}"))
 }
 
 /// The catalog entry that would MITM `host`, whether or not it is switched on.
@@ -4150,7 +4248,7 @@ mod tests {
                 hyper::header::USER_AGENT,
                 HeaderValue::from_str(ua).unwrap(),
             );
-            client_tool(&h, None)
+            client_tool(&h, None, None)
         };
 
         assert_eq!(
@@ -4165,7 +4263,7 @@ mod tests {
         // No agent, or one we don't recognise, is unattributed - never a guess.
         // A wrong slug would put one tool's traffic under another's name in the
         // very view the user reads to find out what their machine is doing.
-        assert_eq!(client_tool(&HeaderMap::new(), None), None);
+        assert_eq!(client_tool(&HeaderMap::new(), None, None), None);
         assert_eq!(tool("curl/8.7.1"), None);
         assert_eq!(tool("Mozilla/5.0 (Macintosh) Chrome/120"), None);
     }
@@ -4184,7 +4282,7 @@ mod tests {
             HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
             HeaderValue::from_static("desktop_app"),
         );
-        assert_eq!(client_tool(&h, None), Some("claude-desktop"));
+        assert_eq!(client_tool(&h, None, None), Some("claude-desktop"));
 
         // The second signal on its own, for a build that drops the first -
         // `classify_client` keeps the same fallback, and the two must not
@@ -4194,7 +4292,7 @@ mod tests {
             HeaderName::from_static("anthropic-client-app"),
             HeaderValue::from_static("com.anthropic.claudefordesktop"),
         );
-        assert_eq!(client_tool(&only_app, None), Some("claude-desktop"));
+        assert_eq!(client_tool(&only_app, None, None), Some("claude-desktop"));
     }
 
     /// The website is attributed too, and separately from the desktop app.
@@ -4209,7 +4307,7 @@ mod tests {
             HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
             HeaderValue::from_static("web_claude_ai"),
         );
-        assert_eq!(client_tool(&h, None), Some("claude-web"));
+        assert_eq!(client_tool(&h, None, None), Some("claude-web"));
     }
 
     /// chatgpt.com in a browser, by OpenAI's own markers, on a chatgpt.com entry.
@@ -4230,7 +4328,7 @@ mod tests {
                 HeaderValue::from_static("x"),
             );
             assert_eq!(
-                client_tool(&h, Some("chatgpt-apps")),
+                client_tool(&h, Some("chatgpt-apps"), None),
                 Some("chatgpt-web"),
                 "{name}"
             );
@@ -4238,8 +4336,8 @@ mod tests {
             // Anthropic request is somebody else's traffic, and answering
             // `chatgpt-web` for it is the cross-vendor mislabelling this module
             // refuses everywhere else.
-            assert_eq!(client_tool(&h, Some("anthropic")), None, "{name}");
-            assert_eq!(client_tool(&h, None), None, "{name}");
+            assert_eq!(client_tool(&h, Some("anthropic"), None), None, "{name}");
+            assert_eq!(client_tool(&h, None, None), None, "{name}");
         }
     }
 
@@ -4263,7 +4361,7 @@ mod tests {
             HeaderName::from_static("oai-device-id"),
             HeaderValue::from_static("x"),
         );
-        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt"));
+        assert_eq!(client_tool(&h, Some("chatgpt-apps"), None), Some("chatgpt"));
         // The other side of the same request, from the same headers.
         let header = |name: &str| h.get(name).and_then(|v: &HeaderValue| v.to_str().ok());
         assert_eq!(classify_client(header), ClientClass::App);
@@ -4281,10 +4379,10 @@ mod tests {
             HeaderName::from_static("originator"),
             HeaderValue::from_static("chatgpt"),
         );
-        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt"));
+        assert_eq!(client_tool(&h, Some("chatgpt-apps"), None), Some("chatgpt"));
         // Both entries on that host carry app traffic under different URL
         // splits, so both must answer.
-        assert_eq!(client_tool(&h, Some("chatgpt")), Some("chatgpt"));
+        assert_eq!(client_tool(&h, Some("chatgpt"), None), Some("chatgpt"));
     }
 
     /// The same header on another vendor's entry is not believed.
@@ -4300,11 +4398,11 @@ mod tests {
             HeaderName::from_static("originator"),
             HeaderValue::from_static("chatgpt"),
         );
-        assert_eq!(client_tool(&h, Some("anthropic")), None);
-        assert_eq!(client_tool(&h, Some("openai")), None);
+        assert_eq!(client_tool(&h, Some("anthropic"), None), None);
+        assert_eq!(client_tool(&h, Some("openai"), None), None);
         // And with no decision at hand at all - the relay's direct-forward
         // path, or a caller that has not been plumbed.
-        assert_eq!(client_tool(&h, None), None);
+        assert_eq!(client_tool(&h, None, None), None);
     }
 
     /// The website still wins on its own markers: a chatgpt.com tab is not the
@@ -4316,7 +4414,10 @@ mod tests {
             HeaderName::from_static("oai-device-id"),
             HeaderValue::from_static("x"),
         );
-        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("chatgpt-web"));
+        assert_eq!(
+            client_tool(&h, Some("chatgpt-apps"), None),
+            Some("chatgpt-web")
+        );
     }
 
     /// A Codex request stays Codex even carrying an OpenAI web marker.
@@ -4337,7 +4438,7 @@ mod tests {
         );
         // On the entry that would otherwise answer `chatgpt-web`, so the
         // allowlist is what decides rather than the scoping.
-        assert_eq!(client_tool(&h, Some("chatgpt-apps")), Some("codex"));
+        assert_eq!(client_tool(&h, Some("chatgpt-apps"), None), Some("codex"));
     }
 
     /// A platform value nobody has seen is not read as the desktop app, for the
@@ -4351,7 +4452,7 @@ mod tests {
             HeaderName::from_static(ANTHROPIC_CLIENT_PLATFORM),
             HeaderValue::from_static("some_new_surface"),
         );
-        assert_eq!(client_tool(&h, None), None);
+        assert_eq!(client_tool(&h, None, None), None);
     }
 
     /// The vendor's declaration outranks the User-Agent, which on this app is a
@@ -4368,7 +4469,90 @@ mod tests {
             hyper::header::USER_AGENT,
             HeaderValue::from_static("Mozilla/5.0 (Macintosh) Chrome/120"),
         );
-        assert_eq!(client_tool(&h, None), Some("claude-desktop"));
+        assert_eq!(client_tool(&h, None, None), Some("claude-desktop"));
+    }
+
+    /// The two spellings of one selector cannot drift.
+    ///
+    /// They are written out separately - the userinfo goes into a config file,
+    /// the base64 is compared against a header - and a mismatch is SILENT: the
+    /// CONNECT simply stops matching and the tool goes unattributed, which looks
+    /// exactly like the bug this mechanism was added to fix.
+    #[test]
+    fn a_selector_header_is_its_userinfo() {
+        use base64::Engine as _;
+        for (userinfo, header) in [
+            (CLAUDE_CODE_PROXY_USERINFO, CLAUDE_CODE_PROXY_AUTH),
+            (HERMES_PROXY_USERINFO, HERMES_PROXY_AUTH),
+        ] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(userinfo);
+            assert_eq!(header, format!("Basic {encoded}"), "for {userinfo}");
+        }
+    }
+
+    #[test]
+    fn a_selector_names_its_client_and_nothing_else_does() {
+        assert_eq!(selector_client(CLAUDE_CODE_PROXY_AUTH), Some("claude-code"));
+        assert_eq!(selector_client(HERMES_PROXY_AUTH), Some("hermes"));
+        // Exact match only. These are values Gate wrote, so anything close but
+        // not equal did not come from us and is evidence of nothing.
+        assert_eq!(selector_client("Basic bm90LW91cnM="), None);
+        assert_eq!(selector_client(""), None);
+        assert_eq!(
+            selector_client(&CLAUDE_CODE_PROXY_AUTH.to_ascii_lowercase()),
+            None
+        );
+    }
+
+    /// The whole point of the selector: it is the one signal Gate wrote, so it
+    /// outranks a User-Agent the caller composed.
+    #[test]
+    fn a_route_selector_outranks_the_user_agent() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("codex/1.2.3"),
+        );
+        assert_eq!(client_tool(&h, None, Some("hermes")), Some("hermes"));
+        // Without one, the UA still answers - nothing about the old path moved.
+        assert_eq!(client_tool(&h, None, None), Some("codex"));
+    }
+
+    /// Hermes' actual User-Agent is `httpx`'s or `requests`', which names
+    /// nothing, and the selector is what has to carry it.
+    #[test]
+    fn a_python_user_agent_is_attributed_only_by_its_selector() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("python-httpx/0.27.0"),
+        );
+        assert_eq!(client_tool(&h, None, None), None);
+        assert_eq!(client_tool(&h, None, Some("hermes")), Some("hermes"));
+    }
+
+    #[test]
+    fn a_selector_reaches_the_client_header() {
+        let mut h = HeaderMap::new();
+        inject_attribution(&mut h, None, Some("hermes"));
+        assert_eq!(
+            h.get(GATE_CLIENT_HEADER).and_then(|v| v.to_str().ok()),
+            Some("hermes")
+        );
+    }
+
+    #[test]
+    fn a_selector_url_is_the_engine_url_plus_its_userinfo() {
+        assert_eq!(
+            hermes_proxy_url("http://127.0.0.1:9977").unwrap(),
+            "http://gate-hermes:route@127.0.0.1:9977"
+        );
+        // Unchanged, and pinned here because four test files spell it out.
+        assert_eq!(
+            claude_code_proxy_url("http://127.0.0.1:9977").unwrap(),
+            "http://gate-claude-code:route@127.0.0.1:9977"
+        );
+        assert!(hermes_proxy_url("https://127.0.0.1:9977").is_err());
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
@@ -4384,7 +4568,7 @@ mod tests {
             HeaderValue::from_static("claude-code"),
         );
 
-        inject_attribution(&mut h, None);
+        inject_attribution(&mut h, None, None);
 
         // The client header is derived from the User-Agent, and there is none
         // here, so the claim is dropped rather than believed.
@@ -4465,7 +4649,16 @@ mod tests {
             HeaderValue::from_static("sk-ant-api03-app"),
         );
 
-        inject_gate_credential(&mut h, "sk-gw-ours", None, None, BillingMode::Payg, None).unwrap();
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            None,
+            None,
+            BillingMode::Payg,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
         assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
@@ -4491,6 +4684,7 @@ mod tests {
             Some("token"),
             Some("org"),
             BillingMode::Byok,
+            None,
             None,
         )
         .unwrap();

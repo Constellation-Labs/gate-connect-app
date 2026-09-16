@@ -700,7 +700,20 @@ fn inject_credential(
     let org_id = (!org.is_empty()).then(|| org.as_ref());
     // The relay has no response hook to feed, so what was injected is not
     // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode, Some(domain)).map(|_| ())
+    // No route selector on this path, and there cannot be one: the relay is a
+    // reverse proxy a tool points its base URL at, so there is no CONNECT and no
+    // `Proxy-Authorization` to read. A relayed tool that needs naming is named by
+    // its User-Agent, exactly as before.
+    inject_gate_credential(
+        headers,
+        &api_key,
+        oauth_token,
+        org_id,
+        mode,
+        Some(domain),
+        None,
+    )
+    .map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM

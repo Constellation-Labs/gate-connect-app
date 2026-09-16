@@ -488,7 +488,20 @@ struct GateHandler {
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
     /// Set from the explicit proxy selector on Claude Code's CONNECT request.
     /// The handler is cloned with this value for the decrypted inner requests.
+    ///
+    /// Kept separate from [`Self::selector_client`] although both read the same
+    /// header, because they are read for different reasons and only one of them
+    /// is allowed to change routing: this forces the Anthropic entry on, and a
+    /// selector added for attribution must never acquire that power by sharing a
+    /// field with it.
     claude_code_route: bool,
+    /// Which client this connection's route selector names, for attribution.
+    ///
+    /// Latched at CONNECT and carried to the inner requests on the handler
+    /// clone, which is the only way it can reach them: `Proxy-Authorization` is
+    /// hop-by-hop and is stripped from the CONNECT a few lines after it is read,
+    /// so nothing downstream can look it up again.
+    selector_client: Option<&'static str>,
     /// One-shot latch for the "Anthropic without the selector" line in
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
@@ -751,11 +764,13 @@ impl HttpHandler for GateHandler {
         // rewrite on it. Intercepted inner requests arrive in absolute form
         // (scheme + authority + path), which is what `decide` expects.
         if req.method() == Method::CONNECT {
-            self.claude_code_route = req
+            let proxy_auth = req
                 .headers()
                 .get("proxy-authorization")
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value == crate::proxy::CLAUDE_CODE_PROXY_AUTH);
+                .and_then(|value| value.to_str().ok());
+            self.claude_code_route =
+                proxy_auth.is_some_and(|value| value == crate::proxy::CLAUDE_CODE_PROXY_AUTH);
+            self.selector_client = proxy_auth.and_then(crate::proxy::selector_client);
             // A proxy credential is hop-by-hop and must never reach either the
             // real Anthropic endpoint or Gate.
             req.headers_mut().remove("proxy-authorization");
@@ -887,6 +902,7 @@ impl HttpHandler for GateHandler {
                     MatchedRoute {
                         upstream_url: &upstream_url,
                         slug: Some(slug.as_str()),
+                        selector: self.selector_client,
                     },
                     &api_key,
                     oauth_token,
@@ -1572,6 +1588,18 @@ pub(crate) struct MatchedRoute<'a> {
     /// any path that rewrites without having matched an entry. Attribution that
     /// depends on it declines rather than guessing.
     pub slug: Option<&'a str>,
+    /// The client named by this connection's route selector, latched off the
+    /// CONNECT.
+    ///
+    /// It rides here rather than as a seventh parameter because it answers the
+    /// same question the slug does - what the engine established about this
+    /// request before rewriting it - and this struct's own doc already says the
+    /// slug is "carried only for attribution today".
+    ///
+    /// `None` is the ordinary case: only the tools Gate configures with an
+    /// explicit proxy URL carry a selector, and everything reaching the engine
+    /// through the system proxy has none.
+    pub selector: Option<&'static str>,
 }
 
 /// Repoint a request at the gateway: swap scheme + authority for the
@@ -1607,6 +1635,7 @@ pub(crate) fn apply_rewrite<T>(
     let MatchedRoute {
         upstream_url,
         slug: domain,
+        selector,
     } = route;
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
@@ -1641,6 +1670,7 @@ pub(crate) fn apply_rewrite<T>(
         org_id,
         mode,
         domain,
+        selector,
     )?;
 
     // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
@@ -2171,6 +2201,7 @@ where
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
+        selector_client: None,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
         app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
@@ -2982,6 +3013,7 @@ mod tests {
             MatchedRoute {
                 upstream_url: "https://api.anthropic.com",
                 slug: None,
+                selector: None,
             },
             "sk-gw-test",
             None,
@@ -3025,6 +3057,7 @@ mod tests {
             MatchedRoute {
                 upstream_url: "https://api.anthropic.com",
                 slug: None,
+                selector: None,
             },
             "sk-gw-test",
             Some("cognito-access-token"),
@@ -3075,6 +3108,7 @@ mod tests {
             MatchedRoute {
                 upstream_url: "https://api.anthropic.com",
                 slug: None,
+                selector: None,
             },
             "sk-gw-test",
             None,
@@ -3123,6 +3157,7 @@ mod tests {
             MatchedRoute {
                 upstream_url: "https://api.anthropic.com",
                 slug: None,
+                selector: None,
             },
             "sk-gw-test",
             None,

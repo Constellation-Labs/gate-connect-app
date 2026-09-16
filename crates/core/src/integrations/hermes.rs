@@ -4,8 +4,8 @@
 //! and the entire integration is a few variables in `~/.hermes/.env`:
 //!
 //! ```text
-//! HTTPS_PROXY=http://127.0.0.1:<engine-port>
-//! HTTP_PROXY=http://127.0.0.1:<engine-port>
+//! HTTPS_PROXY=http://gate-hermes:route@127.0.0.1:<engine-port>
+//! HTTP_PROXY=http://gate-hermes:route@127.0.0.1:<engine-port>
 //! NO_PROXY=localhost,127.0.0.1,::1
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
@@ -192,9 +192,18 @@ impl Integration for Hermes {
         if load_state()?.is_none() {
             return Ok(Status::Detected);
         }
+        // The selector form, because that is what `connect` writes. A Hermes
+        // connected by an older build carries the bare engine URL and so reads
+        // Drifted here, which is the honest answer and the one with a repair
+        // behind it: the file no longer matches what Gate would write, and
+        // re-connect rewrites it. `provider::reconcile_unmapped_tools` does that
+        // unattended.
+        let expected = crate::proxy::persisted_engine_proxy_url()
+            .map(|url| crate::proxy::hermes_proxy_url(&url))
+            .transpose()?;
         Ok(compute_status(
             configured_proxy()?.as_deref().unwrap_or(""),
-            crate::proxy::persisted_engine_proxy_url().as_deref(),
+            expected.as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
             crate::proxy::exported_proxy_url().as_deref(),
         ))
@@ -210,10 +219,17 @@ impl Integration for Hermes {
         // Hard requirement: Hermes sends its traffic to whatever `HTTPS_PROXY`
         // names, so pointing it at an engine that is not running would break
         // its requests rather than merely un-routing them.
-        let proxy_url = input.engine_proxy_url.as_deref().context(
+        let engine_url = input.engine_proxy_url.as_deref().context(
             "the Gate proxy is not running -- turn routing on before connecting Hermes, which \
              sends its traffic through the proxy",
         )?;
+        // With the route selector in the userinfo, so the engine can tell Hermes
+        // apart from everything else that reaches it through a proxy variable.
+        // See `proxy::HERMES_PROXY_AUTH` for why this is the only signal
+        // available: Hermes is Python, so its User-Agent is `httpx`'s or
+        // `requests`', and naming it there would name every Python process on the
+        // machine.
+        let proxy_url = crate::proxy::hermes_proxy_url(engine_url)?;
 
         // Built before the .env write so a failure here leaves nothing behind.
         let bundle = crate::proxy::ca_bundle::ensure()?;
@@ -225,8 +241,8 @@ impl Integration for Hermes {
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
-                ("HTTPS_PROXY", proxy_url.to_string()),
-                ("HTTP_PROXY", proxy_url.to_string()),
+                ("HTTPS_PROXY", proxy_url.clone()),
+                ("HTTP_PROXY", proxy_url.clone()),
                 ("NO_PROXY", NO_PROXY_VALUE.to_string()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
@@ -347,7 +363,12 @@ fn compute_status(
 /// address is not a conflict.
 fn environment_override(configured: &str, exported: Option<&str>) -> Option<Override> {
     let exported = exported?;
-    if exported == configured {
+    // Addresses, not spellings. Gate writes its route selector into the `.env`
+    // value and never into the login environment, so a correctly connected
+    // Hermes has `gate-hermes:route@127.0.0.1:9977` here and `127.0.0.1:9977`
+    // there - one engine, and comparing the raw strings reported every one of
+    // them as overridden by an environment that agreed with it.
+    if proxy_authority(exported) == proxy_authority(configured) {
         return None;
     }
     Some(Override::new(
@@ -371,22 +392,40 @@ fn is_loopback_url(url: &str) -> bool {
     host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
-/// The host part of a URL, lowercased so it compares against a catalog `hosts`
-/// entry directly: `openrouter.ai` for `https://openrouter.ai/api/v1`, `::1` for
-/// `http://[::1]:8080`. Deliberately not a URL parser - it also runs over values
-/// a user hand-wrote into a YAML file, where a missing scheme is likelier than a
-/// query string.
-fn url_host(url: &str) -> String {
+/// The authority a URL names, lowercased and without any `userinfo@`.
+///
+/// The userinfo strip is what lets a proxy URL carrying Gate's route selector be
+/// compared and parsed like any other: `gate-hermes:route@127.0.0.1:9977` and
+/// `127.0.0.1:9977` are one address in two spellings, and without this
+/// [`url_host`] read the host of the first as `gate-hermes` - which is not
+/// loopback, so a correctly connected Hermes failed [`is_loopback_url`].
+///
+/// `rsplit_once`, because a userinfo may legitimately contain a colon
+/// (`user:password`) and only the last `@` separates it from the host.
+fn proxy_authority(url: &str) -> String {
     let lowered = url.trim().to_ascii_lowercase();
     let rest = lowered
         .split_once("://")
         .map_or(lowered.as_str(), |(_, r)| r);
     let authority = rest.split('/').next().unwrap_or("");
     authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_string()
+}
+
+/// The host part of a URL, lowercased so it compares against a catalog `hosts`
+/// entry directly: `openrouter.ai` for `https://openrouter.ai/api/v1`, `::1` for
+/// `http://[::1]:8080`. Deliberately not a URL parser - it also runs over values
+/// a user hand-wrote into a YAML file, where a missing scheme is likelier than a
+/// query string.
+fn url_host(url: &str) -> String {
+    let authority = proxy_authority(url);
+    let host = authority
         .strip_prefix('[')
         .and_then(|a| a.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""))
-        .to_string()
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
+    host.to_string()
 }
 
 /// What Gate will and won't see of this Hermes install, for the notes `connect`
