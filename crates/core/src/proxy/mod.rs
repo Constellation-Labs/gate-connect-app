@@ -685,53 +685,75 @@ struct TrafficMark {
 static TRAFFIC_SEEN: std::sync::Mutex<TrafficSeen> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Starts the sweeper thread on the first request seen, and only then: a
-/// process that never routes anything never has the thread.
-static TRAFFIC_SWEEPER: std::sync::Once = std::sync::Once::new();
-
-/// Register the traffic observer. First registration wins; later calls are
-/// ignored (the shell registers exactly once at setup).
+/// Register the traffic observer and start the sweeper that feeds it. First
+/// registration wins; later calls are ignored (the shell registers exactly once
+/// at setup), and only the winning one starts a thread.
+///
+/// The thread starts here rather than on the first request seen, and that is
+/// a data-plane decision: `thread::spawn` panics when the OS refuses a thread,
+/// and a `Once` that panicked stays poisoned, so a spawn on the request path
+/// would have turned one refused thread into a panic on every gateway-bound
+/// request for the rest of the process. Here a refusal costs the refresh signal
+/// and nothing else; the window still re-reads on its focus edge. The thread
+/// itself is a 1s tick over a map with one entry per tool that has sent
+/// anything, so a shell that never routes (the Linux GUI, whose engine lives in
+/// the daemon) pays for a sleep and an empty walk.
 pub fn set_traffic_observer(observer: impl Fn(&[Option<&'static str>]) + Send + Sync + 'static) {
-    let _ = TRAFFIC_OBSERVER.set(Box::new(observer));
+    if TRAFFIC_OBSERVER.set(Box::new(observer)).is_err() {
+        return;
+    }
+    let sweep = std::thread::Builder::new()
+        .name("gate-traffic-sweeper".into())
+        .spawn(|| {
+            // Set above, before this thread existed; the `else` is unreachable
+            // and keeps the loop from asking again on every tick.
+            let Some(observer) = TRAFFIC_OBSERVER.get() else {
+                return;
+            };
+            loop {
+                std::thread::sleep(TRAFFIC_SWEEP_TICK);
+                let due = match TRAFFIC_SEEN.lock() {
+                    Ok(mut seen) => traffic_due(&mut seen, std::time::Instant::now()),
+                    // Poisoned by a panic elsewhere. Stop sweeping rather than
+                    // spin; the window still re-reads on its focus edge.
+                    Err(_) => return,
+                };
+                if due.is_empty() {
+                    continue;
+                }
+                if engine::debug_log() {
+                    eprintln!("[gate-proxy] traffic observed from {due:?}");
+                }
+                observer(&due);
+            }
+        });
+    if let Err(e) = sweep {
+        eprintln!("[gate-proxy] traffic sweeper could not start; activity reads will refresh on focus only: {e}");
+    }
 }
 
 /// Record that a gateway-bound request from `tool` is leaving now. Called by
 /// [`inject_attribution`] on every such request; a no-op unless a shell has
-/// registered to hear about it.
+/// registered to hear about it. One map update under the lock, no I/O.
 fn note_traffic(tool: Option<&'static str>) {
     if TRAFFIC_OBSERVER.get().is_none() {
         return;
     }
-    let now = std::time::Instant::now();
     if let Ok(mut seen) = TRAFFIC_SEEN.lock() {
-        let mark = seen.entry(tool).or_insert(TrafficMark {
-            last_seen: now,
-            pending_since: None,
-            last_reported: None,
-        });
-        mark.last_seen = now;
-        mark.pending_since.get_or_insert(now);
+        mark_traffic(&mut seen, tool, std::time::Instant::now());
     }
-    TRAFFIC_SWEEPER.call_once(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(TRAFFIC_SWEEP_TICK);
-            let due = match TRAFFIC_SEEN.lock() {
-                Ok(mut seen) => traffic_due(&mut seen, std::time::Instant::now()),
-                // Poisoned by a panic elsewhere. Stop sweeping rather than
-                // spin; the window still re-reads on its focus edge.
-                Err(_) => return,
-            };
-            if due.is_empty() {
-                continue;
-            }
-            if engine::debug_log() {
-                eprintln!("[gate-proxy] traffic observed from {due:?}");
-            }
-            if let Some(observer) = TRAFFIC_OBSERVER.get() {
-                observer(&due);
-            }
-        });
+}
+
+/// The recording step of [`note_traffic`]: `tool` sent a request at `now`.
+/// Separate so the tests drive the same step the request path does.
+fn mark_traffic(seen: &mut TrafficSeen, tool: Option<&'static str>, now: std::time::Instant) {
+    let mark = seen.entry(tool).or_insert(TrafficMark {
+        last_seen: now,
+        pending_since: None,
+        last_reported: None,
     });
+    mark.last_seen = now;
+    mark.pending_since.get_or_insert(now);
 }
 
 /// Which tools are due a report at `now`, marking them reported.
@@ -763,24 +785,17 @@ fn traffic_due(seen: &mut TrafficSeen, now: std::time::Instant) -> Vec<Option<&'
 
 #[cfg(test)]
 mod traffic_tests {
-    use super::{traffic_due, TrafficMark, TrafficSeen, TRAFFIC_QUIET, TRAFFIC_REPORT_INTERVAL};
+    use super::{mark_traffic, traffic_due, TrafficSeen, TRAFFIC_QUIET, TRAFFIC_REPORT_INTERVAL};
     use std::time::{Duration, Instant};
 
     const TOOL: Option<&str> = Some("claude-code");
 
     /// A map with one tool whose requests landed at each of `at` (offsets from
-    /// `t0`), none reported yet.
+    /// `t0`), none reported yet. Recorded the way the request path records.
     fn seen(t0: Instant, at: &[u64]) -> TrafficSeen {
         let mut map = TrafficSeen::new();
         for &secs in at {
-            let now = t0 + Duration::from_secs(secs);
-            let mark = map.entry(TOOL).or_insert(TrafficMark {
-                last_seen: now,
-                pending_since: None,
-                last_reported: None,
-            });
-            mark.last_seen = now;
-            mark.pending_since.get_or_insert(now);
+            mark_traffic(&mut map, TOOL, t0 + Duration::from_secs(secs));
         }
         map
     }
@@ -821,9 +836,7 @@ mod traffic_tests {
         // A second burst straight after the report goes quiet well before the
         // interval is up: it waits for the interval, then lands.
         let again = t0 + TRAFFIC_QUIET + Duration::from_secs(1);
-        let mark = map.get_mut(&TOOL).expect("mark");
-        mark.last_seen = again;
-        mark.pending_since.get_or_insert(again);
+        mark_traffic(&mut map, TOOL, again);
         assert!(traffic_due(&mut map, again + TRAFFIC_QUIET).is_empty());
         assert_eq!(
             traffic_due(&mut map, t0 + TRAFFIC_QUIET + TRAFFIC_REPORT_INTERVAL),
@@ -836,14 +849,7 @@ mod traffic_tests {
         let t0 = Instant::now();
         let mut map = seen(t0, &[0]);
         let late = t0 + Duration::from_secs(3);
-        map.insert(
-            Some("codex"),
-            TrafficMark {
-                last_seen: late,
-                pending_since: Some(late),
-                last_reported: None,
-            },
-        );
+        mark_traffic(&mut map, Some("codex"), late);
         // Only the first has been quiet long enough.
         assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
         assert_eq!(

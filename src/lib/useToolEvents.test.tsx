@@ -170,4 +170,18 @@ describe("useToolEvents", () => {
     expect(seen.at(-1)?.paged).toBe(false);
     expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a"]);
   });
+
+  it("does not count a refused further page as paged", async () => {
+    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
+    const { seen } = harness({ tool: "claude-code" });
+    await flush();
+
+    mockCall.mockRejectedValueOnce(new Error("429"));
+    await act(async () => {
+      seen.at(-1)?.loadMore();
+      await Promise.resolve();
+    });
+    expect(seen.at(-1)?.paged).toBe(false);
+    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a"]);
+  });
 });

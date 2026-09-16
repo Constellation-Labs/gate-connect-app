@@ -184,7 +184,9 @@ export function useToolEvents(
   /** Whether `loadMore` has extended the list past page one. A `reload` puts
    *  page one back in its place, so a caller refreshing on its own initiative
    *  rather than the user's checks this first: pulling pages out from under
-   *  someone reading them is worse than a stale first page. */
+   *  someone reading them is worse than a stale first page. Set when the
+   *  further page lands, not when it is asked for: a refused page extended
+   *  nothing, and must not stop the list following traffic. */
   paged: boolean;
 } {
   const [view, setView] = useState<ToolEventsView | null>(null);
@@ -212,6 +214,7 @@ export function useToolEvents(
               ? { entries: [...prev.entries, ...page.entries], nextCursor: page.nextCursor }
               : page,
           );
+          if (cursor) setPaged(true);
         })
         .catch((e) => {
           if (mine !== attempt.current) return;
@@ -254,10 +257,7 @@ export function useToolEvents(
     // the control when `nextCursor` is null, but that is the pane being careful
     // about a hazard the hook should not have.
     loadMore: () => {
-      if (view?.nextCursor) {
-        setPaged(true);
-        fetchPage(view.nextCursor);
-      }
+      if (view?.nextCursor) fetchPage(view.nextCursor);
     },
     reload: () => {
       setPaged(false);

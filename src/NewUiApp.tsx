@@ -641,18 +641,26 @@ export function NewUiApp() {
   // the next `listen()`.
   const refreshActivityRef = useRef(refreshActivity);
   refreshActivityRef.current = refreshActivity;
+  /** Senders reported while the window was hidden, not yet read for. Null when
+   *  nothing was missed. The focus edge drains it. */
+  const missedWhileHidden = useRef<(string | null)[] | null>(null);
 
   // The relay saw routed traffic leave for the gateway (`proxy::note_traffic`):
   // the one signal that says these reads are stale for certain. They never
   // poll - `useActivity` says why - so this is how the pane keeps up with a
   // terminal beside it. Already coalesced in the core to one report per tool
   // per 30s, after its burst has gone quiet, so nothing is debounced here.
-  // A hidden window skips it: the focus edge below re-reads on the way back,
-  // and a minimised window refreshing every 30s would be spending the shared
-  // budget on a screen nobody is looking at.
+  // A hidden window does not read - a minimised one refreshing every 30s would
+  // be spending the shared budget on a screen nobody is looking at - but it
+  // remembers who sent, so the focus edge below reads for exactly them on the
+  // way back. Remembering matters: on macOS a window fully behind a terminal
+  // counts as hidden, and that terminal is where the traffic comes from.
   useEffect(() => {
     const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
-      if (document.hidden) return;
+      if (document.hidden) {
+        missedWhileHidden.current = [...(missedWhileHidden.current ?? []), ...e.payload];
+        return;
+      }
       refreshActivityRef.current(e.payload);
     });
     return () => {
@@ -1058,13 +1066,17 @@ export function NewUiApp() {
     // condition for the reason the interval above is - the sweep costs two
     // network probes, and there is nothing to learn from it otherwise.
     if (reopenWaiting) void refreshVerdicts();
-    // The same edge for the activity reads: it is also the likeliest moment for
-    // the numbers to have moved, and it covers what the relay's signal cannot
-    // reach - a window that was hidden when it fired, and Linux, where the
-    // engine runs in the helper daemon and the signal never reaches this
-    // process. Guarded by age so alt-tabbing back and forth is not a read each
-    // time.
-    if (Date.now() - activityReadAt.current >= ACTIVITY_REOPEN_MIN_MS) {
+    // The same edge for the activity reads. A report that arrived while the
+    // window was hidden is read for now, whatever the age: it is a certain
+    // signal that was only deferred, not a guess. Otherwise this covers what
+    // the relay's signal cannot reach - Linux, where the engine runs in the
+    // helper daemon and the signal never reaches this process - and is guarded
+    // by age so alt-tabbing back and forth is not a read each time.
+    const missed = missedWhileHidden.current;
+    if (missed) {
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    } else if (Date.now() - activityReadAt.current >= ACTIVITY_REOPEN_MIN_MS) {
       refreshActivityRef.current(null);
     }
   });
@@ -3823,12 +3835,12 @@ export function NewUiApp() {
   );
 }
 
-/** Before a reading lands, no section has one. Kept out of the render so the
- *  object identity is stable and the pane does not repaint for it. */
 /** How old the activity reads have to be before the window being focused again
  *  re-reads them. The same spacing the relay's traffic reports keep. */
 const ACTIVITY_REOPEN_MIN_MS = 30_000;
 
+/** Before a reading lands, no section has one. Kept out of the render so the
+ *  object identity is stable and the pane does not repaint for it. */
 const ALL_MISSING = { chart: true, policies: true, savings: true };
 
 /** Shown before the first load lands, and on the per-app pane whose own reading
