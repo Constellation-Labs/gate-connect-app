@@ -223,6 +223,100 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     );
 }
 
+/// A proxy credential must not be forwarded, on either arm.
+///
+/// `Proxy-Authorization` addresses the proxy itself and stops there. The engine
+/// stripped it on the CONNECT arm only, on the reasoning that only CONNECT
+/// carries one - true of a tunnelled client, which authenticates once and whose
+/// inner requests inherit nothing.
+///
+/// It is not true of a client handed `HTTP_PROXY` as well as `HTTPS_PROXY`. Its
+/// plain-HTTP requests arrive in absolute form on the other arm, each carrying
+/// the credential, and nothing downstream removed it: `apply_rewrite` takes off
+/// only the two Gate headers and hudsucker forwards what it is handed. So the
+/// value reached the gateway, and on a BYOK passthrough it would have reached
+/// the upstream provider.
+///
+/// Non-secret, so this is a fingerprint rather than a credential leak - the
+/// value names which tool Gate configured. That is exactly why it is worth
+/// stripping: it is ours, it identifies the user's tooling, and it has no
+/// business past the hop it addresses.
+#[tokio::test]
+async fn a_proxy_credential_is_stripped_on_the_plain_http_arm_too() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    // Userinfo on the proxy URL is what makes the client send the header, which
+    // is how Gate's own route selectors reach the engine - so this is the shape
+    // a connected tool actually produces, not a synthetic one.
+    let client = reqwest::Client::builder()
+        .proxy(
+            reqwest::Proxy::all(format!(
+                "http://gate-probe:route@127.0.0.1:{}",
+                engine.port()
+            ))
+            .unwrap(),
+        )
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    // Plain http, so there is no CONNECT: the request goes to the proxy in
+    // absolute form and lands on the arm that had no strip.
+    let resp = client
+        .post("http://api.anthropic.com/v1/messages")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(
+        resp.status().is_success(),
+        "gateway returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "gateway should have received one request");
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("proxy-authorization"),
+        None,
+        "the proxy credential must not be forwarded past the hop it addresses"
+    );
+    // The request itself is otherwise untouched, so the strip is not paying for
+    // itself with a broken rewrite.
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer app-token"),
+        "the client's own credential must still be forwarded untouched"
+    );
+}
+
 /// Claude Code has its own explicit proxy selector because the Desktop domain
 /// is independently switchable. Even with that catalog entry off, a connected
 /// Claude Code process must still be intercepted instead of silently reaching
