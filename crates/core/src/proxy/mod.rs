@@ -35,6 +35,7 @@
 //! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
 use crate::account::BillingMode;
+use crate::registry::ToolId;
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -1447,7 +1448,11 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// and only when a tool was positively identified. An unrecognised tool sends no
 /// override at all rather than a best guess, because guessing here would serve -
 /// and charge for - a model chosen for a different tool.
-fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
+fn inject_attribution(
+    headers: &mut HeaderMap,
+    domain: Option<&str>,
+    routed_tool: Option<&'static str>,
+) {
     headers.remove(GATE_INSTALL_ID_HEADER);
     if let Some(id) = crate::primitives::install_id_cached() {
         if let Ok(value) = HeaderValue::from_str(id) {
@@ -1464,7 +1469,14 @@ fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
     {
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
-    let tool = client_tool(headers, domain);
+    // The route wins over the User-Agent, and only ever adds: `routed_tool` is
+    // `Some` exactly when the request arrived on a base URL Gate Connect wrote
+    // with a tool marker in it, which is evidence of our own making rather than
+    // a substring match on a string the tool picks. The guess stays underneath
+    // for everything the marker cannot reach - the forward-proxy engine, where
+    // there is no URL to write, and any relay base URL written before the
+    // marker existed and not yet reconciled.
+    let tool = routed_tool.or_else(|| client_tool(headers, domain));
     // Every gateway-bound request comes through here, on both paths, which is
     // what makes this the one place the window can be told traffic happened.
     note_traffic(tool);
@@ -1568,7 +1580,7 @@ pub mod testing {
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
-        super::inject_attribution(headers, None);
+        super::inject_attribution(headers, None, None);
     }
 
     /// Whether the injection decided Gate serves this request.
@@ -1863,8 +1875,9 @@ pub(crate) fn inject_gate_credential(
     org_id: Option<&str>,
     mode: BillingMode,
     domain: Option<&str>,
+    tool: Option<&'static str>,
 ) -> Result<bool> {
-    inject_attribution(headers, domain);
+    inject_attribution(headers, domain, tool);
     if mode == BillingMode::Payg {
         strip_client_auth(headers);
     }
@@ -2774,16 +2787,27 @@ pub struct ResolvedEndpoint {
 
 impl ResolvedEndpoint {
     /// The base URL a tool config points at to route this endpoint through the
-    /// relay: `<relay>/<slug><client_path>`.
+    /// relay: `<relay>/__gate/t/<tool>/<slug><client_path>`.
     ///
     /// The slug segment is how the relay knows which upstream a request belongs
     /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
-    /// carrying it in a config file. It is stripped back off before anything is
-    /// forwarded, leaving exactly `client_path` + whatever the tool appended.
-    pub fn relay_base_url(&self, relay_base_url: &str) -> String {
+    /// carrying it in a config file. The `tool` segment ahead of it names who
+    /// was configured, so attribution stops depending on the request's
+    /// `User-Agent` - see [`relay::TOOL_PATH_PREFIX`]. Both are stripped back
+    /// off before anything is forwarded, leaving exactly `client_path` +
+    /// whatever the tool appended, so neither reaches the gateway or the
+    /// upstream.
+    ///
+    /// `tool` is the integration's own [`ToolId`], not a lookup. That is the
+    /// whole point: the call site is inside the module that configures that
+    /// tool, which is the one place in the system where "which tool is this" is
+    /// known rather than inferred.
+    pub fn relay_base_url(&self, relay_base_url: &str, tool: ToolId) -> String {
         format!(
-            "{}/{}{}",
+            "{}{}{}/{}{}",
             relay_base_url.trim_end_matches('/'),
+            relay::TOOL_PATH_PREFIX,
+            tool.slug(),
             self.slug,
             self.client_path
         )
@@ -4609,6 +4633,58 @@ mod tests {
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
+    /// The route outranks the `User-Agent`, and the header the caller sent
+    /// outranks neither.
+    ///
+    /// The three-way distinction is the point. A base URL carrying a tool marker
+    /// is something *Gate Connect wrote*, from inside the integration that knows
+    /// which tool it was configuring, so it is better evidence than a substring
+    /// of a string the tool picks for itself. An `x-gate-client` the caller set
+    /// is not evidence at all and stays overwritten either way - otherwise any
+    /// local process could file its spend under another tool's name.
+    #[test]
+    fn a_routed_tool_outranks_the_user_agent_but_a_claimed_header_outranks_nothing() {
+        let attributed = |ua: Option<&str>, routed: Option<&'static str>| {
+            let mut h = HeaderMap::new();
+            if let Some(ua) = ua {
+                h.insert(
+                    hyper::header::USER_AGENT,
+                    HeaderValue::from_str(ua).unwrap(),
+                );
+            }
+            // Always present and always wrong, so every case below also asserts
+            // that the caller's own claim was dropped rather than merged.
+            h.insert(
+                HeaderName::from_static(GATE_CLIENT_HEADER),
+                HeaderValue::from_static("openclaw"),
+            );
+            inject_attribution(&mut h, None, routed);
+            h.get(GATE_CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+
+        // The marker is the whole reason this change exists: a User-Agent that
+        // no longer names the tool - a runtime banner in front of the token is
+        // enough - still attributes correctly when the route named it.
+        assert_eq!(
+            attributed(Some("Bun/1.2.3 opencode/0.4.2"), Some("opencode")),
+            Some("opencode".to_string())
+        );
+        // And with no User-Agent at all, which is where the guess has nothing.
+        assert_eq!(attributed(None, Some("codex")), Some("codex".to_string()));
+
+        // No marker: the guess still runs, so nothing that works today stops.
+        assert_eq!(
+            attributed(Some("opencode/0.4.2"), None),
+            Some("opencode".to_string())
+        );
+
+        // Neither signal: unattributed, never the caller's claim.
+        assert_eq!(attributed(Some("curl/8.7.1"), None), None);
+        assert_eq!(attributed(None, None), None);
+    }
+
     #[test]
     fn attribution_overwrites_whatever_the_caller_claimed() {
         let mut h = HeaderMap::new();
@@ -4621,7 +4697,7 @@ mod tests {
             HeaderValue::from_static("claude-code"),
         );
 
-        inject_attribution(&mut h, None);
+        inject_attribution(&mut h, None, None);
 
         // The client header is derived from the User-Agent, and there is none
         // here, so the claim is dropped rather than believed.
@@ -4702,7 +4778,16 @@ mod tests {
             HeaderValue::from_static("sk-ant-api03-app"),
         );
 
-        inject_gate_credential(&mut h, "sk-gw-ours", None, None, BillingMode::Payg, None).unwrap();
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            None,
+            None,
+            BillingMode::Payg,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
         assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
@@ -4728,6 +4813,7 @@ mod tests {
             Some("token"),
             Some("org"),
             BillingMode::Byok,
+            None,
             None,
         )
         .unwrap();

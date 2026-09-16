@@ -147,7 +147,7 @@ fn relay_base_url_for(relay_base: &str, mode: AuthMode) -> Result<String> {
     let endpoint = format!("{}{}", mode.upstream_url(), mode.gateway_path_suffix());
     let resolved = crate::proxy::resolve_endpoint(&endpoint)
         .with_context(|| format!("Gate has no upstream domain for {endpoint:?}"))?;
-    Ok(resolved.relay_base_url(relay_base))
+    Ok(resolved.relay_base_url(relay_base, ToolId::Codex))
 }
 
 /// The path suffix on Codex's side of the relay, for the passthrough stub that
@@ -779,7 +779,7 @@ model_provider = "gate"
 profile = "work"
 
 [model_providers.gate]
-base_url = "http://127.0.0.1:9977/openai/v1"
+base_url = "http://127.0.0.1:9977/__gate/t/codex/openai/v1"
 
 [profiles.work]
 model_provider = "openai"
@@ -840,11 +840,11 @@ model_provider = "openai"
         // gateway concatenates onto `https://chatgpt.com/backend-api`.
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977", AuthMode::Chatgpt).unwrap(),
-            "http://127.0.0.1:9977/chatgpt/codex"
+            "http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex"
         );
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977/", AuthMode::Chatgpt).unwrap(),
-            "http://127.0.0.1:9977/chatgpt/codex"
+            "http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex"
         );
     }
 
@@ -852,7 +852,7 @@ model_provider = "openai"
     fn apikey_mode_base_url_carries_the_openai_slug_and_v1_path() {
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977", AuthMode::Apikey).unwrap(),
-            "http://127.0.0.1:9977/openai/v1"
+            "http://127.0.0.1:9977/__gate/t/codex/openai/v1"
         );
     }
 
@@ -915,7 +915,9 @@ model_provider = "openai"
         // slug the relay routes on, and ends in /codex so Codex sends
         // /chatgpt/codex/responses. The relay strips the slug and forwards
         // /codex/responses.
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:9977/chatgpt/codex\""));
+        assert!(
+            rendered.contains("base_url = \"http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex\"")
+        );
         // Nothing else is written: no header table, no upstream hint, and above
         // all no credential - the relay injects all of it live.
         assert!(!rendered.contains("http_headers"));
