@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
-import { ProviderMark, providerMarkFor } from "./ProviderMark";
+import { MARK_NAMES, ProviderMark, providerMarkFor } from "./ProviderMark";
 
 afterEach(cleanup);
 
@@ -94,5 +94,46 @@ describe("providerMarkFor", () => {
   it("hides the glyph from assistive tech, which reads the name beside it", () => {
     const { container } = render(<ProviderMark name="anthropic" />);
     expect(container.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+/**
+ * Structural invariants over every mark, which is the only thing a unit test can
+ * say about vendored art.
+ *
+ * These exist because a mark can render *nothing* while every other test passes:
+ * `poolside` did. Its `<mask>` lost `width`, `height` and `mask-type: alpha`
+ * when the art was converted, and without the last of those a gradient-filled
+ * mask is read as luminance, so the whole mark resolved to transparent. Nothing
+ * threw, the paths were all present, and the assertions above were happy.
+ */
+describe("every mark's geometry", () => {
+  it.each(MARK_NAMES)("%s draws at least one path", (name) => {
+    const { container } = render(<ProviderMark name={name} />);
+    const paths = [...container.querySelectorAll("path")];
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.some((p) => (p.getAttribute("d") ?? "").length > 0)).toBe(true);
+  });
+
+  it.each(MARK_NAMES)("%s resolves every url(#id) it references", (name) => {
+    const { container } = render(<ProviderMark name={name} />);
+    const declared = new Set([...container.querySelectorAll("[id]")].map((n) => n.id));
+    const referenced = [...container.querySelectorAll("*")].flatMap((n) =>
+      [...n.attributes]
+        .map((a) => /^url\(#(.+)\)$/.exec(a.value)?.[1])
+        .filter((v): v is string => v !== undefined),
+    );
+    for (const ref of referenced) expect(declared, `${name} -> #${ref}`).toContain(ref);
+  });
+
+  it.each(MARK_NAMES)("%s gives any mask a region and an alpha type", (name) => {
+    // The poolside failure exactly: a mask with no width/height covers nothing
+    // useful, and one without `mask-type: alpha` is read as luminance.
+    const { container } = render(<ProviderMark name={name} />);
+    for (const mask of container.querySelectorAll("mask")) {
+      expect(mask.getAttribute("width"), `${name} mask width`).toBeTruthy();
+      expect(mask.getAttribute("height"), `${name} mask height`).toBeTruthy();
+      expect(mask.style.maskType, `${name} mask-type`).toBe("alpha");
+    }
   });
 });
