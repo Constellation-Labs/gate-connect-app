@@ -2061,7 +2061,6 @@ export function NewUiApp() {
         // one. The local id always exists. `x-gate-install-id` sends this same
         // value, so the two never disagree.
         deviceName: device ?? "Unavailable",
-        deviceNamed: prefs ? prefs.device_name !== null : undefined,
         onRenameDevice: device
           ? () => settings.openRenameDevice(device)
           : undefined,
