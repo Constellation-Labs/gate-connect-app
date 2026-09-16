@@ -18,13 +18,16 @@
 //! "provider": {
 //!   "<id>": {
 //!     "options": {
-//!       "baseURL": "http://127.0.0.1:<relay-port>/<slug><client-path>"
+//!       "baseURL": "http://127.0.0.1:<relay-port>/__gate/t/opencode/<slug><client-path>"
 //!     }
 //!   }
 //! }
 //! ```
 //!
-//! That single value is the entire write. Both parts come from
+//! That single value is the entire write. The `/__gate/t/opencode` marker names
+//! the tool to the relay, which is what lets `x-gate-client` be read off the
+//! route we wrote rather than guessed from OpenCode's `User-Agent`; see
+//! [`crate::proxy::relay`]'s `TOOL_PATH_PREFIX`. The rest comes from
 //! [`crate::proxy::resolve_endpoint`]: `<slug>` names the catalog domain, which
 //! is how the relay knows where to forward, and `<client-path>` is whatever sits
 //! between the upstream host and the SDK's own suffix - `/v1` for Anthropic and
@@ -463,7 +466,7 @@ impl Integration for OpenCode {
                 skipped_off_catalog.push(target.id);
                 continue;
             };
-            let base_url = resolved.relay_base_url(relay_base_url);
+            let base_url = resolved.relay_base_url(relay_base_url, ToolId::OpenCode);
             apply_override(provider_map, &mut state, target, &base_url);
             applied += 1;
         }
@@ -656,7 +659,7 @@ fn restore_provider(
 fn expected_base_url(provider_id: &str, relay_base_url: &str) -> Option<String> {
     let target = KNOWN_PROVIDERS.iter().find(|p| p.id == provider_id)?;
     let resolved = crate::proxy::resolve_endpoint(target.endpoint)?;
-    Some(resolved.relay_base_url(relay_base_url))
+    Some(resolved.relay_base_url(relay_base_url, ToolId::OpenCode))
 }
 
 // --- precedence -------------------------------------------------------
@@ -841,7 +844,7 @@ mod tests {
         let same: Map<String, Value> = json!({
             "provider": {
                 "anthropic": {
-                    "options": { "baseURL": "http://127.0.0.1:9977/anthropic/v1" }
+                    "options": { "baseURL": "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1" }
                 }
             }
         })
@@ -903,24 +906,24 @@ mod tests {
         // OpenRouter, whose API lives under `/api`.
         assert_eq!(
             expected_base_url("anthropic", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/anthropic/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1")
         );
         assert_eq!(
             expected_base_url("openai", "http://127.0.0.1:9977/").as_deref(),
-            Some("http://127.0.0.1:9977/openai/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/openai/v1")
         );
         assert_eq!(
             expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/openrouter/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1")
         );
         // Zen and Go keep their own paths under the shared opencode.ai upstream.
         assert_eq!(
             expected_base_url("opencode", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/opencode/zen/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/opencode/zen/v1")
         );
         assert_eq!(
             expected_base_url("opencode-go", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/opencode/zen/go/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/opencode/zen/go/v1")
         );
         // An id that is not one we redirect has no expected value at all.
         assert_eq!(expected_base_url("nope", "http://127.0.0.1:9977"), None);

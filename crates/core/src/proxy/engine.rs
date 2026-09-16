@@ -1670,6 +1670,10 @@ pub(crate) fn apply_rewrite<T>(
         org_id,
         mode,
         domain,
+        // The engine's half of the established-tool pair. There is no base URL
+        // here to carry a marker - this is a forward proxy - but there is a
+        // CONNECT, and the selector was latched off it. The relay is the mirror
+        // image: no CONNECT, but a base URL that is ours to write.
         selector,
     )?;
 
