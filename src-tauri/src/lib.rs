@@ -691,6 +691,10 @@ fn arm_crash_safety_net(app: &tauri::AppHandle) {
                         if let Err(e) = autostart_optout::set_pending(false) {
                             eprintln!("[gate] clearing safety-net marker failed: {e}");
                         }
+                    } else {
+                        // A fresh LaunchAgent, so it carries none of our policy.
+                        #[cfg(target_os = "macos")]
+                        arm_crash_restart(app);
                     }
                 }
                 Err(e) => {
@@ -809,6 +813,80 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, 
     })
 }
 
+/// Re-apply the crash-restart policy to the LaunchAgent.
+///
+/// That file belongs to `tauri-plugin-autostart`, which writes it from a fixed
+/// template and truncates whatever was there, so every enable erases the
+/// policy. Hence this runs after each one and again at startup, which also
+/// picks up an install that had launch-at-login on before this feature
+/// existed. `arm` is idempotent and treats a missing plist as nothing to do,
+/// so it is always safe to call.
+///
+/// Best-effort: failing to arm costs the next crash its relaunch, which is the
+/// behaviour every build before this one had.
+#[cfg(target_os = "macos")]
+fn arm_crash_restart(app: &tauri::AppHandle) {
+    use gate_connect_core::crash_restart;
+    let result = crash_restart::launch_agent_plist(&app.package_info().name)
+        .and_then(|plist| crash_restart::arm(&plist));
+    if let Err(e) = result {
+        eprintln!("[gate] arming crash restart failed: {e:#}");
+    }
+}
+
+/// Stop asking launchd to bring us back, leaving the rest of the LaunchAgent
+/// alone so the user's launch-at-login choice survives. Called when the streak
+/// of launches that never got off the ground hits its ceiling; a clean exit
+/// clears that streak and the next startup arms again.
+#[cfg(target_os = "macos")]
+fn disarm_crash_restart(app: &tauri::AppHandle, streak: u32) {
+    use gate_connect_core::crash_restart;
+    let result = crash_restart::launch_agent_plist(&app.package_info().name)
+        .and_then(|plist| crash_restart::disarm(&plist));
+    match result {
+        Ok(_) => report_backend_error(
+            "crash_restart",
+            format!("automatic restart after a crash is off: {streak} launches in a row ended before the app was up"),
+        ),
+        Err(e) => eprintln!("[gate] disarming crash restart failed: {e:#}"),
+    }
+}
+
+/// Ask Windows Error Reporting to relaunch us after a crash or a hang.
+///
+/// The macOS half of this is a file; Windows has none, and this one call is
+/// the whole mechanism. The flags are subtractive, and the two we pass narrow
+/// it to the cases we want: an installer patch or a system reboot must not
+/// bring the app back on its own, because neither is a crash and the user's
+/// launch-at-login setting already answers whether it starts at boot.
+///
+/// `--silent` so the relaunch comes up in the tray the way a login launch
+/// does, rather than throwing a window in front of whatever the user is doing.
+#[cfg(target_os = "windows")]
+fn register_application_restart() {
+    // Declared rather than pulled from a crate: it is one function in
+    // kernel32, which std already links on this target.
+    extern "system" {
+        fn RegisterApplicationRestart(pwz_commandline: *const u16, dw_flags: u32) -> i32;
+    }
+    /// Do not restart after an installer patch.
+    const RESTART_NO_PATCH: u32 = 4;
+    /// Do not restart after a system reboot.
+    const RESTART_NO_REBOOT: u32 = 8;
+
+    let mut command_line: Vec<u16> = "--silent".encode_utf16().collect();
+    command_line.push(0);
+    // SAFETY: a documented kernel32 entry point, passed a null-terminated
+    // UTF-16 buffer that outlives the call and a flags word. It only records a
+    // preference with the OS and touches nothing of ours.
+    let hr = unsafe {
+        RegisterApplicationRestart(command_line.as_ptr(), RESTART_NO_PATCH | RESTART_NO_REBOOT)
+    };
+    if hr != 0 {
+        eprintln!("[gate] registering automatic restart failed (hresult {hr:#x})");
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
@@ -819,7 +897,12 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
     let mgr = app.autolaunch();
     if enabled {
         autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
-        mgr.enable().map_err(|e| format!("{e:#}"))
+        mgr.enable().map_err(|e| format!("{e:#}"))?;
+        // The plugin has just rewritten the LaunchAgent from its template,
+        // taking the crash-restart policy with it. Put it back.
+        #[cfg(target_os = "macos")]
+        arm_crash_restart(&app);
+        Ok(())
     } else if autostart_optout::record_disable().map_err(|e| format!("{e:#}"))? {
         mgr.disable().map_err(|e| format!("{e:#}"))
     } else {
@@ -2006,6 +2089,42 @@ pub fn run() {
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            // Open the crash-restart session before anything that could itself
+            // crash, and decide from the last one whether to keep asking the OS
+            // to bring us back. macOS and Windows only: Linux has no exit
+            // handler to close the session with, so every start would read as
+            // unclean, and its engine is a detached daemon that a GUI crash
+            // does not strand anyway.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            match gate_connect_core::crash_restart::record_start() {
+                Ok(verdict) => {
+                    if verdict.previous_was_unclean {
+                        eprintln!(
+                            "[gate] previous session ended without a clean exit ({} in a row)",
+                            verdict.unclean_streak
+                        );
+                    }
+                    #[cfg(target_os = "macos")]
+                    if verdict.exhausted {
+                        disarm_crash_restart(app.handle(), verdict.unclean_streak);
+                    } else {
+                        arm_crash_restart(app.handle());
+                    }
+                    #[cfg(target_os = "windows")]
+                    if verdict.exhausted {
+                        eprintln!(
+                            "[gate] not registering automatic restart: {} launches in a row ended before the app was up",
+                            verdict.unclean_streak
+                        );
+                    } else {
+                        register_application_restart();
+                    }
+                }
+                // Losing the bookkeeping costs a relaunch after the next crash,
+                // which is what every build before this one did.
+                Err(e) => eprintln!("[gate] crash-restart bookkeeping failed: {e:#}"),
+            }
+
             // Engine crash fail-safe UI: the manager reverts the system proxy
             // on its own, but it has no window handle - without this observer
             // the tray kept its green "routing on" dot and an open popover
@@ -2122,6 +2241,11 @@ pub fn run() {
                         if let Err(e) = app.autolaunch().enable() {
                             eprintln!("[gate] enabling launch-at-login default failed: {e}");
                             report_backend_error("launch_at_login", format!("{e}"));
+                        } else {
+                            // Same rewrite as every other enable; see
+                            // `arm_crash_restart`.
+                            #[cfg(target_os = "macos")]
+                            arm_crash_restart(app.handle());
                         }
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = std::fs::write(&marker, b"1");
@@ -2628,6 +2752,13 @@ pub fn run() {
             // is promptless and leaves the CA trusted.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
+                // First, and unconditionally: reaching this event at all is what
+                // makes the exit clean. Recording it clears the unclean streak,
+                // so a user who quits normally after a crash gets the restart
+                // policy back rather than carrying the streak forever.
+                if let Err(e) = gate_connect_core::crash_restart::record_clean_exit() {
+                    eprintln!("[gate] recording clean exit failed: {e:#}");
+                }
                 if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
