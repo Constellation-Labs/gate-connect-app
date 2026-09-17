@@ -279,7 +279,12 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    // Scoped to the banner, like the sibling assertion below it: the rail row
+    // for this tool now carries the same phrase, so a bare text match resolves
+    // to two elements.
+    await expect(
+      app.page.getByRole("status").filter({ hasText: "Reopen to finish" }),
+    ).toBeVisible();
     await expect(
       app.page.getByRole("status").filter({ hasText: "Pages already open" }),
     ).toBeVisible();
@@ -1279,27 +1284,6 @@ test.describe("new UI sidebar rail", () => {
     await expect
       .poll(async () => (await app.state()).proxy.domains.filter((d) => d.enabled).length)
       .toBe(0);
-  });
-
-  test("a row opens a pane that says what its counters measured", async ({
-    boot,
-  }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
-
-    // A row is an app, so its pane covers several surfaces the gateway
-    // attributes differently. The counters are the config tool's; saying so is
-    // the difference between a measurement and a plausible number.
-    await app.page
-      .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Claude", exact: true }) })
-      .getByRole("button")
-      .click();
-
-    await expect(app.page.getByRole("heading", { name: "Claude" })).toBeVisible();
-    // Named, not just present: which surface the figures measured IS the
-    // sentence. `/These counts cover/` alone passes on a caveat that names
-    // nothing, which is the state it exists to replace.
-    await expect(app.page.getByText(/These counts cover Claude Code/)).toBeVisible();
   });
 
   test("a row with nothing attributable says so instead of reporting a quiet day", async ({

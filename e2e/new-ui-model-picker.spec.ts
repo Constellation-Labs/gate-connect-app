@@ -60,6 +60,21 @@ async function openApp(app: { page: import("@playwright/test").Page }) {
   await app.page.getByRole("button", { name: "Claude" }).first().click();
 }
 
+/**
+ * Put the app on a Gate model, which is the only branch that draws a balance.
+ *
+ * The card names credits only while Gate is the source: under App default the
+ * app sends Gate nothing to bill. So every credits case has to make the switch
+ * first, and it is the same three clicks the flow test at the top walks.
+ */
+async function switchToGateModel(app: { page: import("@playwright/test").Page }) {
+  await app.page.getByRole("radio", { name: /Gate model/ }).click();
+  await app.page.getByRole("dialog").getByRole("checkbox", { name: catalogue[0].id }).click();
+  await app.page.getByRole("button", { name: "Apply selections" }).click();
+  await app.page.getByRole("button", { name: "Use Gate credits" }).click();
+  await expect(app.page.getByRole("dialog")).toHaveCount(0);
+}
+
 test.describe("new UI model picker", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -102,7 +117,7 @@ test.describe("new UI model picker", () => {
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
-    await expect(app.page.getByRole("heading", { name: "Choose Gate models" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
     await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(2);
   });
 
@@ -433,6 +448,7 @@ test.describe("new UI model card credits", () => {
     const app = await boot({
       ...base,
       toolModels: {
+        catalogue,
         credits: {
           plan: "pro",
           paygEnabled: true,
@@ -443,6 +459,7 @@ test.describe("new UI model card credits", () => {
       },
     });
     await openApp(app);
+    await switchToGateModel(app);
 
     await expect(app.page.getByText("$10.25 available")).toBeVisible();
   });
@@ -450,8 +467,9 @@ test.describe("new UI model card credits", () => {
   test("reads N/A when no balance was reported, not $0.00", async ({ boot }) => {
     // The default fixture reports none. Printing zero here would tell a funded
     // org their tools are about to stop.
-    const app = await boot(base);
+    const app = await boot({ ...base, toolModels: { catalogue } });
     await openApp(app);
+    await switchToGateModel(app);
 
     // The credits line specifically. A bare "N/A" used to be unambiguous only
     // because the stat tiles above it were stuck in skeletons: this fixture
@@ -463,10 +481,45 @@ test.describe("new UI model card credits", () => {
     await expect(app.page.getByText("$0.00 available")).toHaveCount(0);
   });
 
+  test("says nothing about a balance while the app is on its own model", async ({ boot }) => {
+    // The card drew the balance, "Add credits" and "Manage billing"
+    // unconditionally, directly beneath the radio that had just said Gate is not
+    // serving this app. Under App default there is nothing for Gate to bill.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: {
+          plan: "pro",
+          paygEnabled: true,
+          balanceCents: 1025,
+          lowBalanceThresholdCents: 500,
+          autoTopupArmed: false,
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByRole("radio", { name: /App default/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await expect(app.page.getByText("$10.25 available")).toHaveCount(0);
+    await expect(app.page.getByText(/Gate credits:/)).toHaveCount(0);
+    // And the App-default branch says what it does instead (408:25491).
+    await expect(app.page.getByText(/Using .* model/)).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Add credits" })).toHaveCount(0);
+
+    // And it comes back with the branch that spends it.
+    await switchToGateModel(app);
+    await expect(app.page.getByText("$10.25 available")).toBeVisible();
+  });
+
   test("says PAYG is off rather than showing money that cannot be spent here", async ({ boot }) => {
     const app = await boot({
       ...base,
       toolModels: {
+        catalogue,
         credits: {
           plan: "pro",
           paygEnabled: false,
@@ -477,6 +530,7 @@ test.describe("new UI model card credits", () => {
       },
     });
     await openApp(app);
+    await switchToGateModel(app);
 
     await expect(app.page.getByText("Not enabled")).toBeVisible();
     await expect(app.page.getByText("$42.00 available")).toHaveCount(0);

@@ -166,9 +166,9 @@ export function RoutingBanner({
 /**
  * A tool whose config is right and whose running process has not picked it up.
  *
- * The pane's version of the sidebar's "Not protected - Reopen required": the row
- * has 250px and prints the phrase, and this has the width for the part that
- * matters, which is *which route the traffic is on right now*. AG-570 asks for
+ * The pane's version of the sidebar's "Reopen to finish": the row has 250px and
+ * prints the phrase plus the program's name, and this has the width for the part
+ * that matters, which is *which route the traffic is on right now*. AG-570 asks for
  * the route in use, the requested route, and the action, and the first two are
  * the whole reason this is a card rather than a sentence - "reopen required"
  * without them does not say what reopening would change.
@@ -244,8 +244,10 @@ export function ReopenAlert({
  * width for one tool's two routes, and this has the room for a list.
  *
  * Dismissible for the session, like the recovery notice: the rail still carries
- * "Not protected - Reopen required" on every affected row, so hiding this loses
- * the invitation rather than the fact.
+ * "Reopen to finish" on every affected row, so hiding this loses the invitation
+ * rather than the fact. That claim was false until the phrase existed -
+ * `statusSuffix` dropped the reason, so the row read a bare "Not protected" and
+ * dismissing this card did lose the fact.
  */
 export function ReopenBanner({
   tools,

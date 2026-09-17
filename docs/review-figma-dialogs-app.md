@@ -411,17 +411,38 @@ a `get_design_context` call or from a pixel sampled off a 1:1 render.
   the app ships on three platforms' native scrollbars.
 - MEASURED, INFERRED as to whether it is worth doing.
 
-### M16. Vendor marks are never supplied
+### M16. Vendor marks are never supplied - CLOSED 2026-09-16
 
 - **Figma**: every row draws the provider's own 16px mark (`anthropic 2`,
   `deepseek-color 1`, `alibaba-color 1`, `moonshot 1`), and `130:48324` draws a
   20px `anthropic 1`.
-- **Code**: `GateModelOption.logo` is optional and **no call site passes it**
-  (`NewUiApp.tsx:2035`), nor does `vendorLogo` (`:2061`), so every row and the
-  confirmation draw the `cube` fallback.
-- Already acknowledged at `dialogs.tsx:526` ("Falls back to a cube while the
-  marks are unexported"). Flagged as an open gap, not a defect.
-- MEASURED.
+- **Code** (as reviewed): `GateModelOption.logo` was optional and **no call site
+  passed it**, nor did `vendorLogo`, so every row and the confirmation drew the
+  `cube` fallback.
+- **Fixed** by `src/components/gc/ProviderMark.tsx`. The three dead props are
+  gone rather than plumbed: each call site resolves the mark from the `vendor` it
+  already holds.
+- **This entry's reading of the layer names was wrong, and it is the reason to
+  keep it.** It took `anthropic 2` against `deepseek-color 1` as a mono/colour
+  split in the file. It is not: `-color` is a lobe-icons *filename*, and
+  `anthropic 1` (`130:48325`) and `anthropic 2` (`665:18421`) are **both
+  `#E8704E`**. Every drawn model mark is full colour. Measured off the exports,
+  not inferred from the names - which is what the names could not settle.
+  A second correction from the same measurement: each mark is a **single path in
+  a single colour**. The `fill="white"` in the raw exports is the clip region's
+  rect, not a visible layer, and it disappears when the clip is dropped.
+- MEASURED, RESOLVED.
+
+### M17. `ModalSubject`'s tile is not the drawn wrapper
+
+- **Figma** `130:48324`: a **36px** `icon-wrapper`, `rounded-[4px]`, on
+  `base/card` white with a `base/border` line, holding a **20px** mark.
+- **Code** `Modal.tsx:427-430`: `size-10` (40px) at `rounded-sm`, which is
+  **6px** on this repo's scale, and no card ground.
+- The 20px mark is now passed (`dialogs.tsx:1497`); the wrapper is not changed.
+  `ModalSubject` is shared across several dialogs, so its geometry is a
+  separate change with a separate blast radius.
+- MEASURED, NOT FIXED.
 
 ## Copy differences
 

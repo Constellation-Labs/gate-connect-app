@@ -415,6 +415,12 @@ export function clockTime(taken: Date, now = new Date()): string {
  * the credential: inference is exempt from it, but every other Gate Connect user
  * on the same office network or VPN egress is not, so a timer here spends a
  * budget shared with people this window cannot see.
+ *
+ * What re-reads instead is the relay: every gateway-bound request passes
+ * through it, so it knows when a read is certain to find something new and
+ * emits `traffic-observed` once a tool's burst has gone quiet
+ * (`proxy::note_traffic`). `NewUiApp` calls `reload` on that, and on the
+ * window being focused again.
  */
 export function useActivity(
   enabled: boolean,

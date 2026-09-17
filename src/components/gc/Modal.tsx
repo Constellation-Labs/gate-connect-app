@@ -665,7 +665,13 @@ export function ModalField({
           placeholder={placeholder}
           maxLength={maxLength}
           onChange={(e) => onChange?.(e.target.value)}
-          className={`h-9 w-full rounded-sm border pl-3 text-sm placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          // `143:67751` draws the focused field as the same 4px box with its
+          // border at `base/primary` - no outline and no offset ring. Plain
+          // `:focus` rather than `:focus-visible`: this is the field
+          // `useFocusTrap` lands on when the dialog opens, and a browser will
+          // not match `:focus-visible` for focus it did not observe the user
+          // request, which is the whole reason the global rule below existed.
+          className={`h-9 w-full rounded-control border pl-3 text-sm transition-colors placeholder:text-base-muted-foreground focus:border-base-primary focus:outline-none ${
             readOnly
               ? // Drawn with no fill and no shadow at 60%: it is the value being
                 // replaced, not a field. `143:67746`.

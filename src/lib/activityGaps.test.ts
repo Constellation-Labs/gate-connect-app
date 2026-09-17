@@ -79,40 +79,48 @@ describe("failureNotice", () => {
 });
 
 describe("sectionNotice", () => {
+  // `not_configured` is deliberately absent: it raises no notice at all, which
+  // the case below pins.
   const reasons: UnavailableReason[] = [
     "connectivity",
     "access",
     "attribution",
-    "not_configured",
     "definition_pending",
   ];
 
-  it("names the section and a cause for every reason", () => {
+  it("names the section and a cause for every reason that raises one", () => {
     for (const reason of reasons) {
       const n = sectionNotice("Blocked and flagged", reason);
-      expect(n.subject).toBe("Blocked and flagged");
-      expect(n.cause.length).toBeGreaterThan(0);
+      expect(n, reason).toBeDefined();
+      expect(n!.subject).toBe("Blocked and flagged");
+      expect(n!.cause.length).toBeGreaterThan(0);
     }
+  });
+
+  it("raises nothing for a section nobody has configured", () => {
+    // The card itself already says "No savings configured" where the reader is
+    // looking, and no frame draws a banner above the fold repeating it.
+    expect(sectionNotice("Tokens saved", "not_configured")).toBeUndefined();
   });
 
   it("offers nothing when nothing the user can reach would help", () => {
     // A role is granted by someone else, and an undefined measure is ours to
     // define. A button for either would be a dead end dressed as a remedy.
-    expect(sectionNotice("Blocked and flagged", "access").actions).toEqual([]);
-    expect(sectionNotice("Needs review", "definition_pending").actions).toEqual([]);
+    expect(sectionNotice("Blocked and flagged", "access")!.actions).toEqual([]);
+    expect(sectionNotice("Needs review", "definition_pending")!.actions).toEqual([]);
   });
 
   it("does not send a machine credential to ask an admin for permission", () => {
     // The gateway raises `attribution` for a credential with no user on it,
     // which is what an org-scoped key is. No role change fixes that, so the copy
     // must not imply one, and the offer is a credential that belongs to a person.
-    const n = sectionNotice("Messages", "attribution");
+    const n = sectionNotice("Messages", "attribution")!;
     expect(n.cause).not.toMatch(/role|permission|owner|admin/i);
     expect(n.actions.map((a) => a.kind)).toEqual(["api-keys", "docs"]);
   });
 
   it("points a role problem at the person who can fix it", () => {
-    expect(sectionNotice("Blocked and flagged", "access").cause).toMatch(
+    expect(sectionNotice("Blocked and flagged", "access")!.cause).toMatch(
       /owner or admin/i,
     );
   });

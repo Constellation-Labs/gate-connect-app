@@ -225,7 +225,22 @@ export function Tray({
           {/* Below the recovery card: an operation that did not finish outranks
             * one that finished and is waiting on the user. */}
           {reopen && <ReopenCard reopen={reopen} />}
-          {security && <SecurityCard security={security} />}
+          {/* Nothing to report draws nothing. The card is an undrawn addition
+            * (AG-578; no frame on the Tray page carries it), and its zero state
+            * was the least defensible part of it - a row that says "No recent
+            * security events" is furniture on a 400px surface, and the reader
+            * learns the same thing from its absence.
+            *
+            * Only a LIVE feed may be hidden by its own zero. `offline` and
+            * `reconnecting` are both readings that did not happen rather than
+            * quiet machines, and hiding either would assert a quiet machine
+            * when what happened is that nobody looked - which is the difference
+            * principle 6 is about. `reconnecting` was briefly in the hidden
+            * half, which made a failed re-read after a live one draw nothing
+            * at all. */}
+          {security && (security.state !== "live" || security.count > 0) && (
+            <SecurityCard security={security} />
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
             {groups.map((group) => (
@@ -908,18 +923,19 @@ function SecurityCard({
           * first - with a scope on its own line it was the SCOPE that got cut at
           * large text scales, which is the wrong half to lose. */}
         <span className="min-w-0 text-sm font-medium leading-5 text-base-foreground">
-          {/* Principle 6, the last step of it: an offline feed is not reading, so
-            * its zero is not a reading either. "No recent security events" beside
-            * an OFFLINE pill is the same overclaim as the two absolutes above,
-            * just quieter - it asserts a quiet machine when what happened is
-            * that nobody looked. A count that IS a reading still prints while
-            * reconnecting, because the buffer it counts is real and the pill
-            * beside it already says the stream is catching up. */}
-          {security.state === "offline"
-            ? "Security events unavailable"
-            : security.count === 0
-              ? "No recent security events"
-              : `${security.count} recent security event${security.count === 1 ? "" : "s"}`}
+          {/* Principle 6, the last step of it: a feed that is not reading has no
+            * zero to report. "No recent security events" asserted a quiet machine
+            * when what happened is that nobody looked, so that arm is gone - a
+            * live feed with nothing in it draws no card at all (see :241), and
+            * every zero that reaches here is therefore `offline` or
+            * `reconnecting`, neither of which has looked.
+            *
+            * A count that IS a reading still prints in every state, because the
+            * buffer it counts is real and the pill beside it already says
+            * whether the stream is caught up. */}
+          {security.count > 0
+            ? `${security.count} recent security event${security.count === 1 ? "" : "s"}`
+            : "Security events unavailable"}
         </span>
       </span>
       <span

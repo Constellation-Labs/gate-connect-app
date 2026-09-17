@@ -181,10 +181,18 @@ export function useToolEvents(
   loading: boolean;
   loadMore: () => void;
   reload: () => void;
+  /** Whether `loadMore` has extended the list past page one. A `reload` puts
+   *  page one back in its place, so a caller refreshing on its own initiative
+   *  rather than the user's checks this first: pulling pages out from under
+   *  someone reading them is worse than a stale first page. Set when the
+   *  further page lands, not when it is asked for: a refused page extended
+   *  nothing, and must not stop the list following traffic. */
+  paged: boolean;
 } {
   const [view, setView] = useState<ToolEventsView | null>(null);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
   const [loading, setLoading] = useState(false);
+  const [paged, setPaged] = useState(false);
   /** Which scope is current, so a page that arrives after the user has moved on
    *  is dropped rather than appended to a different tool's feed. */
   const attempt = useRef(0);
@@ -206,6 +214,7 @@ export function useToolEvents(
               ? { entries: [...prev.entries, ...page.entries], nextCursor: page.nextCursor }
               : page,
           );
+          if (cursor) setPaged(true);
         })
         .catch((e) => {
           if (mine !== attempt.current) return;
@@ -231,6 +240,7 @@ export function useToolEvents(
   useEffect(() => {
     setView(null);
     setFailure(null);
+    setPaged(false);
   }, [credential, installId, tool]);
 
   useEffect(() => {
@@ -249,6 +259,10 @@ export function useToolEvents(
     loadMore: () => {
       if (view?.nextCursor) fetchPage(view.nextCursor);
     },
-    reload: () => fetchPage(null),
+    reload: () => {
+      setPaged(false);
+      fetchPage(null);
+    },
+    paged,
   };
 }
