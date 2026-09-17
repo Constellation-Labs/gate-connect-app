@@ -940,3 +940,38 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+/**
+ * AG-897. The rail's two bands ask different questions: an app the user
+ * launches, or a mechanism they are opting into. OpenRouter is a destination
+ * you point something else at, which is the second - its own description says
+ * so, "Any app you have pointed at OpenRouter".
+ */
+describe("which band a section draws under (AG-897)", () => {
+  // `any-app`, which is what both provider-endpoint rows are: neither is one
+  // program's surface, which is the whole reason they are not apps.
+  const bandFor = (slug: string) =>
+    buildGroups(
+      [],
+      [domain({ slug, client: "any-app", display_name: slug })],
+      ON,
+    ).find((g) => g.members.some((m) => m.key === slug))?.band;
+
+  it("files OpenRouter with the endpoints rather than the apps", () => {
+    expect(bandFor("openrouter")).toBe("tools");
+  });
+
+  /** The precedent: a provider endpoint already sat under Tools. */
+  it("puts it in the same band as the other provider endpoint", () => {
+    expect(bandFor("openrouter")).toBe(bandFor("openai"));
+  });
+
+  it("leaves the apps the user launches where they were", () => {
+    const groups = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain(), sessionDomain()],
+      ON,
+    );
+    expect(groups[0].band).toBe("apps");
+  });
+});
