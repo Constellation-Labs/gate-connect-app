@@ -47,10 +47,8 @@ import {
   retryRestoreEntry,
   teardownReport,
   getPreferences,
-  setBlockedEventNotifications,
-  setFlaggedEventNotifications,
   setSecurityNotificationSound,
-  setRoutingHealthNotifications,
+  setNotifications,
   setShareDiagnostics,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
@@ -2281,9 +2279,7 @@ export function NewUiApp() {
         authMode: account?.auth_mode,
         launchAtLogin,
         launchAtLoginUnavailable,
-        routingHealthNotifications: prefs?.routing_health_notifications,
-        blockedEventNotifications: prefs?.blocked_event_notifications,
-        flaggedEventNotifications: prefs?.flagged_event_notifications,
+        notifications: prefs?.notifications,
         securityNotificationSound: prefs?.security_notification_sound,
         shareDiagnostics: prefs?.share_diagnostics,
         preferencesUnavailable: prefsUnavailable,
@@ -2330,7 +2326,7 @@ export function NewUiApp() {
           account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => {
-          // Same rule as the five preference switches: `toggleLaunchAtLogin`
+          // Same rule as the preference switches below: `toggleLaunchAtLogin`
           // reports failure through `onError` and never cleared a previous one,
           // so a successful retry moved the switch and kept the stale banner.
           setActionError(null);
@@ -2340,44 +2336,20 @@ export function NewUiApp() {
         // Optimistic then re-read: the switch has to move on click, and the
         // re-read is what makes a failed write show up rather than leaving the
         // UI asserting a value the file does not hold.
-        onToggleRoutingHealthNotifications: () => {
-          const next = !(prefs?.routing_health_notifications ?? true);
-          // The retry clears its own last failure. Every one of these five
+        onToggleNotifications: () => {
+          const next = !(prefs?.notifications ?? true);
+          // The retry clears its own last failure. Every one of these switches
           // rolled back correctly on a failed write and then left the banner up
           // after the next write succeeded, so the switch showed the new value
           // with an error above it still describing the old attempt.
           setActionError(null);
-          setPrefs((p) =>
-            p ? { ...p, routing_health_notifications: next } : p,
-          );
-          void setRoutingHealthNotifications(next)
-            .catch((e) => setActionError(classifyError(e, "generic")))
-            .finally(() => void loadPreferences());
-        },
-        // Same optimistic-then-re-read shape as the routing switch above: the
-        // switch has to move on click, and the re-read is what surfaces a failed
-        // write instead of leaving the UI asserting a value the file lacks.
-        onToggleBlockedEventNotifications: () => {
-          const next = !(prefs?.blocked_event_notifications ?? true);
-          // Same as the switch above: the retry clears its own last failure.
-          setActionError(null);
-          setPrefs((p) => (p ? { ...p, blocked_event_notifications: next } : p));
-          void setBlockedEventNotifications(next)
-            .catch((e) => setActionError(classifyError(e, "generic")))
-            .finally(() => void loadPreferences());
-        },
-        onToggleFlaggedEventNotifications: () => {
-          const next = !(prefs?.flagged_event_notifications ?? true);
-          // Same as the switch above: the retry clears its own last failure.
-          setActionError(null);
-          setPrefs((p) => (p ? { ...p, flagged_event_notifications: next } : p));
-          void setFlaggedEventNotifications(next)
+          setPrefs((p) => (p ? { ...p, notifications: next } : p));
+          void setNotifications(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
         },
         onToggleSecurityNotificationSound: () => {
           const next = !(prefs?.security_notification_sound ?? true);
-          // Same as the switch above: the retry clears its own last failure.
           setActionError(null);
           setPrefs((p) => (p ? { ...p, security_notification_sound: next } : p));
           void setSecurityNotificationSound(next)

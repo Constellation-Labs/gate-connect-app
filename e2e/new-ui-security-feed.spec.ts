@@ -255,26 +255,25 @@ test.describe("new UI security feed", () => {
   });
 
   test("the notification switches reach the backend", async ({ boot }) => {
-    // The three AG-594 asked for and AG-578 made real. Each must actually stop
-    // something, which is why they waited for a feed that could fire them.
+    // Two switches, not the four AG-594 names: Settings draws one Notifications
+    // row (`116:29086`) over blocked, flagged and routing alike, plus the
+    // undrawn sound. Each must actually stop something, which is why they waited
+    // for a feed that could fire them.
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    const blockedSwitch = app.page.getByRole("switch", { name: "Blocked requests" });
-    await expect(blockedSwitch).toHaveAttribute("aria-checked", "true");
-    await blockedSwitch.click();
-    await expect
-      .poll(() => app.lastCall("set_blocked_event_notifications"))
-      .toEqual({ enabled: false });
-
-    await app.page.getByRole("switch", { name: "Flagged requests" }).click();
-    await expect
-      .poll(() => app.lastCall("set_flagged_event_notifications"))
-      .toEqual({ enabled: false });
+    const notificationsSwitch = app.page.getByRole("switch", { name: "Notifications" });
+    await expect(notificationsSwitch).toHaveAttribute("aria-checked", "true");
+    await notificationsSwitch.click();
+    await expect.poll(() => app.lastCall("set_notifications")).toEqual({ enabled: false });
 
     await app.page.getByRole("switch", { name: "Notification sound" }).click();
     await expect
       .poll(() => app.lastCall("set_security_notification_sound"))
       .toEqual({ enabled: false });
+
+    // The rows the split used to draw are gone.
+    await expect(app.page.getByRole("switch", { name: "Blocked requests" })).toHaveCount(0);
+    await expect(app.page.getByRole("switch", { name: "Flagged requests" })).toHaveCount(0);
   });
 });

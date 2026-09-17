@@ -227,7 +227,7 @@ test.describe("new UI settings preferences", () => {
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  test("turning routing-health notifications off reaches the backend", async ({ boot }) => {
+  test("turning notifications off reaches the backend", async ({ boot }) => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
@@ -235,7 +235,7 @@ test.describe("new UI settings preferences", () => {
     await sw.click();
 
     await expect
-      .poll(() => app.lastCall("set_routing_health_notifications"))
+      .poll(() => app.lastCall("set_notifications"))
       .toEqual({ enabled: false });
     await expect(sw).toHaveAttribute("aria-checked", "false");
   });

@@ -15,11 +15,11 @@
 //! default.
 //!
 //! Scope note. Only the preferences that currently gate something live here.
-//! The per-category security-event switches (blocked / flagged) and the sound
-//! toggle arrived with the live event feed they gate (AG-578) and not before,
-//! for the reason that kept them out until then: a switch that gates nothing is
-//! worse than a missing switch, because it tells the user they have turned
-//! something off.
+//! The notification switches arrived with the live event feed they gate
+//! (AG-578) and not before, for the reason that kept them out until then: a
+//! switch that gates nothing is worse than a missing switch, because it tells
+//! the user they have turned something off. There were briefly three of them,
+//! one per category; Settings draws one row, so there is one flag.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -41,11 +41,15 @@ fn default_true() -> bool {
 /// buffer, or a separate file for one label - buys nothing. Callers clone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
-    /// Native notifications about routing itself: a session that expired, a
-    /// quit that could not put a tool back. These are the two the app actually
-    /// fires today.
+    /// Whether Gate Connect may show native notifications at all: a request
+    /// blocked or flagged by the security feed, and routing itself - a session
+    /// that expired, a quit that could not put a tool back.
+    ///
+    /// One switch over all of them because Settings draws one row. An earlier
+    /// build split it three ways, per AG-594's acceptance criteria; the Figma
+    /// draws a single `Notifications` row (`116:29086`) and the frame wins.
     #[serde(default = "default_true")]
-    pub routing_health_notifications: bool,
+    pub notifications: bool,
     /// Whether Gate Connect may send diagnostic data. The onboarding step records
     /// the first answer; Settings changes it afterwards. Storing it here rather
     /// than deriving it means an install that never saw the step still reads as
@@ -111,18 +115,7 @@ pub struct Preferences {
     /// accepted does not re-ask.
     #[serde(default)]
     pub session_routing_accepted: Vec<String>,
-    /// Notify when a request is **blocked**.
-    ///
-    /// Split from the flagged switch rather than shipped as one security toggle
-    /// because the two differ in weight: a block stopped something the user was
-    /// trying to do, a flag only noted it. Someone who wants to hear about the
-    /// first and not the second is asking for something reasonable.
-    #[serde(default = "default_true")]
-    pub blocked_event_notifications: bool,
-    /// Notify when a request is **flagged**.
-    #[serde(default = "default_true")]
-    pub flagged_event_notifications: bool,
-    /// Whether those notifications make a sound.
+    /// Whether security notifications make a sound.
     #[serde(default = "default_true")]
     pub security_notification_sound: bool,
     /// Which model each tool should run on, keyed by tool slug (AG-588).
@@ -219,15 +212,13 @@ pub struct ToolModelChoice {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            routing_health_notifications: true,
+            notifications: true,
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
             // Empty is "never asked", which is the only honest default: an
             // install that has not been asked has not consented.
             session_routing_accepted: Vec::new(),
-            blocked_event_notifications: true,
-            flagged_event_notifications: true,
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
@@ -363,12 +354,12 @@ pub fn reset_cache_for_tests() {
     }
 }
 
-/// Turn routing-health notifications on or off, leaving the other preferences
-/// alone. Read-modify-write rather than taking a whole `Preferences`, so a caller
-/// that only knows about one switch cannot clobber a field it has never heard of.
-pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
+/// Turn native notifications on or off, leaving the other preferences alone.
+/// Read-modify-write rather than taking a whole `Preferences`, so a caller that
+/// only knows about one switch cannot clobber a field it has never heard of.
+pub fn set_notifications(enabled: bool) -> Result<()> {
     let mut prefs = load();
-    prefs.routing_health_notifications = enabled;
+    prefs.notifications = enabled;
     save(&prefs)
 }
 
@@ -380,20 +371,6 @@ pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
 pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
     let mut prefs = load();
     prefs.signed_out_deliberately = deliberate;
-    save(&prefs)
-}
-
-/// Turn blocked-request notifications on or off. Read-modify-write, as above.
-pub fn set_blocked_event_notifications(enabled: bool) -> Result<()> {
-    let mut prefs = load();
-    prefs.blocked_event_notifications = enabled;
-    save(&prefs)
-}
-
-/// Turn flagged-request notifications on or off.
-pub fn set_flagged_event_notifications(enabled: bool) -> Result<()> {
-    let mut prefs = load();
-    prefs.flagged_event_notifications = enabled;
     save(&prefs)
 }
 
@@ -636,7 +613,7 @@ mod tests {
     #[test]
     fn defaults_are_everything_on() {
         let prefs = Preferences::default();
-        assert!(prefs.routing_health_notifications);
+        assert!(prefs.notifications);
         assert!(prefs.share_diagnostics);
     }
 
@@ -662,7 +639,7 @@ mod tests {
         let raw = serde_json::to_string(&Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: true,
-            routing_health_notifications: true,
+            notifications: true,
             device_name: None,
             ..Preferences::default()
         })
@@ -681,16 +658,58 @@ mod tests {
         let partial: Preferences = serde_json::from_str(r#"{"share_diagnostics":false}"#)
             .expect("partial object should parse");
         assert!(
-            partial.routing_health_notifications,
+            partial.notifications,
             "an absent field must not read as off"
         );
         assert!(!partial.share_diagnostics);
     }
 
+    /// The upgrade this collapse creates, pinned rather than left to be
+    /// discovered. A file written by the three-switch build carries
+    /// `routing_health_notifications`, `blocked_event_notifications` and
+    /// `flagged_event_notifications`, none of which exist any more.
+    ///
+    /// It must still parse, every other field must survive, and `notifications`
+    /// must load **on**. That last one is a real consequence: someone who had
+    /// turned an alert off gets it back on once, and the next `save` drops the
+    /// stale keys for good.
+    ///
+    /// A `serde(alias)` onto one of the three would carry the old answer
+    /// forward, and is deliberately not used. The only honest candidate is
+    /// `routing_health_notifications`, which gated *routing* - so a user who had
+    /// routing quiet but security alerts on would have the alerts silenced by
+    /// the upgrade. On this product, coming back louder is the safe direction
+    /// and coming back quieter is not. Aliasing all three is not available
+    /// either: serde rejects duplicate fields, and `load` turns any parse error
+    /// into `Preferences::default()`, which would discard `device_name`,
+    /// `tool_models` and `session_routing_accepted` with it.
+    #[test]
+    fn a_file_from_the_three_switch_build_loads_with_notifications_on() {
+        let legacy = r#"{
+            "routing_health_notifications": false,
+            "blocked_event_notifications": false,
+            "flagged_event_notifications": false,
+            "security_notification_sound": false,
+            "device_name": "Work laptop",
+            "session_routing_accepted": ["claude"]
+        }"#;
+        let prefs: Preferences = serde_json::from_str(legacy).expect("a legacy file still parses");
+
+        assert!(
+            prefs.notifications,
+            "the collapsed field has no stored value, so it loads at its default"
+        );
+        // Everything the old file DID say about a field that still exists is
+        // kept. Losing these to the upgrade would be the unrecoverable half.
+        assert!(!prefs.security_notification_sound);
+        assert_eq!(prefs.device_name.as_deref(), Some("Work laptop"));
+        assert_eq!(prefs.session_routing_accepted, vec!["claude".to_string()]);
+    }
+
     #[test]
     fn an_explicit_false_survives_a_round_trip() {
         let prefs = Preferences {
-            routing_health_notifications: false,
+            notifications: false,
             share_diagnostics: true,
             share_diagnostics_recorded: true,
             device_name: None,

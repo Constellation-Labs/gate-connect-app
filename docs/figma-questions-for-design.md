@@ -12,9 +12,9 @@ reach each one (`docs/review-flow-*.md`). Questions 2 and 3 come from the
 second pass and are the two largest here, because they are about whether a
 capability exists at all rather than what it looks like.
 
-Node ids are given so each can be opened directly. Question 6 is kept as
-ANSWERED rather than deleted, because closing it changed a rule we had
-written down.
+Node ids are given so each can be opened directly. Questions are kept after
+they close rather than deleted, because closing one usually changes a rule we
+had written down.
 
 ---
 
@@ -241,20 +241,30 @@ drawn either way.
 
 ---
 
-## 8. Notifications: one row or three?
+## 8. ANSWERED - one row, and the frame's copy with it
 
-**What we see.** `116:29086` draws a single row: "Alert me when a request is
-blocked or flagged".
+**What we saw.** `116:29086` draws a single row, "Alert me when a request is
+blocked or flagged". The app had split it into three - notify on blocked,
+notify on flagged, and a sound toggle - because AG-594's acceptance criteria
+names a switch for each and the backend gated the three preferences separately.
 
-**Why it matters.** The app splits that into three rows - notify on blocked,
-notify on flagged, and a sound toggle - because the backend gates those
-preferences separately and one switch cannot express "blocked but not flagged".
-So the drawn sentence describes something the single control would not actually
-do.
+**How it was settled.** Product chose the frame over the ticket on 2026-09-17:
+Settings draws the one row, and the drawn sentence goes back on it. The three
+preferences collapsed into a single `notifications` flag, so the switch now
+gates the security feed's blocked and flagged notifications **and** the two
+routing ones - an expired session, a quit that could not put a tool back.
 
-**What we need.** Should Settings show the one drawn row, or the three the
-preferences support? If one, we need to know what it writes when a user only
-wants blocked alerts.
+Two things worth knowing rather than re-deciding:
+
+- The drawn sentence under-describes the routing half. That is the price of one
+  switch, and it was accepted knowingly. If design would rather the row said
+  something wider, this is the line to change.
+- **The sound row stays**, undrawn. It is in AG-594's acceptance criteria and it
+  gates something real (`sound` on every notification the feed fires), so
+  Startup draws two rows: the drawn Notifications one and Notification sound.
+  A frame for it would close the last gap here, and would settle its icon too:
+  both rows currently draw `bell`, because the drawn row owns that glyph and the
+  undrawn one has nothing to copy. We have not picked a second by eye.
 
 ---
 

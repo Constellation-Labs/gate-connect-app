@@ -501,16 +501,8 @@ export function installFakeTauri(state: BackendState): void {
     // skipped the re-render, and a preference change was invisible to anything
     // derived from it.
     get_preferences: () => ({ ...state.preferences }),
-    set_routing_health_notifications: ({ enabled }) => {
-      state.preferences.routing_health_notifications = enabled as boolean;
-      return null;
-    },
-    set_blocked_event_notifications: ({ enabled }) => {
-      state.preferences.blocked_event_notifications = enabled as boolean;
-      return null;
-    },
-    set_flagged_event_notifications: ({ enabled }) => {
-      state.preferences.flagged_event_notifications = enabled as boolean;
+    set_notifications: ({ enabled }) => {
+      state.preferences.notifications = enabled as boolean;
       return null;
     },
     set_security_notification_sound: ({ enabled }) => {

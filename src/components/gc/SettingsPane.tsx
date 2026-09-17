@@ -120,9 +120,7 @@ export function buildSettingsSections({
   authMode,
   launchAtLogin,
   launchAtLoginUnavailable,
-  routingHealthNotifications,
-  blockedEventNotifications,
-  flaggedEventNotifications,
+  notifications,
   securityNotificationSound,
   shareDiagnostics,
   preferencesUnavailable,
@@ -141,9 +139,7 @@ export function buildSettingsSections({
   onDisconnect,
   onToggleLaunchAtLogin,
   onRetryLaunchAtLogin,
-  onToggleRoutingHealthNotifications,
-  onToggleBlockedEventNotifications,
-  onToggleFlaggedEventNotifications,
+  onToggleNotifications,
   onToggleSecurityNotificationSound,
   onToggleShareDiagnostics,
   onViewCollectedData,
@@ -194,9 +190,7 @@ export function buildSettingsSections({
   /** The launch-at-login read failed. Drives the Unavailable row; the boolean
    * above is then meaningless and must not reach a switch. */
   launchAtLoginUnavailable?: boolean;
-  routingHealthNotifications?: boolean;
-  blockedEventNotifications?: boolean;
-  flaggedEventNotifications?: boolean;
+  notifications?: boolean;
   securityNotificationSound?: boolean;
   shareDiagnostics?: boolean;
   /** The preferences read failed - same reasoning as `launchAtLoginUnavailable`,
@@ -234,9 +228,7 @@ export function buildSettingsSections({
   /** Present only when the launch-at-login read failed, so the row can offer a
    * retry instead of drawing a switch from a value it does not have. */
   onRetryLaunchAtLogin?: () => void;
-  onToggleRoutingHealthNotifications?: () => void;
-  onToggleBlockedEventNotifications?: () => void;
-  onToggleFlaggedEventNotifications?: () => void;
+  onToggleNotifications?: () => void;
   onToggleSecurityNotificationSound?: () => void;
   onToggleShareDiagnostics?: () => void;
   /** Opens the collected-data list from the share-diagnostics row's own
@@ -483,68 +475,45 @@ export function buildSettingsSections({
         // Main screens", read 2026-08-21) - an earlier build gave it a section
         // of its own because AG-594 names one.
         //
-        // Now the four switches AG-594 names, not the one this shipped with.
-        // The three below it gate the blocked and flagged notifications the live
-        // security feed (AG-578) fires, and the sound they make; this one keeps
-        // its own narrower job, the two routing notifications the app has always
-        // fired. The drawn "blocked or flagged" description moved to the row that
-        // actually controls that, which is what it was describing all along.
-        ...(onToggleRoutingHealthNotifications
+        // One row, and one switch over every native notification the app can
+        // fire: blocked and flagged requests from the live security feed
+        // (AG-578), plus the two routing ones - an expired session, a quit that
+        // could not put a tool back. A previous build split it into three rows
+        // because AG-594's acceptance criteria names a switch each. The Figma
+        // draws one (`116:29086`) with the description below, and the frame wins
+        // over the ticket, so the split is gone and the drawn sentence is back on
+        // the row it was written for. It under-describes the routing half, which
+        // is the price of one switch and is question 8 in
+        // `docs/figma-questions-for-design.md`.
+        ...(onToggleNotifications
           ? [
               {
-                id: "routing-health",
+                id: "notifications",
                 icon: "bell" as IconName,
                 label: "Notifications",
-                // The frame's "Alert me when a request is blocked or flagged"
-                // (`116:29086`) moved to the Blocked/Flagged rows below, which
-                // are the switches that do that. This row keeps the routing
-                // wording because routing is what it gates - the two are
-                // different notifications and one switch cannot honestly claim
-                // both.
-                description: "Alert me about routing problems",
+                description: "Alert me when a request is blocked or flagged",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
                       toggle: {
-                        on: routingHealthNotifications ?? true,
-                        onToggle: onToggleRoutingHealthNotifications,
+                        on: notifications ?? true,
+                        onToggle: onToggleNotifications,
                       },
                     }),
               } as SettingsRow,
             ]
           : []),
-        // The three AG-594 asks for and AG-578 finally makes real. Split by
-        // category rather than shipped as one security switch because a block
-        // stopped something the user was doing and a flag only noted it, so
-        // wanting the first and not the second is a reasonable thing to want.
-        ...(onToggleBlockedEventNotifications
-          ? [
-              {
-                id: "blocked-events",
-                icon: "shieldBan" as IconName,
-                label: "Blocked requests",
-                description: "Alert me when a request is blocked",
-                toggle: {
-                  on: blockedEventNotifications ?? true,
-                  onToggle: onToggleBlockedEventNotifications,
-                },
-              } as SettingsRow,
-            ]
-          : []),
-        ...(onToggleFlaggedEventNotifications
-          ? [
-              {
-                id: "flagged-events",
-                icon: "triangleAlert" as IconName,
-                label: "Flagged requests",
-                description: "Alert me when a request is flagged",
-                toggle: {
-                  on: flaggedEventNotifications ?? true,
-                  onToggle: onToggleFlaggedEventNotifications,
-                },
-              } as SettingsRow,
-            ]
-          : []),
+        // Undrawn, and kept: the frame has no sound row, but AG-594's acceptance
+        // criteria names one and it gates something real - `sound` on every
+        // security notification the feed fires. Only those: the routing
+        // notifications never carry one, which is why the description says
+        // security alerts rather than repeating the label.
+        //
+        // It takes the same `unavailable` branch as the row above because it
+        // comes from the same read. It used to lack one, which was survivable
+        // while two rows sat between them and is not now they are adjacent: a
+        // failed read drew Retry on one row and a confident "On" directly under
+        // it, from a value nobody had read.
         ...(onToggleSecurityNotificationSound
           ? [
               {
@@ -552,10 +521,14 @@ export function buildSettingsSections({
                 icon: "bell" as IconName,
                 label: "Notification sound",
                 description: "Play a sound with security alerts",
-                toggle: {
-                  on: securityNotificationSound ?? true,
-                  onToggle: onToggleSecurityNotificationSound,
-                },
+                ...(preferencesUnavailable && onRetryPreferences
+                  ? { unavailable: { onRetry: onRetryPreferences } }
+                  : {
+                      toggle: {
+                        on: securityNotificationSound ?? true,
+                        onToggle: onToggleSecurityNotificationSound,
+                      },
+                    }),
               } as SettingsRow,
             ]
           : []),

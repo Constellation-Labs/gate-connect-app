@@ -192,11 +192,9 @@ export interface BackendState {
     historyOk?: boolean;
   };
   preferences: {
-    routing_health_notifications: boolean;
-    /** AG-578's per-category switches, and the sound they make. Default on, like
-        every other preference. */
-    blocked_event_notifications: boolean;
-    flagged_event_notifications: boolean;
+    /** The one switch Settings draws, over every native notification. Default
+        on, like every other preference. */
+    notifications: boolean;
     security_notification_sound: boolean;
     share_diagnostics: boolean;
     /** Whether the diagnostic-data question has been ANSWERED, as opposed to
@@ -623,9 +621,7 @@ export function defaultState(): BackendState {
     launchAtLogin: { enabled: false, pending_disable: false },
     securityFeed: { state: "live", events: [], historyOk: true },
     preferences: {
-      routing_health_notifications: true,
-      blocked_event_notifications: true,
-      flagged_event_notifications: true,
+      notifications: true,
       security_notification_sound: true,
       share_diagnostics: true,
       share_diagnostics_recorded: true,
