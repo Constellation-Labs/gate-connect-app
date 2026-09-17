@@ -28,6 +28,23 @@ const CODEX = {
   status: { kind: "detected" as const },
 };
 
+/**
+ * Open Codex's pane, which is where its reopen card is drawn. The rail names
+ * the section, so Codex is reached through "ChatGPT / Codex".
+ */
+async function openCodexPane(app: { page: import("@playwright/test").Page }) {
+  await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+}
+
+/**
+ * The pane's reopen card, taken by the one line that names the tool inside the
+ * sentence: the rail row carries the bare phrase too, so a looser match
+ * resolves to two elements. `new-ui-verdict.spec.ts` reads it the same way.
+ */
+function reopenCard(app: { page: import("@playwright/test").Page }) {
+  return app.page.getByText(/^Reopen .+ to finish$/);
+}
+
 test.describe("new UI running apps", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -279,11 +296,13 @@ test.describe("new UI running apps", () => {
   });
 
   /**
-   * AG-566 AC 3: the invitation belongs on Overview too, not only on the pane
-   * of the tool it is about. The pane's own card covers that tool, so the
-   * banner names the ones whose panes are not open.
+   * The invitation is the tool's, so it is drawn on the tool's pane and nowhere
+   * else. AG-566 AC 3 asked for it on Overview as well and a shell banner did
+   * that for a while; one tool's pending reopen in shell chrome then stood over
+   * Overview, Settings and every other tool's pane. The rail row still names
+   * the tool, which is what gets the user here.
    */
-  test("Overview offers the reopen without opening the tool", async ({ boot }) => {
+  test("the tool's pane offers the reopen, and Overview does not", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...CODEX, status: { kind: "connected" as const } }],
@@ -291,11 +310,15 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText("Codex");
+    // The boot screen carries the rail's phrase and nothing else: no card, so
+    // no "Close tool" to press.
+    await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
 
-    await banner.getByRole("button", { name: "Close tool" }).click();
+    await openCodexPane(app);
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Close tool" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -324,20 +347,23 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
+    await openCodexPane(app);
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
 
     // The user opens it again, somewhere the app cannot see. No click, no
     // event, no visibility change - the standing sweep is the only thing that
     // can notice.
     await app.patch({ staleAgents: 0 });
 
-    await expect(banner).toBeHidden({ timeout: 25_000 });
+    await expect(card).toBeHidden({ timeout: 25_000 });
     // And the rail row it was about reads as routing, off the same sweep.
-    // `exact`, because the sidebar's own eyebrow reads "Protected apps".
-    await expect(app.page.getByText("Protected", { exact: true })).toBeVisible({
-      timeout: 25_000,
-    });
+    // Read off the row rather than off the page: the pane this test now opens
+    // says "Protected" in its own header too, and the sidebar's eyebrow reads
+    // "Protected apps".
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible({ timeout: 25_000 });
   });
 
   /**
@@ -355,19 +381,20 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
+    await openCodexPane(app);
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
 
-    // Quit between the sweep that raised the banner and the press.
+    // Quit between the sweep that raised the card and the press.
     await app.patch({ staleAgents: 0, runningAgentNames: [] });
-    await banner.getByRole("button", { name: "Close tool" }).click();
+    await app.page.getByRole("button", { name: "Close tool" }).click();
 
     // No dialog about a tool that is not running...
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
     ).toBeHidden();
-    // ...and the banner goes, because the empty scan is the answer to it.
-    await expect(banner).toBeHidden({ timeout: 25_000 });
+    // ...and the card goes, because the empty scan is the answer to it.
+    await expect(card).toBeHidden({ timeout: 25_000 });
   });
 
   /**

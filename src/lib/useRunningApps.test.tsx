@@ -148,7 +148,7 @@ describe("useRunningApps: when to say anything", () => {
 
   it("tells the caller nothing was running, rather than swallowing the click", async () => {
     // No dialog is still the right answer, but silence alone is what made the
-    // shell banner's own button look broken: the banner is built from a verdict
+    // reopen card's own button look broken: the card is built from a verdict
     // read at some earlier moment, and by the time somebody presses it the tool
     // may already have been reopened. So the caller hears about it and re-reads.
     (runningAgents as Mock).mockResolvedValue({ scanned_names: ["codex"], agents: [] });
