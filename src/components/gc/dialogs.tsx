@@ -614,6 +614,24 @@ export function CloseAppsDialog({
   );
 }
 
+/**
+ * The all-clear, drawn only once every tool is verified.
+ *
+ * Both of its sentences used to describe an earlier moment than the one it
+ * appears in. `NewUiApp` and `TrayApp` raise this only when `allVerified` is
+ * true, and `verified` means "Gate checked these after they came back"
+ * (`reopen.ts`'s own bucket blurb) - so by the time a reader sees it the app has
+ * been closed, reopened AND confirmed on the new route.
+ *
+ * It said "<app> closed successfully" and "Open <app> whenever you are ready to
+ * continue", asking for a step the user had already finished and reporting the
+ * first of three things that happened. Someone who had just watched the app
+ * reopen had to work out whether Gate had noticed (AG-880).
+ *
+ * The waiting sentence is not lost - it belongs to `ReopenProgressDialog`,
+ * which is what draws while a tool is still in `manual_reopen`, and which says
+ * "Open each one and Gate finishes the check" there.
+ */
 export function ChangeReadyDialog({
   app,
   onDone,
@@ -626,17 +644,17 @@ export function ChangeReadyDialog({
       tone="success"
       icon="circleCheck"
       title="Change is ready"
-      subtitle={`${app.name} closed successfully`}
+      subtitle={`${app.name} is back on the new route`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
       width={512}
     >
       <ModalNote>
         <p className="font-medium text-base-foreground">
-          The new Gate route is active
+          The new Gate route is active and in use
         </p>
         <p className="mt-1">
-          Open {app.name} whenever you are ready to continue.
+          Gate reopened {app.name} and checked it. There is nothing left to do.
         </p>
       </ModalNote>
     </Modal>

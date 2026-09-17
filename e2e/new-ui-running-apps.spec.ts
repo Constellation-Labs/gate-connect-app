@@ -222,6 +222,14 @@ test.describe("new UI running apps", () => {
     await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible({
       timeout: 15_000,
     });
+    // AG-880: and it does not ask for the step just taken. This dialog only
+    // draws once every tool is verified - Gate closed it, reopened it and
+    // checked it - so "Open Codex whenever you are ready to continue" asked a
+    // user who had just watched that happen to do it again.
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("active and in use");
+    await expect(dialog).not.toContainText(/whenever you are ready/);
+    await expect(dialog).not.toContainText(/closed successfully/);
   });
 
   /**

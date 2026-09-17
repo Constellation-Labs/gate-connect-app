@@ -3832,9 +3832,9 @@ function toDialogOrg(org: Org): DialogOrganization {
 }
 
 /**
- * `ChangeReadyDialog` names one subject ("Codex closed successfully"), so naming
- * a single app when that is what was closed, and staying vague when it was
- * several, beats asserting something that was not true.
+ * `ChangeReadyDialog` names one subject ("Codex is back on the new route"), so
+ * naming a single app when that is what was closed, and staying vague when it
+ * was several, beats asserting something that was not true.
  */
 /** "Couldn't connect Codex", or "Couldn't connect 2 of 4: Codex, OpenCode". */
 function cascadeTitle(e: FamilyCascadeError): string {
