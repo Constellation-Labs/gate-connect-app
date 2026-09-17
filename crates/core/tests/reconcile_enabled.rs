@@ -375,3 +375,150 @@ fn managed_drift_without_relay_is_left_alone() {
     let after = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
     assert_eq!(before, after);
 }
+
+// ---------------------------------------------------------------------------
+// Codex. The provider pass is the only path that could reach it - it is mapped
+// to the `openai` provider, so `reconcile_unmapped_tools` skips it by
+// construction - which makes `domains_enabled_persisted(openai)` the gate on
+// everything below.
+// ---------------------------------------------------------------------------
+
+/// Make Codex look installed, logged in, and connected by an older build: the
+/// base URL shape we wrote before the tool marker existed, plus the
+/// `[_gate_connect]` marker saying it was ours. This is [`Status::Drifted`]
+/// under the marker shape.
+fn install_codex_with_stale_managed_config(relay_port: u16) {
+    let dir = env::codex_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        env::codex_auth_json_path().unwrap(),
+        r#"{"auth_mode":"apikey"}"#,
+    )
+    .unwrap();
+    let stale = format!(
+        r#"model_provider = "gate"
+
+[model_providers.gate]
+name = "Gate"
+base_url = "http://127.0.0.1:{relay_port}/openai/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[_gate_connect]
+previous_model_provider_absent = true
+"#
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), stale).unwrap();
+}
+
+fn codex_status() -> Status {
+    find(ToolId::Codex).unwrap().status().unwrap()
+}
+
+fn codex_config() -> String {
+    fs::read_to_string(env::codex_config_toml_path().unwrap()).unwrap()
+}
+
+#[test]
+fn codex_stale_managed_config_is_reapplied() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_codex_with_stale_managed_config(port);
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(find(ToolId::Codex).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_status(), Status::Connected);
+    assert!(
+        codex_config().contains(&format!("http://127.0.0.1:{port}/__gate/t/codex/openai/v1")),
+        "the stale base URL should have been rewritten with the tool marker: {}",
+        codex_config()
+    );
+}
+
+/// Turning Codex off by hand is an instruction, not drift to repair.
+///
+/// `model_provider = "openai"` is what a user writes to stop routing Codex
+/// through Gate without running disconnect, and `status` reports it as
+/// `Drifted` because our block is still sitting there. The marker alone cannot
+/// tell that apart from our own stale write - it records who created the block,
+/// not who wrote the values in it now - which is why `config_is_managed` asks
+/// the second question too.
+#[test]
+fn codex_hand_edited_off_gate_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_codex_with_stale_managed_config(port);
+    let hand_edited =
+        codex_config().replace(r#"model_provider = "gate""#, r#"model_provider = "openai""#);
+    fs::write(env::codex_config_toml_path().unwrap(), &hand_edited).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "a config pointed away from Gate is not ours to reapply"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), hand_edited, "the hand edit was reverted");
+}
+
+/// The same question about the other value the user can change: our block, our
+/// marker, but `base_url` repointed at their own gateway.
+#[test]
+fn codex_repointed_base_url_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_codex_with_stale_managed_config(port);
+    let repointed = codex_config().replace(
+        &format!("http://127.0.0.1:{port}/openai/v1"),
+        "https://gateway.example.com/v1",
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), &repointed).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(!find(ToolId::Codex).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), repointed, "the hand edit was reverted");
+}
+
+/// A disconnected tool stays disconnected across the sweep's drift half.
+///
+/// This is the load-bearing half of letting managed drift repair itself without
+/// consulting the provider switch: `disconnect` removes the marker, so the
+/// question `config_is_managed` asks answers "no" for every tool the user has
+/// deliberately turned off, whatever its provider's domains say.
+#[test]
+fn codex_disconnected_is_not_reconnected_by_the_drift_half() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_codex_with_stale_managed_config(port);
+    find(ToolId::Codex).unwrap().disconnect().unwrap();
+    let after_disconnect = codex_config();
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "the disconnect stub must not read as a config we manage"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(
+        codex_config(),
+        after_disconnect,
+        "a disconnected Codex was reconnected"
+    );
+}
