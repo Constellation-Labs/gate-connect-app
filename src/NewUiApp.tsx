@@ -163,7 +163,6 @@ import {
   PaneNote,
   RecoveryBanner,
   ReopenAlert,
-  ReopenBanner,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
@@ -1335,8 +1334,8 @@ export function NewUiApp() {
 
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
-    // The scan found nothing for a tool the banner named, so the reading the
-    // banner was built from is out of date - the tool has been reopened, or
+    // The scan found nothing for a tool the card named, so the reading the
+    // card was built from is out of date - the tool has been reopened, or
     // quit. Re-sweep rather than swallow the click: the invitation is what is
     // wrong here, and leaving it on screen is what made the button look dead.
     onNothingRunning: () => void refreshVerdicts(),
@@ -2621,32 +2620,6 @@ export function NewUiApp() {
   );
 
   /**
-   * Every tool the sweep says is applied but not picked up, for the shell
-   * banner. AG-566 AC 3 asks for the invitation on Overview as well as on tool
-   * detail, and the banner slot is what every pane shares.
-   *
-   * Dismissible for the session. The rail still reads "Not protected - Reopen
-   * required" on each affected row, so hiding this drops the invitation rather
-   * than the fact.
-   */
-  const [reopenHidden, setReopenHidden] = useState(false);
-  const reopenPending = useMemo(
-    () =>
-      [...verdicts.values()]
-        .filter((v) => v.reason === "reopen_required")
-        // Not the tool whose pane is open: `ReopenAlert` is already sitting on
-        // it with the same two routes and the same button, and one fact drawn
-        // twice on one screen reads as two problems.
-        //
-        // `openTool`, not the pane's slug: verdicts are keyed per tool and the
-        // pane is a section, so comparing the two suppressed nothing and drew
-        // the card twice.
-        .filter((v) => v.slug !== openTool)
-        .map((v) => ({ slug: v.slug, name: toolName(v.slug) ?? v.slug })),
-    [verdicts, toolName, openTool],
-  );
-
-  /**
    * The one-off note that follows the certificate landing, on Linux.
    *
    * Driven off `ca_trusted` going false to true rather than off the action that
@@ -2789,6 +2762,17 @@ export function NewUiApp() {
     // The section's config tool, not the pane's slug. A verdict is measured per
     // tool and a reopen is a process reopening, so both are the tool's - the
     // section id matched neither map and the card stopped being drawn at all.
+    //
+    // Two invariants hold this up, and both fail silently - the card simply
+    // does not draw. `openTool` is the FIRST installed config member of the
+    // section, so it is the right slug only while no section holds two; and it
+    // filters `tools` where `apps` additionally drops `isSettingsManaged`, so a
+    // settings-managed member carrying this verdict would resolve a slug and
+    // then miss `appFor`. Today only `claude-code`, `codex` and `opencode` can
+    // reach `reopen_required` (`AGENT_PROCESSES` in `lib.rs` is what narrows
+    // it), each is member 0 of its section and none is settings-managed. The
+    // shell banner used to mask both shapes by keying off `verdicts` directly;
+    // the tray card still does, which is the remaining backstop.
     if (view.kind !== "app" || openTool === null) return undefined;
     const verdict = verdicts.get(openTool);
     if (verdict?.reason !== "reopen_required") return undefined;
@@ -3021,8 +3005,16 @@ export function NewUiApp() {
 
   /**
    * The one notice the shell draws, ranked: a failed action, then an
-   * interrupted restore, then tools waiting to be reopened, then the
-   * certificate's browser note.
+   * interrupted restore, then the certificate's browser note.
+   *
+   * A pending reopen is not on it. It is one tool's fact, and it belongs on
+   * that tool's pane, where `ReopenAlert` names both routes rather than listing
+   * names - the shell banner drew it over Overview, Settings and every other
+   * tool's pane, which is the thing #277 took the drift and check-error cards
+   * off Overview for. The rail still reads "Reopen to finish" on each affected
+   * row - its own amber phrase, deliberately not "Not protected" - with the
+   * program named after the dash on a multi-surface section. This drops AG-566
+   * AC 3, which asked for the invitation on Overview.
    *
    * Lifted out of the `AppShell` call so the reload note below can be stacked
    * beside it rather than ranked inside it. Unchanged otherwise.
@@ -3055,17 +3047,8 @@ export function NewUiApp() {
         onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
         onFinishLater={() => setRecoveryHidden(true)}
       />
-    ) : reopenPending.length > 0 && !reopenHidden ? (
-      // Last of the three: an unfinished operation and a failure both
-      // outrank a change that landed and is waiting on the user to open a
-      // window they were told about.
-      <ReopenBanner
-        tools={reopenPending}
-        onReopen={(slug) => void runningApps.offerAfterChange([slug])}
-        onDismiss={() => setReopenHidden(true)}
-      />
     ) : browserRestart ? (
-      // Bottom of the chain, and neutral where the three above are amber or
+      // Bottom of the chain, and neutral where the two above are amber or
       // red: each of those names something still to be fixed in Gate's own
       // routing, while this is a step outside the app that the user may
       // already have taken. It must never displace one of them.
@@ -3082,12 +3065,12 @@ export function NewUiApp() {
    *
    * It was the fifth arm of the chain and that was wrong in both directions.
    * Routing a section while its CLI is running is the case this advice exists
-   * for, and it is exactly the case that fills `reopenPending` - so the banner
-   * about the browser lost to the banner about the CLI, and then appeared on
-   * its own minutes later, once the reopen cleared, as a second event about a
-   * click the person had stopped thinking about. The two are remedies for two
-   * halves of ONE click, on two different things the person owns; neither
-   * replaces the other and both belong on screen.
+   * for, and it is exactly the case that raised the reopen banner the chain
+   * used to carry - so the banner about the browser lost to that one, and then
+   * appeared on its own minutes later, once the reopen cleared, as a second
+   * event about a click the person had stopped thinking about. The two are
+   * remedies for two halves of ONE click, on two different things the person
+   * owns; neither replaces the other and both belong on screen.
    *
    * The trust note is the one exception and keeps its rank: quitting a browser
    * and opening it again reloads every page by definition, so drawing both

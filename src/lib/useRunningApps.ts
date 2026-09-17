@@ -99,8 +99,8 @@ export function useRunningApps({
    * The scan found no process for the tools it was asked about.
    *
    * Called instead of opening a dialog, because a dialog about nothing is worse
-   * than silence - but silence alone is what made the shell banner's own button
-   * look broken. The banner is built from a verdict, the verdict is a reading
+   * than silence - but silence alone is what made the reopen card's own button
+   * look broken. The card is built from a verdict, the verdict is a reading
    * taken at some earlier moment, and by the time somebody presses the button
    * the tool may already have been reopened or quit. An empty scan is the
    * answer to that: the invitation is stale, so the caller re-reads rather than

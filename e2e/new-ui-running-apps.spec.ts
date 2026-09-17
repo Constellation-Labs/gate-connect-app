@@ -28,6 +28,16 @@ const CODEX = {
   status: { kind: "detected" as const },
 };
 
+/**
+ * The pane's reopen card. `ReopenAlert` takes `role="status"` - it is raised by
+ * a sweep rather than by a click - and it is the only status region inside the
+ * pane, so the role scopes a click to the card rather than to whatever else
+ * happens to hold a "Close tool" button.
+ */
+function reopenCard(app: { page: import("@playwright/test").Page }) {
+  return app.page.getByRole("status").filter({ hasText: /^Reopen .+ to finish/ });
+}
+
 test.describe("new UI running apps", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -279,11 +289,13 @@ test.describe("new UI running apps", () => {
   });
 
   /**
-   * AG-566 AC 3: the invitation belongs on Overview too, not only on the pane
-   * of the tool it is about. The pane's own card covers that tool, so the
-   * banner names the ones whose panes are not open.
+   * The invitation is the tool's, so it is drawn on the tool's pane and nowhere
+   * else. AG-566 AC 3 asked for it on Overview as well and a shell banner did
+   * that for a while; one tool's pending reopen in shell chrome then stood over
+   * Overview, Settings and every other tool's pane. The rail row still names
+   * the tool, which is what gets the user here.
    */
-  test("Overview offers the reopen without opening the tool", async ({ boot }) => {
+  test("the tool's pane offers the reopen, and Overview does not", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...CODEX, status: { kind: "connected" as const } }],
@@ -291,11 +303,22 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText("Codex");
+    // Positive first, and that ordering is the assertion. `boot` waits only for
+    // the first heading while `refreshVerdicts` is still in flight, so a bare
+    // count of zero passes against a page that has not heard about the reopen
+    // yet - which would let the banner come back unnoticed. The rail row is
+    // what proves the sweep landed on this screen.
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Reopen to finish" }),
+    ).toBeVisible();
+    // And with the fact on screen, nothing in shell chrome offers the action.
+    await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
 
-    await banner.getByRole("button", { name: "Close tool" }).click();
+    await app.openSection("ChatGPT / Codex");
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
+
+    await card.getByRole("button", { name: "Close tool" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -324,20 +347,23 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
+    await app.openSection("ChatGPT / Codex");
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
 
     // The user opens it again, somewhere the app cannot see. No click, no
     // event, no visibility change - the standing sweep is the only thing that
     // can notice.
     await app.patch({ staleAgents: 0 });
 
-    await expect(banner).toBeHidden({ timeout: 25_000 });
+    await expect(card).toBeHidden({ timeout: 25_000 });
     // And the rail row it was about reads as routing, off the same sweep.
-    // `exact`, because the sidebar's own eyebrow reads "Protected apps".
-    await expect(app.page.getByText("Protected", { exact: true })).toBeVisible({
-      timeout: 25_000,
-    });
+    // Read off the row rather than off the page: the pane this test now opens
+    // says "Protected" in its own header too, and the sidebar's eyebrow reads
+    // "Protected apps".
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible({ timeout: 25_000 });
   });
 
   /**
@@ -355,19 +381,20 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
-    await expect(banner).toBeVisible();
+    await app.openSection("ChatGPT / Codex");
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
 
-    // Quit between the sweep that raised the banner and the press.
+    // Quit between the sweep that raised the card and the press.
     await app.patch({ staleAgents: 0, runningAgentNames: [] });
-    await banner.getByRole("button", { name: "Close tool" }).click();
+    await card.getByRole("button", { name: "Close tool" }).click();
 
     // No dialog about a tool that is not running...
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
     ).toBeHidden();
-    // ...and the banner goes, because the empty scan is the answer to it.
-    await expect(banner).toBeHidden({ timeout: 25_000 });
+    // ...and the card goes, because the empty scan is the answer to it.
+    await expect(card).toBeHidden({ timeout: 25_000 });
   });
 
   /**
@@ -430,9 +457,9 @@ test.describe("new UI running apps", () => {
 
     // Codex's row is the ChatGPT / Codex app row: one switch, and the config
     // tool inside it is what a reopen is about.
-    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    await app.openSection("ChatGPT / Codex");
 
-    await expect(app.page.getByText(/Reopen .* to finish/)).toBeVisible();
+    await expect(reopenCard(app)).toBeVisible();
     await expect(
       app.page.getByText("Apps already open may need reopening"),
     ).toHaveCount(0);
@@ -459,7 +486,7 @@ test.describe("new UI running apps", () => {
     // asks to turn routing OFF and never reaches the gate. Reconnecting is what
     // asks to write the config, and the gate is on that path. The card is drawn
     // on Codex's own pane, reached through its section's rail row.
-    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    await app.openSection("ChatGPT / Codex");
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 

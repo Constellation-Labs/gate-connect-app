@@ -2762,12 +2762,17 @@ transitions, for the same reason `lib/recovery.ts` exists: the dialogs, the shel
 banner and the tray card all draw these rows, and a row assembled twice is a row
 that reads "Verifying" on one surface and "Reopen required" on another.
 
-**"Reopen to finish" is on all three surfaces** (AC 3): `ReopenAlert` on tool
-detail, a new `ReopenBanner` in the shell's banner slot - which is what Overview
-shares - and a tray card. The banner drops the tool whose pane is open, because
-the card is already sitting on it with the same two routes and the same button.
+**"Reopen to finish" is on two surfaces**: `ReopenAlert` on tool detail and a
+tray card. It was on three - a `ReopenBanner` in the shell's banner slot, which
+is how Overview carried it for AC 3 - and that banner is gone. One tool's
+pending reopen drawn in shell chrome appeared over Overview, Settings and every
+other tool's pane; it is the same thing #277 took the drift and check-error
+cards off Overview for, and the rail still reads "Reopen to finish" on each
+affected row - its own amber phrase rather than "Not protected", with the
+program named after the dash on a multi-surface section. So AC 3's Overview
+half is deliberately not met.
 
-**All three keep sweeping, and all three say "Close tool".** Two later
+**Both keep sweeping, and both say "Close tool".** Two later
 corrections, both from the same root: the reopen is the one reading in this app
 that resolves without anybody touching it, and nothing was watching for it.
 `tool_watch.rs` watches config files and binaries - never the process table - so
@@ -2782,7 +2787,7 @@ that clears it - plus one on the focus edge, and `useRunningApps` reports an
 empty scan (`onNothingRunning`) so a stale invitation takes itself down instead
 of swallowing the click. The label was the other half: Gate cannot reopen a CLI,
 so a button reading "Reopen Claude Code" promised the one thing this flow never
-does. It opens the close confirmation, and all three surfaces now say so. The
+does. It opens the close confirmation, and both surfaces now say so. The
 heading above them still reads "Reopen to finish", which is the true sentence -
 Gate closes it, the person opens it.
 

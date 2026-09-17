@@ -146,8 +146,9 @@ export function Tray({
     onReview: () => void;
   };
   /** Tools whose configuration is applied and whose running process has not
-   *  picked it up (AG-566 AC 3, which asks for this on tool detail, Overview
-   *  *and* the tray).
+   *  picked it up. AG-566 AC 3 asked for this on tool detail, Overview and the
+   *  tray; the Overview banner is gone, so the surfaces are the tool's pane,
+   *  the rail row and this.
    *
    *  Same division as `recovery`: the tray carries the fact and the one action,
    *  and the per-tool routes and stages stay in the window, which has the width
@@ -871,8 +872,8 @@ function ReopenCard({
         className="flex h-8 items-center justify-center rounded-md border border-amber-300 bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 shadow-base-btn-sm transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
       >
         {/* "Close", not "Reopen": this opens the close confirmation, and Gate
-            cannot start a CLI again. One label across the three surfaces that
-            raise this flow - see `banners.tsx`. */}
+            cannot start a CLI again. One label across both surfaces that raise
+            this flow - see `banners.tsx`. */}
         Close tool
       </button>
     </div>

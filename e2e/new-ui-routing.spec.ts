@@ -16,16 +16,6 @@ import { OPENCLAW } from "./backend";
  */
 const useNewUi = { gc: "gc.newUi" };
 
-/**
- * Open Codex's pane, which is where its drift card is drawn. Overview draws
- * only the whole-machine causes (`lib/notices.ts`), so a spec that wants the
- * "Let Gate Connect manage CLI" switch has to leave the boot screen first.
- * The rail names the section, so Codex is reached through "ChatGPT / Codex".
- */
-async function openCodexPane(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-}
-
 test.describe("new UI routing", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -66,7 +56,7 @@ test.describe("new UI routing", () => {
 
   test("re-adopting from the alert card goes through the review", async ({ boot }) => {
     const app = await boot(driftedCodex);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     // The card's switch reads off: the app is not protected. This is the path
     // that re-adopts, and the only one that reaches the review gate. Its
@@ -91,7 +81,7 @@ test.describe("new UI routing", () => {
 
   test("declining the review leaves the config alone", async ({ boot }) => {
     const app = await boot(driftedCodex);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
@@ -266,17 +256,17 @@ test.describe("new UI routing", () => {
     await expect(note).toHaveCount(0);
   });
 
-  test("it is drawn beside the reopen banner, not behind it", async ({ boot }) => {
-    // The case the advice exists for is also the case that fills the reopen
-    // banner: a CLI running while its section is switched on. Ranked below it,
-    // the browser half of one click lost to the CLI half, and then appeared on
-    // its own once the reopen cleared - a second event about a click the person
-    // had stopped thinking about. They are two remedies for two things the
-    // person owns, and both belong on screen.
+  test("it is drawn beside the reopen card, not behind it", async ({ boot }) => {
+    // The case the advice exists for is also the case that raises the reopen
+    // card: a CLI running while its section is switched on. Ranked below the
+    // banner that card replaced, the browser half of one click lost to the CLI
+    // half, and then appeared on its own once the reopen cleared - a second
+    // event about a click the person had stopped thinking about. They are two
+    // remedies for two things the person owns, and both belong on screen.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      // A CLI that is running on the route it started with, which is what fills
-      // the reopen banner - and what a real user in this case has.
+      // A CLI that is running on the route it started with, which is what
+      // raises the reopen card - and what a real user in this case has.
       staleAgents: 1,
       tools: [
         {
@@ -291,12 +281,13 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    // Scoped to the banner, like the sibling assertion below it: the rail row
-    // for this tool now carries the same phrase, so a bare text match resolves
-    // to two elements.
-    await expect(
-      app.page.getByRole("status").filter({ hasText: "Reopen to finish" }),
-    ).toBeVisible();
+    // The card is on the tool's pane, and the advice is shell chrome that
+    // follows the user there - which is the whole assertion: one click, two
+    // remedies, both on screen at once.
+    await app.openSection("Claude");
+    // The line that names the tool, because the rail row carries the bare
+    // phrase too and a looser match resolves to two elements.
+    await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
     await expect(
       app.page.getByRole("status").filter({ hasText: "Pages already open" }),
     ).toBeVisible();
@@ -424,7 +415,7 @@ test.describe("new UI drift repair", () => {
     boot,
   }) => {
     const app = await boot(drifted);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -441,7 +432,7 @@ test.describe("new UI drift repair", () => {
     // Not "unknown" dressed as an address: with no port there is nothing true to
     // show, so the row goes rather than guessing.
     const app = await boot({ ...drifted, proxy: { running: true, ca_trusted: true, relay_base_url: null } });
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -1175,7 +1166,7 @@ test.describe("new UI: the review names the file it will change", () => {
 
   test("the review names the config file", async ({ boot }) => {
     const app = await boot(driftedWithPath);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -1191,7 +1182,7 @@ test.describe("new UI: the review names the file it will change", () => {
       ...driftedWithPath,
       tools: [{ ...driftedWithPath.tools[0], config_location: null }],
     });
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 

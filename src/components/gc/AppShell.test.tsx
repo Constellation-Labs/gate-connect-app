@@ -43,8 +43,9 @@ const noticeWrapper = () => screen.getByText("a notice").closest("div");
  * banner. That was correct while `ErrorBanner` was the only thing in the slot
  * and wrong as soon as the recovery and reopen banners joined it: both then
  * floated over every dialog, lit while everything round them dimmed. The
- * sharpest case was `ReopenBanner`, whose "Close tool" button sat on top of the
- * close-apps dialog that button opens.
+ * sharpest case was the reopen banner, whose "Close tool" button sat on top of
+ * the close-apps dialog that button opens. That banner is gone - a pending
+ * reopen is drawn on the tool's own pane now - but the exemption stays scoped.
  */
 describe("AppShell notice elevation", () => {
   it("leaves every notice under the dialog scrim", () => {

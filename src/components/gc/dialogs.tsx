@@ -80,7 +80,7 @@ export interface DialogApp {
  * A tool in the reopen flow, with the mark the shell holds for it.
  *
  * The reopen model itself comes from `lib/reopen`, unchanged: the dialogs, the
- * shell banner and the tray card all draw the same rows, and a dialog-shaped
+ * pane's reopen card and the tray card all draw the same rows, and a dialog-shaped
  * copy of them is how two surfaces end up disagreeing about one tool.
  */
 export type DialogReopenTool = ReopenTool & {
