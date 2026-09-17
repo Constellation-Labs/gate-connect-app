@@ -613,6 +613,36 @@ Evidence: `src/components/gc/banners.tsx` (`RoutingBanner`),
 
 ---
 
+## 24. "No Gate credits used" is false on a PAYG account
+
+**What the file draws.** `408:25491`, the App-default row in the Model selection
+card, reads "Gate protects requests, then leaves model choice to Claude Desktop.
+No Gate credits used."
+
+**Why we did not ship the second sentence.** It is true only under BYOK. On a
+PAYG account the engine strips the tool's own credential and debits the org
+balance for every PAYG-eligible slug, whatever the per-tool model source says -
+`strip_client_auth`, reached on `mode == BillingMode::Payg` in
+`crates/core/src/proxy/mod.rs`, runs before any model decision. So on that
+account the row tells a user their traffic is free at the moment it is being
+billed, on the one surface principle 1 is about.
+
+We shipped the first sentence alone. That is a deviation from drawn copy, which
+is design's to settle, so it is here rather than in CLAUDE.md's list of decided
+exceptions.
+
+**The second half of the question.** The same review found that gating the
+credits row on the Gate branch hides the balance and "Add credits" from a PAYG
+account on App default - which is exactly when it is spending. Whether the
+balance should show whenever the account is PAYG, regardless of branch, is the
+part we cannot answer from the frames: no frame draws a PAYG App-default pane.
+
+**Narrow today, not permanently.** `billing_mode` is settable only from the CLI
+and the frontend never reads it. If PAYG becomes settable in the app, both
+halves above stop being narrow on the same day.
+
+---
+
 ## For information: things we found and fixed without asking
 
 So the list above is not mistaken for the whole audit. All of these were

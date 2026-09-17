@@ -53,8 +53,10 @@ afterEach(cleanup);
 describe("the model picker, choosing several", () => {
   it("draws the file's copy, and names the app in the subtitle", () => {
     renderPicker();
+    // Singular in both modes. `665:18405` draws it, and that frame is this
+    // dialog; the plural came from `665:19069` and design pointed here.
     expect(
-      screen.getByRole("heading", { name: "Choose Gate models" }),
+      screen.getByRole("heading", { name: "Choose a Gate model" }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog").textContent).toContain(
       "OpenCode will be able to use these models",
@@ -214,5 +216,27 @@ describe("the model picker, choosing one", () => {
     expect(screen.queryAllByRole("checkbox", named)).toHaveLength(0);
     expect(screen.queryAllByRole("radio", named)).toHaveLength(0);
     expect(screen.queryAllByRole("button", named)).toHaveLength(0);
+  });
+});
+
+describe("ModelPickerDialog vendor marks", () => {
+  it("draws each row's provider mark rather than one cube for every vendor", () => {
+    // The frames draw a real 16px mark per row (665:18421 `anthropic 2`,
+    // 671:19259 `moonshot 1`); `logo` was declared on the row type and passed by
+    // nobody, so the list drew the fallback for all 413 catalogue entries.
+    const { container } = renderPicker();
+
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy(); // anthropic
+    expect(container.querySelector('svg path[fill="black"]')).toBeTruthy(); // moonshot
+  });
+
+  it("keeps the cube for a vendor with no published mark", () => {
+    const { container } = renderPicker({
+      models: [{ id: "sao10k/l3-euryale", vendor: "sao10k", tags: [] }],
+      selectedIds: [],
+    });
+
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
+    expect(screen.getByText("sao10k/l3-euryale")).toBeTruthy();
   });
 });

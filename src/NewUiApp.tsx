@@ -69,7 +69,6 @@ import type { ClassifiedError } from "./lib/errors";
 import {
   browserTrustRestartAdvice,
   buildGroups,
-  switchScopeNote,
   BAND_LABELS,
   sectionHint,
   sectionMemberKeys,
@@ -95,7 +94,6 @@ import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
-import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
 import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
@@ -104,6 +102,7 @@ import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
 import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
+import type { GapNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
 import {
   SettingsPane,
@@ -422,15 +421,6 @@ export function NewUiApp() {
   >(null);
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
-  // Which installation the Overview's *filter* covers; `null` is the whole org,
-  // and stays the default because traffic sent before attribution existed has no
-  // installation at all. Selecting one refetches - the gateway narrows every
-  // section server-side, so there is nothing to slice here.
-  //
-  // Named for the filter rather than the id on purpose: `installId` above is this
-  // machine's own identity, which is a different fact. The two were briefly the
-  // same name and the compiler caught it.
-  const [installFilter, setInstallFilter] = useState<string | null>(null);
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
   // can switch org without the window remounting.
@@ -485,17 +475,22 @@ export function NewUiApp() {
   // there is nothing to authenticate with, so a fetch could only fail, and the
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
-  const activity = useActivity(canRead, installFilter, credential);
+  // Org-wide, always. The Overview carried an installation filter (AG-572 AC 1,
+  // "shows ... selected installation") that no frame draws - the drawn header
+  // `116:26487` has exactly two children, "Overview" and "Last 24 hours" - so it
+  // came out on 2026-09-16. `null` was already its default, because traffic sent
+  // before attribution existed has no installation at all and scoping by default
+  // would quietly drop it out of totals the user could already see.
+  const activity = useActivity(canRead, null, credential);
   /** The 24-hour read has not answered yet, either way. Drives the Overview's
    *  skeletons, and named here because the tray's jump to the security section
    *  needs the same fact: the anchor's position is not final until the cards
    *  above it stop being placeholders. */
   const activityPending = activity.view === null && activity.failure === null;
-  const {
-    installations,
-    current: currentInstallId,
-    resolved: installsResolved,
-  } = useInstallations(canRead, credential);
+  const { current: currentInstallId, resolved: installsResolved } = useInstallations(
+    canRead,
+    credential,
+  );
   /**
    * The one config tool in the open section, if it has one.
    *
@@ -517,10 +512,11 @@ export function NewUiApp() {
           // `list_tools` carries the not-installed ones too, so without it a
           // Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
-          // have traffic, and drew zeroes with no caveat - `openDomain` false so
-          // no unattributed marker, `partialReading` undefined because IT reads
-          // the built ledger. A number with nothing behind it, in the one place
-          // principle 6 names.
+          // have traffic, and drew zeroes with no caveat - `openDomain` false
+          // so no unattributed marker. A number with nothing behind it, in the
+          // one place principle 6 names. (The `partialReading` caveat this used
+          // to name as the other half of that guard is gone; see the commit
+          // that removed it.)
           tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
         ) ?? null)
       : null;
@@ -761,12 +757,6 @@ export function NewUiApp() {
       })),
     [toolEvents.view, dash, openLink],
   );
-
-  // A machine id belongs to the org it sent traffic to, so a filter selected
-  // before an org switch cannot be honoured after it.
-  useEffect(() => {
-    setInstallFilter(null);
-  }, [credential]);
 
   const loadLaunchAtLogin = useCallback(async () => {
     const launch = await launchAtLoginStatus().catch(() => null);
@@ -2153,7 +2143,6 @@ export function NewUiApp() {
         // one. The local id always exists. `x-gate-install-id` sends this same
         // value, so the two never disagree.
         deviceName: device ?? "Unavailable",
-        deviceNamed: prefs ? prefs.device_name !== null : undefined,
         onRenameDevice: device
           ? () => settings.openRenameDevice(device)
           : undefined,
@@ -2636,43 +2625,6 @@ export function NewUiApp() {
   }, [proxy]);
 
   /**
-   * What the open section's switch covers, on the pane that opens on it.
-   *
-   * Same shape as the advice below and a different kind of thing: this is a
-   * description of the surfaces, true on every platform and whether or not the
-   * section is on, and it is here because the window shell draws a row's copy as
-   * one sentence and these sections need three or four. `groups.ts` carries the
-   * copy, composes the credential sentence with the section's remaining hosts,
-   * and documents why that composition is not this file's to do.
-   */
-  const scopeCard = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const group = groups.find((g) => g.id === view.slug);
-    return group
-      ? switchScopeNote(group, platform, proxy?.browser_proxy_channel ?? false)
-      : undefined;
-  }, [view, groups, platform, proxy]);
-
-  /**
-   * Whether the open section's figures cover less than its switch routes.
-   *
-   * True when the section has a config tool (so there IS a reading) and any
-   * member the gateway cannot attribute (so the reading is narrower than the
-   * heading). `client_tool` comes from the caller's own User-Agent, and the
-   * desktop apps send none the matcher places - see `proxy::client_tool` and
-   * the ceiling its doc describes.
-   */
-  const partialReading = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const section = groups.find((g) => g.id === view.slug);
-    const configMember = section?.members.find((m) => m.kind === "config");
-    if (!section || !configMember) return undefined;
-    return section.members.some((m) => m.kind === "proxy")
-      ? { covers: configMember.tool?.product_name ?? configMember.name }
-      : undefined;
-  }, [view, groups]);
-
-  /**
    * The standing note a proxy-routed row carries on Linux.
    *
    * Not a verdict and not drawn like one: `reopen_required` is measured per tool
@@ -3088,17 +3040,6 @@ export function NewUiApp() {
               busy: routingBusy,
               caTrusted: proxy.ca_trusted,
               onToggle: (next) => void toggleMaster(next),
-              // Absent on Linux, where these variables *are* the system proxy
-              // and cannot be declined without turning routing off.
-              envExport: proxy.env_export_separable
-                ? {
-                    on: proxy.env_export_opted_in,
-                    onToggle: (next) => {
-                      setActionError(null);
-                      void routing.setEnvExport(next);
-                    },
-                  }
-                : undefined,
             }
           : undefined
       }
@@ -3639,7 +3580,6 @@ export function NewUiApp() {
           //
           // Computed from the section rather than hardcoded, so it disappears
           // per surface as attribution improves rather than needing a sweep.
-          partialReading={partialReading}
           alert={
             <>
               {reopenAlert}
@@ -3653,15 +3593,6 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {/* One card, not two, and one source for it: `switchScopeNote`
-                  composes the credential sentence with the section's remaining
-                  hosts, because the second is worded against whether the first
-                  precedes it. This used to be two `PaneNote`s, which is how the
-                  Claude pane drew two cards headed "What this switch covers"
-                  one above the other. */}
-              {scopeCard && (
-                <PaneNote title={scopeCard.title} body={scopeCard.body} />
-              )}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
@@ -3776,26 +3707,6 @@ export function NewUiApp() {
           // there is one, it names its own gaps.
           unavailable={activity.view?.missing ?? ALL_MISSING}
           period={activity.view?.period ?? "Last 24 hours"}
-          scope={
-            <InstallationPicker
-              installations={installations}
-              // What the user asked for, not what the gateway echoed. This is a
-              // control, and driving a control from observed state is the bug
-              // CLAUDE.md's second principle documents: selecting an installation
-              // clears the view, so the echo was `null` for the whole round trip
-              // and the picker snapped back to "All installations" - contradicting
-              // the click that caused it, for three seconds under
-              // `gcSlowActivity(3000)`.
-              //
-              // The old comment argued the label had to agree with numbers that
-              // were "still the previous scope's". They are not: the effect below
-              // clears them, so it agreed with nothing. The figures are skeletons
-              // while this is pending, which is what says the numbers are not the
-              // new scope's yet.
-              value={installFilter}
-              onChange={setInstallFilter}
-            />
-          }
           alert={
             <>
               {notice && (
@@ -4050,7 +3961,11 @@ function ActivityGaps({
   const notices = mergeNotices(
     failure
       ? [failureNotice(failure)]
-      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason)),
+      : (view?.gaps ?? [])
+          .map((g) => sectionNotice(g.section, g.reason))
+          // `not_configured` raises none: the section's own card says it in the
+          // place the reader is looking.
+          .filter((n): n is GapNotice => n !== undefined),
   ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 

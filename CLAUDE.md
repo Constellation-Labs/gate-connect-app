@@ -201,6 +201,20 @@ one-to-one so any value can be traced back without guessing.
   savings tables draw their row glyphs at `base/muted-foreground` #6b7280
   (`116:26721`), deliberately quieter than the label beside them. Resolve the
   node before applying either half of this.
+  **A model row is a third case, and takes neither ink**: it draws the
+  provider's own full-colour brand mark (`src/components/gc/ProviderMark.tsx`),
+  because the frames do - `anthropic 2` is `#E8704E`, `deepseek-color 1`
+  `#4D6BFE`, `alibaba-color 1` `#FF6003`. The `-color` suffix on those layer
+  names is a lobe-icons filename, not a variant choice, so do not read it as a
+  mono/colour split: `anthropic 1` and `anthropic 2` are the same colour.
+  A vendor with no published mark falls back to `Icon name="cube"`, which is
+  the `Icon / Boxes` the frames put in the same slot. The marks that ARE
+  monochrome (openai, grok, ibm, ai21, inception, relace) inherit the wrapper's
+  ink, so a model row gives them `base.foreground` and never the muted grey the
+  Overview's row glyphs take - otherwise one row draws OpenAI grey beside
+  Moonshot's hard-coded black. Keep this separate from
+  `BrandMark.tsx`, whose marks are monochrome so the rail's dark tile can ink
+  them.
 - **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's,
   which redefines Tailwind's own `sm` (2px -> **6px**), `lg` and `xl`. So
   `rounded-sm` is 6px, and reaching for it because you want 2px is a mistake

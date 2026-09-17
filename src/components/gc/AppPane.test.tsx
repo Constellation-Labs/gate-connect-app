@@ -81,33 +81,6 @@ describe("AppPane header", () => {
   });
 });
 
-describe("AppPane partial reading", () => {
-  it("says which surface the counters measured, because the heading names more", () => {
-    // A row is an app, and its switch spans surfaces the gateway attributes
-    // differently. The counters are the config tool's; the desktop app sends no
-    // User-Agent `client_tool` places, so its traffic is in no per-tool read.
-    // A plausible number under a heading naming the whole app is the failure
-    // principle 6 rules out, and it is worse than an absent one.
-    render(pane({ name: "Claude", partialReading: { covers: "Claude Code" } }));
-    const note = screen.getByText(/These counts cover Claude Code/);
-    expect(note.textContent).toContain("not attributed to an app");
-  });
-
-  it("says nothing when the figures cover the whole row", () => {
-    render(pane({ name: "Claude" }));
-    expect(screen.queryByText(/These counts cover/)).toBeNull();
-  });
-
-  it("yields to the row that has no reading at all", () => {
-    // `unattributed` already explains that per-app activity does not exist for
-    // this row. Drawing both would caveat a reading that is not there.
-    render(
-      pane({ name: "OpenRouter", unattributed: true, partialReading: { covers: "Codex" } }),
-    );
-    expect(screen.queryByText(/These counts cover/)).toBeNull();
-  });
-});
-
 describe("AppPane model card", () => {
   it("draws the model card when the app has one model family", () => {
     render(pane());
@@ -502,8 +475,82 @@ describe("AppPane model selection", () => {
 
   it("reads N/A for a credit balance nothing reports", () => {
     // Not a dash: a dash reads as a value. No endpoint returns a Gate balance.
-    render(pane({ credits: null }));
+    // On the Gate branch, which is the only one that draws a balance at all.
+    render(pane({ modelChoice: "gate", gateModel: model, credits: null }));
     expect(within(card("Model selection")).getByText("N/A")).toBeTruthy();
+  });
+
+  it("names the balance only while Gate is the source", () => {
+    // Under App default this app sends Gate nothing to bill, so a balance here
+    // describes a relationship it is not in - and it sat directly beneath the
+    // radio that had just said Gate is not serving this app.
+    render(pane({ modelChoice: "app", gateModel: model, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    // The balance line specifically, with its colon: the App-default row below
+    // says "No Gate credits used", which is the opposite claim and must stay.
+    expect(within(card_).queryByText(/Gate credits:/)).toBeNull();
+    expect(within(card_).queryByText("$10.25 available")).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
+  });
+
+  it("says what App default means, which the card used to leave blank", () => {
+    // `408:25491`. The branch that is actually serving the user said less about
+    // itself than the one that was not: choosing App default left the radios and
+    // then a credits row about an account it is not using.
+    render(pane({ name: "Claude Desktop", modelChoice: "app" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText("Using Claude Desktop model")).toBeTruthy();
+    expect(
+      within(card_).getByText(/leaves model choice to Claude Desktop/),
+    ).toBeTruthy();
+  });
+
+  it("keeps that row off the Gate branch, where it would be false", () => {
+    render(pane({ modelChoice: "gate", gateModel: model }));
+    expect(within(card("Model selection")).queryByText(/^Using /)).toBeNull();
+  });
+
+  it("draws no App-default row from a failed read", () => {
+    // Principle 2: `null` is not App default, so nothing may claim it is.
+    render(pane({ modelChoice: null }));
+    expect(within(card("Model selection")).queryByText(/^Using /)).toBeNull();
+  });
+
+  it("withholds the balance from a failed read rather than guessing the branch", () => {
+    // `null` is not App default and not Gate - it is no reading. Principle 2:
+    // nothing here may be drawn from a reading that never landed.
+    render(pane({ modelChoice: null, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).queryByText(/Gate credits:/)).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Add credits" })).toBeNull();
+  });
+
+  it("draws the balance once Gate is the source", () => {
+    render(pane({ modelChoice: "gate", gateModel: model, credits: "$10.25 available" }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(/Gate credits:/)).toBeTruthy();
+    expect(within(card_).getByRole("button", { name: "Add credits" })).toBeTruthy();
+  });
+
+  it("marks the current model with its provider's brand, not a letter", () => {
+    // The row drew a cube for every vendor until `ProviderMark` landed, and a
+    // grey monogram before that.
+    const { container } = render(pane({ modelChoice: "gate", gateModel: model }));
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy();
+  });
+
+  it("falls back to the cube for a vendor with no published mark", () => {
+    // sao10k and thirteen others publish none; a cube is the `Icon / Boxes` the
+    // frames draw in the same slot.
+    const { container } = render(
+      pane({ modelChoice: "gate", gateModel: { vendor: "sao10k", ids: ["sao10k/l3-euryale"] } }),
+    );
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
+    expect(within(card("Model selection")).getByText("sao10k")).toBeTruthy();
   });
 
   it("chooses through the callback rather than deciding locally", async () => {

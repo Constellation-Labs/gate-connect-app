@@ -158,7 +158,10 @@ function listSubjects(group: GapNotice[]): string {
 }
 
 /** One section of an otherwise good reading is missing. */
-export function sectionNotice(section: string, reason: UnavailableReason): GapNotice {
+export function sectionNotice(
+  section: string,
+  reason: UnavailableReason,
+): GapNotice | undefined {
   switch (reason) {
     case "connectivity":
       return {
@@ -192,11 +195,10 @@ export function sectionNotice(section: string, reason: UnavailableReason): GapNo
         actions: [API_KEYS, DOCS],
       };
     case "not_configured":
-      return {
-        subject: section,
-        cause: "Nothing is set up for this yet, so there is nothing to report.",
-        actions: [DASHBOARD],
-      };
+      // No notice. The section's own card already says "No savings configured"
+      // in the place the reader is looking, and no frame draws a banner
+      // repeating it above the fold.
+      return undefined;
     case "definition_pending":
       return {
         subject: section,
