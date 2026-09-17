@@ -89,6 +89,52 @@ Watch the quit path. AG-911's scope note is explicit that app-exit runs the same
 teardown as the toggle, so a listener that dies with the GUI fixes the switch
 and leaves quitting broken the same way.
 
+## Parked, waiting on one product answer
+
+**AG-889 and AG-897 are one decision, not two.** Both are about entries that are
+not apps: `api.openai.com` and OpenRouter are hosts any app can be pointed at,
+and Gate cannot attribute their traffic per-entry because `client_tool` comes
+from the caller's User-Agent. So neither page can ever show its own activity,
+and both currently say so and nothing else.
+
+**AG-889's suggested fix should not be taken as written.** It proposes folding
+the OpenAI API entry into ChatGPT / Codex. `groups.ts` argues against that in
+place, and the argument is specific: nothing OpenAI ships rides that entry -
+Codex routes through the relay regardless, and the desktop app is on
+`chatgpt.com` - so what depends on it is any *other* program calling
+`api.openai.com`. Folding it in makes turning on ChatGPT silently route every
+OpenAI-calling script on the machine, which is the same shape as the problem
+AG-893 just fixed.
+
+The suggestion also depends on "What this switch covers", which #273 removed
+because no frame draws it. There is no longer a place on the switch to put the
+disclosure it relies on.
+
+**What the tickets actually ask for** is narrower than the suggestion: AG-889's
+Expected is that no screen exists whose only message is that its own numbers are
+unavailable, and AG-897's is that OpenRouter is "grouped with the provider
+endpoints rather than under Apps". Both are satisfied by:
+
+1. A provider-endpoints group, out of Apps, by the same rule that moved
+   `env-proxy` in AG-893.
+2. Honest copy on those pages - routed and protected, traffic not attributed to
+   one app, counted in the Overview - instead of three `n/a` tiles and two
+   "isn't attributed" cards.
+
+**The question we cannot answer ourselves:** should the rail have a third
+category, or do provider endpoints stay under Tools? That is a shape decision,
+and it is adjacent to the epic's own open question, which AG-879 assigns to the
+squad lead.
+
+- If **yes**: implement both steps, AG-897 closes with it, the fold-in is dropped.
+- If **no**: do step 2 alone, which is AG-889's literal Expected, and the entries
+  stay where they are.
+- If the **fold-in** is still wanted: someone has to accept that routing ChatGPT
+  routes unrelated scripts, and find somewhere to disclose it.
+
+Nothing was implemented for either ticket. AG-897's one-word band change is held
+with it, because it is the same decision.
+
 ## Re-scope before anyone picks these up
 
 - **AG-893** is half-resolved. #273 removed "Also set shell environment
