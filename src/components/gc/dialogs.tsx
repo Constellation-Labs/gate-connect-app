@@ -1705,6 +1705,16 @@ export function ReplaceApiKeyDialog({
  * and the alternative to a dialog is a click that silently rewrites machine-wide
  * settings.
  *
+ * **The variables are not how OpenCode routes**, and the body must not say they
+ * are. `integrations/opencode.rs` rewrites `provider.<id>.options.baseURL` to
+ * the loopback relay for every provider it knew at connect time, needing neither
+ * a variable nor the CA. What that snapshot cannot cover is a provider added
+ * afterwards, one outside the allowlist, or one skipped as local - the
+ * environment is what carries that traffic, which is why OpenCode asks for the
+ * channel (`useRouting.ts`, the `opencode-env` doc). The body said "OpenCode has
+ * no gateway setting of its own, so Gate routes it with your machine's proxy
+ * variables" for months, against that comment; AG-893's review caught it.
+ *
  * Informational in tone, not destructive: nothing is being replaced or removed,
  * so the primary is the plain one and it says what it turns on. Focus stays on
  * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
@@ -1738,22 +1748,28 @@ export function OpenCodeEnvDialog({
       // No terminal glyph in the set; `squareCode` is the closest thing to the
       // shell this dialog is about.
       icon="squareCode"
-      title="Turning on OpenCode also turns on Terminal tools"
+      // "Command-line tools" is the Settings row's label, which is where the
+      // control lives now (AG-893). "Terminal tools" was the rail row's name,
+      // and the rail no longer has one.
+      title="Turning on OpenCode also turns on Command-line tools"
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{ label: "Turn both on", onClick: onConfirm }}
       onDismiss={onCancel}
     >
-      {/* The drawn sentence ended "...that reads them, not OpenCode", which
-          contradicts the clause before it - the variables are how Gate routes
-          OpenCode. Cut rather than reworded, 2026-09-04, so nothing is
-          invented: what the copy is for is the breadth, and naming git, curl
-          and npm carries that on its own. */}
+      {/* Why OpenCode asks, then what saying yes reaches. The first sentence
+          used to claim the variables are how Gate routes OpenCode, which the
+          component doc above explains is false; the breadth sentence and the
+          certificate sentence are unchanged. An earlier drawn ending, "...that
+          reads them, not OpenCode", was cut on 2026-09-04 as contradicting the
+          clause before it; with the clause corrected the cut still stands,
+          since naming git, curl and npm carries the breadth on its own. */}
       <p className="text-sm leading-5 text-neutral-600">
-        OpenCode has no gateway setting of its own, so Gate routes it with your
-        machine&apos;s proxy variables. Those apply to every command line tool
-        that reads them. That includes git, curl and npm. One of them also tells
-        Node to trust Gate&apos;s certificate, so every Node program you start
-        afterwards accepts the traffic Gate inspects.
+        OpenCode&apos;s own settings cover the providers you had set up when you
+        turned it on. Anything you add later reaches Gate through your
+        machine&apos;s proxy variables instead, and those apply to every command
+        line tool that reads them, git, curl and npm included. One of them also
+        tells Node to trust Gate&apos;s certificate, so every Node program you
+        start afterwards accepts the traffic Gate inspects.
       </p>
     </Modal>
   );

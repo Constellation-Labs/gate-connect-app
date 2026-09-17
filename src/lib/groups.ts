@@ -679,6 +679,31 @@ function memberFromDomain(
  * Order within a section is the order written here, and it is tools first then
  * hosts: the thing Gate configures, then the hosts it intercepts for it.
  */
+/**
+ * What the shell-environment channel reaches, in one sentence, drawn wherever
+ * the channel is described in our own words: the window's Settings row and the
+ * popover's Terminal blurb. One string so the two cannot drift apart, which is
+ * what AG-893 reported: "Terminal" and "Also set shell environment variables"
+ * described one control two ways, and the first fix described it a third.
+ *
+ * "From now on", not "after your next login". On macOS `launchctl setenv` is
+ * the parent of everything the session starts afterwards, new Terminal windows
+ * included (`system_proxy.rs`); Windows writes `HKCU\Environment`, which every
+ * new process inherits; Linux pushes the variables into the running session
+ * over D-Bus and only falls back to the next login where there is no session
+ * bus (`system_proxy_linux.rs`). Already-running programs keep their old
+ * environment everywhere, which "you start from now on" also says.
+ *
+ * The certificate clause is the larger of the two facts and the harder one to
+ * discover: `NODE_EXTRA_CA_CERTS` puts Gate's interception CA in the trust
+ * roots of every Node process started afterwards.
+ *
+ * The tray's card keeps its own drawn copy (`735:37341`) and is not this
+ * string; the file wins there.
+ */
+export const SHELL_CHANNEL_COVERAGE =
+  "Routes every program you start from now on, not only AI tools, and tells Node to trust Gate's certificate.";
+
 const SECTIONS: readonly {
   id: string;
   name: string;
@@ -752,6 +777,12 @@ const SECTIONS: readonly {
     name: "Terminal",
     band: "tools",
     members: ["env-proxy"],
+    // The same sentence the window's Settings row draws, then the one fact the
+    // popover has room for that the row does not. One coverage statement for
+    // one control is what AG-893 asked for; this used to say "after your next
+    // login" where Settings said "afterwards", which was the ticket's defect
+    // restated across two surfaces.
+    //
     // "Anything else, including a local model, keeps going where it always did"
     // was not true and is gone. `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1` -
     // loopback only - so a model served from another machine on the LAN or over
@@ -763,8 +794,7 @@ const SECTIONS: readonly {
     // Widening `no_proxy` to private, link-local and Tailscale addresses is
     // AG-911's scope, not this ticket's. When it lands, the stronger sentence
     // becomes true and can come back.
-    blurb:
-      "Routes every program started after your next login, not only AI tools. Gate inspects traffic to the AI providers it knows and passes everything else through untouched.",
+    blurb: `${SHELL_CHANNEL_COVERAGE} Gate inspects traffic to the AI providers it knows and passes everything else through untouched.`,
   },
   {
     id: "openai-api",
@@ -965,21 +995,10 @@ function intended(m: GroupMember): boolean {
 export function describeSection(id: string): string | undefined {
   const section = SECTIONS.find((s) => s.id === id);
   if (section?.description) return section.description;
-  // `blurb` before the member's own sentence. Terminal is the only section that
-  // carries one, and it was the only section whose pane said less than the data
-  // had: `describeMember("env-proxy")` is "Command line tools that follow your
-  // proxy settings", which never says the switch is machine-wide.
-  //
-  // The sentence that says so was already written - it just sat in the field
-  // the window shell does not read, because `group.blurb` is rendered only by
-  // `screens/FamilyPanel.tsx`, which is the popover. The window had a second
-  // statement of its own, the `machineScopeNote` pane note, and when that went
-  // (no frame draws it) the new shell was left with no machine-wide statement
-  // at all. AG-893.
-  //
-  // Reading the same string in both shells is also what the ticket asks for:
-  // one coverage sentence, not two that have to be kept true of each other.
-  if (section?.blurb) return section.blurb;
+  // Not `blurb`. A branch here read it for the Terminal pane (AG-893), and the
+  // same change then moved that pane's control to Settings and filtered the
+  // section out of both new shells - so the branch had no caller left. The
+  // popover renders `group.blurb` itself, from the built ledger.
   return describeMember(sectionMemberKeys(id)[0] ?? id);
 }
 
