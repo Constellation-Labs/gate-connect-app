@@ -1236,12 +1236,16 @@ fn inject_attribution(
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
     // The route wins over the User-Agent, and only ever adds: `routed_tool` is
-    // `Some` exactly when the request arrived on a base URL Gate Connect wrote
-    // with a tool marker in it, which is evidence of our own making rather than
-    // a substring match on a string the tool picks. The guess stays underneath
-    // for everything the marker cannot reach - the forward-proxy engine, where
-    // there is no URL to write, and any relay base URL written before the
-    // marker existed and not yet reconciled.
+    // `Some` exactly when the request arrived on a base URL carrying a tool
+    // marker. That is not more *trustworthy* than the User-Agent - any process
+    // on the loopback interface can call any path, exactly as it can send any
+    // header - it is only no longer dependent on a string Gate neither owns nor
+    // versions, so the honest case stops breaking when a tool renames itself.
+    // Worth holding onto here rather than only at `TOOL_PATH_PREFIX`, because
+    // this is the line that feeds `inject_model_choice`. The guess stays
+    // underneath for everything the marker cannot reach - the forward-proxy
+    // engine, where there is no URL to write, and any relay base URL written
+    // before the marker existed and not yet reconciled.
     let tool = routed_tool.or_else(|| client_tool(headers, domain));
     headers.remove(GATE_CLIENT_HEADER);
     if let Some(slug) = tool {
@@ -2570,7 +2574,8 @@ impl ResolvedEndpoint {
     /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
     /// carrying it in a config file. The `tool` segment ahead of it names who
     /// was configured, so attribution stops depending on the request's
-    /// `User-Agent` - see [`relay::TOOL_PATH_PREFIX`]. Both are stripped back
+    /// `User-Agent` - see `relay::TOOL_PATH_PREFIX`, which is crate-private and
+    /// so cannot be linked from this public item. Both are stripped back
     /// off before anything is forwarded, leaving exactly `client_path` +
     /// whatever the tool appended, so neither reaches the gateway or the
     /// upstream.
@@ -4201,8 +4206,13 @@ mod tests {
     /// asserts the `connect` column and that one asserts `registry`. A sample
     /// added here goes there too. Nothing but this comment enforces that, so a
     /// row with no counterpart proves half of what it looks like it proves.
+    ///
+    /// Which is why the name says `connect` rather than "agrees with the
+    /// gateway": the `registry` column is documentation here, read by a person
+    /// porting the table across and by nothing else. A name promising a
+    /// cross-repo assertion would have a green run standing behind it.
     #[test]
-    fn the_user_agent_table_agrees_with_the_gateway_registry() {
+    fn the_user_agent_table_pins_what_connect_stamps() {
         let tool = |ua: &str| {
             let mut h = HeaderMap::new();
             h.insert(

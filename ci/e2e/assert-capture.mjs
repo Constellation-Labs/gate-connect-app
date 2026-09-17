@@ -50,6 +50,18 @@ if (!match) {
 // a mismatch reports the tool we were actually attributed as instead of falling
 // through to "nothing matched the needle", which would send whoever hits this
 // looking for a routing bug that isn't there.
+//
+// `match` is the FIRST captured request that satisfies `ok()`, not the best one.
+// A tool that emits several qualifying requests in a run must therefore carry
+// the same `x-gate-client` on all of them, which it does today - attribution is
+// decided per route and per User-Agent, not per request - but a tool that mixed
+// two base URLs in one run would have this land on whichever the capture saw
+// first.
+//
+// An empty slug is a caller that forgot the argument, not a request to skip the
+// check, so it is announced rather than left silently vacuous: the failure mode
+// this exists to catch is attribution going quiet without anybody noticing, and
+// an assertion that checks nothing is that same failure wearing a tick.
 if (client) {
   const got = match.headers['x-gate-client'];
   if (got !== client) {
@@ -58,6 +70,10 @@ if (client) {
     );
     process.exit(1);
   }
+} else {
+  console.error(
+    `note: no expected tool slug was passed for "${needle}", so x-gate-client went unchecked`,
+  );
 }
 
 const beta = match.headers['anthropic-beta'] || '';
