@@ -102,8 +102,11 @@ describe("the master status card", () => {
         },
       ],
     });
+    // AG-913: one vocabulary with the topbar banner, which is where this
+    // sentence comes from. It used to read "Partially routed" here and
+    // "partly routing your apps" there, for the same state.
     expect(
-      screen.getByRole("heading", { name: "Partially routed" }),
+      screen.getByRole("heading", { name: "Gate is partly routing your apps" }),
     ).toBeTruthy();
     expect(screen.getByText("On · 1 of 2 tools routing")).toBeTruthy();
   });
@@ -142,7 +145,11 @@ describe("the master status card", () => {
         },
       ],
     });
-    expect(screen.getByRole("heading", { name: "Not protected" })).toBeTruthy();
+    // Its own state since AG-913, rather than being folded into "partly" the
+    // way the banner used to fold it: none of one is not partly.
+    expect(
+      screen.getByRole("heading", { name: "Gate is not routing your apps" }),
+    ).toBeTruthy();
     expect(screen.getByText("Off · 0 of 1 tools routing")).toBeTruthy();
   });
 
@@ -167,8 +174,14 @@ describe("the master status card", () => {
         },
       ],
     });
-    expect(screen.getByText("Off · No apps set to route")).toBeTruthy();
+    // The sentence carries it now, so the sub-line is just the intent. Saying
+    // "Not protected" over this was the fault-claim AG-913 removed.
+    expect(
+      screen.getByRole("heading", { name: "No apps are set to route" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Off")).toBeTruthy();
     expect(screen.queryByText(/0 of 0/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: /Not protected/ })).toBeNull();
   });
 
   it("renders no switch: the drawn card is a status, not a control", () => {

@@ -9,6 +9,7 @@ import { OutlineIconButton } from "./Topbar";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
 import { useRovingMenu } from "../../lib/useRovingMenu";
+import { routingState, showsFraction } from "../../lib/routingState";
 
 /**
  * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
@@ -43,10 +44,11 @@ import { useRovingMenu } from "../../lib/useRovingMenu";
  *   having no width to print it. Rows the gateway cannot attribute - the chat
  *   domains, permanently - keep the two-line shape the design also draws (the
  *   compact `Other tools` rows in `Connect/routing`).
- * - **The master card's off state is inferred** - only "Partially routed" and
- *   "Gate is protecting you" are drawn - following the status vocabulary:
- *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
- *   sub-line carrying the intent.
+ * - **The master card's unhappy states are inferred** - only the equivalent of
+ *   "partly routed" and "Gate is protecting you" are drawn. Since AG-913 the
+ *   words come from `lib/routingState`, shared with the topbar banner so the
+ *   two surfaces cannot describe one reading differently, and the drawn
+ *   "On/Off · N of M tools routing" sub-line carries the intent.
  * - **Contact support is in the menu**, as `744:38201` draws it. It was omitted
  *   for as long as the address behind it 404'd; support resolved to the
  *   dashboard's own Overview page on 2026-09-07 (that is where the support
@@ -335,34 +337,31 @@ export function Tray({
 function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
   const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
   const routed = apps.filter((a) => a.status.kind === "protected").length;
-  const all = apps.length > 0 && routed === apps.length;
-  const { tone, icon, title } = all
-    ? { tone: "green" as const, icon: "shieldCheck" as IconName, title: "Gate is protecting you" }
-    : routed > 0
-      ? { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Partially routed" }
-      : // Not drawn: the page stops at "partially". The vocabulary's amber
-        // phrase covers it, and the sub-line below carries whether that is
-        // intent (Off) or circumstance (On with nothing routing).
-        { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Not protected" };
+  // The same reading the topbar banner takes, from the same module (AG-913).
+  // This card used to word it differently - "Partially routed" against the
+  // banner's "partly routing your apps" - and to fold "nothing was asked for"
+  // into "Not protected", which reports a fault the user caused on purpose.
+  const state = routingState(routed, apps.length);
+  const { tone, icon } = state;
   return (
     <div
       className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${
-        all ? "border-green-300" : "border-amber-300"
+        tone === "green" ? "border-green-300" : "border-amber-300"
       }`}
     >
       <StatusTile tone={tone} icon={icon} size={36} />
       <div className="flex min-w-0 flex-col gap-0.5">
-        <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
+        <h1 className="text-sm font-medium leading-5 text-base-foreground">
+          {state.headline}
+        </h1>
         <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
           {/* No fraction when the denominator is intent and the intent is
             * nothing: "0 of 0 tools routing" reports a gap the user opened on
             * purpose, with both halves of the ratio meaningless. Same call as
             * the topbar banner's, and the same open question about the tone
             * (question 23 in `docs/figma-questions-for-design.md`). */}
-          {on ? "On" : "Off"} ·{" "}
-          {apps.length === 0
-            ? "No apps set to route"
-            : `${routed} of ${apps.length} tools routing`}
+          {on ? "On" : "Off"}
+          {showsFraction(state) ? ` · ${routed} of ${apps.length} tools routing` : ""}
         </p>
       </div>
     </div>
