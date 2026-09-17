@@ -11,6 +11,11 @@
 
 pub mod account;
 pub mod audit;
+
+/// Asking the OS to bring us back after a crash, so the exit-time proxy revert
+/// that an abort skips is only missed for seconds rather than until the next
+/// launch.
+pub mod crash_restart;
 /// Read-only snapshot of this install, for the copy-pasteable support report.
 pub mod diagnostics;
 pub mod env;
