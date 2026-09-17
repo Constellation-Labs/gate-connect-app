@@ -309,6 +309,23 @@ describe("Settings help section", () => {
     expect(screen.getByRole("button", { name: /Reset Gate Connect/ })).toBeTruthy();
   });
 
+  // AG-911 requires this in words: turning routing off leaves a local
+  // passthrough bound so already-running apps keep working, and the user is
+  // entitled to know a listener is still there and that it reads nothing.
+  it("says a passthrough stays running while routing is off", async () => {
+    await renderOn("macos");
+    expect(screen.getByText(/Stays running while routing is off/i)).toBeTruthy();
+    expect(screen.getByText(/inspects nothing/i)).toBeTruthy();
+  });
+
+  // A standing fact about the machine, not a state readout: it is as true
+  // while routing is on, and hiding it there would mean the one screen that
+  // explains what Gate leaves behind only admits to it half the time.
+  it("states the passthrough whether routing is on or off", async () => {
+    await renderOn("macos", { routingOn: true });
+    expect(screen.getByText(/Stays running while routing is off/i)).toBeTruthy();
+  });
+
   // AG-911: a disconnect stops the passthrough too, so a session that was
   // working a moment ago stops. Naming what to restart is the difference
   // between that being expected and being a mystery.

@@ -705,6 +705,31 @@ export function Settings({
         </>
       )}
 
+      {/* The one thing "Off" does not say by itself.
+          Turning routing off leaves a small local passthrough bound, so that
+          terminals and editors opened while routing was on keep working:
+          unsetting the proxy variables cannot reach a process that already has
+          them. That is a listener the user did not ask for, on a product whose
+          promise is that off means off, so it is stated rather than left to be
+          discovered in Activity Monitor. The second sentence is what makes it
+          acceptable and is not decoration.
+
+          Here rather than on Home, and phrased as a standing fact rather than
+          shown only while off: Home is read mid-task and answers "is my traffic
+          routed right now", where a paragraph about what runs in the other
+          state is noise. This section is already where the app explains what it
+          leaves on the machine, next to the certificate it installed. */}
+      <div className="flex items-start gap-3 px-3.5 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-gc-body-md font-medium text-gc-ink">Local passthrough</div>
+          <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
+            Stays running while routing is off, so apps that already have
+            Gate&rsquo;s settings keep working. It forwards traffic untouched and
+            inspects nothing.
+          </div>
+        </div>
+      </div>
+
       <div className="mt-auto">
         <SectionLabel>Help</SectionLabel>
         {/* Dev mode sits here, with Replay tour, because both are things you

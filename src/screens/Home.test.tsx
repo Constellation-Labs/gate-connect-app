@@ -122,20 +122,13 @@ afterEach(() => {
 });
 
 describe("Home CA-trust card", () => {
-  // AG-911 requires this in words: turning routing off leaves a local
-  // passthrough bound so already-running apps keep working, and the user is
-  // entitled to know a listener is still there and that it reads nothing.
-  it("says a passthrough stays running while routing is off", () => {
+  // The passthrough disclosure lives in Settings, not here: Home is read
+  // mid-task and answers "is my traffic routed right now", where a paragraph
+  // about what runs in the other state is noise. Asserted so a well-meaning
+  // move back onto this screen has to argue with a test first.
+  it("leaves the passthrough disclosure to Settings", () => {
     renderHome({ proxyOn: false, domains: [makeDomain()] });
-    expect(screen.getByText(/local passthrough stays running/i)).toBeTruthy();
-    expect(screen.getByText(/inspects nothing/i)).toBeTruthy();
-  });
-
-  it("does not claim a passthrough while routing is on", () => {
-    // While on, the card above already accounts for the traffic; repeating it
-    // here would read as a second, separate listener.
-    renderHome({ proxyOn: true, domains: [makeDomain()] });
-    expect(screen.queryByText(/local passthrough stays running/i)).toBeNull();
+    expect(screen.queryByText(/local passthrough/i)).toBeNull();
   });
 
   it("opens compact, with the action visible and the lecture optional", () => {
