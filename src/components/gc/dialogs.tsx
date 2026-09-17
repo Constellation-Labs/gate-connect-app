@@ -2569,7 +2569,10 @@ export function TeardownReportDialog({
   const sections: {
     key: keyof TeardownReport;
     title: string;
-    detail: string;
+    /** One sentence per row, or none. `ModalSubject`'s description slot
+     *  truncates to one line by design, and these sentences are all longer
+     *  than the row is wide, so every one of them ends in an ellipsis. */
+    detail?: string;
     tone: PillTone;
   }[] = [
     {
@@ -2591,8 +2594,13 @@ export function TeardownReportDialog({
     {
       key: "awaiting_reopen",
       title: "Waiting to be reopened",
-      detail:
-        "Back on their own settings on disk, but a running process is still using the route it started with.",
+      // No sentence. It read "Back on their own settings on disk, but a running
+      // process is still using the route it started with", 103 characters into
+      // a one-line slot, so no reader ever saw past "but a running process is
+      // still...". The heading carries the state; the pill carries the action.
+      // Removed 2026-09-17 rather than reworded, pending a frame: this dialog
+      // is undrawn (`docs/review-flow-overview.md`), so there is no copy to
+      // match and the other three sentences here clip the same way.
       tone: "amber",
     },
     {
