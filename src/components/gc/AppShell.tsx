@@ -39,7 +39,6 @@ export function AppShell({
   refreshingApps,
   inventory,
   notice,
-  noticeAboveDialog,
   dialog,
   children,
 }: {
@@ -75,21 +74,6 @@ export function AppShell({
    * pane is open - a failed toggle is about the window, not about one view.
    */
   notice?: ReactNode;
-  /**
-   * Lift the notice above the dialog scrim.
-   *
-   * False by default, because the design dims the chrome and banners along with
-   * the pane and a banner that stays lit while a dialog is open reads as part of
-   * the dialog. Only a notice that is *the sole report of a failed action* earns
-   * the exception - see the call site.
-   *
-   * This used to be unconditional, which was right when `notice` carried only
-   * `ErrorBanner` and wrong the moment it carried three. The recovery and reopen
-   * banners then floated over every dialog, undimmed and overlapping it; the
-   * sharpest case was a "Close tool" button sitting on top of the close-apps
-   * dialog that same button opens.
-   */
-  noticeAboveDialog?: boolean;
   /** A dialog covering the window, or nothing. */
   dialog?: ReactNode;
   /** The open pane. */
@@ -122,16 +106,23 @@ export function AppShell({
         totalCount={routing.totalCount}
       />
 
-      {/* Above the modal scrim (`Modal` is z-20) only when the caller asks. A
-        * failed rename or key replacement is reported here and nowhere else,
-        * and under the scrim its dismiss button sat beneath a full-window
-        * overlay - readable, unclickable. Every other notice dims with the rest
-        * of the chrome, which is what the design draws. */}
-      {notice && (
-        <div className={noticeAboveDialog ? "relative z-30" : undefined}>
-          {notice}
-        </div>
-      )}
+      {/* Under the modal scrim, like every other piece of chrome.
+        *
+        * The error banner used to be lifted above it (#244 narrowed the lift to
+        * this one notice, on the grounds that a failed action is reported here
+        * and nowhere else, so its dismiss button would otherwise be readable
+        * and unclickable).
+        *
+        * Driving the app against staging showed what that costs: a connect
+        * failure and the certificate dialog arrive from the same click, and the
+        * banner then floats lit over a dimmed dialog it has nothing to do with.
+        * It reads as a layering bug, and it makes a modal not modal.
+        *
+        * Readable is the part that matters - the banner is a report, not a
+        * control - and the dismiss comes back the moment the dialog closes. An
+        * error raised BY a dialog's own action belongs inside that dialog,
+        * which is the better fix and a larger one. */}
+      {notice && <div>{notice}</div>}
 
       <div className="flex min-h-0 flex-1">
         <Sidebar

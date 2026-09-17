@@ -1314,6 +1314,39 @@ export function ModelPickerDialog({
              *  consequence. */}
           </div>
 
+          {/* What a set of several actually does, said only once there is one
+            * (AG-888).
+            *
+            * The dialog offered a checkbox per model and never explained the
+            * rule, so the reasonable reading was the one the ticket reached:
+            * "the app takes one model, so anything past the first is
+            * ignored". It is not. The set is an ALLOW-LIST (AG-746,
+            * `gateway-proxy`'s `applyUserModelChoice`): a request for a model
+            * in it is served as the model the tool asked for, and only a
+            * request for something outside it is rewritten, onto the first
+            * entry. That is what makes several Codex sessions on several
+            * models keep their own choices instead of collapsing onto one.
+            *
+            * So this sentence carries the two facts the checkboxes cannot: the
+            * tool's own choice survives, and there is a fallback for everything
+            * else.
+            *
+            * It does **not** call the fallback "the first in the list". `draft`
+            * is selection order - `choose` appends - and the rows render in
+            * catalogue order inside their vendor groups, so `draft[0]` is
+            * routinely not the first row on screen: check GPT-5 and then a
+            * Claude model and the list draws Claude on top while the fallback
+            * is GPT-5. The value is right, the phrase pointed at an ordering
+            * this dialog never shows and offers no way to change, so it names
+            * the model and stops. */}
+          {multiple && draft.length > 1 && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {appName} keeps its own model whenever it asks for one of these.
+              Anything else it asks for is served as{" "}
+              <span className="font-medium text-base-foreground">{draft[0]}</span>.
+            </p>
+          )}
+
           {/* Never hidden silently. The rule that sets models aside is partly
            *  empirical - see `modelCompatibility` - so it will date, and a user
            *  looking for a model that is missing needs to be told it was a
@@ -1677,6 +1710,13 @@ export function ReplaceApiKeyDialog({
  * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
  * dialogs where the safe answer is "no".
  *
+ * **It carries the CA line**, which was stated nowhere at all.
+ * `NODE_EXTRA_CA_CERTS` adds Gate's interception certificate to the trust roots
+ * of every Node process started afterwards - a larger fact than "git and curl
+ * go through Gate", and the harder one to discover. Settings says it too, on
+ * the row that owns the control; this dialog says it at the moment a click is
+ * about to cause it.
+ *
  * **Shared because the tray needs it too, and did not have it.** `useRouting`
  * raises this prompt for whichever shell called `setAppRouted`, and awaits a
  * promise only a rendered dialog resolves. The tray routed OpenCode through that
@@ -1711,7 +1751,9 @@ export function OpenCodeEnvDialog({
       <p className="text-sm leading-5 text-neutral-600">
         OpenCode has no gateway setting of its own, so Gate routes it with your
         machine&apos;s proxy variables. Those apply to every command line tool
-        that reads them. That includes git, curl and npm.
+        that reads them. That includes git, curl and npm. One of them also tells
+        Node to trust Gate&apos;s certificate, so every Node program you start
+        afterwards accepts the traffic Gate inspects.
       </p>
     </Modal>
   );
@@ -1777,28 +1819,53 @@ export function SessionConsentDialog({
       tone="warning"
       icon="shieldCheck"
       title={`Route ${name} through Gate?`}
+      // What the switch does, before any exception to it. The subtitle led with
+      // "This also routes ...", which is the footnote to a rule the reader had
+      // not been given yet, and ended on "which Gate sees on the account you
+      // are already signed in with" - a clause naming the credential taxonomy
+      // rather than anything the reader can picture (AG-901).
       subtitle={
         hostList
-          ? `This also routes ${hostList}, which Gate sees on the account you are already signed in with.`
-          : `This also routes a surface Gate sees on the account you are already signed in with.`
+          ? `${name}'s traffic goes through Gate, and so does ${hostList}, where you are already signed in.`
+          : `${name}'s traffic goes through Gate, including a surface where you are already signed in.`
       }
       secondary={{ label: "Not now", onClick: onDismiss }}
       primary={{ label: `Route ${name}`, onClick: onConfirm }}
       onDismiss={onDismiss}
     >
+      {/* What Gate does, then what it does not, which is the order someone
+        * deciding needs and the order the ticket asks for.
+        *
+        * Every clause is `Credential::Additive`'s own sentence in plain words:
+        * "the caller's own session cookie or subscription bearer stays on the
+        * request and Gate adds its headers alongside ... Gate records and
+        * inspects the traffic rather than supplying a key for it"
+        * (`crates/core/src/taxonomy.rs`). "It does not supply a key for it" said
+        * the same thing and named a mechanism nobody outside this repo knows
+        * about, so it read as a disclaimer rather than as reassurance. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Gate records and inspects that traffic. It does not supply a key for it,
-        and it cannot read anything you are not sending anyway.
+        Gate records and inspects what passes through it. It sees nothing you
+        were not already sending, and it does not sign in for you: your existing
+        login is passed through, not replaced.
       </p>
       {wide && (
         <p className="text-sm leading-5 text-neutral-600">
-          It is matched on host, so it covers everything on this machine that
-          sends to {hostList} - not only {name}.
+          Gate routes by address, so everything on this machine that sends to{" "}
+          {hostList} goes the same way, not only {name}.
         </p>
       )}
+      {/* The decision is reversible and the dialog never said so. "Asked once
+        * per app. Turning <app> off later does not bring this question back."
+        * is two facts about the DIALOG, and read together they sound like the
+        * consent cannot be withdrawn. It can: the switch is the withdrawal, and
+        * `accept_session_routing` is deliberately never un-recorded so that
+        * flipping a section back on does not re-interrogate someone who has
+        * already answered. Reset does not clear it either - `account::clear`
+        * removes credentials and leaves `preferences.json` alone - so "change it
+        * in Settings" would be a promise the app does not keep. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Asked once per app. Turning {name} off later does not bring this question
-        back.
+        You are asked this once. Turn {name} off whenever you like and the
+        routing stops, but Gate will not ask this question again.
       </p>
     </Modal>
   );

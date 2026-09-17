@@ -320,7 +320,6 @@ export function adapt(raw: RawOverview): ActivityView {
   note("Savings", raw.tokenSavings);
 
   const saved = c.tokensSaved;
-  const amount = saved.amount ?? 0;
   const generatedAt = new Date(raw.generatedAt);
   const takenAt = clockTime(generatedAt);
   return {
@@ -332,15 +331,10 @@ export function adapt(raw: RawOverview): ActivityView {
       blockedFlagged: c.blockedOrFlagged.state === "ok" ? (c.blockedOrFlagged.value ?? 0) : null,
       // The endpoint sends a fraction; the tile wants whole percent.
       tokensSavedPercent: saved.state === "ok" ? Math.round((saved.fraction ?? 0) * 100) : null,
-      // Formatted here, not upstream. `Intl` owns the currency symbol and
-      // placement; the leading "+" is the design's own convention for a saving.
-      tokensSavedAmount:
-        saved.state === "ok"
-          ? `+${new Intl.NumberFormat(undefined, {
-              style: "currency",
-              currency: saved.currency ?? "USD",
-            }).format(amount)}`
-          : null,
+      // No dollar figure. The gateway still sends `amount` and `currency`, and
+      // the frame still draws the estimate beside the percentage, but AG-879's
+      // Key decisions say Connect does not display estimated dollar figures for
+      // token savings - so the percentage is the whole tile.
     },
     buckets: (raw.requestsByHour.buckets ?? []).map(toBucket),
     policies: toRows<Policy>(raw.policies.rows, POLICY_ICONS, "shieldCheck", (r) => ({

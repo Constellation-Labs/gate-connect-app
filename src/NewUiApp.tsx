@@ -68,15 +68,16 @@ import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
+  BAND_LABELS,
   browserTrustRestartAdvice,
   buildGroups,
-  BAND_LABELS,
+  describeSection,
+  hintForMember,
+  isSettingsManaged,
+  proxyReopenAdvice,
   sectionHint,
   sectionMemberKeys,
   sessionMembers,
-  describeSection,
-  hintForMember,
-  proxyReopenAdvice,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
@@ -96,7 +97,7 @@ import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { useActivity, useInstallations } from "./lib/activity";
-import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import { formatCredits, formatPlan, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
@@ -572,9 +573,23 @@ export function NewUiApp() {
     modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
   );
   /** The org's Gate credit balance, for the card and the billing confirmation.
-   *  Read whenever an app pane is open - it is what a switch to a Gate model
-   *  starts spending. */
-  const credits = useCredits(canRead && openTool !== null, credential);
+   *  Read whenever the account can be read at all, not only while an app pane
+   *  is open. It was gated on `openTool !== null`, which was right when the
+   *  balance had one reader: the pane is what a switch to a Gate model starts
+   *  spending. Settings needs the same payload for its Gate plan row (AG-891),
+   *  and on that pane `openTool` is null - so the row could not have been wired
+   *  to anything, whatever it was passed.
+   *
+   *  The focus refresh stays on the app pane, which is the narrower of the two
+   *  gates and the one the widening should not have carried with it. Re-reading
+   *  on every return to the window is an argument about a BALANCE - it moves
+   *  while the user is away running the tool, and the pane is where they come
+   *  back to see what it cost. A plan does not move while somebody alt-tabs, so
+   *  gating both on `canRead` would put a `/v1/me/credits` on every focus for
+   *  the life of the session, against the same address-keyed throttle bucket
+   *  the activity read below is careful not to spend on a timer. Opening the
+   *  pane re-reads anyway, because this flips and `reload` re-runs. */
+  const credits = useCredits(canRead, credential, openTool !== null);
 
   /**
    * What the open app is set to, or null when we do not know.
@@ -1358,7 +1373,11 @@ export function NewUiApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(tools, proxy.domains, {
+        ? // The TOOL LIST is filtered, not the built ledger. `buildGroups` gives
+          // a member no section claims a section of its own, so filtering
+          // afterwards would put `env-proxy` back under its raw name with none
+          // of the section copy - see `isSettingsManaged`.
+          buildGroups(tools.filter((t) => !isSettingsManaged(t.slug)), proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
             // The sweep, which a section's rendered state cannot do without.
@@ -1474,7 +1493,7 @@ export function NewUiApp() {
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
-        .filter((t) => t.status.kind !== "not_installed")
+        .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
         .map((t) => ({
           slug: t.slug,
           name: t.name,
@@ -2158,11 +2177,38 @@ export function NewUiApp() {
         // org switcher, and no screen named the account the user was signed in
         // as. An API-key account has no email and gets the dash.
         loginId: oauth?.email ?? "-",
-        // No gateway field carries a plan today, so this says so rather than
-        // drawing a bare dash nobody can read a meaning into. Same vocabulary
-        // as `installId` above; the frame's "Free" is a mock value, not a
-        // reading. When the gateway starts naming one, this is the seam.
-        plan: "Unavailable",
+        // The plan the gateway reports, in the word the user has already seen
+        // for it. This was the literal string "Unavailable", on a comment
+        // saying no gateway field carried a plan - `/v1/me/credits` does, and
+        // the App pane had been drawing it since AG-592, so Settings claimed
+        // nothing was known while another pane named it in the same session
+        // (AG-891).
+        //
+        // Three states, kept apart: in flight, landed-and-unnamed, and failed.
+        // `formatPlan` is what makes the word agree with the dashboard.
+        plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
+        planUnreadable: credits.failure !== null,
+        onRetryPlan: credits.reload,
+        // The machine-wide shell proxy, which used to be a card in the rail
+        // and a row in the app list. Absent on Linux, where these variables are
+        // the system proxy and cannot be declined without turning routing off -
+        // the same condition the rail card carried.
+        shellProxy:
+          proxy?.env_export_separable
+            ? {
+                on: proxy.env_export_opted_in,
+                // The same flag the rail's switches carry. `setEnvExport`
+                // returns early while any other routing call is in flight, so
+                // without it a click lands on nothing and the switch does not
+                // move - and this is a machine-wide write someone plausibly
+                // makes right after flipping an app.
+                busy: routingBusy,
+                onToggle: () => {
+                  setActionError(null);
+                  void routing.setEnvExport(!proxy.env_export_opted_in);
+                },
+              }
+            : undefined,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
@@ -3052,13 +3098,6 @@ export function NewUiApp() {
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
       inventory={inventory}
-      // Only the error banner outranks a dialog, and only because it is the one
-      // report a failed action gets: under the scrim its dismiss button is
-      // readable and unclickable. The recovery and reopen banners are advisory
-      // and persistent - they survive the dialog either way - so they dim with
-      // the rest of the chrome rather than floating over it. Leaving them lifted
-      // put a "Close tool" button on top of the close-apps dialog it opens.
-      noticeAboveDialog={actionError !== null}
       notice={noticeStack}
       onToggleApp={toggleRailApp}
       dialog={
@@ -3534,7 +3573,11 @@ export function NewUiApp() {
                 // a zero balance. See principle 6.
                 credits: formatCredits(credits.credits),
                 // Null when unread, which the row omits rather than guessing.
-                plan: credits.credits?.plan ?? null,
+                // The same word Settings and the dashboard use. This drew
+                // "Paid plan" off the raw value, so one account read "Paid"
+                // here and "Pro" on the dashboard - and, once Settings was
+                // wired, "Pro" two panes away in the same window.
+                plan: formatPlan(credits.credits?.plan ?? null),
                 // No dedicated credits endpoint, but the row's own glyph
                 // promises an external link, and the dashboard is where credits
                 // are actually bought.
@@ -3779,7 +3822,6 @@ const EMPTY_STATS: UsageStats = {
   messages: null,
   blockedFlagged: null,
   tokensSavedPercent: null,
-  tokensSavedAmount: null,
 };
 
 /** The file Gate rewrites for one tool, for the drift review's copy. */

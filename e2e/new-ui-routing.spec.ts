@@ -1042,18 +1042,27 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     ).toBeVisible();
     await expect(dialog.getByText("Never checked")).toHaveCount(0);
 
-    // Nothing here has a process name Gate can look for: two provider slugs
+    // Two of the three have no process name Gate can look for: OpenRouter,
     // and the environment channel, which is not a process.
+    //
+    // `anthropic` is the third and it is NOT one of them, which this used to
+    // assert the opposite of. `AGENT_PROCESSES` carries an `anthropic` row -
+    // the Claude desktop app, whose slug is a proxy-domain key precisely
+    // because Gate routes it through the system proxy - so the real backend
+    // takes a reading for it and reports "Not running". The harness was missing
+    // the two desktop rows, which is what made "no process to look for" look
+    // like the right answer here, and the same gap is why no spec could reach
+    // AG-900.
     await expect(
       dialog.getByText("Gate has no process to look for").first(),
     ).toBeVisible();
     // `exact`, because the deferral's own sentence says the proxy "was not
     // running yet" and a substring match picks that up - the assertion is about
     // the Process line, whose whole text is the reading.
-    await expect(dialog.getByText("Not running", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Not running", { exact: true })).toHaveCount(1);
     await expect(
       dialog.getByText("Gate has no process to look for", { exact: true }),
-    ).toHaveCount(3);
+    ).toHaveCount(2);
   });
 
   test("reviewing changes nothing", async ({ boot }) => {
@@ -1361,13 +1370,18 @@ test.describe("new UI sidebar rail", () => {
       ],
     });
 
-    // A row per tool, under one band. OpenClaw, OpenCode and the environment
-    // channel are three programs and three switches - the environment channel
-    // is its own row now rather than OpenCode's roommate, because what it
-    // routes is every program started after the next login.
-    for (const name of ["OpenClaw", "OpenCode", "Terminal"]) {
+    // A row per tool, under one band.
+    for (const name of ["OpenClaw", "OpenCode"]) {
       await expect(app.page.getByRole("switch", { name, exact: true })).toBeVisible();
     }
+    // Not the environment channel. It used to be a row here, on the argument
+    // that what it routes is a different client from the editor - true, but it
+    // is not an app, and the rail is a list of apps. Its control moved to
+    // Settings (AG-893), so the fixture keeps it in `list_tools` to prove the
+    // filter is what removes it rather than its absence from the fixture.
+    await expect(
+      app.page.getByRole("switch", { name: "Terminal", exact: true }),
+    ).toHaveCount(0);
     // The headings are the two bands, and nothing else. Every earlier grouping
     // this rail had - vendors, then clients, then a catch-all for whatever
     // those could not place - is gone.

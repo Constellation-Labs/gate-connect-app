@@ -1419,13 +1419,25 @@ pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
 /// offers to skip naming, and a hostname usually carries a person's name. An
 /// unnamed device is attributed by its install id alone.
 pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
-/// The models the user chose for this tool, comma-separated and in preference
-/// order (AG-588 / AG-590).
+/// The models the user enabled for this tool, comma-separated (AG-588 / AG-590).
 ///
 /// Unlike the two above this is not a label on the request - it **changes what
-/// the gateway serves**, so the gateway rewrites the body's `model` to the first
-/// entry. Sent only when the user set that tool to a Gate model; absent means
-/// the tool's own choice stands, which is the default and must stay the default.
+/// the gateway serves**. Sent only when the user set that tool to a Gate model;
+/// absent means the tool's own choice stands, which is the default and must stay
+/// the default.
+///
+/// **The set is an allow-list, not an override queue (AG-746).** This comment
+/// said the gateway "rewrites the body's `model` to the first entry", full stop,
+/// which was true before AG-746 and is the reading AG-888 was filed on. What
+/// `gateway-proxy`'s `applyUserModelChoice` actually does: a request for a model
+/// IN the set is served as the model the tool asked for and the body is left
+/// alone; only a request for something outside the set is rewritten, onto the
+/// first entry. Three sessions on three enabled models therefore keep their own
+/// choices instead of all being served the first.
+///
+/// So the order is still the user's and still load-bearing - the first entry is
+/// what everything unlisted becomes - but it is a fallback rather than a
+/// default.
 pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 
 /// Stamp the attribution headers the activity view groups by.
