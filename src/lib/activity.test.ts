@@ -68,7 +68,6 @@ describe("adapt", () => {
 
     expect(view.stats.blockedFlagged).toBeNull();
     expect(view.stats.tokensSavedPercent).toBeNull();
-    expect(view.stats.tokensSavedAmount).toBeNull();
     // Answered, and the answer was nothing.
     expect(view.stats.messages).toBe(0);
   });

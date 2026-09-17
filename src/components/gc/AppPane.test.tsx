@@ -10,7 +10,6 @@ const stats: UsageStats = {
   messages: 0,
   blockedFlagged: 0,
   tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
 };
 
 const entry: ActivityEntry = {

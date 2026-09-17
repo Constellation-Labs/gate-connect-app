@@ -3787,7 +3787,6 @@ const EMPTY_STATS: UsageStats = {
   messages: null,
   blockedFlagged: null,
   tokensSavedPercent: null,
-  tokensSavedAmount: null,
 };
 
 /** The file Gate rewrites for one tool, for the drift review's copy. */

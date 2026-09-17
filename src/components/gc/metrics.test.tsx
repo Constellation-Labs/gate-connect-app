@@ -124,7 +124,6 @@ describe("StatTiles", () => {
     messages: 0,
     blockedFlagged: null,
     tokensSavedPercent: null,
-    tokensSavedAmount: null,
   };
 
   it("keeps a measured zero a zero and marks an unread counter N/A", () => {
@@ -147,7 +146,6 @@ describe("StatTiles", () => {
           messages: null,
           blockedFlagged: null,
           tokensSavedPercent: null,
-          tokensSavedAmount: null,
         }}
       />,
     );
@@ -215,5 +213,28 @@ describe("MessagesChart empty and pending states", () => {
 
     expect(screen.queryByText(EMPTY)).toBeNull();
     expect(columns(container).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the Tokens saved tile", () => {
+  it("shows the percentage and no dollar estimate", () => {
+    // AG-879's Key decisions: "Connect does not display estimated dollar
+    // figures for token savings." A deliberate deviation from the frame, which
+    // draws one beside the percentage (`408:25130`, "+$1.05"), on a product
+    // decision that postdates it. The gateway still sends `amount` and
+    // `currency`; Connect no longer reads them.
+    render(
+      <StatTiles
+        stats={{
+          messages: 67,
+          blockedFlagged: 0,
+          tokensSavedPercent: 4,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("4%")).toBeTruthy();
+    expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.queryByText(/US\$/)).toBeNull();
   });
 });

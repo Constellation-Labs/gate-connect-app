@@ -10,7 +10,6 @@ const stats: UsageStats = {
   messages: 0,
   blockedFlagged: 0,
   tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
 };
 
 /** A feed that has answered and had nothing to report, which is the state that
