@@ -135,6 +135,53 @@ squad lead.
 Nothing was implemented for either ticket. AG-897's one-word band change is held
 with it, because it is the same decision.
 
+## AG-895: not reproducible from the code, and here is why
+
+Toggling OpenCode cannot put Codex in the "Apply changes to running apps?"
+dialog on any current path. Every caller of `offerAfterChange` is scoped:
+
+- `useSectionRouting.routeSection` passes the keys of members that actually
+  wrote, and `cascadeTargets` only ever returns members of the section clicked.
+  The OpenCode section has exactly one member, `opencode`.
+- `NewUiApp.routeApp` passes `[slug]`, with a comment recording the older bug
+  where it did not ("flipping Codex offered to close a running `claude`").
+- Both reopen banners pass one slug; the app pane's passes its own `openTool`.
+- Only `toggleMaster` passes nothing, and it means every tool.
+
+Rust narrows it again: `agent_names_for(Some(["opencode"]))` yields the single
+process name `opencode`, and `for_each_agent_process` scans no others.
+
+**What the ticket's own evidence points at instead.** It records the banner
+behind the dialog already reading "Reopen to finish - Codex is still using the
+route it started with". That is a verdict banner, it predates the click, and
+its own button raises this same dialog for Codex (covered by
+`new-ui-running-apps.spec.ts`, which asserts `only: ["codex"]`). So the most
+likely sequence is a Codex reopen already pending, with the dialog attributed
+to the OpenCode click because that is what the user had just done.
+
+**But the underlying suspicion is sound, and this is the part worth deciding.**
+Turning OpenCode on *does* reach Codex, just not through this dialog:
+`useRouting.setAppRouted` couples OpenCode to `proxySetEnvExport(true)`, which
+sets the proxy variables for every process started afterwards. Programs already
+running - Codex among them - keep the environment they launched with. Gate
+offers to close none of them, because `env-proxy` contributes no process names
+and the offer is built from the members that wrote.
+
+So there are two honest answers and they are not the same work:
+
+1. The dialog is right and the report is a misattribution. Needs the reporter to
+   say whether the Codex banner was up before the click.
+2. A machine-wide env change should offer the same "these are on their old
+   route" step that a config write does, in which case the offer for an OpenCode
+   toggle legitimately includes every running agent - and the dialog has to say
+   *why* Codex is in a list the user reached by clicking OpenCode, which is
+   exactly what AG-895's Expected asks for ("if a change genuinely affects a
+   second app, the dialog says which change reached it and why").
+
+Raised on the ticket. Not implemented: (2) is a product call about how loud a
+machine-wide toggle should be, and it lands on the same disclosure surface
+AG-893 just settled.
+
 ## Re-scope before anyone picks these up
 
 - **AG-893** is half-resolved. #273 removed "Also set shell environment
