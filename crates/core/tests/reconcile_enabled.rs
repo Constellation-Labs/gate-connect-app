@@ -522,3 +522,127 @@ fn codex_disconnected_is_not_reconnected_by_the_drift_half() {
         "a disconnected Codex was reconnected"
     );
 }
+
+// ---------------------------------------------------------------------------
+// OpenCode. No provider maps it, so it takes the drift half via
+// `reconcile_unmapped_tools`. Its own local-protection guard is what used to
+// make that unreachable.
+// ---------------------------------------------------------------------------
+
+/// Route OpenCode through Gate for real, then wind its baseURL back to the
+/// shape an older build wrote - no tool marker - which is what every existing
+/// install holds on the first launch after this change.
+fn install_opencode_with_stale_managed_config(relay_port: u16) {
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        env::opencode_config_path().unwrap(),
+        r#"{
+  "provider": {
+    "anthropic": {
+      "options": { "apiKey": "{env:ANTHROPIC_API_KEY}" },
+      "models": { "claude-haiku-4-5": {} }
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ
+        .connect(&gate_connect_core::registry::ConnectInput {
+            gateway_base_url: "https://gw.example.com".into(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: Default::default(),
+            relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
+            engine_proxy_url: None,
+        })
+        .expect("connect opencode");
+
+    let raw = fs::read_to_string(env::opencode_config_path().unwrap()).unwrap();
+    let stale = raw.replace(
+        &format!("http://127.0.0.1:{relay_port}/__gate/t/opencode/"),
+        &format!("http://127.0.0.1:{relay_port}/"),
+    );
+    assert_ne!(raw, stale, "the connect write should have carried a marker");
+    fs::write(env::opencode_config_path().unwrap(), stale).unwrap();
+}
+
+fn opencode_config() -> String {
+    fs::read_to_string(env::opencode_config_path().unwrap()).unwrap()
+}
+
+/// An OpenCode install written before the tool marker repairs itself.
+///
+/// The obstacle was its own local-protection guard: `connect` skips a provider
+/// whose current baseURL `looks_local`, and Gate's relay is on 127.0.0.1, so
+/// every already-connected provider was filtered out and the re-apply bailed
+/// with "No supported OpenCode providers found". Not a corner case - a re-apply
+/// is *always* over a baseURL of ours, so the guard fired on 100% of connected
+/// installs and none of them could ever pick up a new relay port either.
+#[test]
+fn opencode_stale_managed_config_is_reapplied() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_opencode_with_stale_managed_config(port);
+    assert!(matches!(
+        find(ToolId::OpenCode).unwrap().status().unwrap(),
+        Status::Drifted(_)
+    ));
+    assert!(find(ToolId::OpenCode).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert!(
+        opencode_config().contains(&format!("http://127.0.0.1:{port}/__gate/t/opencode/")),
+        "the stale base URL should have been rewritten with the tool marker: {}",
+        opencode_config()
+    );
+}
+
+/// The guard the exemption above has to keep: a provider inside the allowlist
+/// that the user pointed at their own local server is still left alone, because
+/// the sidecar has no record of us ever writing it.
+#[test]
+fn opencode_leaves_a_users_own_local_endpoint_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    let own = r#"{
+  "provider": {
+    "anthropic": {
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" }
+    }
+  }
+}
+"#;
+    fs::write(env::opencode_config_path().unwrap(), own).unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    let err = integ
+        .connect(&gate_connect_core::registry::ConnectInput {
+            gateway_base_url: "https://gw.example.com".into(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: Default::default(),
+            relay_base_url: Some(format!("http://127.0.0.1:{port}")),
+            engine_proxy_url: None,
+        })
+        .expect_err("a local endpoint we never wrote is not ours to repoint");
+    assert!(
+        err.to_string().contains("No supported OpenCode providers"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        opencode_config(),
+        own,
+        "the user's own endpoint was rewritten"
+    );
+}
