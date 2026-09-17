@@ -41,7 +41,22 @@ export interface SettingsRow {
   /** Middle column, e.g. "MacBook Pro". */
   value?: string;
   action?: SettingsAction;
-  toggle?: { on: boolean; onToggle: () => void };
+  toggle?: {
+    on: boolean;
+    /**
+     * An operation is in flight, so the switch keeps focus and ignores clicks.
+     *
+     * Optional because most rows here do not need it: a notification
+     * preference or launch-at-login is a local write that lands before the
+     * user can click twice. The shell-proxy row is the one that does - it
+     * shares `useRouting`'s single `busy` flag with every app switch, and
+     * `setEnvExport` opens with `if (busy) return`, so without this a click
+     * made during any other routing operation is swallowed and the switch
+     * simply does not move.
+     */
+    busy?: boolean;
+    onToggle: () => void;
+  };
   /**
    * This row's value could not be read. Renders "Unavailable" and a Retry in
    * place of the value and control, rather than showing a default dressed as
@@ -203,7 +218,7 @@ export function buildSettingsSections({
   /** The machine-wide shell proxy channel, or undefined where the platform
    *  cannot offer it separately (Linux, where these variables ARE the system
    *  proxy). The window owns this control; the tray reports it. */
-  shellProxy?: { on: boolean; onToggle: () => void };
+  shellProxy?: { on: boolean; busy?: boolean; onToggle: () => void };
   onReplaceKey?: () => void;
   /** Offered only to an account still on a pasted key. The popover has carried
    * this since it shipped (`screens/Settings.tsx`); the new shell had only the
@@ -390,6 +405,12 @@ export function buildSettingsSections({
                   "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Required by OpenCode.",
                 toggle: {
                   on: shellProxy.on,
+                  // Shared with every app switch: this is `useRouting`'s one
+                  // `busy` flag, and `setEnvExport` returns early on it. A
+                  // machine-wide `launchctl setenv` round trip is exactly the
+                  // click someone makes right after flipping an app, so the
+                  // swallowed case is reachable rather than theoretical.
+                  busy: shellProxy.busy,
                   onToggle: shellProxy.onToggle,
                 },
               } as SettingsRow,
@@ -836,6 +857,7 @@ function Row({ row }: { row: SettingsRow }) {
               <BaseSwitch
                 on={row.toggle.on}
                 label={row.label}
+                busy={row.toggle.busy}
                 onClick={row.toggle.onToggle}
               />
             </span>

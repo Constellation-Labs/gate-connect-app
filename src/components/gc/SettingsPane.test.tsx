@@ -382,6 +382,16 @@ describe("the command-line tools row", () => {
     expect(onToggle).toHaveBeenCalled();
   });
 
+  it("carries the in-flight flag through to the switch", () => {
+    // `setEnvExport` returns early while `useRouting` is busy, so a switch that
+    // does not know it would swallow the click and stay put. Every rail switch
+    // already reports this; the control moving to Settings must not lose it.
+    expect(shellRow({ shellProxy: { on: true, busy: true, onToggle: noop } })!.toggle?.busy).toBe(
+      true,
+    );
+    expect(shellRow({ shellProxy: { on: true, onToggle: noop } })!.toggle?.busy).toBeUndefined();
+  });
+
   it("says what it reaches and what it costs", () => {
     // Neither old control did. "Terminal" and "command line tools that follow
     // your proxy settings" said neither, and the certificate half was stated

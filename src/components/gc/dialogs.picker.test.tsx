@@ -257,13 +257,26 @@ describe("what a set of several means", () => {
     expect(screen.queryByText(/keeps its own model/)).toBeNull();
   });
 
-  it("explains the rule, and names the first entry, once there are several", () => {
+  it("explains the rule, and names the fallback, once there are several", () => {
     renderPicker({ selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id] });
 
     expect(screen.getByText(/keeps its own model whenever it asks for one of these/)).toBeTruthy();
-    // The order is the user's and it decides what unlisted requests become, so
-    // the first entry is named rather than left to be inferred from the list.
+    // The fallback is named rather than left to be inferred from the list.
     expect(screen.getByText(CATALOGUE[0].id, { selector: "span.font-medium" })).toBeTruthy();
+  });
+
+  it("names the fallback without claiming it is first on screen", () => {
+    // `draft` is selection order and the rows render in catalogue order, so the
+    // two disagree the moment somebody checks a later row first. The copy used
+    // to call the fallback "the first in the list", which points at an ordering
+    // the dialog never draws and gives no way to change.
+    renderPicker({ selectedIds: [] });
+    fireEvent.click(box(CATALOGUE[1].id));
+    fireEvent.click(box(CATALOGUE[0].id));
+
+    // The fallback is what was checked first, not what sits at the top.
+    expect(screen.getByText(CATALOGUE[1].id, { selector: "span.font-medium" })).toBeTruthy();
+    expect(screen.queryByText(/first in the list/)).toBeNull();
   });
 
   it("follows the draft rather than what is applied", () => {

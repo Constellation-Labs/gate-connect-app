@@ -579,11 +579,16 @@ export function NewUiApp() {
    *  and on that pane `openTool` is null - so the row could not have been wired
    *  to anything, whatever it was passed.
    *
-   *  The cost is one `/v1/me/credits` per focus on panes that do not draw a
-   *  balance. It is a small read behind the same `canRead` gate as every other,
-   *  and the alternative - fetching lazily per pane - would make the Settings
-   *  row flash a loading state every time it is opened. */
-  const credits = useCredits(canRead, credential);
+   *  The focus refresh stays on the app pane, which is the narrower of the two
+   *  gates and the one the widening should not have carried with it. Re-reading
+   *  on every return to the window is an argument about a BALANCE - it moves
+   *  while the user is away running the tool, and the pane is where they come
+   *  back to see what it cost. A plan does not move while somebody alt-tabs, so
+   *  gating both on `canRead` would put a `/v1/me/credits` on every focus for
+   *  the life of the session, against the same address-keyed throttle bucket
+   *  the activity read below is careful not to spend on a timer. Opening the
+   *  pane re-reads anyway, because this flips and `reload` re-runs. */
+  const credits = useCredits(canRead, credential, openTool !== null);
 
   /**
    * What the open app is set to, or null when we do not know.
@@ -2187,6 +2192,12 @@ export function NewUiApp() {
           proxy?.env_export_separable
             ? {
                 on: proxy.env_export_opted_in,
+                // The same flag the rail's switches carry. `setEnvExport`
+                // returns early while any other routing call is in flight, so
+                // without it a click lands on nothing and the switch does not
+                // move - and this is a machine-wide write someone plausibly
+                // makes right after flipping an app.
+                busy: routingBusy,
                 onToggle: () => {
                   setActionError(null);
                   void routing.setEnvExport(!proxy.env_export_opted_in);

@@ -121,6 +121,34 @@ describe("adaptEvents", () => {
     expect(view.entries[0].categoryIcon).toBeNull();
   });
 
+  it.each(["block", "flag", "redact"] as const)(
+    "does not call an uncategorised %s Regular",
+    (securityAction) => {
+      // "Regular" is a verdict, and only `allow` is one. Staging returned
+      // nothing but `allow`, so this was the untested half: a row the gateway
+      // acted on but did not name would have drawn "Regular" and a shieldCheck
+      // in the Type cell, two columns from a Security pill reading "blocked".
+      // The dash is the honest reading - something fired, nobody said what.
+      const view = adaptEvents(
+        envelope([raw({ securityAction, securityCategory: null })]),
+      );
+
+      expect(view.entries[0].category).toBeNull();
+      expect(view.entries[0].categoryIcon).toBeNull();
+    },
+  );
+
+  it("still names the category on a row the gateway did categorise", () => {
+    // The narrowing above is about the FALLBACK only: an action that fired and
+    // named its category renders that category, whatever the action was.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: "block", securityCategory: "injection" })]),
+    );
+
+    expect(view.entries[0].category).toBe("injection");
+    expect(view.entries[0].categoryIcon).toBe("shieldAlert");
+  });
+
   it("falls back to a glyph rather than none for a category it does not know", () => {
     // The frame puts a glyph in every Type cell, and the gateway's vocabulary is
     // not pinned down - so an unknown category still draws one, the way

@@ -1328,14 +1328,22 @@ export function ModelPickerDialog({
             * models keep their own choices instead of collapsing onto one.
             *
             * So this sentence carries the two facts the checkboxes cannot: the
-            * tool's own choice survives, and the order is not decoration - the
-            * first entry is what everything else becomes. */}
+            * tool's own choice survives, and there is a fallback for everything
+            * else.
+            *
+            * It does **not** call the fallback "the first in the list". `draft`
+            * is selection order - `choose` appends - and the rows render in
+            * catalogue order inside their vendor groups, so `draft[0]` is
+            * routinely not the first row on screen: check GPT-5 and then a
+            * Claude model and the list draws Claude on top while the fallback
+            * is GPT-5. The value is right, the phrase pointed at an ordering
+            * this dialog never shows and offers no way to change, so it names
+            * the model and stops. */}
           {multiple && draft.length > 1 && (
             <p className="text-base-xs leading-4 text-base-muted-foreground">
               {appName} keeps its own model whenever it asks for one of these.
               Anything else it asks for is served as{" "}
-              <span className="font-medium text-base-foreground">{draft[0]}</span>, the
-              first in the list.
+              <span className="font-medium text-base-foreground">{draft[0]}</span>.
             </p>
           )}
 

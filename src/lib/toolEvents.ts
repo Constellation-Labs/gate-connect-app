@@ -134,7 +134,10 @@ const CATEGORY_FALLBACK: IconName = "shieldCheck";
  *
  * The explicit categories arrive from the gateway and render as the frame draws
  * them; this is the fourth case the frame does not draw, because it only ever
- * drew rows where something fired. */
+ * drew rows where something fired.
+ *
+ * Reserved for `allow`. See `toEntry`: it is a verdict, not a note that the
+ * gateway answered, so an uncategorised `block` must not borrow it. */
 const REGULAR = "Regular";
 const REGULAR_ICON: IconName = "shieldCheck";
 
@@ -153,15 +156,17 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // happened is that the request was examined and nothing matched, and that
     // is a reading worth naming.
     //
-    // Keyed on the ACTION, not on the category: `securityAction` is the
-    // gateway's answer, so a row that has one was examined. A row with neither
-    // was not examined, or is not this caller's to see into, and keeps the dash
-    // rather than being promoted to a verdict we did not get - the same
-    // distinction the `security` line above makes, and CLAUDE.md principle 6.
-    category: raw.securityCategory ?? (raw.securityAction ? REGULAR : null),
+    // Keyed on `allow` specifically, not on "the gateway answered". "Regular"
+    // is a verdict, and it is only true of the action that IS one: a `block`,
+    // `flag` or `redact` that arrived without a category was examined and
+    // something fired, so calling it Regular would print the opposite of the
+    // pill in the Security cell two columns over. That row keeps the dash -
+    // something happened and the gateway did not name what - which is the same
+    // withholding the `security` line above makes, and CLAUDE.md principle 6.
+    category: raw.securityCategory ?? (raw.securityAction === "allow" ? REGULAR : null),
     categoryIcon: raw.securityCategory
       ? (CATEGORY_ICONS[raw.securityCategory] ?? CATEGORY_FALLBACK)
-      : raw.securityAction
+      : raw.securityAction === "allow"
         ? REGULAR_ICON
         : null,
     model: raw.model ?? NO_MODEL,
