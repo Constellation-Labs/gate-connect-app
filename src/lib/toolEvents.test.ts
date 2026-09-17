@@ -96,6 +96,59 @@ describe("adaptEvents", () => {
     expect(view.entries[0].categoryIcon).toBe("userRound");
   });
 
+  it("calls an examined request with no category Regular, not a dash", () => {
+    // AG-887. A guardrail category exists only where a guardrail fired, so
+    // ordinary traffic carried none and the Type column was a dash on every
+    // row. A dash reads as missing; what happened is that the request was
+    // examined and nothing matched.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: "allow", securityCategory: null })]),
+    );
+
+    expect(view.entries[0].category).toBe("Regular");
+    expect(view.entries[0].categoryIcon).toBe("shieldCheck");
+  });
+
+  it("keeps the dash where the gateway recorded nothing at all", () => {
+    // Keyed on the ACTION: no action means the row was not examined, or is not
+    // this caller's to see into. Promoting that to "Regular" would claim a
+    // verdict we never got - principle 6, the same line `security` draws.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: null, securityCategory: null })]),
+    );
+
+    expect(view.entries[0].category).toBeNull();
+    expect(view.entries[0].categoryIcon).toBeNull();
+  });
+
+  it.each(["block", "flag", "redact"] as const)(
+    "does not call an uncategorised %s Regular",
+    (securityAction) => {
+      // "Regular" is a verdict, and only `allow` is one. Staging returned
+      // nothing but `allow`, so this was the untested half: a row the gateway
+      // acted on but did not name would have drawn "Regular" and a shieldCheck
+      // in the Type cell, two columns from a Security pill reading "blocked".
+      // The dash is the honest reading - something fired, nobody said what.
+      const view = adaptEvents(
+        envelope([raw({ securityAction, securityCategory: null })]),
+      );
+
+      expect(view.entries[0].category).toBeNull();
+      expect(view.entries[0].categoryIcon).toBeNull();
+    },
+  );
+
+  it("still names the category on a row the gateway did categorise", () => {
+    // The narrowing above is about the FALLBACK only: an action that fired and
+    // named its category renders that category, whatever the action was.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: "block", securityCategory: "injection" })]),
+    );
+
+    expect(view.entries[0].category).toBe("injection");
+    expect(view.entries[0].categoryIcon).toBe("shieldAlert");
+  });
+
   it("falls back to a glyph rather than none for a category it does not know", () => {
     // The frame puts a glyph in every Type cell, and the gateway's vocabulary is
     // not pinned down - so an unknown category still draws one, the way
@@ -104,13 +157,6 @@ describe("adaptEvents", () => {
 
     expect(view.entries[0].category).toBe("something-new");
     expect(view.entries[0].categoryIcon).toBe("shieldCheck");
-  });
-
-  it("leaves the category null when the gateway named none", () => {
-    const view = adaptEvents(envelope([raw({ securityCategory: null })]));
-
-    expect(view.entries[0].category).toBeNull();
-    expect(view.entries[0].categoryIcon).toBeNull();
   });
 
   it("carries the provider for the vendor mark", () => {

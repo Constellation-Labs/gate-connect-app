@@ -172,7 +172,7 @@ fn payg_writes_an_unauthenticated_provider_block() {
     // The apikey path shape, since the ChatGPT route is a subscription and so
     // never pay-as-you-go.
     assert!(
-        toml.contains("base_url = \"http://127.0.0.1:45981/openai/v1\""),
+        toml.contains("base_url = \"http://127.0.0.1:45981/__gate/t/codex/openai/v1\""),
         "PAYG pins the OpenAI /v1 shape: {toml}"
     );
 }

@@ -320,7 +320,6 @@ export function adapt(raw: RawOverview): ActivityView {
   note("Savings", raw.tokenSavings);
 
   const saved = c.tokensSaved;
-  const amount = saved.amount ?? 0;
   const generatedAt = new Date(raw.generatedAt);
   const takenAt = clockTime(generatedAt);
   return {
@@ -332,15 +331,10 @@ export function adapt(raw: RawOverview): ActivityView {
       blockedFlagged: c.blockedOrFlagged.state === "ok" ? (c.blockedOrFlagged.value ?? 0) : null,
       // The endpoint sends a fraction; the tile wants whole percent.
       tokensSavedPercent: saved.state === "ok" ? Math.round((saved.fraction ?? 0) * 100) : null,
-      // Formatted here, not upstream. `Intl` owns the currency symbol and
-      // placement; the leading "+" is the design's own convention for a saving.
-      tokensSavedAmount:
-        saved.state === "ok"
-          ? `+${new Intl.NumberFormat(undefined, {
-              style: "currency",
-              currency: saved.currency ?? "USD",
-            }).format(amount)}`
-          : null,
+      // No dollar figure. The gateway still sends `amount` and `currency`, and
+      // the frame still draws the estimate beside the percentage, but AG-879's
+      // Key decisions say Connect does not display estimated dollar figures for
+      // token savings - so the percentage is the whole tile.
     },
     buckets: (raw.requestsByHour.buckets ?? []).map(toBucket),
     policies: toRows<Policy>(raw.policies.rows, POLICY_ICONS, "shieldCheck", (r) => ({
@@ -422,6 +416,42 @@ export function clockTime(taken: Date, now = new Date()): string {
  * (`proxy::note_traffic`). `NewUiApp` calls `reload` on that, and on the
  * window being focused again.
  */
+/**
+ * How far past the hour an hourly re-read is spread (AG-894).
+ *
+ * Not decoration. This endpoint sits in the gateway's 100-requests-per-minute
+ * throttle, keyed on the SOURCE ADDRESS rather than on the credential - the
+ * same fact that rules out polling above. Every Gate Connect window on one
+ * office network or VPN egress shares that bucket, and a rollover pinned to
+ * :00 exactly would have all of them ask in the same second. Spreading over
+ * two minutes costs the reader nothing: the hour they were waiting for has
+ * already turned.
+ */
+export const ACTIVITY_ROLLOVER_SPREAD_MS = 120_000;
+
+/**
+ * How long until the next hourly re-read.
+ *
+ * The top of the next hour, plus a random spread. Every other trigger for these
+ * reads is an edge somebody causes - the relay seeing traffic, the window being
+ * focused, the window becoming visible - and a window sitting open and visible
+ * with nothing happening has no edge at all. What goes stale then is precisely
+ * which hours the chart's axis covers, and that changes once an hour, so this is
+ * the cadence the problem has rather than a timer reintroduced by the back door.
+ *
+ * Local hours, matching `toBucket`'s labels: the axis the reader is comparing
+ * against is drawn in their own clock, so the boundary that matters is theirs.
+ */
+export function msUntilHourRollover(
+  now: number,
+  spread: number = ACTIVITY_ROLLOVER_SPREAD_MS,
+): number {
+  const next = new Date(now);
+  next.setMinutes(0, 0, 0);
+  next.setHours(next.getHours() + 1);
+  return next.getTime() - now + Math.floor(Math.random() * spread);
+}
+
 export function useActivity(
   enabled: boolean,
   installId: string | null = null,

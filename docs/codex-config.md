@@ -98,13 +98,14 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "http://127.0.0.1:8977/chatgpt/codex"
+base_url = "http://127.0.0.1:8977/__gate/t/codex/chatgpt/codex"
 wire_api = "responses"
 requires_openai_auth = true
 ```
 
-- Codex sends `/chatgpt/codex/responses`.
-- The relay strips `/chatgpt`, looks that slug up in its built-in catalog, and
+- Codex sends `/__gate/t/codex/chatgpt/codex/responses`.
+- The relay strips `/__gate/t/codex`, records `codex` as the client tool for
+  attribution, strips `/chatgpt`, looks that slug up in its built-in catalog, and
   forwards `/codex/responses` to the gateway with
   `X-Gate-Upstream-Url: https://chatgpt.com/backend-api` attached.
 
@@ -115,13 +116,14 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "http://127.0.0.1:8977/openai/v1"
+base_url = "http://127.0.0.1:8977/__gate/t/codex/openai/v1"
 wire_api = "responses"
 requires_openai_auth = true
 ```
 
-- Codex sends `/openai/v1/responses`.
-- The relay strips `/openai` and forwards `/v1/responses` with
+- Codex sends `/__gate/t/codex/openai/v1/responses`.
+- The relay strips `/__gate/t/codex` and `/openai`, and forwards `/v1/responses`
+  with
   `X-Gate-Upstream-Url: https://api.openai.com`.
 
 ## Notes

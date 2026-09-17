@@ -55,8 +55,13 @@ interface RawToolEvents {
  * Not a withholding and not an error: a request that belonged to no session has no
  * conversation to name. The security cell draws its own dash for its own reason,
  * with its own tooltip - see `AppPane`.
+ *
+ * A plain hyphen, the same glyph every other "no reading" in the app draws. It
+ * was an em dash, which CLAUDE.md forbids outright, and it sat two cells away
+ * from the Type and Security dashes - three spellings of "nothing here" in one
+ * table row.
  */
-const NO_REFERENCE = "\u2014";
+const NO_REFERENCE = "-";
 
 /** What a row says when no model was attributed to the request. */
 const NO_MODEL = "Unknown model";
@@ -125,6 +130,17 @@ const CATEGORY_ICONS: Record<string, IconName> = {
 
 const CATEGORY_FALLBACK: IconName = "shieldCheck";
 
+/** What the Type column says for a request no guardrail matched.
+ *
+ * The explicit categories arrive from the gateway and render as the frame draws
+ * them; this is the fourth case the frame does not draw, because it only ever
+ * drew rows where something fired.
+ *
+ * Reserved for `allow`. See `toEntry`: it is a verdict, not a note that the
+ * gateway answered, so an uncategorised `block` must not borrow it. */
+const REGULAR = "Regular";
+const REGULAR_ICON: IconName = "shieldCheck";
+
 /** One row, formatted. */
 function toEntry(raw: RawEvent): ActivityEntry {
   return {
@@ -134,10 +150,25 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // `allow` is the honest default *only* when the gateway answered. A null
     // action is unknown to us and renders as a dash, not as a verdict.
     security: raw.securityAction ? SECURITY[raw.securityAction] : null,
-    category: raw.securityCategory,
+    // A guardrail category exists only where a guardrail fired, so ordinary
+    // traffic carried none and the Type column was a dash on every row - which
+    // is what AG-887 reports as "empty". A dash reads as missing; what actually
+    // happened is that the request was examined and nothing matched, and that
+    // is a reading worth naming.
+    //
+    // Keyed on `allow` specifically, not on "the gateway answered". "Regular"
+    // is a verdict, and it is only true of the action that IS one: a `block`,
+    // `flag` or `redact` that arrived without a category was examined and
+    // something fired, so calling it Regular would print the opposite of the
+    // pill in the Security cell two columns over. That row keeps the dash -
+    // something happened and the gateway did not name what - which is the same
+    // withholding the `security` line above makes, and CLAUDE.md principle 6.
+    category: raw.securityCategory ?? (raw.securityAction === "allow" ? REGULAR : null),
     categoryIcon: raw.securityCategory
       ? (CATEGORY_ICONS[raw.securityCategory] ?? CATEGORY_FALLBACK)
-      : null,
+      : raw.securityAction === "allow"
+        ? REGULAR_ICON
+        : null,
     model: raw.model ?? NO_MODEL,
     provider: raw.provider,
     title: raw.conversationTitle,

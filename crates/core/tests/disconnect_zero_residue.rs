@@ -659,7 +659,7 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     // the upstream hint on the bare host the catalog knows.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1"),
         "openrouter baseURL must keep the slug + /v1: {connected}"
     );
     assert!(
@@ -796,9 +796,12 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::write(&launcher, "#!/bin/sh\n").unwrap();
 
-    // A config.yaml and an .env holding the user's own key. Neither the model
-    // block nor the key may be touched: Hermes routes via the proxy now, so
-    // there is no base_url to rewrite and no provider to discover.
+    // A config.yaml and an .env holding the user's own key. The user's model
+    // block and key may not be touched: Hermes routes via the proxy now, so
+    // there is no base_url to rewrite and no provider to discover. Connect does
+    // add one line - `model.extra_headers.x-gate-tool`, which is what names
+    // Hermes on the wire - and disconnect has to take exactly that back out,
+    // which is the assertion at the end of this test.
     let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let original_cfg =
@@ -823,11 +826,20 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
     );
-    assert_eq!(
-        fs::read_to_string(&cfg).unwrap(),
-        original_cfg,
-        "config.yaml must not be touched at all"
+    // The one line connect writes there, and nothing else: the user's own keys
+    // survive verbatim, which is what a surgical edit buys over a YAML
+    // round-trip.
+    let cfg_body = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        cfg_body.contains("x-gate-tool: hermes"),
+        "Hermes must be named in its own config, or nothing can attribute it: {cfg_body}"
     );
+    for line in original_cfg.lines() {
+        assert!(
+            cfg_body.contains(line),
+            "the user's config must survive the edit, lost {line:?}: {cfg_body}"
+        );
+    }
 
     // A re-connect has to be a no-op that succeeds, not a refusal: it is how a
     // drifted Hermes is repaired, including unattended by `reconcile_enabled`.
@@ -861,10 +873,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         after.contains("OPENROUTER_API_KEY=sk-user"),
         "the user's own key must survive: {after}"
     );
+    // Byte-identical, not merely equivalent. A disconnect that left an empty
+    // `extra_headers:` block behind, or reflowed the file, would be residue in
+    // a file Gate does not own - and this is the only test that would notice.
     assert_eq!(
         fs::read_to_string(&cfg).unwrap(),
         original_cfg,
-        "config.yaml must still be untouched after disconnect"
+        "config.yaml must come back byte for byte after disconnect"
     );
     assert!(
         !env::app_support_dir()

@@ -543,12 +543,17 @@ fn domains_enabled_persisted(_p: &Provider) -> bool {
 /// Only tools that carry their own upstream credential (`requires_upstream_credential
 /// == false`, e.g. Claude Code) are auto-applied; a tool that needs a
 /// Gate-stored key is left for the explicit connect flow. Tools in
-/// [`Status::Detected`] (installed, no Gate config) are connected; a
-/// [`Status::Drifted`] tool is *re*-connected only when its config carries our
-/// own management marker ([`Integration::config_is_managed`]) - i.e. the stale
-/// values are ours (an old scheme, a changed relay port), not a setup the user
-/// made by hand - and the relay is up so there's a live base URL to point it
-/// at. Unmarked drift is left alone so this never clobbers an out-of-app setup.
+/// [`Status::Detected`] (installed, no Gate config) are connected when the
+/// provider's switch is on; a [`Status::Drifted`] tool is *re*-connected
+/// whenever its config carries our own management marker
+/// ([`Integration::config_is_managed`]) - i.e. the stale values are ours (an old
+/// scheme, a changed relay port), not a setup the user made by hand - and the
+/// relay is up so there's a live base URL to point it at. The switch is not
+/// consulted for that half: the marker is the user's own past connect, which
+/// says more about intent than a domain flag does, and [`disable`] disconnects
+/// each tool before persisting the off state, so a provider the user turned off
+/// leaves nothing marked for this to find. Unmarked drift is left alone so this
+/// never clobbers an out-of-app setup.
 ///
 /// Tools no provider maps get the drift half of the same treatment via
 /// [`reconcile_unmapped_tools`]; they have no provider flag to read as intent,
@@ -559,9 +564,26 @@ pub fn reconcile_enabled() -> Result<()> {
     };
     let relay_base_url = crate::proxy::relay_base_url();
     for p in providers() {
-        if !domains_enabled_persisted(&p) {
-            continue;
-        }
+        // The switch gates auto-*connecting*, not repairing. A `Detected` tool
+        // has never been routed, so something has to say the user wants it to
+        // be, and the enabled domain is that something. Managed drift says it
+        // already: the config carries our marker, which is the user's own past
+        // connect, and reasserting a base URL of ours that went stale is
+        // finishing that job rather than starting a new one. That is the test
+        // [`reconcile_unmapped_tools`] applies to the tools no provider maps,
+        // and this pass disagreeing with it is why Codex never repaired itself.
+        //
+        // Codex is the case that proves it rather than an exception to it. Its
+        // provider's cascade is deliberately EMPTY - both `chatgpt` entries are
+        // `Credential::Additive`, asserted in this module's tests - so no switch
+        // on the machine can ever report the OpenAI family as on, and under the
+        // old gate `config_is_managed` was unreachable for the one tool it was
+        // written for.
+        //
+        // Turning a provider off does not leave a tool behind for this to pick
+        // up: [`disable`] disconnects each one first, which removes the marker,
+        // so a repaired tool is always one the user still has connected.
+        let enabled = domains_enabled_persisted(&p);
         for &id in p.tool_ids {
             let Some(integ) = registry::find(id) else {
                 continue;
@@ -570,7 +592,7 @@ pub fn reconcile_enabled() -> Result<()> {
                 continue; // needs a stored key; not safe to auto-apply
             }
             let reapply = match integ.status() {
-                Ok(Status::Detected) => true,
+                Ok(Status::Detected) => enabled,
                 // Our own writes gone stale - safe to reassert, but only with
                 // a relay to point at (connect() bails without one, and this
                 // drift may *be* "relay not enabled yet").

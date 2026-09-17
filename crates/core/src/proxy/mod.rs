@@ -35,6 +35,7 @@
 //! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
 use crate::account::BillingMode;
+use crate::registry::ToolId;
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -1410,6 +1411,16 @@ pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
 /// Which tool sent the request, when we can tell. Feeds the per-tool series in
 /// the activity view.
 pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// A tool naming itself because Gate wrote this header into that tool's own
+/// config file - the engine's equivalent of the relay's path marker, for a tool
+/// that has no base URL for us to write.
+///
+/// **Deliberately not [`GATE_CLIENT_HEADER`] itself.** That one is stamped by
+/// us and stripped from whatever the caller sent, so a tool cannot label its own
+/// traffic with it. This one is a request *input*, read before the strip and
+/// consumed here: it never reaches the gateway, and the slug it names is
+/// validated against [`crate::registry::ToolId`] rather than forwarded as text.
+pub(crate) const GATE_TOOL_HEADER: &str = "x-gate-tool";
 /// What the user calls this machine, so the gateway can show traffic under a
 /// human name rather than an install id. Self-asserted and non-secret, like the
 /// two above.
@@ -1419,13 +1430,25 @@ pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
 /// offers to skip naming, and a hostname usually carries a person's name. An
 /// unnamed device is attributed by its install id alone.
 pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
-/// The models the user chose for this tool, comma-separated and in preference
-/// order (AG-588 / AG-590).
+/// The models the user enabled for this tool, comma-separated (AG-588 / AG-590).
 ///
 /// Unlike the two above this is not a label on the request - it **changes what
-/// the gateway serves**, so the gateway rewrites the body's `model` to the first
-/// entry. Sent only when the user set that tool to a Gate model; absent means
-/// the tool's own choice stands, which is the default and must stay the default.
+/// the gateway serves**. Sent only when the user set that tool to a Gate model;
+/// absent means the tool's own choice stands, which is the default and must stay
+/// the default.
+///
+/// **The set is an allow-list, not an override queue (AG-746).** This comment
+/// said the gateway "rewrites the body's `model` to the first entry", full stop,
+/// which was true before AG-746 and is the reading AG-888 was filed on. What
+/// `gateway-proxy`'s `applyUserModelChoice` actually does: a request for a model
+/// IN the set is served as the model the tool asked for and the body is left
+/// alone; only a request for something outside the set is rewritten, onto the
+/// first entry. Three sessions on three enabled models therefore keep their own
+/// choices instead of all being served the first.
+///
+/// So the order is still the user's and still load-bearing - the first entry is
+/// what everything unlisted becomes - but it is a fallback rather than a
+/// default.
 pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 
 /// Stamp the attribution headers the activity view groups by.
@@ -1447,7 +1470,11 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// and only when a tool was positively identified. An unrecognised tool sends no
 /// override at all rather than a best guess, because guessing here would serve -
 /// and charge for - a model chosen for a different tool.
-fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
+fn inject_attribution(
+    headers: &mut HeaderMap,
+    domain: Option<&str>,
+    routed_tool: Option<&'static str>,
+) {
     headers.remove(GATE_INSTALL_ID_HEADER);
     if let Some(id) = crate::primitives::install_id_cached() {
         if let Ok(value) = HeaderValue::from_str(id) {
@@ -1464,9 +1491,28 @@ fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
     {
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
-    let tool = client_tool(headers, domain);
+    // The route wins over the User-Agent, and only ever adds: `routed_tool` is
+    // `Some` exactly when the request arrived on a base URL carrying a tool
+    // marker. That is not more *trustworthy* than the User-Agent - any process
+    // on the loopback interface can call any path, exactly as it can send any
+    // header - it is only no longer dependent on a string Gate neither owns nor
+    // versions, so the honest case stops breaking when a tool renames itself.
+    // Worth holding onto here rather than only at `TOOL_PATH_PREFIX`, because
+    // this is the line that feeds `inject_model_choice`. The guess stays
+    // underneath for everything the marker cannot reach - the forward-proxy
+    // engine, where there is no URL to write, and any relay base URL written
+    // before the marker existed and not yet reconciled.
+    // Consumed, not forwarded: the caller's own copy goes no further than this
+    // hop whether or not we could read it. It is Gate-internal, it names the
+    // user's tooling, and the gateway learns the same fact from the header we
+    // stamp below.
+    headers.remove(GATE_TOOL_HEADER);
+    let tool = routed_tool.or_else(|| client_tool(headers, domain));
     // Every gateway-bound request comes through here, on both paths, which is
     // what makes this the one place the window can be told traffic happened.
+    // Told after the marker has had its say, so a relay-routed tool reaches the
+    // activity feed under the name its own config carries rather than under
+    // whatever its `User-Agent` happened to spell.
     note_traffic(tool);
     headers.remove(GATE_CLIENT_HEADER);
     if let Some(slug) = tool {
@@ -1568,7 +1614,7 @@ pub mod testing {
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
-        super::inject_attribution(headers, None);
+        super::inject_attribution(headers, None, None);
     }
 
     /// Whether the injection decided Gate serves this request.
@@ -1628,6 +1674,26 @@ pub mod testing {
     }
 }
 
+/// The tool named by [`GATE_TOOL_HEADER`], if it names one we know.
+///
+/// This is `established` evidence in the sense `client_tool` means it: the
+/// header is there because Gate wrote it into a config file only that tool
+/// reads, not because a string the caller composed looked right. It is the only
+/// such signal available on the forward-proxy path for a tool that has no base
+/// URL - the engine sees a CONNECT, so there is no URL of ours to put a marker
+/// in.
+///
+/// An unknown slug yields `None` rather than being passed through, so the value
+/// that reaches the activity column is always one of ours. Same reasoning as the
+/// relay's marker: a request we cannot name is served unlabelled.
+pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
+    headers
+        .get(GATE_TOOL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::registry::ToolId::from_slug)
+        .map(crate::registry::ToolId::slug)
+}
+
 /// Which client sent a request, for the gateway's `client_tool` column.
 ///
 /// Two signals, in order of how much they can be trusted.
@@ -1648,13 +1714,27 @@ pub mod testing {
 /// would attribute one tool's traffic to another in the view the user reads to
 /// find out what their machine is doing.
 ///
-/// **Display only, and caller-steerable.** Every signal here is a header the
-/// sender chose, so any local process whose traffic is intercepted can file its
-/// requests under another app's name. `inject_attribution` strips
+/// **Caller-steerable, and not display-only.** Every header signal here is one
+/// the sender chose, so any local process whose traffic is intercepted can file
+/// its requests under another app's name. `inject_attribution` strips
 /// [`GATE_CLIENT_HEADER`] before stamping, so a caller cannot set the value
-/// outright - only steer which branch fires - and nothing in routing, credential
-/// injection or the cascade rule reads the result. Keep it that way: this is a
-/// label on a counter, never an authorization input.
+/// outright - only steer which branch fires.
+///
+/// This doc used to say "nothing in routing, credential injection or the cascade
+/// rule reads the result", and that is **false**: [`inject_model_choice`] takes
+/// this value and stamps [`GATE_MODEL_HEADER`] only for a positively identified
+/// tool, and that header rewrites the served model and decides what the user is
+/// billed for. So identifying a tool better does not only move a number on a
+/// chart - it can start honouring a Gate-model choice that was stored but never
+/// applied, because the tool was going unrecognised. That is the intended
+/// reading of the feature (the user picked that model for that tool, and it was
+/// silently not being used), and it is a billing-visible consequence that
+/// belongs written down rather than discovered.
+///
+/// It remains **never an authorization input**: nothing here decides whether a
+/// request is served, only which stored intent is applied to it. Keep that half
+/// true. The ceiling on the steerable case is that a forged agent can only reach
+/// a model the user themselves chose for the tool it is impersonating.
 ///
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
 /// `chatgpt-web` - have no [`crate::registry::ToolId`], and the activity queries
@@ -1863,8 +1943,9 @@ pub(crate) fn inject_gate_credential(
     org_id: Option<&str>,
     mode: BillingMode,
     domain: Option<&str>,
+    tool: Option<&'static str>,
 ) -> Result<bool> {
-    inject_attribution(headers, domain);
+    inject_attribution(headers, domain, tool);
     if mode == BillingMode::Payg {
         strip_client_auth(headers);
     }
@@ -2774,19 +2855,61 @@ pub struct ResolvedEndpoint {
 
 impl ResolvedEndpoint {
     /// The base URL a tool config points at to route this endpoint through the
-    /// relay: `<relay>/<slug><client_path>`.
+    /// relay: `<relay>/__gate/t/<tool>/<slug><client_path>`.
     ///
     /// The slug segment is how the relay knows which upstream a request belongs
     /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
-    /// carrying it in a config file. It is stripped back off before anything is
-    /// forwarded, leaving exactly `client_path` + whatever the tool appended.
-    pub fn relay_base_url(&self, relay_base_url: &str) -> String {
+    /// carrying it in a config file. The `tool` segment ahead of it names who
+    /// was configured, so attribution stops depending on the request's
+    /// `User-Agent` - see `relay::TOOL_PATH_PREFIX`, which is crate-private and
+    /// so cannot be linked from this public item. Both are stripped back
+    /// off before anything is forwarded, leaving exactly `client_path` +
+    /// whatever the tool appended, so neither reaches the gateway or the
+    /// upstream.
+    ///
+    /// `tool` is the integration's own [`ToolId`], not a lookup. That is the
+    /// whole point: the call site is inside the module that configures that
+    /// tool, which is the one place in the system where "which tool is this" is
+    /// known rather than inferred.
+    pub fn relay_base_url(&self, relay_base_url: &str, tool: ToolId) -> String {
         format!(
-            "{}/{}{}",
+            "{}{}{}/{}{}",
             relay_base_url.trim_end_matches('/'),
+            relay::TOOL_PATH_PREFIX,
+            tool.slug(),
             self.slug,
             self.client_path
         )
+    }
+
+    /// Is `candidate` a base URL *we* wrote for this endpoint and tool?
+    ///
+    /// Not "does it point at loopback". The two are not the same question and
+    /// the difference is a config the user owns: someone who repoints a tool we
+    /// connected at their own local server is still on loopback, and answering
+    /// yes there hands `reconcile_enabled` a licence to take it back. It asks
+    /// instead whether the string is one [`Self::relay_base_url`] could have
+    /// produced, which only Gate Connect writes.
+    ///
+    /// Judged at the candidate's OWN origin rather than the relay's current one,
+    /// because a base URL that has gone stale is exactly what the reapply exists
+    /// to repair: the relay comes back on a different port and every config we
+    /// wrote now names a dead one. Both path shapes count for the same reason -
+    /// the pre-marker one is what every install written before the tool segment
+    /// still holds, and it is no less ours for being old.
+    pub fn is_relay_base_url(&self, candidate: &str, tool: ToolId) -> bool {
+        let Some((scheme, rest)) = candidate.split_once("://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.is_empty() {
+            return false;
+        }
+        let origin = format!("{scheme}://{authority}");
+        if self.relay_base_url(&origin, tool) == candidate {
+            return true;
+        }
+        format!("{origin}/{}{}", self.slug, self.client_path) == candidate
     }
 }
 
@@ -2831,6 +2954,50 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::SolveOutcome;
+
+    /// What separates a base URL of ours from one the user owns.
+    ///
+    /// The tempting test is "does it point at loopback", and it is wrong in the
+    /// one direction that costs something: a tool the user has repointed at
+    /// their own local server answers yes to it, and `config_is_managed` would
+    /// then let `reconcile_enabled` take the config back without asking. The
+    /// question is whether the string is one we could have written.
+    #[test]
+    fn only_a_url_we_could_have_written_reads_as_ours() {
+        use super::{resolve_endpoint, ToolId};
+        let r = resolve_endpoint("https://api.anthropic.com/v1").expect("anthropic resolves");
+
+        // What we write today, and the same at a port the relay has since left:
+        // the stale one is precisely what the reapply exists to repair, so it
+        // has to still read as ours.
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:1234/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        // The shape written before the marker existed, which every install that
+        // has not reconciled since still holds.
+        assert!(r.is_relay_base_url("http://127.0.0.1:9977/anthropic/v1", ToolId::OpenCode));
+
+        // The user's own llama server on the same interface. Loopback, and not
+        // ours.
+        assert!(!r.is_relay_base_url("http://127.0.0.1:11434/v1", ToolId::OpenCode));
+        // Ours in shape, but naming a different tool or a different upstream.
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/codex/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/openai/v1",
+            ToolId::OpenCode
+        ));
+        // Not a URL at all, and a scheme with no authority.
+        assert!(!r.is_relay_base_url("anthropic/v1", ToolId::OpenCode));
+        assert!(!r.is_relay_base_url("http:///anthropic/v1", ToolId::OpenCode));
+    }
 
     /// The wire words the frontend's own union spells out.
     ///
@@ -4377,6 +4544,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The cross-repo agreement table for tool attribution.
+    ///
+    /// Two matchers, in two repositories, answer "which tool sent this" and
+    /// neither compares notes with the other: [`client_tool`] here, and the
+    /// per-platform `detect` in the gateway's
+    /// `apps/gateway-proxy/src/utils/platform-registry.ts`. They disagreed for
+    /// months on any agent whose own token is not the first thing in its
+    /// `User-Agent` - the gateway anchored its `opencode` regex, this side uses
+    /// a case-insensitive `contains` - and nothing caught it, because each
+    /// side's tests were written against its own rule.
+    ///
+    /// Disagreement is worse than either side being wrong alone. This side
+    /// stamps `x-gate-client: opencode` while the gateway writes
+    /// `agent_framework: direct-api`, so one row carries two confident and
+    /// contradictory claims and neither surface reads as "unknown".
+    ///
+    /// So the table records BOTH answers per sample rather than one shared one.
+    /// The columns are not expected to be equal - where they differ the row says
+    /// why, and that visibility is the point. **The same table is mirrored in
+    /// the gateway**, in `tests/utils/agent-ua-samples.test.ts`; this test
+    /// asserts the `connect` column and that one asserts `registry`. A sample
+    /// added here goes there too. Nothing but this comment enforces that, so a
+    /// row with no counterpart proves half of what it looks like it proves.
+    ///
+    /// Which is why the name says `connect` rather than "agrees with the
+    /// gateway": the `registry` column is documentation here, read by a person
+    /// porting the table across and by nothing else. A name promising a
+    /// cross-repo assertion would have a green run standing behind it.
+    #[test]
+    fn the_user_agent_table_pins_what_connect_stamps() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h, None)
+        };
+
+        // (user-agent, what this side stamps, what the gateway registry makes
+        // of the same string on its own).
+        let samples: &[(&str, Option<&str>, Option<&str>)] = &[
+            // Agreed: what each tool sends today, backed by real captures.
+            (
+                "claude-cli/2.1.222 (external, cli)",
+                Some("claude-code"),
+                Some("claude-code"),
+            ),
+            ("codex_cli_rs/0.55.0", Some("codex"), Some("codex")),
+            ("opencode/0.4.2", Some("opencode"), Some("opencode")),
+            // The shape that split the two matchers, and the reason the `^`
+            // anchor came off the gateway's `opencode` detector: the token is
+            // present but not first, as it would be with a runtime or wrapper
+            // banner in front of it.
+            (
+                "Bun/1.2.3 opencode/0.4.2",
+                Some("opencode"),
+                Some("opencode"),
+            ),
+            // Case is the tool's business, not ours - one tool has to be one
+            // series.
+            ("Codex/1.0", Some("codex"), Some("codex")),
+            // DIVERGENT, and not a regex disagreement: the two sides read
+            // different evidence. This side matches `openclaw` in the
+            // User-Agent; the gateway detects OpenClaw from body markers and
+            // has no UA signal at all, so a UA-only sample is genuinely `None`
+            // there. Routed traffic is still attributed, because the gateway
+            // now prefers `x-gate-client` - which is to say, this side's answer
+            // - over its own detector.
+            ("openclaw/1.4.0", Some("openclaw"), None),
+            // Not agents. A wrong slug here would file somebody else's traffic
+            // under a tool's name in the very view a user opens to find out
+            // what their machine is doing, which is worse than the honest
+            // blank.
+            ("curl/8.7.1", None, None),
+            ("Mozilla/5.0 (Macintosh) Chrome/120", None, None),
+        ];
+
+        for (ua, connect, _registry) in samples {
+            assert_eq!(tool(ua), *connect, "user-agent {ua:?}");
+        }
+    }
+
     /// The `User-Agent` guess is the only tool signal either path has, so its
     /// misses matter as much as its hits.
     #[test]
@@ -4609,6 +4859,58 @@ mod tests {
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
+    /// The route outranks the `User-Agent`, and the header the caller sent
+    /// outranks neither.
+    ///
+    /// The three-way distinction is the point. A base URL carrying a tool marker
+    /// is something *Gate Connect wrote*, from inside the integration that knows
+    /// which tool it was configuring, so it is better evidence than a substring
+    /// of a string the tool picks for itself. An `x-gate-client` the caller set
+    /// is not evidence at all and stays overwritten either way - otherwise any
+    /// local process could file its spend under another tool's name.
+    #[test]
+    fn a_routed_tool_outranks_the_user_agent_but_a_claimed_header_outranks_nothing() {
+        let attributed = |ua: Option<&str>, routed: Option<&'static str>| {
+            let mut h = HeaderMap::new();
+            if let Some(ua) = ua {
+                h.insert(
+                    hyper::header::USER_AGENT,
+                    HeaderValue::from_str(ua).unwrap(),
+                );
+            }
+            // Always present and always wrong, so every case below also asserts
+            // that the caller's own claim was dropped rather than merged.
+            h.insert(
+                HeaderName::from_static(GATE_CLIENT_HEADER),
+                HeaderValue::from_static("openclaw"),
+            );
+            inject_attribution(&mut h, None, routed);
+            h.get(GATE_CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+
+        // The marker is the whole reason this change exists: a User-Agent that
+        // no longer names the tool - a runtime banner in front of the token is
+        // enough - still attributes correctly when the route named it.
+        assert_eq!(
+            attributed(Some("Bun/1.2.3 opencode/0.4.2"), Some("opencode")),
+            Some("opencode".to_string())
+        );
+        // And with no User-Agent at all, which is where the guess has nothing.
+        assert_eq!(attributed(None, Some("codex")), Some("codex".to_string()));
+
+        // No marker: the guess still runs, so nothing that works today stops.
+        assert_eq!(
+            attributed(Some("opencode/0.4.2"), None),
+            Some("opencode".to_string())
+        );
+
+        // Neither signal: unattributed, never the caller's claim.
+        assert_eq!(attributed(Some("curl/8.7.1"), None), None);
+        assert_eq!(attributed(None, None), None);
+    }
+
     #[test]
     fn attribution_overwrites_whatever_the_caller_claimed() {
         let mut h = HeaderMap::new();
@@ -4621,7 +4923,7 @@ mod tests {
             HeaderValue::from_static("claude-code"),
         );
 
-        inject_attribution(&mut h, None);
+        inject_attribution(&mut h, None, None);
 
         // The client header is derived from the User-Agent, and there is none
         // here, so the claim is dropped rather than believed.
@@ -4702,7 +5004,16 @@ mod tests {
             HeaderValue::from_static("sk-ant-api03-app"),
         );
 
-        inject_gate_credential(&mut h, "sk-gw-ours", None, None, BillingMode::Payg, None).unwrap();
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            None,
+            None,
+            BillingMode::Payg,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
         assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
@@ -4728,6 +5039,7 @@ mod tests {
             Some("token"),
             Some("org"),
             BillingMode::Byok,
+            None,
             None,
         )
         .unwrap();

@@ -10,7 +10,6 @@ const stats: UsageStats = {
   messages: 0,
   blockedFlagged: 0,
   tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
 };
 
 const entry: ActivityEntry = {
@@ -213,7 +212,12 @@ describe("AppPane recent activity", () => {
     // would satisfy that, and the point is that the row says so. `status` is
     // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
-    expect(cell.textContent).toBe("\u2014");
+    // A plain hyphen, which is what every other "no reading" in the app draws -
+    // `SecurityEvents`'s `UNATTRIBUTED` and the Settings plan row. These two
+    // cells were the last em dashes in the app, which CLAUDE.md forbids
+    // outright; replacing them with an en dash traded one inconsistency for
+    // another, since no other surface uses that glyph.
+    expect(cell.textContent).toBe("-");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
     expect(within(feed).queryByText("error")).toBeNull();
@@ -446,8 +450,12 @@ describe("AppPane model selection", () => {
   });
 
   it("shows the plan the gateway named, which AG-592 asks the tool detail for", () => {
-    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "paid" }));
-    expect(within(card("Model selection")).getByText("Paid plan")).toBeTruthy();
+    // Already in the user's vocabulary when it arrives: the shell maps the
+    // gateway's `paid` through `formatPlan`, so this pane prints what the
+    // dashboard prints. It used to title-case the raw value here and say
+    // "Paid", which is the same account named two ways by two products.
+    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "Pro" }));
+    expect(within(card("Model selection")).getByText("Pro plan")).toBeTruthy();
   });
 
   it("says nothing about a plan nobody named", () => {

@@ -3,6 +3,7 @@ import type { RecoveryNextStep } from "../../lib/api";
 import type { RecoveryRow } from "../../lib/recovery";
 import { BaseSwitch, StatusTile } from "./base";
 import { Icon } from "./Icon";
+import { routingState, showsFraction } from "../../lib/routingState";
 
 /**
  * The banner stack that sits between the topbar and the content pane
@@ -87,24 +88,28 @@ export function UpdateBanner({
  * Standing summary of how much of the user's traffic is actually routed.
  *
  * Everything protected reads as "protecting you" in green; anything short of
- * that reads as "partly routing" in amber. The Figma mocks label a 2-of-4 state
- * "protecting you" and a 0-of-4 state "partly routed", which cannot both be
- * right - only two variants are drawn, so the all-or-not-all split is the
- * reading that leaves no state unrepresented.
+ * that is amber. The Figma mocks label a 2-of-4 state "protecting you" and a
+ * 0-of-4 state "partly routed", which cannot both be right - only two variants
+ * are drawn, so the all-or-not-all split is the reading that leaves no state
+ * unrepresented.
  *
- * **An empty denominator is neither of those and must not borrow the amber
- * sentence.** `totalCount` is what the user asked for, so zero means they asked
- * for nothing - and "Gate Connect is partly routing your apps · Partly routed ·
- * 0 of 0 Apps" reports a gap where there is no gap, in three ways at once: a
- * count of nothing, a fraction whose halves are both zero, and a fault the user
- * caused on purpose by switching everything off. Since the denominator became
- * intent this is reachable by that switch rather than only on a machine with no
- * tools, which is what made it worth its own branch.
+ * **Which state, and what to call it, is `lib/routingState`'s** since AG-913.
+ * The tray's master card answers the same question and used to answer it in
+ * different words, so the vocabulary is shared rather than written twice. Two
+ * distinctions live there that this banner used to lose:
  *
- * The tile stays amber because there is no third tone drawn and picking one by
- * eye is the thing this repo is told not to do - see question 23 in
- * `docs/figma-questions-for-design.md`. The words are the part that was making
- * a false claim, so the words are the part that changed.
+ * - **An empty denominator is not a gap.** `totalCount` is what the user asked
+ *   for, so zero means they asked for nothing - and "partly routing your apps ·
+ *   Partly routed · 0 of 0 Apps" reported a gap where there is none, in three
+ *   ways at once. Since the denominator became intent this is reachable by the
+ *   master switch rather than only on a machine with no tools.
+ * - **None of three is not partly.** That case used to fall into the partly
+ *   branch and read "partly routing your apps" over `0 of 3`.
+ *
+ * The tile stays amber for all three unhappy states because there is no third
+ * tone drawn and picking one by eye is the thing this repo is told not to do -
+ * see question 23 in `docs/figma-questions-for-design.md`. The words are the
+ * part that was making a false claim, so the words are the part that changed.
  */
 export function RoutingBanner({
   protectedCount,
@@ -113,38 +118,32 @@ export function RoutingBanner({
   protectedCount: number;
   totalCount: number;
 }) {
-  const allProtected = totalCount > 0 && protectedCount === totalCount;
-  const nothingRequested = totalCount === 0;
+  // One vocabulary with the tray's master card (AG-913). The fourth state is
+  // new here: "you asked for three and none are routed" used to fall into the
+  // `partly` branch and read "partly routing your apps" over `0 of 3`.
+  const state = routingState(protectedCount, totalCount);
 
   return (
     <div className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4 py-2">
       <div className="flex items-center gap-3">
         {/* 32px tile with a 16px glyph - `banner/status-protected`'s
          * icon-wrapper (228:85985), between the tile's other two sizes. */}
-        <StatusTile
-          tone={allProtected ? "green" : "amber"}
-          icon={allProtected ? "shieldCheck" : "shieldBan"}
-          size={32}
-        />
+        <StatusTile tone={state.tone} icon={state.icon} size={32} />
         <p className="text-sm font-medium leading-5 text-base-foreground">
-          {allProtected
-            ? "Gate Connect is protecting you"
-            : nothingRequested
-              ? "No apps are set to route through Gate Connect"
-              : "Gate Connect is partly routing your apps"}
+          {state.headline}
         </p>
       </div>
       <p className="text-sm leading-5 tracking-label-14">
         <span
-          className={`font-medium ${allProtected ? "text-green-600" : "text-amber-600"}`}
+          className={`font-medium ${state.tone === "green" ? "text-green-600" : "text-amber-600"}`}
         >
           {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
             * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
-          {allProtected ? "Routed" : nothingRequested ? "None routed" : "Partly routed"}
+          {state.label}
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
-        {!nothingRequested && (
+        {showsFraction(state) && (
           <>
             <span className="text-base-muted-foreground"> · </span>
             <span className="text-base-muted-foreground">

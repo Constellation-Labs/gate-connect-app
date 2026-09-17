@@ -47,16 +47,16 @@ const noticeWrapper = () => screen.getByText("a notice").closest("div");
  * close-apps dialog that button opens.
  */
 describe("AppShell notice elevation", () => {
-  it("leaves a notice under the dialog scrim by default", () => {
+  it("leaves every notice under the dialog scrim", () => {
+    // Including the error banner, which used to be lifted. A connect failure
+    // and the certificate dialog arrive from the same click, and the lifted
+    // banner then floated lit over a dimmed dialog it had nothing to do with -
+    // which reads as a layering bug and makes a modal not modal. The banner is
+    // a report, so being readable under the scrim is enough; its dismiss comes
+    // back when the dialog closes.
     render(shell({ notice: <p>a notice</p> }));
 
     expect(noticeWrapper()?.className ?? "").not.toContain("z-30");
-  });
-
-  it("lifts the notice above the scrim only when the caller asks", () => {
-    render(shell({ notice: <p>a notice</p>, noticeAboveDialog: true }));
-
-    expect(noticeWrapper()?.className ?? "").toContain("z-30");
   });
 });
 

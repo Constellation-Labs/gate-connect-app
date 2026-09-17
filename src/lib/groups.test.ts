@@ -3,17 +3,19 @@ import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./
 import type { Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
+  PROXY_REOPEN_ADVICE,
   browserTrustRestartAdvice,
   buildGroups,
+  cascadeTargets,
+  describeMember,
+  describeSection,
+  groupSummary,
   hasBrowserSurface,
   hostReloadAdvice,
-  describeMember,
-  groupSummary,
-  cascadeTargets,
+  isSettingsManaged,
   needsSessionConsent,
-  sessionMembers,
   proxyReopenAdvice,
-  PROXY_REOPEN_ADVICE,
+  sessionMembers,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -940,6 +942,66 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+describe("describeSection", () => {
+  it("gives the Terminal pane a sentence that says it is machine-wide", () => {
+    // AG-893. The pane used to fall through to `describeMember("env-proxy")` -
+    // "Command line tools that follow your proxy settings" - which never says
+    // the switch reaches every program you start, or that it touches git and
+    // curl. The sentence that says so was already written; it sat in `blurb`,
+    // which only the popover reads.
+    const said = describeSection("terminal");
+
+    expect(said).toMatch(/every program started after your next login/);
+    expect(said).toMatch(/not only AI tools/);
+  });
+
+  it("still prefers a section's own description where it has one", () => {
+    expect(describeSection("claude")).toMatch(/Claude Code in your terminal/);
+  });
+
+  it("falls back to the first member for a section with neither", () => {
+    // `openai-api` carries no description and no blurb, and its member's
+    // sentence is the only place the host is written in the window UI.
+    expect(describeSection("openai-api")).toBeDefined();
+  });
+});
+
+describe("settings-managed members", () => {
+  it("keeps the shell-environment channel out of the app list", () => {
+    // AG-893. A machine-wide setting is not an app, and the rail is a list of
+    // apps. Its control is in Settings now; the tray reports it.
+    expect(isSettingsManaged("env-proxy")).toBe(true);
+    expect(isSettingsManaged("opencode")).toBe(false);
+  });
+
+  it("must filter the TOOL LIST, not the built ledger", () => {
+    // The trap: `buildGroups` gives a member no section claims a section of its
+    // own, so filtering afterwards puts the row back under its raw name with
+    // none of the section copy. Filtering the input is what removes it.
+    const tools = [
+      tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", {
+        scope: "machine",
+      }),
+      tool("opencode", "OpenCode", { kind: "connected" }, "opencode"),
+    ];
+
+    const filtered = buildGroups(
+      tools.filter((t) => !isSettingsManaged(t.slug)),
+      [],
+      { proxyOn: true, caTrusted: true, verdicts: new Map() },
+    );
+    expect(filtered.map((g) => g.id)).not.toContain("terminal");
+
+    // And the trap itself, so a future refactor that filters afterwards fails.
+    const unfiltered = buildGroups(tools, [], {
+      proxyOn: true,
+      caTrusted: true,
+      verdicts: new Map(),
+    });
+    expect(unfiltered.map((g) => g.id)).toContain("terminal");
+  });
+});
 
 /**
  * AG-897. The rail's two bands ask different questions: an app the user
