@@ -829,7 +829,11 @@ function RecentActivity({
                   would be invented here. */}
                 <td className="py-[1.125rem] pr-4">
                   {entry.category ? (
-                    <span className="flex items-center gap-2 text-sm leading-5 text-base-foreground">
+                    <span
+                      className="flex items-center gap-2 text-sm leading-5 text-base-foreground"
+                      // Only "Regular" carries one; see `ActivityEntry.categoryTitle`.
+                      title={entry.categoryTitle ?? undefined}
+                    >
                       {entry.categoryIcon && (
                         <Icon name={entry.categoryIcon} size={20} />
                       )}

@@ -74,8 +74,18 @@ describe("SessionConsentDialog", () => {
     // withdrawal, and that is the sentence a person deciding needs.
     consent();
 
-    expect(screen.getByText(/Turn Claude off whenever you like/)).toBeTruthy();
+    expect(screen.getByText(/turn Claude off whenever you like/)).toBeTruthy();
     expect(screen.getByText(/routing stops/)).toBeTruthy();
+  });
+
+  it("says the question is asked once, once", () => {
+    // The paragraph used to say "You are asked this once" and then "Gate will
+    // not ask this question again": one fact, stated twice in three lines.
+    consent();
+
+    const said = screen.getByText(/asked this once/).textContent ?? "";
+    expect(said.match(/ask/g)?.length).toBe(2);
+    expect(said).not.toMatch(/ask this question again/);
   });
 
   it("does not offer a setting that would undo it, because there is none", () => {

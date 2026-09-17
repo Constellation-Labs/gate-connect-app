@@ -41,6 +41,15 @@ export interface ActivityEntry {
   /** The glyph for {@link category}, chosen by the adapter the way
    *  `Policy.icon` is. Null when there is no category to draw one for. */
   categoryIcon: IconName | null;
+  /**
+   * A hover explanation for {@link category}, where the label alone does not
+   * say what it means. Set only for "Regular", which is Connect's word rather
+   * than the gateway's: the dash cell beside it has always carried a title
+   * saying why it is a dash, and a reader wondering what "Regular" means had
+   * nowhere to hover. A gateway-named category needs none; it is the gateway's
+   * spelling and there is nothing to add to it.
+   */
+  categoryTitle?: string | null;
   /** The model that served the request, or copy saying none was attributed. */
   model: string;
   /** Which upstream served it (`anthropic`, `openai`), for the vendor mark beside

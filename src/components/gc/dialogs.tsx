@@ -1878,10 +1878,14 @@ export function SessionConsentDialog({
         * flipping a section back on does not re-interrogate someone who has
         * already answered. Reset does not clear it either - `account::clear`
         * removes credentials and leaves `preferences.json` alone - so "change it
-        * in Settings" would be a promise the app does not keep. */}
+        * in Settings" would be a promise the app does not keep.
+        *
+        * One sentence. The first version said "You are asked this once" and
+        * then "Gate will not ask this question again", which is the same fact
+        * twice in three lines. */}
       <p className="text-sm leading-5 text-neutral-600">
-        You are asked this once. Turn {name} off whenever you like and the
-        routing stops, but Gate will not ask this question again.
+        You are asked this once: turn {name} off whenever you like and the
+        routing stops, and turning it back on will not ask again.
       </p>
     </Modal>
   );
