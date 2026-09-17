@@ -114,7 +114,8 @@ export function Overview({
    *  traffic instead of reporting it as empty. `ActivityView.missing` is where
    *  this comes from and why the two are separate facts. */
   unavailable?: { chart?: boolean; policies?: boolean; savings?: boolean };
-  /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
+  /** Slot for an `AlertBanner`, which the design places above the stat tiles.
+   *  Whole-machine routing causes only; a tool's own card is on its pane. */
   alert?: ReactNode;
   period?: string;
 }) {

@@ -454,10 +454,12 @@ test.describe("new UI running apps", () => {
       ],
     });
 
-    // The Overview's drift notice, not the rail row. A drifted row renders on -
+    // The pane's drift notice, not the rail row. A drifted row renders on -
     // that is the user's intent, which drift does not revoke - so its switch
     // asks to turn routing OFF and never reaches the gate. Reconnecting is what
-    // asks to write the config, and the gate is on that path.
+    // asks to write the config, and the gate is on that path. The card is drawn
+    // on Codex's own pane, reached through its section's rail row.
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 

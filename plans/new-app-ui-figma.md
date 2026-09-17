@@ -654,8 +654,9 @@ reads "X isn't protected" / "Routing is set to off. Reconnect to restore
 protection." (plural: "N apps aren't protected"); the drift notice and
 `NewUiApp`'s `driftAlert` title with the remedy, "Reconnect to restore
 protection". One deviation, recorded at both sites: the drawn drift body says
-"This app's" and the card names no app while paging between apps, so the
-name goes where that phrase was.
+"This app's" and the card names no app, so the name goes where that phrase
+was (since 2026-09-16 the drift card is drawn only on its own app's pane, and
+the name still keeps the sentence true on Overview's collapsed cards).
 
 **A selector trap the new rows sprang.** Playwright's `getByRole` name option
 is substring matching, so the always-present "ChatGPT (Codex subscription)"
@@ -2133,8 +2134,9 @@ The queue downstream PRs draw from, in the order that unblocks the most.
 12. **Alert banner copy: DONE 2026-08-23.** `master-off` and `drifted` in
     `lib/notices.ts` (and `NewUiApp`'s `driftAlert`) carry the drawn copy.
     The drift card names the app in its body where the drawing says "This
-    app's" - the card pages between apps and the drawn card never names one -
-    raised with the designer rather than shipped ambiguous.
+    app's" - the drawn card never names one - raised with the designer rather
+    than shipped ambiguous. Since 2026-09-16 the per-tool cards are drawn only
+    on their own app's pane; Overview keeps the collapsed whole-machine ones.
 
 Rows the design draws that have no backend command at all: device rename and
 notifications, plus plan upgrade, which has no billing URL to open. They render

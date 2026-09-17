@@ -101,7 +101,7 @@ import { useActivity, useInstallations } from "./lib/activity";
 import { formatCredits, formatPlan, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
-import { buildNotices } from "./lib/notices";
+import { machineNotices, memberNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
 import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
@@ -1489,13 +1489,15 @@ export function NewUiApp() {
   const [noticePage, setNoticePage] = useState(0);
   const [noticeBusy, setNoticeBusy] = useState(false);
 
+  /** Overview's cards: the whole-machine causes only. A tool's own drift or
+   *  check error is drawn on that tool's pane (`paneNotice`), not here. */
   const notices = useMemo(
-    () => buildNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
+    () => machineNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
     [groups, dismissedNotices],
   );
-  // Clamped rather than reset when the list shrinks: fixing the tool on the last
-  // page removes its notice, and a page index left pointing past the end would
-  // blank the banner while notices remain.
+  // Clamped rather than reset when the list shrinks: fixing the cause on the
+  // last page removes its notice, and a page index left pointing past the end
+  // would blank the banner while notices remain.
   const notice =
     notices.length > 0
       ? notices[Math.min(noticePage, notices.length - 1)]
@@ -2539,25 +2541,27 @@ export function NewUiApp() {
    * about - only on Overview. Both halves are the same mistake: the pane was
    * not asking about itself.
    *
-   * No paging: this card is one app's, and the drawn chevrons belong to the
+   * Since 2026-09-16 this is the ONLY surface that draws a tool's own causes
+   * (drift, a check error); Overview keeps the two whole-machine ones.
+   *
+   * Built per member of the open section, not picked out of Overview's list.
+   * That list collapses master-off and needs-trust to one card keyed on the
+   * cause, so a lookup on it drew that card on whichever section happened to
+   * own the first affected member and on no other. `memberNotices` gives every
+   * affected pane its own card, worded for its own tool, and dismissed by that
+   * tool's key rather than by a shared one.
+   *
+   * No paging: this card is one section's, and the drawn chevrons belong to the
    * multiple-apps variant on Overview.
    */
   const paneNotice = useMemo(
     () =>
       view.kind === "app"
-        ? // Any member of the open section, not the pane's own slug: a notice is
-          // keyed on the member it is about, and the pane is a section now.
-          //
-          // One caveat worth knowing rather than fixing here: `buildNotices`
-          // collapses master-off and needs-trust into ONE notice carrying the
-          // first affected member's key, so only the section owning that member
-          // draws the card even though the cause is true of every section at
-          // once. That predates the sections - the lookup used to be on the
-          // member key directly and had the same hole - and the fix belongs in
-          // `lib/notices.ts`, where the collapsing happens.
-          (notices.find((n) => sectionMemberKeys(view.slug).includes(n.memberKey)) ?? null)
+        ? (memberNotices(groups, sectionMemberKeys(view.slug)).find(
+            (n) => !dismissedNotices.includes(n.id),
+          ) ?? null)
         : null,
-    [notices, view],
+    [groups, dismissedNotices, view],
   );
   /**
    * One row of the reopen flow, acted on alone.
@@ -3714,7 +3718,12 @@ export function NewUiApp() {
                   title={paneNotice.title}
                   body={paneNotice.body}
                   switchLabel={paneNotice.switchLabel}
+                  // The switch reflects the state being fixed, which is always
+                  // "not routing". Toggling it performs the action.
                   on={false}
+                  // Both flags, because either path writes: `routingBusy` covers
+                  // the reconnect that goes through `useRouting`, `noticeBusy`
+                  // the two whole-machine actions that do not.
                   busy={noticeBusy || routingBusy}
                   onToggle={() => void runNoticeAction(paneNotice.action)}
                   onDismiss={() =>

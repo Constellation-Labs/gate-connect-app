@@ -200,7 +200,8 @@ export function AppPane({
    *  exist directly above two cards claiming it could not be read - a fault
    *  report over a permanent, intended shape of the data. */
   unattributed?: boolean;
-  /** Slot for an `AlertBanner` when this app has drifted. */
+  /** Slot for the `AlertBanner` about this app: drift, a check error, or a
+   *  whole-machine cause worded for this app. */
   alert?: ReactNode;
 }) {
   return (
