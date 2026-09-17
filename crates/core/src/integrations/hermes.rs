@@ -63,6 +63,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::integrations::dotenv;
@@ -94,6 +95,13 @@ struct State {
     /// already set is absent, so disconnect leaves it be.
     #[serde(default)]
     added_vars: Vec<String>,
+    /// The value connect last wrote for each variable that is ours. A refresh
+    /// is gated on the line still holding it, so a value the user has edited by
+    /// hand since stops being ours and is left alone. Absent on a sidecar
+    /// written before this field existed, which `add_vars` reads as ownership
+    /// by key for one connect and then records properly.
+    #[serde(default)]
+    written_vars: BTreeMap<String, String>,
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
@@ -179,6 +187,29 @@ impl Integration for Hermes {
         // work apart from the user's.
         let mut state = load_state()?.unwrap_or_default();
 
+        // What a previous connect wrote, and the value it left there. Passing
+        // the value is what keeps this ownership rather than a standing claim
+        // on the key: a line the user has since repointed at their own proxy is
+        // no longer ours to correct.
+        let mut ours: Vec<dotenv::Owned> = state
+            .written_vars
+            .iter()
+            .map(|(key, value)| dotenv::Owned {
+                key: key.clone(),
+                value: Some(value.clone()),
+            })
+            .collect();
+        // Keys from an install that predates `written_vars`: ours by key alone,
+        // for this one connect, and recorded with a value on the way out.
+        for key in &state.added_vars {
+            if !state.written_vars.contains_key(key) {
+                ours.push(dotenv::Owned {
+                    key: key.clone(),
+                    value: None,
+                });
+            }
+        }
+
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
@@ -187,10 +218,7 @@ impl Integration for Hermes {
                 ("NO_PROXY", NO_PROXY_VALUE.to_string()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
-            // What a previous connect wrote, so this one may bring it up to
-            // date. The port moves; without this the file keeps whatever the
-            // first connect saw and re-connect repairs nothing.
-            &state.added_vars,
+            &ours,
         )?;
 
         // Nothing added AND nothing we ever added: the variables are the user's
@@ -222,6 +250,11 @@ impl Integration for Hermes {
             state.added_vars = applied.added;
             state.env_file_created = applied.file_created;
         }
+        // The values, unlike the list above, are replaced every time: they are
+        // what the file holds now, not who put it there. Recorded even when
+        // nothing changed, so a sidecar that predates the field stops relying
+        // on ownership by key after a single connect.
+        state.written_vars = applied.owned_values.into_iter().collect();
         save_state(&state)?;
 
         // Naming what moved matters more on a repair than on a first connect.
