@@ -385,7 +385,6 @@ export function Home({
                 {gatewayHost}
               </div>
             )}
-
           </div>
         )}
 

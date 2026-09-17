@@ -81,7 +81,7 @@ impl Integration for EnvProxy {
         Ok(compute_status(
             crate::proxy::env_export_opted_in(),
             crate::proxy::exported_proxy_url().as_deref(),
-            crate::proxy::persisted_engine_proxy_url().as_deref(),
+            crate::proxy::exported_proxy_identity_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
             crate::proxy::env_export_is_separable(),
         ))

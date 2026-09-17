@@ -68,6 +68,61 @@ macOS/Windows cross-user token as a tracked follow-up rather than a blocker,
 because multi-user desktop machines are rare in the target audience and the
 same-user case is not fixable with a token at all.
 
+## Accepted: the environment forwarder
+
+The machine-wide variables name `proxy::forwarder` rather than the engine, so
+that the env channel fails open the way the PAC channel does (rationale in
+`docs/routing-architecture.md`). It is a separate, detached process, so unlike
+the listeners above it can still be accepting when no other part of Gate is
+running.
+
+What it is: a forward proxy that hands each connection to the engine when the
+engine answers, and connects the client straight to its destination when it
+does not.
+
+- **It cannot spend the Gate credential**, because it never has one. It holds
+  no key, no token and no org; it never terminates TLS, mints no certificate,
+  and rewrites nothing to the gateway. The blast radius that the rest of this
+  document weighs - the ability to *spend* - does not apply to it at all.
+- **It does not read traffic.** Only the first request head is parsed, and only
+  far enough to learn where the connection is going; after that the connection
+  is spliced.
+- **It does not forward the proxy credential when going direct.**
+  `Proxy-Authorization` addresses this hop, so the direct path strips it rather
+  than carrying it to a third party. It is passed through untouched when the
+  connection goes to the engine, which is where it is meant to be read.
+- **It is an open forward proxy to an arbitrary `host:port`**, which is the one
+  capability it does have, and it has it for as long as it runs. It applies no
+  peer gate of its own.
+- **It is the same signed executable as the app**, shipped as a sidecar, and it
+  inherits the environment of whichever process spawned it.
+
+Decision: accepted. The marginal capability over the status quo is small - any
+local process can already open its own outbound socket, so what this adds is
+reaching a host *through* Gate's process rather than directly, which matters
+only where an egress filter distinguishes the two. Weighed against the
+alternative, which is that turning Gate off takes the machine's AI tooling
+(and its curl and its npm) offline until every affected process is restarted.
+
+**But do not read "it holds no credential" as containment for the cross-user
+case.** While the engine is up, the forwarder hands the connection straight to
+it, and the engine on macOS and Windows applies no UID gate either - so a
+non-owner peer reaching the forwarder gets exactly what it would get by dialing
+the engine directly, credential injection included. The forwarder neither adds
+that exposure nor removes it; it is parity with an already-accepted gap, which
+is why the decision stands. It does mean the ordering of any future UID work
+matters: gating the engine and relay while leaving the forwarder ungated would
+launder a non-owner peer into an owner-uid connection and undo the gate. The
+forwarder has to be gated first, or at the same time.
+
+Where the forwarder is socket-activated (macOS, via its LaunchAgent) the
+squatting case disappears rather than being detected: launchd holds the port
+from login, so no other process can be there to adopt. On Windows, and on macOS
+when the agent could not be installed, the app instead proves the listener is
+ours with a 0600 shared token on a reserved health path before exporting its
+port - a plain TCP probe would have let any local process that bound the
+remembered port be published as the machine's `HTTPS_PROXY`.
+
 ## Noted: the `claude-web` catalog entry (session cookie)
 
 The opt-in `claude-web` domain MITMs `claude.ai/organizations/*` and forwards

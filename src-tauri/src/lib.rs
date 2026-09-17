@@ -315,6 +315,13 @@ async fn clear_account() -> Result<(), String> {
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // And stop the environment forwarder. It is deliberately left running
+        // across a plain routing-off - that is exactly when the processes
+        // holding our exported variables still need it - so this path and the
+        // CA untrust are the only places it is retired. This is the one an
+        // ordinary user reaches: it is what the Reset button runs
+        // (`App.tsx`'s `forget`, which disables routing and then calls here).
+        gate_connect_core::proxy::forwarder::stop();
         account::clear().map_err(|e| format!("{e:#}"))
     })
     .await
@@ -1871,8 +1878,17 @@ fn quit_app(app: tauri::AppHandle) {
 #[tauri::command]
 async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
     // Off the main thread: disconnect does config-file I/O.
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
+    let names = tauri::async_runtime::spawn_blocking(|| {
+        // Collected before the disconnect, which is what makes them stop being
+        // managed.
+        let names = gate_connect_core::registry::managed_tool_names();
+        gate_connect_core::provider::snapshot_and_disable_everything()
+            .map_err(|e| format!("{e:#}"))?;
+        // This is a disconnect, not a routing-off: the user asked Gate out of
+        // the path, so the passthrough listener goes too. The plain quit
+        // deliberately leaves it running - see `proxy::forwarder::stop`.
+        gate_connect_core::proxy::forwarder::stop();
+        Ok::<_, String>(names)
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
@@ -1887,13 +1903,51 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
                 // nowhere else in the product, and this notification arrives
                 // seconds after a panel that called them tools. The rest of the
                 // wording is shared with QuitConfirm on purpose.
-                "Your tools are back on their own settings while Gate Connect is \
-                 closed. Restart any running CLI agents; everything reconnects \
-                 when Gate Connect starts again.",
+                //
+                // The tools are named when we know them, because "restart any
+                // running CLI agents" asks the user to work out which - and a
+                // disconnect stops the passthrough too, so a session that was
+                // working a moment ago stops, which is worth being precise
+                // about. Anything else started while routing was on still holds
+                // the proxy variables, hence the sentence after the list.
+                &if names.is_empty() {
+                    "Your tools are back on their own settings while Gate \
+                     Connect is closed. Restart any terminal or editor you \
+                     opened while routing was on; everything reconnects when \
+                     Gate Connect starts again."
+                        .to_string()
+                } else {
+                    format!(
+                        "Your tools are back on their own settings while Gate \
+                         Connect is closed. Restart {} - and any other terminal \
+                         or editor you opened while routing was on. Everything \
+                         reconnects when Gate Connect starts again.",
+                        join_names(&names)
+                    )
+                },
             )
             .show();
     }
     Ok(())
+}
+
+/// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
+/// comma-join reads as a fragment at two items.
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The tools Gate Connect currently manages, for copy that has to name what a
+/// disconnect will interrupt.
+#[tauri::command]
+async fn routed_app_names() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::registry::managed_tool_names)
+        .await
+        .map_err(|e| format!("join error: {e}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1967,6 +2021,7 @@ pub fn run() {
                     proxy_set_env_export,
                     proxy_trust_ca,
                     proxy_untrust_ca,
+            routed_app_names,
                     launch_at_login_status,
                     set_launch_at_login,
                     set_updater_relaunching,
