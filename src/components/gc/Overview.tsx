@@ -145,11 +145,29 @@ export function Overview({
         // AG-572: selecting the counter moves to the Token savings section.
         // `scrollIntoView` on the section rather than a hash link, which would
         // put a fragment in the webview's URL for a window that has no address.
-        onSelectTokensSaved={() =>
-          document.getElementById(SAVINGS_SECTION_ID)?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          })
+        //
+        // **Offered only when the section has something in it (AG-883).** Token
+        // savings is the second-to-last card, so `block: "start"` cannot be
+        // honoured: the pane pins at its maximum scroll instead, and with the
+        // table and the feed below it both empty, the click reads as the page
+        // jumping to a screen of nothing. Measured in Chromium at the drawn
+        // 800px window: `scrollHeight` does not change, `scrollTop` goes from 0
+        // to 504 of a possible 504.
+        //
+        // The two tickets want opposite things - AG-572 says the counter
+        // navigates, AG-883 says clicking it must not move the page - and this
+        // is the reading that keeps both: it navigates when there is somewhere
+        // to land, and is an ordinary tile when there is not. `Stat` already
+        // draws it as a plain `div` with no hover when no handler is passed, so
+        // nothing offers a jump that would go nowhere.
+        onSelectTokensSaved={
+          pending || unavailable?.savings || savings.length === 0
+            ? undefined
+            : () =>
+                document.getElementById(SAVINGS_SECTION_ID)?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                })
         }
       />
       <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />

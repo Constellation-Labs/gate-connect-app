@@ -22,7 +22,7 @@ import type {
 } from "../../lib/api";
 import type { GroupMember } from "../../lib/groups";
 import type { RecoveryRow } from "../../lib/recovery";
-import type { ReopenAction, ReopenTool } from "../../lib/reopen";
+import type { ReopenAction, ReopenAppRow, ReopenTool } from "../../lib/reopen";
 import {
   actionsFor,
   allVerified,
@@ -31,14 +31,16 @@ import {
   REOPEN_ACTION_LABEL,
   REOPEN_STAGE_DETAIL,
   REOPEN_STAGE_LABEL,
-  reopenBuckets,
+  reopenAppRows,
   WHY_REOPEN,
 } from "../../lib/reopen";
 import {
-  operationLine,
+  plainNextStep,
+  plainOperationLine,
+  plainOutcome,
   recoveryRows,
-  stageCounts,
   TEARDOWN_ACTION_LABEL,
+  unresolved,
 } from "../../lib/recovery";
 import type { PillTone } from "./Modal";
 import {
@@ -614,11 +616,32 @@ export function CloseAppsDialog({
   );
 }
 
+/**
+ * The all-clear, drawn at `134:61659`.
+ *
+ * **The copy deviates from the frame, and AG-880 is why.** The frame's subtitle
+ * ("Codex closed successfully") and its body ("Open Codex whenever you are
+ * ready to continue") describe the moment straight after the SIGTERM, which is
+ * where this dialog used to fire - `stage.kind === "done"`, out of `closeApps`.
+ * AG-566 moved the tail behind `allVerified`, and `bucketOf` returns `verified`
+ * only for `routing` and `not_routed`, both of which mean the tool came back up
+ * and Gate took a reading on it. So no state is left in which this dialog draws
+ * and the user still has an app to open, and the drawn instruction asked for a
+ * step they had already finished.
+ *
+ * "the new route" rather than "the new Gate route": `not_routed` lands in the
+ * same bucket, and that is the verdict when the change being applied was
+ * routing *off*. Naming Gate there would claim a path the tool is not on.
+ */
 export function ChangeReadyDialog({
   app,
+  plural = false,
   onDone,
 }: {
   app: DialogApp;
+  /** Whether `app.name` stands for several apps ("The affected apps"), so the
+   *  subtitle agrees with its subject. Both call sites close a set. */
+  plural?: boolean;
   onDone: () => void;
 }) {
   return (
@@ -626,17 +649,18 @@ export function ChangeReadyDialog({
       tone="success"
       icon="circleCheck"
       title="Change is ready"
-      subtitle={`${app.name} closed successfully`}
+      subtitle={`${app.name} ${plural ? "are" : "is"} back on the new route`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
       width={512}
     >
       <ModalNote>
         <p className="font-medium text-base-foreground">
-          The new Gate route is active
+          The new route is active and in use.
         </p>
         <p className="mt-1">
-          Open {app.name} whenever you are ready to continue.
+          Gate verified the route after the restart, so there is nothing left to
+          do.
         </p>
       </ModalNote>
     </Modal>
@@ -678,7 +702,10 @@ export function ReopenProgressDialog({
   const settled = tools.every((t) => isResting(t.stage));
   const done = allVerified(tools);
   const waiting = tools.filter((t) => !isResting(t.stage)).length;
-  const buckets = reopenBuckets(tools);
+  // One row per app, not one per running process (AG-898). The rail calls
+  // Codex and the ChatGPT desktop app one app, and this dialog listed them
+  // apart on the screen the user reached from it.
+  const apps = reopenAppRows(tools);
   return (
     <Modal
       tone={settled && !done ? "warning" : settled ? "success" : "neutral"}
@@ -693,27 +720,52 @@ export function ReopenProgressDialog({
       onDismiss={onDone}
       width={544}
     >
-      {settled ? (
-        buckets.map((bucket) => (
-          <div key={bucket.key} className="flex flex-col gap-2">
-            <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-              {bucket.title}
-            </p>
-            <p className="text-base-xs leading-4 text-neutral-600">{bucket.blurb}</p>
-            {bucket.tools.map((tool) => (
-              <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
-            ))}
-          </div>
-        ))
-      ) : (
-        <div className="flex flex-col gap-2">
-          {tools.map((tool) => (
-            <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
-          ))}
-        </div>
-      )}
+      {/* One list in both states (AG-898). The settled view used to sort the
+          tools into up to six headed buckets, each carrying its own paragraph
+          about what Gate did and did not check - so five tools could cost the
+          reader three different explanations before they found their own. Every
+          row already states its own stage and what that stage means, which is
+          the same account without the reader having to assemble it. */}
+      <div className="flex flex-col gap-2">
+        {apps.map((app) => (
+          <ReopenAppRowView key={app.id} app={app} onAction={onAction} />
+        ))}
+      </div>
       <ModalNote>{WHY_REOPEN}</ModalNote>
     </Modal>
+  );
+}
+
+/**
+ * One app inside the progress dialog.
+ *
+ * The app reports its worst member, because reporting the better half is how a
+ * dialog tells somebody everything is fine while their editor is not routed.
+ * Where the members disagree, each is named under the row - that is the whole
+ * of what the headed buckets used to carry, at the one place it is relevant.
+ *
+ * The actions still belong to `lead.slug`; see `reopenAppRows`.
+ */
+function ReopenAppRowView({
+  app,
+  onAction,
+}: {
+  app: ReopenAppRow<DialogReopenTool>;
+  onAction: (slug: string, action: ReopenAction) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <ReopenToolRow tool={{ ...app.lead, name: app.name }} onAction={onAction} />
+      {app.mixed && (
+        <ul className="ml-3 flex flex-col gap-0.5">
+          {app.members.map((member) => (
+            <li key={member.slug} className="text-base-xs leading-4 text-neutral-600">
+              {member.name}: {REOPEN_STAGE_LABEL[member.stage]}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1314,6 +1366,39 @@ export function ModelPickerDialog({
              *  consequence. */}
           </div>
 
+          {/* What a set of several actually does, said only once there is one
+            * (AG-888).
+            *
+            * The dialog offered a checkbox per model and never explained the
+            * rule, so the reasonable reading was the one the ticket reached:
+            * "the app takes one model, so anything past the first is
+            * ignored". It is not. The set is an ALLOW-LIST (AG-746,
+            * `gateway-proxy`'s `applyUserModelChoice`): a request for a model
+            * in it is served as the model the tool asked for, and only a
+            * request for something outside it is rewritten, onto the first
+            * entry. That is what makes several Codex sessions on several
+            * models keep their own choices instead of collapsing onto one.
+            *
+            * So this sentence carries the two facts the checkboxes cannot: the
+            * tool's own choice survives, and there is a fallback for everything
+            * else.
+            *
+            * It does **not** call the fallback "the first in the list". `draft`
+            * is selection order - `choose` appends - and the rows render in
+            * catalogue order inside their vendor groups, so `draft[0]` is
+            * routinely not the first row on screen: check GPT-5 and then a
+            * Claude model and the list draws Claude on top while the fallback
+            * is GPT-5. The value is right, the phrase pointed at an ordering
+            * this dialog never shows and offers no way to change, so it names
+            * the model and stops. */}
+          {multiple && draft.length > 1 && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {appName} keeps its own model whenever it asks for one of these.
+              Anything else it asks for is served as{" "}
+              <span className="font-medium text-base-foreground">{draft[0]}</span>.
+            </p>
+          )}
+
           {/* Never hidden silently. The rule that sets models aside is partly
            *  empirical - see `modelCompatibility` - so it will date, and a user
            *  looking for a model that is missing needs to be told it was a
@@ -1677,6 +1762,13 @@ export function ReplaceApiKeyDialog({
  * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
  * dialogs where the safe answer is "no".
  *
+ * **It carries the CA line**, which was stated nowhere at all.
+ * `NODE_EXTRA_CA_CERTS` adds Gate's interception certificate to the trust roots
+ * of every Node process started afterwards - a larger fact than "git and curl
+ * go through Gate", and the harder one to discover. Settings says it too, on
+ * the row that owns the control; this dialog says it at the moment a click is
+ * about to cause it.
+ *
  * **Shared because the tray needs it too, and did not have it.** `useRouting`
  * raises this prompt for whichever shell called `setAppRouted`, and awaits a
  * promise only a rendered dialog resolves. The tray routed OpenCode through that
@@ -1711,7 +1803,9 @@ export function OpenCodeEnvDialog({
       <p className="text-sm leading-5 text-neutral-600">
         OpenCode has no gateway setting of its own, so Gate routes it with your
         machine&apos;s proxy variables. Those apply to every command line tool
-        that reads them. That includes git, curl and npm.
+        that reads them. That includes git, curl and npm. One of them also tells
+        Node to trust Gate&apos;s certificate, so every Node program you start
+        afterwards accepts the traffic Gate inspects.
       </p>
     </Modal>
   );
@@ -1777,28 +1871,53 @@ export function SessionConsentDialog({
       tone="warning"
       icon="shieldCheck"
       title={`Route ${name} through Gate?`}
+      // What the switch does, before any exception to it. The subtitle led with
+      // "This also routes ...", which is the footnote to a rule the reader had
+      // not been given yet, and ended on "which Gate sees on the account you
+      // are already signed in with" - a clause naming the credential taxonomy
+      // rather than anything the reader can picture (AG-901).
       subtitle={
         hostList
-          ? `This also routes ${hostList}, which Gate sees on the account you are already signed in with.`
-          : `This also routes a surface Gate sees on the account you are already signed in with.`
+          ? `${name}'s traffic goes through Gate, and so does ${hostList}, where you are already signed in.`
+          : `${name}'s traffic goes through Gate, including a surface where you are already signed in.`
       }
       secondary={{ label: "Not now", onClick: onDismiss }}
       primary={{ label: `Route ${name}`, onClick: onConfirm }}
       onDismiss={onDismiss}
     >
+      {/* What Gate does, then what it does not, which is the order someone
+        * deciding needs and the order the ticket asks for.
+        *
+        * Every clause is `Credential::Additive`'s own sentence in plain words:
+        * "the caller's own session cookie or subscription bearer stays on the
+        * request and Gate adds its headers alongside ... Gate records and
+        * inspects the traffic rather than supplying a key for it"
+        * (`crates/core/src/taxonomy.rs`). "It does not supply a key for it" said
+        * the same thing and named a mechanism nobody outside this repo knows
+        * about, so it read as a disclaimer rather than as reassurance. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Gate records and inspects that traffic. It does not supply a key for it,
-        and it cannot read anything you are not sending anyway.
+        Gate records and inspects what passes through it. It sees nothing you
+        were not already sending, and it does not sign in for you: your existing
+        login is passed through, not replaced.
       </p>
       {wide && (
         <p className="text-sm leading-5 text-neutral-600">
-          It is matched on host, so it covers everything on this machine that
-          sends to {hostList} - not only {name}.
+          Gate routes by address, so everything on this machine that sends to{" "}
+          {hostList} goes the same way, not only {name}.
         </p>
       )}
+      {/* The decision is reversible and the dialog never said so. "Asked once
+        * per app. Turning <app> off later does not bring this question back."
+        * is two facts about the DIALOG, and read together they sound like the
+        * consent cannot be withdrawn. It can: the switch is the withdrawal, and
+        * `accept_session_routing` is deliberately never un-recorded so that
+        * flipping a section back on does not re-interrogate someone who has
+        * already answered. Reset does not clear it either - `account::clear`
+        * removes credentials and leaves `preferences.json` alone - so "change it
+        * in Settings" would be a promise the app does not keep. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Asked once per app. Turning {name} off later does not bring this question
-        back.
+        You are asked this once. Turn {name} off whenever you like and the
+        routing stops, but Gate will not ask this question again.
       </p>
     </Modal>
   );
@@ -2286,15 +2405,14 @@ export function RestoreDetailsDialog({
   onClose: () => void;
 }) {
   const rows = recoveryRows(summary, now);
-  const counts = stageCounts(summary);
-  const failures = rows.filter((r) => r.errorCategory.length > 0);
+  const stuck = unresolved(summary).map((t) => t.name);
   const waiting = rows.filter((r) => r.outcome === "deferred_engine_down");
   return (
     <Modal
       tone="neutral"
       icon="info"
       title="What happened to routing"
-      subtitle={operationLine(summary, now)}
+      subtitle={plainOperationLine(summary, now)}
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
       width={600}
@@ -2304,28 +2422,34 @@ export function RestoreDetailsDialog({
       ) : (
         <>
           <ModalNote>
-            <p className="font-medium text-base-foreground">
-              {counts.complete} of {counts.total} stages completed
-              {counts.pending > 0 ? `, ${counts.pending} still pending` : ""}
-            </p>
-            {failures.length > 0 && (
-              // Categories, not messages. The restore branches on these
-              // conditions itself, so the grouping cannot drift from the
-              // attempt the way a parsed error string would. Each row carries
-              // its own message under Details.
-              <p className="mt-1">
-                Failures by category:{" "}
-                {[...new Set(failures.map((r) => r.errorCategory))].join(", ")}.
+            {/* Which app, in its own name, rather than "0 of 1 stages
+                completed". The count answered a question about the journal;
+                AG-886 asks this line to answer which app is not routed. The
+                failure categories that used to sit here have moved into each
+                row's own disclosure - "Failures by category: Configuration
+                write" is a sentence for someone triaging Gate, not for someone
+                whose editor stopped working. */}
+            {stuck.length === 0 ? (
+              <p className="font-medium text-base-foreground">
+                Everything Gate recorded is done. Nothing here needs you.
               </p>
+            ) : (
+              <>
+                <p className="font-medium text-base-foreground">
+                  {stuck.length === 1
+                    ? `${stuck[0]} is not routing through Gate yet.`
+                    : `${stuck.length} apps are not routing through Gate yet: ${joinNames(stuck)}.`}
+                </p>
+                <p className="mt-1">Each one below says why, and what to do about it.</p>
+              </>
             )}
             {waiting.length > 0 && (
-              // Said separately from the failures above, and that separation is
-              // the point: these were reached and declined by Gate itself
-              // because the engine was not up, and reporting them under a
-              // failure heading is what sent somebody looking for a problem
-              // that was an engine still starting.
+              // Said separately, and that separation is the point: these were
+              // reached and declined by Gate itself because the engine was not
+              // up, and reporting them as a failure is what sent somebody
+              // looking for a problem that was an engine still starting.
               <p className="mt-1">
-                {waiting.length === 1 ? "One entry is" : `${waiting.length} entries are`}{" "}
+                {waiting.length === 1 ? "One of them is" : `${waiting.length} of them are`}{" "}
                 waiting for routing to come up, not for you.
               </p>
             )}
@@ -2339,17 +2463,35 @@ export function RestoreDetailsDialog({
   );
 }
 
-/** One tool's four readings, laid out as a definition list so the labels stay
- *  legible when a value wraps. Not `ModalSubject`: that row truncates its
- *  description to one line, which is right for naming a subject and wrong for a
- *  diagnostic block. */
+/**
+ * One entry: what happened to it in the reader's words, the one thing to do
+ * about it, and the diagnostics behind a disclosure.
+ *
+ * **The order is the fix for AG-886.** The four readings below - stage, last
+ * verified route, last check, process - are what AG-570 asked for, and they are
+ * still here, because handing this summary to someone else is one of the things
+ * the review is for. They are no longer the first thing a user meets. A person
+ * who opened this from "Routing didn't finish coming back" wants to know which
+ * app is affected and what to do; "Last check: Checked per tool, not per
+ * provider" and "Process: Gate has no process to look for" are true, useful to
+ * whoever debugs it, and unreadable as an answer to that question.
+ *
+ * Not `ModalSubject`: that row truncates its description to one line, which is
+ * right for naming a subject and wrong for a diagnostic block.
+ */
 function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
+  const instruction = plainNextStep(row.nextStep);
   return (
     <div className="rounded-md border border-base-border p-3">
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-sm font-medium leading-5 text-base-foreground">
           {row.name}
         </p>
+        {/* "Done" / "Unfinished" rather than the stage name. `Not started` is
+            the journal's word for a row the operation never reached, and as a
+            pill beside an app name it read as a state of the app. A dropped or
+            uninstalled entry is complete too, which is why this follows
+            `stageComplete` and not the outcome. */}
         <span
           className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-base-2xs leading-4 ${
             row.stageComplete
@@ -2357,36 +2499,47 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
               : "bg-amber-100 text-amber-900"
           }`}
         >
-          {row.stage}
+          {row.stageComplete ? "Done" : "Unfinished"}
         </span>
       </div>
-      <p className="mt-1 text-sm leading-5 text-neutral-600">{row.stageDetail}</p>
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
-        <dt className="text-base-muted-foreground">Stage</dt>
-        <dd className="text-base-foreground">{row.stageLine}</dd>
-        {row.errorCategory && (
-          <>
-            <dt className="text-base-muted-foreground">Failure</dt>
-            <dd className="text-base-foreground">{row.errorCategory}</dd>
-          </>
-        )}
-        <dt className="text-base-muted-foreground">Last verified route</dt>
-        <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
-        <dt className="text-base-muted-foreground">Last check</dt>
-        <dd className="text-base-foreground">{row.checkResult}</dd>
-        <dt className="text-base-muted-foreground">Process</dt>
-        <dd className="text-base-foreground">{row.runningState}</dd>
-        <dt className="text-base-muted-foreground">Next action</dt>
-        <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
-      </dl>
-      {/* The reason, not just the category. "Configuration write" says which
-          step and can never say why, which left this dialog unable to answer
-          its own title - the message existed, on stderr, where nobody reading
-          this will find it. Same component the reopen flow uses for a backend
-          error string, in the same shape of neutral card, so the two surfaces
-          that show one look alike; it draws mono, which is what machine output
-          takes. */}
-      {row.error && <ErrorDetails raw={row.error} title="Details" />}
+      <p className="mt-1 text-sm leading-5 text-neutral-600">{plainOutcome(row.outcome)}</p>
+      {instruction && (
+        <p className="mt-2 text-sm font-medium leading-5 text-base-foreground">
+          {instruction}
+        </p>
+      )}
+      {/* Same `<details>` shape as `ErrorDetails`, in neutral ink rather than
+          red: this is a reading, not a failure. */}
+      <details className="mt-2">
+        <summary className="cursor-pointer py-0.5 text-base-2xs text-base-muted-foreground">
+          Technical details
+        </summary>
+        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
+          <dt className="text-base-muted-foreground">Stage</dt>
+          <dd className="text-base-foreground">{row.stageLine}</dd>
+          <dt className="text-base-muted-foreground">Detail</dt>
+          <dd className="text-base-foreground">{row.stageDetail}</dd>
+          {row.errorCategory && (
+            <>
+              <dt className="text-base-muted-foreground">Failure</dt>
+              <dd className="text-base-foreground">{row.errorCategory}</dd>
+            </>
+          )}
+          <dt className="text-base-muted-foreground">Last verified route</dt>
+          <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
+          <dt className="text-base-muted-foreground">Last check</dt>
+          <dd className="text-base-foreground">{row.checkResult}</dd>
+          <dt className="text-base-muted-foreground">Process</dt>
+          <dd className="text-base-foreground">{row.runningState}</dd>
+          <dt className="text-base-muted-foreground">Next action</dt>
+          <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
+        </dl>
+        {/* The reason, not just the category. "Configuration write" says which
+            step and can never say why, which left this dialog unable to answer
+            its own title - the message existed, on stderr, where nobody reading
+            this will find it. */}
+        {row.error && <ErrorDetails raw={row.error} title="Details" />}
+      </details>
     </div>
   );
 }

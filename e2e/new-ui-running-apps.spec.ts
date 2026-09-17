@@ -51,6 +51,50 @@ test.describe("new UI running apps", () => {
     ).toBeVisible();
   });
 
+  /**
+   * AG-900: closing Claude left the Claude desktop app running while the dialog
+   * reported it closed.
+   *
+   * The Claude switch is a section - `claude-code` + `anthropic` +
+   * `claude-web` - and the offer was built from `moved.filter(m => m.kind ===
+   * "config")`, so only the CLI's row survived. The desktop app is routed
+   * through the system proxy rather than by a config write, and it resolves
+   * that proxy at its own launch, which makes it exactly as stale after the
+   * switch as the CLI is. The entry's own copy promises to cover it: "Claude
+   * Code in your terminal, and the Claude desktop app".
+   */
+  test("offers the desktop app too, not only the CLI beside it", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE],
+      // `Claude` is the desktop app and `claude` is the CLI. The case is the
+      // whole difference, in the harness as in `agent_name_of`.
+      runningAgentNames: ["claude", "Claude"],
+    });
+
+    await app.routeApp("Claude");
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+    await expect(dialog.getByText("Claude Code").first()).toBeVisible();
+    await expect(dialog.getByText("Claude Desktop").first()).toBeVisible();
+    // And the dialog draws the difference between the two, which is the reason
+    // the desktop app belongs here rather than being quietly left running: Gate
+    // can put it back, and cannot put a shell session back.
+    await expect(
+      dialog.getByText("Gate Connect will reopen Claude Desktop"),
+    ).toBeVisible();
+
+    // The scan has to have been asked about it, which is the half a rendered
+    // row cannot prove: the slug reaches Rust, where `agent_names_for` turns it
+    // into the `Claude` process name.
+    await expect
+      .poll(async () => ((await app.lastCall("running_agents"))?.only as string[]) ?? [])
+      .toContain("anthropic");
+  });
+
   test("says nothing when the app is not running", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
@@ -86,7 +130,12 @@ test.describe("new UI running apps", () => {
     // Closed is not applied: Gate cannot reopen a terminal tool, so the account
     // says whose move it is rather than claiming the route is live.
     await expect(app.page.getByRole("heading", { name: "What happened" })).toBeVisible();
-    await expect(app.page.getByRole("dialog")).toContainText("Waiting for you to reopen");
+    // AG-898 dropped the headed outcome groups, so the account is the row's own
+    // stage rather than a bucket title above it. Same fact, said once.
+    await expect(app.page.getByRole("dialog")).toContainText("Reopen required");
+    await expect(app.page.getByRole("dialog")).toContainText(
+      "Open it again and Gate will check its route.",
+    );
   });
 
   test("backing out of the confirmation closes nothing", async ({ boot }) => {
@@ -214,7 +263,12 @@ test.describe("new UI running apps", () => {
     await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
-    await expect(app.page.getByRole("dialog")).toContainText("Waiting for you to reopen");
+    // AG-898 dropped the headed outcome groups, so the account is the row's own
+    // stage rather than a bucket title above it. Same fact, said once.
+    await expect(app.page.getByRole("dialog")).toContainText("Reopen required");
+    await expect(app.page.getByRole("dialog")).toContainText(
+      "Open it again and Gate will check its route.",
+    );
 
     // The user opens it again.
     await app.patch({ runningAgentNames: ["codex"] });

@@ -743,12 +743,28 @@ const SECTIONS: readonly {
     description: "The OpenCode editor, and OpenCode's own Zen and Go models.",
   },
   {
+    // Still here although the window's rail no longer draws it - see
+    // {@link SETTINGS_MANAGED_MEMBERS}. The popover reads this section, and
+    // deleting it would not remove the row anyway: an unclaimed member key gets
+    // a section of its own, so the row would come back under its raw name with
+    // none of the copy below.
     id: "terminal",
     name: "Terminal",
     band: "tools",
     members: ["env-proxy"],
+    // "Anything else, including a local model, keeps going where it always did"
+    // was not true and is gone. `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1` -
+    // loopback only - so a model served from another machine on the LAN or over
+    // Tailscale DOES traverse the engine, which is exactly the case AG-899
+    // reports breaking when routing is switched off. What is true is that Gate
+    // inspects only the provider hosts it knows and blind-tunnels the rest
+    // (`proxy/mod.rs`: "A CONNECT to any other host is blind-tunnelled").
+    //
+    // Widening `no_proxy` to private, link-local and Tailscale addresses is
+    // AG-911's scope, not this ticket's. When it lands, the stronger sentence
+    // becomes true and can come back.
     blurb:
-      "Routes every program started after your next login, not only AI tools. Anything else, including a local model, keeps going where it always did.",
+      "Routes every program started after your next login, not only AI tools. Gate inspects traffic to the AI providers it knows and passes everything else through untouched.",
   },
   {
     id: "openai-api",
@@ -768,6 +784,43 @@ const SECTIONS: readonly {
 /** Which band a section draws under. Two, and the split is what the user is
  *  being asked: an app they use, or a mechanism they are opting into. */
 export type Band = "apps" | "tools";
+
+/**
+ * Member keys the window's APP LIST does not draw, because they are not apps.
+ *
+ * One entry: `env-proxy`, the shell-environment channel. It sat in the rail
+ * under a heading reading "Terminal", described as "command line tools that
+ * follow your proxy settings", which undersells it badly. `launchctl setenv`
+ * hands seven variables to every process started afterwards in the login
+ * session - the four `http(s)_proxy` spellings, the two `no_proxy` ones, and
+ * `NODE_EXTRA_CA_CERTS` - GUI apps opened from Finder included. That last one
+ * puts Gate's interception CA in the trust roots of every Node process started
+ * afterwards.
+ *
+ * A machine-wide setting is not an app, and the rail is a list of apps. It is a
+ * setting, so it lives in Settings, where the rest of this window's machine
+ * state does. The tray mirrors it as a status card rather than a second switch,
+ * which is the rule the tray already follows for the engine ("the engine's own
+ * control stays in the full app", `Tray.tsx`).
+ *
+ * That also answers AG-893, which reported two controls describing the same
+ * coverage in different words. There is one control now, in the place a setting
+ * belongs, and the surfaces that are not the window report it rather than
+ * offering it again.
+ *
+ * NOT applied by {@link buildGroups}, deliberately: the popover still draws this
+ * row and the ledger is shared, so the window filters its own inputs instead -
+ * see `NewUiApp`'s `groups` and `apps`. Filtering the TOOL LIST rather than the
+ * built ledger is what keeps the row from reappearing under "unclaimed", which
+ * is where a member no section claims lands.
+ */
+export const SETTINGS_MANAGED_MEMBERS: readonly string[] = ["env-proxy"];
+
+/** Whether this member's control lives in Settings rather than the app list.
+ *  See {@link SETTINGS_MANAGED_MEMBERS}. */
+export function isSettingsManaged(key: string): boolean {
+  return SETTINGS_MANAGED_MEMBERS.includes(key);
+}
 
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own
@@ -912,7 +965,40 @@ function intended(m: GroupMember): boolean {
 export function describeSection(id: string): string | undefined {
   const section = SECTIONS.find((s) => s.id === id);
   if (section?.description) return section.description;
+  // `blurb` before the member's own sentence. Terminal is the only section that
+  // carries one, and it was the only section whose pane said less than the data
+  // had: `describeMember("env-proxy")` is "Command line tools that follow your
+  // proxy settings", which never says the switch is machine-wide.
+  //
+  // The sentence that says so was already written - it just sat in the field
+  // the window shell does not read, because `group.blurb` is rendered only by
+  // `screens/FamilyPanel.tsx`, which is the popover. The window had a second
+  // statement of its own, the `machineScopeNote` pane note, and when that went
+  // (no frame draws it) the new shell was left with no machine-wide statement
+  // at all. AG-893.
+  //
+  // Reading the same string in both shells is also what the ticket asks for:
+  // one coverage sentence, not two that have to be kept true of each other.
+  if (section?.blurb) return section.blurb;
   return describeMember(sectionMemberKeys(id)[0] ?? id);
+}
+
+/**
+ * The app a routable surface belongs to, or null when no section claims it.
+ *
+ * The inverse of {@link sectionMemberKeys}, and exported for the same reason:
+ * a caller holding a slug but no built ledger still needs to know which app the
+ * user thinks it is. The reopen flow is that caller - it is handed running
+ * processes, one per surface, and AG-898 asks it to report one outcome per app
+ * rather than listing Codex and ChatGPT as two.
+ *
+ * Reads {@link SECTIONS} directly rather than a built `Group[]`, because the
+ * mapping from surface to app is static: what `buildGroups` adds is which
+ * members exist on this machine, which is not a question this answers.
+ */
+export function appForMember(key: string): { id: string; name: string } | null {
+  const section = SECTIONS.find((s) => s.members.includes(key));
+  return section ? { id: section.id, name: section.name } : null;
 }
 
 /** The member keys a section claims, in draw order, or empty for an id no

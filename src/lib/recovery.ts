@@ -300,3 +300,71 @@ export const TEARDOWN_ACTION_LABEL: Record<TeardownTool["next_action"], string> 
   reopen_tool: "Reopen tool",
   retry_check: "Retry check",
 };
+
+/**
+ * The plain-English half of a row (AG-886).
+ *
+ * `stageDetail` and the four readings beside it are written for someone holding
+ * the codebase: "The operation stopped before reaching this one", "Checked per
+ * tool, not per provider", "Gate has no process to look for". AG-570 asked for
+ * them and they stay - handing this summary to someone else is still one of the
+ * things the review is for - but they belong behind a disclosure rather than in
+ * front of a user who wants to know whether their editor is routed.
+ *
+ * These carry the same facts in the words the reader would use. One set rather
+ * than the tool/provider split `stageDetail` makes, because the split exists to
+ * avoid promising a config file to a provider that has none, and none of these
+ * sentences mentions a config file.
+ */
+const PLAIN_OUTCOME: Record<RestoreOutcome, string> = {
+  pending: "Gate did not reach this one, so nothing about it changed.",
+  restored: "This one is set up and routing again.",
+  write_failed: "Gate could not save its settings, so it is still on the route it had.",
+  not_installed: "This is not on your machine any more, so there was nothing to do.",
+  unknown: "Gate no longer recognises this entry, so it was dropped.",
+  deferred_signed_out: "Gate has no account to point this at yet.",
+  deferred_engine_down: "Gate's proxy was not running yet, so this one is still waiting.",
+};
+
+/** Why this entry is where it is, for the user-facing half of the row. */
+export function plainOutcome(stage: RestoreOutcome): string {
+  return PLAIN_OUTCOME[stage];
+}
+
+/**
+ * The one thing to do about a row, as an instruction rather than a control.
+ *
+ * {@link NEXT_STEP_LABEL} names a button; this says what pressing it is for,
+ * which is what AG-886 asks the dialog to answer. The review is read-only by
+ * AG-570, so every instruction points at a surface that can actually act - the
+ * routing notice's own "Resume now", or the tool itself.
+ */
+const NEXT_STEP_INSTRUCTION: Record<RecoveryNextStep, string> = {
+  none: "",
+  retry: "Choose Resume now on the routing notice to finish this.",
+  sign_in: "Sign in to your Gate account and this finishes on its own.",
+  reopen_tool: "Close it and open it again, and Gate will check its route.",
+};
+
+/** What the user should do about a row, or "" when nothing is owed. */
+export function plainNextStep(step: RecoveryNextStep): string {
+  return NEXT_STEP_INSTRUCTION[step];
+}
+
+/**
+ * The review's subtitle, in the user's terms (AG-886).
+ *
+ * {@link operationLine} says what the journal was doing ("It was trying to
+ * leave routing on for every tool it had recorded"), which answers a question
+ * about Gate's bookkeeping rather than about the reader's machine.
+ */
+export function plainOperationLine(summary: RecoverySummary, now: Date): string {
+  const when = ago(summary.updated_unix, now);
+  const what = summary.requested_routing_on ? "turning routing on" : "turning routing off";
+  // The notice that opens this dialog is raised by `unresolved`, but the dialog
+  // outlives the notice: resuming from underneath it settles every row while it
+  // is still on screen, and "did not finish" would then be false.
+  const tail =
+    unresolved(summary).length === 0 ? "and everything it recorded is done" : "and did not finish";
+  return when === UNKNOWN ? `Gate was ${what} ${tail}.` : `Gate was ${what} ${when} ${tail}.`;
+}

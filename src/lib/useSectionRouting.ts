@@ -155,8 +155,25 @@ export function useSectionRouting({
           const advice = hostReloadAdvice(intercepted);
           if (advice) onHostsRouted?.(advice);
         }
-        const movedTools = moved.filter((m) => m.kind === "config").map((m) => m.key);
-        if (movedTools.length > 0) await runningApps.offerAfterChange(movedTools);
+        // Every member that moved, not only the config ones (AG-900).
+        //
+        // The `kind === "config"` filter that used to sit here is why closing
+        // Claude left the Claude desktop app running while the dialog reported
+        // it closed. The Claude section is `claude-code` + `anthropic` +
+        // `claude-web`: the CLI writes a config, the desktop app is routed
+        // through the system proxy instead, and it resolves that proxy at its
+        // own launch - so it is exactly as stale after the switch as the CLI is,
+        // and the section's own copy promises to cover it ("Claude Code in your
+        // terminal, and the Claude desktop app").
+        //
+        // Nothing needs to decide here which slugs have processes. Rust's
+        // `agent_names_for` already answers that from `AGENT_PROCESSES`, where
+        // the two desktop apps are rows on purpose and carry proxy-domain keys
+        // for exactly this call; a slug with no process of its own contributes
+        // no names and drops out. `claude-web` is one of those, so the scan
+        // asks about `claude` and `Claude` and about nothing else.
+        const movedKeys = moved.map((m) => m.key);
+        if (movedKeys.length > 0) await runningApps.offerAfterChange(movedKeys);
         // No failure summary is built here. `useRouting` reports each member's
         // failure through `onError`, classified and carrying the backend string;
         // the sentence this used to compose ("<section> is partly on - the rest
