@@ -131,7 +131,7 @@ export function Home({
   // Switched on but not flowing because the master is off. Saying so is what
   // makes flipping the switch feel safe rather than speculative.
   const waitingCount = groups.reduce(
-    (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
+    (n, g) => n + g.members.filter((m) => m.attention === "not-routing").length,
     0,
   );
   // What the user has asked to route, as opposed to what is actually flowing.
@@ -153,10 +153,10 @@ export function Home({
   // top, everything else holds catalog order. `sort` is stable, so the healthy
   // tail never reshuffles between renders.
   //
-  // `master-off` is deliberately absent, as it was when this ranking fed the
+  // `not-routing` is deliberately absent, as it was when this ranking fed the
   // door. It is not per-family news, it is the master switch's own state, and
   // the card above already says "Off · N waiting". Ranked here it would print
-  // "waiting on routing" on every row at once - the same sentence the card just
+  // "no routing" on every row at once - the same sentence the card just
   // said, repeated four times, while naming nothing.
   const EXCEPTION_RANK: Record<string, number> = {
     error: 0,
@@ -649,7 +649,7 @@ export function Home({
                   // up to four rows directly under the card that just said it,
                   // and in the certificate's case alongside the only button that
                   // fixes it. The pill still reports what it costs the family.
-                  exception={kind === "master-off" || kind === "needs-trust" ? null : exception}
+                  exception={kind === "not-routing" || kind === "needs-trust" ? null : exception}
                   kind={kind}
                   last={i === ranked.length - 1}
                   onOpen={() => onOpenFamily(group.id)}
@@ -699,12 +699,12 @@ export function Home({
                 Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
                 shell, so OpenCode and other terminal tools route too.
               </div>
-              {/* No "Waiting on routing" line here, unlike the panel this came
+              {/* No "No routing" line here, unlike the panel this came
                   from. That panel had no master card, so the sentence had
                   nowhere else to live; Home's card sits 190px up reporting
                   "Off · N waiting", and DESIGN.md's own rule is that
                   card-owned states never reprint further down - it is why the
-                  ledger rows below suppress `master-off` too. Printing it here
+                  ledger rows below suppress `not-routing` too. Printing it here
                   would be the third copy of one fact on one screen.
 
                   The switch still has to answer for reading "on" over a channel
@@ -904,8 +904,8 @@ function FamilyRow({
       <span id={`home-family-${group.id}`} className="sr-only">
         {label}. {count}
         {/* Not when the pill already said it. A dark family now names its own
-            cause, so `master-off` read "Waiting on routing. 0 of 2 routing.
-            waiting on routing". The visible row already suppresses this pair;
+            cause, so `not-routing` read "No routing. 0 of 2 routing. no
+            routing". The visible row already suppresses this pair;
             the description was the copy that still had both. */}
         {exception && exception.toLowerCase() !== label.toLowerCase() ? `. ${exception}` : ""}
       </span>

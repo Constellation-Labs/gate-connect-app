@@ -243,7 +243,7 @@ describe("GroupMembers inline expansion", () => {
 
   it("announces a failed member at the top, not only inside its own row", () => {
     renderDetail([tool("openclaw", "OpenClaw", { kind: "error", message: "bad json" })], []);
-    // The most severe member state was the only one with no banner: master-off
+    // The most severe member state was the only one with no banner: not-routing
     // and drifted each got one, so a failure was the single thing the screen
     // left the user to find by expanding rows.
     expect(screen.getByText(/OpenClaw isn’t reporting its routing state/)).toBeTruthy();
@@ -360,7 +360,7 @@ describe("GroupMembers intent versus flow", () => {
   });
 });
 
-describe("GroupMembers master-off remedy", () => {
+describe("GroupMembers not-routing remedy", () => {
   /** Switched on, engine down: the state round 6 introduced with prose only. */
   function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
     const [group] = buildGroups(
@@ -387,7 +387,7 @@ describe("GroupMembers master-off remedy", () => {
 
   it("names the state on the member", () => {
     renderMasterOff();
-    expect(screen.getAllByText("Waiting on routing")).toHaveLength(2);
+    expect(screen.getAllByText("No routing")).toHaveLength(2);
   });
 
   it("offers the way out from the expanded member, not just prose", () => {

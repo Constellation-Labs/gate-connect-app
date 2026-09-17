@@ -2549,9 +2549,9 @@ export function NewUiApp() {
    * whose body named Codex.
    *
    * It also only ever fired for drift, while `notices.ts` already had the copy
-   * for master-off, needs-trust and error. The one cause `Flows / App` draws
+   * for not-routing, needs-trust and error. The one cause `Flows / App` draws
    * (`116:30663`, "Claude Desktop isn't protected / Routing is set to off") is
-   * master-off, and it never appeared on the pane that names the app it is
+   * not-routing, and it never appeared on the pane that names the app it is
    * about - only on Overview. Both halves are the same mistake: the pane was
    * not asking about itself.
    *
@@ -2559,7 +2559,7 @@ export function NewUiApp() {
    * (drift, a check error); Overview keeps the two whole-machine ones.
    *
    * Built per member of the open section, not picked out of Overview's list.
-   * That list collapses master-off and needs-trust to one card keyed on the
+   * That list collapses not-routing and needs-trust to one card keyed on the
    * cause, so a lookup on it drew that card on whichever section happened to
    * own the first affected member and on no other. `memberNotices` gives every
    * affected pane its own card, worded for its own tool, and dismissed by that

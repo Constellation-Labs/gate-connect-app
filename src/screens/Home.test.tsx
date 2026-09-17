@@ -329,7 +329,7 @@ describe("Home ledger rows", () => {
   });
 
   it("still names the families when routing is off", () => {
-    // Every member reports master-off with routing down, so ranking that state
+    // Every member reports not-routing with routing down, so ranking that state
     // as an exception made the door print "waiting on routing" and drop the
     // inventory - under a card already reading "Off · 1 waiting". Routing-off is
     // the one state whose only question is what comes back when you flip it.
@@ -339,7 +339,7 @@ describe("Home ledger rows", () => {
       domains: [],
     });
     expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.queryByText("waiting on routing")).toBeNull();
+    expect(screen.queryByText("no routing")).toBeNull();
     // The master card keeps sole ownership of its own state.
     expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
   });
@@ -684,8 +684,8 @@ describe("Home family pill vocabulary", () => {
     expect(screen.queryByText("Not routed")).toBeNull();
   });
 
-  it("leaves master-off to the card, which says it once as a count", () => {
-    // `master-off` is `enabled && !proxyOn`, and proxyOn is global, so it can
+  it("leaves not-routing to the card, which says it once as a count", () => {
+    // `not-routing` is `enabled && !proxyOn`, and proxyOn is global, so it can
     // never distinguish one family from another: on the pill it is four
     // identical capsules restating the card directly above them. DESIGN.md:
     // "Card-owned states never print on a row."
@@ -693,7 +693,7 @@ describe("Home family pill vocabulary", () => {
       proxyOn: false,
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
     });
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("No routing")).toBeNull();
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
     // The card carries it, once, and countably.
     expect(screen.getByText(/Off .+ waiting$/)).toBeTruthy();
@@ -705,7 +705,7 @@ describe("Home family pill vocabulary", () => {
       domains: [makeDomain({ enabled: false })],
     });
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("No routing")).toBeNull();
     expect(screen.queryByText("Needs trust")).toBeNull();
   });
 });
@@ -816,11 +816,11 @@ describe("Home command-line tools switch", () => {
     const toggle = screen.getByRole("switch", { name: NAME });
     // The switch reports the stored choice, which survives routing being turned
     // off. It points at the card's status line rather than repeating it: the
-    // master card owns `master-off` and says it once, countably.
+    // master card owns `not-routing` and says it once, countably.
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     const described = document.getElementById(toggle.getAttribute("aria-describedby")!);
     expect(described?.textContent).toMatch(/^Off/);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("No routing")).toBeNull();
   });
 
   it("carries its instruction in ink that clears AA", () => {
