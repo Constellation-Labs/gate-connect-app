@@ -55,8 +55,13 @@ interface RawToolEvents {
  * Not a withholding and not an error: a request that belonged to no session has no
  * conversation to name. The security cell draws its own dash for its own reason,
  * with its own tooltip - see `AppPane`.
+ *
+ * A plain hyphen, the same glyph every other "no reading" in the app draws. It
+ * was an em dash, which CLAUDE.md forbids outright, and it sat two cells away
+ * from the Type and Security dashes - three spellings of "nothing here" in one
+ * table row.
  */
-const NO_REFERENCE = "\u2014";
+const NO_REFERENCE = "-";
 
 /** What a row says when no model was attributed to the request. */
 const NO_MODEL = "Unknown model";

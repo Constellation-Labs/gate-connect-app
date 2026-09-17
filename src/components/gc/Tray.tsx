@@ -609,7 +609,7 @@ function CliCard({ cli }: { cli: { on: boolean } }) {
       {/* The same vocabulary the rows use for a state they report rather than
         * offer, so the card reads as a reading and not as a control someone
         * failed to wire. */}
-      <span className="shrink-0 text-base-xs font-medium leading-4 text-base-muted-foreground">
+      <span className="shrink-0 text-base-xs font-medium leading-4 tracking-label-12 text-base-muted-foreground">
         {cli.on ? "On" : "Off"}
       </span>
     </div>

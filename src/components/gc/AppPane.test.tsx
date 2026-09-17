@@ -212,9 +212,12 @@ describe("AppPane recent activity", () => {
     // would satisfy that, and the point is that the row says so. `status` is
     // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
-    // En dash. CLAUDE.md's standing instruction forbids the em dash outright,
-    // and this cell and the Type cell beside it were the two places it survived.
-    expect(cell.textContent).toBe("\u2013");
+    // A plain hyphen, which is what every other "no reading" in the app draws -
+    // `SecurityEvents`'s `UNATTRIBUTED` and the Settings plan row. These two
+    // cells were the last em dashes in the app, which CLAUDE.md forbids
+    // outright; replacing them with an en dash traded one inconsistency for
+    // another, since no other surface uses that glyph.
+    expect(cell.textContent).toBe("-");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
     expect(within(feed).queryByText("error")).toBeNull();

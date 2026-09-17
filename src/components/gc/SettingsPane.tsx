@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { BaseSwitch, Card } from "./base";
+import { BaseSwitch, Card, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import type { AuthMode } from "../../lib/api";
@@ -54,6 +54,17 @@ export interface SettingsRow {
    * infer routing from a config file.
    */
   unavailable?: { onRetry: () => void };
+  /**
+   * The value is still being read. Draws a `Skeleton` in the value slot and
+   * keeps the row in its value shape while it waits.
+   *
+   * Both halves matter. Principle 6 asks for a skeleton rather than a blank
+   * where a reading is in flight, and without the flag `Row` cannot tell "not
+   * yet" from a description row that has no value at all - so the label column
+   * would take the full width, then snap back to 189px when the value landed,
+   * carrying the trailing action across the row with it.
+   */
+  valuePending?: boolean;
 }
 
 export interface SettingsSection {
@@ -282,6 +293,7 @@ export function buildSettingsSections({
           // principle 6's "no figure without a reading" and draws the dash the
           // Login ID row uses for the same reason.
           value: plan ?? (plan === null ? "-" : undefined),
+          valuePending: plan === undefined && !planUnreadable,
           ...(planUnreadable && onRetryPlan
             ? { unavailable: { onRetry: onRetryPlan } }
             : {}),
@@ -375,7 +387,7 @@ export function buildSettingsSections({
                 // "command line tools that follow your proxy settings" said
                 // neither. The certificate half was stated nowhere at all.
                 description:
-                  "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Needed for OpenCode, which has no proxy setting of its own.",
+                  "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Required by OpenCode.",
                 toggle: {
                   on: shellProxy.on,
                   onToggle: shellProxy.onToggle,
@@ -746,7 +758,8 @@ function Row({ row }: { row: SettingsRow }) {
         * gutter and a sentence in it wrapped to six lines. */}
       <div
         className={`min-w-0 ${
-          row.description !== undefined || (row.value === undefined && !row.unavailable)
+          row.description !== undefined ||
+          (row.value === undefined && !row.unavailable && !row.valuePending)
             ? "flex-1"
             : "w-[189px] shrink-0"
         }`}
@@ -782,6 +795,12 @@ function Row({ row }: { row: SettingsRow }) {
         </>
       ) : (
         <>
+          {row.value === undefined && row.valuePending && (
+            <span className="min-w-0 flex-1">
+              <Skeleton className="h-4 w-12" />
+            </span>
+          )}
+
           {row.value !== undefined && (
             <p
               className={`truncate text-sm leading-5 text-base-foreground ${

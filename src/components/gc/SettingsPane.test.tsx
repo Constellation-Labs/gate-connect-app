@@ -334,6 +334,18 @@ describe("the Gate plan row", () => {
     expect(planRow({ plan: undefined }).unavailable).toBeUndefined();
   });
 
+  it("marks the in-flight row pending rather than leaving the slot blank", () => {
+    // Principle 6 asks for a skeleton where a reading is in flight, and the
+    // flag is also what keeps the row in its value shape: without it the label
+    // column reads as a description row, takes the full width, and snaps back
+    // to 189px when the plan lands, dragging "Upgrade plan" across the row.
+    expect(planRow({ plan: undefined }).valuePending).toBe(true);
+    expect(planRow({ plan: "Pro" }).valuePending).toBe(false);
+    // A failed read draws Unavailable and a Retry, not a skeleton that waits
+    // for something nobody is fetching.
+    expect(planRow({ plan: undefined, planUnreadable: true }).valuePending).toBe(false);
+  });
+
   it("draws a dash for a landed read that named no plan", () => {
     // Principle 6: a reading happened and carried no plan. That is not the same
     // as no reading, and neither is "Free" - the one value a reader would act

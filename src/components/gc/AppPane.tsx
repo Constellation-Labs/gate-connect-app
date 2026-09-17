@@ -845,7 +845,7 @@ function RecentActivity({
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No guardrail category recorded, or not your request"
                     >
-                      &#8211;
+                      -
                     </span>
                   )}
                 </td>
@@ -886,7 +886,7 @@ function RecentActivity({
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No security action recorded, or not your request"
                     >
-                      &#8211;
+                      -
                     </span>
                   )}
                 </td>
