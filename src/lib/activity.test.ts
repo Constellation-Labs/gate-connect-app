@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { adapt, clockTime } from "./activity";
+import {
+  ACTIVITY_ROLLOVER_SPREAD_MS,
+  adapt,
+  clockTime,
+  msUntilHourRollover,
+} from "./activity";
 
 /**
  * What the Overview does with the gateway's policy rows.
@@ -136,5 +141,58 @@ describe("clockTime", () => {
     // The month and day in front of the same clock time as above.
     expect(label).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
     expect(label.endsWith(clockTime(taken, new Date(taken)))).toBe(true);
+  });
+});
+
+/**
+ * AG-894. The Overview held a reading taken at 11:55 while its label went on
+ * saying "Last 24 hours", so its axis ended at hour 11 beside an app pane
+ * ending at 13.
+ */
+describe("the hourly re-read (AG-894)", () => {
+  const at = (iso: string) => new Date(iso).getTime();
+
+  it("lands in the hour after the one it was asked in", () => {
+    const now = at("2026-09-16T11:55:00");
+    const fire = new Date(now + msUntilHourRollover(now, 0));
+
+    expect(fire.getHours()).toBe(12);
+    expect(fire.getMinutes()).toBe(0);
+  });
+
+  it("waits a full hour when asked exactly on the hour", () => {
+    expect(msUntilHourRollover(at("2026-09-16T13:00:00"), 0)).toBe(3_600_000);
+  });
+
+  it("never returns a delay that would fire in the same hour", () => {
+    for (const minute of [0, 1, 17, 30, 59]) {
+      const now = at(`2026-09-16T09:${String(minute).padStart(2, "0")}:00`);
+      const fire = new Date(now + msUntilHourRollover(now, 0));
+      expect(fire.getTime()).toBeGreaterThan(now);
+      expect(fire.getHours()).toBe(10);
+    }
+  });
+
+  it("rolls the day over rather than producing hour 24", () => {
+    const now = at("2026-09-16T23:30:00");
+    const fire = new Date(now + msUntilHourRollover(now, 0));
+
+    expect(fire.getHours()).toBe(0);
+    expect(fire.getDate()).toBe(17);
+  });
+
+  /**
+   * The spread is what keeps one office network from asking in the same second:
+   * this endpoint's throttle bucket is keyed on source address, not credential.
+   */
+  it("spreads the read past the boundary, never before it", () => {
+    const now = at("2026-09-16T11:55:00");
+    const base = 5 * 60 * 1000;
+
+    for (let i = 0; i < 200; i += 1) {
+      const delay = msUntilHourRollover(now, ACTIVITY_ROLLOVER_SPREAD_MS);
+      expect(delay).toBeGreaterThanOrEqual(base);
+      expect(delay).toBeLessThan(base + ACTIVITY_ROLLOVER_SPREAD_MS);
+    }
   });
 });

@@ -79,6 +79,7 @@ import {
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
+import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
@@ -675,6 +676,42 @@ export function NewUiApp() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
+  /**
+   * Re-read when the hour turns, so the chart's axis keeps up with the clock
+   * (AG-894).
+   *
+   * The reads are event-driven and deliberately never poll, because the
+   * endpoint's throttle bucket is shared across a whole egress - `useActivity`
+   * makes that case and it still holds. But every other trigger is an edge the
+   * user or their traffic causes: the relay seeing a request, the window being
+   * focused again, the window becoming visible. A window sitting open and
+   * visible with nothing new happening has no edge at all, so its reading stays
+   * at the hour it was taken while its label goes on saying "Last 24 hours" -
+   * which is how the Overview came to end at hour 11 beside an app pane ending
+   * at 13.
+   *
+   * One read per hour per visible window is not the timer that reasoning ruled
+   * out. It is also the only cadence the complaint needs: what went stale is
+   * which hours the axis covers, and that changes exactly once an hour.
+   *
+   * Hidden windows do not read, matching the traffic listener - and they do not
+   * need to, because the reopen and visibility edges both re-read on the way
+   * back, the first of them age-guarded by `ACTIVITY_REOPEN_MIN_MS`.
+   */
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        // Re-checked at fire time, not at schedule time: a window hidden after
+        // the timer was set must not spend a request nobody is looking at.
+        if (!document.hidden) refreshActivityRef.current(null);
+        schedule();
+      }, msUntilHourRollover(Date.now()));
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, []);
+
   // A write failure belongs to the pane it happened on. Without this, refusing a
   // change on Codex would keep saying so over Claude Code's pane, blaming the
   // wrong app for a refusal that had nothing to do with it.
@@ -3761,6 +3798,9 @@ export function NewUiApp() {
 /** How old the activity reads have to be before the window being focused again
  *  re-reads them. The same spacing the relay's traffic reports keep. */
 const ACTIVITY_REOPEN_MIN_MS = 30_000;
+
+
+
 
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
