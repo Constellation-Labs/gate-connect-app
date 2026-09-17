@@ -40,7 +40,6 @@ export function Home({
   onEnableRouting,
   staleAgentsHint,
   onDismissStaleAgents,
-  onToggleProxy,
   onTrustCa,
   trustPending,
   onOpenFamily,
@@ -84,7 +83,6 @@ export function Home({
   onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
-  onToggleProxy: () => void;
   onTrustCa: () => void;
   /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
    * certificate card's sentence for the one that names that dialog. */
@@ -361,18 +359,6 @@ export function Home({
                     </>
                   )}
                 </div>
-                {showProxy && (
-                  <Switch
-                    className="ml-auto"
-                    on={proxyOn}
-                    label="Route through Gate"
-                    busy={busy}
-                    onClick={() => {
-                      setInteracted(true);
-                      onToggleProxy();
-                    }}
-                  />
-                )}
               </div>
             )}
 

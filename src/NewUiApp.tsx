@@ -1403,29 +1403,6 @@ export function NewUiApp() {
     [routing, runningApps],
   );
 
-  /**
-   * Turn all routing on or off.
-   *
-   * Same follow-up as a config write: every routed tool is on its old route until
-   * it restarts, so a master toggle that actually moved offers to close them.
-   *
-   * The one caller that genuinely means every tool, so it passes no filter.
-   */
-  const toggleMaster = useCallback(
-    async (next: boolean) => {
-      setActionError(null);
-      if (await routing.setMasterRouted(next)) {
-        await runningApps.offerAfterChange();
-        // Routing off is a teardown: it sweeps every tool back to its own
-        // settings and the sweep is best-effort per tool. AG-570 requires the
-        // result to name what it could not put back, so the configs are read
-        // back and anything outstanding is reported.
-        if (!next) await reportTeardown("teardown");
-      }
-    },
-    [routing, runningApps, reportTeardown],
-  );
-
   const groups = useMemo<Group[]>(
     () =>
       proxy
@@ -2527,6 +2504,39 @@ export function NewUiApp() {
   ).length;
 
   /**
+   * The integration rows are the only switch, so intent drives the engine.
+   *
+   * A row turning on already starts it - `connect_tool` does it implicitly for a
+   * config tool, `ensureEngineRunning` explicitly for a chat domain - and this
+   * is the other half: with nothing asked for, there is nothing for the engine
+   * to carry, so it stops. The rail's master card used to be the only way to
+   * express that and the Figma never drew it (`440:953`).
+   *
+   * Driven from `desiredApps`, the same intent the banner counts, so the switch
+   * the user sees and the engine they get cannot disagree - principle 2's split
+   * with the denominator wired to the mechanism.
+   *
+   * **Gated on the first scan having landed.** `desiredApps` is empty before
+   * detection runs, for want of information rather than because the user asked
+   * for nothing, and stopping the engine on that would tear routing down on
+   * every launch. `inventory` cannot be the gate: it reads `ok` before the first
+   * scan too, on purpose.
+   */
+  useEffect(() => {
+    if (scan === null) return;
+    if (desiredApps.length > 0) return;
+    void (async () => {
+      // AG-570 AC 8 rode the master toggle and now rides this: `proxy_disable`
+      // snapshots the routed set and sweeps it back, best-effort per tool, so a
+      // stop that could not put everything back has to name what it left. The
+      // running-apps offer deliberately does *not* come with it - each row made
+      // its own when it was switched off, and a second prompt for tools already
+      // dealt with is the double-ask that offer is scoped to avoid.
+      if (await routing.stopEngine()) await reportTeardown("teardown");
+    })();
+  }, [scan, desiredApps.length, routing, reportTeardown]);
+
+  /**
    * The open app's own notice, for its own pane.
    *
    * This was a drift-only card built from `drifted[0]` - the first drifted
@@ -3147,20 +3157,6 @@ export function NewUiApp() {
       view={view}
       onNavigate={setView}
       appGroups={sidebarGroups}
-      // The engine's own switch. Without it a window whose routing was off could
-      // start it only by accident, through a config member's connect - and a
-      // chat domain, which routes through the engine rather than the relay,
-      // could not start it at all.
-      master={
-        proxy
-          ? {
-              on: proxy.running,
-              busy: routingBusy,
-              caTrusted: proxy.ca_trusted,
-              onToggle: (next) => void toggleMaster(next),
-            }
-          : undefined
-      }
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}

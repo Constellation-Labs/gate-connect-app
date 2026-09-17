@@ -36,24 +36,28 @@ test.describe("new UI engine controls", () => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
-  test("the master switch starts the engine", async ({ boot }) => {
+  test("the rail draws no master switch", async ({ boot }) => {
+    // The integration rows are the only switch. A control that set the engine
+    // independently of them could only disagree with them, and the Figma never
+    // drew one in the rail (`440:953` is the org header, the nav and the app
+    // groups). Starting is covered by the chat-domain test below and by the
+    // config-tool paths in the routing spec.
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    const master = app.page.getByRole("switch", { name: "Route traffic through Gate" });
-    await expect(master).toHaveAttribute("aria-checked", "false");
-
-    await master.click();
-
-    await expect.poll(() => app.lastCall("proxy_enable")).not.toBeNull();
-    await expect(master).toHaveAttribute("aria-checked", "true");
+    await expect(
+      app.page.getByRole("switch", { name: "Route traffic through Gate" }),
+    ).toHaveCount(0);
   });
 
-  test("and stops it, without asking about the certificate", async ({ boot }) => {
+  test("the last integration switched off stops the engine", async ({ boot }) => {
     // Disabling is promptless: the certificate stays trusted so re-enabling does
     // not raise the OS dialog again.
-    const app = await boot({ proxy: { running: true, ca_trusted: false } });
+    const app = await boot({
+      proxy: { running: true, ca_trusted: false },
+      tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
+    });
 
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+    await app.page.getByRole("switch", { name: "Claude" }).click();
 
     await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
     expect(await app.lastCall("proxy_trust_ca")).toBeNull();
@@ -66,15 +70,27 @@ test.describe("new UI engine controls", () => {
    * believed it wrote - a sweep that returns success having written nothing is
    * the failure this report exists to catch.
    */
-  test("routing off lists the tools it could not put back", async ({ boot }) => {
+  test("a teardown lists the tools it could not put back", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      // Left connected by the sweep, which is what a best-effort teardown does
-      // when one tool's write fails.
-      tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
+      // Drifted, which is a tool the sweep cannot put back: its file no longer
+      // holds what Gate wrote, so the teardown has Gate's values still in there
+      // and nothing it recognises to take out. `still_gate` is the bucket.
+      tools: [
+        { ...CLAUDE_CODE, status: { kind: "drifted" as const, reason: "edited by hand" } },
+      ],
     });
 
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+    // Reset, not the rail. With the integration rows as the only switch, the
+    // rail can no longer reach this state: switching a row off disconnects that
+    // tool first, and a tool that refuses keeps its own row on, so intent never
+    // empties and the engine never stops. `proxy_disable`'s sweep is what leaves
+    // a tool behind, and Reset is the path that still runs it regardless of what
+    // any row says (`useSettingsActions`). Quit and sign-out are the others.
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Review reset" }).click();
+    await app.page.getByRole("checkbox").check();
+    await app.page.getByRole("button", { name: "Reset Gate Connect" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -90,10 +106,10 @@ test.describe("new UI engine controls", () => {
   }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      tools: [CLAUDE_CODE],
+      tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
     });
 
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+    await app.page.getByRole("switch", { name: "Claude" }).click();
 
     await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -104,16 +120,16 @@ test.describe("new UI engine controls", () => {
   test("routing off separates a tool waiting to be reopened", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
-      tools: [CLAUDE_CODE],
+      tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
       staleAgents: 1,
       runningAgents: 1,
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+    await app.page.getByRole("switch", { name: "Claude" }).click();
 
-    // The close-and-reopen offer comes first (the master toggle has always
-    // raised it); dismissing it reveals the report behind.
+    // The close-and-reopen offer comes first (the row's own toggle raises it for
+    // the tool it just disconnected); dismissing it reveals the report behind.
     await app.page.getByRole("button", { name: /reopen later/i }).click();
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText("Waiting to be reopened")).toBeVisible();

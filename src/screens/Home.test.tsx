@@ -114,7 +114,6 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onEnableRouting={vi.fn()}
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
-      onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
       trustPending={false}
       onOpenFamily={vi.fn()}
@@ -232,11 +231,12 @@ describe("Home CA-trust card", () => {
 });
 
 describe("Home master toggle", () => {
-  it("calls onToggleProxy", () => {
-    const onToggleProxy = vi.fn();
-    renderHome({ onToggleProxy });
-    fireEvent.click(screen.getByRole("switch", { name: "Route through Gate" }));
-    expect(onToggleProxy).toHaveBeenCalledTimes(1);
+  it("draws no master switch: the integration rows are the only switch", () => {
+    // Removed with the rail's master card. The engine follows intent now - a
+    // row turning on starts it, the last row turning off stops it - so a
+    // control that sets it independently could only disagree with the rows.
+    renderHome({});
+    expect(screen.queryByRole("switch", { name: "Route through Gate" })).toBeNull();
   });
 
   it("keeps the count and lets the card carry the certificate message", () => {
@@ -293,11 +293,13 @@ describe("Home ledger rows", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // The card is one control and its address; a list of the things it governs
-    // is a different grain, so it gets its own surface.
+    // The card is routing's state and its address; a list of the things it
+    // governs is a different grain, so it gets its own surface. Anchored on the
+    // card's heading since the master switch was removed - the card itself is
+    // what the rows must stay out of, and it outlived the switch.
     const row = screen.getByRole("button", { name: "Claude details" });
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
-    expect(master.closest(".shadow-border")!.contains(row)).toBe(false);
+    const card = screen.getByRole("heading", { name: "Routing" }).closest(".shadow-border")!;
+    expect(card.contains(row)).toBe(false);
   });
 
   it("puts the dashboard link after anything the app has to say", () => {
@@ -766,12 +768,9 @@ describe("Home command-line tools switch", () => {
 
   it("toggles the shell-environment channel without touching routing", () => {
     const onToggleEnvExport = vi.fn();
-    const onToggleProxy = vi.fn();
-    renderHome({ ...withFamily, onToggleEnvExport, onToggleProxy });
+    renderHome({ ...withFamily, onToggleEnvExport });
     fireEvent.click(screen.getByRole("switch", { name: NAME }));
     expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
-    // It spans every family, so it must never move the master as a side effect.
-    expect(onToggleProxy).not.toHaveBeenCalled();
   });
 
   it("reflects the backend's choice rather than the master's state", () => {
@@ -786,15 +785,15 @@ describe("Home command-line tools switch", () => {
     expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
   });
 
-  it("sits below the ledger, not beside the master switch", () => {
-    // The arrangement this replaced put the two switches 66px apart wearing the
-    // same track in the same indigo, which said a machine-wide change to git and
-    // curl was routing's equal. The ledger between them is the fix.
+  it("sits below the ledger", () => {
+    // The arrangement this replaced put this switch 66px from the master's,
+    // wearing the same track in the same indigo, which said a machine-wide
+    // change to git and curl was routing's equal. The ledger between them was
+    // the fix, and it still is: the master switch is gone, but this one must
+    // stay below the ledger rather than climbing back up to the routing card.
     renderHome(withFamily);
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
     const shell = screen.getByRole("switch", { name: NAME });
     const heading = screen.getByRole("heading", { name: "What routes through Gate" });
-    expect(master.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(heading.compareDocumentPosition(shell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 

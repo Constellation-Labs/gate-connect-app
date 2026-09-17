@@ -1403,7 +1403,6 @@ export function App() {
         onEnableRouting={() => void toggleProxy(false)}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
-        onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
         trustPending={trustPending}
         onOpenFamily={(groupId) => {
