@@ -3,6 +3,9 @@ import type { RecoverySummary, RecoveryTool } from "./api";
 import {
   ago,
   operationLine,
+  plainNextStep,
+  plainOperationLine,
+  plainOutcome,
   recoveryRow,
   recoveryRows,
   stageCounts,
@@ -323,5 +326,73 @@ describe("recoveryRows", () => {
       NOW,
     );
     expect(rows.map((r) => r.name)).toEqual(["A", "B"]);
+  });
+});
+
+/**
+ * AG-886. The diagnostic vocabulary stays for whoever is handed this summary;
+ * what the user reads first has to be answerable without the codebase.
+ */
+describe("the plain-English half (AG-886)", () => {
+  it("says what happened without the journal's own words", () => {
+    const plain = plainOutcome("pending");
+
+    expect(plain).toBe("Gate did not reach this one, so nothing about it changed.");
+    // "The operation" is the restore talking about itself.
+    expect(plain).not.toMatch(/operation/i);
+    expect(plain).not.toMatch(/stage/i);
+  });
+
+  it("gives every outcome a sentence, so no row can fall through to a blank", () => {
+    const outcomes = [
+      "pending",
+      "restored",
+      "write_failed",
+      "not_installed",
+      "unknown",
+      "deferred_signed_out",
+      "deferred_engine_down",
+    ] as const;
+    for (const o of outcomes) {
+      expect(plainOutcome(o).length).toBeGreaterThan(0);
+    }
+  });
+
+  /** The review is read-only by AG-570, so an instruction that said "press
+   *  Retry" would point at a control this dialog does not have. */
+  it("points each next step at a surface that can actually act", () => {
+    expect(plainNextStep("retry")).toBe(
+      "Choose Resume now on the routing notice to finish this.",
+    );
+    expect(plainNextStep("reopen_tool")).toMatch(/open it again/i);
+    expect(plainNextStep("sign_in")).toMatch(/Sign in/);
+    expect(plainNextStep("none")).toBe("");
+  });
+
+  it("subtitles the operation without naming what it recorded", () => {
+    const line = plainOperationLine(
+      summary({ tools: [toolRow({ stage: "pending", next_step: "retry" })] }),
+      NOW,
+    );
+
+    expect(line).toBe("Gate was turning routing on 5m ago and did not finish.");
+    expect(line).not.toMatch(/recorded/);
+  });
+
+  /**
+   * The dialog outlives the notice that opened it: resuming from underneath
+   * settles every row while it is still on screen, and "did not finish" is then
+   * false.
+   */
+  it("stops saying it did not finish once nothing is owed", () => {
+    expect(plainOperationLine(summary(), NOW)).toBe(
+      "Gate was turning routing on 5m ago and everything it recorded is done.",
+    );
+  });
+
+  it("drops the age when the clock would not answer", () => {
+    expect(plainOperationLine(summary({ updated_unix: 0 }), NOW)).toBe(
+      "Gate was turning routing on and everything it recorded is done.",
+    );
   });
 });

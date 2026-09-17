@@ -35,10 +35,12 @@ import {
   WHY_REOPEN,
 } from "../../lib/reopen";
 import {
-  operationLine,
+  plainNextStep,
+  plainOperationLine,
+  plainOutcome,
   recoveryRows,
-  stageCounts,
   TEARDOWN_ACTION_LABEL,
+  unresolved,
 } from "../../lib/recovery";
 import type { PillTone } from "./Modal";
 import {
@@ -2286,15 +2288,14 @@ export function RestoreDetailsDialog({
   onClose: () => void;
 }) {
   const rows = recoveryRows(summary, now);
-  const counts = stageCounts(summary);
-  const failures = rows.filter((r) => r.errorCategory.length > 0);
+  const stuck = unresolved(summary).map((t) => t.name);
   const waiting = rows.filter((r) => r.outcome === "deferred_engine_down");
   return (
     <Modal
       tone="neutral"
       icon="info"
       title="What happened to routing"
-      subtitle={operationLine(summary, now)}
+      subtitle={plainOperationLine(summary, now)}
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
       width={600}
@@ -2304,28 +2305,34 @@ export function RestoreDetailsDialog({
       ) : (
         <>
           <ModalNote>
-            <p className="font-medium text-base-foreground">
-              {counts.complete} of {counts.total} stages completed
-              {counts.pending > 0 ? `, ${counts.pending} still pending` : ""}
-            </p>
-            {failures.length > 0 && (
-              // Categories, not messages. The restore branches on these
-              // conditions itself, so the grouping cannot drift from the
-              // attempt the way a parsed error string would. Each row carries
-              // its own message under Details.
-              <p className="mt-1">
-                Failures by category:{" "}
-                {[...new Set(failures.map((r) => r.errorCategory))].join(", ")}.
+            {/* Which app, in its own name, rather than "0 of 1 stages
+                completed". The count answered a question about the journal;
+                AG-886 asks this line to answer which app is not routed. The
+                failure categories that used to sit here have moved into each
+                row's own disclosure - "Failures by category: Configuration
+                write" is a sentence for someone triaging Gate, not for someone
+                whose editor stopped working. */}
+            {stuck.length === 0 ? (
+              <p className="font-medium text-base-foreground">
+                Everything Gate recorded is done. Nothing here needs you.
               </p>
+            ) : (
+              <>
+                <p className="font-medium text-base-foreground">
+                  {stuck.length === 1
+                    ? `${stuck[0]} is not routing through Gate yet.`
+                    : `${stuck.length} apps are not routing through Gate yet: ${joinNames(stuck)}.`}
+                </p>
+                <p className="mt-1">Each one below says why, and what to do about it.</p>
+              </>
             )}
             {waiting.length > 0 && (
-              // Said separately from the failures above, and that separation is
-              // the point: these were reached and declined by Gate itself
-              // because the engine was not up, and reporting them under a
-              // failure heading is what sent somebody looking for a problem
-              // that was an engine still starting.
+              // Said separately, and that separation is the point: these were
+              // reached and declined by Gate itself because the engine was not
+              // up, and reporting them as a failure is what sent somebody
+              // looking for a problem that was an engine still starting.
               <p className="mt-1">
-                {waiting.length === 1 ? "One entry is" : `${waiting.length} entries are`}{" "}
+                {waiting.length === 1 ? "One of them is" : `${waiting.length} of them are`}{" "}
                 waiting for routing to come up, not for you.
               </p>
             )}
@@ -2339,17 +2346,35 @@ export function RestoreDetailsDialog({
   );
 }
 
-/** One tool's four readings, laid out as a definition list so the labels stay
- *  legible when a value wraps. Not `ModalSubject`: that row truncates its
- *  description to one line, which is right for naming a subject and wrong for a
- *  diagnostic block. */
+/**
+ * One entry: what happened to it in the reader's words, the one thing to do
+ * about it, and the diagnostics behind a disclosure.
+ *
+ * **The order is the fix for AG-886.** The four readings below - stage, last
+ * verified route, last check, process - are what AG-570 asked for, and they are
+ * still here, because handing this summary to someone else is one of the things
+ * the review is for. They are no longer the first thing a user meets. A person
+ * who opened this from "Routing didn't finish coming back" wants to know which
+ * app is affected and what to do; "Last check: Checked per tool, not per
+ * provider" and "Process: Gate has no process to look for" are true, useful to
+ * whoever debugs it, and unreadable as an answer to that question.
+ *
+ * Not `ModalSubject`: that row truncates its description to one line, which is
+ * right for naming a subject and wrong for a diagnostic block.
+ */
 function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
+  const instruction = plainNextStep(row.nextStep);
   return (
     <div className="rounded-md border border-base-border p-3">
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-sm font-medium leading-5 text-base-foreground">
           {row.name}
         </p>
+        {/* "Done" / "Unfinished" rather than the stage name. `Not started` is
+            the journal's word for a row the operation never reached, and as a
+            pill beside an app name it read as a state of the app. A dropped or
+            uninstalled entry is complete too, which is why this follows
+            `stageComplete` and not the outcome. */}
         <span
           className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-base-2xs leading-4 ${
             row.stageComplete
@@ -2357,36 +2382,47 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
               : "bg-amber-100 text-amber-900"
           }`}
         >
-          {row.stage}
+          {row.stageComplete ? "Done" : "Unfinished"}
         </span>
       </div>
-      <p className="mt-1 text-sm leading-5 text-neutral-600">{row.stageDetail}</p>
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
-        <dt className="text-base-muted-foreground">Stage</dt>
-        <dd className="text-base-foreground">{row.stageLine}</dd>
-        {row.errorCategory && (
-          <>
-            <dt className="text-base-muted-foreground">Failure</dt>
-            <dd className="text-base-foreground">{row.errorCategory}</dd>
-          </>
-        )}
-        <dt className="text-base-muted-foreground">Last verified route</dt>
-        <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
-        <dt className="text-base-muted-foreground">Last check</dt>
-        <dd className="text-base-foreground">{row.checkResult}</dd>
-        <dt className="text-base-muted-foreground">Process</dt>
-        <dd className="text-base-foreground">{row.runningState}</dd>
-        <dt className="text-base-muted-foreground">Next action</dt>
-        <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
-      </dl>
-      {/* The reason, not just the category. "Configuration write" says which
-          step and can never say why, which left this dialog unable to answer
-          its own title - the message existed, on stderr, where nobody reading
-          this will find it. Same component the reopen flow uses for a backend
-          error string, in the same shape of neutral card, so the two surfaces
-          that show one look alike; it draws mono, which is what machine output
-          takes. */}
-      {row.error && <ErrorDetails raw={row.error} title="Details" />}
+      <p className="mt-1 text-sm leading-5 text-neutral-600">{plainOutcome(row.outcome)}</p>
+      {instruction && (
+        <p className="mt-2 text-sm font-medium leading-5 text-base-foreground">
+          {instruction}
+        </p>
+      )}
+      {/* Same `<details>` shape as `ErrorDetails`, in neutral ink rather than
+          red: this is a reading, not a failure. */}
+      <details className="mt-2">
+        <summary className="cursor-pointer py-0.5 text-base-2xs text-base-muted-foreground">
+          Technical details
+        </summary>
+        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
+          <dt className="text-base-muted-foreground">Stage</dt>
+          <dd className="text-base-foreground">{row.stageLine}</dd>
+          <dt className="text-base-muted-foreground">Detail</dt>
+          <dd className="text-base-foreground">{row.stageDetail}</dd>
+          {row.errorCategory && (
+            <>
+              <dt className="text-base-muted-foreground">Failure</dt>
+              <dd className="text-base-foreground">{row.errorCategory}</dd>
+            </>
+          )}
+          <dt className="text-base-muted-foreground">Last verified route</dt>
+          <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
+          <dt className="text-base-muted-foreground">Last check</dt>
+          <dd className="text-base-foreground">{row.checkResult}</dd>
+          <dt className="text-base-muted-foreground">Process</dt>
+          <dd className="text-base-foreground">{row.runningState}</dd>
+          <dt className="text-base-muted-foreground">Next action</dt>
+          <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
+        </dl>
+        {/* The reason, not just the category. "Configuration write" says which
+            step and can never say why, which left this dialog unable to answer
+            its own title - the message existed, on stderr, where nobody reading
+            this will find it. */}
+        {row.error && <ErrorDetails raw={row.error} title="Details" />}
+      </details>
     </div>
   );
 }
