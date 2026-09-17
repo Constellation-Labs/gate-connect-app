@@ -28,6 +28,15 @@ import { Card, EmptyNote, Skeleton } from "./base";
  */
 export interface UsageStats {
   messages: number | null;
+  /**
+   * Requests Gate acted on: blocked, flagged **or redacted**.
+   *
+   * The name is the wire key's (`counters.blockedOrFlagged`), which kept its
+   * older and narrower spelling on purpose - Gate Connect builds already in the
+   * field read it, and a key that vanished would read to them as a gateway too
+   * old to answer. The gateway counts all three since AG-884; its own method is
+   * named `countEnforcementActions` for that reason.
+   */
   blockedFlagged: number | null;
   /** Whole percent, e.g. 38 renders as "38%".
    *
@@ -178,7 +187,20 @@ export function StatTiles({
     <Card className="flex" busy={pending}>
       {pending && <span className="sr-only">Loading your activity</span>}
       <Stat label="Messages" value={count(stats.messages)} />
-      <Stat label="Blocked/Flagged" value={count(stats.blockedFlagged)} divided />
+      {/* Three words, because the counter behind it counts three things
+        * (AG-884): the gateway's action set is block, flag and redact. It read
+        * "Blocked/Flagged" while an org whose PII policy is set to REDACT saw a
+        * zero here and its own dashboard listing the events.
+        *
+        * The file's own three terms, in the file's own order - `SERIES` above
+        * draws the legend as Blocked, Flagged, Redacted (`864:3597`). So this
+        * is not new vocabulary, it is the label catching up with the chart
+        * underneath it.
+        *
+        * NOT AG-572's "Blocked or redacted", which is the phrasing the
+        * criterion uses: flagged is counted too, and a label that named two of
+        * the three would be a second wrong answer. */}
+      <Stat label="Blocked/Flagged/Redacted" value={count(stats.blockedFlagged)} divided />
       <Stat
         label="Tokens saved"
         value={
