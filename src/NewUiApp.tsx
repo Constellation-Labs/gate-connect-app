@@ -1334,8 +1334,8 @@ export function NewUiApp() {
 
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
-    // The scan found nothing for a tool the banner named, so the reading the
-    // banner was built from is out of date - the tool has been reopened, or
+    // The scan found nothing for a tool the card named, so the reading the
+    // card was built from is out of date - the tool has been reopened, or
     // quit. Re-sweep rather than swallow the click: the invitation is what is
     // wrong here, and leaving it on screen is what made the button look dead.
     onNothingRunning: () => void refreshVerdicts(),
@@ -2762,6 +2762,17 @@ export function NewUiApp() {
     // The section's config tool, not the pane's slug. A verdict is measured per
     // tool and a reopen is a process reopening, so both are the tool's - the
     // section id matched neither map and the card stopped being drawn at all.
+    //
+    // Two invariants hold this up, and both fail silently - the card simply
+    // does not draw. `openTool` is the FIRST installed config member of the
+    // section, so it is the right slug only while no section holds two; and it
+    // filters `tools` where `apps` additionally drops `isSettingsManaged`, so a
+    // settings-managed member carrying this verdict would resolve a slug and
+    // then miss `appFor`. Today only `claude-code`, `codex` and `opencode` can
+    // reach `reopen_required` (`AGENT_PROCESSES` in `lib.rs` is what narrows
+    // it), each is member 0 of its section and none is settings-managed. The
+    // shell banner used to mask both shapes by keying off `verdicts` directly;
+    // the tray card still does, which is the remaining backstop.
     if (view.kind !== "app" || openTool === null) return undefined;
     const verdict = verdicts.get(openTool);
     if (verdict?.reason !== "reopen_required") return undefined;
@@ -3000,9 +3011,10 @@ export function NewUiApp() {
    * that tool's pane, where `ReopenAlert` names both routes rather than listing
    * names - the shell banner drew it over Overview, Settings and every other
    * tool's pane, which is the thing #277 took the drift and check-error cards
-   * off Overview for. The rail still reads "Not protected - Reopen required" on
-   * each affected row, so nothing that names the tool is lost. This drops
-   * AG-566 AC 3, which asked for the invitation on Overview.
+   * off Overview for. The rail still reads "Reopen to finish" on each affected
+   * row - its own amber phrase, deliberately not "Not protected" - with the
+   * program named after the dash on a multi-surface section. This drops AG-566
+   * AC 3, which asked for the invitation on Overview.
    *
    * Lifted out of the `AppShell` call so the reload note below can be stacked
    * beside it rather than ranked inside it. Unchanged otherwise.

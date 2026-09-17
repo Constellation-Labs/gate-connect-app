@@ -29,20 +29,13 @@ const CODEX = {
 };
 
 /**
- * Open Codex's pane, which is where its reopen card is drawn. The rail names
- * the section, so Codex is reached through "ChatGPT / Codex".
- */
-async function openCodexPane(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-}
-
-/**
- * The pane's reopen card, taken by the one line that names the tool inside the
- * sentence: the rail row carries the bare phrase too, so a looser match
- * resolves to two elements. `new-ui-verdict.spec.ts` reads it the same way.
+ * The pane's reopen card. `ReopenAlert` takes `role="status"` - it is raised by
+ * a sweep rather than by a click - and it is the only status region inside the
+ * pane, so the role scopes a click to the card rather than to whatever else
+ * happens to hold a "Close tool" button.
  */
 function reopenCard(app: { page: import("@playwright/test").Page }) {
-  return app.page.getByText(/^Reopen .+ to finish$/);
+  return app.page.getByRole("status").filter({ hasText: /^Reopen .+ to finish/ });
 }
 
 test.describe("new UI running apps", () => {
@@ -310,15 +303,22 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    // The boot screen carries the rail's phrase and nothing else: no card, so
-    // no "Close tool" to press.
+    // Positive first, and that ordering is the assertion. `boot` waits only for
+    // the first heading while `refreshVerdicts` is still in flight, so a bare
+    // count of zero passes against a page that has not heard about the reopen
+    // yet - which would let the banner come back unnoticed. The rail row is
+    // what proves the sweep landed on this screen.
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Reopen to finish" }),
+    ).toBeVisible();
+    // And with the fact on screen, nothing in shell chrome offers the action.
     await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
 
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
     const card = reopenCard(app);
     await expect(card).toBeVisible();
 
-    await app.page.getByRole("button", { name: "Close tool" }).click();
+    await card.getByRole("button", { name: "Close tool" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -347,7 +347,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
     const card = reopenCard(app);
     await expect(card).toBeVisible();
 
@@ -381,13 +381,13 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["codex"],
     });
 
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
     const card = reopenCard(app);
     await expect(card).toBeVisible();
 
     // Quit between the sweep that raised the card and the press.
     await app.patch({ staleAgents: 0, runningAgentNames: [] });
-    await app.page.getByRole("button", { name: "Close tool" }).click();
+    await card.getByRole("button", { name: "Close tool" }).click();
 
     // No dialog about a tool that is not running...
     await expect(
@@ -457,9 +457,9 @@ test.describe("new UI running apps", () => {
 
     // Codex's row is the ChatGPT / Codex app row: one switch, and the config
     // tool inside it is what a reopen is about.
-    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    await app.openSection("ChatGPT / Codex");
 
-    await expect(app.page.getByText(/Reopen .* to finish/)).toBeVisible();
+    await expect(reopenCard(app)).toBeVisible();
     await expect(
       app.page.getByText("Apps already open may need reopening"),
     ).toHaveCount(0);
@@ -486,7 +486,7 @@ test.describe("new UI running apps", () => {
     // asks to turn routing OFF and never reaches the gate. Reconnecting is what
     // asks to write the config, and the gate is on that path. The card is drawn
     // on Codex's own pane, reached through its section's rail row.
-    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    await app.openSection("ChatGPT / Codex");
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 

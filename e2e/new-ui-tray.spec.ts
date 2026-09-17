@@ -109,9 +109,11 @@ test.describe("tray popover", () => {
   });
 
   /**
-   * AG-566 AC 3: "Reopen to finish" belongs on tool detail, Overview *and* the
-   * tray. Same division as the recovery card - the tray carries the fact and
-   * the one action, and the per-tool routes stay in the window.
+   * "Reopen to finish" on the tray, which is the surface AG-566 AC 3 asked for
+   * that survives: the Overview banner it also asked for is gone, and the fact
+   * is the tool's pane, the rail row and this. Same division as the recovery
+   * card - the tray carries the fact and the one action, and the per-tool
+   * routes stay in the window.
    */
   test("a tool waiting to be reopened is offered from the tray", async ({ boot }) => {
     const app = await boot({

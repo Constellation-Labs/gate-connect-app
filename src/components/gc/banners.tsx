@@ -192,7 +192,15 @@ export function ReopenAlert({
   onReopen: () => void;
 }) {
   return (
-    <div className="flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+    // `role="status"`, which a pane card does not normally take: this one is
+    // raised by a background sweep rather than by anything the user just did,
+    // and the shell banner that used to carry the same fact announced it. With
+    // that banner gone this is the window's only voice for it, so a card
+    // appearing under a reader's cursor says so instead of arriving in silence.
+    <div
+      role="status"
+      className="flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5"
+    >
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="refresh" size={36} />
         <div className="min-w-0">

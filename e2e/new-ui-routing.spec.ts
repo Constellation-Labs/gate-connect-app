@@ -16,21 +16,6 @@ import { OPENCLAW } from "./backend";
  */
 const useNewUi = { gc: "gc.newUi" };
 
-/**
- * Open Codex's pane, which is where its drift card is drawn. Overview draws
- * only the whole-machine causes (`lib/notices.ts`), so a spec that wants the
- * "Let Gate Connect manage CLI" switch has to leave the boot screen first.
- * The rail names the section, so Codex is reached through "ChatGPT / Codex".
- */
-async function openCodexPane(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-}
-
-/** The same, for the Claude section, whose reopen card is drawn on its pane. */
-async function openClaudePane(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "Claude" }).first().click();
-}
-
 test.describe("new UI routing", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -71,7 +56,7 @@ test.describe("new UI routing", () => {
 
   test("re-adopting from the alert card goes through the review", async ({ boot }) => {
     const app = await boot(driftedCodex);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     // The card's switch reads off: the app is not protected. This is the path
     // that re-adopts, and the only one that reaches the review gate. Its
@@ -96,7 +81,7 @@ test.describe("new UI routing", () => {
 
   test("declining the review leaves the config alone", async ({ boot }) => {
     const app = await boot(driftedCodex);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
@@ -299,7 +284,7 @@ test.describe("new UI routing", () => {
     // The card is on the tool's pane, and the advice is shell chrome that
     // follows the user there - which is the whole assertion: one click, two
     // remedies, both on screen at once.
-    await openClaudePane(app);
+    await app.openSection("Claude");
     // The line that names the tool, because the rail row carries the bare
     // phrase too and a looser match resolves to two elements.
     await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
@@ -430,7 +415,7 @@ test.describe("new UI drift repair", () => {
     boot,
   }) => {
     const app = await boot(drifted);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -447,7 +432,7 @@ test.describe("new UI drift repair", () => {
     // Not "unknown" dressed as an address: with no port there is nothing true to
     // show, so the row goes rather than guessing.
     const app = await boot({ ...drifted, proxy: { running: true, ca_trusted: true, relay_base_url: null } });
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -1181,7 +1166,7 @@ test.describe("new UI: the review names the file it will change", () => {
 
   test("the review names the config file", async ({ boot }) => {
     const app = await boot(driftedWithPath);
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
@@ -1197,7 +1182,7 @@ test.describe("new UI: the review names the file it will change", () => {
       ...driftedWithPath,
       tools: [{ ...driftedWithPath.tools[0], config_location: null }],
     });
-    await openCodexPane(app);
+    await app.openSection("ChatGPT / Codex");
 
     await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 

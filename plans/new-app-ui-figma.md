@@ -2767,9 +2767,10 @@ tray card. It was on three - a `ReopenBanner` in the shell's banner slot, which
 is how Overview carried it for AC 3 - and that banner is gone. One tool's
 pending reopen drawn in shell chrome appeared over Overview, Settings and every
 other tool's pane; it is the same thing #277 took the drift and check-error
-cards off Overview for, and the rail still reads "Not protected - Reopen
-required" on each affected row. So AC 3's Overview half is deliberately not
-met.
+cards off Overview for, and the rail still reads "Reopen to finish" on each
+affected row - its own amber phrase rather than "Not protected", with the
+program named after the dash on a multi-surface section. So AC 3's Overview
+half is deliberately not met.
 
 **Both keep sweeping, and both say "Close tool".** Two later
 corrections, both from the same root: the reopen is the one reading in this app

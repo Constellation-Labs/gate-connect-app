@@ -14,20 +14,6 @@ import { test, expect } from "./fixtures";
  */
 const useNewUi = { gc: "gc.newUi" };
 
-/**
- * Where a verdict's reason is asserted, and why it is not the rail.
- *
- * A 250px row cannot fit "Not protected - Configuration update failed" and
- * truncates the reason mid-word, so the rail prints the coloured phrase alone
- * and the app pane's header carries the reason in full. A spec that wants the
- * phrase reads the row; one that wants the reason opens the pane.
- */
-async function openApp(app: { page: import("@playwright/test").Page }, name: string) {
-  // The section's name: the rail draws one row per app, so Codex is reached
-  // through "ChatGPT / Codex" rather than through a row of its own.
-  await app.page.getByRole("button", { name }).first().click();
-}
-
 const connectedCodex = {
   slug: "codex",
   // The surface, not the product: rows are named for what they cover and the
@@ -72,7 +58,7 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
 
-    await openApp(app, "ChatGPT / Codex");
+    await app.openSection("ChatGPT / Codex");
     await expect(app.page.getByText("Connection problem")).toBeVisible();
   });
 
@@ -102,7 +88,7 @@ test.describe("new UI routing verdict", () => {
       staleAgents: 1,
     });
 
-    await openApp(app, "ChatGPT / Codex");
+    await app.openSection("ChatGPT / Codex");
     // `ReopenAlert`, which is the pane's own card. The bare phrase "Reopen to
     // finish" is on the rail row and the tray card too - the surfaces that
     // carry one fact, which is what the phrase is for - so this takes the
@@ -135,7 +121,7 @@ test.describe("new UI routing verdict", () => {
       runningAgentNames: ["codex"],
     });
 
-    await openApp(app, "ChatGPT / Codex");
+    await app.openSection("ChatGPT / Codex");
 
     await expect(
       app.page.getByText(/It was already running when its configuration changed/),
