@@ -16,19 +16,22 @@
 //! against a plist produced by the real [`crash_restart::arm`], in the shape the
 //! autostart plugin writes, so the artifact under test is the one that ships.
 //!
-//! **Ignored by default, on purpose.** CI runs `cargo test --workspace` on
-//! macOS, and this test needs a GUI session `launchctl` can bootstrap into,
-//! which a runner may not have, and it waits out a throttle interval. Run it
-//! deliberately on a real machine:
+//! **Ignored by default, and it stays that way.** It takes a little over
+//! [`crash_restart::THROTTLE_SECONDS`] to run, so letting `cargo test
+//! --workspace` pick it up would hang fifty seconds on the macOS leg of every
+//! pull request for an answer that only changes when macOS does.
+//! `.github/workflows/launchd-restart.yml` asks for it by name instead, on
+//! changes to the code it checks and on demand. Locally:
 //!
 //! ```text
 //! cargo test -p gate-connect-core --test launchd_restart -- --ignored --nocapture
 //! ```
 //!
-//! Promote it to a default test once it has passed somewhere that CI can also
-//! reach. It takes a little over [`crash_restart::THROTTLE_SECONDS`] to run:
-//! the three jobs are bootstrapped together and waited on once, rather than
-//! each paying its own interval.
+//! Whether a CI runner even has a GUI session for `launchctl` to bootstrap
+//! into was the open question here, and it does: verified 2026-09-17 on
+//! `macos-latest`, uid 501, domain reachable, all three endings behaving as
+//! the module under test assumes. The three jobs are bootstrapped together and
+//! waited on once rather than each paying its own interval.
 //!
 //! It touches nothing of the user's. Every job has a label unique to this
 //! process, the plists live in a scratch directory rather than
