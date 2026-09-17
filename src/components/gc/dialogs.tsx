@@ -614,11 +614,32 @@ export function CloseAppsDialog({
   );
 }
 
+/**
+ * The all-clear, drawn at `134:61659`.
+ *
+ * **The copy deviates from the frame, and AG-880 is why.** The frame's subtitle
+ * ("Codex closed successfully") and its body ("Open Codex whenever you are
+ * ready to continue") describe the moment straight after the SIGTERM, which is
+ * where this dialog used to fire - `stage.kind === "done"`, out of `closeApps`.
+ * AG-566 moved the tail behind `allVerified`, and `bucketOf` returns `verified`
+ * only for `routing` and `not_routed`, both of which mean the tool came back up
+ * and Gate took a reading on it. So no state is left in which this dialog draws
+ * and the user still has an app to open, and the drawn instruction asked for a
+ * step they had already finished.
+ *
+ * "the new route" rather than "the new Gate route": `not_routed` lands in the
+ * same bucket, and that is the verdict when the change being applied was
+ * routing *off*. Naming Gate there would claim a path the tool is not on.
+ */
 export function ChangeReadyDialog({
   app,
+  plural = false,
   onDone,
 }: {
   app: DialogApp;
+  /** Whether `app.name` stands for several apps ("The affected apps"), so the
+   *  subtitle agrees with its subject. Both call sites close a set. */
+  plural?: boolean;
   onDone: () => void;
 }) {
   return (
@@ -626,17 +647,18 @@ export function ChangeReadyDialog({
       tone="success"
       icon="circleCheck"
       title="Change is ready"
-      subtitle={`${app.name} closed successfully`}
+      subtitle={`${app.name} ${plural ? "are" : "is"} back on the new route`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
       width={512}
     >
       <ModalNote>
         <p className="font-medium text-base-foreground">
-          The new Gate route is active
+          The new route is active and in use.
         </p>
         <p className="mt-1">
-          Open {app.name} whenever you are ready to continue.
+          Gate verified the route after the restart, so there is nothing left to
+          do.
         </p>
       </ModalNote>
     </Modal>

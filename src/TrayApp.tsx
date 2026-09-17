@@ -1182,6 +1182,7 @@ export function TrayApp() {
                       ? runningApps.stage.tools[0].name
                       : "The affected apps",
                 }}
+                plural={runningApps.stage.tools.length !== 1}
                 onDone={runningApps.dismiss}
               />
             ) : (
