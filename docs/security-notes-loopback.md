@@ -68,6 +68,59 @@ macOS/Windows cross-user token as a tracked follow-up rather than a blocker,
 because multi-user desktop machines are rare in the target audience and the
 same-user case is not fixable with a token at all.
 
+## Accepted: the parked state (macOS and Windows, routing off)
+
+Turning routing off **parks** the engine rather than stopping it: the three
+ports stay bound and `set_intercept(false)` drops both listeners to plain
+forwarding. This is not a convenience. `launchctl unsetenv` cannot reach a
+process that is already running, so releasing the ports strands every shell,
+editor and CLI that already inherited `HTTPS_PROXY` - including tools the user
+never switched on, and software Gate does not manage, because the export is
+machine-wide. Linux has always parked (`helper::set_passthrough`).
+
+The question this section answers is what a parked listener can be used for,
+since it outlives the user's "off".
+
+- **It cannot spend the credential.** This is the property the rest of this
+  document is about, and the park does not weaken it. The MITM port claims no
+  host at all - `engine::effective_rules` returns an empty set while parked -
+  so nothing is decrypted, no leaf cert is minted, and `decide` never reaches
+  a rewrite. The relay forces `Route::Passthrough` (`relay.rs`, on
+  `state.intercept`), strips the Gate headers, and forwards under the tool's
+  own credential.
+- **The relay is still not an open proxy.** Catalog resolution runs *before*
+  the intercept check, so a parked relay can only ever be aimed at a known
+  upstream, exactly as while routing is on.
+- **The MITM port remains a general forward proxy.** A CONNECT to an
+  arbitrary `host:port` is tunnelled, as it is while routing is on. This is
+  the one capability the park extends in time - from "while routing is on" to
+  "for the rest of the app session".
+- **The PAC responder is inert.** `pac_script` is built from the live rules,
+  which are empty while parked, so it names the engine for no host.
+
+Decision: accepted. The comparison that matters is parked versus *routing*,
+not parked versus nothing bound - the alternative to parking is not a quiet
+machine, it is a broken one. A parked engine is strictly less capable than the
+engine it replaces: egress only, no spend. Egress is also what any local
+process already has by opening its own socket, so the marginal capability is
+reaching an arbitrary host *through* Gate's process rather than directly,
+which matters only where an egress filter treats the two differently.
+
+The macOS/Windows cross-user gap named above is therefore unchanged in kind
+and smaller in consequence while parked: another local user reaching a parked
+port gets a forward proxy, not the owner's credential. The same UID-resolution
+work (`net.inet.tcp.pcblist`, `GetExtendedTcpTable`) would close it for both
+states at once.
+
+The park does not outlive the app: the ports are released on app exit, on a
+gateway switch, on a re-enable, and on untrusting the CA. Exit is also the
+residual - quitting still strands already-running tools, because on these two
+platforms the listeners live in the GUI process. Closing that needs a listener
+that outlives the GUI, and any such design should be assessed here first: a
+forwarder that carries no credential sits below the bar this document already
+accepts, but it would make the forward-proxy capability permanent rather than
+session-scoped.
+
 ## Noted: the `claude-web` catalog entry (session cookie)
 
 The opt-in `claude-web` domain MITMs `claude.ai/organizations/*` and forwards
