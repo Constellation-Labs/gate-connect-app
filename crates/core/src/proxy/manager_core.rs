@@ -80,6 +80,14 @@ pub trait DesktopOps: Send + Sync + 'static {
     fn engine_pac_port(&self, running: &engine::RunningEngine) -> Option<u16>;
     fn enable_env(&self, port: u16) -> Result<()>;
     fn disable_env(&self) -> Result<()>;
+    /// Start (or find) the environment forwarder and return the port the
+    /// machine-wide variables should name. Behind the seam because it spawns a
+    /// process, which no unit test should do.
+    fn ensure_env_forwarder(&self) -> Result<u16>;
+    /// Ask a running forwarder to exit. Only for the explicit "Gate should let
+    /// go of this machine" paths - never for a plain disable, which is exactly
+    /// when the processes it protects still need it.
+    fn stop_env_forwarder(&self);
     /// Startup sweep: clear any proxy slot still pointed at a dead loopback
     /// listener. Returns what it cleared, for the log line.
     fn clear_stranded_loopback(&self) -> Result<Vec<String>>;
@@ -328,7 +336,28 @@ impl<O: DesktopOps> DesktopManager<O> {
         // routing down for everything that *does* follow the PAC, so it degrades
         // to "GUI apps routed, CLI tools not" rather than to "enable failed".
         if crate::proxy::env_export_opted_in() {
-            if let Err(e) = self.ops.enable_env(running.port()) {
+            // Export the *forwarder's* port, not the engine's. The variables
+            // outlive every process that reads them - `launchctl unsetenv`
+            // cannot reach a running one - so the address they name has to be
+            // one that keeps answering after the engine goes away, or routing
+            // off becomes "no provider is reachable" for every already-running
+            // tool. See `proxy::forwarder`.
+            //
+            // Falling back to the engine's own port if the forwarder will not
+            // start: that is exactly today's behaviour, so a forwarder problem
+            // costs the fail-open property and nothing else.
+            let env_port = match self.ops.ensure_env_forwarder() {
+                Ok(port) => port,
+                Err(e) => {
+                    eprintln!(
+                        "gate proxy: could not start the environment forwarder ({e}); exporting \
+                         the engine port instead, so tools will lose connectivity when routing \
+                         is switched off until they are restarted"
+                    );
+                    running.port()
+                }
+            };
+            if let Err(e) = self.ops.enable_env(env_port) {
                 eprintln!(
                     "gate proxy: could not export proxy environment variables ({e}); GUI apps \
                      still route through Gate, but CLI tools that read HTTPS_PROXY will not"
@@ -607,6 +636,13 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
+        // Untrusting the CA is an explicit "Gate should let go of this
+        // machine" action, so the forwarder goes with it. Not the only one:
+        // forgetting the workspace runs `clear_account`, which retires it too,
+        // and that is the common path (the Reset button). A plain disable must
+        // leave it running - that is exactly when the processes holding our
+        // exported variables still need it.
+        self.ops.stop_env_forwarder();
         Ok(())
     }
 
@@ -810,6 +846,13 @@ mod tests {
         point_fails: bool,
         /// The "persisted" engine port file.
         persisted_port: Option<u16>,
+        /// Make `ensure_env_forwarder` fail, modeling a forwarder that will
+        /// not start.
+        forwarder_fails: bool,
+        /// The port `ensure_env_forwarder` handed out, if it was asked.
+        forwarder_port: Option<u16>,
+        /// The port `enable_env` was actually told to export.
+        exported_port: Option<u16>,
     }
 
     struct FakeOps(StdMutex<FakeState>);
@@ -938,14 +981,37 @@ mod tests {
             None
         }
 
-        fn enable_env(&self, _port: u16) -> Result<()> {
-            self.record("enable_env");
+        fn enable_env(&self, port: u16) -> Result<()> {
+            let mut s = self.0.lock().unwrap();
+            s.calls.push("enable_env".to_string());
+            // Recorded, not discarded: the test that matters here is *which*
+            // port was exported, and a fake that drops it passes just as
+            // happily when production exports the engine's.
+            s.exported_port = Some(port);
             Ok(())
         }
 
         fn disable_env(&self) -> Result<()> {
             self.record("disable_env");
             Ok(())
+        }
+
+        fn ensure_env_forwarder(&self) -> Result<u16> {
+            self.record("ensure_env_forwarder");
+            let mut s = self.0.lock().unwrap();
+            if s.forwarder_fails {
+                anyhow::bail!("forwarder refused to start");
+            }
+            s.forwarder_port = Some(47_321);
+            Ok(47_321)
+        }
+
+        fn stop_env_forwarder(&self) {
+            self.0
+                .lock()
+                .unwrap()
+                .calls
+                .push("stop_env_forwarder".into());
         }
 
         fn clear_stranded_loopback(&self) -> Result<Vec<String>> {
@@ -1262,6 +1328,78 @@ mod tests {
         mgr.disable_quiet().expect("quiet disable");
         mgr.untrust_ca_system()
             .expect("system untrust after disable");
+    }
+
+    /// The exported variables must name the forwarder, not the engine. They
+    /// outlive every process that reads them, so the address they carry has to
+    /// be one that still answers after the engine goes away.
+    #[test]
+    fn the_exported_variables_name_the_forwarder() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let state = mgr.enable().expect("enable");
+        let engine_port = state.port.expect("port");
+
+        assert_eq!(mgr.ops.count("ensure_env_forwarder"), 1);
+        let exported = mgr.ops.0.lock().unwrap().exported_port;
+        assert_eq!(
+            exported,
+            Some(47_321),
+            "the forwarder's port, not any other"
+        );
+        assert_ne!(
+            exported,
+            Some(engine_port),
+            "exporting the engine's own port is the bug"
+        );
+        assert!(mgr.ops.index_of("ensure_env_forwarder") < mgr.ops.index_of("enable_env"));
+
+        mgr.disable().expect("disable");
+    }
+
+    /// A forwarder that will not start costs the fail-open property and
+    /// nothing else: routing still comes up, exporting the engine port exactly
+    /// as it did before there was a forwarder.
+    #[test]
+    fn a_forwarder_that_will_not_start_does_not_fail_the_enable() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::with(FakeState {
+            forwarder_fails: true,
+            ..FakeState::default()
+        }));
+
+        let state = mgr.enable().expect("enable must still succeed");
+        assert!(state.running);
+        assert_eq!(mgr.ops.count("enable_env"), 1, "the export still happens");
+        assert_eq!(
+            mgr.ops.0.lock().unwrap().exported_port,
+            state.port,
+            "and falls back to the engine's own port, which is what shipped \
+             before there was a forwarder"
+        );
+
+        mgr.disable().expect("disable");
+    }
+
+    /// A plain disable must leave the forwarder alone - it is exactly then
+    /// that the processes holding our variables still need it. Untrusting the
+    /// CA is the explicit "let go of this machine" action, and does stop it.
+    #[test]
+    fn disable_leaves_the_forwarder_running_and_untrust_stops_it() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        mgr.disable().expect("disable");
+        assert_eq!(
+            mgr.ops.count("stop_env_forwarder"),
+            0,
+            "stopping it on disable would strand the tools it exists to protect"
+        );
+
+        mgr.untrust_ca().expect("untrust after disable");
+        assert_eq!(mgr.ops.count("stop_env_forwarder"), 1);
     }
 
     #[test]

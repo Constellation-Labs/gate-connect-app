@@ -761,6 +761,28 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
+        // The same strip on the other arm, which had none. A proxy credential
+        // is hop-by-hop: it addresses *this* proxy and must not be forwarded,
+        // whatever the request turns out to be.
+        //
+        // Only CONNECT was covered because only CONNECT was thought to carry
+        // one - the tunnelled case authenticates once and the inner requests
+        // inherit nothing. But a client given `HTTP_PROXY` as well as
+        // `HTTPS_PROXY` sends plain-HTTP requests in absolute form straight to
+        // this arm, with the proxy credential on every one of them, and nothing
+        // downstream removes it: `apply_rewrite` takes off only the two Gate
+        // headers, and hudsucker forwards what it is handed.
+        //
+        // Deliberately just this header rather than the full RFC 9110 §7.6.1
+        // set. `connection` and `upgrade` are hop-by-hop too, and this engine
+        // already gives them meaning of its own a few lines below
+        // (`is_upgrade_request`); `content-length` is only safe to drop where
+        // the request is rebuilt, which is the relay's case and not this one.
+        // A blanket strip here would break body framing and the upgrade path
+        // to close a leak that is neither. `proxy-authenticate` is the
+        // response half of the pair and never rides a request, so it is not
+        // removed here either.
+        req.headers_mut().remove("proxy-authorization");
         // Fresh verdict per request; only the chatgpt.com block below sets it.
         self.chatgpt_turn = None;
         // Likewise: only a successful OAuth-bearing rewrite below sets this.
@@ -1830,7 +1852,10 @@ fn candidate_ports(ours: &[u16]) -> Vec<u16> {
 /// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
 /// isn't deferred.
 fn persisted_ports() -> Vec<u16> {
-    let mut ports: Vec<u16> = ["port", "pac-port"]
+    // `forwarder-port` is in here for the same reason as the rest: it is a port
+    // this install remembers and rebinds, so a fresh engine listener taking it
+    // would strand every process holding the exported variables.
+    let mut ports: Vec<u16> = ["port", "pac-port", "forwarder-port"]
         .iter()
         .filter_map(|name| super::port_persist::load(name).ok().flatten())
         .collect();

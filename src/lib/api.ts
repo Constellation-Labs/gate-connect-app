@@ -462,6 +462,14 @@ export const proxyEnable = () => invoke<ProxyState>("proxy_enable");
  * removing it is the separate, explicit proxyUntrustCa. */
 export const proxyDisable = () => invoke<ProxyState>("proxy_disable");
 
+/** The tools Gate Connect currently manages, by display name.
+ *
+ * For copy that has to name what a disconnect interrupts. Deliberately not a
+ * complete answer to "what needs restarting": the proxy variables are exported
+ * machine-wide, so anything opened while routing was on holds them too, and the
+ * copy says that part in words. */
+export const routedAppNames = () => invoke<string[]>("routed_app_names");
+
 /** Toggle a provider. Applied live when the engine is running - no restart,
  * no prompt. */
 export const proxySetDomain = (slug: string, enabled: boolean) =>

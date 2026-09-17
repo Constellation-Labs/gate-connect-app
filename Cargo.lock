@@ -1593,6 +1593,7 @@ dependencies = [
  "bytes",
  "dirs 5.0.1",
  "futures-util",
+ "gate-connect-paths",
  "http",
  "http-body-util",
  "hudsucker",
@@ -1643,6 +1644,27 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "url",
+]
+
+[[package]]
+name = "gate-connect-forwarder"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "gate-connect-paths",
+ "httparse",
+ "libc",
+ "tokio",
+]
+
+[[package]]
+name = "gate-connect-paths"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "dirs 5.0.1",
+ "sha2",
+ "socket2",
 ]
 
 [[package]]

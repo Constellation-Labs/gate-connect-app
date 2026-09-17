@@ -145,12 +145,31 @@ fn tool_installed_after_enable_is_configured() {
         Some(expected_proxy.as_str())
     );
     // The proxy variable is inherited by everything `claude` spawns, so the
-    // loopback bypass travels with it or a local MCP server goes through the
-    // engine.
-    assert_eq!(
-        env_block.get("NO_PROXY").and_then(|v| v.as_str()),
-        Some("localhost,127.0.0.1,::1")
-    );
+    // bypass travels with it or a local MCP server goes through the engine -
+    // and so does a model server on the LAN or on Tailscale, which is the
+    // failure that widened this list.
+    //
+    // Asserted by content rather than by equality: pinning the exact string
+    // is what made this test break when the list grew, and the list is
+    // expected to grow again.
+    let no_proxy = env_block
+        .get("NO_PROXY")
+        .and_then(|v| v.as_str())
+        .expect("NO_PROXY must be written");
+    for expected in [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        ".ts.net",
+        ".local",
+    ] {
+        assert!(
+            no_proxy.contains(expected),
+            "NO_PROXY must bypass {expected}, got {no_proxy}"
+        );
+    }
     assert!(
         !env_block.contains_key("ANTHROPIC_BASE_URL"),
         "the canonical Anthropic base URL must remain implicit"

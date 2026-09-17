@@ -21,6 +21,7 @@
 /test-results/
 /playwright-report/
 /blob-report/
+/src-tauri/binaries/
 
 .figma-mcp/.env
 .figma-mcp/assets/
