@@ -5633,10 +5633,30 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 
 /// Raise and key the popover without activating the app - set_focus() alone
 /// won't raise a background app's window.
+///
+/// Main thread only, and it puts itself there. Unlike the Tauri calls beside
+/// it (`show`, `set_focus`, `unminimize`), which post to the event loop from
+/// any thread, the two messages below go straight to the NSWindow on the
+/// calling thread, and AppKit traps window ordering off the main thread
+/// ("Must only be used from the main thread", SIGILL). `request_quit` hit
+/// exactly that: it probes tool configs on a blocking thread and revealed the
+/// quit dialog from the same thread, so quitting with a connected tool
+/// crashed the app before `RunEvent::Exit` could revert the system proxy.
+/// The hop is a post, not a wait, so a caller that must not block on the main
+/// thread (the challenge-solve poll) is not blocked by it.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
+
+    if objc2::MainThreadMarker::new().is_none() {
+        let window = window.clone();
+        let _ = window
+            .app_handle()
+            .clone()
+            .run_on_main_thread(move || order_front_regardless(&window));
+        return;
+    }
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
