@@ -78,6 +78,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::integrations::binaries;
@@ -95,7 +96,7 @@ const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
 
 /// Keep loopback off the proxy so a self-hosted provider is reached directly.
-const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+use crate::proxy::NO_PROXY_VALUE;
 
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
@@ -115,6 +116,13 @@ struct State {
     /// already set is absent, so disconnect leaves it be.
     #[serde(default)]
     added_vars: Vec<String>,
+    /// The value connect last wrote for each variable that is ours. A refresh
+    /// is gated on the line still holding it, so a value the user has edited by
+    /// hand since stops being ours and is left alone. Absent on a sidecar
+    /// written before this field existed, which `add_vars` reads as ownership
+    /// by key for one connect and then records properly.
+    #[serde(default)]
+    written_vars: BTreeMap<String, String>,
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
@@ -244,6 +252,29 @@ impl Integration for Hermes {
         // work apart from the user's.
         let mut state = load_state()?.unwrap_or_default();
 
+        // What a previous connect wrote, and the value it left there. Passing
+        // the value is what keeps this ownership rather than a standing claim
+        // on the key: a line the user has since repointed at their own proxy is
+        // no longer ours to correct.
+        let mut ours: Vec<dotenv::Owned> = state
+            .written_vars
+            .iter()
+            .map(|(key, value)| dotenv::Owned {
+                key: key.clone(),
+                value: Some(value.clone()),
+            })
+            .collect();
+        // Keys from an install that predates `written_vars`: ours by key alone,
+        // for this one connect, and recorded with a value on the way out.
+        for key in &state.added_vars {
+            if !state.written_vars.contains_key(key) {
+                ours.push(dotenv::Owned {
+                    key: key.clone(),
+                    value: None,
+                });
+            }
+        }
+
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
@@ -252,6 +283,7 @@ impl Integration for Hermes {
                 ("NO_PROXY", NO_PROXY_VALUE.to_string()),
                 ("HERMES_CA_BUNDLE", bundle.display().to_string()),
             ],
+            &ours,
         )?;
 
         // Nothing added AND nothing we ever added: the variables are the user's
@@ -261,6 +293,14 @@ impl Integration for Hermes {
         // alone failed with a message about settings that were Gate's own - and
         // re-connect is how a drifted Hermes is meant to be repaired, including
         // by `provider::reconcile_unmapped_tools`, which does it unattended.
+        //
+        // That last sentence was false for as long as `add_vars` could only
+        // add. Every key was already present, so a re-connect wrote nothing,
+        // reported success and left a stale port in place; the unattended
+        // repair ran every launch and fixed nothing, and only toggling the
+        // master switch - disconnect, clean file, connect - actually worked.
+        // `add_vars` now refreshes the keys the sidecar says are ours, which
+        // is what makes the claim true.
         if applied.added.is_empty() && state.added_vars.is_empty() {
             anyhow::bail!(
                 "Hermes already has its own proxy settings in ~/.hermes/.env -- Gate left them \
@@ -306,9 +346,30 @@ impl Integration for Hermes {
             state.added_vars = applied.added;
             state.env_file_created = applied.file_created;
         }
+        // The values, unlike the list above, are replaced every time: they are
+        // what the file holds now, not who put it there. Recorded even when
+        // nothing changed, so a sidecar that predates the field stops relying
+        // on ownership by key after a single connect.
+        state.written_vars = applied.owned_values.into_iter().collect();
         save_state(&state)?;
 
-        eprintln!("note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up.");
+        // Naming what moved matters more on a repair than on a first connect.
+        // A refreshed key means the file was pointing somewhere Gate no longer
+        // listens - a moved loopback port is the case that happens - and until
+        // Hermes is restarted it is still using the old value, so a bare "we
+        // wrote your config" would be telling the user the half that is already
+        // true and omitting the half they have to act on.
+        if applied.refreshed.is_empty() {
+            eprintln!(
+                "note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up."
+            );
+        } else {
+            eprintln!(
+                "note: updated {} in ~/.hermes/.env -- Hermes reads that file at startup, so \
+                 restart it or it keeps using the old value.",
+                applied.refreshed.join(", ")
+            );
+        }
         // A correct `.env` is only half of being seen: the engine MITMs a host
         // only while an enabled catalog domain claims it, and Hermes' own
         // default upstream ships off. Which hosts Gate inspects is the user's

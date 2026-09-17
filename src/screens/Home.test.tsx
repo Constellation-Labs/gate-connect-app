@@ -133,6 +133,15 @@ afterEach(() => {
 });
 
 describe("Home CA-trust card", () => {
+  // The passthrough disclosure lives in Settings, not here: Home is read
+  // mid-task and answers "is my traffic routed right now", where a paragraph
+  // about what runs in the other state is noise. Asserted so a well-meaning
+  // move back onto this screen has to argue with a test first.
+  it("leaves the passthrough disclosure to Settings", () => {
+    renderHome({ proxyOn: false, domains: [makeDomain()] });
+    expect(screen.queryByText(/local passthrough/i)).toBeNull();
+  });
+
   it("opens compact, with the action visible and the lecture optional", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
     expect(screen.getByText(/Apps with no gateway setting need/)).toBeTruthy();

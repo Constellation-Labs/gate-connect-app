@@ -19,10 +19,11 @@ vi.mock("../lib/api", () => ({
   setLaunchAtLogin: vi.fn(),
   getAccountKeyPrefix: vi.fn().mockResolvedValue(null),
   backfillAccountKeyPrefix: vi.fn(),
+  routedAppNames: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 import { usePlatform } from "../lib/platform";
-import { launchAtLoginStatus, setLaunchAtLogin } from "../lib/api";
+import { launchAtLoginStatus, setLaunchAtLogin, routedAppNames } from "../lib/api";
 
 const account: Account = {
   gateway_base_url: "https://gate.example.com",
@@ -307,5 +308,47 @@ describe("Settings help section", () => {
     expect(docs).toBeTruthy();
     // Still last in the row, so the destructive control keeps its isolation.
     expect(screen.getByRole("button", { name: /Reset Gate Connect/ })).toBeTruthy();
+  });
+
+  // AG-911 requires this in words: turning routing off leaves a local
+  // passthrough bound so already-running apps keep working, and the user is
+  // entitled to know a listener is still there and that it reads nothing.
+  it("says a passthrough stays running while routing is off", async () => {
+    await renderOn("macos");
+    expect(screen.getByText(/Stays running while routing is off/i)).toBeTruthy();
+    expect(screen.getByText(/inspects nothing/i)).toBeTruthy();
+  });
+
+  // A standing fact about the machine, not a state readout: it is as true
+  // while routing is on, and hiding it there would mean the one screen that
+  // explains what Gate leaves behind only admits to it half the time.
+  it("states the passthrough whether routing is on or off", async () => {
+    await renderOn("macos", { routingOn: true });
+    expect(screen.getByText(/Stays running while routing is off/i)).toBeTruthy();
+  });
+
+  // AG-911: a disconnect stops the passthrough too, so a session that was
+  // working a moment ago stops. Naming what to restart is the difference
+  // between that being expected and being a mystery.
+  it("names the tools a reset will interrupt", async () => {
+    (routedAppNames as Mock).mockResolvedValue(["Claude Code", "Codex"]);
+    await renderOn("macos");
+    fireEvent.click(screen.getByRole("button", { name: /Reset Gate Connect/ }));
+    expect(
+      await screen.findByText(/Restart Claude Code and Codex afterwards/),
+    ).toBeTruthy();
+    // And the part a list cannot cover: the variables are machine-wide.
+    expect(
+      screen.getByText(/terminal or editor you opened while routing was on/),
+    ).toBeTruthy();
+  });
+
+  it("still offers the reset when the tool list cannot be read", async () => {
+    // Refusing to show the panel because we could not enumerate tools would be
+    // the wrong trade: the user is trying to reset.
+    (routedAppNames as Mock).mockRejectedValue(new Error("nope"));
+    await renderOn("macos");
+    fireEvent.click(screen.getByRole("button", { name: /Reset Gate Connect/ }));
+    expect(await screen.findByText(/Reset Gate Connect\?/)).toBeTruthy();
   });
 });

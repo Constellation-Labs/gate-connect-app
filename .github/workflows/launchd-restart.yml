@@ -1,0 +1,63 @@
+name: launchd restart
+
+# Does launchd actually do what `crates/core/src/crash_restart.rs` assumes?
+#
+# The unit tests prove we write the keys we meant to write. This proves the
+# keys mean what we think: a `KeepAlive` naming only `Crashed` restarts a job
+# that dies from a crash signal, and leaves alone one that exits cleanly or is
+# killed outright. Those are properties of launchd, so only a real `launchctl`
+# can settle them, and only on macOS.
+#
+# Its own workflow rather than a job in ci.yml because it is narrow and not
+# free: it needs a macOS runner (billed at a multiple of Linux) and it waits
+# out the throttle interval the policy sets. So it runs when the code it
+# checks changes, and on demand for anyone who wants to confirm the assumption
+# still holds after a macOS release.
+#
+# The test is `#[ignore]`d, so `cargo test --workspace` in ci.yml never picks
+# it up by accident; this workflow asks for it by name.
+
+on:
+  pull_request:
+    paths:
+      - "crates/core/src/crash_restart.rs"
+      - "crates/core/tests/launchd_restart.rs"
+      - ".github/workflows/launchd-restart.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/core/src/crash_restart.rs"
+      - "crates/core/tests/launchd_restart.rs"
+      - ".github/workflows/launchd-restart.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launchd:
+    name: launchd restart policy
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same pin as ci.yml and release.yml.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: launchd-restart
+
+      # Recorded before the test runs, because a bootstrap failure here is
+      # usually a missing GUI session rather than a broken policy, and this is
+      # the line that tells the two apart in the log.
+      - name: Session launchctl can see
+        run: |
+          echo "uid: $(id -u)"
+          launchctl print "gui/$(id -u)" > /dev/null 2>&1 \
+            && echo "gui domain: reachable" \
+            || echo "gui domain: NOT reachable (the test will fail on bootstrap)"
+
+      - name: Crash restarts, clean exit and kill do not
+        run: cargo test -p gate-connect-core --test launchd_restart -- --ignored --nocapture

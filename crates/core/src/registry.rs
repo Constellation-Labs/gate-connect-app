@@ -367,6 +367,26 @@ pub fn find(id: ToolId) -> Option<Box<dyn Integration>> {
     registry().into_iter().find(|i| i.id() == id)
 }
 
+/// The tools Gate Connect currently manages, by display name.
+///
+/// Not the same question as "which processes need restarting", and cannot be:
+/// the proxy variables are exported machine-wide, so anything launched while
+/// routing was on holds them - every terminal, every editor, and software Gate
+/// has never heard of. This is the part that can be named, and the copy that
+/// uses it says the rest in words.
+pub fn managed_tool_names() -> Vec<String> {
+    registry()
+        .into_iter()
+        .filter(|integ| {
+            matches!(
+                integ.status(),
+                Ok(Status::Connected) | Ok(Status::Drifted(_))
+            )
+        })
+        .map(|integ| integ.display_name().to_string())
+        .collect()
+}
+
 /// Disconnect every tool Gate Connect currently manages (Connected or
 /// Drifted). Sign-out runs this first - clearing the account while tool
 /// configs still embed the key would leave them routing to the gateway

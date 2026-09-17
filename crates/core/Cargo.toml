@@ -9,6 +9,9 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 dirs.workspace = true
+# Shared with the standalone forwarder binary so the two cannot disagree about
+# where the port files live or what the health contract is.
+gate-connect-paths = { path = "../paths" }
 keyring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
