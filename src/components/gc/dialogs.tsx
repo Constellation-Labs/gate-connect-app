@@ -960,8 +960,9 @@ export interface GateModelOption {
  * the *multiple* mode rather than at this one - everything around the control
  * still comes from it.
  *
- * `multiple={false}` has no call site yet: nothing in the backend says which
- * tools are single-model, since `model_ids` is a list for every tool.
+ * `multiple={false}` is driven by `groups.runsOneModel` (AG-888). The backend
+ * still says nothing about arity - `model_ids` is a list for every tool - so
+ * the answer is a flag on `SECTIONS`, beside the rest of the per-app facts.
  */
 export function ModelPickerDialog({
   appName,
@@ -1020,7 +1021,17 @@ export function ModelPickerDialog({
   const searchRef = useRef<HTMLInputElement>(null);
 
   /** Seeded from the stored set so Cancel is a real cancel. */
-  const [draft, setDraft] = useState<string[]>(selectedIds);
+  /**
+   * Single-select shows one model: the first stored id.
+   *
+   * An app can arrive here carrying a set chosen before it was single-model,
+   * or before AG-888 existed. Drawing four circle-checks would show a state
+   * this picker cannot produce, and the first entry is the honest one to show -
+   * it is what the gateway falls back to for anything outside the set.
+   */
+  const [draft, setDraft] = useState<string[]>(
+    multiple ? selectedIds : selectedIds.slice(0, 1),
+  );
 
   const vendors = useMemo(
     () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => a.localeCompare(b)),

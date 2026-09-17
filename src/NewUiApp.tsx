@@ -71,6 +71,7 @@ import {
   buildGroups,
   BAND_LABELS,
   sectionHint,
+  runsOneModel,
   sectionMemberKeys,
   sessionMembers,
   describeSection,
@@ -3211,6 +3212,12 @@ export function NewUiApp() {
             // The slug, not the display name: compatibility is keyed on the tool
             // the preferences use, and two apps can share a name.
             appSlug={openTool}
+            // Claude and ChatGPT / Codex run one model at a time (AG-888), so
+            // their picker offers exactly one choice: clicking a model replaces
+            // the current one and applies immediately. Every other app keeps
+            // the multi-select. The arity lives on `SECTIONS` because nothing
+            // in the backend reports it.
+            multiple={!runsOneModel(openTool ?? "")}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}

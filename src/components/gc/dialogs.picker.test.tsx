@@ -8,8 +8,9 @@ import { ModelPickerDialog } from "./dialogs";
  * The 25 cases in `e2e/new-ui-model-picker.spec.ts` already walk the multiple
  * mode through the real shell, so what is worth pinning here is what a browser
  * run cannot reach or would pay a lot to reach: the `Apply selections` gate,
- * which is a comparison rather than a click path; the single mode, which has no
- * call site yet and so appears in no e2e flow at all; and the handful of
+ * which is a comparison rather than a click path; the single mode, which
+ * AG-888 gave its first call site and which no e2e flow walks yet; and the
+ * handful of
  * behaviours that are *different* between the modes rather than merely present
  * in one - the lock on the last model, the footer note, the button row.
  *
@@ -238,5 +239,53 @@ describe("ModelPickerDialog vendor marks", () => {
 
     expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
     expect(screen.getByText("sao10k/l3-euryale")).toBeTruthy();
+  });
+});
+
+/**
+ * AG-888. Claude and ChatGPT / Codex run one model at a time, so their picker
+ * offers exactly one choice rather than a checkbox per model.
+ */
+describe("the single-model picker (AG-888)", () => {
+  it("offers no way to hold more than one", () => {
+    renderPicker({ appName: "Claude", appSlug: "claude-code", multiple: false });
+
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.getAllByRole("radio")).toHaveLength(CATALOGUE.length);
+    expect(
+      screen.queryByRole("button", { name: "Apply selections" }),
+    ).toBeNull();
+  });
+
+  it("replaces the current model rather than adding to it", () => {
+    const onSave = vi.fn();
+    renderPicker({
+      appSlug: "claude-code",
+      multiple: false,
+      selectedIds: [CATALOGUE[0].id],
+      onSave,
+    });
+
+    fireEvent.click(radio(CATALOGUE[1].id));
+
+    expect(onSave).toHaveBeenCalledWith([CATALOGUE[1].id]);
+  });
+
+  /**
+   * An app can arrive carrying a set chosen before it was single-model. Four
+   * circle-checks would draw a state this picker cannot produce; the first
+   * entry is the honest one, being what the gateway falls back to for anything
+   * outside the set.
+   */
+  it("shows one model when a set was stored before the app became single-model", () => {
+    renderPicker({
+      appSlug: "claude-code",
+      multiple: false,
+      selectedIds: CATALOGUE.map((m) => m.id),
+    });
+
+    expect(radio(CATALOGUE[0].id).getAttribute("aria-checked")).toBe("true");
+    expect(radio(CATALOGUE[1].id).getAttribute("aria-checked")).toBe("false");
+    expect(radio(CATALOGUE[2].id).getAttribute("aria-checked")).toBe("false");
   });
 });
