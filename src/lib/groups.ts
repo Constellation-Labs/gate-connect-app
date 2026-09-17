@@ -912,6 +912,21 @@ function intended(m: GroupMember): boolean {
 export function describeSection(id: string): string | undefined {
   const section = SECTIONS.find((s) => s.id === id);
   if (section?.description) return section.description;
+  // `blurb` before the member's own sentence. Terminal is the only section that
+  // carries one, and it was the only section whose pane said less than the data
+  // had: `describeMember("env-proxy")` is "Command line tools that follow your
+  // proxy settings", which never says the switch is machine-wide.
+  //
+  // The sentence that says so was already written - it just sat in the field
+  // the window shell does not read, because `group.blurb` is rendered only by
+  // `screens/FamilyPanel.tsx`, which is the popover. The window had a second
+  // statement of its own, the `machineScopeNote` pane note, and when that went
+  // (no frame draws it) the new shell was left with no machine-wide statement
+  // at all. AG-893.
+  //
+  // Reading the same string in both shells is also what the ticket asks for:
+  // one coverage sentence, not two that have to be kept true of each other.
+  if (section?.blurb) return section.blurb;
   return describeMember(sectionMemberKeys(id)[0] ?? id);
 }
 

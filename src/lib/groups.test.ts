@@ -3,17 +3,18 @@ import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./
 import type { Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
+  PROXY_REOPEN_ADVICE,
   browserTrustRestartAdvice,
   buildGroups,
+  cascadeTargets,
+  describeMember,
+  describeSection,
+  groupSummary,
   hasBrowserSurface,
   hostReloadAdvice,
-  describeMember,
-  groupSummary,
-  cascadeTargets,
   needsSessionConsent,
-  sessionMembers,
   proxyReopenAdvice,
-  PROXY_REOPEN_ADVICE,
+  sessionMembers,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -940,3 +941,27 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+describe("describeSection", () => {
+  it("gives the Terminal pane a sentence that says it is machine-wide", () => {
+    // AG-893. The pane used to fall through to `describeMember("env-proxy")` -
+    // "Command line tools that follow your proxy settings" - which never says
+    // the switch reaches every program you start, or that it touches git and
+    // curl. The sentence that says so was already written; it sat in `blurb`,
+    // which only the popover reads.
+    const said = describeSection("terminal");
+
+    expect(said).toMatch(/every program started after your next login/);
+    expect(said).toMatch(/not only AI tools/);
+  });
+
+  it("still prefers a section's own description where it has one", () => {
+    expect(describeSection("claude")).toMatch(/Claude Code in your terminal/);
+  });
+
+  it("falls back to the first member for a section with neither", () => {
+    // `openai-api` carries no description and no blurb, and its member's
+    // sentence is the only place the host is written in the window UI.
+    expect(describeSection("openai-api")).toBeDefined();
+  });
+});
