@@ -2342,10 +2342,16 @@ fn set_device_name(name: String) -> Result<(), String> {
     gate_connect_core::preferences::set_device_name(&name).map_err(|e| format!("{e:#}"))
 }
 
-/// Turn native notifications on or off. Gates everything the app can put on
-/// screen: a request blocked or flagged by the security feed (AG-578), an
-/// expired session, and a quit that could not put a tool back on its own
-/// settings.
+/// Turn native notifications on or off. One switch, because Settings draws one
+/// row: a request blocked or flagged by the security feed (AG-578), a quit that
+/// could not put a tool back on its own settings, and the session-expired notice
+/// fired from the health tick.
+///
+/// **Not quite everything, and not by design.** `signal_session_dead` shows the
+/// same session-expired notice without reading this, and `SESSION_NEEDS_SIGNIN`
+/// lets whichever path fires first suppress the other, so an off switch can
+/// still be beaten to it. That gap predates this switch and is left alone here
+/// rather than widened into a behaviour change on an untouched path.
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))

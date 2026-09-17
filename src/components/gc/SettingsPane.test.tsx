@@ -15,6 +15,7 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     apiKeyMasked: "sk-gw***********",
     launchAtLogin: true,
     notifications: true,
+    securityNotificationSound: true,
     shareDiagnostics: true,
     version: "v0.1.4",
     onRenameDevice: noop,
@@ -25,6 +26,7 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     onToggleLaunchAtLogin: noop,
     onRetryLaunchAtLogin: noop,
     onToggleNotifications: noop,
+    onToggleSecurityNotificationSound: noop,
     onToggleShareDiagnostics: noop,
     onRetryPreferences: noop,
     onReplayTutorial: noop,
@@ -234,11 +236,15 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
     expect(launch?.unavailable).toBeDefined();
   });
 
-  it("marks both preference switches unavailable together, since they share one read", () => {
+  it("marks every preference switch unavailable together, since they share one read", () => {
     const built = sections({ preferencesUnavailable: true });
     const rows = built.flatMap((s) => s.rows);
     expect(rows.find((r) => r.id === "notifications")?.unavailable).toBeDefined();
+    // The sound row comes from the same read and sits directly under the one
+    // above, so a switch here is a value nobody read drawn beside a Retry.
+    expect(rows.find((r) => r.id === "security-sound")?.unavailable).toBeDefined();
     expect(rows.find((r) => r.id === "share-diagnostics")?.unavailable).toBeDefined();
+    expect(rows.find((r) => r.id === "security-sound")?.toggle).toBeUndefined();
   });
 
   /** Only the preference switches; a failed preferences read says nothing about

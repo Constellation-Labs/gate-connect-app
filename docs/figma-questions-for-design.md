@@ -241,7 +241,7 @@ drawn either way.
 
 ---
 
-## 8. RESOLVED - one row, and the frame's copy with it
+## 8. ANSWERED - one row, and the frame's copy with it
 
 **What we saw.** `116:29086` draws a single row, "Alert me when a request is
 blocked or flagged". The app had split it into three - notify on blocked,
@@ -262,7 +262,9 @@ Two things worth knowing rather than re-deciding:
 - **The sound row stays**, undrawn. It is in AG-594's acceptance criteria and it
   gates something real (`sound` on every notification the feed fires), so
   Startup draws two rows: the drawn Notifications one and Notification sound.
-  A frame for it would close the last gap here.
+  A frame for it would close the last gap here, and would settle its icon too:
+  both rows currently draw `bell`, because the drawn row owns that glyph and the
+  undrawn one has nothing to copy. We have not picked a second by eye.
 
 ---
 

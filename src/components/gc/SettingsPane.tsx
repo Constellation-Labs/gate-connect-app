@@ -505,7 +505,15 @@ export function buildSettingsSections({
           : []),
         // Undrawn, and kept: the frame has no sound row, but AG-594's acceptance
         // criteria names one and it gates something real - `sound` on every
-        // security notification the feed fires.
+        // security notification the feed fires. Only those: the routing
+        // notifications never carry one, which is why the description says
+        // security alerts rather than repeating the label.
+        //
+        // It takes the same `unavailable` branch as the row above because it
+        // comes from the same read. It used to lack one, which was survivable
+        // while two rows sat between them and is not now they are adjacent: a
+        // failed read drew Retry on one row and a confident "On" directly under
+        // it, from a value nobody had read.
         ...(onToggleSecurityNotificationSound
           ? [
               {
@@ -513,10 +521,14 @@ export function buildSettingsSections({
                 icon: "bell" as IconName,
                 label: "Notification sound",
                 description: "Play a sound with security alerts",
-                toggle: {
-                  on: securityNotificationSound ?? true,
-                  onToggle: onToggleSecurityNotificationSound,
-                },
+                ...(preferencesUnavailable && onRetryPreferences
+                  ? { unavailable: { onRetry: onRetryPreferences } }
+                  : {
+                      toggle: {
+                        on: securityNotificationSound ?? true,
+                        onToggle: onToggleSecurityNotificationSound,
+                      },
+                    }),
               } as SettingsRow,
             ]
           : []),

@@ -2349,12 +2349,8 @@ export function NewUiApp() {
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
         },
-        // Same optimistic-then-re-read shape as the switch above: the switch has
-        // to move on click, and the re-read is what surfaces a failed write
-        // instead of leaving the UI asserting a value the file lacks.
         onToggleSecurityNotificationSound: () => {
           const next = !(prefs?.security_notification_sound ?? true);
-          // Same as the switch above: the retry clears its own last failure.
           setActionError(null);
           setPrefs((p) => (p ? { ...p, security_notification_sound: next } : p));
           void setSecurityNotificationSound(next)

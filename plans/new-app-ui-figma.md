@@ -730,8 +730,9 @@ highlight pair is likewise a Button-component treatment nothing in the new UI
 reproduces yet. The destructive button's `#FEF2F2` label stays white, matching
 `Modal`. The Notifications description kept the honest routing-health copy
 over the drawn "blocked or flagged" for the reason recorded on 2026-08-21 - since
-superseded by AG-578, which built the feed and gave the drawn sentence its own
-rows - and
+superseded twice, by AG-578, which built the feed and gave the drawn sentence its
+own rows, and then on 2026-09-17, which collapsed those rows back into the one
+the frame draws and put the sentence on it - and
 the Help section and the Sign-in method / certificate / What-is-collected rows
 remain the standing undrawn deviations. 548 unit tests and the 169-test e2e
 suite pass.
@@ -995,7 +996,9 @@ stands; only the sentences are ours.
 a live security feed that did not exist, so the row promised more than it fired.
 Left as the file had it at the time, unlike the two above. Resolved 2026-08-31,
 and not by editing the copy: the feed was built, and the drawn sentence moved to
-the Blocked/Flagged rows it was describing.
+the Blocked/Flagged rows it was describing. **Superseded 2026-09-17** - those
+rows are gone and the sentence is back on the single drawn row; see "One
+Notifications row again" below.
 
 **Smaller, all measured.** The Settings page title takes the frame's 20/**24**
 rather than the token export's 20/28. The rail's right edge is `base/border`,

@@ -15,11 +15,11 @@
 //! default.
 //!
 //! Scope note. Only the preferences that currently gate something live here.
-//! The per-category security-event switches (blocked / flagged) and the sound
-//! toggle arrived with the live event feed they gate (AG-578) and not before,
-//! for the reason that kept them out until then: a switch that gates nothing is
-//! worse than a missing switch, because it tells the user they have turned
-//! something off.
+//! The notification switches arrived with the live event feed they gate
+//! (AG-578) and not before, for the reason that kept them out until then: a
+//! switch that gates nothing is worse than a missing switch, because it tells
+//! the user they have turned something off. There were briefly three of them,
+//! one per category; Settings draws one row, so there is one flag.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -662,6 +662,48 @@ mod tests {
             "an absent field must not read as off"
         );
         assert!(!partial.share_diagnostics);
+    }
+
+    /// The upgrade this collapse creates, pinned rather than left to be
+    /// discovered. A file written by the three-switch build carries
+    /// `routing_health_notifications`, `blocked_event_notifications` and
+    /// `flagged_event_notifications`, none of which exist any more.
+    ///
+    /// It must still parse, every other field must survive, and `notifications`
+    /// must load **on**. That last one is a real consequence: someone who had
+    /// turned an alert off gets it back on once, and the next `save` drops the
+    /// stale keys for good.
+    ///
+    /// A `serde(alias)` onto one of the three would carry the old answer
+    /// forward, and is deliberately not used. The only honest candidate is
+    /// `routing_health_notifications`, which gated *routing* - so a user who had
+    /// routing quiet but security alerts on would have the alerts silenced by
+    /// the upgrade. On this product, coming back louder is the safe direction
+    /// and coming back quieter is not. Aliasing all three is not available
+    /// either: serde rejects duplicate fields, and `load` turns any parse error
+    /// into `Preferences::default()`, which would discard `device_name`,
+    /// `tool_models` and `session_routing_accepted` with it.
+    #[test]
+    fn a_file_from_the_three_switch_build_loads_with_notifications_on() {
+        let legacy = r#"{
+            "routing_health_notifications": false,
+            "blocked_event_notifications": false,
+            "flagged_event_notifications": false,
+            "security_notification_sound": false,
+            "device_name": "Work laptop",
+            "session_routing_accepted": ["claude"]
+        }"#;
+        let prefs: Preferences = serde_json::from_str(legacy).expect("a legacy file still parses");
+
+        assert!(
+            prefs.notifications,
+            "the collapsed field has no stored value, so it loads at its default"
+        );
+        // Everything the old file DID say about a field that still exists is
+        // kept. Losing these to the upgrade would be the unrecoverable half.
+        assert!(!prefs.security_notification_sound);
+        assert_eq!(prefs.device_name.as_deref(), Some("Work laptop"));
+        assert_eq!(prefs.session_routing_accepted, vec!["claude".to_string()]);
     }
 
     #[test]

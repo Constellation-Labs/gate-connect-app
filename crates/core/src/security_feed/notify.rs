@@ -145,10 +145,10 @@ impl Grouper {
     /// events stopping, so the moment worth reporting is precisely the moment
     /// nothing arrives to drive an `admit`.
     ///
-    /// Re-reads the switches rather than trusting the ones in force when the
-    /// bucket opened: a user who turns blocked notifications off mid-storm has
-    /// asked for silence, and a summary landing afterwards would be the switch
-    /// failing to stop something.
+    /// Re-reads the preference rather than trusting the one in force when the
+    /// bucket opened: a user who turns notifications off mid-storm has asked for
+    /// silence, and a summary landing afterwards would be the switch failing to
+    /// stop something.
     pub fn sweep(&mut self, prefs: &preferences::Preferences, now: Instant) -> Vec<Notification> {
         let mut due = Vec::new();
         let mut expired = Vec::new();
@@ -392,6 +392,24 @@ mod tests {
         let on = prefs(true, true);
         assert!(fired(g.admit(&blocked, &on, now)));
         assert!(fired(g.admit(&flagged, &on, now)));
+    }
+
+    /// The early return in `admit` is before the bucket is touched, which is the
+    /// property worth pinning: an event that arrives while the switch is off is
+    /// not silently spent. Turn the switch back on and the next event is still
+    /// the one that speaks, rather than being counted as a repeat of something
+    /// the user was never told about.
+    #[test]
+    fn an_event_admitted_while_off_does_not_spend_the_bucket() {
+        let mut g = Grouper::new();
+        let now = Instant::now();
+        let e = event(Action::Block, Some("credential"), Some("codex"));
+
+        assert!(g.admit(&e, &prefs(false, true), now).is_empty());
+        assert!(
+            fired(g.admit(&e, &prefs(true, true), now)),
+            "the first event after the switch comes back on has to speak"
+        );
     }
 
     #[test]
