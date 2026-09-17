@@ -307,32 +307,14 @@ describe("useRouting: domains", () => {
   });
 });
 
-describe("useRouting: the master switch", () => {
-  it("trusts the certificate before starting the engine", async () => {
-    const { api } = harness([], proxyState({ running: false, ca_trusted: false }));
-
-    let done: Promise<boolean> | null = null;
-    await act(async () => {
-      done = api.current!.setMasterRouted(true);
-    });
-    // Asked first: `proxy_enable` trusts the CA itself, and that is the step that
-    // raises the OS prompt.
-    expect(api.current!.prompt).toEqual({ kind: "trust" });
-    expect(proxyEnable).not.toHaveBeenCalled();
-
-    await act(async () => {
-      api.current!.resolvePrompt(true);
-      await done;
-    });
-    expect(proxyTrustCa).toHaveBeenCalled();
-    expect(proxyEnable).toHaveBeenCalled();
-  });
-
+describe("useRouting: stopping the engine", () => {
   it("does not ask about the certificate on the way off", async () => {
+    // Every way off is promptless, so the way back on is too. Removing the
+    // certificate is `untrustCa`, a separate and confirmed action.
     const { api } = harness([], proxyState({ ca_trusted: false }));
 
     await act(async () => {
-      await api.current!.setMasterRouted(false);
+      await api.current!.stopEngine();
     });
 
     expect(api.current!.prompt).toBeNull();
@@ -340,33 +322,38 @@ describe("useRouting: the master switch", () => {
     expect(proxyDisable).toHaveBeenCalled();
   });
 
-  it("reports nothing changed when the certificate is refused", async () => {
-    // The caller follows a real change with the running-apps offer, and there is
-    // nothing to reopen when the engine never started.
-    const { api } = harness([], proxyState({ running: false, ca_trusted: false }));
+  it("reports that the engine moved, so the caller can follow up", async () => {
+    const { api } = harness([], proxyState({ running: true }));
 
-    let done: Promise<boolean> | null = null;
-    await act(async () => {
-      done = api.current!.setMasterRouted(true);
-    });
     let changed: boolean | undefined;
     await act(async () => {
-      api.current!.resolvePrompt(false);
-      changed = await done!;
+      changed = await api.current!.stopEngine();
+    });
+
+    expect(changed).toBe(true);
+  });
+
+  it("does nothing when the engine is already stopped", async () => {
+    // The intent effect in `NewUiApp` re-runs on every intent change, so a
+    // window sitting at nothing-requested would otherwise call `proxy_disable`
+    // on each one.
+    const { api } = harness([], proxyState({ running: false }));
+
+    let changed: boolean | undefined;
+    await act(async () => {
+      changed = await api.current!.stopEngine();
     });
 
     expect(changed).toBe(false);
-    expect(proxyEnable).not.toHaveBeenCalled();
-    // Declining is an answer, not a failure.
-    expect(api.current!.prompt).toBeNull();
+    expect(proxyDisable).not.toHaveBeenCalled();
   });
 
-  it("surfaces a failed toggle under its own context", async () => {
-    (proxyEnable as Mock).mockRejectedValue(new Error("admin prompt cancelled"));
-    const { api, onError } = harness([], proxyState({ running: false }));
+  it("surfaces a failed stop under its own context", async () => {
+    (proxyDisable as Mock).mockRejectedValue(new Error("engine would not stop"));
+    const { api, onError } = harness([], proxyState({ running: true }));
 
     await act(async () => {
-      await api.current!.setMasterRouted(true);
+      await api.current!.stopEngine();
     });
 
     expect(onError).toHaveBeenCalledWith(expect.any(Error), "proxy_toggle");

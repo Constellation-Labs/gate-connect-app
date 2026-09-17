@@ -36,7 +36,7 @@ test.describe("sign in", () => {
     // moment it exists for.
     await expect(app.page.getByText("One prompt to expect")).toBeVisible();
     await app.page.getByRole("button", { name: "Install certificate" }).click();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(app.routingStatus).toHaveText(/^On/);
     expect((await app.state()).proxy.running).toBe(true);
   });
 

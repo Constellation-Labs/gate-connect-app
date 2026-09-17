@@ -11,7 +11,7 @@ type PillLabel =
   | "Error"
   | "Needs trust"
   | "Set up elsewhere"
-  | "Waiting on routing"
+  | "No routing"
   | "Not verified"
   | "Not routed";
 
@@ -61,13 +61,13 @@ const SKIN: Record<PillLabel, { wrap: string; dot: string }> = {
   },
   // Switched on with the master off. Sunken like "Not routed" because nothing
   // is flowing, but ink-2 rather than ink-3: the user did not ask for this.
-  "Waiting on routing": {
+  "No routing": {
     wrap: "bg-gc-sunken text-gc-ink-2 ring-1 ring-gc-ink-4/45",
     dot: "bg-gc-ink-3",
   },
   // Nothing known to be wrong, nothing confirmed either. Warning rung rather
   // than sunken: the switch is on, so this is not a state the user chose, and
-  // the same argument that gives "Waiting on routing" ink-2 gives this the
+  // the same argument that gives "No routing" ink-2 gives this the
   // amber ring - an unanswered check is a half-on for a reason outside the row.
   "Not verified": {
     wrap: "bg-gc-warning-wash text-gc-ink-2 ring-1 ring-gc-warning-deep/45",
@@ -112,7 +112,7 @@ export function groupPillLabel(
     // which family is stuck - and grey there was actively misleading, because
     // pressing Trust turned a row the user read as "you turned this off" green.
     //
-    // `master-off` cannot. It is set as `enabled && !proxyOn`, and `proxyOn` is
+    // `not-routing` cannot. It is set as `enabled && !proxyOn`, and `proxyOn` is
     // global, so every enabled member of every family gets it at the same
     // moment: printed here it is four identical pills saying what the card
     // directly above already said as a count ("Off · 8 waiting"), which is
@@ -156,7 +156,7 @@ export function memberPillLabel(member: GroupMember): PillLabel {
   // Switched on, master off: the config still points at a relay that isn't
   // running. Not "Routed" (nothing flows) and not "Not routed" (the user
   // didn't turn it off).
-  if (member.attention === "master-off") return "Waiting on routing";
+  if (member.attention === "not-routing") return "No routing";
   // Not "Not routed": that is what the pill says for a switch the user turned
   // off, and this member's switch is on. Nothing could be confirmed, which is a
   // third thing and the one AG-570 requires be distinguishable from both.

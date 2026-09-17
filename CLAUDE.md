@@ -134,7 +134,22 @@ A third was found, raised and decided on 2026-09-10, so it joins them:
  message both. Verified by relaunching, not only by reading. Frames `694:33002`
  and `694:33340`; question 22 in `docs/figma-questions-for-design.md`.
 
-If you find a fourth of these, raise it rather than deciding it.
+A fourth was raised and decided on 2026-09-17, so it joins them:
+
+- **The `not-routing` notice** says routing is not running, not the drawn
+ "Routing is set to off" (`116:30663`). The drawn sentence names a control the
+ user set, and there is no longer a control to set: the integration rows are
+ the only routing switch, the master card is gone from the rail and the switch
+ is gone from the popover. Nor did anybody set it - the state's usual cause is
+ now the engine failing to start under a row that is on, most often a refused
+ admin prompt. "Set to off" would send that user looking for a switch to put
+ back. The attention kind was `master-off` for the same reason and is now
+ `not-routing`; its phrase is "No routing", not "Waiting on routing", because
+ waiting promises an arrival a failed start will not deliver, and because
+ principle 3's vocabulary already has Not routed and did not need a fifth term.
+ Question 25 in `docs/figma-questions-for-design.md`.
+
+If you find a fifth of these, raise it rather than deciding it.
 
 `https://www.figma.com/design/9FrccCojXy0f8QD8Wm5Lln/Gate-Connect`
 

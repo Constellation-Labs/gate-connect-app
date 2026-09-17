@@ -441,46 +441,48 @@ export function useRouting({
   );
 
   /**
-   * Turn all routing on or off: the engine itself, not one app.
+   * Stop the engine because nothing is asked for any more.
    *
-   * The popover's master switch (`App.tsx`'s `toggleProxy`) minus the takeover.
-   * The certificate is trusted on the way on, because enabling is the step that
-   * prompts, and never on the way off, which is promptless. The backend owns the
-   * routed set across the toggle - off snapshots what was on, on restores that
-   * snapshot - so this reflects the result through `resync` rather than
-   * reconstructing it here.
+   * The mirror of `ensureEngineRunning`, and the other half of making the
+   * integration rows the only switch: a row turning on starts the engine, and
+   * the last row turning off stops it. There is no user-facing control between
+   * the two, so this is driven from intent rather than from a click - see the
+   * effect in `NewUiApp` that owns the decision.
+   *
+   * Promptless, like every way off: the certificate is left in the trust store
+   * so the way back on stays promptless too, which is what `untrustCa` is for
+   * when the user means the stronger thing.
    *
    * Reports whether the engine actually moved, so the caller can follow up with
    * the running-apps offer: every routed tool is on its old route until it
    * restarts, exactly as after a config write.
    */
-  const setMasterRouted = useCallback(
-    async (routed: boolean): Promise<boolean> => {
-      if (busy) return false;
-      setBusy(true);
-      let changed = false;
-      try {
-        if (routed) await ensureCaTrusted();
-        await (routed ? proxyEnable() : proxyDisable());
-        track(routed ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
-        changed = true;
-      } catch (e) {
-        if (!(e instanceof Declined)) {
-          trackError(e, "proxy_toggle");
-          onError?.(e, "proxy_toggle");
-        }
-      } finally {
-        await settle();
-      }
-      return changed;
-    },
-    [busy, ensureCaTrusted, resync, onError],
-  );
+  const stopEngine = useCallback(async (): Promise<boolean> => {
+    if (busy) return false;
+    // Already down, so there is nothing to report and nothing to offer. The
+    // effect that calls this re-runs on every intent change, and without this
+    // a window sitting at nothing-requested would call `proxy_disable` on each
+    // one.
+    if (!proxy || !proxy.running) return false;
+    setBusy(true);
+    let changed = false;
+    try {
+      await proxyDisable();
+      track("proxy_disabled", { source: "intent" });
+      changed = true;
+    } catch (e) {
+      trackError(e, "proxy_toggle");
+      onError?.(e, "proxy_toggle");
+    } finally {
+      await settle();
+    }
+    return changed;
+  }, [busy, proxy, resync, onError]);
 
   /**
    * Turn the shell-environment channel on or off.
    *
-   * Its own action rather than a branch of `setMasterRouted`, for the reason
+   * Its own action rather than a branch of the engine controls, for the reason
    * `App.tsx` gives: this never starts or stops the engine, it decides whether
    * the proxy is also written into the user's environment - a machine-wide
    * change that reaches `git` and `curl`, not just the AI tools.
@@ -509,7 +511,7 @@ export function useRouting({
    * lands, and the engine keeps running, so the state it leaves behind is one
    * the user cannot read off a switch. Turning routing off deliberately does
    * *not* do this - re-enabling stays promptless - which is why it is a separate
-   * action rather than part of the master toggle.
+   * action rather than part of stopping the engine.
    */
   const untrustCa = useCallback(async () => {
     if (busy) return;
@@ -536,7 +538,7 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
-    setMasterRouted,
+    stopEngine,
     setEnvExport,
     untrustCa,
     writeFailures,

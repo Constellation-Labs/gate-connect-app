@@ -57,8 +57,8 @@ test.describe("command-line switch", () => {
     await expect(
       app.page.getByRole("switch", { name: "Route command-line tools through Gate" }),
     ).toHaveCount(0);
-    // The master switch is still there: only the sub-setting drops out.
-    await expect(app.routingSwitch).toBeVisible();
+    // The routing card is still there: only the sub-setting drops out.
+    await expect(app.routingStatus).toBeVisible();
   });
 });
 

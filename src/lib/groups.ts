@@ -406,7 +406,7 @@ export type MemberAttention =
    */
   | "overridden"
   | "needs-trust"
-  | "master-off"
+  | "not-routing"
   /**
    * Nothing is known to be wrong, and nothing could be confirmed either.
    *
@@ -596,7 +596,7 @@ function memberFromTool(
         : tool.status.kind === "drifted"
           ? "drifted"
           : tool.status.kind === "overridden"
-            ? // Above master-off and unverified on purpose: those describe a
+            ? // Above not-routing and unverified on purpose: those describe a
               // route that would carry this tool's traffic once something is
               // switched on, and this one says the traffic is not on our route
               // at all.
@@ -606,7 +606,7 @@ function memberFromTool(
             // relay as a connection problem, and "routing is off" is what the
             // user needs to hear.
             connected && !proxyOn
-            ? "master-off"
+            ? "not-routing"
             : connected && !routed
               ? "unverified"
               : null,
@@ -645,7 +645,7 @@ function memberFromDomain(
     attention: domain.enabled && proxyOn && !caTrusted
       ? "needs-trust"
       : domain.enabled && !proxyOn
-        ? "master-off"
+        ? "not-routing"
         : null,
     domain,
     client: domain.client,
@@ -1079,7 +1079,7 @@ export function sessionMembers(group: Group): GroupMember[] {
 export type GroupException =
   | "error"
   | "needs-trust"
-  | "master-off"
+  | "not-routing"
   | "drifted"
   | "overridden"
   | "unverified";
@@ -1100,7 +1100,7 @@ export function groupSummary(group: Group): {
   const drifted = group.members.filter((m) => m.attention === "drifted");
   const overridden = group.members.filter((m) => m.attention === "overridden");
   const untrusted = group.members.filter((m) => m.attention === "needs-trust");
-  const masterOff = group.members.filter((m) => m.attention === "master-off");
+  const notRouting = group.members.filter((m) => m.attention === "not-routing");
   if (errors.length > 0) {
     return {
       count,
@@ -1111,8 +1111,8 @@ export function groupSummary(group: Group): {
   if (untrusted.length > 0) {
     return { count, exception: "certificate not trusted", kind: "needs-trust" };
   }
-  if (masterOff.length > 0) {
-    return { count, exception: "waiting on routing", kind: "master-off" };
+  if (notRouting.length > 0) {
+    return { count, exception: "no routing", kind: "not-routing" };
   }
   if (drifted.length > 0) {
     return {

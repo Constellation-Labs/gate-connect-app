@@ -37,7 +37,6 @@ import {
   openOnboardingWindow,
   routedClientsStale,
   routingVerdicts,
-  runningAgentsCount,
   staleAgentsCount,
   pendingQuitTools,
   getPreferences,
@@ -126,31 +125,6 @@ function hostOf(url: string | undefined): string {
   }
 }
 
-/** Contexts whose failure means traffic is not flowing. These are the startup
- *  restore paths, which is exactly why the buffer exists: they run before the
- *  webview does, so the user has no other way to learn the engine never came
- *  up. A failure here is a total routing outage that the popover would
- *  otherwise render as a healthy screen. */
-// The routing takeover teaches its lesson once per install; after the first
-// acknowledgment (persisted like the tour flag), later toggles fall back to
-// the inline restart hint that carries the same advice, so the daily user
-// isn't re-interrupted every session. Storage failures degrade to "already
-// seen" - never trap the user in a recurring takeover.
-const ROUTING_TAKEOVER_SEEN_KEY = "gc.routing-takeover.v1.seen";
-function hasSeenRoutingTakeover(): boolean {
-  try {
-    return localStorage.getItem(ROUTING_TAKEOVER_SEEN_KEY) === "1";
-  } catch {
-    return true;
-  }
-}
-function markRoutingTakeoverSeen(): void {
-  try {
-    localStorage.setItem(ROUTING_TAKEOVER_SEEN_KEY, "1");
-  } catch {
-    /* noop */
-  }
-}
 
 /** What the last routing change resulted in. "started" means the change
  * turned the master on as a side effect; "pending" means it did not and
@@ -811,11 +785,11 @@ export function App() {
     return running;
   }, [refreshVerdicts]);
 
-  // `takeover: true` (the home-screen toggle) surfaces the result as the
-  // full-popover routing notice; the Routing screen's toggle keeps its
-  // inline hints instead.
+  /** Start (or stop) the engine from one of the two "turn routing on" remedies:
+   *  the setup screen's and the routing notice's. The home screen's master
+   *  switch was the third caller and is gone. */
   const toggleProxy = useCallback(
-    async (takeover: boolean) => {
+    async () => {
       if (proxyBusyRef.current) return;
       proxyBusyRef.current = true;
       setProxyBusy(true);
@@ -826,43 +800,14 @@ export function App() {
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
-        // The takeover and the inline hints say the same thing ("restart your
-        // agents"), so show one or the other, never both.
-        if (takeover) {
-          // A failed probe defaults to showing.
-          const agents = await runningAgentsCount().catch(() => 1);
-          // Nothing running means nothing to CLOSE, which is not the same as
-          // nothing to say - and conflating the two is what left a whole class
-          // of user with no notice at all. `AGENT_PROCESS_NAMES` is
-          // `claude`/`codex`/`opencode`, so a user whose routed clients are a
-          // browser tab and a desktop app probes 0 every time, and this branch
-          // used to answer that by rendering nothing: the one user who most
-          // needs telling that an already-open page is still bypassing Gate was
-          // the one user told nothing. The count cannot simply be widened to
-          // fix that, because the same set drives `close_running_agents`, and
-          // an app that offers to close your browser is a worse bug than the
-          // one being fixed.
-          //
-          // So the count decides the REMEDY, not whether to speak. With
-          // something to close, the takeover (or, once acknowledged, the inline
-          // hint) offers to close it. With nothing to close, the inline hint
-          // carries the advice that does apply - reload what you have open -
-          // and drops the close action, exactly as the `pending` banner already
-          // drops it for the same reason.
-          setNothingToClose(agents === 0);
-          if (agents > 0 && !hasSeenRoutingTakeover()) {
-            markRoutingTakeoverSeen();
-            setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
-          } else {
-            setChangeNotice(next.running ? "on" : "off");
-          }
-        } else {
-          // The Routing screen's own toggle never probed, and its banner has
-          // always offered the close route. Unchanged: assuming there is
-          // something to close is this path's existing behaviour.
-          setNothingToClose(false);
-          setChangeNotice(next.running ? "on" : "off");
-        }
+        // The close-running-agents takeover went with the master switch that
+        // was its only caller: it probed `running_agents_count` and offered to
+        // close what it found. Both remaining callers are "turn routing on"
+        // remedies - the setup screen's and the notice's - and both always took
+        // this arm. The inline hint is what they get, and it is what they got
+        // before.
+        setNothingToClose(false);
+        setChangeNotice(next.running ? "on" : "off");
         // The backend owns the routed set across a master toggle: turning off
         // snapshots what was on and disables all; turning on restores that
         // snapshot. Just reflect the result (the returned ProxyState already
@@ -1248,6 +1193,49 @@ export function App() {
   // family that no longer exists cannot say that about itself.
   const openGroup = groups.find((g) => g.id === openFamily);
 
+  // Assigned during render, not from an effect: the callers below await their
+  // own resync, but React has not necessarily committed the render it causes by
+  // the time that settles, so an effect-written ref can still hold the
+  // pre-click ledger - which is exactly the member being switched off.
+  const desiredRef = useRef<{ key: string; groupId: string }[]>([]);
+  desiredRef.current = groups.flatMap((g) =>
+    g.members.filter((m) => m.desired).map((m) => ({ key: m.key, groupId: g.id })),
+  );
+
+  /**
+   * Stop the engine when a turn-off has left nothing asked for.
+   *
+   * This screen's master switch is gone, so without this the popover would have
+   * no way off at all: every path *on* survives (a member's connect starts the
+   * engine, and so does a domain) and none of the paths off would.
+   *
+   * Called from the three controls that can turn something off rather than from
+   * an effect watching the ledger. An effect would be a standing invariant, and
+   * this is not one: the CLI and the Linux helper daemon both start the engine
+   * behind this window's back - `proxy-state-changed` is the popover being told
+   * so - and a rule that corrected them would undo the announcement it had just
+   * repainted. The window shell draws the same distinction.
+   *
+   * Read through a ref because the caller's closure is stale by the time its
+   * own resync has landed, and the resynced ledger is the one that answers
+   * whether anything is still asked for.
+   */
+  const stopIfNothingDesired = useCallback(async (isBeingTurnedOff: (m: { key: string; groupId: string }) => boolean) => {
+    // Everything still asked for is part of what this click is turning off, so
+    // the click empties the ledger.
+    if (!desiredRef.current.every(isBeingTurnedOff)) return;
+    try {
+      setProxy(await proxyDisable());
+    } catch (err) {
+      // Reported where every other routing failure on this screen is. The engine
+      // staying up is the safe direction to fail in: it carries traffic nobody
+      // is asking for any more, which is untidy, where the other way drops
+      // traffic somebody is.
+      setProviderError(classifyError(err, "proxy_toggle"));
+    }
+  }, []);
+
+
   let body: ReactNode;
   if (screen === "loading") {
     // Startup screen while we resolve account + proxy (and the macOS keychain
@@ -1301,7 +1289,7 @@ export function App() {
         onTurnOnRouting={async () => {
           // Inline hints (not the takeover): the user is mid-flow and lands on
           // Home right after, where the restart hint carries the follow-up.
-          await toggleProxy(false);
+          await toggleProxy();
           setScreen("home");
         }}
         onDone={() => setScreen("home")}
@@ -1348,9 +1336,19 @@ export function App() {
         group={openGroup}
         busy={proxyBusy}
         onBack={() => setScreen("home")}
-        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
-        onToggleTool={setToolRouted}
-        onSetDomain={setDomain}
+        onToggleGroup={(id, on) => {
+          void setGroupRouted(id, on).then(
+            () => void (on || stopIfNothingDesired((m) => m.groupId === id)),
+          );
+        }}
+        onToggleTool={async (slug, routed) => {
+          await setToolRouted(slug, routed);
+          if (!routed) await stopIfNothingDesired((m) => m.key === slug);
+        }}
+        onSetDomain={async (slug, enabled) => {
+          await setDomain(slug, enabled);
+          if (!enabled) await stopIfNothingDesired((m) => m.key === slug);
+        }}
         onTrustCa={trustCa}
         trustPending={trustPending}
         proxyOn={proxy?.running ?? false}
@@ -1361,7 +1359,7 @@ export function App() {
         // unconditionally on macOS and Windows, where the PAC goes into the
         // setting the browser itself reads.
         browserChannel={proxy?.browser_proxy_channel ?? false}
-        onEnableRouting={() => void toggleProxy(false)}
+        onEnableRouting={() => void toggleProxy()}
         authMode={account?.auth_mode}
       />
     );
@@ -1400,10 +1398,9 @@ export function App() {
             confirming: true,
           })
         }
-        onEnableRouting={() => void toggleProxy(false)}
+        onEnableRouting={() => void toggleProxy()}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
-        onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
         trustPending={trustPending}
         onOpenFamily={(groupId) => {

@@ -1403,29 +1403,6 @@ export function NewUiApp() {
     [routing, runningApps],
   );
 
-  /**
-   * Turn all routing on or off.
-   *
-   * Same follow-up as a config write: every routed tool is on its old route until
-   * it restarts, so a master toggle that actually moved offers to close them.
-   *
-   * The one caller that genuinely means every tool, so it passes no filter.
-   */
-  const toggleMaster = useCallback(
-    async (next: boolean) => {
-      setActionError(null);
-      if (await routing.setMasterRouted(next)) {
-        await runningApps.offerAfterChange();
-        // Routing off is a teardown: it sweeps every tool back to its own
-        // settings and the sweep is best-effort per tool. AG-570 requires the
-        // result to name what it could not put back, so the configs are read
-        // back and anything outstanding is reported.
-        if (!next) await reportTeardown("teardown");
-      }
-    },
-    [routing, runningApps, reportTeardown],
-  );
-
   const groups = useMemo<Group[]>(
     () =>
       proxy
@@ -1689,7 +1666,42 @@ export function NewUiApp() {
     onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
-  const toggleRailApp = section.toggle;
+  /**
+   * The integration rows are the only switch, so the last one off stops the
+   * engine.
+   *
+   * Driven by the click rather than by an effect watching intent. An effect
+   * would be a standing invariant, and this must not be one: it would fight
+   * anything that starts the engine out of band - the CLI and the Linux helper
+   * daemon both do, and `proxy-state-changed` is the popover being told so -
+   * and it would fire on the first render of a session that booted routed with
+   * nothing asked for, tearing routing down on launch. The rule is "turning the
+   * last integration off turns routing off", which is a thing the user did.
+   *
+   * Read through a ref because the click's own closure is stale by the time the
+   * cascade resolves: `section.toggle` awaits its resync, so the committed
+   * ledger is the one that answers whether anything is still asked for.
+   */
+  const desiredSlugsRef = useRef<string[]>([]);
+  const toggleRailApp = useCallback(
+    async (slug: string, next: boolean) => {
+      // Worked out from the click, not read back afterwards. `section.toggle`
+      // awaits its own resync, but React has not necessarily committed the
+      // render that resync causes by the time the promise settles, so a ledger
+      // read here can still be the pre-click one - which is precisely the row
+      // being switched off, and the stop would never fire.
+      const last = !next && desiredSlugsRef.current.every((s) => s === slug);
+      await section.toggle(slug, next);
+      if (!last) return;
+      // AG-570 AC 8 rode the master toggle and now rides this: `proxy_disable`
+      // snapshots the routed set and sweeps it back, best-effort per tool, so a
+      // stop that could not put everything back has to name what it left. The
+      // running-apps offer deliberately does *not* come with it - the row just
+      // switched off made its own for the tool it disconnected.
+      if (await routing.stopEngine()) await reportTeardown("teardown");
+    },
+    [section, routing, reportTeardown],
+  );
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2522,9 +2534,11 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
+  desiredSlugsRef.current = desiredApps.map((a) => a.slug);
   const protectedCount = desiredApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
+
 
   /**
    * The open app's own notice, for its own pane.
@@ -2535,9 +2549,9 @@ export function NewUiApp() {
    * whose body named Codex.
    *
    * It also only ever fired for drift, while `notices.ts` already had the copy
-   * for master-off, needs-trust and error. The one cause `Flows / App` draws
+   * for not-routing, needs-trust and error. The one cause `Flows / App` draws
    * (`116:30663`, "Claude Desktop isn't protected / Routing is set to off") is
-   * master-off, and it never appeared on the pane that names the app it is
+   * not-routing, and it never appeared on the pane that names the app it is
    * about - only on Overview. Both halves are the same mistake: the pane was
    * not asking about itself.
    *
@@ -2545,7 +2559,7 @@ export function NewUiApp() {
    * (drift, a check error); Overview keeps the two whole-machine ones.
    *
    * Built per member of the open section, not picked out of Overview's list.
-   * That list collapses master-off and needs-trust to one card keyed on the
+   * That list collapses not-routing and needs-trust to one card keyed on the
    * cause, so a lookup on it drew that card on whichever section happened to
    * own the first affected member and on no other. `memberNotices` gives every
    * affected pane its own card, worded for its own tool, and dismissed by that
@@ -3147,20 +3161,6 @@ export function NewUiApp() {
       view={view}
       onNavigate={setView}
       appGroups={sidebarGroups}
-      // The engine's own switch. Without it a window whose routing was off could
-      // start it only by accident, through a config member's connect - and a
-      // chat domain, which routes through the engine rather than the relay,
-      // could not start it at all.
-      master={
-        proxy
-          ? {
-              on: proxy.running,
-              busy: routingBusy,
-              caTrusted: proxy.ca_trusted,
-              onToggle: (next) => void toggleMaster(next),
-            }
-          : undefined
-      }
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}

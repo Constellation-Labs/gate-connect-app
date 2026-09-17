@@ -75,7 +75,7 @@ function explain({
    *  channel a running browser re-reads. Only the chat branch consults it. */
   browserChannel: boolean;
 }): string {
-  if (member.attention === "master-off") {
+  if (member.attention === "not-routing") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
@@ -341,14 +341,14 @@ export function GroupMembers({
    * can name the dialog instead of showing a dead button. */
   trustPending: boolean;
   /** Whether the engine is running. A member can be switched on and still not
-   * route, which is what the master-off state is. */
+   * route, which is what the not-routing state is. */
   proxyOn: boolean;
   /** Whether the session has the proxy channel a running browser reads, so a
    * chat row's copy can say whether it covers the browser. A reading
    * (`ProxyState.browser_proxy_channel`), not a platform guess: on Linux it is
    * false wherever GNOME's proxy schema is absent. */
   browserChannel: boolean;
-  /** The remedy for the master-off state, for the same reason `onTrustCa`
+  /** The remedy for the not-routing state, for the same reason `onTrustCa`
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
   /** So a gateway 401 sends an OAuth user to sign-in and a key user to the
@@ -453,7 +453,7 @@ export function GroupMembers({
 
       {(untrusted.length > 0 || trustPending) && (
         // The last member state to get a banner, and the only blocking one that
-        // did not have one: `master-off`, `error` and `drifted` each announced
+        // did not have one: `not-routing`, `error` and `drifted` each announced
         // themselves at group level while the certificate was named on the
         // family row and then explained nowhere, with its remedy two disclosures
         // down inside a member. Since the family row says "certificate not
@@ -466,8 +466,8 @@ export function GroupMembers({
         // still coming up. Without this the OS dialog appeared over a panel
         // that never mentioned it.
         //
-        // Mutually exclusive with the master-off banner above: a member can only
-        // be untrusted while the engine is running, and only master-off while it
+        // Mutually exclusive with the not-routing banner above: a member can only
+        // be untrusted while the engine is running, and only not-routing while it
         // is not. Warning wash with the colour on the icon and the sentence in
         // ink, per the Wash-First rule, and the same words Home's card uses so
         // the two screens do not describe one certificate two ways.
@@ -769,7 +769,7 @@ export function GroupMembers({
                       with two members expanded the screen showed three
                       identical "Turn on routing" buttons for one action. The
                       remedy-travels-with-the-problem rule needs this clause. */}
-                  {member.attention === "master-off" && !(group.desired > 0 && !proxyOn) && (
+                  {member.attention === "not-routing" && !(group.desired > 0 && !proxyOn) && (
                     <Button
                       variant="accent"
                       size="sm"

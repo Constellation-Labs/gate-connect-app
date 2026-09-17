@@ -55,8 +55,8 @@ function group(id: string, members: GroupMember[]): Group {
 }
 
 const groups = [
-  group("chatgpt", [member("codex", "master-off", "CLI"), member("chatgpt", "master-off")]),
-  group("openrouter", [member("openrouter", "master-off")]),
+  group("chatgpt", [member("codex", "not-routing", "CLI"), member("chatgpt", "not-routing")]),
+  group("openrouter", [member("openrouter", "not-routing")]),
   group("claude", [member("claude-code", "drifted", "Claude Code")]),
   group("opencode", [member("opencode", "error", "OpenCode")]),
 ];
@@ -66,7 +66,7 @@ describe("machineNotices", () => {
     const notices = machineNotices(groups);
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({
-      id: "master-off",
+      id: "not-routing",
       title: "3 apps aren’t protected",
       action: { kind: "enable-routing" },
     });
@@ -90,14 +90,14 @@ describe("machineNotices", () => {
 describe("memberNotices", () => {
   it("gives every affected member its own card without a count", () => {
     const notices = memberNotices(groups, ["codex", "chatgpt"]);
-    expect(notices.map((n) => n.id)).toEqual(["master-off:codex", "master-off:chatgpt"]);
+    expect(notices.map((n) => n.id)).toEqual(["not-routing:codex", "not-routing:chatgpt"]);
     expect(notices[0].title).toBe("CLI isn’t protected");
   });
 
   it("only sees the members it was asked about", () => {
     // OpenRouter's cause is the same as ChatGPT's; its card is still its own.
     expect(memberNotices(groups, ["openrouter"]).map((n) => n.id)).toEqual([
-      "master-off:openrouter",
+      "not-routing:openrouter",
     ]);
     expect(memberNotices(groups, ["nothing-here"])).toEqual([]);
   });
@@ -115,9 +115,9 @@ describe("memberNotices", () => {
   });
 
   it("ranks by how directly the user can act, not by section order", () => {
-    const mixed = [group("x", [member("a", "error"), member("b", "drifted"), member("c", "master-off")])];
+    const mixed = [group("x", [member("a", "error"), member("b", "drifted"), member("c", "not-routing")])];
     expect(memberNotices(mixed, ["a", "b", "c"]).map((n) => n.id)).toEqual([
-      "master-off:c",
+      "not-routing:c",
       "drifted:b",
       "error:a",
     ]);

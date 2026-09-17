@@ -641,6 +641,51 @@ part we cannot answer from the frames: no frame draws a PAYG App-default pane.
 and the frontend never reads it. If PAYG becomes settable in the app, both
 halves above stop being narrow on the same day.
 
+## 25. The master switch is gone, and its notice's copy names it
+
+**What changed.** The integration rows are the only routing switch now. The
+rail's master card has been removed, and so has the popover's switch; the engine
+follows intent instead, which it already half did - a config tool's connect
+starts it implicitly and `ensureEngineRunning` starts it for a chat domain - and
+the last row switched off now stops it.
+
+The rail card was never drawn. `440:953` is the org header, Overview/Settings
+and the app groups, and nothing else, which is the same argument that took the
+shell-environment card out on 2026-09-16. It had survived only because a chat
+domain could not start the engine and the popover's switch was the one thing
+that could; that gap was closed separately, and the card outlived its reason.
+
+**What we changed without asking, and why it is here.** The `not-routing`
+notice - `master-off` until this change - draws "Routing is set to off.
+Reconnect to restore protection." (`116:30663`). The first sentence names a
+control the user set. There is no such control any more, and nobody set it: the
+state's usual cause now is the engine failing to start under a row that is on,
+most often a refused admin prompt. Someone sent looking for a switch to put back
+will not find one. We ship "Routing isn't running. Turn it on to restore
+protection."
+
+That is a deviation from drawn copy, so it is recorded in `CLAUDE.md` beside the
+other three rather than left for a future reader to "correct" back.
+
+**The phrase moved too.** The member pill read "Waiting on routing". Waiting
+promises an arrival, and a refused admin prompt is not a wait, so it now reads
+"No routing" - which is also inside principle 3's vocabulary (Protected / Not
+protected / Config drifted / Not routed) rather than a fifth term beside it.
+
+**What we want from the file.** A corrected `116:30663`, which would retire the
+fourth exception the way a corrected `694:33002` would retire the third. And, if
+the rail card is genuinely gone for good, confirmation that no frame is meant to
+draw one - `440:953` already reads that way, but the card existed for months
+against it.
+
+**One thing we did not decide.** The close-running-agents takeover went with the
+popover's master switch, which was its only caller: routed tools keep their old
+route until they restart, and that flow was the popover's way of saying so. The
+window covers it per row. Whether the popover needs it back before it is retired
+is a product question, not a drawing one.
+
+---
+
 ---
 
 ## For information: things we found and fixed without asking
