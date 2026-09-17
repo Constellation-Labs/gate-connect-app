@@ -3063,13 +3063,6 @@ export function NewUiApp() {
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
       inventory={inventory}
-      // Only the error banner outranks a dialog, and only because it is the one
-      // report a failed action gets: under the scrim its dismiss button is
-      // readable and unclickable. The recovery and reopen banners are advisory
-      // and persistent - they survive the dialog either way - so they dim with
-      // the rest of the chrome rather than floating over it. Leaving them lifted
-      // put a "Close tool" button on top of the close-apps dialog it opens.
-      noticeAboveDialog={actionError !== null}
       notice={noticeStack}
       onToggleApp={toggleRailApp}
       dialog={
