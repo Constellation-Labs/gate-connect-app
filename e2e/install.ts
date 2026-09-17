@@ -94,11 +94,23 @@ export function installFakeTauri(state: BackendState): void {
     return p;
   }
 
-  /** Rust's `AGENT_PROCESSES`: tool slug to the process name it runs under. */
+  /** Rust's `AGENT_PROCESSES`: tool slug to the process name it runs under.
+
+      The last two are the desktop apps, and their slugs are proxy-domain keys
+      rather than registry tool ids - Gate routes them through the system proxy
+      instead of rewriting a config. They were missing here, which is why no
+      spec could reach AG-900: the harness could not model a Claude desktop app
+      being open at all.
+
+      **Case is the difference between the first row and the fourth**, exactly
+      as in Rust: `Claude` is the desktop app, `claude` is the CLI, and
+      `agent_name_of` deliberately does not fold them together. */
   const AGENT_PROCESSES: [string, string][] = [
     ["claude-code", "claude"],
     ["codex", "codex"],
     ["opencode", "opencode"],
+    ["anthropic", "Claude"],
+    ["chatgpt", "ChatGPT"],
   ];
 
   /** Rust's `agent_names_for`: null/undefined asks about every tool, a list
@@ -109,18 +121,31 @@ export function installFakeTauri(state: BackendState): void {
     );
   }
 
+  /** Rust's `Surface::App` rows: the desktop apps, which own their own window
+      and can therefore be relaunched, unlike a CLI inside a shell session Gate
+      does not own. */
+  const APP_SURFACE_SLUGS = ["anthropic", "chatgpt"];
+
   /** Rust's `display_name` per slug, for the surfaces that list tools rather
       than rail rows. A fixture's own `displayName` wins over it. */
   const PRODUCT_NAMES: Record<string, string> = {
     "claude-code": "Claude Code",
     codex: "Codex",
     opencode: "OpenCode",
+    anthropic: "Claude Desktop",
+    chatgpt: "ChatGPT",
   };
 
   /** Rust's `agent_slug_of`: which tool a process belongs to, matched on the
-      same lowercased name the walk filtered by. */
+      same name the walk filtered by.
+
+      `normalise_agent_name` strips a `.exe` suffix case-insensitively and
+      leaves the name itself alone, so the comparison is exact. It used to
+      lowercase here, which folded `Claude` onto the `claude-code` row - the
+      very bug Rust's own comment records having fixed. */
   function agentSlugOf(name: string): string {
-    return AGENT_PROCESSES.find(([, n]) => n === name.toLowerCase())?.[0] ?? "";
+    const bare = /\.exe$/i.test(name) ? name.slice(0, -4) : name;
+    return AGENT_PROCESSES.find(([, n]) => n === bare)?.[0] ?? "";
   }
 
   /** What the verdict layer calls the Gate route: the account's own gateway URL,
@@ -565,18 +590,22 @@ export function installFakeTauri(state: BackendState): void {
           .map((name, i) => ({
             slug: agentSlugOf(name),
             name,
-            // False for every tool, as in Rust: all six are terminal programs
-            // Gate cannot relaunch. A spec that wants the other branch has to
-            // change this deliberately.
-            can_reopen: false,
+            // Rust derives this from `Surface` and a resolved relaunch target:
+            // a CLI runs inside a shell session Gate does not own, so it can
+            // never be relaunched; a desktop app owns its own window and can.
+            // Modelled by surface here rather than hardcoded to false, so a
+            // spec cannot set up an offer to reopen a CLI that the real backend
+            // would never make - nor miss the desktop case, which is the one
+            // AG-900 is about.
+            can_reopen: APP_SURFACE_SLUGS.includes(agentSlugOf(name)),
             // The table's product name, which is what the reopen flow draws
             // when `list_tools` cannot name the slug.
             product_name: PRODUCT_NAMES[agentSlugOf(name)] ?? name,
-            // True for every row this harness models: `AGENT_PROCESSES` above
-            // carries only the three CLIs, and all three are registry tools the
-            // sweep answers for. The desktop-app rows - which are not - would
-            // need adding here before a spec could exercise `Reopened`.
-            verifiable: true,
+            // `ToolId::from_slug(slug).is_some()` in Rust: whether the verdict
+            // sweep can answer for this row at all. True for the three CLIs,
+            // which are registry tools; false for the two desktop apps, whose
+            // slugs are proxy-domain keys the registry has no entry for.
+            verifiable: !APP_SURFACE_SLUGS.includes(agentSlugOf(name)),
             pid: 100 + i,
             started_at_unix: 1_700_000_000,
             // Whether a process predates the last routing change. `staleAgents`
@@ -585,7 +614,11 @@ export function installFakeTauri(state: BackendState): void {
             // staleness, and the scan reports a fresh process.
             predates_routing: state.staleAgents > 0,
           }))
-          .filter((a) => names.includes(a.name.toLowerCase())),
+          // Exact, like `for_each_agent_process`'s own comparison. It used to
+          // lowercase, which would let a running `Claude` answer a scan that
+          // only asked about `claude` - the collision Rust's `agent_name_of`
+          // stopped folding together on purpose.
+          .filter((a) => names.includes(a.name)),
       };
     },
     stale_agents_count: () => state.staleAgents,
