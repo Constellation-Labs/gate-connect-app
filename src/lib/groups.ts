@@ -718,8 +718,14 @@ const SECTIONS: readonly {
   },
   {
     id: "openrouter",
+    // A provider endpoint, not an app (AG-897). The band is "tools"
+    // for the same reason `openai-api` below is: nothing here is a program the
+    // user launches. Its own description says as much - "Any app you have
+    // pointed at OpenRouter" describes a destination, and the apps it names are
+    // the rows above. Listing it under Apps beside Claude and ChatGPT / Codex
+    // invited the reader to look for OpenRouter in their dock.
     name: "OpenRouter",
-    band: "apps",
+    band: "tools",
     members: ["openrouter"],
     description: "Any app you have pointed at OpenRouter.",
   },

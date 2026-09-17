@@ -1372,13 +1372,15 @@ test.describe("new UI sidebar rail", () => {
     // An exact count, and then the same count after a row moves. `/of \d+$/`
     // passes for "0 of 0", so it went green on a rail that drew no rows at all -
     // and a counter that never changes is not a counter.
-    // Three: Claude, ChatGPT / Codex and OpenRouter, which the default catalog
-    // draws whether or not a tool is installed.
-    await expect(apps).toHaveText("0 of 3");
+    // Two: Claude and ChatGPT / Codex, which the default catalog draws whether
+    // or not a tool is installed. OpenRouter used to make it three and now
+    // draws under Tools (AG-897) - it is a provider endpoint you point an app
+    // at, not an app the user launches.
+    await expect(apps).toHaveText("0 of 2");
 
     await app.routeApp("ChatGPT / Codex");
 
-    await expect(apps).toHaveText("1 of 3");
+    await expect(apps).toHaveText("1 of 2");
   });
 
   test("the multi-provider tools each get a switch, under one band", async ({ boot }) => {
