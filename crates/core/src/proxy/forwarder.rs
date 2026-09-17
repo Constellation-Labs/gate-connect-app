@@ -412,6 +412,15 @@ pub(crate) fn ensure_running() -> Result<u16> {
 }
 
 /// Poll `port` until it answers as ours, or the spawn budget runs out.
+///
+/// macOS only, like its one caller: the launch-agent branch is the only place
+/// that hands back a port it has not yet watched come up. Everywhere else
+/// `ensure_running` polls `persisted_port` itself after spawning.
+///
+/// Gated rather than left to the module's `allow(dead_code)` at the top of the
+/// file, because that allow deliberately exempts macOS and Windows - so on
+/// Windows this was a hard error under `-D warnings`, which is what CI reported.
+#[cfg(target_os = "macos")]
 fn await_health(port: u16, token: &str) -> bool {
     let deadline = std::time::Instant::now() + SPAWN_TIMEOUT;
     while std::time::Instant::now() < deadline {
