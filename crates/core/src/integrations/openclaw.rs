@@ -147,6 +147,13 @@ struct State {
     /// alone - so disconnect must not remove it.
     #[serde(default)]
     ca_env_added: bool,
+    /// The `NODE_EXTRA_CA_CERTS` value connect last wrote. A refresh is gated
+    /// on the line still holding it, so a bundle the user has repointed by hand
+    /// stops being ours and is left alone. `None` on a sidecar written before
+    /// this field existed, which `add_vars` reads as ownership by key for one
+    /// connect and then records properly.
+    #[serde(default)]
+    ca_env_value: Option<String>,
     /// Whether connect created `~/.openclaw/.env` itself. Disconnect deletes
     /// the file only in that case, and only if removing our line empties it.
     #[serde(default)]
@@ -247,12 +254,26 @@ impl Integration for OpenClaw {
         // Point OpenClaw's Node runtime at Gate's CA. A value the user already
         // set is left strictly alone - it may be a corporate bundle the rest of
         // their setup depends on.
+        //
+        // Ours only if a previous connect wrote it, and only while the line
+        // still holds what that connect left. The path is stable in practice,
+        // so this is about not having a second rule rather than about a value
+        // known to move.
+        let ours: Vec<dotenv::Owned> = if state.ca_env_added {
+            vec![dotenv::Owned {
+                key: CA_ENV_KEY.to_string(),
+                value: state.ca_env_value.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[(
                 CA_ENV_KEY,
                 crate::proxy::ca_cert_path()?.display().to_string(),
             )],
+            &ours,
         )?;
         // Only record a fresh write; a re-connect must keep the first answer,
         // or disconnect would leave behind a line we did add.
@@ -260,6 +281,14 @@ impl Integration for OpenClaw {
             state.ca_env_added = !applied.added.is_empty();
             state.ca_env_file_created = applied.file_created;
         }
+        // The value, unlike the flag above, is replaced every time: it is what
+        // the file holds now, not who put it there. Empty when the line is the
+        // user's, which is the same thing `ca_env_added` says.
+        state.ca_env_value = applied
+            .owned_values
+            .iter()
+            .find(|(key, _)| key == CA_ENV_KEY)
+            .map(|(_, value)| value.clone());
 
         // Both keys are required, and `enabled` is the load-bearing one.
         // OpenClaw's `startProxy` opens with `if (config?.enabled !== true)
