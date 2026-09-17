@@ -836,14 +836,16 @@ function RecentActivity({
                       <span className="truncate">{entry.category}</span>
                     </span>
                   ) : (
-                    // The same withholding the Security cell draws, for the same
-                    // reason: the gateway named no category, or this row is not
-                    // this caller's to see into.
+                    // Reached only when the gateway recorded no security action
+                    // at all - a row it did not examine, or one that is not this
+                    // caller's to see into. A request that WAS examined and
+                    // matched nothing says "Regular" instead (`toolEvents.ts`);
+                    // this is the case where we genuinely have no reading.
                     <span
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No guardrail category recorded, or not your request"
                     >
-                      &#8212;
+                      &#8211;
                     </span>
                   )}
                 </td>
@@ -884,7 +886,7 @@ function RecentActivity({
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No security action recorded, or not your request"
                     >
-                      &#8212;
+                      &#8211;
                     </span>
                   )}
                 </td>

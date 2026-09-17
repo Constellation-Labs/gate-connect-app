@@ -96,6 +96,31 @@ describe("adaptEvents", () => {
     expect(view.entries[0].categoryIcon).toBe("userRound");
   });
 
+  it("calls an examined request with no category Regular, not a dash", () => {
+    // AG-887. A guardrail category exists only where a guardrail fired, so
+    // ordinary traffic carried none and the Type column was a dash on every
+    // row. A dash reads as missing; what happened is that the request was
+    // examined and nothing matched.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: "allow", securityCategory: null })]),
+    );
+
+    expect(view.entries[0].category).toBe("Regular");
+    expect(view.entries[0].categoryIcon).toBe("shieldCheck");
+  });
+
+  it("keeps the dash where the gateway recorded nothing at all", () => {
+    // Keyed on the ACTION: no action means the row was not examined, or is not
+    // this caller's to see into. Promoting that to "Regular" would claim a
+    // verdict we never got - principle 6, the same line `security` draws.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: null, securityCategory: null })]),
+    );
+
+    expect(view.entries[0].category).toBeNull();
+    expect(view.entries[0].categoryIcon).toBeNull();
+  });
+
   it("falls back to a glyph rather than none for a category it does not know", () => {
     // The frame puts a glyph in every Type cell, and the gateway's vocabulary is
     // not pinned down - so an unknown category still draws one, the way
@@ -104,13 +129,6 @@ describe("adaptEvents", () => {
 
     expect(view.entries[0].category).toBe("something-new");
     expect(view.entries[0].categoryIcon).toBe("shieldCheck");
-  });
-
-  it("leaves the category null when the gateway named none", () => {
-    const view = adaptEvents(envelope([raw({ securityCategory: null })]));
-
-    expect(view.entries[0].category).toBeNull();
-    expect(view.entries[0].categoryIcon).toBeNull();
   });
 
   it("carries the provider for the vendor mark", () => {

@@ -212,7 +212,9 @@ describe("AppPane recent activity", () => {
     // would satisfy that, and the point is that the row says so. `status` is
     // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
-    expect(cell.textContent).toBe("\u2014");
+    // En dash. CLAUDE.md's standing instruction forbids the em dash outright,
+    // and this cell and the Type cell beside it were the two places it survived.
+    expect(cell.textContent).toBe("\u2013");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
     expect(within(feed).queryByText("error")).toBeNull();
