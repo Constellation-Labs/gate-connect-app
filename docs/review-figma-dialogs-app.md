@@ -439,7 +439,7 @@ a `get_design_context` call or from a pixel sampled off a 1:1 render.
   `base/card` white with a `base/border` line, holding a **20px** mark.
 - **Code** `Modal.tsx:427-430`: `size-10` (40px) at `rounded-sm`, which is
   **6px** on this repo's scale, and no card ground.
-- The 20px mark is now passed (`dialogs.tsx:1469`); the wrapper is not changed.
+- The 20px mark is now passed (`dialogs.tsx:1497`); the wrapper is not changed.
   `ModalSubject` is shared across several dialogs, so its geometry is a
   separate change with a separate blast radius.
 - MEASURED, NOT FIXED.

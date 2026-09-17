@@ -208,7 +208,11 @@ one-to-one so any value can be traced back without guessing.
   names is a lobe-icons filename, not a variant choice, so do not read it as a
   mono/colour split: `anthropic 1` and `anthropic 2` are the same colour.
   A vendor with no published mark falls back to `Icon name="cube"`, which is
-  the `Icon / Boxes` the frames put in the same slot. Keep this separate from
+  the `Icon / Boxes` the frames put in the same slot. The marks that ARE
+  monochrome (openai, grok, ibm, ai21, inception, relace) inherit the wrapper's
+  ink, so a model row gives them `base.foreground` and never the muted grey the
+  Overview's row glyphs take - otherwise one row draws OpenAI grey beside
+  Moonshot's hard-coded black. Keep this separate from
   `BrandMark.tsx`, whose marks are monochrome so the rail's dark tile can ink
   them.
 - **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's,

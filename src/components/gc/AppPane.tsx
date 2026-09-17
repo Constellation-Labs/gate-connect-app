@@ -339,7 +339,13 @@ function VendorMark({ provider }: { provider: string | null }) {
       <span
         aria-hidden
         title={provider}
-        className="flex size-4 shrink-0 items-center justify-center text-base-muted-foreground"
+        // `base.foreground`, not the muted grey the Overview's row glyphs take.
+        // A brand mark is not a glyph: the colour ones carry their own fills and
+        // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
+        // inception, relace) inherit it - so muting the wrapper rendered OpenAI
+        // grey here and inked in the picker, while Moonshot, which hard-codes
+        // black, stayed black in both. Same ink as `dialogs.tsx`'s row now.
+        className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
       >
         {providerMarkFor(provider) ?? <Icon name="cube" size={16} />}
       </span>
@@ -506,9 +512,23 @@ function ModelSelection({
               <p className="text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
                 Using {appName} model
               </p>
+              {/* The frame's last sentence, "No Gate credits used", is dropped.
+                * It is only true under BYOK: on a PAYG account the engine strips
+                * the tool's own credential and debits the org balance for every
+                * eligible slug, whatever the per-tool model source says
+                * (`proxy/mod.rs` `strip_client_auth`, reached on
+                * `mode == Payg`). An absolute claim about the user's money, on
+                * the one surface principle 1 is about, must not be false in a
+                * mode the product supports - so the row now says only what the
+                * App-default branch actually decides, which is model choice.
+                *
+                * Raised with design rather than settled here: it is a deviation
+                * from drawn copy, which CLAUDE.md reserves for design.
+                * `billing_mode` is CLI-only today and the frontend never reads
+                * it, which is why the balance is still gated on the Gate branch
+                * alone - see the question doc. */}
               <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-                Gate protects requests, then leaves model choice to {appName}. No
-                Gate credits used.
+                Gate protects requests, then leaves model choice to {appName}.
               </p>
             </InfoRow>
           </div>

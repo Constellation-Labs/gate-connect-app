@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
-import { MARK_NAMES, ProviderMark, providerMarkFor } from "./ProviderMark";
+import { MARK_NAMES, ProviderMark, providerMarkFor, providerNameFor } from "./ProviderMark";
 
 afterEach(cleanup);
 
@@ -21,18 +21,37 @@ describe("providerMarkFor", () => {
   it("gives one mark to a company the catalogue spells several ways", () => {
     // Staging answers all of these for four companies. Resolving only one
     // spelling would leave the other drawing a cube beside an identical model.
+    //
+    // Asserted on the resolved NAME rather than on two renders' `innerHTML`:
+    // that comparison only held for marks with no ids, so an alias resolving to
+    // one of the six marks that carry defs would have failed on the `useId`
+    // suffix rather than on the thing under test.
     const pairs: [string, string][] = [
       ["x-ai", "xai"],
       ["z-ai", "zai"],
       ["moonshot", "moonshotai"],
       ["bytedance", "bytedance-seed"],
+      ["mistralai", "mistral"],
+      ["meta-llama", "meta"],
+      ["amazon", "aws"],
+      ["ibm-granite", "ibm"],
+      ["arcee-ai", "arcee"],
     ];
     for (const [a, b] of pairs) {
-      const one = render(providerMarkFor(a)!).container.innerHTML;
-      cleanup();
-      const two = render(providerMarkFor(b)!).container.innerHTML;
-      cleanup();
-      expect(one, `${a} vs ${b}`).toBe(two);
+      expect(providerNameFor(a), `${a} vs ${b}`).toBe(providerNameFor(b));
+      expect(providerNameFor(a), a).toBeDefined();
+    }
+  });
+
+  it("does not resolve a vendor off Object.prototype", () => {
+    // `vendor` is the gateway's `owned_by` or the id's prefix, so a catalogue row
+    // names it. On a bare index `constructor` comes back truthy, `MARKS[name]` is
+    // undefined, and `.viewBox` throws inside render - which the root
+    // ErrorBoundary turns into a blank main window.
+    for (const hostile of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(providerNameFor(hostile), hostile).toBeUndefined();
+      expect(() => providerMarkFor(hostile), hostile).not.toThrow();
+      expect(providerMarkFor(hostile), hostile).toBeUndefined();
     }
   });
 
@@ -40,10 +59,7 @@ describe("providerMarkFor", () => {
     // lobe-icons publishes a separate `qwen-color`; the frame draws
     // `alibaba-color 1` beside `gate/qwen3-6-35b-a3b` and the file wins. qwen is
     // the catalogue's largest namespace, so this is its most visible mark.
-    const qwen = render(providerMarkFor("qwen")!).container.innerHTML;
-    cleanup();
-    const alibaba = render(<ProviderMark name="alibaba" />).container.innerHTML;
-    expect(qwen).toBe(alibaba);
+    expect(providerNameFor("qwen")).toBe("alibaba");
   });
 
   it("is case insensitive, since `owned_by` is the gateway's spelling", () => {

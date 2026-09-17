@@ -3,8 +3,9 @@ import { test, expect } from "./fixtures";
 /**
  * The controls the window shell was drawn with and never wired: the engine's own
  * switch - now in the navigation rail, above the families it governs - the
- * shell-environment channel, the certificate, the app pane's switch,
- * the diagnostics probes, and the one-time OAuth offer.
+ * certificate, the app pane's switch, the diagnostics probes, and the one-time
+ * OAuth offer. (The shell-environment channel had a card here too, until it
+ * turned out no frame drew it.)
  *
  * All of these existed as backend commands the whole time - the popover reaches
  * every one of them. What could not be tested at the hook level is exactly what

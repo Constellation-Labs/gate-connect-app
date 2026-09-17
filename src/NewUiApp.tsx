@@ -512,10 +512,11 @@ export function NewUiApp() {
           // `list_tools` carries the not-installed ones too, so without it a
           // Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
-          // have traffic, and drew zeroes with no caveat - `openDomain` false so
-          // no unattributed marker, `partialReading` undefined because IT reads
-          // the built ledger. A number with nothing behind it, in the one place
-          // principle 6 names.
+          // have traffic, and drew zeroes with no caveat - `openDomain` false
+          // so no unattributed marker. A number with nothing behind it, in the
+          // one place principle 6 names. (The `partialReading` caveat this used
+          // to name as the other half of that guard is gone; see the commit
+          // that removed it.)
           tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
         ) ?? null)
       : null;

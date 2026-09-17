@@ -21,10 +21,10 @@ import type { SecurityEventsProps } from "./SecurityEvents";
  * resolutions - what Gate did with this traffic, in aggregate and event by
  * event - and the pane scrolls, so the feed costs the summaries nothing.
  *
- * It is a required prop rather than a `ReactNode` slot like `alert` and `scope`
- * below. Those two are genuinely optional chrome; this is the section the pane
- * is now the only home for, and a caller that could omit it could lose the
- * feed entirely with nothing failing to say so.
+ * It is a required prop rather than a `ReactNode` slot like `alert` below.
+ * That one is genuinely optional chrome; this is the section the pane is now
+ * the only home for, and a caller that could omit it could lose the feed
+ * entirely with nothing failing to say so.
  */
 
 /**

@@ -17,8 +17,11 @@ import { useId, type JSX } from "react";
  * design signed off. Every other mark is vendored from lobehub/lobe-icons
  * (https://github.com/lobehub/lobe-icons, MIT) - the same set the designer
  * built the frames from, which is why the drawn layers carry its asset names
- * (`deepseek-color 1`, `moonshot 1`). The marks remain their owners'
- * trademarks, used here to identify the models they name.
+ * (`deepseek-color 1`, `moonshot 1`). MIT requires its copyright and permission
+ * notice to travel with the copies, and this repo is Apache-2.0, so that notice
+ * lives in `THIRD_PARTY_NOTICES.md` at the root rather than in this comment.
+ * The marks remain their owners' trademarks, used here to identify the models
+ * they name.
  *
  * Each mark keeps **its own viewBox** rather than being rescaled to a common
  * one: the Figma exports are 16 and lobe-icons is 24, and rewriting
@@ -382,6 +385,25 @@ const PROVIDER_BY_VENDOR: Record<string, ProviderName> = {
  * `Icon / Boxes` the frames put in the same slot.
  */
 export function providerMarkFor(vendor: string, size?: number): JSX.Element | undefined {
-  const name = PROVIDER_BY_VENDOR[vendor.toLowerCase()];
+  const name = providerNameFor(vendor);
   return name ? <ProviderMark name={name} size={size} /> : undefined;
+}
+
+/**
+ * The resolution on its own, without the element.
+ *
+ * `Object.hasOwn`, not a bare index. `vendor` is the gateway's `owned_by` or the
+ * id's prefix (`toolModels.ts:187`), so a catalogue row can name a vendor
+ * `constructor` or `__proto__` - both survive `toLowerCase()`, both come back
+ * truthy off `Object.prototype`, and `MARKS[name]` is then `undefined` and
+ * `.viewBox` throws *inside render*, which the root ErrorBoundary turns into a
+ * blank main window. A remote string must not be able to do that.
+ *
+ * Exported because the alias table is worth testing directly: comparing two
+ * renders' `innerHTML` only works for marks with no ids in them, so the six
+ * aliases that resolve to a mark carrying defs could not be checked that way.
+ */
+export function providerNameFor(vendor: string): ProviderName | undefined {
+  const key = vendor.toLowerCase();
+  return Object.hasOwn(PROVIDER_BY_VENDOR, key) ? PROVIDER_BY_VENDOR[key] : undefined;
 }

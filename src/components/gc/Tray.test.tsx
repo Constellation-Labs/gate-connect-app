@@ -234,6 +234,16 @@ describe("the security card", () => {
     expect(screen.queryByText(/No recent security events/)).toBeNull();
   });
 
+  it("still draws for a reconnecting feed with an empty buffer", () => {
+    // `reconnecting` is a reading that did not happen, exactly like `offline`.
+    // Hiding it made a failed re-read after a live one render nothing at all,
+    // indistinguishable from a quiet machine.
+    renderTray({ security: { state: "reconnecting", count: 0, onOpen: noop } });
+
+    expect(screen.getByText("Security events unavailable")).toBeTruthy();
+    expect(screen.queryByText(/No recent security events/)).toBeNull();
+  });
+
   /** Reconnecting still counts: the buffer it counts is real, and the pill
    *  beside it already says the stream is catching up. */
   it("keeps a real count while reconnecting", () => {
