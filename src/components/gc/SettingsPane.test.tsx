@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
 import { cleanup, render, screen } from "@testing-library/react";
 import { buildSettingsSections, SettingsPane } from "./SettingsPane";
 
@@ -398,8 +399,21 @@ describe("the command-line tools row", () => {
     // nowhere at all.
     const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
 
-    expect(row.description).toMatch(/every program you start afterwards/);
+    expect(row.description).toMatch(/every program you start from now on/);
     expect(row.description).toMatch(/certificate/i);
+    // Not "Required by OpenCode": OpenCode's configured providers route
+    // through a `baseURL` rewrite and need none of this. The dialog that
+    // couples the two is where the real reason is said.
+    expect(row.description).not.toMatch(/OpenCode/);
+  });
+
+  it("draws the same coverage sentence the popover's Terminal blurb does", () => {
+    // AG-893 was one control described two ways. The first fix described it a
+    // third ("afterwards" here, "after your next login" in the popover), so the
+    // sentence is one exported string and this pins that both surfaces read it.
+    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
+
+    expect(row.description).toBe(SHELL_CHANNEL_COVERAGE);
   });
 
   it("is absent where the platform cannot offer it separately", () => {

@@ -285,7 +285,7 @@ describe("FamilyPanel explains the sections that need a sentence", () => {
     // the definition here; nothing displayed it, so the category's only
     // description in the UI was 18 characters in a truncating slot.
     expect(screen.getByRole("heading", { level: 1, name: "Terminal" })).toBeTruthy();
-    expect(screen.getByText(/every program started after your next login/)).toBeTruthy();
+    expect(screen.getByText(/every program you start from now on/)).toBeTruthy();
   });
 
   it("names the boundary rather than promising Gate takes everything", () => {
@@ -312,7 +312,7 @@ describe("FamilyPanel explains the sections that need a sentence", () => {
       tools: [makeTool("openclaw", "CLI", { kind: "detected" }, "openclaw")],
     });
     expect(screen.getByRole("heading", { level: 1, name: "OpenClaw" })).toBeTruthy();
-    expect(screen.queryByText(/every program started after your next login/)).toBeNull();
+    expect(screen.queryByText(/every program you start from now on/)).toBeNull();
   });
 
   it("stays silent on a family whose name already says what it covers", () => {

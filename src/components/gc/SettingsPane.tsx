@@ -3,6 +3,7 @@ import { BaseSwitch, Card, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import type { AuthMode } from "../../lib/api";
+import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
 
 /**
  * The Settings pane (Figma `Flows / Settings`). Named `SettingsPane` rather
@@ -401,8 +402,15 @@ export function buildSettingsSections({
                 // give: what it reaches, and what it costs. "Terminal" and
                 // "command line tools that follow your proxy settings" said
                 // neither. The certificate half was stated nowhere at all.
-                description:
-                  "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Required by OpenCode.",
+                //
+                // The shared sentence, so this row and the popover's blurb
+                // cannot describe one control two ways again. It no longer
+                // says "Required by OpenCode": OpenCode's configured providers
+                // route through a `baseURL` rewrite and need none of this
+                // (`useRouting.ts`, the `opencode-env` doc). The channel is
+                // what covers a provider added later, and `OpenCodeEnvDialog`
+                // is the place that explains that, at the moment it applies.
+                description: SHELL_CHANNEL_COVERAGE,
                 toggle: {
                   on: shellProxy.on,
                   // Shared with every app switch: this is `useRouting`'s one

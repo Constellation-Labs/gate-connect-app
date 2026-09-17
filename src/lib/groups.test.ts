@@ -944,19 +944,7 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
 
 describe("describeSection", () => {
-  it("gives the Terminal pane a sentence that says it is machine-wide", () => {
-    // AG-893. The pane used to fall through to `describeMember("env-proxy")` -
-    // "Command line tools that follow your proxy settings" - which never says
-    // the switch reaches every program you start, or that it touches git and
-    // curl. The sentence that says so was already written; it sat in `blurb`,
-    // which only the popover reads.
-    const said = describeSection("terminal");
-
-    expect(said).toMatch(/every program started after your next login/);
-    expect(said).toMatch(/not only AI tools/);
-  });
-
-  it("still prefers a section's own description where it has one", () => {
+  it("prefers a section's own description where it has one", () => {
     expect(describeSection("claude")).toMatch(/Claude Code in your terminal/);
   });
 

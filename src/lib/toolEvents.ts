@@ -140,6 +140,9 @@ const CATEGORY_FALLBACK: IconName = "shieldCheck";
  * gateway answered, so an uncategorised `block` must not borrow it. */
 const REGULAR = "Regular";
 const REGULAR_ICON: IconName = "shieldCheck";
+/** What "Regular" means, for the cell's hover. The dash cell has always
+ *  explained itself the same way; a word Connect chose owes the same. */
+const REGULAR_TITLE = "Gate examined this request and no guardrail matched";
 
 /** One row, formatted. */
 function toEntry(raw: RawEvent): ActivityEntry {
@@ -169,6 +172,8 @@ function toEntry(raw: RawEvent): ActivityEntry {
       : raw.securityAction === "allow"
         ? REGULAR_ICON
         : null,
+    categoryTitle:
+      !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
     model: raw.model ?? NO_MODEL,
     provider: raw.provider,
     title: raw.conversationTitle,

@@ -107,6 +107,19 @@ describe("adaptEvents", () => {
 
     expect(view.entries[0].category).toBe("Regular");
     expect(view.entries[0].categoryIcon).toBe("shieldCheck");
+    // "Regular" is Connect's word, not the gateway's, so the cell explains
+    // itself on hover the way the dash cell beside it always has.
+    expect(view.entries[0].categoryTitle).toMatch(/no guardrail matched/);
+  });
+
+  it("adds no hover text to a category the gateway named", () => {
+    // The gateway's own spelling stands alone; there is nothing to add to it.
+    const view = adaptEvents(
+      envelope([raw({ securityAction: "block", securityCategory: "pii" })]),
+    );
+
+    expect(view.entries[0].category).toBe("pii");
+    expect(view.entries[0].categoryTitle).toBeNull();
   });
 
   it("keeps the dash where the gateway recorded nothing at all", () => {
