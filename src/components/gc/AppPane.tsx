@@ -408,7 +408,10 @@ function ModelSelection({
   gateModel: GateModel | null;
   onChangeModel: () => void;
   credits: string | null;
-  /** The org's plan, or null when the gateway did not name one (AG-592). */
+  /** The org's plan, already in the user's vocabulary - the shell maps it
+   *  through `formatPlan`, so this is "Pro" rather than the gateway's `paid`.
+   *  Null when the gateway named none (AG-592). Title-casing used to happen
+   *  here, which is how the raw value reached the screen. */
   plan: string | null;
   onAddCredits: () => void;
   /** Absent when the gateway named no billing destination, which removes the
@@ -612,7 +615,7 @@ function ModelSelection({
                *  one sends them to change something they may already have. */}
               {plan && (
                 <p className="text-base-2xs leading-4 text-base-muted-foreground">
-                  {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
+                  {plan} plan
                 </p>
               )}
               <p className="text-sm leading-5 text-base-foreground">

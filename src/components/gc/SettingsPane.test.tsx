@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { buildSettingsSections, SettingsPane } from "./SettingsPane";
 
@@ -309,5 +309,44 @@ describe("SettingsPane", () => {
     expect(screen.queryByRole("switch", { name: "Launch at login" })).toBeNull();
     expect(screen.getByText("Unavailable")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+});
+
+describe("the Gate plan row", () => {
+  const planRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "account")!
+      .rows.find((r) => r.id === "plan")!;
+
+  it("names the plan the gateway reported", () => {
+    // It was the literal string "Unavailable" on a comment saying no gateway
+    // field carried a plan. One does, and the App pane had been drawing it
+    // since AG-592 - so Settings claimed nothing was known while another pane
+    // named the plan in the same session (AG-891).
+    expect(planRow({ plan: "Pro" }).value).toBe("Pro");
+    expect(planRow({ plan: "Pro" }).unavailable).toBeUndefined();
+  });
+
+  it("says nothing at all while the read is in flight", () => {
+    // Not "Unavailable": nothing has failed yet, and a row that cries failure
+    // during a normal load teaches the user to ignore it when it means it.
+    expect(planRow({ plan: undefined }).value).toBeUndefined();
+    expect(planRow({ plan: undefined }).unavailable).toBeUndefined();
+  });
+
+  it("draws a dash for a landed read that named no plan", () => {
+    // Principle 6: a reading happened and carried no plan. That is not the same
+    // as no reading, and neither is "Free" - the one value a reader would act
+    // on by upgrading something they may already have.
+    expect(planRow({ plan: null }).value).toBe("-");
+  });
+
+  it("offers a retry when the read failed", () => {
+    const onRetryPlan = vi.fn();
+    const row = planRow({ plan: undefined, planUnreadable: true, onRetryPlan });
+
+    expect(row.unavailable).toBeDefined();
+    row.unavailable!.onRetry();
+    expect(onRetryPlan).toHaveBeenCalled();
   });
 });

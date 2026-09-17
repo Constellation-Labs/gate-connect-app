@@ -95,7 +95,7 @@ import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { useActivity, useInstallations } from "./lib/activity";
-import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import { formatCredits, formatPlan, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
@@ -2162,11 +2162,18 @@ export function NewUiApp() {
         // org switcher, and no screen named the account the user was signed in
         // as. An API-key account has no email and gets the dash.
         loginId: oauth?.email ?? "-",
-        // No gateway field carries a plan today, so this says so rather than
-        // drawing a bare dash nobody can read a meaning into. Same vocabulary
-        // as `installId` above; the frame's "Free" is a mock value, not a
-        // reading. When the gateway starts naming one, this is the seam.
-        plan: "Unavailable",
+        // The plan the gateway reports, in the word the user has already seen
+        // for it. This was the literal string "Unavailable", on a comment
+        // saying no gateway field carried a plan - `/v1/me/credits` does, and
+        // the App pane had been drawing it since AG-592, so Settings claimed
+        // nothing was known while another pane named it in the same session
+        // (AG-891).
+        //
+        // Three states, kept apart: in flight, landed-and-unnamed, and failed.
+        // `formatPlan` is what makes the word agree with the dashboard.
+        plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
+        planUnreadable: credits.failure !== null,
+        onRetryPlan: credits.reload,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
@@ -3538,7 +3545,11 @@ export function NewUiApp() {
                 // a zero balance. See principle 6.
                 credits: formatCredits(credits.credits),
                 // Null when unread, which the row omits rather than guessing.
-                plan: credits.credits?.plan ?? null,
+                // The same word Settings and the dashboard use. This drew
+                // "Paid plan" off the raw value, so one account read "Paid"
+                // here and "Pro" on the dashboard - and, once Settings was
+                // wired, "Pro" two panes away in the same window.
+                plan: formatPlan(credits.credits?.plan ?? null),
                 // No dedicated credits endpoint, but the row's own glyph
                 // promises an external link, and the dashboard is where credits
                 // are actually bought.

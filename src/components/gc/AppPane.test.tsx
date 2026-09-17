@@ -446,8 +446,12 @@ describe("AppPane model selection", () => {
   });
 
   it("shows the plan the gateway named, which AG-592 asks the tool detail for", () => {
-    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "paid" }));
-    expect(within(card("Model selection")).getByText("Paid plan")).toBeTruthy();
+    // Already in the user's vocabulary when it arrives: the shell maps the
+    // gateway's `paid` through `formatPlan`, so this pane prints what the
+    // dashboard prints. It used to title-case the raw value here and say
+    // "Paid", which is the same account named two ways by two products.
+    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "Pro" }));
+    expect(within(card("Model selection")).getByText("Pro plan")).toBeTruthy();
   });
 
   it("says nothing about a plan nobody named", () => {

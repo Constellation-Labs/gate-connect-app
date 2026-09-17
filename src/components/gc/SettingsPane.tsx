@@ -86,6 +86,8 @@ export function buildSettingsSections({
   installId,
   loginId,
   plan,
+  planUnreadable,
+  onRetryPlan,
   gateway,
   apiKeyMasked,
   authMode,
@@ -129,7 +131,19 @@ export function buildSettingsSections({
   deviceName: string;
   installId: string;
   loginId: string;
-  plan: string;
+  /**
+   * The org's plan, already in the user's vocabulary (`formatPlan`).
+   *
+   * `undefined` while the credits read is in flight, `null` when it landed and
+   * named no plan. Both draw something other than a plan, and they are not the
+   * same thing: the first is "not yet", the second is "the gateway did not
+   * say". See `onRetryPlan`.
+   */
+  plan?: string | null;
+  /** The credits read failed. Draws "Unavailable" and a Retry, as the other
+   *  failed reads on this pane do. */
+  planUnreadable?: boolean;
+  onRetryPlan?: () => void;
   gateway: string;
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
@@ -250,7 +264,22 @@ export function buildSettingsSections({
           id: "plan",
           icon: "fileBadge2",
           label: "Gate plan",
-          value: plan,
+          // Four states, and the row must not flatten them (AG-891).
+          //
+          // This was the literal string "Unavailable", on a comment saying no
+          // gateway field carried a plan. One does - `/v1/me/credits` reports
+          // it, and the App pane had been drawing it since AG-592 - so Settings
+          // said "Unavailable" while another pane in the same session named the
+          // plan. Two screens, two sources, one account.
+          //
+          // `undefined` while the read is in flight leaves the value off rather
+          // than guessing; `null` is a landed read that named no plan, which is
+          // principle 6's "no figure without a reading" and draws the dash the
+          // Login ID row uses for the same reason.
+          value: plan ?? (plan === null ? "-" : undefined),
+          ...(planUnreadable && onRetryPlan
+            ? { unavailable: { onRetry: onRetryPlan } }
+            : {}),
           action: onUpgradePlan
             ? { label: "Upgrade plan", onClick: onUpgradePlan, external: true }
             : undefined,
