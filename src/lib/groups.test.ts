@@ -12,6 +12,7 @@ import {
   groupSummary,
   hasBrowserSurface,
   hostReloadAdvice,
+  isSettingsManaged,
   needsSessionConsent,
   proxyReopenAdvice,
   sessionMembers,
@@ -963,5 +964,41 @@ describe("describeSection", () => {
     // `openai-api` carries no description and no blurb, and its member's
     // sentence is the only place the host is written in the window UI.
     expect(describeSection("openai-api")).toBeDefined();
+  });
+});
+
+describe("settings-managed members", () => {
+  it("keeps the shell-environment channel out of the app list", () => {
+    // AG-893. A machine-wide setting is not an app, and the rail is a list of
+    // apps. Its control is in Settings now; the tray reports it.
+    expect(isSettingsManaged("env-proxy")).toBe(true);
+    expect(isSettingsManaged("opencode")).toBe(false);
+  });
+
+  it("must filter the TOOL LIST, not the built ledger", () => {
+    // The trap: `buildGroups` gives a member no section claims a section of its
+    // own, so filtering afterwards puts the row back under its raw name with
+    // none of the section copy. Filtering the input is what removes it.
+    const tools = [
+      tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", {
+        scope: "machine",
+      }),
+      tool("opencode", "OpenCode", { kind: "connected" }, "opencode"),
+    ];
+
+    const filtered = buildGroups(
+      tools.filter((t) => !isSettingsManaged(t.slug)),
+      [],
+      { proxyOn: true, caTrusted: true, verdicts: new Map() },
+    );
+    expect(filtered.map((g) => g.id)).not.toContain("terminal");
+
+    // And the trap itself, so a future refactor that filters afterwards fails.
+    const unfiltered = buildGroups(tools, [], {
+      proxyOn: true,
+      caTrusted: true,
+      verdicts: new Map(),
+    });
+    expect(unfiltered.map((g) => g.id)).toContain("terminal");
   });
 });

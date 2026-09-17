@@ -67,15 +67,16 @@ import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
+  BAND_LABELS,
   browserTrustRestartAdvice,
   buildGroups,
-  BAND_LABELS,
+  describeSection,
+  hintForMember,
+  isSettingsManaged,
+  proxyReopenAdvice,
   sectionHint,
   sectionMemberKeys,
   sessionMembers,
-  describeSection,
-  hintForMember,
-  proxyReopenAdvice,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
@@ -1362,7 +1363,11 @@ export function NewUiApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(tools, proxy.domains, {
+        ? // The TOOL LIST is filtered, not the built ledger. `buildGroups` gives
+          // a member no section claims a section of its own, so filtering
+          // afterwards would put `env-proxy` back under its raw name with none
+          // of the section copy - see `isSettingsManaged`.
+          buildGroups(tools.filter((t) => !isSettingsManaged(t.slug)), proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
             // The sweep, which a section's rendered state cannot do without.
@@ -1478,7 +1483,7 @@ export function NewUiApp() {
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
-        .filter((t) => t.status.kind !== "not_installed")
+        .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
         .map((t) => ({
           slug: t.slug,
           name: t.name,
@@ -2174,6 +2179,20 @@ export function NewUiApp() {
         plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
         planUnreadable: credits.failure !== null,
         onRetryPlan: credits.reload,
+        // The machine-wide shell proxy, which used to be a card in the rail
+        // and a row in the app list. Absent on Linux, where these variables are
+        // the system proxy and cannot be declined without turning routing off -
+        // the same condition the rail card carried.
+        shellProxy:
+          proxy?.env_export_separable
+            ? {
+                on: proxy.env_export_opted_in,
+                onToggle: () => {
+                  setActionError(null);
+                  void routing.setEnvExport(!proxy.env_export_opted_in);
+                },
+              }
+            : undefined,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still

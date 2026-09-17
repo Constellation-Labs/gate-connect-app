@@ -743,6 +743,11 @@ const SECTIONS: readonly {
     description: "The OpenCode editor, and OpenCode's own Zen and Go models.",
   },
   {
+    // Still here although the window's rail no longer draws it - see
+    // {@link SETTINGS_MANAGED_MEMBERS}. The popover reads this section, and
+    // deleting it would not remove the row anyway: an unclaimed member key gets
+    // a section of its own, so the row would come back under its raw name with
+    // none of the copy below.
     id: "terminal",
     name: "Terminal",
     band: "tools",
@@ -779,6 +784,43 @@ const SECTIONS: readonly {
 /** Which band a section draws under. Two, and the split is what the user is
  *  being asked: an app they use, or a mechanism they are opting into. */
 export type Band = "apps" | "tools";
+
+/**
+ * Member keys the window's APP LIST does not draw, because they are not apps.
+ *
+ * One entry: `env-proxy`, the shell-environment channel. It sat in the rail
+ * under a heading reading "Terminal", described as "command line tools that
+ * follow your proxy settings", which undersells it badly. `launchctl setenv`
+ * hands seven variables to every process started afterwards in the login
+ * session - the four `http(s)_proxy` spellings, the two `no_proxy` ones, and
+ * `NODE_EXTRA_CA_CERTS` - GUI apps opened from Finder included. That last one
+ * puts Gate's interception CA in the trust roots of every Node process started
+ * afterwards.
+ *
+ * A machine-wide setting is not an app, and the rail is a list of apps. It is a
+ * setting, so it lives in Settings, where the rest of this window's machine
+ * state does. The tray mirrors it as a status card rather than a second switch,
+ * which is the rule the tray already follows for the engine ("the engine's own
+ * control stays in the full app", `Tray.tsx`).
+ *
+ * That also answers AG-893, which reported two controls describing the same
+ * coverage in different words. There is one control now, in the place a setting
+ * belongs, and the surfaces that are not the window report it rather than
+ * offering it again.
+ *
+ * NOT applied by {@link buildGroups}, deliberately: the popover still draws this
+ * row and the ledger is shared, so the window filters its own inputs instead -
+ * see `NewUiApp`'s `groups` and `apps`. Filtering the TOOL LIST rather than the
+ * built ledger is what keeps the row from reappearing under "unclaimed", which
+ * is where a member no section claims lands.
+ */
+export const SETTINGS_MANAGED_MEMBERS: readonly string[] = ["env-proxy"];
+
+/** Whether this member's control lives in Settings rather than the app list.
+ *  See {@link SETTINGS_MANAGED_MEMBERS}. */
+export function isSettingsManaged(key: string): boolean {
+  return SETTINGS_MANAGED_MEMBERS.includes(key);
+}
 
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own

@@ -348,18 +348,30 @@ describe("the not-installed section", () => {
 });
 
 describe("the command-line tools card", () => {
-  it("dispatches the shell-environment toggle", () => {
-    const onToggle = vi.fn();
-    renderTray({ cli: { on: false, onToggle } });
-    screen.getByRole("switch", { name: "Command-line tools" }).click();
-    expect(onToggle).toHaveBeenCalledWith(true);
+  it("reports the channel's state rather than offering a switch", () => {
+    // The tray introduces no concept of its own: the window's Settings pane
+    // owns this control, and two switches for one machine-wide setting is what
+    // AG-893 reported. Same call the master card makes one section up.
+    renderTray({ cli: { on: true } });
+
+    expect(screen.getByText("Command-line tools")).toBeTruthy();
+    expect(screen.getByText("On")).toBeTruthy();
+    expect(
+      screen.queryByRole("switch", { name: "Command-line tools" }),
+    ).toBeNull();
+  });
+
+  it("says Off rather than going quiet when the channel is off", () => {
+    // A card that vanished when off would make "off" and "not supported here"
+    // the same picture, and they are different facts.
+    renderTray({ cli: { on: false } });
+
+    expect(screen.getByText("Off")).toBeTruthy();
   });
 
   it("is absent where the channel is not separable", () => {
     renderTray();
-    expect(
-      screen.queryByRole("switch", { name: "Command-line tools" }),
-    ).toBeNull();
+    expect(screen.queryByText("Command-line tools")).toBeNull();
   });
 });
 

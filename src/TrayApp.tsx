@@ -36,6 +36,7 @@ import {
   BAND_LABELS,
   buildGroups,
   hintForMember,
+  isSettingsManaged,
   sectionHint,
   sectionMemberKeys,
   sessionMembers,
@@ -568,7 +569,10 @@ export function TrayApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(tools, proxy.domains, {
+        ? // Same filter the window applies: the channel has a status card of
+          // its own above this list, so a row for it here would be the second
+          // control AG-893 is about - and the tray offers no control for it.
+          buildGroups(tools.filter((t) => !isSettingsManaged(t.slug)), proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
             // The sweep, which a section's rendered state cannot do without.
@@ -675,7 +679,7 @@ export function TrayApp() {
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
-        .filter((t) => t.status.kind !== "not_installed")
+        .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
         .map((t) => ({
           slug: t.slug,
           name: t.name,
@@ -959,17 +963,11 @@ export function TrayApp() {
       notInstalled={notInstalled}
       notInstalledOpen={notInstalledOpen}
       onToggleNotInstalled={() => setNotInstalledOpen((v) => !v)}
+      // Reported, not offered. The window's Settings pane owns this control -
+      // the tray reports what the window decides and introduces no concept of
+      // its own, the same rule the master card follows.
       cli={
-        proxy?.env_export_separable
-          ? {
-              on: proxy.env_export_opted_in,
-              busy: routingBusy,
-              onToggle: (next) => {
-                setActionError(null);
-                void routing.setEnvExport(next);
-              },
-            }
-          : undefined
+        proxy?.env_export_separable ? { on: proxy.env_export_opted_in } : undefined
       }
       rootRef={root}
       // Same chain as the window's rail. `account.org_name` is OAuth-only, so

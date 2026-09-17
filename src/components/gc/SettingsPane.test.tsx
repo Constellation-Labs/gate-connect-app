@@ -350,3 +350,39 @@ describe("the Gate plan row", () => {
     expect(onRetryPlan).toHaveBeenCalled();
   });
 });
+
+describe("the command-line tools row", () => {
+  const shellRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "shell-proxy");
+
+  it("puts the machine-wide channel in Settings, not the app list", () => {
+    // AG-893. It used to be a card in the rail and a row in the app list, both
+    // describing the same coverage in different words. The rail is a list of
+    // apps and this is a setting, so there is one control now and it is here.
+    const onToggle = vi.fn();
+    const row = shellRow({ shellProxy: { on: true, onToggle } })!;
+
+    expect(row.label).toBe("Command-line tools");
+    expect(row.toggle?.on).toBe(true);
+    row.toggle!.onToggle();
+    expect(onToggle).toHaveBeenCalled();
+  });
+
+  it("says what it reaches and what it costs", () => {
+    // Neither old control did. "Terminal" and "command line tools that follow
+    // your proxy settings" said neither, and the certificate half was stated
+    // nowhere at all.
+    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
+
+    expect(row.description).toMatch(/every program you start afterwards/);
+    expect(row.description).toMatch(/certificate/i);
+  });
+
+  it("is absent where the platform cannot offer it separately", () => {
+    // Linux: these variables ARE the system proxy, so declining them means
+    // turning routing off, which is a different control.
+    expect(shellRow({ shellProxy: undefined })).toBeUndefined();
+  });
+});

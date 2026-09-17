@@ -99,7 +99,9 @@ export function Tray({
   /** The shell-environment channel, drawn as its own card ("Command-line
    * tools"). Absent on Linux, where those variables are the system proxy and
    * cannot be declined separately. */
-  cli?: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
+  /** Reported, not offered: the window's Settings pane owns this control.
+   *  See {@link CliCard}. */
+  cli?: { on: boolean };
   orgName: string;
   /** Open the organization selector (AG-582). The tray does not own one - it
    *  hands over to the window, which does. Omit and the footer draws the org as
@@ -581,14 +583,21 @@ function NotInstalledSection({
   );
 }
 
-/** The shell-environment switch as the tray draws it (735:37341), with the
+/** The shell-environment channel as the tray draws it (735:37341), with the
  * frame's own copy - shorter than the rail card's, and naming the mechanism
- * (`HTTPS_PROXY`) outright. */
-function CliCard({
-  cli,
-}: {
-  cli: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
-}) {
+ * (`HTTPS_PROXY`) outright.
+ *
+ * **A status card, not a switch**, which is the same call the master card makes
+ * one section up and for the same reason: the tray reports what the window
+ * decides, and it introduces no concept of its own. Two switches for one
+ * machine-wide setting is what AG-893 reported, and the window's Settings pane
+ * is where a setting belongs.
+ *
+ * The frame draws a switch here. So does every tray frame for the master card,
+ * at opacity 0 - see this file's header. The drawn control is kept as the
+ * drawn LAYOUT and rendered as state, rather than as a second control that can
+ * disagree with the first. */
+function CliCard({ cli }: { cli: { on: boolean } }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card py-3 pl-3 pr-2">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -597,12 +606,12 @@ function CliCard({
           Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
         </p>
       </div>
-      <BaseSwitch
-        on={cli.on}
-        label="Command-line tools"
-        busy={cli.busy}
-        onClick={() => cli.onToggle(!cli.on)}
-      />
+      {/* The same vocabulary the rows use for a state they report rather than
+        * offer, so the card reads as a reading and not as a control someone
+        * failed to wire. */}
+      <span className="shrink-0 text-base-xs font-medium leading-4 text-base-muted-foreground">
+        {cli.on ? "On" : "Off"}
+      </span>
     </div>
   );
 }

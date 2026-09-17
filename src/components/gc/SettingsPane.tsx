@@ -107,6 +107,7 @@ export function buildSettingsSections({
   onRenameDevice,
   onCopyInstallId,
   onUpgradePlan,
+  shellProxy,
   onReplaceKey,
   onSwitchToGateAccount,
   signInNote,
@@ -188,6 +189,10 @@ export function buildSettingsSections({
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
+  /** The machine-wide shell proxy channel, or undefined where the platform
+   *  cannot offer it separately (Linux, where these variables ARE the system
+   *  proxy). The window owns this control; the tray reports it. */
+  shellProxy?: { on: boolean; onToggle: () => void };
   onReplaceKey?: () => void;
   /** Offered only to an account still on a pasted key. The popover has carried
    * this since it shipped (`screens/Settings.tsx`); the new shell had only the
@@ -347,6 +352,37 @@ export function buildSettingsSections({
                 } as SettingsRow,
               ]
             : []),
+        // Machine-wide, so Settings rather than the app list - the rail is a
+        // list of apps and this is not one (AG-893, and `isSettingsManaged`).
+        // Placed in Connection because it decides HOW traffic reaches Gate,
+        // which is what the rest of this section is about.
+        //
+        // Undrawn by the file: no frame carries this row, because the file draws
+        // it as a card in the rail, which is where it should not be. The tray's
+        // own card (`735:37341`) IS drawn and keeps its copy, as a status
+        // display - the tray reports what the window decides.
+        //
+        // Absent on Linux, where these variables are the system proxy and cannot
+        // be declined without turning routing off.
+        ...(shellProxy
+          ? [
+              {
+                id: "shell-proxy",
+                icon: "squareCode" as IconName,
+                label: "Command-line tools",
+                // The two facts a reader needs and neither control used to
+                // give: what it reaches, and what it costs. "Terminal" and
+                // "command line tools that follow your proxy settings" said
+                // neither. The certificate half was stated nowhere at all.
+                description:
+                  "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Needed for OpenCode, which has no proxy setting of its own.",
+                toggle: {
+                  on: shellProxy.on,
+                  onToggle: shellProxy.onToggle,
+                },
+              } as SettingsRow,
+            ]
+          : []),
         ...(certificate
           ? [
               {

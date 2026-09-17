@@ -1677,6 +1677,13 @@ export function ReplaceApiKeyDialog({
  * the primary for the same reason - `useFocusTrap`'s `initialFocus` is for the
  * dialogs where the safe answer is "no".
  *
+ * **It carries the CA line**, which was stated nowhere at all.
+ * `NODE_EXTRA_CA_CERTS` adds Gate's interception certificate to the trust roots
+ * of every Node process started afterwards - a larger fact than "git and curl
+ * go through Gate", and the harder one to discover. Settings says it too, on
+ * the row that owns the control; this dialog says it at the moment a click is
+ * about to cause it.
+ *
  * **Shared because the tray needs it too, and did not have it.** `useRouting`
  * raises this prompt for whichever shell called `setAppRouted`, and awaits a
  * promise only a rendered dialog resolves. The tray routed OpenCode through that
@@ -1711,7 +1718,9 @@ export function OpenCodeEnvDialog({
       <p className="text-sm leading-5 text-neutral-600">
         OpenCode has no gateway setting of its own, so Gate routes it with your
         machine&apos;s proxy variables. Those apply to every command line tool
-        that reads them. That includes git, curl and npm.
+        that reads them. That includes git, curl and npm. One of them also tells
+        Node to trust Gate&apos;s certificate, so every Node program you start
+        afterwards accepts the traffic Gate inspects.
       </p>
     </Modal>
   );

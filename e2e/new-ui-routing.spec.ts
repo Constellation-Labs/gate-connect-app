@@ -1361,13 +1361,18 @@ test.describe("new UI sidebar rail", () => {
       ],
     });
 
-    // A row per tool, under one band. OpenClaw, OpenCode and the environment
-    // channel are three programs and three switches - the environment channel
-    // is its own row now rather than OpenCode's roommate, because what it
-    // routes is every program started after the next login.
-    for (const name of ["OpenClaw", "OpenCode", "Terminal"]) {
+    // A row per tool, under one band.
+    for (const name of ["OpenClaw", "OpenCode"]) {
       await expect(app.page.getByRole("switch", { name, exact: true })).toBeVisible();
     }
+    // Not the environment channel. It used to be a row here, on the argument
+    // that what it routes is a different client from the editor - true, but it
+    // is not an app, and the rail is a list of apps. Its control moved to
+    // Settings (AG-893), so the fixture keeps it in `list_tools` to prove the
+    // filter is what removes it rather than its absence from the fixture.
+    await expect(
+      app.page.getByRole("switch", { name: "Terminal", exact: true }),
+    ).toHaveCount(0);
     // The headings are the two bands, and nothing else. Every earlier grouping
     // this rail had - vendors, then clients, then a catch-all for whatever
     // those could not place - is gone.
