@@ -3816,14 +3816,22 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // taskbar button instead, macOS needs `orderFrontRegardless` (see
             // the popover's own helper, written for this same reason).
             //
-            // Kept to `show` + `set_focus` plus that macOS helper, which
-            // touches AppKit directly rather than the runtime. Raising the
-            // window topmost from here was tried and rejected: each such call
-            // dispatches to the main thread and blocks, and this thread
-            // exists precisely because `cookies_for_url` deadlocks on Windows
-            // when the main thread is busy (wry#583). If a raise turns out to
-            // be needed it belongs on the BUILDER, where it costs no runtime
-            // dispatch.
+            // Kept to `show` + `set_focus` plus that macOS helper. None of
+            // the three waits on the main thread: the two Tauri setters post
+            // a `Message::Window` and return, and the helper reposts ITSELF
+            // the same way when it is called off-thread (see
+            // `order_front_regardless`). Nothing here may wait, which is the
+            // reason this poll has a thread at all: `cookies_for_url` below
+            // is a GETTER, and it deadlocks on Windows when the main thread
+            // is busy (wry#583).
+            //
+            // The helper used to message AppKit inline from here, which was
+            // wrong twice over. `ns_window()` is a getter too, so it took the
+            // very round trip this thread exists to avoid, and the objc calls
+            // after it ran off the main thread - the trap that crashed the
+            // app on quit. Raising the window topmost was tried and rejected
+            // separately; if it turns out to be needed it belongs on the
+            // BUILDER, where it costs no runtime dispatch.
             if !revealed && navigation_challenged && std::time::Instant::now() >= reveal_at {
                 eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
                 let _ = window.show();
@@ -5643,7 +5651,9 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 /// quit dialog from the same thread, so quitting with a connected tool
 /// crashed the app before `RunEvent::Exit` could revert the system proxy.
 /// The hop is a post, not a wait, so a caller that must not block on the main
-/// thread (the challenge-solve poll) is not blocked by it.
+/// thread (the challenge-solve poll) is not blocked by it. The post can only
+/// fail once the event loop has shut down, which is why the `Err` is dropped:
+/// by then there is no window left to raise.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {
     use objc2::msg_send;
@@ -5665,6 +5675,11 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         return;
     }
 
+    // SAFETY: on the main thread, by the guard above. Both messages are
+    // documented public NSWindow selectors taking no arguments and returning
+    // void; the pointer comes from this window's own `ns_window()`, which
+    // errors rather than answering for a window that is gone, and is
+    // null-checked before it is messaged.
     unsafe {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
