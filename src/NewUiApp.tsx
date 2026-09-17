@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SECURITY_SECTION_ID, SecurityEventDialog } from "./components/gc/SecurityEvents";
 import { useSecurityFeed } from "./lib/securityFeed";
 import type { SecurityEvent } from "./lib/api";
@@ -1025,20 +1026,24 @@ export function NewUiApp() {
   }, [account, loadKeyPrefix]);
 
   /**
-   * First launch ever: open the tutorial window.
+   * First launch ever: open the tutorial window and step this one aside.
    *
    * The popover has done this since the intro moved into its own window, and this
    * shell only offered Replay tutorial in Settings - so a new install on what is
    * now the default surface replayed something it had never been shown.
    *
-   * Unlike the popover this does **not** hide the main window. Stepping a 360px
-   * panel aside is housekeeping; a 1024x720 window the user just opened
-   * disappearing reads as a crash, and the onboarding window's close handler
-   * reveals this one either way.
+   * This shell used to leave the main window up behind the intro, on the theory
+   * that a window the user just opened disappearing reads as a crash. In practice
+   * the two came up together (AG-876): a 1280x800 app and a 1080x720 tutorial,
+   * both centred, one over the other, before the user had been told what either
+   * was. The app starts once the intro is done: the onboarding window's
+   * CloseRequested handler in src-tauri reveals this one, whether the intro
+   * finished or was closed early, so the hide is never permanent.
    */
   useEffect(() => {
     if (hasSeenTour()) return;
     void openOnboardingWindow("firstrun").catch(() => {});
+    void getCurrentWindow().hide().catch(() => {});
   }, []);
 
   // The tutorial announces completion from its own webview; record the flag in
