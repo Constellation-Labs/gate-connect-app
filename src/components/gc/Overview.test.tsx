@@ -100,3 +100,37 @@ describe("the Security events section", () => {
     expect(screen.queryByText("Loading security events")).toBeNull();
   });
 });
+
+describe("the Tokens saved tile", () => {
+  const saving = { id: "s1", name: "Prompt compression", icon: "layers" as const, enabled: true };
+
+  it("is a button that jumps when the section it jumps to has rows", () => {
+    // AG-572's decision, and the half of it that works: there is something to
+    // land on.
+    render(pane({ savings: [saving] }));
+
+    expect(screen.getByRole("button", { name: /Tokens saved/i })).toBeTruthy();
+  });
+
+  it("is an ordinary tile when the section below is empty", () => {
+    // AG-883. Token savings is the second-to-last card, so the pane pins at its
+    // maximum scroll rather than putting the heading at the top - and with the
+    // table and the feed both empty, the click reads as the page jumping to a
+    // screen of nothing. An offer to navigate somewhere blank is worse than no
+    // offer, so the tile stops being a button.
+    render(pane({ savings: [] }));
+
+    expect(screen.queryByRole("button", { name: /Tokens saved/i })).toBeNull();
+  });
+
+  it("does not offer the jump while the read is in flight or failed", () => {
+    // The section draws placeholders in one case and a sentence in the other.
+    // Neither is a destination.
+    const { unmount } = render(pane({ savings: [saving], pending: true }));
+    expect(screen.queryByRole("button", { name: /Tokens saved/i })).toBeNull();
+    unmount();
+
+    render(pane({ savings: [saving], unavailable: { savings: true } }));
+    expect(screen.queryByRole("button", { name: /Tokens saved/i })).toBeNull();
+  });
+});
