@@ -10,7 +10,7 @@
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
-//! **`config.yaml` is never written.** Hermes loads `$HERMES_HOME/.env` at CLI
+//! **Routing is never written to `config.yaml`.** Hermes loads `$HERMES_HOME/.env` at CLI
 //! startup (`hermes_cli/env_loader.py`, called from `cli.py`) before any client
 //! is constructed, and `agent/process_bootstrap.py` reads `HTTPS_PROXY` /
 //! `HTTP_PROXY` / `ALL_PROXY` (plus lower-case) from the environment, honouring
@@ -32,8 +32,23 @@
 //! protection the old `is_local_url` guard gave, expressed where Hermes can
 //! actually act on it.
 //!
-//! **`config.yaml` is read once, to say what Gate will see - never to change
-//! it.** A correct `.env` is only half of being visible: the engine MITMs a host
+//! **`config.yaml` is read to say what Gate will see, and written only to name
+//! Hermes on the wire.** The distinction is the one the paragraph above draws.
+//! `model.base_url` is a routing directive, and writing it was per-endpoint, so
+//! a config change routed around Gate while status said Connected - that is
+//! what `.env` replaced and it stays replaced. `model.extra_headers` decides
+//! nothing about where a request goes: it adds `x-gate-tool: hermes`, which the
+//! engine reads and consumes, and if it is missing the request routes exactly
+//! the same and arrives unattributed. So the rule that banned the base_url
+//! write does not reach this one, and the header is the only signal the engine
+//! can have for Hermes - no base URL means no path marker, and its User-Agent
+//! is `python-httpx/...` because it is a Python program.
+//!
+//! The write is surgical (`yaml_block`) rather than a `serde_yaml` round-trip,
+//! because a round-trip returns a semantically equal document with every
+//! comment gone, and this is a file the user wrote. A shape that editor will
+//! not touch is left alone, costing the label and nothing else.
+//! A correct `.env` is only half of being visible: the engine MITMs a host
 //! only while an enabled catalog domain claims it, and Hermes' documented default
 //! upstream (`openrouter.ai`) ships off, so the traffic can be routed through
 //! Gate and blind-tunnelled past it at the same time. Connecting Hermes must not
@@ -68,6 +83,7 @@ use std::path::PathBuf;
 use crate::integrations::binaries;
 use crate::integrations::dotenv;
 use crate::integrations::precedence::Override;
+use crate::integrations::yaml_block;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
@@ -102,6 +118,12 @@ struct State {
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
+    /// What the `config.yaml` header edit had to create, so disconnect takes
+    /// back exactly that. Absent on a state file written before the header
+    /// existed, which reads as "we wrote nothing there" - correct, because we
+    /// had not.
+    #[serde(default)]
+    header_created: Option<yaml_block::Created>,
 }
 
 fn default_version() -> u8 {
@@ -246,6 +268,37 @@ impl Integration for Hermes {
             );
         }
 
+        // Name Hermes on its own requests. This is the one signal the engine
+        // can have for it: Hermes has no base URL for us to write, so there is
+        // no path marker, and its User-Agent is `python-httpx/...` because it
+        // is a Python program - `client_tool`'s needle for it has never once
+        // fired. A header Gate writes into a file only Hermes reads is evidence
+        // of our own making, which is the same standard the relay marker meets.
+        //
+        // `extra_headers` rather than `default_headers`: the two are merged and
+        // aliases of each other, so writing the one the user is less likely to
+        // be keeping means never having to edit a block that is theirs.
+        //
+        // Best-effort on purpose. A config shape `yaml_block` will not edit, or
+        // no write permission, costs the attribution and nothing else - the
+        // routing above is what makes Hermes work, and refusing to connect over
+        // a label would be the wrong trade. `status` reports it.
+        let header_created = write_tool_header()
+            .map_err(|e| {
+                eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
+            })
+            .ok()
+            .flatten();
+        // Same rule as `added_vars` below, and the same trap: on a re-connect
+        // the header is already there and correct, so `write_tool_header`
+        // reports creating nothing - and assigning that would erase the record
+        // of what the FIRST connect created. Disconnect reads this to know how
+        // much to take back out, so erasing it strands our block in the user's
+        // config forever.
+        if state.header_created.is_none() {
+            state.header_created = header_created;
+        }
+
         // Preserve the ORIGINAL record across re-connects: a second connect
         // must not claim credit for variables the first one added.
         if state.added_vars.is_empty() {
@@ -272,6 +325,12 @@ impl Integration for Hermes {
             return Ok(());
         };
         dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
+        // Only if we wrote one. A `None` here is a connect that predates the
+        // header or one whose write was refused, and in both cases the config
+        // is the user's untouched.
+        if let Some(created) = state.header_created {
+            remove_tool_header(created)?;
+        }
         // Only drop the sidecar once the file is back: losing it first would
         // leave our variables in place while status reports the tool clean.
         clear_state()
@@ -479,6 +538,94 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
 /// documented aliases of one another (see
 /// `docs/harness-integration-validation.md`, H6), so all three have to be read.
 const BASE_URL_KEYS: &[&str] = &["base_url", "api", "url"];
+
+/// Where the tool header lives in `config.yaml`, and what it says.
+///
+/// `model.extra_headers` is global - "sent on every request to an
+/// OpenAI-compatible endpoint" - unlike the per-provider `extra_headers`, which
+/// is scoped to one named entry. That distinction is the whole choice: a
+/// per-endpoint setting is what made the old `model.base_url` rewrite unsafe,
+/// because adding a provider silently routed around it. A header that is missing
+/// costs a label; one that is missing *only sometimes* would be worse than
+/// either.
+const HEADER_PARENT: &str = "model";
+const HEADER_CHILD: &str = "extra_headers";
+
+/// Write the header, returning what had to be created for it.
+///
+/// `None` means there was nothing to do or nothing we could safely do; the error
+/// arm is reserved for I/O, so a refused shape is not reported as a failure.
+fn write_tool_header() -> Result<Option<yaml_block::Created>> {
+    let path = crate::env::hermes_config_path()?;
+    let before = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let (after, edit) = match yaml_block::set_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        ToolId::Hermes.slug(),
+    ) {
+        Ok(result) => result,
+        Err(refusal) => {
+            // A shape the editor will not touch. Said once, plainly, because
+            // the user's only visible symptom is otherwise a tool that routes
+            // but never appears by name.
+            eprintln!(
+                "note: left ~/.hermes/config.yaml alone ({refusal:?}); Hermes will route through \
+                 Gate but its traffic will be recorded as unattributed."
+            );
+            return Ok(None);
+        }
+    };
+    match edit {
+        // Already ours and already right - and on a re-connect that is the
+        // usual answer, so it must not rewrite the file to say so.
+        yaml_block::Edit::Unchanged => Ok(None),
+        yaml_block::Edit::Refreshed => {
+            write_config(&path, &after)?;
+            Ok(None)
+        }
+        yaml_block::Edit::Inserted(created) => {
+            write_config(&path, &after)?;
+            Ok(Some(created))
+        }
+    }
+}
+
+/// Take the header back out, per what connect recorded creating.
+fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
+    let path = crate::env::hermes_config_path()?;
+    let Ok(before) = std::fs::read_to_string(&path) else {
+        // Gone already; nothing of ours is left in a file that is not there.
+        return Ok(());
+    };
+    let after = yaml_block::remove_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        created,
+    );
+    if after != before {
+        write_config(&path, &after)?;
+    }
+    Ok(())
+}
+
+/// 0o600 like the `.env` beside it: this file can hold `${VAR}`-interpolated
+/// header values, and the upstream example uses that for access tokens.
+fn write_config(path: &std::path::Path, body: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    crate::primitives::write_file(path, body.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
+}
 
 /// `config.yaml` as YAML, or `None` if it is absent or does not parse. Never an
 /// error: nothing here is load-bearing enough to fail a connect over.

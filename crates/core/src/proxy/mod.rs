@@ -1411,6 +1411,16 @@ pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
 /// Which tool sent the request, when we can tell. Feeds the per-tool series in
 /// the activity view.
 pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// A tool naming itself because Gate wrote this header into that tool's own
+/// config file - the engine's equivalent of the relay's path marker, for a tool
+/// that has no base URL for us to write.
+///
+/// **Deliberately not [`GATE_CLIENT_HEADER`] itself.** That one is stamped by
+/// us and stripped from whatever the caller sent, so a tool cannot label its own
+/// traffic with it. This one is a request *input*, read before the strip and
+/// consumed here: it never reaches the gateway, and the slug it names is
+/// validated against [`crate::registry::ToolId`] rather than forwarded as text.
+pub(crate) const GATE_TOOL_HEADER: &str = "x-gate-tool";
 /// What the user calls this machine, so the gateway can show traffic under a
 /// human name rather than an install id. Self-asserted and non-secret, like the
 /// two above.
@@ -1492,6 +1502,11 @@ fn inject_attribution(
     // underneath for everything the marker cannot reach - the forward-proxy
     // engine, where there is no URL to write, and any relay base URL written
     // before the marker existed and not yet reconciled.
+    // Consumed, not forwarded: the caller's own copy goes no further than this
+    // hop whether or not we could read it. It is Gate-internal, it names the
+    // user's tooling, and the gateway learns the same fact from the header we
+    // stamp below.
+    headers.remove(GATE_TOOL_HEADER);
     let tool = routed_tool.or_else(|| client_tool(headers, domain));
     // Every gateway-bound request comes through here, on both paths, which is
     // what makes this the one place the window can be told traffic happened.
@@ -1657,6 +1672,26 @@ pub mod testing {
     pub fn strip_tool_credential_for_tests(headers: &mut HeaderMap) {
         super::strip_client_auth(headers);
     }
+}
+
+/// The tool named by [`GATE_TOOL_HEADER`], if it names one we know.
+///
+/// This is `established` evidence in the sense `client_tool` means it: the
+/// header is there because Gate wrote it into a config file only that tool
+/// reads, not because a string the caller composed looked right. It is the only
+/// such signal available on the forward-proxy path for a tool that has no base
+/// URL - the engine sees a CONNECT, so there is no URL of ours to put a marker
+/// in.
+///
+/// An unknown slug yields `None` rather than being passed through, so the value
+/// that reaches the activity column is always one of ours. Same reasoning as the
+/// relay's marker: a request we cannot name is served unlabelled.
+pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
+    headers
+        .get(GATE_TOOL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::registry::ToolId::from_slug)
+        .map(crate::registry::ToolId::slug)
 }
 
 /// Which client sent a request, for the gateway's `client_tool` column.

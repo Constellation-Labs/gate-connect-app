@@ -224,6 +224,146 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     );
 }
 
+/// A tool that names itself in its own config is attributed, and the header it
+/// used goes no further.
+///
+/// This is the whole of Hermes' attribution. It has no base URL for Gate to
+/// write, so there is no path marker; and it is a Python program, so its
+/// User-Agent is `python-httpx/...` and `client_tool`'s `hermes` needle has
+/// never once fired - `harnesses.json` has recorded the consequence for as long
+/// as the needle has existed. `model.extra_headers` in `config.yaml` is the one
+/// place Gate can put a value that only Hermes sends.
+///
+/// Two assertions, and the second matters as much as the first. The gateway
+/// must learn `hermes`, and must not learn it twice: `x-gate-tool` is
+/// Gate-internal, it names the user's tooling, and it is consumed at the hop
+/// that reads it.
+#[tokio::test]
+async fn a_tool_that_names_itself_in_its_config_is_attributed() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+            billing_mode: Default::default(),
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    // The User-Agent is deliberately the one Hermes really sends, so this test
+    // fails if attribution ever quietly starts coming from the guess instead.
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("user-agent", "python-httpx/0.27.0")
+        .header("x-gate-tool", "hermes")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(
+        resp.status().is_success(),
+        "gateway returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "gateway should have received one request");
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-client"),
+        Some("hermes"),
+        "the config header is what names a tool the User-Agent cannot"
+    );
+    assert_eq!(
+        r.header("x-gate-tool"),
+        None,
+        "the input header is consumed at this hop, not forwarded"
+    );
+}
+
+/// A slug we do not know is dropped, not passed through.
+///
+/// The value reaches us from a file on the user's disk, so it can say anything.
+/// Whatever lands in the activity column has to be one of ours, and an
+/// unrecognised tool is unattributed rather than a string nobody can map back
+/// to a row - the same rule the relay marker follows.
+#[tokio::test]
+async fn a_tool_header_naming_something_unknown_is_dropped() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+            billing_mode: Default::default(),
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("user-agent", "python-httpx/0.27.0")
+        .header("x-gate-tool", "not-a-tool")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(resp.status().is_success());
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-client"),
+        None,
+        "unrecognised is unattributed"
+    );
+    assert_eq!(r.header("x-gate-tool"), None, "and still not forwarded");
+}
+
 /// Claude Code has its own explicit proxy selector because the Desktop domain
 /// is independently switchable. Even with that catalog entry off, a connected
 /// Claude Code process must still be intercepted instead of silently reaching
