@@ -2834,6 +2834,36 @@ impl ResolvedEndpoint {
             self.client_path
         )
     }
+
+    /// Is `candidate` a base URL *we* wrote for this endpoint and tool?
+    ///
+    /// Not "does it point at loopback". The two are not the same question and
+    /// the difference is a config the user owns: someone who repoints a tool we
+    /// connected at their own local server is still on loopback, and answering
+    /// yes there hands `reconcile_enabled` a licence to take it back. It asks
+    /// instead whether the string is one [`Self::relay_base_url`] could have
+    /// produced, which only Gate Connect writes.
+    ///
+    /// Judged at the candidate's OWN origin rather than the relay's current one,
+    /// because a base URL that has gone stale is exactly what the reapply exists
+    /// to repair: the relay comes back on a different port and every config we
+    /// wrote now names a dead one. Both path shapes count for the same reason -
+    /// the pre-marker one is what every install written before the tool segment
+    /// still holds, and it is no less ours for being old.
+    pub fn is_relay_base_url(&self, candidate: &str, tool: ToolId) -> bool {
+        let Some((scheme, rest)) = candidate.split_once("://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.is_empty() {
+            return false;
+        }
+        let origin = format!("{scheme}://{authority}");
+        if self.relay_base_url(&origin, tool) == candidate {
+            return true;
+        }
+        format!("{origin}/{}{}", self.slug, self.client_path) == candidate
+    }
 }
 
 /// Resolve a provider's canonical endpoint - the URL a tool would call if Gate
@@ -2877,6 +2907,50 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::SolveOutcome;
+
+    /// What separates a base URL of ours from one the user owns.
+    ///
+    /// The tempting test is "does it point at loopback", and it is wrong in the
+    /// one direction that costs something: a tool the user has repointed at
+    /// their own local server answers yes to it, and `config_is_managed` would
+    /// then let `reconcile_enabled` take the config back without asking. The
+    /// question is whether the string is one we could have written.
+    #[test]
+    fn only_a_url_we_could_have_written_reads_as_ours() {
+        use super::{resolve_endpoint, ToolId};
+        let r = resolve_endpoint("https://api.anthropic.com/v1").expect("anthropic resolves");
+
+        // What we write today, and the same at a port the relay has since left:
+        // the stale one is precisely what the reapply exists to repair, so it
+        // has to still read as ours.
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:1234/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        // The shape written before the marker existed, which every install that
+        // has not reconciled since still holds.
+        assert!(r.is_relay_base_url("http://127.0.0.1:9977/anthropic/v1", ToolId::OpenCode));
+
+        // The user's own llama server on the same interface. Loopback, and not
+        // ours.
+        assert!(!r.is_relay_base_url("http://127.0.0.1:11434/v1", ToolId::OpenCode));
+        // Ours in shape, but naming a different tool or a different upstream.
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/codex/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/openai/v1",
+            ToolId::OpenCode
+        ));
+        // Not a URL at all, and a scheme with no authority.
+        assert!(!r.is_relay_base_url("anthropic/v1", ToolId::OpenCode));
+        assert!(!r.is_relay_base_url("http:///anthropic/v1", ToolId::OpenCode));
+    }
 
     /// The wire words the frontend's own union spells out.
     ///

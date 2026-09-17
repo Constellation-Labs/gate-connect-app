@@ -394,14 +394,6 @@ impl Integration for OpenCode {
         let mut settings = load_settings()?.unwrap_or_default();
         let auth = load_opencode_auth().unwrap_or_default();
 
-        // Load any existing state - re-connects must preserve the
-        // *original* snapshots, not overwrite them with our intermediate
-        // values from the previous connect. It is read here rather than after
-        // the guard below because the guard needs it: a provider recorded here
-        // is one we wrote, and the local-protection test cannot tell our own
-        // baseURL apart from a user's private endpoint without that.
-        let mut state = load_state()?.unwrap_or_default();
-
         // Figure out which well-known providers to route through Gate:
         // anything the user has either pre-configured in opencode.json OR
         // logged into via `opencode auth login`.
@@ -434,10 +426,13 @@ impl Integration for OpenCode {
         // theoretical: it is what a re-apply always is - the reconcile pass
         // rewriting a base URL of our own that has gone stale, which is exactly
         // how an existing install picks up a new relay port, or the tool marker
-        // this file now writes. The sidecar is what makes the two cases
-        // distinguishable: a provider recorded in it is one `connect` wrote, so
-        // re-pointing it is finishing our own job rather than hijacking the
-        // user's.
+        // this file now writes.
+        //
+        // `is_relay_base_url` and not "is it in the sidecar", which would have
+        // been the easy test and the wrong one: a provider we connected and the
+        // user has since repointed at their own local server is in the sidecar
+        // too, and exempting it would take their endpoint back. It asks whether
+        // the string is one we could have written, at whatever port it names.
         let mut skipped_local: Vec<&str> = Vec::new();
         let targets: Vec<&KnownProvider> = candidates
             .into_iter()
@@ -452,7 +447,8 @@ impl Integration for OpenCode {
                     .and_then(|o| o.get("baseURL"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let ours = state.providers.contains_key(p.id);
+                let ours = crate::proxy::resolve_endpoint(p.endpoint)
+                    .is_some_and(|r| r.is_relay_base_url(existing, ToolId::OpenCode));
                 if !existing.is_empty() && looks_local(existing) && !ours {
                     skipped_local.push(p.id);
                     false
@@ -473,6 +469,11 @@ impl Integration for OpenCode {
                 skipped_local.join(", ")
             );
         }
+
+        // Load any existing state - re-connects must preserve the
+        // *original* snapshots, not overwrite them with our intermediate
+        // values from the previous connect.
+        let mut state = load_state()?.unwrap_or_default();
 
         let provider_map = ensure_object(&mut settings, "provider");
 

@@ -646,3 +646,62 @@ fn opencode_leaves_a_users_own_local_endpoint_alone() {
         "the user's own endpoint was rewritten"
     );
 }
+
+/// The guard's other half, for Codex: our block, our marker, our pointer, but a
+/// `base_url` the user aimed at their own local server.
+///
+/// A loopback test would call this ours, because the user's own server is on
+/// 127.0.0.1 too, and hand the reapply a licence to take the config back. The
+/// question has to be "is this a URL we would have written", not "is this
+/// address local".
+#[test]
+fn codex_repointed_at_a_local_server_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_codex_with_stale_managed_config(port);
+    let repointed = codex_config().replace(
+        &format!("http://127.0.0.1:{port}/openai/v1"),
+        "http://127.0.0.1:11434/v1",
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), &repointed).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "a local endpoint we never wrote is not ours to reapply"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), repointed, "the hand edit was reverted");
+}
+
+/// Same for OpenCode, and this is the one the sidecar test would have failed:
+/// the provider IS recorded there, because we connected it, and the user has
+/// since pointed it somewhere of their own.
+#[test]
+fn opencode_repointed_at_a_local_server_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.local_addr().unwrap().port();
+    install_opencode_with_stale_managed_config(port);
+    let raw = opencode_config();
+    let repointed = raw.replace(
+        &format!("http://127.0.0.1:{port}/anthropic/v1"),
+        "http://127.0.0.1:11434/v1",
+    );
+    assert_ne!(raw, repointed, "the stale config should name anthropic");
+    fs::write(env::opencode_config_path().unwrap(), &repointed).unwrap();
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(
+        opencode_config(),
+        repointed,
+        "the user's own endpoint was taken back"
+    );
+}

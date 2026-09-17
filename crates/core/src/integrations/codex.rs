@@ -792,7 +792,7 @@ fn is_connected_marker(doc: &DocumentMut) -> bool {
 }
 
 /// Whether the config still points at Gate: `model_provider` is ours, and our
-/// block's `base_url` still names loopback, where the relay lives.
+/// block's `base_url` is still one we would have written.
 ///
 /// The second half of [`Integration::config_is_managed`], and the half that
 /// decides whether `reconcile_enabled` may rewrite this file without asking.
@@ -802,10 +802,15 @@ fn is_connected_marker(doc: &DocumentMut) -> bool {
 /// is how you send the traffic somewhere else. Either one, and the config stops
 /// being ours to silently reapply.
 ///
-/// Loopback rather than the relay's current origin, deliberately - matching
-/// [`super::hermes`]'s `is_loopback_url` - because the stale-port case is
-/// exactly what the reapply exists to fix, and comparing against today's origin
-/// would exclude it.
+/// `is_relay_base_url` rather than the loopback test [`super::hermes`] uses for
+/// the same job: a user who repoints Codex at their own local server is still on
+/// loopback, and that answer would hand the reapply a licence to take it back.
+/// It judges the URL at its own origin, so a relay that came back on a different
+/// port - the drift this exists to repair - still reads as ours.
+///
+/// Both auth modes count. Each writes a different upstream and therefore a
+/// different path, and a config in the other one is drift `status` already
+/// reports; what matters here is only that the URL is one of ours.
 ///
 /// Split out for the same testability reason as [`is_connected_marker`].
 fn still_aims_at_us(doc: &DocumentMut) -> bool {
@@ -816,29 +821,22 @@ fn still_aims_at_us(doc: &DocumentMut) -> bool {
     if !points_at_gate {
         return false;
     }
-    doc.get("model_providers")
+    let Some(base_url) = doc
+        .get("model_providers")
         .and_then(|i| i.as_table_like())
         .and_then(|t| t.get(PROVIDER_ID))
         .and_then(|i| i.as_table_like())
         .and_then(|t| t.get("base_url"))
         .and_then(|i| i.as_str())
-        .is_some_and(is_loopback_url)
-}
-
-/// Whether a base URL points at loopback - i.e. is one of ours rather than a
-/// gateway the user pointed Codex at themselves. Deliberately not a URL parser:
-/// it runs over a value a user may have hand-written into a TOML file.
-fn is_loopback_url(url: &str) -> bool {
-    let lowered = url.trim().to_ascii_lowercase();
-    let rest = lowered
-        .split_once("://")
-        .map_or(lowered.as_str(), |(_, r)| r);
-    let authority = rest.split('/').next().unwrap_or("");
-    let host = authority
-        .strip_prefix('[')
-        .and_then(|a| a.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
-    host == "localhost" || host == "::1" || host.starts_with("127.")
+    else {
+        return false;
+    };
+    [AuthMode::Apikey, AuthMode::Chatgpt]
+        .into_iter()
+        .any(|mode| {
+            crate::proxy::resolve_endpoint(&direct_base_url(mode))
+                .is_some_and(|r| r.is_relay_base_url(base_url, ToolId::Codex))
+        })
 }
 
 /// The `[_gate_connect]` keys `connect` records, either of which says the table

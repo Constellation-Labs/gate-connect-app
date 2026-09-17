@@ -910,11 +910,9 @@ fn has_dot_segment(path_and_query: &str) -> bool {
         .map(|(p, _)| p)
         .unwrap_or(path_and_query);
     path.split('/').any(|segment| {
-        let lowered = segment.to_ascii_lowercase();
-        matches!(
-            lowered.as_str(),
-            "." | "%2e" | ".." | ".%2e" | "%2e." | "%2e%2e"
-        )
+        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
+            .iter()
+            .any(|form| segment.eq_ignore_ascii_case(form))
     })
 }
 
