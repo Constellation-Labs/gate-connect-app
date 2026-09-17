@@ -392,6 +392,31 @@ function adaptBillingUrl(billing: unknown): string | null {
 }
 
 /**
+ * The plan, as a person reads it.
+ *
+ * The gateway reports `free` or `paid` - the column is constrained to exactly
+ * those two (`CHK_org_entitlements_plan`), and no endpoint anywhere reports
+ * "pro". The dashboard maps `paid` to **"Pro"** for display, in its sidebar,
+ * its billing page and its billing emails, so that is the word the user has
+ * already seen for this account. Connect title-cased the raw value instead and
+ * said "Paid", which is the same account described by two different products in
+ * two different words - and AG-879 asks for the opposite: what Connect shows
+ * must equal what the dashboard shows.
+ *
+ * Anything else the gateway grows is passed through title-cased rather than
+ * hidden, since an unknown plan name is still the user's plan.
+ *
+ * Null stays null. A plan nobody reported is not "Free": that is the one value
+ * a reader acts on, by going to upgrade something they may already have.
+ */
+export function formatPlan(plan: string | null): string | null {
+  if (plan === null) return null;
+  if (plan === "paid") return "Pro";
+  if (plan === "free") return "Free";
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+/**
  * The credits line for the model card, as Figma 228:89517 words it
  * ("$10.25 available").
  *
