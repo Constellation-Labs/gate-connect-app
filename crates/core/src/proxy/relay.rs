@@ -187,7 +187,7 @@ struct RelayState {
     domains: Vec<ProxyDomain>,
     /// Whether inference rewrites to the gateway at all. When false (the Linux
     /// daemon with no GUI connected - see
-    /// [`RunningEngine::set_relay_intercept`](super::engine::RunningEngine::set_relay_intercept)),
+    /// [`RunningEngine::set_intercept`](super::engine::RunningEngine::set_intercept)),
     /// every request forwards to the real upstream under the tool's own
     /// credential: the relay's analogue of the MITM port's blind tunnel.
     intercept: watch::Receiver<bool>,

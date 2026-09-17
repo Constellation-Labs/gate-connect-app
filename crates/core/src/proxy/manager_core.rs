@@ -115,8 +115,8 @@ enum Teardown {
     ///
     /// This is what Linux has always done - `manager_linux::disable_inner`
     /// ends in `set_passthrough()` rather than a stop - and the divergence is
-    /// the whole of the bug. `helper::set_passthrough` is the same two calls
-    /// against the daemon.
+    /// the whole of the bug. `helper::set_passthrough` is the same pair of
+    /// calls against the daemon.
     Dormant,
     /// Join the engine and release its ports. For the paths where a parked
     /// listener would be wrong rather than merely idle: app exit (the process
@@ -155,24 +155,29 @@ impl<O: DesktopOps> DesktopManager<O> {
 
     /// Park a no-longer-routing engine with its ports still bound.
     ///
-    /// The two calls are the whole of "dormant": an empty domain set makes
-    /// `decide` return `Tunnel` for every host, so the MITM port blind-tunnels
-    /// instead of minting leaf certs, and clearing the relay's intercept flag
-    /// makes it forward to the real upstream under the tool's own credential.
-    /// Neither spends the user's Gate credential, and no traffic is read.
+    /// `set_intercept(false)` is what makes it a plain proxy: every CONNECT is
+    /// blind-tunnelled instead of decrypted, and the relay forwards to the
+    /// tool's real upstream under the tool's own credential. No leaf cert is
+    /// minted, nothing is rewritten to the gateway, and the user's Gate
+    /// credential is never attached.
+    ///
+    /// Clearing the domains is *not* what does that, and on its own would do
+    /// the opposite: `route_rules` force-enables Claude Code's own entry
+    /// exactly when the live set does not claim the host, so an empty set makes
+    /// the selector path fire. It is cleared anyway so the engine's own
+    /// `intercepting()` count reads zero, which is what `status` and the
+    /// debug log report.
     fn park_dormant(&self, running: engine::RunningEngine) {
-        // A crashed engine has nothing to offer a stale client; joining it is
-        // the same reap `handle_engine_crash` does, and parking it would leave
-        // `dormant` holding a dead handle that the next enable stops for no
-        // reason.
-        if running.is_finished() {
-            running.stop();
-            return;
-        }
+        running.set_intercept(false);
         running.update_domains(&[]);
-        running.set_relay_intercept(false);
         let mut slot = self.dormant.lock().expect("dormant engine mutex poisoned");
-        if let Some(previous) = slot.replace(running) {
+        // Take the old handle out before joining it: `stop()` blocks, and
+        // holding this lock across it would make a second caller wait on a
+        // thread join for no reason. Unreachable today - a routing engine
+        // implies an empty `dormant` - but the ordering is free.
+        let previous = slot.replace(running);
+        drop(slot);
+        if let Some(previous) = previous {
             previous.stop();
         }
     }
@@ -282,7 +287,7 @@ impl<O: DesktopOps> DesktopManager<O> {
             return self.status();
         }
         // Release a parked engine before anything probes a port or binds one.
-        // It holds the *previous* account's gateway URL, which `engine::start`
+        // It holds the gateway URL it was started with, which `engine::start`
         // takes once and never updates, so it cannot be adopted; and its
         // listener is sitting on exactly the address `preferred_engine_port`
         // is about to ask for. `stop()` joins, so the address is free by the
@@ -441,9 +446,10 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// unconditional - the revert happens first and never depends on admin,
     /// so it can't be canceled and strand traffic. The CA is left trusted.
     ///
-    /// The engine's ports stay bound, intercepting nothing, until the app
-    /// quits: see [`Teardown::Dormant`] for why releasing them here is what
-    /// breaks every already-running tool.
+    /// The engine's ports stay bound, intercepting nothing, until something
+    /// explicitly releases them - a quit, a gateway switch, a re-enable, or an
+    /// untrust. See [`Teardown::Dormant`] for why releasing them *here* is
+    /// what breaks every already-running tool.
     pub fn disable(&self) -> Result<ProxyState> {
         self.disable_inner(Teardown::Dormant)?;
 
@@ -540,12 +546,20 @@ impl<O: DesktopOps> DesktopManager<O> {
             Some(snapshot) => self.ops.restore(&snapshot),
             None => self.ops.force_off(),
         };
+        // Park only when the revert worked. A failed one returns early below
+        // with the snapshot still on disk, so the next launch's reconcile can
+        // retry it - and a live snapshot plus a live listener is exactly what
+        // `engine_hosted_elsewhere` reads as "another process is routing",
+        // which would make `status` report running with routing off. The
+        // failure path keeps the old behaviour and releases the ports.
+        let park = matches!(teardown, Teardown::Dormant) && reverted.is_ok();
         if let Some(running) = running {
-            match teardown {
-                Teardown::Dormant => self.park_dormant(running),
-                Teardown::Stop => running.stop(),
+            if park {
+                self.park_dormant(running);
+            } else {
+                running.stop();
             }
-        } else if matches!(teardown, Teardown::Stop) {
+        } else if !park {
             // Nothing routing, but a previous disable may have parked one -
             // an exit or a gateway switch has to take that down too.
             self.stop_dormant();
@@ -652,7 +666,7 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// mints leaf certs the OS would then reject. This is the explicit way to
     /// remove the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.prepare_untrust()?;
         self.ops.ca_untrust()?;
         self.status()
     }
@@ -661,12 +675,12 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// [`trust_ca_system`](Self::trust_ca_system), and refuses while running
     /// for the same reason [`untrust_ca`](Self::untrust_ca) does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.prepare_untrust()?;
         self.ops.ca_untrust_system()?;
         self.status()
     }
 
-    fn refuse_untrust_while_running(&self) -> Result<()> {
+    fn prepare_untrust(&self) -> Result<()> {
         if self
             .engine
             .lock()
@@ -713,22 +727,28 @@ impl<O: DesktopOps> DesktopManager<O> {
             return;
         };
         // A parked engine carries this same callback, so its death lands here
-        // too - and there is nothing to revert, because the disable that
-        // parked it already did all of it. Falling through would be actively
-        // harmful: the snapshot is gone by now, so the `force_off` below would
-        // fire and switch off a system proxy the user owns, which the disable
-        // had faithfully restored. Reap the handle and say nothing; routing is
-        // already off and the shell is already drawing it that way.
-        if guard.is_none() {
-            let parked = self
+        // too - and there is nothing to revert, because the disable that parked
+        // it already did all of it. Falling through would be actively harmful:
+        // the snapshot is gone by now, so the `force_off` below would fire and
+        // switch off a system proxy the user owns, which the disable had
+        // faithfully restored. Say nothing; routing is already off and the
+        // shell is already drawing it that way.
+        //
+        // Gated on a parked engine actually being held, not merely on "no
+        // routing engine": a crash *during* `enable` also arrives with an empty
+        // guard, and that one still wants the revert below.
+        //
+        // The dead handle is deliberately not reaped here. `on_unexpected_exit`
+        // runs on the engine's own thread, so `is_finished()` is still false at
+        // this point and any check for it would never match; the next
+        // `stop_dormant` (enable, exit, or untrust) joins it instead.
+        if guard.is_none()
+            && self
                 .dormant
                 .lock()
                 .expect("dormant engine mutex poisoned")
-                .take_if(|e| e.is_finished());
-            if let Some(parked) = parked {
-                parked.stop();
-                eprintln!("gate proxy: the parked pass-through engine exited; ports released");
-            }
+                .is_some()
+        {
             return;
         }
         eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
@@ -1421,6 +1441,23 @@ mod tests {
             "disable must leave the exported port answering"
         );
 
+        // And it answers as a plain proxy. Clearing the domains is the visible
+        // half; `set_intercept(false)` is the half that matters, because
+        // `route_rules` force-enables Claude Code's entry exactly when the live
+        // set is empty - an engine parked by clearing domains alone would still
+        // decrypt and bill a `claude` session that predates the toggle.
+        // `a_parked_engine_routes_nothing_even_with_the_selector` in `engine`
+        // pins that; here we check the manager asked for both.
+        assert_eq!(
+            mgr.dormant
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|e| e.intercepting()),
+            Some(0),
+            "a parked engine must claim no domains"
+        );
+
         mgr.disable_quiet().expect("release for the next test");
     }
 
@@ -1463,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_engine_dying_neither_reverts_nor_notifies() {
+    fn the_crash_fail_safe_stands_down_while_parked() {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
@@ -1472,7 +1509,10 @@ mod tests {
         let before = notifications();
 
         // The parked engine carries the same crash callback the routing one
-        // did, so its death lands in the same handler.
+        // did, so its death lands in the same handler. Calling it directly is
+        // the only way to drive that branch from a test: `on_unexpected_exit`
+        // runs on the engine's own thread, so a genuinely dying engine could
+        // not be observed as finished from here anyway.
         mgr.handle_engine_crash();
 
         // Nothing to revert, and reverting anyway would be destructive: the

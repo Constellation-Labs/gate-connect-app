@@ -80,6 +80,33 @@ to DIRECT; a stale `HTTPS_PROXY` makes every CLI request fail to connect. On
 Windows this also has to run above the early return in `reconcile_on_startup`,
 because registry values outlive a reboot where launchd variables do not.
 
+### Disable parks the engine, it does not stop it
+
+The ordering rule above is necessary and not sufficient. `launchctl unsetenv`
+only changes what processes started *afterwards* inherit, so every shell,
+editor and CLI already running keeps the exported `HTTPS_PROXY` for its whole
+life. Releasing the port under them turns "routing off" into "no provider is
+reachable" - including for tools the user never switched on, and for software
+Gate does not manage, because the export is machine-wide.
+
+So the routing toggle **parks** the engine: the ports stay bound and
+`set_intercept(false)` drops both listeners to plain forwarding, which is the
+path those tools would have taken with Gate not installed. Linux has always
+done this (`helper::set_passthrough`); the desktop managers now do too.
+
+`set_intercept` is what parks, **not** clearing the domain set. `route_rules`
+force-enables Claude Code's entry precisely when the live set does not claim
+the host, so an empty set makes the selector path fire rather than stop: an
+engine parked by clearing domains alone would go on decrypting and billing a
+`claude` session started before the toggle.
+
+Four paths still release the ports, because a parked listener would be wrong
+there rather than idle: app exit, a gateway switch, a re-enable (which rebinds
+the same port), and untrusting the CA. App exit is the residual - the listeners
+live in the GUI process on macOS and Windows, so quitting still strands
+already-running tools. Closing that needs a listener that outlives the GUI,
+which is what the Linux daemon already is.
+
 ## 3. Per-tool status
 
 | Tool                                | Mechanism                         | What Gate writes                                                                             | In UI  |
