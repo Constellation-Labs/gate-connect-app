@@ -1248,6 +1248,49 @@ export function App() {
   // family that no longer exists cannot say that about itself.
   const openGroup = groups.find((g) => g.id === openFamily);
 
+  // Assigned during render, not from an effect: the callers below await their
+  // own resync, but React has not necessarily committed the render it causes by
+  // the time that settles, so an effect-written ref can still hold the
+  // pre-click ledger - which is exactly the member being switched off.
+  const desiredRef = useRef<{ key: string; groupId: string }[]>([]);
+  desiredRef.current = groups.flatMap((g) =>
+    g.members.filter((m) => m.desired).map((m) => ({ key: m.key, groupId: g.id })),
+  );
+
+  /**
+   * Stop the engine when a turn-off has left nothing asked for.
+   *
+   * This screen's master switch is gone, so without this the popover would have
+   * no way off at all: every path *on* survives (a member's connect starts the
+   * engine, and so does a domain) and none of the paths off would.
+   *
+   * Called from the three controls that can turn something off rather than from
+   * an effect watching the ledger. An effect would be a standing invariant, and
+   * this is not one: the CLI and the Linux helper daemon both start the engine
+   * behind this window's back - `proxy-state-changed` is the popover being told
+   * so - and a rule that corrected them would undo the announcement it had just
+   * repainted. The window shell draws the same distinction.
+   *
+   * Read through a ref because the caller's closure is stale by the time its
+   * own resync has landed, and the resynced ledger is the one that answers
+   * whether anything is still asked for.
+   */
+  const stopIfNothingDesired = useCallback(async (isBeingTurnedOff: (m: { key: string; groupId: string }) => boolean) => {
+    // Everything still asked for is part of what this click is turning off, so
+    // the click empties the ledger.
+    if (!desiredRef.current.every(isBeingTurnedOff)) return;
+    try {
+      setProxy(await proxyDisable());
+    } catch (err) {
+      // Reported where every other routing failure on this screen is. The engine
+      // staying up is the safe direction to fail in: it carries traffic nobody
+      // is asking for any more, which is untidy, where the other way drops
+      // traffic somebody is.
+      setProviderError(classifyError(err, "proxy_toggle"));
+    }
+  }, []);
+
+
   let body: ReactNode;
   if (screen === "loading") {
     // Startup screen while we resolve account + proxy (and the macOS keychain
@@ -1348,9 +1391,19 @@ export function App() {
         group={openGroup}
         busy={proxyBusy}
         onBack={() => setScreen("home")}
-        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
-        onToggleTool={setToolRouted}
-        onSetDomain={setDomain}
+        onToggleGroup={(id, on) => {
+          void setGroupRouted(id, on).then(
+            () => void (on || stopIfNothingDesired((m) => m.groupId === id)),
+          );
+        }}
+        onToggleTool={async (slug, routed) => {
+          await setToolRouted(slug, routed);
+          if (!routed) await stopIfNothingDesired((m) => m.key === slug);
+        }}
+        onSetDomain={async (slug, enabled) => {
+          await setDomain(slug, enabled);
+          if (!enabled) await stopIfNothingDesired((m) => m.key === slug);
+        }}
         onTrustCa={trustCa}
         trustPending={trustPending}
         proxyOn={proxy?.running ?? false}

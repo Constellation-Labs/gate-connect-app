@@ -1666,7 +1666,42 @@ export function NewUiApp() {
     onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
-  const toggleRailApp = section.toggle;
+  /**
+   * The integration rows are the only switch, so the last one off stops the
+   * engine.
+   *
+   * Driven by the click rather than by an effect watching intent. An effect
+   * would be a standing invariant, and this must not be one: it would fight
+   * anything that starts the engine out of band - the CLI and the Linux helper
+   * daemon both do, and `proxy-state-changed` is the popover being told so -
+   * and it would fire on the first render of a session that booted routed with
+   * nothing asked for, tearing routing down on launch. The rule is "turning the
+   * last integration off turns routing off", which is a thing the user did.
+   *
+   * Read through a ref because the click's own closure is stale by the time the
+   * cascade resolves: `section.toggle` awaits its resync, so the committed
+   * ledger is the one that answers whether anything is still asked for.
+   */
+  const desiredSlugsRef = useRef<string[]>([]);
+  const toggleRailApp = useCallback(
+    async (slug: string, next: boolean) => {
+      // Worked out from the click, not read back afterwards. `section.toggle`
+      // awaits its own resync, but React has not necessarily committed the
+      // render that resync causes by the time the promise settles, so a ledger
+      // read here can still be the pre-click one - which is precisely the row
+      // being switched off, and the stop would never fire.
+      const last = !next && desiredSlugsRef.current.every((s) => s === slug);
+      await section.toggle(slug, next);
+      if (!last) return;
+      // AG-570 AC 8 rode the master toggle and now rides this: `proxy_disable`
+      // snapshots the routed set and sweeps it back, best-effort per tool, so a
+      // stop that could not put everything back has to name what it left. The
+      // running-apps offer deliberately does *not* come with it - the row just
+      // switched off made its own for the tool it disconnected.
+      if (await routing.stopEngine()) await reportTeardown("teardown");
+    },
+    [section, routing, reportTeardown],
+  );
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -2499,42 +2534,11 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
+  desiredSlugsRef.current = desiredApps.map((a) => a.slug);
   const protectedCount = desiredApps.filter(
     (a) => a.status.kind === "protected",
   ).length;
 
-  /**
-   * The integration rows are the only switch, so intent drives the engine.
-   *
-   * A row turning on already starts it - `connect_tool` does it implicitly for a
-   * config tool, `ensureEngineRunning` explicitly for a chat domain - and this
-   * is the other half: with nothing asked for, there is nothing for the engine
-   * to carry, so it stops. The rail's master card used to be the only way to
-   * express that and the Figma never drew it (`440:953`).
-   *
-   * Driven from `desiredApps`, the same intent the banner counts, so the switch
-   * the user sees and the engine they get cannot disagree - principle 2's split
-   * with the denominator wired to the mechanism.
-   *
-   * **Gated on the first scan having landed.** `desiredApps` is empty before
-   * detection runs, for want of information rather than because the user asked
-   * for nothing, and stopping the engine on that would tear routing down on
-   * every launch. `inventory` cannot be the gate: it reads `ok` before the first
-   * scan too, on purpose.
-   */
-  useEffect(() => {
-    if (scan === null) return;
-    if (desiredApps.length > 0) return;
-    void (async () => {
-      // AG-570 AC 8 rode the master toggle and now rides this: `proxy_disable`
-      // snapshots the routed set and sweeps it back, best-effort per tool, so a
-      // stop that could not put everything back has to name what it left. The
-      // running-apps offer deliberately does *not* come with it - each row made
-      // its own when it was switched off, and a second prompt for tools already
-      // dealt with is the double-ask that offer is scoped to avoid.
-      if (await routing.stopEngine()) await reportTeardown("teardown");
-    })();
-  }, [scan, desiredApps.length, routing, reportTeardown]);
 
   /**
    * The open app's own notice, for its own pane.

@@ -51,9 +51,17 @@ export class App {
     }, patch as Record<string, unknown>);
   }
 
-  /** The switch that turns routing on and off. */
-  get routingSwitch() {
-    return this.page.getByRole("switch", { name: "Route through Gate" });
+  /** The routing card's status line ("On · 1 of 2 routing", "Off · not
+   *  routing"). This is what reads the engine's state on Home now that the
+   *  master switch is gone and the integration switches are the only ones. */
+  get routingStatus() {
+    return this.page.locator("#routing-status");
+  }
+
+  /** A member switch inside a family panel, which is where the popover's
+   *  integration switches live. Reached through `familyRow`. */
+  memberSwitch(label: string) {
+    return this.page.getByRole("switch", { name: `Route ${label} through Gate` });
   }
 
   /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
