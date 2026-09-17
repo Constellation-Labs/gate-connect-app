@@ -1,4 +1,5 @@
 import type { RunningAgent, Verdict } from "./api";
+import { appForMember } from "./groups";
 
 /**
  * The vocabulary of the reopen flow: what a tool is doing right now, what the
@@ -264,16 +265,19 @@ export function actionsFor(stage: ReopenStage): ReopenAction[] {
       // reading that refreshes itself teaches the user it does not.
       return ["view_diagnostics"];
     case "close_failed":
-      return ["reopen_tool", "view_diagnostics", "contact_support"];
+      // No `contact_support` (AG-898). Support belongs where Gate has
+      // established the user cannot resolve it themselves, and nothing here
+      // establishes that: a process Gate could not signal is one the person can
+      // close from their own window. `view_diagnostics` is still the way to
+      // carry this to somebody, and it is the honest one - it hands over a
+      // reading rather than opening a ticket about a routing check.
+      return ["reopen_tool", "view_diagnostics"];
     case "config_failed":
       return ["retry_application", "use_tool_defaults", "view_diagnostics"];
     case "verify_failed":
-      return [
-        "retry_verification",
-        "use_tool_defaults",
-        "view_diagnostics",
-        "contact_support",
-      ];
+      // Four actions, one of which was `contact_support`, on the row for a tool
+      // whose own retry had not been tried yet. See the note above.
+      return ["retry_verification", "use_tool_defaults", "view_diagnostics"];
     default:
       return [];
   }
@@ -474,4 +478,89 @@ export function allSettled(tools: ReopenTool[]): boolean {
  *  account of itself - the design draws "Change is ready" for it. */
 export function allVerified(tools: ReopenTool[]): boolean {
   return tools.length > 0 && tools.every((t) => bucketOf(t.stage) === "verified");
+}
+
+/**
+ * How much a stage wants the reader's attention, lowest first.
+ *
+ * Only ever used to pick which member speaks for an app (AG-898). The order is
+ * the question "does this need me?", not the order of the flow: a failure
+ * outranks a wait, a wait outranks work in flight, and a settled good reading
+ * comes last. Two members of one app rarely disagree; when they do, the app has
+ * to report the half that is worse, because reporting the better half is how a
+ * dialog tells somebody everything is fine while their editor is not routed.
+ */
+const STAGE_SEVERITY: Record<ReopenStage, number> = {
+  config_failed: 0,
+  close_failed: 1,
+  verify_failed: 2,
+  reopen_required: 3,
+  awaiting_reopen: 4,
+  applying: 5,
+  closing: 6,
+  reopening: 7,
+  verifying: 8,
+  reopened: 9,
+  not_routed: 10,
+  routing: 11,
+};
+
+/** One app, and the surfaces of it this flow touched. */
+export interface ReopenAppRow<T extends ReopenTool = ReopenTool> {
+  /** The section id, or the lone tool's slug when no section claims it. */
+  id: string;
+  name: string;
+  /** The member the row reports, and whose slug its actions carry. */
+  lead: T;
+  /** Every member of this app in the flow, in the order they arrived. */
+  members: T[];
+  /** Whether the members disagree about their stage, so the surface knows to
+   *  account for them individually rather than let the lead speak for all. */
+  mixed: boolean;
+}
+
+/**
+ * One row per app, not one per running process (AG-898).
+ *
+ * The flow is handed surfaces: Codex has a config file, the ChatGPT desktop app
+ * has a chat turn and a Work endpoint, and the scan reports each separately. The
+ * rail has called those one app named "ChatGPT / Codex" since `SECTIONS` was
+ * written, and a dialog that lists them apart contradicts the surface the user
+ * just came from.
+ *
+ * **Actions stay per slug.** AG-566 AC 10 requires that retrying one tool never
+ * repeats the change for another, so the row carries `lead` rather than a set,
+ * and every control the surface draws takes `lead.slug`. Merging rows changes
+ * what is *shown*, never what a button does.
+ *
+ * Generic in the row type so a shell that has decorated its tools - with brand
+ * marks, in `reopenSubjects` - keeps the decoration.
+ */
+export function reopenAppRows<T extends ReopenTool>(tools: T[]): ReopenAppRow<T>[] {
+  const order: string[] = [];
+  const byApp = new Map<string, { name: string; members: T[] }>();
+  for (const tool of tools) {
+    const app = appForMember(tool.slug);
+    const id = app?.id ?? tool.slug;
+    const existing = byApp.get(id);
+    if (existing) {
+      existing.members.push(tool);
+      continue;
+    }
+    order.push(id);
+    byApp.set(id, { name: app?.name ?? tool.name, members: [tool] });
+  }
+  return order.map((id) => {
+    const { name, members } = byApp.get(id)!;
+    const lead = members.reduce((worst, t) =>
+      STAGE_SEVERITY[t.stage] < STAGE_SEVERITY[worst.stage] ? t : worst,
+    );
+    return {
+      id,
+      name,
+      lead,
+      members,
+      mixed: members.some((t) => t.stage !== lead.stage),
+    };
+  });
 }

@@ -983,6 +983,24 @@ export function describeSection(id: string): string | undefined {
   return describeMember(sectionMemberKeys(id)[0] ?? id);
 }
 
+/**
+ * The app a routable surface belongs to, or null when no section claims it.
+ *
+ * The inverse of {@link sectionMemberKeys}, and exported for the same reason:
+ * a caller holding a slug but no built ledger still needs to know which app the
+ * user thinks it is. The reopen flow is that caller - it is handed running
+ * processes, one per surface, and AG-898 asks it to report one outcome per app
+ * rather than listing Codex and ChatGPT as two.
+ *
+ * Reads {@link SECTIONS} directly rather than a built `Group[]`, because the
+ * mapping from surface to app is static: what `buildGroups` adds is which
+ * members exist on this machine, which is not a question this answers.
+ */
+export function appForMember(key: string): { id: string; name: string } | null {
+  const section = SECTIONS.find((s) => s.members.includes(key));
+  return section ? { id: section.id, name: section.name } : null;
+}
+
 /** The member keys a section claims, in draw order, or empty for an id no
  *  section owns - which is a section `buildGroups` synthesised for an unplaced
  *  member, whose id IS its member key.

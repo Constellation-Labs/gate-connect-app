@@ -22,7 +22,7 @@ import type {
 } from "../../lib/api";
 import type { GroupMember } from "../../lib/groups";
 import type { RecoveryRow } from "../../lib/recovery";
-import type { ReopenAction, ReopenTool } from "../../lib/reopen";
+import type { ReopenAction, ReopenAppRow, ReopenTool } from "../../lib/reopen";
 import {
   actionsFor,
   allVerified,
@@ -31,7 +31,7 @@ import {
   REOPEN_ACTION_LABEL,
   REOPEN_STAGE_DETAIL,
   REOPEN_STAGE_LABEL,
-  reopenBuckets,
+  reopenAppRows,
   WHY_REOPEN,
 } from "../../lib/reopen";
 import {
@@ -702,7 +702,10 @@ export function ReopenProgressDialog({
   const settled = tools.every((t) => isResting(t.stage));
   const done = allVerified(tools);
   const waiting = tools.filter((t) => !isResting(t.stage)).length;
-  const buckets = reopenBuckets(tools);
+  // One row per app, not one per running process (AG-898). The rail calls
+  // Codex and the ChatGPT desktop app one app, and this dialog listed them
+  // apart on the screen the user reached from it.
+  const apps = reopenAppRows(tools);
   return (
     <Modal
       tone={settled && !done ? "warning" : settled ? "success" : "neutral"}
@@ -717,27 +720,52 @@ export function ReopenProgressDialog({
       onDismiss={onDone}
       width={544}
     >
-      {settled ? (
-        buckets.map((bucket) => (
-          <div key={bucket.key} className="flex flex-col gap-2">
-            <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-              {bucket.title}
-            </p>
-            <p className="text-base-xs leading-4 text-neutral-600">{bucket.blurb}</p>
-            {bucket.tools.map((tool) => (
-              <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
-            ))}
-          </div>
-        ))
-      ) : (
-        <div className="flex flex-col gap-2">
-          {tools.map((tool) => (
-            <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
-          ))}
-        </div>
-      )}
+      {/* One list in both states (AG-898). The settled view used to sort the
+          tools into up to six headed buckets, each carrying its own paragraph
+          about what Gate did and did not check - so five tools could cost the
+          reader three different explanations before they found their own. Every
+          row already states its own stage and what that stage means, which is
+          the same account without the reader having to assemble it. */}
+      <div className="flex flex-col gap-2">
+        {apps.map((app) => (
+          <ReopenAppRowView key={app.id} app={app} onAction={onAction} />
+        ))}
+      </div>
       <ModalNote>{WHY_REOPEN}</ModalNote>
     </Modal>
+  );
+}
+
+/**
+ * One app inside the progress dialog.
+ *
+ * The app reports its worst member, because reporting the better half is how a
+ * dialog tells somebody everything is fine while their editor is not routed.
+ * Where the members disagree, each is named under the row - that is the whole
+ * of what the headed buckets used to carry, at the one place it is relevant.
+ *
+ * The actions still belong to `lead.slug`; see `reopenAppRows`.
+ */
+function ReopenAppRowView({
+  app,
+  onAction,
+}: {
+  app: ReopenAppRow<DialogReopenTool>;
+  onAction: (slug: string, action: ReopenAction) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <ReopenToolRow tool={{ ...app.lead, name: app.name }} onAction={onAction} />
+      {app.mixed && (
+        <ul className="ml-3 flex flex-col gap-0.5">
+          {app.members.map((member) => (
+            <li key={member.slug} className="text-base-xs leading-4 text-neutral-600">
+              {member.name}: {REOPEN_STAGE_LABEL[member.stage]}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
