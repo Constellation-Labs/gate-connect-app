@@ -747,8 +747,19 @@ const SECTIONS: readonly {
     name: "Terminal",
     band: "tools",
     members: ["env-proxy"],
+    // "Anything else, including a local model, keeps going where it always did"
+    // was not true and is gone. `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1` -
+    // loopback only - so a model served from another machine on the LAN or over
+    // Tailscale DOES traverse the engine, which is exactly the case AG-899
+    // reports breaking when routing is switched off. What is true is that Gate
+    // inspects only the provider hosts it knows and blind-tunnels the rest
+    // (`proxy/mod.rs`: "A CONNECT to any other host is blind-tunnelled").
+    //
+    // Widening `no_proxy` to private, link-local and Tailscale addresses is
+    // AG-911's scope, not this ticket's. When it lands, the stronger sentence
+    // becomes true and can come back.
     blurb:
-      "Routes every program started after your next login, not only AI tools. Anything else, including a local model, keeps going where it always did.",
+      "Routes every program started after your next login, not only AI tools. Gate inspects traffic to the AI providers it knows and passes everything else through untouched.",
   },
   {
     id: "openai-api",
