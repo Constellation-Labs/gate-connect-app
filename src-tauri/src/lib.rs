@@ -3176,10 +3176,31 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 
 /// Raise and key the popover without activating the app - set_focus() alone
 /// won't raise a background app's window.
+///
+/// Main thread only, and it puts itself there. Unlike the Tauri calls beside
+/// it (`show`, `set_focus`, `unminimize`), which post to the event loop from
+/// any thread, the two messages below go straight to the NSWindow on the
+/// calling thread, and AppKit traps window ordering off the main thread
+/// ("Must only be used from the main thread", SIGILL). `request_quit` hit
+/// exactly that: it probes tool configs on a blocking thread and revealed the
+/// quit dialog from the same thread, so quitting with a connected tool crashed
+/// the app before `RunEvent::Exit` could revert the system proxy. The hop is a
+/// post rather than a wait, so it never blocks the thread that called it, and
+/// it can only fail once the event loop has shut down - which is why the `Err`
+/// is dropped: by then there is no window left to raise.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
+
+    if objc2::MainThreadMarker::new().is_none() {
+        let window = window.clone();
+        let _ = window
+            .app_handle()
+            .clone()
+            .run_on_main_thread(move || order_front_regardless(&window));
+        return;
+    }
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
@@ -3188,6 +3209,11 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         return;
     }
 
+    // SAFETY: on the main thread, by the guard above. Both messages are
+    // documented public NSWindow selectors taking no arguments and returning
+    // void; the pointer comes from this window's own `ns_window()`, which
+    // errors rather than answering for a window that is gone, and is
+    // null-checked before it is messaged.
     unsafe {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
