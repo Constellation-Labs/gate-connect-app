@@ -29,10 +29,14 @@ import { Card, EmptyNote, Skeleton } from "./base";
 export interface UsageStats {
   messages: number | null;
   blockedFlagged: number | null;
-  /** Whole percent, e.g. 38 renders as "38%". */
+  /** Whole percent, e.g. 38 renders as "38%".
+   *
+   * The percentage is the whole figure now. A dollar estimate used to sit
+   * beside it - the frame draws one (`408:25130`, "+$1.05") - and AG-879's Key
+   * decisions removed it: "Connect does not display estimated dollar figures
+   * for token savings." A deliberate deviation from the drawn frame, on a
+   * product decision that postdates it. */
   tokensSavedPercent: number | null;
-  /** Pre-formatted and currency-aware upstream, e.g. "+$3.10". */
-  tokensSavedAmount: string | null;
 }
 
 /**
@@ -184,11 +188,6 @@ export function StatTiles({
               ? UNAVAILABLE
               : `${stats.tokensSavedPercent}%`
         }
-        delta={
-          pending || unattributed
-            ? undefined
-            : (stats.tokensSavedAmount ?? undefined)
-        }
         divided
         onSelect={onSelectTokensSaved}
       />
@@ -199,14 +198,12 @@ export function StatTiles({
 function Stat({
   label,
   value,
-  delta,
   divided,
   onSelect,
 }: {
   label: string;
   /** Null while the reading is in flight; see `StatTiles`. */
   value: string | null;
-  delta?: string;
   divided?: boolean;
   onSelect?: () => void;
 }) {
@@ -239,9 +236,6 @@ function Stat({
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
           <span className="text-2xl font-medium leading-7 tracking-heading-24 text-base-foreground">{value}</span>
-        )}
-        {delta && (
-          <span className="text-sm leading-5 text-green-600">{delta}</span>
         )}
       </span>
     </Tag>

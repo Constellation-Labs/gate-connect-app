@@ -291,7 +291,12 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    // Scoped to the banner, like the sibling assertion below it: the rail row
+    // for this tool now carries the same phrase, so a bare text match resolves
+    // to two elements.
+    await expect(
+      app.page.getByRole("status").filter({ hasText: "Reopen to finish" }),
+    ).toBeVisible();
     await expect(
       app.page.getByRole("status").filter({ hasText: "Pages already open" }),
     ).toBeVisible();
@@ -919,6 +924,20 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     },
   };
 
+  /**
+   * AG-886 moved the per-tool readings - stage, last verified route, last
+   * check, process - behind a "Technical details" disclosure. They are still
+   * what AG-570 asks the review for, so this suite still checks them; it just
+   * has to open the disclosure first, because a collapsed `<details>` keeps its
+   * content in the DOM and out of `toBeVisible`.
+   */
+  const openTechnicalDetails = async (dialog: ReturnType<typeof expect> extends never ? never : any) => {
+    const summaries = dialog.getByText("Technical details");
+    for (let i = 0; i < (await summaries.count()); i += 1) {
+      await summaries.nth(i).click();
+    }
+  };
+
   test("it accounts for every entry, including the ones never reached", async ({ boot }) => {
     const app = await boot(withJournal);
 
@@ -927,6 +946,7 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("CLI")).toBeVisible();
+    await openTechnicalDetails(dialog);
     // `.first()`: each stage is drawn twice per row, as the pill and as the
     // Stage line of the diagnostics list under it.
     await expect(dialog.getByText("Configuration written").first()).toBeVisible();
@@ -935,9 +955,10 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     // read as not started, not as fine and not as failed.
     await expect(dialog.getByText("Not started").first()).toBeVisible();
     // The operation itself, which AG-570 asks be named along with its update
-    // time and what it was trying to achieve.
-    await expect(dialog.getByText(/Turning routing back on/)).toBeVisible();
-    await expect(dialog.getByText(/of 3 stages completed/)).toBeVisible();
+    // time. AG-886 says it in the reader's terms rather than the journal's, and
+    // replaces the stage count with which app is not routing.
+    await expect(dialog.getByText(/Gate was turning routing on/)).toBeVisible();
+    await expect(dialog.getByText(/stages completed/)).toHaveCount(0);
   });
 
   /** The rest of what the AC asks the review for: the failure's *category*, the
@@ -950,8 +971,12 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await app.page.getByRole("button", { name: "Review details" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    // Categories, not error strings.
-    await expect(dialog.getByText(/Failures by category/)).toBeVisible();
+    await openTechnicalDetails(dialog);
+    // Categories, not error strings. AG-886 moved the category onto the row it
+    // belongs to instead of summarising them above the fold, where
+    // "Failures by category: Configuration write" was a sentence for whoever
+    // triages Gate rather than for whoever's editor stopped working.
+    await expect(dialog.getByText(/Failures by category/)).toHaveCount(0);
     await expect(dialog.getByText("Configuration write").first()).toBeVisible();
     await expect(dialog.getByText("Last verified route").first()).toBeVisible();
     await expect(dialog.getByText("Last check").first()).toBeVisible();
@@ -1024,11 +1049,16 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(dialog).toBeVisible();
 
     // Waiting, not failed - and said apart from the failures, so the two
-    // deferrals do not read as faults.
+    // deferrals do not read as faults. This line survives AG-886 because it was
+    // already plain, and it is the one that stops a reader hunting a problem
+    // that was a proxy still coming up.
+    await expect(dialog.getByText(/2 of them are waiting for routing/)).toBeVisible();
+
+    await openTechnicalDetails(dialog);
     await expect(dialog.getByText("Waiting for routing").first()).toBeVisible();
-    await expect(dialog.getByText(/2 entries are waiting for routing/)).toBeVisible();
-    // Exactly one entry belongs under the failure heading now.
-    await expect(dialog.getByText(/Failures by category: Configuration write\./)).toBeVisible();
+    // The category is on its row now rather than summarised above the fold.
+    await expect(dialog.getByText(/Failures by category/)).toHaveCount(0);
+    await expect(dialog.getByText("Configuration write").first()).toBeVisible();
 
     // The provider that failed says so about its *routing*, not about a config
     // file - OpenRouter has none, and the sentence was shared.
@@ -1037,8 +1067,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     ).toBeVisible();
     await expect(dialog.getByText(/write this tool's config/)).toHaveCount(0);
 
-    // And it says what went wrong, which the category never could.
-    await dialog.getByRole("group").filter({ hasText: "Details" }).first().click();
+    // And it says what went wrong, which the category never could. Targeted by
+    // its exact summary text: since AG-886 this `<details>` is nested inside the
+    // row's "Technical details" one, so a `hasText: "Details"` filter over the
+    // groups matches the outer one first and leaves this collapsed.
+    await dialog.getByText("Details", { exact: true }).first().click();
     await expect(
       dialog.getByText("configuring Claude Code: permission denied"),
     ).toBeVisible();
@@ -1051,18 +1084,27 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     ).toBeVisible();
     await expect(dialog.getByText("Never checked")).toHaveCount(0);
 
-    // Nothing here has a process name Gate can look for: two provider slugs
+    // Two of the three have no process name Gate can look for: OpenRouter,
     // and the environment channel, which is not a process.
+    //
+    // `anthropic` is the third and it is NOT one of them, which this used to
+    // assert the opposite of. `AGENT_PROCESSES` carries an `anthropic` row -
+    // the Claude desktop app, whose slug is a proxy-domain key precisely
+    // because Gate routes it through the system proxy - so the real backend
+    // takes a reading for it and reports "Not running". The harness was missing
+    // the two desktop rows, which is what made "no process to look for" look
+    // like the right answer here, and the same gap is why no spec could reach
+    // AG-900.
     await expect(
       dialog.getByText("Gate has no process to look for").first(),
     ).toBeVisible();
     // `exact`, because the deferral's own sentence says the proxy "was not
     // running yet" and a substring match picks that up - the assertion is about
     // the Process line, whose whole text is the reading.
-    await expect(dialog.getByText("Not running", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Not running", { exact: true })).toHaveCount(1);
     await expect(
       dialog.getByText("Gate has no process to look for", { exact: true }),
-    ).toHaveCount(3);
+    ).toHaveCount(2);
   });
 
   test("reviewing changes nothing", async ({ boot }) => {
@@ -1091,7 +1133,10 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await app.page.getByRole("button", { name: "Review details" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("OpenCode")).toBeVisible();
+    // `exact`: the headline now names the app too ("OpenCode is not routing
+    // through Gate yet"), so a substring match resolves to two nodes.
+    await expect(dialog.getByText("OpenCode", { exact: true })).toBeVisible();
+    await openTechnicalDetails(dialog);
     await expect(dialog.getByText("Not started").first()).toBeVisible();
     // No journal, no update time. Unknown rather than 1970.
     await expect(dialog.getByText(/last updated/)).toHaveCount(0);
@@ -1297,27 +1342,6 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("a row opens a pane that says what its counters measured", async ({
-    boot,
-  }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
-
-    // A row is an app, so its pane covers several surfaces the gateway
-    // attributes differently. The counters are the config tool's; saying so is
-    // the difference between a measurement and a plausible number.
-    await app.page
-      .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Claude", exact: true }) })
-      .getByRole("button")
-      .click();
-
-    await expect(app.page.getByRole("heading", { name: "Claude" })).toBeVisible();
-    // Named, not just present: which surface the figures measured IS the
-    // sentence. `/These counts cover/` alone passes on a caveat that names
-    // nothing, which is the state it exists to replace.
-    await expect(app.page.getByText(/These counts cover Claude Code/)).toBeVisible();
-  });
-
   test("a row with nothing attributable says so instead of reporting a quiet day", async ({
     boot,
   }) => {
@@ -1393,13 +1417,18 @@ test.describe("new UI sidebar rail", () => {
       ],
     });
 
-    // A row per tool, under one band. OpenClaw, OpenCode and the environment
-    // channel are three programs and three switches - the environment channel
-    // is its own row now rather than OpenCode's roommate, because what it
-    // routes is every program started after the next login.
-    for (const name of ["OpenClaw", "OpenCode", "Terminal"]) {
+    // A row per tool, under one band.
+    for (const name of ["OpenClaw", "OpenCode"]) {
       await expect(app.page.getByRole("switch", { name, exact: true })).toBeVisible();
     }
+    // Not the environment channel. It used to be a row here, on the argument
+    // that what it routes is a different client from the editor - true, but it
+    // is not an app, and the rail is a list of apps. Its control moved to
+    // Settings (AG-893), so the fixture keeps it in `list_tools` to prove the
+    // filter is what removes it rather than its absence from the fixture.
+    await expect(
+      app.page.getByRole("switch", { name: "Terminal", exact: true }),
+    ).toHaveCount(0);
     // The headings are the two bands, and nothing else. Every earlier grouping
     // this rail had - vendors, then clients, then a catch-all for whatever
     // those could not place - is gone.

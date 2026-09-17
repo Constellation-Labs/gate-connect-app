@@ -290,11 +290,18 @@ describe("FamilyPanel explains the sections that need a sentence", () => {
 
   it("names the boundary rather than promising Gate takes everything", () => {
     renderPanel(terminal);
-    // The half a user running a local model needs, and the half the old copy
-    // got backwards.
+    // The boundary is what Gate INSPECTS, not what it carries. This used to
+    // promise "anything else, including a local model, keeps going where it
+    // always did", which is false for a model served from another machine:
+    // `NO_PROXY_VALUE` is `localhost,127.0.0.1,::1`, so only loopback bypasses
+    // the engine and a LAN or Tailscale host goes through it. That is the case
+    // AG-899 reports breaking when routing is switched off.
     expect(
-      screen.getByText(/including a local model, keeps going where it always did/),
+      screen.getByText(/passes everything else through untouched/),
     ).toBeTruthy();
+    expect(
+      screen.queryByText(/including a local model, keeps going where it always did/),
+    ).toBeNull();
     expect(screen.queryByText(/every provider you.+ve set up in them/)).toBeNull();
   });
 

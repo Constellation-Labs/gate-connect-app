@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { BaseSwitch, Card } from "./base";
+import { BaseSwitch, Card, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import type { AuthMode } from "../../lib/api";
@@ -41,7 +41,22 @@ export interface SettingsRow {
   /** Middle column, e.g. "MacBook Pro". */
   value?: string;
   action?: SettingsAction;
-  toggle?: { on: boolean; onToggle: () => void };
+  toggle?: {
+    on: boolean;
+    /**
+     * An operation is in flight, so the switch keeps focus and ignores clicks.
+     *
+     * Optional because most rows here do not need it: a notification
+     * preference or launch-at-login is a local write that lands before the
+     * user can click twice. The shell-proxy row is the one that does - it
+     * shares `useRouting`'s single `busy` flag with every app switch, and
+     * `setEnvExport` opens with `if (busy) return`, so without this a click
+     * made during any other routing operation is swallowed and the switch
+     * simply does not move.
+     */
+    busy?: boolean;
+    onToggle: () => void;
+  };
   /**
    * This row's value could not be read. Renders "Unavailable" and a Retry in
    * place of the value and control, rather than showing a default dressed as
@@ -54,6 +69,17 @@ export interface SettingsRow {
    * infer routing from a config file.
    */
   unavailable?: { onRetry: () => void };
+  /**
+   * The value is still being read. Draws a `Skeleton` in the value slot and
+   * keeps the row in its value shape while it waits.
+   *
+   * Both halves matter. Principle 6 asks for a skeleton rather than a blank
+   * where a reading is in flight, and without the flag `Row` cannot tell "not
+   * yet" from a description row that has no value at all - so the label column
+   * would take the full width, then snap back to 189px when the value landed,
+   * carrying the trailing action across the row with it.
+   */
+  valuePending?: boolean;
 }
 
 export interface SettingsSection {
@@ -83,10 +109,11 @@ export interface SettingsSection {
  */
 export function buildSettingsSections({
   deviceName,
-  deviceNamed,
   installId,
   loginId,
   plan,
+  planUnreadable,
+  onRetryPlan,
   gateway,
   apiKeyMasked,
   authMode,
@@ -106,6 +133,7 @@ export function buildSettingsSections({
   onRenameDevice,
   onCopyInstallId,
   onUpgradePlan,
+  shellProxy,
   onReplaceKey,
   onSwitchToGateAccount,
   signInNote,
@@ -128,18 +156,21 @@ export function buildSettingsSections({
   onReviewReset,
 }: {
   deviceName: string;
-  /**
-   * Whether that name is the user's own, rather than the hostname standing in.
-   *
-   * Not cosmetic: it decides which sentence the row tells the user about their
-   * traffic. Undefined until the preferences read lands, which withholds the
-   * sentence rather than guessing at it - the same call `preferencesUnavailable`
-   * makes for the two switches below.
-   */
-  deviceNamed?: boolean;
   installId: string;
   loginId: string;
-  plan: string;
+  /**
+   * The org's plan, already in the user's vocabulary (`formatPlan`).
+   *
+   * `undefined` while the credits read is in flight, `null` when it landed and
+   * named no plan. Both draw something other than a plan, and they are not the
+   * same thing: the first is "not yet", the second is "the gateway did not
+   * say". See `onRetryPlan`.
+   */
+  plan?: string | null;
+  /** The credits read failed. Draws "Unavailable" and a Retry, as the other
+   *  failed reads on this pane do. */
+  planUnreadable?: boolean;
+  onRetryPlan?: () => void;
   gateway: string;
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
@@ -184,6 +215,10 @@ export function buildSettingsSections({
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
+  /** The machine-wide shell proxy channel, or undefined where the platform
+   *  cannot offer it separately (Linux, where these variables ARE the system
+   *  proxy). The window owns this control; the tray reports it. */
+  shellProxy?: { on: boolean; busy?: boolean; onToggle: () => void };
   onReplaceKey?: () => void;
   /** Offered only to an account still on a pasted key. The popover has carried
    * this since it shipped (`screens/Settings.tsx`); the new shell had only the
@@ -229,19 +264,15 @@ export function buildSettingsSections({
           icon: "monitor",
           label: "Device",
           value: deviceName,
-          // Says where the name goes, and it has to say two different things,
-          // because a named device and an unnamed one send different requests.
-          // A name the user chose rides every proxied request as
-          // `x-gate-device-name`; the hostname shown for a device that was never
-          // named is a display fallback and goes nowhere. Undefined while the
-          // preferences read is still in flight: which sentence is true is not
-          // yet known, and the wrong one is a claim about the user's traffic.
-          description:
-            deviceNamed === undefined
-              ? undefined
-              : deviceNamed
-                ? "Sent with this device's traffic so activity can be grouped by device."
-                : "Not sent. Name this device to group its activity by device.",
+          // No second line, for the reason Sign-in method has none: `116:28986`
+          // draws this row as icon, label, value and button on one 20px line,
+          // and every drawn row that carries a value draws it the same way.
+          //
+          // What went with it was where the name goes - a chosen name rides
+          // every proxied request as `x-gate-device-name`, a hostname fallback
+          // goes nowhere - which is a principle-1 fact about the wire. The
+          // Rename dialog is where it belongs if it comes back, since that is
+          // where the user acts on it.
           action: onRenameDevice
             ? { label: "Rename device", onClick: onRenameDevice }
             : undefined,
@@ -264,7 +295,23 @@ export function buildSettingsSections({
           id: "plan",
           icon: "fileBadge2",
           label: "Gate plan",
-          value: plan,
+          // Four states, and the row must not flatten them (AG-891).
+          //
+          // This was the literal string "Unavailable", on a comment saying no
+          // gateway field carried a plan. One does - `/v1/me/credits` reports
+          // it, and the App pane had been drawing it since AG-592 - so Settings
+          // said "Unavailable" while another pane in the same session named the
+          // plan. Two screens, two sources, one account.
+          //
+          // `undefined` while the read is in flight leaves the value off rather
+          // than guessing; `null` is a landed read that named no plan, which is
+          // principle 6's "no figure without a reading" and draws the dash the
+          // Login ID row uses for the same reason.
+          value: plan ?? (plan === null ? "-" : undefined),
+          valuePending: plan === undefined && !planUnreadable,
+          ...(planUnreadable && onRetryPlan
+            ? { unavailable: { onRetry: onRetryPlan } }
+            : {}),
           action: onUpgradePlan
             ? { label: "Upgrade plan", onClick: onUpgradePlan, external: true }
             : undefined,
@@ -332,6 +379,43 @@ export function buildSettingsSections({
                 } as SettingsRow,
               ]
             : []),
+        // Machine-wide, so Settings rather than the app list - the rail is a
+        // list of apps and this is not one (AG-893, and `isSettingsManaged`).
+        // Placed in Connection because it decides HOW traffic reaches Gate,
+        // which is what the rest of this section is about.
+        //
+        // Undrawn by the file: no frame carries this row, because the file draws
+        // it as a card in the rail, which is where it should not be. The tray's
+        // own card (`735:37341`) IS drawn and keeps its copy, as a status
+        // display - the tray reports what the window decides.
+        //
+        // Absent on Linux, where these variables are the system proxy and cannot
+        // be declined without turning routing off.
+        ...(shellProxy
+          ? [
+              {
+                id: "shell-proxy",
+                icon: "squareCode" as IconName,
+                label: "Command-line tools",
+                // The two facts a reader needs and neither control used to
+                // give: what it reaches, and what it costs. "Terminal" and
+                // "command line tools that follow your proxy settings" said
+                // neither. The certificate half was stated nowhere at all.
+                description:
+                  "Routes every program you start afterwards, not only AI tools, and trusts Gate's certificate in Node. Required by OpenCode.",
+                toggle: {
+                  on: shellProxy.on,
+                  // Shared with every app switch: this is `useRouting`'s one
+                  // `busy` flag, and `setEnvExport` returns early on it. A
+                  // machine-wide `launchctl setenv` round trip is exactly the
+                  // click someone makes right after flipping an app, so the
+                  // swallowed case is reachable rather than theoretical.
+                  busy: shellProxy.busy,
+                  onToggle: shellProxy.onToggle,
+                },
+              } as SettingsRow,
+            ]
+          : []),
         ...(certificate
           ? [
               {
@@ -695,7 +779,8 @@ function Row({ row }: { row: SettingsRow }) {
         * gutter and a sentence in it wrapped to six lines. */}
       <div
         className={`min-w-0 ${
-          row.description !== undefined || (row.value === undefined && !row.unavailable)
+          row.description !== undefined ||
+          (row.value === undefined && !row.unavailable && !row.valuePending)
             ? "flex-1"
             : "w-[189px] shrink-0"
         }`}
@@ -731,6 +816,12 @@ function Row({ row }: { row: SettingsRow }) {
         </>
       ) : (
         <>
+          {row.value === undefined && row.valuePending && (
+            <span className="min-w-0 flex-1">
+              <Skeleton className="h-4 w-12" />
+            </span>
+          )}
+
           {row.value !== undefined && (
             <p
               className={`truncate text-sm leading-5 text-base-foreground ${
@@ -766,6 +857,7 @@ function Row({ row }: { row: SettingsRow }) {
               <BaseSwitch
                 on={row.toggle.on}
                 label={row.label}
+                busy={row.toggle.busy}
                 onClick={row.toggle.onToggle}
               />
             </span>

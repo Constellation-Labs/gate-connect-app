@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adaptCredits, adaptModels, adaptPreferences, formatCredits } from "./toolModels";
+import { adaptCredits, adaptModels, adaptPreferences, formatCredits, formatPlan } from "./toolModels";
 import type { ToolModels } from "./api";
 
 /**
@@ -271,5 +271,31 @@ describe("adaptCredits", () => {
       expect(c.billingUrl).toBeNull();
       expect(c.balanceCents).toBe(1025);
     });
+  });
+});
+
+describe("formatPlan", () => {
+  it("says Pro for the paid plan, as the dashboard does", () => {
+    // The gateway reports `paid`; the dashboard renders "Pro" in its sidebar,
+    // its billing page and its emails. Connect said "Paid", so one account was
+    // described by two products in two words - which is what AG-879 asks us to
+    // stop doing.
+    expect(formatPlan("paid")).toBe("Pro");
+  });
+
+  it("says Free for the free plan", () => {
+    expect(formatPlan("free")).toBe("Free");
+  });
+
+  it("passes through a plan the gateway grows later", () => {
+    // Better an unfamiliar plan name than none: it is still the user's plan,
+    // and hiding it would read as though they had no plan at all.
+    expect(formatPlan("enterprise")).toBe("Enterprise");
+  });
+
+  it("keeps an unreported plan null rather than defaulting to Free", () => {
+    // "Free" is the one value a reader acts on, by upgrading something they may
+    // already have upgraded.
+    expect(formatPlan(null)).toBeNull();
   });
 });

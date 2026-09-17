@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SECURITY_SECTION_ID, SecurityEventDialog } from "./components/gc/SecurityEvents";
 import { useSecurityFeed } from "./lib/securityFeed";
 import type { SecurityEvent } from "./lib/api";
@@ -67,19 +68,20 @@ import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
+  BAND_LABELS,
   browserTrustRestartAdvice,
   buildGroups,
-  switchScopeNote,
-  BAND_LABELS,
+  describeSection,
+  hintForMember,
+  isSettingsManaged,
+  proxyReopenAdvice,
   sectionHint,
   sectionMemberKeys,
   sessionMembers,
-  describeSection,
-  hintForMember,
-  proxyReopenAdvice,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
+import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "./lib/config";
@@ -95,15 +97,15 @@ import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
-import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
-import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import { formatCredits, formatPlan, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { machineNotices, memberNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
 import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
+import type { GapNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
 import {
   SettingsPane,
@@ -422,15 +424,6 @@ export function NewUiApp() {
   >(null);
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
-  // Which installation the Overview's *filter* covers; `null` is the whole org,
-  // and stays the default because traffic sent before attribution existed has no
-  // installation at all. Selecting one refetches - the gateway narrows every
-  // section server-side, so there is nothing to slice here.
-  //
-  // Named for the filter rather than the id on purpose: `installId` above is this
-  // machine's own identity, which is a different fact. The two were briefly the
-  // same name and the compiler caught it.
-  const [installFilter, setInstallFilter] = useState<string | null>(null);
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
   // can switch org without the window remounting.
@@ -485,17 +478,22 @@ export function NewUiApp() {
   // there is nothing to authenticate with, so a fetch could only fail, and the
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
-  const activity = useActivity(canRead, installFilter, credential);
+  // Org-wide, always. The Overview carried an installation filter (AG-572 AC 1,
+  // "shows ... selected installation") that no frame draws - the drawn header
+  // `116:26487` has exactly two children, "Overview" and "Last 24 hours" - so it
+  // came out on 2026-09-16. `null` was already its default, because traffic sent
+  // before attribution existed has no installation at all and scoping by default
+  // would quietly drop it out of totals the user could already see.
+  const activity = useActivity(canRead, null, credential);
   /** The 24-hour read has not answered yet, either way. Drives the Overview's
    *  skeletons, and named here because the tray's jump to the security section
    *  needs the same fact: the anchor's position is not final until the cards
    *  above it stop being placeholders. */
   const activityPending = activity.view === null && activity.failure === null;
-  const {
-    installations,
-    current: currentInstallId,
-    resolved: installsResolved,
-  } = useInstallations(canRead, credential);
+  const { current: currentInstallId, resolved: installsResolved } = useInstallations(
+    canRead,
+    credential,
+  );
   /**
    * The one config tool in the open section, if it has one.
    *
@@ -517,10 +515,11 @@ export function NewUiApp() {
           // `list_tools` carries the not-installed ones too, so without it a
           // Claude pane on a machine with no Claude Code resolved to
           // `claude-code`, fired every per-tool read against a tool that cannot
-          // have traffic, and drew zeroes with no caveat - `openDomain` false so
-          // no unattributed marker, `partialReading` undefined because IT reads
-          // the built ledger. A number with nothing behind it, in the one place
-          // principle 6 names.
+          // have traffic, and drew zeroes with no caveat - `openDomain` false
+          // so no unattributed marker. A number with nothing behind it, in the
+          // one place principle 6 names. (The `partialReading` caveat this used
+          // to name as the other half of that guard is gone; see the commit
+          // that removed it.)
           tools.some((t) => t.slug === key && t.status.kind !== "not_installed"),
         ) ?? null)
       : null;
@@ -575,9 +574,23 @@ export function NewUiApp() {
     modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
   );
   /** The org's Gate credit balance, for the card and the billing confirmation.
-   *  Read whenever an app pane is open - it is what a switch to a Gate model
-   *  starts spending. */
-  const credits = useCredits(canRead && openTool !== null, credential);
+   *  Read whenever the account can be read at all, not only while an app pane
+   *  is open. It was gated on `openTool !== null`, which was right when the
+   *  balance had one reader: the pane is what a switch to a Gate model starts
+   *  spending. Settings needs the same payload for its Gate plan row (AG-891),
+   *  and on that pane `openTool` is null - so the row could not have been wired
+   *  to anything, whatever it was passed.
+   *
+   *  The focus refresh stays on the app pane, which is the narrower of the two
+   *  gates and the one the widening should not have carried with it. Re-reading
+   *  on every return to the window is an argument about a BALANCE - it moves
+   *  while the user is away running the tool, and the pane is where they come
+   *  back to see what it cost. A plan does not move while somebody alt-tabs, so
+   *  gating both on `canRead` would put a `/v1/me/credits` on every focus for
+   *  the life of the session, against the same address-keyed throttle bucket
+   *  the activity read below is careful not to spend on a timer. Opening the
+   *  pane re-reads anyway, because this flips and `reload` re-runs. */
+  const credits = useCredits(canRead, credential, openTool !== null);
 
   /**
    * What the open app is set to, or null when we do not know.
@@ -611,6 +624,110 @@ export function NewUiApp() {
     currentInstallId,
     credential,
   );
+
+  /** When the activity surfaces were last re-read on our own initiative, for
+   *  the focus edge's guard below. Starts at mount, which is when the hooks
+   *  above do their first read. */
+  const activityReadAt = useRef(Date.now());
+  /**
+   * Re-read the activity surfaces because the relay saw traffic.
+   *
+   * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
+   * better information. The Overview's org-wide read refreshes on any of it;
+   * the open pane's per-tool reads only when its tool is among the senders, so
+   * Codex traffic does not re-read the Claude pane. The feed is left alone
+   * once the user has paged into it: `reload` puts page one back, and taking
+   * pages away from someone reading them is worse than a stale first page.
+   * Each hook's `reload` is a no-op while that hook is disabled.
+   */
+  const refreshActivity = (tools: (string | null)[] | null) => {
+    activityReadAt.current = Date.now();
+    activity.reload();
+    if (openTool !== null && (tools === null || tools.includes(openTool))) {
+      toolActivity.reload();
+      if (!toolEvents.paged) toolEvents.reload();
+    }
+  };
+  // Latest-callback ref so the listener registers once: the hooks hand back a
+  // fresh `reload` closure every render, so there is nothing stable to memoise
+  // on, and re-subscribing each render would race Tauri's async `off()` against
+  // the next `listen()`.
+  const refreshActivityRef = useRef(refreshActivity);
+  refreshActivityRef.current = refreshActivity;
+  /** Senders reported while the window was hidden, not yet read for. Null when
+   *  nothing was missed. The focus edge drains it. */
+  const missedWhileHidden = useRef<(string | null)[] | null>(null);
+
+  // The relay saw routed traffic leave for the gateway (`proxy::note_traffic`):
+  // the one signal that says these reads are stale for certain. They never
+  // poll - `useActivity` says why - so this is how the pane keeps up with a
+  // terminal beside it. Already coalesced in the core to one report per tool
+  // per 30s, after its burst has gone quiet, so nothing is debounced here.
+  // A hidden window does not read - a minimised one refreshing every 30s would
+  // be spending the shared budget on a screen nobody is looking at - but it
+  // remembers who sent, so the focus edge below reads for exactly them on the
+  // way back. Remembering matters: on macOS a window fully behind a terminal
+  // counts as hidden, and that terminal is where the traffic comes from.
+  useEffect(() => {
+    const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
+      if (document.hidden) {
+        missedWhileHidden.current = [...(missedWhileHidden.current ?? []), ...e.payload];
+        return;
+      }
+      refreshActivityRef.current(e.payload);
+    });
+    // Becoming visible is not the same edge as being focused: a window
+    // uncovered by moving the terminal aside is looked at without being
+    // clicked, and the focus edge never fires. Drain here too; whichever of the
+    // two runs first takes the list and the other finds nothing.
+    const onVisible = () => {
+      const missed = missedWhileHidden.current;
+      if (document.hidden || !missed) return;
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  /**
+   * Re-read when the hour turns, so the chart's axis keeps up with the clock
+   * (AG-894).
+   *
+   * The reads are event-driven and deliberately never poll, because the
+   * endpoint's throttle bucket is shared across a whole egress - `useActivity`
+   * makes that case and it still holds. But every other trigger is an edge the
+   * user or their traffic causes: the relay seeing a request, the window being
+   * focused again, the window becoming visible. A window sitting open and
+   * visible with nothing new happening has no edge at all, so its reading stays
+   * at the hour it was taken while its label goes on saying "Last 24 hours" -
+   * which is how the Overview came to end at hour 11 beside an app pane ending
+   * at 13.
+   *
+   * One read per hour per visible window is not the timer that reasoning ruled
+   * out. It is also the only cadence the complaint needs: what went stale is
+   * which hours the axis covers, and that changes exactly once an hour.
+   *
+   * Hidden windows do not read, matching the traffic listener - and they do not
+   * need to, because the reopen and visibility edges both re-read on the way
+   * back, the first of them age-guarded by `ACTIVITY_REOPEN_MIN_MS`.
+   */
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        // Re-checked at fire time, not at schedule time: a window hidden after
+        // the timer was set must not spend a request nobody is looking at.
+        if (!document.hidden) refreshActivityRef.current(null);
+        schedule();
+      }, msUntilHourRollover(Date.now()));
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, []);
+
   // A write failure belongs to the pane it happened on. Without this, refusing a
   // change on Codex would keep saying so over Claude Code's pane, blaming the
   // wrong app for a refusal that had nothing to do with it.
@@ -694,12 +811,6 @@ export function NewUiApp() {
     [toolEvents.view, dash, openLink],
   );
 
-  // A machine id belongs to the org it sent traffic to, so a filter selected
-  // before an org switch cannot be honoured after it.
-  useEffect(() => {
-    setInstallFilter(null);
-  }, [credential]);
-
   const loadLaunchAtLogin = useCallback(async () => {
     const launch = await launchAtLoginStatus().catch(() => null);
     setLaunchAtLoginUnavailable(launch === null);
@@ -771,7 +882,16 @@ export function NewUiApp() {
   const loadPending = useCallback(async () => {
     const [p, s] = await Promise.all([
       pendingRestore().catch(() => null),
-      recoverySummary().catch(() => null),
+      // Three outcomes, not two (AG-890). `.catch(() => null)` collapsed "the
+      // read failed" into "there is nothing pending", and the line below acted
+      // on the second - so one transient failure wiped a summary this window
+      // already held. The tray's recovery card runs off its own
+      // `pendingRestore` read and kept showing the unfinished run, which is how
+      // the two surfaces came to disagree about whether anything had happened.
+      recoverySummary().then(
+        (v) => ({ read: true as const, v }),
+        () => ({ read: false as const, v: null }),
+      ),
     ]);
     if (p) setPending(p);
     // Read alongside the pending state, not lazily on click, for two reasons: the
@@ -779,7 +899,12 @@ export function NewUiApp() {
     // that if it knows whether there is anything to review; and its per-tool rows
     // are part of the notice itself, so fetching them on expand would leave the
     // Show tools control claiming a count it has not read.
-    setSummary(s);
+    //
+    // A successful read of nothing still clears: a master-on runs `restore_all`,
+    // which is what shortens the snapshots, and the notice has to go when the
+    // work finishes. That is the case this guard must NOT swallow, which is why
+    // it turns on `read` rather than on the value.
+    if (s.read) setSummary(s.v);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -967,20 +1092,24 @@ export function NewUiApp() {
   }, [account, loadKeyPrefix]);
 
   /**
-   * First launch ever: open the tutorial window.
+   * First launch ever: open the tutorial window and step this one aside.
    *
    * The popover has done this since the intro moved into its own window, and this
    * shell only offered Replay tutorial in Settings - so a new install on what is
    * now the default surface replayed something it had never been shown.
    *
-   * Unlike the popover this does **not** hide the main window. Stepping a 360px
-   * panel aside is housekeeping; a 1024x720 window the user just opened
-   * disappearing reads as a crash, and the onboarding window's close handler
-   * reveals this one either way.
+   * This shell used to leave the main window up behind the intro, on the theory
+   * that a window the user just opened disappearing reads as a crash. In practice
+   * the two came up together (AG-876): a 1280x800 app and a 1080x720 tutorial,
+   * both centred, one over the other, before the user had been told what either
+   * was. The app starts once the intro is done: the onboarding window's
+   * CloseRequested handler in src-tauri reveals this one, whether the intro
+   * finished or was closed early, so the hide is never permanent.
    */
   useEffect(() => {
     if (hasSeenTour()) return;
     void openOnboardingWindow("firstrun").catch(() => {});
+    void getCurrentWindow().hide().catch(() => {});
   }, []);
 
   // The tutorial announces completion from its own webview; record the flag in
@@ -1010,6 +1139,19 @@ export function NewUiApp() {
     // condition for the reason the interval above is - the sweep costs two
     // network probes, and there is nothing to learn from it otherwise.
     if (reopenWaiting) void refreshVerdicts();
+    // The same edge for the activity reads. A report that arrived while the
+    // window was hidden is read for now, whatever the age: it is a certain
+    // signal that was only deferred, not a guess. Otherwise this covers what
+    // the relay's signal cannot reach - Linux, where the engine runs in the
+    // helper daemon and the signal never reaches this process - and is guarded
+    // by age so alt-tabbing back and forth is not a read each time.
+    const missed = missedWhileHidden.current;
+    if (missed) {
+      missedWhileHidden.current = null;
+      refreshActivityRef.current(missed);
+    } else if (Date.now() - activityReadAt.current >= ACTIVITY_REOPEN_MIN_MS) {
+      refreshActivityRef.current(null);
+    }
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
@@ -1028,6 +1170,11 @@ export function NewUiApp() {
    * tool, what the last checks saw, and what each one still needs. Null when
    * there is nothing to recover, which is the normal case. */
   const [summary, setSummary] = useState<RecoverySummary | null>(null);
+  /** The current summary, for the `recovery-details-requested` listener. That
+   *  effect is subscribed once with no dependencies on purpose (see its doc),
+   *  so it cannot close over this state. */
+  const summaryRef = useRef<RecoverySummary | null>(null);
+  summaryRef.current = summary;
   const [detailsOpen, setDetailsOpen] = useState(false);
   /**
    * Which entry a resume is on, and what it has attempted this pass.
@@ -1282,7 +1429,11 @@ export function NewUiApp() {
   const groups = useMemo<Group[]>(
     () =>
       proxy
-        ? buildGroups(tools, proxy.domains, {
+        ? // The TOOL LIST is filtered, not the built ledger. `buildGroups` gives
+          // a member no section claims a section of its own, so filtering
+          // afterwards would put `env-proxy` back under its raw name with none
+          // of the section copy - see `isSettingsManaged`.
+          buildGroups(tools.filter((t) => !isSettingsManaged(t.slug)), proxy.domains, {
             proxyOn: proxy.running,
             caTrusted: proxy.ca_trusted,
             // The sweep, which a section's rendered state cannot do without.
@@ -1400,7 +1551,7 @@ export function NewUiApp() {
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
-        .filter((t) => t.status.kind !== "not_installed")
+        .filter((t) => t.status.kind !== "not_installed" && !isSettingsManaged(t.slug))
         .map((t) => ({
           slug: t.slug,
           name: t.name,
@@ -1850,12 +2001,19 @@ export function NewUiApp() {
       // silently dismissed a failed rename in this window that the user had not
       // read yet - and then, on the refused paths, did nothing else at all.
       setActionError(null);
-      if (fresh) {
-        setSummary(fresh);
+      // The one this window already holds, when the fresh read came back with
+      // nothing. The tray only draws Review details over an unfinished run, so
+      // a press means there is one; answering with whatever we last read beats
+      // answering with a page about something else.
+      const target = fresh ?? summaryRef.current;
+      if (target) {
+        setSummary(target);
         setDetailsOpen(true);
-      } else {
-        setView({ kind: "settings" });
       }
+      // Nothing to show: refused silently, like the two refusals above. It used
+      // to open Settings (AG-890), which has nothing on it about routing
+      // recovery - so the one surface that could answer the question sent the
+      // user somewhere that could not, with no word about why.
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
@@ -2074,7 +2232,6 @@ export function NewUiApp() {
         // one. The local id always exists. `x-gate-install-id` sends this same
         // value, so the two never disagree.
         deviceName: device ?? "Unavailable",
-        deviceNamed: prefs ? prefs.device_name !== null : undefined,
         onRenameDevice: device
           ? () => settings.openRenameDevice(device)
           : undefined,
@@ -2085,11 +2242,38 @@ export function NewUiApp() {
         // org switcher, and no screen named the account the user was signed in
         // as. An API-key account has no email and gets the dash.
         loginId: oauth?.email ?? "-",
-        // No gateway field carries a plan today, so this says so rather than
-        // drawing a bare dash nobody can read a meaning into. Same vocabulary
-        // as `installId` above; the frame's "Free" is a mock value, not a
-        // reading. When the gateway starts naming one, this is the seam.
-        plan: "Unavailable",
+        // The plan the gateway reports, in the word the user has already seen
+        // for it. This was the literal string "Unavailable", on a comment
+        // saying no gateway field carried a plan - `/v1/me/credits` does, and
+        // the App pane had been drawing it since AG-592, so Settings claimed
+        // nothing was known while another pane named it in the same session
+        // (AG-891).
+        //
+        // Three states, kept apart: in flight, landed-and-unnamed, and failed.
+        // `formatPlan` is what makes the word agree with the dashboard.
+        plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
+        planUnreadable: credits.failure !== null,
+        onRetryPlan: credits.reload,
+        // The machine-wide shell proxy, which used to be a card in the rail
+        // and a row in the app list. Absent on Linux, where these variables are
+        // the system proxy and cannot be declined without turning routing off -
+        // the same condition the rail card carried.
+        shellProxy:
+          proxy?.env_export_separable
+            ? {
+                on: proxy.env_export_opted_in,
+                // The same flag the rail's switches carry. `setEnvExport`
+                // returns early while any other routing call is in flight, so
+                // without it a click lands on nothing and the switch does not
+                // move - and this is a machine-wide write someone plausibly
+                // makes right after flipping an app.
+                busy: routingBusy,
+                onToggle: () => {
+                  setActionError(null);
+                  void routing.setEnvExport(!proxy.env_export_opted_in);
+                },
+              }
+            : undefined,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
@@ -2559,43 +2743,6 @@ export function NewUiApp() {
   }, [proxy]);
 
   /**
-   * What the open section's switch covers, on the pane that opens on it.
-   *
-   * Same shape as the advice below and a different kind of thing: this is a
-   * description of the surfaces, true on every platform and whether or not the
-   * section is on, and it is here because the window shell draws a row's copy as
-   * one sentence and these sections need three or four. `groups.ts` carries the
-   * copy, composes the credential sentence with the section's remaining hosts,
-   * and documents why that composition is not this file's to do.
-   */
-  const scopeCard = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const group = groups.find((g) => g.id === view.slug);
-    return group
-      ? switchScopeNote(group, platform, proxy?.browser_proxy_channel ?? false)
-      : undefined;
-  }, [view, groups, platform, proxy]);
-
-  /**
-   * Whether the open section's figures cover less than its switch routes.
-   *
-   * True when the section has a config tool (so there IS a reading) and any
-   * member the gateway cannot attribute (so the reading is narrower than the
-   * heading). `client_tool` comes from the caller's own User-Agent, and the
-   * desktop apps send none the matcher places - see `proxy::client_tool` and
-   * the ceiling its doc describes.
-   */
-  const partialReading = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    const section = groups.find((g) => g.id === view.slug);
-    const configMember = section?.members.find((m) => m.kind === "config");
-    if (!section || !configMember) return undefined;
-    return section.members.some((m) => m.kind === "proxy")
-      ? { covers: configMember.tool?.product_name ?? configMember.name }
-      : undefined;
-  }, [view, groups]);
-
-  /**
    * The standing note a proxy-routed row carries on Linux.
    *
    * Not a verdict and not drawn like one: `reopen_required` is measured per tool
@@ -3011,17 +3158,6 @@ export function NewUiApp() {
               busy: routingBusy,
               caTrusted: proxy.ca_trusted,
               onToggle: (next) => void toggleMaster(next),
-              // Absent on Linux, where these variables *are* the system proxy
-              // and cannot be declined without turning routing off.
-              envExport: proxy.env_export_separable
-                ? {
-                    on: proxy.env_export_opted_in,
-                    onToggle: (next) => {
-                      setActionError(null);
-                      void routing.setEnvExport(next);
-                    },
-                  }
-                : undefined,
             }
           : undefined
       }
@@ -3029,13 +3165,6 @@ export function NewUiApp() {
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
       inventory={inventory}
-      // Only the error banner outranks a dialog, and only because it is the one
-      // report a failed action gets: under the scrim its dismiss button is
-      // readable and unclickable. The recovery and reopen banners are advisory
-      // and persistent - they survive the dialog either way - so they dim with
-      // the rest of the chrome rather than floating over it. Leaving them lifted
-      // put a "Close tool" button on top of the close-apps dialog it opens.
-      noticeAboveDialog={actionError !== null}
       notice={noticeStack}
       onToggleApp={toggleRailApp}
       dialog={
@@ -3170,6 +3299,7 @@ export function NewUiApp() {
               app={{
                 name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
               }}
+              plural={runningApps.stage.tools.length !== 1}
               onDone={runningApps.dismiss}
             />
           ) : (
@@ -3511,7 +3641,11 @@ export function NewUiApp() {
                 // a zero balance. See principle 6.
                 credits: formatCredits(credits.credits),
                 // Null when unread, which the row omits rather than guessing.
-                plan: credits.credits?.plan ?? null,
+                // The same word Settings and the dashboard use. This drew
+                // "Paid plan" off the raw value, so one account read "Paid"
+                // here and "Pro" on the dashboard - and, once Settings was
+                // wired, "Pro" two panes away in the same window.
+                plan: formatPlan(credits.credits?.plan ?? null),
                 // No dedicated credits endpoint, but the row's own glyph
                 // promises an external link, and the dashboard is where credits
                 // are actually bought.
@@ -3562,7 +3696,6 @@ export function NewUiApp() {
           //
           // Computed from the section rather than hardcoded, so it disappears
           // per surface as attribution improves rather than needing a sweep.
-          partialReading={partialReading}
           alert={
             <>
               {reopenAlert}
@@ -3576,15 +3709,6 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {/* One card, not two, and one source for it: `switchScopeNote`
-                  composes the credential sentence with the section's remaining
-                  hosts, because the second is worded against whether the first
-                  precedes it. This used to be two `PaneNote`s, which is how the
-                  Claude pane drew two cards headed "What this switch covers"
-                  one above the other. */}
-              {scopeCard && (
-                <PaneNote title={scopeCard.title} body={scopeCard.body} />
-              )}
               {proxyAdvice && (
                 <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
               )}
@@ -3704,26 +3828,6 @@ export function NewUiApp() {
           // there is one, it names its own gaps.
           unavailable={activity.view?.missing ?? ALL_MISSING}
           period={activity.view?.period ?? "Last 24 hours"}
-          scope={
-            <InstallationPicker
-              installations={installations}
-              // What the user asked for, not what the gateway echoed. This is a
-              // control, and driving a control from observed state is the bug
-              // CLAUDE.md's second principle documents: selecting an installation
-              // clears the view, so the echo was `null` for the whole round trip
-              // and the picker snapped back to "All installations" - contradicting
-              // the click that caused it, for three seconds under
-              // `gcSlowActivity(3000)`.
-              //
-              // The old comment argued the label had to agree with numbers that
-              // were "still the previous scope's". They are not: the effect below
-              // clears them, so it agreed with nothing. The figures are skeletons
-              // while this is pending, which is what says the numbers are not the
-              // new scope's yet.
-              value={installFilter}
-              onChange={setInstallFilter}
-            />
-          }
           alert={
             <>
               {notice && (
@@ -3775,6 +3879,13 @@ export function NewUiApp() {
   );
 }
 
+/** How old the activity reads have to be before the window being focused again
+ *  re-reads them. The same spacing the relay's traffic reports keep. */
+const ACTIVITY_REOPEN_MIN_MS = 30_000;
+
+
+
+
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
 const ALL_MISSING = { chart: true, policies: true, savings: true };
@@ -3787,7 +3898,6 @@ const EMPTY_STATS: UsageStats = {
   messages: null,
   blockedFlagged: null,
   tokensSavedPercent: null,
-  tokensSavedAmount: null,
 };
 
 /** The file Gate rewrites for one tool, for the drift review's copy. */
@@ -3974,7 +4084,11 @@ function ActivityGaps({
   const notices = mergeNotices(
     failure
       ? [failureNotice(failure)]
-      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason)),
+      : (view?.gaps ?? [])
+          .map((g) => sectionNotice(g.section, g.reason))
+          // `not_configured` raises none: the section's own card says it in the
+          // place the reader is looking.
+          .filter((n): n is GapNotice => n !== undefined),
   ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 

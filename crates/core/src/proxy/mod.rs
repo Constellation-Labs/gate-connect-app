@@ -35,6 +35,7 @@
 //! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
 use crate::account::BillingMode;
+use crate::registry::ToolId;
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -625,6 +626,240 @@ pub fn gate_auth_check_finished() {
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
 }
 
+/// Observer the desktop shell registers to hear that routed traffic left this
+/// machine for the gateway, and from which tools. It is handed the tools whose
+/// traffic is being reported in this batch - `None` for a sender
+/// [`client_tool`] could not name.
+///
+/// This is what the window's activity reads refresh on. They cannot poll: the
+/// activity endpoint sits in a throttle bucket keyed on the source address, so a
+/// timer in every window would spend a budget shared with everyone behind the
+/// same egress (see `useActivity`). The relay is the one component that knows
+/// for certain a new request exists, so a read it triggers is never wasted and
+/// an idle machine costs nothing.
+///
+/// Fed from [`inject_attribution`], which every gateway-bound request passes
+/// through on both paths - the MITM engine and the loopback relay - so neither
+/// needs a hook of its own. Not cfg-gated, like the auth observer above: on
+/// Linux the engine lives in the helper daemon, which registers no observer, so
+/// [`note_traffic`] is a no-op there and the window falls back to re-reading
+/// when it is focused again.
+static TRAFFIC_OBSERVER: std::sync::OnceLock<TrafficObserver> = std::sync::OnceLock::new();
+
+/// See [`TRAFFIC_OBSERVER`].
+type TrafficObserver = Box<dyn Fn(&[Option<&'static str>]) + Send + Sync>;
+
+/// One [`TrafficMark`] per tool, keyed as [`client_tool`] names them.
+type TrafficSeen = std::collections::BTreeMap<Option<&'static str>, TrafficMark>;
+
+/// How long a tool's traffic has to be quiet before it is reported. A turn is
+/// rarely one request, and the gateway's activity view lags ingestion by a
+/// moment, so reporting the first request would re-read numbers that do not
+/// yet include it. Reporting the *lull* after a burst reads once, late enough
+/// to see all of it.
+const TRAFFIC_QUIET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The most often one tool is reported, and the cadence while its traffic never
+/// goes quiet - a long agent run should still move the counters. Each report
+/// costs the window up to three throttled reads, so this is what bounds the
+/// spend: two reports a minute per active tool.
+const TRAFFIC_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the sweeper looks for a tool that has gone quiet. Cheap: it walks
+/// a map with one entry per tool that has sent anything this run.
+const TRAFFIC_SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the sweeper knows about one tool's traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrafficMark {
+    /// The newest request seen.
+    last_seen: std::time::Instant,
+    /// The oldest request not yet reported; `None` once everything seen has
+    /// been.
+    pending_since: Option<std::time::Instant>,
+    /// When this tool was last reported; `None` until it has been.
+    last_reported: Option<std::time::Instant>,
+}
+
+/// Per-tool marks. A `BTreeMap` because `HashMap::new` is not `const`, and the
+/// map holds a handful of entries.
+static TRAFFIC_SEEN: std::sync::Mutex<TrafficSeen> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Register the traffic observer and start the sweeper that feeds it. First
+/// registration wins; later calls are ignored (the shell registers exactly once
+/// at setup), and only the winning one starts a thread.
+///
+/// The thread starts here rather than on the first request seen, and that is
+/// a data-plane decision: `thread::spawn` panics when the OS refuses a thread,
+/// and a `Once` that panicked stays poisoned, so a spawn on the request path
+/// would have turned one refused thread into a panic on every gateway-bound
+/// request for the rest of the process. Here a refusal costs the refresh signal
+/// and nothing else; the window still re-reads on its focus edge. The thread
+/// itself is a 1s tick over a map with one entry per tool that has sent
+/// anything, so a shell that never routes (the Linux GUI, whose engine lives in
+/// the daemon) pays for a sleep and an empty walk.
+pub fn set_traffic_observer(observer: impl Fn(&[Option<&'static str>]) + Send + Sync + 'static) {
+    if TRAFFIC_OBSERVER.set(Box::new(observer)).is_err() {
+        return;
+    }
+    let sweep = std::thread::Builder::new()
+        .name("gate-traffic-sweeper".into())
+        .spawn(|| {
+            // Set above, before this thread existed; the `else` is unreachable
+            // and keeps the loop from asking again on every tick.
+            let Some(observer) = TRAFFIC_OBSERVER.get() else {
+                return;
+            };
+            loop {
+                std::thread::sleep(TRAFFIC_SWEEP_TICK);
+                let due = match TRAFFIC_SEEN.lock() {
+                    Ok(mut seen) => traffic_due(&mut seen, std::time::Instant::now()),
+                    // Poisoned by a panic elsewhere. Stop sweeping rather than
+                    // spin; the window still re-reads on its focus edge.
+                    Err(_) => return,
+                };
+                if due.is_empty() {
+                    continue;
+                }
+                if engine::debug_log() {
+                    eprintln!("[gate-proxy] traffic observed from {due:?}");
+                }
+                observer(&due);
+            }
+        });
+    if let Err(e) = sweep {
+        eprintln!("[gate-proxy] traffic sweeper could not start; activity reads will refresh on focus only: {e}");
+    }
+}
+
+/// Record that a gateway-bound request from `tool` is leaving now. Called by
+/// [`inject_attribution`] on every such request; a no-op unless a shell has
+/// registered to hear about it. One map update under the lock, no I/O.
+fn note_traffic(tool: Option<&'static str>) {
+    if TRAFFIC_OBSERVER.get().is_none() {
+        return;
+    }
+    if let Ok(mut seen) = TRAFFIC_SEEN.lock() {
+        mark_traffic(&mut seen, tool, std::time::Instant::now());
+    }
+}
+
+/// The recording step of [`note_traffic`]: `tool` sent a request at `now`.
+/// Separate so the tests drive the same step the request path does.
+fn mark_traffic(seen: &mut TrafficSeen, tool: Option<&'static str>, now: std::time::Instant) {
+    let mark = seen.entry(tool).or_insert(TrafficMark {
+        last_seen: now,
+        pending_since: None,
+        last_reported: None,
+    });
+    mark.last_seen = now;
+    mark.pending_since.get_or_insert(now);
+}
+
+/// Which tools are due a report at `now`, marking them reported.
+///
+/// A tool is due when it has unreported traffic, it has not been reported
+/// within [`TRAFFIC_REPORT_INTERVAL`], and either it has been quiet for
+/// [`TRAFFIC_QUIET`] or its unreported traffic is [`TRAFFIC_REPORT_INTERVAL`]
+/// old - the second so continuous traffic is reported on a cadence rather than
+/// never. Pure, so the timing is testable without a thread.
+fn traffic_due(seen: &mut TrafficSeen, now: std::time::Instant) -> Vec<Option<&'static str>> {
+    let mut due = Vec::new();
+    for (tool, mark) in seen.iter_mut() {
+        let Some(pending_since) = mark.pending_since else {
+            continue;
+        };
+        let spaced = mark
+            .last_reported
+            .is_none_or(|at| now.duration_since(at) >= TRAFFIC_REPORT_INTERVAL);
+        let quiet = now.duration_since(mark.last_seen) >= TRAFFIC_QUIET;
+        let overdue = now.duration_since(pending_since) >= TRAFFIC_REPORT_INTERVAL;
+        if spaced && (quiet || overdue) {
+            mark.pending_since = None;
+            mark.last_reported = Some(now);
+            due.push(*tool);
+        }
+    }
+    due
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::{mark_traffic, traffic_due, TrafficSeen, TRAFFIC_QUIET, TRAFFIC_REPORT_INTERVAL};
+    use std::time::{Duration, Instant};
+
+    const TOOL: Option<&str> = Some("claude-code");
+
+    /// A map with one tool whose requests landed at each of `at` (offsets from
+    /// `t0`), none reported yet. Recorded the way the request path records.
+    fn seen(t0: Instant, at: &[u64]) -> TrafficSeen {
+        let mut map = TrafficSeen::new();
+        for &secs in at {
+            mark_traffic(&mut map, TOOL, t0 + Duration::from_secs(secs));
+        }
+        map
+    }
+
+    #[test]
+    fn a_burst_is_reported_once_it_goes_quiet_and_then_not_again() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0, 1, 2]);
+        // Still inside the quiet window after the last request: nothing yet.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET / 2).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(2) + TRAFFIC_QUIET),
+            vec![TOOL]
+        );
+        // Reported, and with nothing new there is nothing to say.
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(600)).is_empty());
+    }
+
+    #[test]
+    fn continuous_traffic_is_reported_on_the_interval_rather_than_never() {
+        let t0 = Instant::now();
+        // A request every second, so it is never quiet.
+        let at: Vec<u64> = (0..=60).collect();
+        let mut map = seen(t0, &at);
+        let interval = TRAFFIC_REPORT_INTERVAL.as_secs();
+        assert!(traffic_due(&mut map, t0 + Duration::from_secs(interval - 1)).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + Duration::from_secs(interval)),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn a_report_is_never_closer_than_the_interval_to_the_last_one() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        // A second burst straight after the report goes quiet well before the
+        // interval is up: it waits for the interval, then lands.
+        let again = t0 + TRAFFIC_QUIET + Duration::from_secs(1);
+        mark_traffic(&mut map, TOOL, again);
+        assert!(traffic_due(&mut map, again + TRAFFIC_QUIET).is_empty());
+        assert_eq!(
+            traffic_due(&mut map, t0 + TRAFFIC_QUIET + TRAFFIC_REPORT_INTERVAL),
+            vec![TOOL]
+        );
+    }
+
+    #[test]
+    fn tools_are_reported_independently() {
+        let t0 = Instant::now();
+        let mut map = seen(t0, &[0]);
+        let late = t0 + Duration::from_secs(3);
+        mark_traffic(&mut map, Some("codex"), late);
+        // Only the first has been quiet long enough.
+        assert_eq!(traffic_due(&mut map, t0 + TRAFFIC_QUIET), vec![TOOL]);
+        assert_eq!(
+            traffic_due(&mut map, late + TRAFFIC_QUIET),
+            vec![Some("codex")]
+        );
+    }
+}
+
 /// The last `cf_clearance` a solve captured, kept for the life of the
 /// process so an engine restart does not throw it away.
 ///
@@ -1176,6 +1411,16 @@ pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
 /// Which tool sent the request, when we can tell. Feeds the per-tool series in
 /// the activity view.
 pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// A tool naming itself because Gate wrote this header into that tool's own
+/// config file - the engine's equivalent of the relay's path marker, for a tool
+/// that has no base URL for us to write.
+///
+/// **Deliberately not [`GATE_CLIENT_HEADER`] itself.** That one is stamped by
+/// us and stripped from whatever the caller sent, so a tool cannot label its own
+/// traffic with it. This one is a request *input*, read before the strip and
+/// consumed here: it never reaches the gateway, and the slug it names is
+/// validated against [`crate::registry::ToolId`] rather than forwarded as text.
+pub(crate) const GATE_TOOL_HEADER: &str = "x-gate-tool";
 /// What the user calls this machine, so the gateway can show traffic under a
 /// human name rather than an install id. Self-asserted and non-secret, like the
 /// two above.
@@ -1185,13 +1430,25 @@ pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
 /// offers to skip naming, and a hostname usually carries a person's name. An
 /// unnamed device is attributed by its install id alone.
 pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
-/// The models the user chose for this tool, comma-separated and in preference
-/// order (AG-588 / AG-590).
+/// The models the user enabled for this tool, comma-separated (AG-588 / AG-590).
 ///
 /// Unlike the two above this is not a label on the request - it **changes what
-/// the gateway serves**, so the gateway rewrites the body's `model` to the first
-/// entry. Sent only when the user set that tool to a Gate model; absent means
-/// the tool's own choice stands, which is the default and must stay the default.
+/// the gateway serves**. Sent only when the user set that tool to a Gate model;
+/// absent means the tool's own choice stands, which is the default and must stay
+/// the default.
+///
+/// **The set is an allow-list, not an override queue (AG-746).** This comment
+/// said the gateway "rewrites the body's `model` to the first entry", full stop,
+/// which was true before AG-746 and is the reading AG-888 was filed on. What
+/// `gateway-proxy`'s `applyUserModelChoice` actually does: a request for a model
+/// IN the set is served as the model the tool asked for and the body is left
+/// alone; only a request for something outside the set is rewritten, onto the
+/// first entry. Three sessions on three enabled models therefore keep their own
+/// choices instead of all being served the first.
+///
+/// So the order is still the user's and still load-bearing - the first entry is
+/// what everything unlisted becomes - but it is a fallback rather than a
+/// default.
 pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 
 /// Stamp the attribution headers the activity view groups by.
@@ -1213,7 +1470,11 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// and only when a tool was positively identified. An unrecognised tool sends no
 /// override at all rather than a best guess, because guessing here would serve -
 /// and charge for - a model chosen for a different tool.
-fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
+fn inject_attribution(
+    headers: &mut HeaderMap,
+    domain: Option<&str>,
+    routed_tool: Option<&'static str>,
+) {
     headers.remove(GATE_INSTALL_ID_HEADER);
     if let Some(id) = crate::primitives::install_id_cached() {
         if let Ok(value) = HeaderValue::from_str(id) {
@@ -1230,7 +1491,29 @@ fn inject_attribution(headers: &mut HeaderMap, domain: Option<&str>) {
     {
         headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
-    let tool = client_tool(headers, domain);
+    // The route wins over the User-Agent, and only ever adds: `routed_tool` is
+    // `Some` exactly when the request arrived on a base URL carrying a tool
+    // marker. That is not more *trustworthy* than the User-Agent - any process
+    // on the loopback interface can call any path, exactly as it can send any
+    // header - it is only no longer dependent on a string Gate neither owns nor
+    // versions, so the honest case stops breaking when a tool renames itself.
+    // Worth holding onto here rather than only at `TOOL_PATH_PREFIX`, because
+    // this is the line that feeds `inject_model_choice`. The guess stays
+    // underneath for everything the marker cannot reach - the forward-proxy
+    // engine, where there is no URL to write, and any relay base URL written
+    // before the marker existed and not yet reconciled.
+    // Consumed, not forwarded: the caller's own copy goes no further than this
+    // hop whether or not we could read it. It is Gate-internal, it names the
+    // user's tooling, and the gateway learns the same fact from the header we
+    // stamp below.
+    headers.remove(GATE_TOOL_HEADER);
+    let tool = routed_tool.or_else(|| client_tool(headers, domain));
+    // Every gateway-bound request comes through here, on both paths, which is
+    // what makes this the one place the window can be told traffic happened.
+    // Told after the marker has had its say, so a relay-routed tool reaches the
+    // activity feed under the name its own config carries rather than under
+    // whatever its `User-Agent` happened to spell.
+    note_traffic(tool);
     headers.remove(GATE_CLIENT_HEADER);
     if let Some(slug) = tool {
         headers.insert(
@@ -1331,7 +1614,7 @@ pub mod testing {
     pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
-        super::inject_attribution(headers, None);
+        super::inject_attribution(headers, None, None);
     }
 
     /// Whether the injection decided Gate serves this request.
@@ -1391,6 +1674,26 @@ pub mod testing {
     }
 }
 
+/// The tool named by [`GATE_TOOL_HEADER`], if it names one we know.
+///
+/// This is `established` evidence in the sense `client_tool` means it: the
+/// header is there because Gate wrote it into a config file only that tool
+/// reads, not because a string the caller composed looked right. It is the only
+/// such signal available on the forward-proxy path for a tool that has no base
+/// URL - the engine sees a CONNECT, so there is no URL of ours to put a marker
+/// in.
+///
+/// An unknown slug yields `None` rather than being passed through, so the value
+/// that reaches the activity column is always one of ours. Same reasoning as the
+/// relay's marker: a request we cannot name is served unlabelled.
+pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
+    headers
+        .get(GATE_TOOL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::registry::ToolId::from_slug)
+        .map(crate::registry::ToolId::slug)
+}
+
 /// Which client sent a request, for the gateway's `client_tool` column.
 ///
 /// Two signals, in order of how much they can be trusted.
@@ -1411,13 +1714,27 @@ pub mod testing {
 /// would attribute one tool's traffic to another in the view the user reads to
 /// find out what their machine is doing.
 ///
-/// **Display only, and caller-steerable.** Every signal here is a header the
-/// sender chose, so any local process whose traffic is intercepted can file its
-/// requests under another app's name. `inject_attribution` strips
+/// **Caller-steerable, and not display-only.** Every header signal here is one
+/// the sender chose, so any local process whose traffic is intercepted can file
+/// its requests under another app's name. `inject_attribution` strips
 /// [`GATE_CLIENT_HEADER`] before stamping, so a caller cannot set the value
-/// outright - only steer which branch fires - and nothing in routing, credential
-/// injection or the cascade rule reads the result. Keep it that way: this is a
-/// label on a counter, never an authorization input.
+/// outright - only steer which branch fires.
+///
+/// This doc used to say "nothing in routing, credential injection or the cascade
+/// rule reads the result", and that is **false**: [`inject_model_choice`] takes
+/// this value and stamps [`GATE_MODEL_HEADER`] only for a positively identified
+/// tool, and that header rewrites the served model and decides what the user is
+/// billed for. So identifying a tool better does not only move a number on a
+/// chart - it can start honouring a Gate-model choice that was stored but never
+/// applied, because the tool was going unrecognised. That is the intended
+/// reading of the feature (the user picked that model for that tool, and it was
+/// silently not being used), and it is a billing-visible consequence that
+/// belongs written down rather than discovered.
+///
+/// It remains **never an authorization input**: nothing here decides whether a
+/// request is served, only which stored intent is applied to it. Keep that half
+/// true. The ceiling on the steerable case is that a forged agent can only reach
+/// a model the user themselves chose for the tool it is impersonating.
 ///
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
 /// `chatgpt-web` - have no [`crate::registry::ToolId`], and the activity queries
@@ -1626,8 +1943,9 @@ pub(crate) fn inject_gate_credential(
     org_id: Option<&str>,
     mode: BillingMode,
     domain: Option<&str>,
+    tool: Option<&'static str>,
 ) -> Result<bool> {
-    inject_attribution(headers, domain);
+    inject_attribution(headers, domain, tool);
     if mode == BillingMode::Payg {
         strip_client_auth(headers);
     }
@@ -2537,19 +2855,61 @@ pub struct ResolvedEndpoint {
 
 impl ResolvedEndpoint {
     /// The base URL a tool config points at to route this endpoint through the
-    /// relay: `<relay>/<slug><client_path>`.
+    /// relay: `<relay>/__gate/t/<tool>/<slug><client_path>`.
     ///
     /// The slug segment is how the relay knows which upstream a request belongs
     /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
-    /// carrying it in a config file. It is stripped back off before anything is
-    /// forwarded, leaving exactly `client_path` + whatever the tool appended.
-    pub fn relay_base_url(&self, relay_base_url: &str) -> String {
+    /// carrying it in a config file. The `tool` segment ahead of it names who
+    /// was configured, so attribution stops depending on the request's
+    /// `User-Agent` - see `relay::TOOL_PATH_PREFIX`, which is crate-private and
+    /// so cannot be linked from this public item. Both are stripped back
+    /// off before anything is forwarded, leaving exactly `client_path` +
+    /// whatever the tool appended, so neither reaches the gateway or the
+    /// upstream.
+    ///
+    /// `tool` is the integration's own [`ToolId`], not a lookup. That is the
+    /// whole point: the call site is inside the module that configures that
+    /// tool, which is the one place in the system where "which tool is this" is
+    /// known rather than inferred.
+    pub fn relay_base_url(&self, relay_base_url: &str, tool: ToolId) -> String {
         format!(
-            "{}/{}{}",
+            "{}{}{}/{}{}",
             relay_base_url.trim_end_matches('/'),
+            relay::TOOL_PATH_PREFIX,
+            tool.slug(),
             self.slug,
             self.client_path
         )
+    }
+
+    /// Is `candidate` a base URL *we* wrote for this endpoint and tool?
+    ///
+    /// Not "does it point at loopback". The two are not the same question and
+    /// the difference is a config the user owns: someone who repoints a tool we
+    /// connected at their own local server is still on loopback, and answering
+    /// yes there hands `reconcile_enabled` a licence to take it back. It asks
+    /// instead whether the string is one [`Self::relay_base_url`] could have
+    /// produced, which only Gate Connect writes.
+    ///
+    /// Judged at the candidate's OWN origin rather than the relay's current one,
+    /// because a base URL that has gone stale is exactly what the reapply exists
+    /// to repair: the relay comes back on a different port and every config we
+    /// wrote now names a dead one. Both path shapes count for the same reason -
+    /// the pre-marker one is what every install written before the tool segment
+    /// still holds, and it is no less ours for being old.
+    pub fn is_relay_base_url(&self, candidate: &str, tool: ToolId) -> bool {
+        let Some((scheme, rest)) = candidate.split_once("://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.is_empty() {
+            return false;
+        }
+        let origin = format!("{scheme}://{authority}");
+        if self.relay_base_url(&origin, tool) == candidate {
+            return true;
+        }
+        format!("{origin}/{}{}", self.slug, self.client_path) == candidate
     }
 }
 
@@ -2594,6 +2954,50 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::SolveOutcome;
+
+    /// What separates a base URL of ours from one the user owns.
+    ///
+    /// The tempting test is "does it point at loopback", and it is wrong in the
+    /// one direction that costs something: a tool the user has repointed at
+    /// their own local server answers yes to it, and `config_is_managed` would
+    /// then let `reconcile_enabled` take the config back without asking. The
+    /// question is whether the string is one we could have written.
+    #[test]
+    fn only_a_url_we_could_have_written_reads_as_ours() {
+        use super::{resolve_endpoint, ToolId};
+        let r = resolve_endpoint("https://api.anthropic.com/v1").expect("anthropic resolves");
+
+        // What we write today, and the same at a port the relay has since left:
+        // the stale one is precisely what the reapply exists to repair, so it
+        // has to still read as ours.
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(r.is_relay_base_url(
+            "http://127.0.0.1:1234/__gate/t/opencode/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        // The shape written before the marker existed, which every install that
+        // has not reconciled since still holds.
+        assert!(r.is_relay_base_url("http://127.0.0.1:9977/anthropic/v1", ToolId::OpenCode));
+
+        // The user's own llama server on the same interface. Loopback, and not
+        // ours.
+        assert!(!r.is_relay_base_url("http://127.0.0.1:11434/v1", ToolId::OpenCode));
+        // Ours in shape, but naming a different tool or a different upstream.
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/codex/anthropic/v1",
+            ToolId::OpenCode
+        ));
+        assert!(!r.is_relay_base_url(
+            "http://127.0.0.1:9977/__gate/t/opencode/openai/v1",
+            ToolId::OpenCode
+        ));
+        // Not a URL at all, and a scheme with no authority.
+        assert!(!r.is_relay_base_url("anthropic/v1", ToolId::OpenCode));
+        assert!(!r.is_relay_base_url("http:///anthropic/v1", ToolId::OpenCode));
+    }
 
     /// The wire words the frontend's own union spells out.
     ///
@@ -4140,6 +4544,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The cross-repo agreement table for tool attribution.
+    ///
+    /// Two matchers, in two repositories, answer "which tool sent this" and
+    /// neither compares notes with the other: [`client_tool`] here, and the
+    /// per-platform `detect` in the gateway's
+    /// `apps/gateway-proxy/src/utils/platform-registry.ts`. They disagreed for
+    /// months on any agent whose own token is not the first thing in its
+    /// `User-Agent` - the gateway anchored its `opencode` regex, this side uses
+    /// a case-insensitive `contains` - and nothing caught it, because each
+    /// side's tests were written against its own rule.
+    ///
+    /// Disagreement is worse than either side being wrong alone. This side
+    /// stamps `x-gate-client: opencode` while the gateway writes
+    /// `agent_framework: direct-api`, so one row carries two confident and
+    /// contradictory claims and neither surface reads as "unknown".
+    ///
+    /// So the table records BOTH answers per sample rather than one shared one.
+    /// The columns are not expected to be equal - where they differ the row says
+    /// why, and that visibility is the point. **The same table is mirrored in
+    /// the gateway**, in `tests/utils/agent-ua-samples.test.ts`; this test
+    /// asserts the `connect` column and that one asserts `registry`. A sample
+    /// added here goes there too. Nothing but this comment enforces that, so a
+    /// row with no counterpart proves half of what it looks like it proves.
+    ///
+    /// Which is why the name says `connect` rather than "agrees with the
+    /// gateway": the `registry` column is documentation here, read by a person
+    /// porting the table across and by nothing else. A name promising a
+    /// cross-repo assertion would have a green run standing behind it.
+    #[test]
+    fn the_user_agent_table_pins_what_connect_stamps() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h, None)
+        };
+
+        // (user-agent, what this side stamps, what the gateway registry makes
+        // of the same string on its own).
+        let samples: &[(&str, Option<&str>, Option<&str>)] = &[
+            // Agreed: what each tool sends today, backed by real captures.
+            (
+                "claude-cli/2.1.222 (external, cli)",
+                Some("claude-code"),
+                Some("claude-code"),
+            ),
+            ("codex_cli_rs/0.55.0", Some("codex"), Some("codex")),
+            ("opencode/0.4.2", Some("opencode"), Some("opencode")),
+            // The shape that split the two matchers, and the reason the `^`
+            // anchor came off the gateway's `opencode` detector: the token is
+            // present but not first, as it would be with a runtime or wrapper
+            // banner in front of it.
+            (
+                "Bun/1.2.3 opencode/0.4.2",
+                Some("opencode"),
+                Some("opencode"),
+            ),
+            // Case is the tool's business, not ours - one tool has to be one
+            // series.
+            ("Codex/1.0", Some("codex"), Some("codex")),
+            // DIVERGENT, and not a regex disagreement: the two sides read
+            // different evidence. This side matches `openclaw` in the
+            // User-Agent; the gateway detects OpenClaw from body markers and
+            // has no UA signal at all, so a UA-only sample is genuinely `None`
+            // there. Routed traffic is still attributed, because the gateway
+            // now prefers `x-gate-client` - which is to say, this side's answer
+            // - over its own detector.
+            ("openclaw/1.4.0", Some("openclaw"), None),
+            // Not agents. A wrong slug here would file somebody else's traffic
+            // under a tool's name in the very view a user opens to find out
+            // what their machine is doing, which is worse than the honest
+            // blank.
+            ("curl/8.7.1", None, None),
+            ("Mozilla/5.0 (Macintosh) Chrome/120", None, None),
+        ];
+
+        for (ua, connect, _registry) in samples {
+            assert_eq!(tool(ua), *connect, "user-agent {ua:?}");
+        }
+    }
+
     /// The `User-Agent` guess is the only tool signal either path has, so its
     /// misses matter as much as its hits.
     #[test]
@@ -4372,6 +4859,58 @@ mod tests {
     }
 
     /// Attribution is stamped from our own state, never from the caller's.
+    /// The route outranks the `User-Agent`, and the header the caller sent
+    /// outranks neither.
+    ///
+    /// The three-way distinction is the point. A base URL carrying a tool marker
+    /// is something *Gate Connect wrote*, from inside the integration that knows
+    /// which tool it was configuring, so it is better evidence than a substring
+    /// of a string the tool picks for itself. An `x-gate-client` the caller set
+    /// is not evidence at all and stays overwritten either way - otherwise any
+    /// local process could file its spend under another tool's name.
+    #[test]
+    fn a_routed_tool_outranks_the_user_agent_but_a_claimed_header_outranks_nothing() {
+        let attributed = |ua: Option<&str>, routed: Option<&'static str>| {
+            let mut h = HeaderMap::new();
+            if let Some(ua) = ua {
+                h.insert(
+                    hyper::header::USER_AGENT,
+                    HeaderValue::from_str(ua).unwrap(),
+                );
+            }
+            // Always present and always wrong, so every case below also asserts
+            // that the caller's own claim was dropped rather than merged.
+            h.insert(
+                HeaderName::from_static(GATE_CLIENT_HEADER),
+                HeaderValue::from_static("openclaw"),
+            );
+            inject_attribution(&mut h, None, routed);
+            h.get(GATE_CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+
+        // The marker is the whole reason this change exists: a User-Agent that
+        // no longer names the tool - a runtime banner in front of the token is
+        // enough - still attributes correctly when the route named it.
+        assert_eq!(
+            attributed(Some("Bun/1.2.3 opencode/0.4.2"), Some("opencode")),
+            Some("opencode".to_string())
+        );
+        // And with no User-Agent at all, which is where the guess has nothing.
+        assert_eq!(attributed(None, Some("codex")), Some("codex".to_string()));
+
+        // No marker: the guess still runs, so nothing that works today stops.
+        assert_eq!(
+            attributed(Some("opencode/0.4.2"), None),
+            Some("opencode".to_string())
+        );
+
+        // Neither signal: unattributed, never the caller's claim.
+        assert_eq!(attributed(Some("curl/8.7.1"), None), None);
+        assert_eq!(attributed(None, None), None);
+    }
+
     #[test]
     fn attribution_overwrites_whatever_the_caller_claimed() {
         let mut h = HeaderMap::new();
@@ -4384,7 +4923,7 @@ mod tests {
             HeaderValue::from_static("claude-code"),
         );
 
-        inject_attribution(&mut h, None);
+        inject_attribution(&mut h, None, None);
 
         // The client header is derived from the User-Agent, and there is none
         // here, so the claim is dropped rather than believed.
@@ -4465,7 +5004,16 @@ mod tests {
             HeaderValue::from_static("sk-ant-api03-app"),
         );
 
-        inject_gate_credential(&mut h, "sk-gw-ours", None, None, BillingMode::Payg, None).unwrap();
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            None,
+            None,
+            BillingMode::Payg,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
         assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
@@ -4491,6 +5039,7 @@ mod tests {
             Some("token"),
             Some("org"),
             BillingMode::Byok,
+            None,
             None,
         )
         .unwrap();

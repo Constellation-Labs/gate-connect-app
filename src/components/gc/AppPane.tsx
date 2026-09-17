@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
+import { providerMarkFor } from "./ProviderMark";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
@@ -49,8 +50,6 @@ export interface GateModel {
    * belongs to the first one's.
    */
   ids: string[];
-  /** Vendor mark, 16px. Drawn only for a set of one. */
-  logo?: ReactNode;
 }
 
 
@@ -82,7 +81,6 @@ export function AppPane({
   onLoadMore,
   unavailable,
   unattributed,
-  partialReading,
   alert,
 }: {
   name: string;
@@ -202,26 +200,6 @@ export function AppPane({
    *  exist directly above two cards claiming it could not be read - a fault
    *  report over a permanent, intended shape of the data. */
   unattributed?: boolean;
-  /**
-   *  The figures cover only part of what this row's switch routes, and this
-   *  names the part.
-   *
-   *  A row is an app now, and an app's switch spans surfaces the gateway
-   *  attributes differently: `client_tool` is derived from the caller's own
-   *  User-Agent, so Claude Code is attributed and the desktop app - which sends
-   *  no User-Agent the matcher places - is not. The counters below are one
-   *  surface's, under a heading naming all of them.
-   *
-   *  Distinct from `unattributed`, which says there is no reading at all and
-   *  never will be. This says there IS one and it is narrower than the heading
-   *  implies, which is the more dangerous of the two: the number is plausible,
-   *  so nothing prompts the reader to doubt it. Principle 6 is about exactly
-   *  that - a figure is a measurement, or the card says what it measured.
-   *
-   *  Absent where the figures cover the whole row. Goes away per surface as
-   *  attribution improves rather than all at once.
-   */
-  partialReading?: { covers: string };
   /** Slot for the `AlertBanner` about this app: drift, a check error, or a
    *  whole-machine cause worded for this app. */
   alert?: ReactNode;
@@ -271,15 +249,6 @@ export function AppPane({
 
       {alert}
 
-      {/* Above the tiles, not below them: a caveat under a number is read after
-          the number has already been believed. */}
-      {partialReading && !unattributed && (
-        <p className="text-base-xs leading-4 text-base-muted-foreground">
-          These counts cover {partialReading.covers}. Gate routes more than that
-          for this app, and the rest is not attributed to an app, so it is not
-          counted here.
-        </p>
-      )}
       <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
       <MessagesChart
         buckets={buckets}
@@ -291,6 +260,7 @@ export function AppPane({
       {onChooseModel && onChangeModel && onAddCredits && (
         <ModelSelection
           appName={name}
+          appLogo={logo}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
@@ -348,20 +318,20 @@ function AppStatusLine({
 /**
  * The upstream's mark beside the model (Figma 272:3282).
  *
- * A monogram, not a brand asset: this repo carries no provider logos - the sidebar
- * falls back to a letter for the same reason - and drawing someone else's mark
- * badly from memory is worse than not drawing it. Swap this for the real SVGs when
- * they land; the shape and size are already what the design asks for.
+ * The real brand mark now that `ProviderMark` carries them; this used to be a
+ * one-letter monogram because the repo held no provider logos. Unmapped vendors
+ * fall back to the cube, which is the `Icon / Boxes` the frames draw in the same
+ * slot - a letter tile read as a different kind of thing entirely.
  *
- * Renders nothing when the provider is unknown, rather than a question mark: the
- * model name beside it already carries the row, and an empty slot keeps the column
- * aligned.
+ * Renders an empty slot when the provider is unknown, rather than a question
+ * mark: the model name beside it already carries the row, and the spacer keeps
+ * the column aligned.
  *
  * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
  * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
- * element is reachable by mouse and by nothing else, which for a one-letter
- * monogram means the provider is the one thing on the row a screen reader could
- * not get at. The tooltip stays for pointer users.
+ * element is reachable by mouse and by nothing else, which would make the
+ * provider the one thing on the row a screen reader could not get at. The
+ * tooltip stays for pointer users.
  */
 function VendorMark({ provider }: { provider: string | null }) {
   if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
@@ -370,9 +340,15 @@ function VendorMark({ provider }: { provider: string | null }) {
       <span
         aria-hidden
         title={provider}
-        className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+        // `base.foreground`, not the muted grey the Overview's row glyphs take.
+        // A brand mark is not a glyph: the colour ones carry their own fills and
+        // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
+        // inception, relace) inherit it - so muting the wrapper rendered OpenAI
+        // grey here and inked in the picker, while Moonshot, which hard-codes
+        // black, stayed black in both. Same ink as `dialogs.tsx`'s row now.
+        className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
       >
-        {provider.charAt(0)}
+        {providerMarkFor(provider) ?? <Icon name="cube" size={16} />}
       </span>
       <span className="sr-only">{provider}</span>
     </>
@@ -407,6 +383,7 @@ function VendorMark({ provider }: { provider: string | null }) {
  */
 function ModelSelection({
   appName,
+  appLogo,
   choice,
   pending,
   busy,
@@ -420,6 +397,10 @@ function ModelSelection({
   onManageBilling,
 }: {
   appName: string;
+  /** The app's own brand mark, for the App-default row. The section's mark, the
+   *  same one the pane header wears - this row is about the app, not about a
+   *  provider, so `ProviderMark` is the wrong family here. */
+  appLogo?: ReactNode;
   choice: ModelChoice | null;
   pending?: boolean;
   busy?: boolean;
@@ -428,7 +409,10 @@ function ModelSelection({
   gateModel: GateModel | null;
   onChangeModel: () => void;
   credits: string | null;
-  /** The org's plan, or null when the gateway did not name one (AG-592). */
+  /** The org's plan, already in the user's vocabulary - the shell maps it
+   *  through `formatPlan`, so this is "Pro" rather than the gateway's `paid`.
+   *  Null when the gateway named none (AG-592). Title-casing used to happen
+   *  here, which is how the raw value reached the screen. */
   plan: string | null;
   onAddCredits: () => void;
   /** Absent when the gateway named no billing destination, which removes the
@@ -515,6 +499,46 @@ function ModelSelection({
         </p>
       )}
 
+      {/* The App-default branch's own row (`408:25491`), below the divider the
+        * frame draws at `408:25490`. The card had nothing here at all: choosing
+        * App default left the radios and then the credits row, so the branch
+        * that is actually serving the user said less about itself than the one
+        * that was not. It is the same slot the Gate branch fills, and it
+        * answers the same question - what is serving this app, and what does it
+        * cost. Nothing, is the answer, and the frame says so out loud. */}
+      {choice === "app" && (
+        <>
+          <div className="mt-4 border-t border-base-border" />
+          <div className="mt-4">
+            <InfoRow icon={appLogo ?? <Icon name="cube" size={20} />}>
+              {/* `heading/14`, the one named heading step with no tracking at
+                * all, so it overrides `text-sm`'s own -0.14px. */}
+              <p className="text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
+                Using {appName} model
+              </p>
+              {/* The frame's last sentence, "No Gate credits used", is dropped.
+                * It is only true under BYOK: on a PAYG account the engine strips
+                * the tool's own credential and debits the org balance for every
+                * eligible slug, whatever the per-tool model source says
+                * (`proxy/mod.rs` `strip_client_auth`, reached on
+                * `mode == Payg`). An absolute claim about the user's money, on
+                * the one surface principle 1 is about, must not be false in a
+                * mode the product supports - so the row now says only what the
+                * App-default branch actually decides, which is model choice.
+                *
+                * Raised with design rather than settled here: it is a deviation
+                * from drawn copy, which CLAUDE.md reserves for design.
+                * `billing_mode` is CLI-only today and the frontend never reads
+                * it, which is why the balance is still gated on the Gate branch
+                * alone - see the question doc. */}
+              <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+                Gate protects requests, then leaves model choice to {appName}.
+              </p>
+            </InfoRow>
+          </div>
+        </>
+      )}
+
       {/* Only while Gate is the source. Under App default there is no current
        * Gate model to report: the row would be a section headed "Current"
        * describing nothing current, sitting directly beneath the radio that had
@@ -538,7 +562,7 @@ function ModelSelection({
                 // No mark for a set: see `GateModel.ids`.
                 icon={
                   gateModel.ids.length === 1
-                    ? (gateModel.logo ?? <Icon name="cube" size={16} />)
+                    ? (providerMarkFor(gateModel.vendor) ?? <Icon name="cube" size={16} />)
                     : undefined
                 }
                 actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
@@ -564,38 +588,46 @@ function ModelSelection({
               </InfoRow>
             )}
           </div>
+
+          {/* Only while Gate is the source, for the same reason as the row
+            * above. A balance is what the Gate branch spends: under App default
+            * this app sends Gate nothing to bill, so naming the balance here
+            * describes a relationship it is not in, and "Add credits" /
+            * "Manage billing" are actions on an account it is not using. The
+            * card was drawing all three unconditionally, directly beneath the
+            * radio that had just said Gate is not serving this app. */}
+          <div className="mt-2 flex flex-col gap-2">
+            <InfoRow
+              icon={<Icon name="creditCard" size={20} />}
+              actions={[
+                // AG-592 asks for Manage billing "when available to the account".
+                // Availability is answered by the gateway naming a destination: no
+                // URL, no button. A disabled one would be a control the user has to
+                // click to learn is not for them.
+                ...(onManageBilling
+                  ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
+                  : []),
+                { label: "Add credits", onClick: onAddCredits, external: true },
+              ]}
+            >
+              {/* AG-592 asks the tool detail to show the plan alongside the
+               *  balance. Drawn only when the gateway named one: a plan is the
+               *  thing a reader would act on, by upgrading, and naming the wrong
+               *  one sends them to change something they may already have. */}
+              {plan && (
+                <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                  {plan} plan
+                </p>
+              )}
+              <p className="text-sm leading-5 text-base-foreground">
+                <span className="text-neutral-600">Gate credits: </span>
+                {credits ?? "N/A"}
+              </p>
+            </InfoRow>
+          </div>
         </>
       )}
 
-      <div className="mt-2 flex flex-col gap-2">
-        <InfoRow
-          icon={<Icon name="creditCard" size={20} />}
-          actions={[
-            // AG-592 asks for Manage billing "when available to the account".
-            // Availability is answered by the gateway naming a destination: no
-            // URL, no button. A disabled one would be a control the user has to
-            // click to learn is not for them.
-            ...(onManageBilling
-              ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
-              : []),
-            { label: "Add credits", onClick: onAddCredits, external: true },
-          ]}
-        >
-          {/* AG-592 asks the tool detail to show the plan alongside the
-           *  balance. Drawn only when the gateway named one: a plan is the
-           *  thing a reader would act on, by upgrading, and naming the wrong
-           *  one sends them to change something they may already have. */}
-          {plan && (
-            <p className="text-base-2xs leading-4 text-base-muted-foreground">
-              {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
-            </p>
-          )}
-          <p className="text-sm leading-5 text-base-foreground">
-            <span className="text-neutral-600">Gate credits: </span>
-            {credits ?? "N/A"}
-          </p>
-        </InfoRow>
-      </div>
     </Card>
   );
 }
@@ -805,14 +837,16 @@ function RecentActivity({
                       <span className="truncate">{entry.category}</span>
                     </span>
                   ) : (
-                    // The same withholding the Security cell draws, for the same
-                    // reason: the gateway named no category, or this row is not
-                    // this caller's to see into.
+                    // Reached only when the gateway recorded no security action
+                    // at all - a row it did not examine, or one that is not this
+                    // caller's to see into. A request that WAS examined and
+                    // matched nothing says "Regular" instead (`toolEvents.ts`);
+                    // this is the case where we genuinely have no reading.
                     <span
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No guardrail category recorded, or not your request"
                     >
-                      &#8212;
+                      -
                     </span>
                   )}
                 </td>
@@ -853,7 +887,7 @@ function RecentActivity({
                       className="text-sm leading-5 text-base-muted-foreground"
                       title="No security action recorded, or not your request"
                     >
-                      &#8212;
+                      -
                     </span>
                   )}
                 </td>

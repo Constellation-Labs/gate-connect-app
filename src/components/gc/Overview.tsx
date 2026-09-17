@@ -21,10 +21,10 @@ import type { SecurityEventsProps } from "./SecurityEvents";
  * resolutions - what Gate did with this traffic, in aggregate and event by
  * event - and the pane scrolls, so the feed costs the summaries nothing.
  *
- * It is a required prop rather than a `ReactNode` slot like `alert` and `scope`
- * below. Those two are genuinely optional chrome; this is the section the pane
- * is now the only home for, and a caller that could omit it could lose the
- * feed entirely with nothing failing to say so.
+ * It is a required prop rather than a `ReactNode` slot like `alert` below.
+ * That one is genuinely optional chrome; this is the section the pane is now
+ * the only home for, and a caller that could omit it could lose the feed
+ * entirely with nothing failing to say so.
  */
 
 /**
@@ -93,7 +93,6 @@ export function Overview({
   security,
   alert,
   period = "Last 24 hours",
-  scope,
   pending,
   unavailable,
 }: {
@@ -119,9 +118,6 @@ export function Overview({
    *  Whole-machine routing causes only; a tool's own card is on its pane. */
   alert?: ReactNode;
   period?: string;
-  /** Slot for the installation picker, beside the period label: both say what
-   *  the numbers below cover, so they belong on the same line. */
-  scope?: ReactNode;
 }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
@@ -135,7 +131,6 @@ export function Overview({
           Overview
         </h1>
         <div className="flex items-center gap-3">
-          {scope}
           {/* `copy/14`, not `copy/12`: the period label is a 20px-tall text
             * node in both Overview generations (`864:3477`, `121:34782`'s
             * parent), which is 14px type. */}
@@ -151,11 +146,29 @@ export function Overview({
         // AG-572: selecting the counter moves to the Token savings section.
         // `scrollIntoView` on the section rather than a hash link, which would
         // put a fragment in the webview's URL for a window that has no address.
-        onSelectTokensSaved={() =>
-          document.getElementById(SAVINGS_SECTION_ID)?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          })
+        //
+        // **Offered only when the section has something in it (AG-883).** Token
+        // savings is the second-to-last card, so `block: "start"` cannot be
+        // honoured: the pane pins at its maximum scroll instead, and with the
+        // table and the feed below it both empty, the click reads as the page
+        // jumping to a screen of nothing. Measured in Chromium at the drawn
+        // 800px window: `scrollHeight` does not change, `scrollTop` goes from 0
+        // to 504 of a possible 504.
+        //
+        // The two tickets want opposite things - AG-572 says the counter
+        // navigates, AG-883 says clicking it must not move the page - and this
+        // is the reading that keeps both: it navigates when there is somewhere
+        // to land, and is an ordinary tile when there is not. `Stat` already
+        // draws it as a plain `div` with no hover when no handler is passed, so
+        // nothing offers a jump that would go nowhere.
+        onSelectTokensSaved={
+          pending || unavailable?.savings || savings.length === 0
+            ? undefined
+            : () =>
+                document.getElementById(SAVINGS_SECTION_ID)?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                })
         }
       />
       <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />

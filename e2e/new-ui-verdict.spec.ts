@@ -103,7 +103,13 @@ test.describe("new UI routing verdict", () => {
     });
 
     await openApp(app, "ChatGPT / Codex");
-    await expect(app.page.getByText("Reopen required")).toBeVisible();
+    // `ReopenAlert`, which is the pane's own card. The bare phrase "Reopen to
+    // finish" is on the rail row and the shell banner too - three surfaces
+    // carrying one fact, which is what the phrase is for - so this takes the
+    // one that names the tool inside the sentence. It read "Reopen required"
+    // until the rail had a phrase for this state: the row drew a bare
+    // "Not protected" then, so the reason matched here and nowhere else.
+    await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
   });
 
   /**

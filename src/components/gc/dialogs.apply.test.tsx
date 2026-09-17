@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { ApplyChangesDialog } from "./dialogs";
+import { ApplyChangesDialog, ChangeReadyDialog } from "./dialogs";
 import type { DialogReopenTool } from "./dialogs";
 
 const noop = () => {};
@@ -107,5 +107,59 @@ describe("ApplyChangesDialog route pair", () => {
 
     expect(screen.getByTestId("codex-mark")).toBeTruthy();
     expect(screen.queryByText("cube")).toBeNull();
+  });
+});
+
+/**
+ * AG-880. The dialog draws only behind `allVerified`, and `bucketOf` calls a
+ * tool verified only at `routing` or `not_routed` - both of which are readings
+ * taken after it came back up. So the drawn "Open Codex whenever you are ready
+ * to continue" named a step the reader had already finished, and there is no
+ * state that can reach this dialog where it would be true.
+ */
+describe("ChangeReadyDialog", () => {
+  it("does not ask the user to open an app it has already verified", () => {
+    render(<ChangeReadyDialog app={{ name: "Codex" }} onDone={noop} />);
+
+    expect(screen.queryByText(/whenever you are ready/i)).toBeNull();
+    expect(screen.queryByText(/closed successfully/i)).toBeNull();
+    expect(screen.queryByText(/^Open Codex/i)).toBeNull();
+  });
+
+  it("says the route is active and in use", () => {
+    render(<ChangeReadyDialog app={{ name: "Codex" }} onDone={noop} />);
+
+    expect(screen.getByText(/The new route is active and in use\./)).toBeTruthy();
+    expect(screen.getByText(/Codex is back on the new route/)).toBeTruthy();
+  });
+
+  it("offers dismissal as the only action", () => {
+    render(<ChangeReadyDialog app={{ name: "Codex" }} onDone={noop} />);
+
+    const buttons = screen
+      .getAllByRole("button")
+      .map((b) => b.textContent?.trim())
+      .filter((t): t is string => Boolean(t));
+    expect(buttons).toEqual(["Done"]);
+  });
+
+  /** "The affected apps is back" is the reason `plural` exists. */
+  it("agrees with a subject that stands for several apps", () => {
+    render(
+      <ChangeReadyDialog app={{ name: "The affected apps" }} plural onDone={noop} />,
+    );
+
+    expect(screen.getByText(/The affected apps are back on the new route/)).toBeTruthy();
+  });
+
+  /**
+   * `not_routed` shares the verified bucket, and it is the verdict when the
+   * change applied was routing *off*. Naming Gate in the body would claim a
+   * path the tool is no longer on.
+   */
+  it("does not name Gate as the route, because routing off lands here too", () => {
+    render(<ChangeReadyDialog app={{ name: "Codex" }} onDone={noop} />);
+
+    expect(screen.queryByText(/new Gate route/)).toBeNull();
   });
 });

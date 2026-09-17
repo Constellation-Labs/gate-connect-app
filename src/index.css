@@ -229,3 +229,17 @@
   outline: 2px solid theme("colors.gc.accent");
   outline-offset: 2px;
 }
+
+/* ...but not on a field that draws its own focus.
+
+   The rule above exists for the safe BUTTON a takeover lands on. A text field
+   carries the focus itself - the drawn state is the border at `base/primary`
+   (`143:67751`) - so the ring was a second, detached box around a control that
+   was already saying it had focus, in `gc.accent` rather than the new UI's ink.
+   It was the first thing on screen in every dialog that opens on a field, which
+   is how it read as an error state. */
+input[data-initial-focus]:focus,
+textarea[data-initial-focus]:focus,
+select[data-initial-focus]:focus {
+  outline: none;
+}

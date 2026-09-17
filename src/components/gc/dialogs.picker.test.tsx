@@ -53,8 +53,10 @@ afterEach(cleanup);
 describe("the model picker, choosing several", () => {
   it("draws the file's copy, and names the app in the subtitle", () => {
     renderPicker();
+    // Singular in both modes. `665:18405` draws it, and that frame is this
+    // dialog; the plural came from `665:19069` and design pointed here.
     expect(
-      screen.getByRole("heading", { name: "Choose Gate models" }),
+      screen.getByRole("heading", { name: "Choose a Gate model" }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog").textContent).toContain(
       "OpenCode will be able to use these models",
@@ -214,5 +216,85 @@ describe("the model picker, choosing one", () => {
     expect(screen.queryAllByRole("checkbox", named)).toHaveLength(0);
     expect(screen.queryAllByRole("radio", named)).toHaveLength(0);
     expect(screen.queryAllByRole("button", named)).toHaveLength(0);
+  });
+});
+
+describe("ModelPickerDialog vendor marks", () => {
+  it("draws each row's provider mark rather than one cube for every vendor", () => {
+    // The frames draw a real 16px mark per row (665:18421 `anthropic 2`,
+    // 671:19259 `moonshot 1`); `logo` was declared on the row type and passed by
+    // nobody, so the list drew the fallback for all 413 catalogue entries.
+    const { container } = renderPicker();
+
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy(); // anthropic
+    expect(container.querySelector('svg path[fill="black"]')).toBeTruthy(); // moonshot
+  });
+
+  it("keeps the cube for a vendor with no published mark", () => {
+    const { container } = renderPicker({
+      models: [{ id: "sao10k/l3-euryale", vendor: "sao10k", tags: [] }],
+      selectedIds: [],
+    });
+
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
+    expect(screen.getByText("sao10k/l3-euryale")).toBeTruthy();
+  });
+});
+
+describe("what a set of several means", () => {
+  /**
+   * AG-888 was filed as "the picker lets you pick more than the app can use".
+   * It cannot be fixed as written - `applyUserModelChoice` in `gateway-proxy`
+   * treats the set as an ALLOW-LIST (AG-746), so the second and later entries
+   * are what let several sessions keep their own models - but the dialog never
+   * said so, which is why that reading was available at all.
+   */
+  it("says nothing extra while one model is chosen", () => {
+    // One model is the unambiguous case: the tool either asks for it or is
+    // rewritten onto it, and there is no order to explain.
+    renderPicker({ selectedIds: [CATALOGUE[0].id] });
+
+    expect(screen.queryByText(/keeps its own model/)).toBeNull();
+  });
+
+  it("explains the rule, and names the fallback, once there are several", () => {
+    renderPicker({ selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id] });
+
+    expect(screen.getByText(/keeps its own model whenever it asks for one of these/)).toBeTruthy();
+    // The fallback is named rather than left to be inferred from the list.
+    expect(screen.getByText(CATALOGUE[0].id, { selector: "span.font-medium" })).toBeTruthy();
+  });
+
+  it("names the fallback without claiming it is first on screen", () => {
+    // `draft` is selection order and the rows render in catalogue order, so the
+    // two disagree the moment somebody checks a later row first. The copy used
+    // to call the fallback "the first in the list", which points at an ordering
+    // the dialog never draws and gives no way to change.
+    renderPicker({ selectedIds: [] });
+    fireEvent.click(box(CATALOGUE[1].id));
+    fireEvent.click(box(CATALOGUE[0].id));
+
+    // The fallback is what was checked first, not what sits at the top.
+    expect(screen.getByText(CATALOGUE[1].id, { selector: "span.font-medium" })).toBeTruthy();
+    expect(screen.queryByText(/first in the list/)).toBeNull();
+  });
+
+  it("follows the draft rather than what is applied", () => {
+    // Nothing is written until Apply, so the sentence has to describe the set
+    // the user is looking at - otherwise it explains a rule for a different set.
+    renderPicker({ selectedIds: [CATALOGUE[0].id] });
+    fireEvent.click(box(CATALOGUE[1].id));
+
+    expect(screen.getByText(/keeps its own model/)).toBeTruthy();
+  });
+
+  it("stays out of the single-select mode", () => {
+    // There is no set to explain, and no order.
+    renderPicker({
+      multiple: false,
+      selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id],
+    });
+
+    expect(screen.queryByText(/keeps its own model/)).toBeNull();
   });
 });

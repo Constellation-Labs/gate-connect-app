@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { buildSettingsSections, SettingsPane } from "./SettingsPane";
 
@@ -196,33 +196,6 @@ describe("buildSettingsSections", () => {
   });
 });
 
-describe("what the Device row says about the wire", () => {
-  const deviceRow = (deviceNamed?: boolean) =>
-    sections({ deviceNamed })
-      .find((s) => s.id === "device")!
-      .rows.find((r) => r.id === "device")!;
-
-  it("tells a named device its name is sent", () => {
-    // The name rides every proxied request as `x-gate-device-name`. The row is
-    // where the user finds that out; principle 1 is that reassurance comes from
-    // saying what goes over the wire, not from omitting it.
-    expect(deviceRow(true).description).toMatch(/[Ss]ent with this device's traffic/);
-  });
-
-  it("tells an unnamed device that nothing is sent", () => {
-    // The value shown is the hostname, and the hostname is a display fallback
-    // that stops at the window - skipping the naming step really does skip it.
-    // Saying "sent" here would be a false claim about the user's traffic.
-    expect(deviceRow(false).description).toMatch(/^Not sent\./);
-  });
-
-  it("says nothing until it knows which is true", () => {
-    // Undefined is the preferences read still in flight. Either sentence would
-    // be a guess, and both are claims about where a person's machine name goes.
-    expect(deviceRow(undefined).description).toBeUndefined();
-  });
-});
-
 describe("buildSettingsSections: rows with nothing behind them", () => {
   // The alternative is a control that visibly does nothing, which the user
   // cannot tell from broken. Regressing this looks like "add a noop handler".
@@ -336,5 +309,102 @@ describe("SettingsPane", () => {
     expect(screen.queryByRole("switch", { name: "Launch at login" })).toBeNull();
     expect(screen.getByText("Unavailable")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+});
+
+describe("the Gate plan row", () => {
+  const planRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "account")!
+      .rows.find((r) => r.id === "plan")!;
+
+  it("names the plan the gateway reported", () => {
+    // It was the literal string "Unavailable" on a comment saying no gateway
+    // field carried a plan. One does, and the App pane had been drawing it
+    // since AG-592 - so Settings claimed nothing was known while another pane
+    // named the plan in the same session (AG-891).
+    expect(planRow({ plan: "Pro" }).value).toBe("Pro");
+    expect(planRow({ plan: "Pro" }).unavailable).toBeUndefined();
+  });
+
+  it("says nothing at all while the read is in flight", () => {
+    // Not "Unavailable": nothing has failed yet, and a row that cries failure
+    // during a normal load teaches the user to ignore it when it means it.
+    expect(planRow({ plan: undefined }).value).toBeUndefined();
+    expect(planRow({ plan: undefined }).unavailable).toBeUndefined();
+  });
+
+  it("marks the in-flight row pending rather than leaving the slot blank", () => {
+    // Principle 6 asks for a skeleton where a reading is in flight, and the
+    // flag is also what keeps the row in its value shape: without it the label
+    // column reads as a description row, takes the full width, and snaps back
+    // to 189px when the plan lands, dragging "Upgrade plan" across the row.
+    expect(planRow({ plan: undefined }).valuePending).toBe(true);
+    expect(planRow({ plan: "Pro" }).valuePending).toBe(false);
+    // A failed read draws Unavailable and a Retry, not a skeleton that waits
+    // for something nobody is fetching.
+    expect(planRow({ plan: undefined, planUnreadable: true }).valuePending).toBe(false);
+  });
+
+  it("draws a dash for a landed read that named no plan", () => {
+    // Principle 6: a reading happened and carried no plan. That is not the same
+    // as no reading, and neither is "Free" - the one value a reader would act
+    // on by upgrading something they may already have.
+    expect(planRow({ plan: null }).value).toBe("-");
+  });
+
+  it("offers a retry when the read failed", () => {
+    const onRetryPlan = vi.fn();
+    const row = planRow({ plan: undefined, planUnreadable: true, onRetryPlan });
+
+    expect(row.unavailable).toBeDefined();
+    row.unavailable!.onRetry();
+    expect(onRetryPlan).toHaveBeenCalled();
+  });
+});
+
+describe("the command-line tools row", () => {
+  const shellRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "shell-proxy");
+
+  it("puts the machine-wide channel in Settings, not the app list", () => {
+    // AG-893. It used to be a card in the rail and a row in the app list, both
+    // describing the same coverage in different words. The rail is a list of
+    // apps and this is a setting, so there is one control now and it is here.
+    const onToggle = vi.fn();
+    const row = shellRow({ shellProxy: { on: true, onToggle } })!;
+
+    expect(row.label).toBe("Command-line tools");
+    expect(row.toggle?.on).toBe(true);
+    row.toggle!.onToggle();
+    expect(onToggle).toHaveBeenCalled();
+  });
+
+  it("carries the in-flight flag through to the switch", () => {
+    // `setEnvExport` returns early while `useRouting` is busy, so a switch that
+    // does not know it would swallow the click and stay put. Every rail switch
+    // already reports this; the control moving to Settings must not lose it.
+    expect(shellRow({ shellProxy: { on: true, busy: true, onToggle: noop } })!.toggle?.busy).toBe(
+      true,
+    );
+    expect(shellRow({ shellProxy: { on: true, onToggle: noop } })!.toggle?.busy).toBeUndefined();
+  });
+
+  it("says what it reaches and what it costs", () => {
+    // Neither old control did. "Terminal" and "command line tools that follow
+    // your proxy settings" said neither, and the certificate half was stated
+    // nowhere at all.
+    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
+
+    expect(row.description).toMatch(/every program you start afterwards/);
+    expect(row.description).toMatch(/certificate/i);
+  });
+
+  it("is absent where the platform cannot offer it separately", () => {
+    // Linux: these variables ARE the system proxy, so declining them means
+    // turning routing off, which is a different control.
+    expect(shellRow({ shellProxy: undefined })).toBeUndefined();
   });
 });

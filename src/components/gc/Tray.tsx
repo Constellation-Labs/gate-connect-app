@@ -9,6 +9,7 @@ import { OutlineIconButton } from "./Topbar";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
 import { useRovingMenu } from "../../lib/useRovingMenu";
+import { routingState, showsFraction } from "../../lib/routingState";
 
 /**
  * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
@@ -43,10 +44,11 @@ import { useRovingMenu } from "../../lib/useRovingMenu";
  *   having no width to print it. Rows the gateway cannot attribute - the chat
  *   domains, permanently - keep the two-line shape the design also draws (the
  *   compact `Other tools` rows in `Connect/routing`).
- * - **The master card's off state is inferred** - only "Partially routed" and
- *   "Gate is protecting you" are drawn - following the status vocabulary:
- *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
- *   sub-line carrying the intent.
+ * - **The master card's unhappy states are inferred** - only the equivalent of
+ *   "partly routed" and "Gate is protecting you" are drawn. Since AG-913 the
+ *   words come from `lib/routingState`, shared with the topbar banner so the
+ *   two surfaces cannot describe one reading differently, and the drawn
+ *   "On/Off · N of M tools routing" sub-line carries the intent.
  * - **Contact support is in the menu**, as `744:38201` draws it. It was omitted
  *   for as long as the address behind it 404'd; support resolved to the
  *   dashboard's own Overview page on 2026-09-07 (that is where the support
@@ -99,7 +101,9 @@ export function Tray({
   /** The shell-environment channel, drawn as its own card ("Command-line
    * tools"). Absent on Linux, where those variables are the system proxy and
    * cannot be declined separately. */
-  cli?: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
+  /** Reported, not offered: the window's Settings pane owns this control.
+   *  See {@link CliCard}. */
+  cli?: { on: boolean };
   orgName: string;
   /** Open the organization selector (AG-582). The tray does not own one - it
    *  hands over to the window, which does. Omit and the footer draws the org as
@@ -225,7 +229,22 @@ export function Tray({
           {/* Below the recovery card: an operation that did not finish outranks
             * one that finished and is waiting on the user. */}
           {reopen && <ReopenCard reopen={reopen} />}
-          {security && <SecurityCard security={security} />}
+          {/* Nothing to report draws nothing. The card is an undrawn addition
+            * (AG-578; no frame on the Tray page carries it), and its zero state
+            * was the least defensible part of it - a row that says "No recent
+            * security events" is furniture on a 400px surface, and the reader
+            * learns the same thing from its absence.
+            *
+            * Only a LIVE feed may be hidden by its own zero. `offline` and
+            * `reconnecting` are both readings that did not happen rather than
+            * quiet machines, and hiding either would assert a quiet machine
+            * when what happened is that nobody looked - which is the difference
+            * principle 6 is about. `reconnecting` was briefly in the hidden
+            * half, which made a failed re-read after a live one draw nothing
+            * at all. */}
+          {security && (security.state !== "live" || security.count > 0) && (
+            <SecurityCard security={security} />
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
             {groups.map((group) => (
@@ -318,34 +337,31 @@ export function Tray({
 function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
   const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
   const routed = apps.filter((a) => a.status.kind === "protected").length;
-  const all = apps.length > 0 && routed === apps.length;
-  const { tone, icon, title } = all
-    ? { tone: "green" as const, icon: "shieldCheck" as IconName, title: "Gate is protecting you" }
-    : routed > 0
-      ? { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Partially routed" }
-      : // Not drawn: the page stops at "partially". The vocabulary's amber
-        // phrase covers it, and the sub-line below carries whether that is
-        // intent (Off) or circumstance (On with nothing routing).
-        { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Not protected" };
+  // The same reading the topbar banner takes, from the same module (AG-913).
+  // This card used to word it differently - "Partially routed" against the
+  // banner's "partly routing your apps" - and to fold "nothing was asked for"
+  // into "Not protected", which reports a fault the user caused on purpose.
+  const state = routingState(routed, apps.length);
+  const { tone, icon } = state;
   return (
     <div
       className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${
-        all ? "border-green-300" : "border-amber-300"
+        tone === "green" ? "border-green-300" : "border-amber-300"
       }`}
     >
       <StatusTile tone={tone} icon={icon} size={36} />
       <div className="flex min-w-0 flex-col gap-0.5">
-        <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
+        <h1 className="text-sm font-medium leading-5 text-base-foreground">
+          {state.headline}
+        </h1>
         <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
           {/* No fraction when the denominator is intent and the intent is
             * nothing: "0 of 0 tools routing" reports a gap the user opened on
             * purpose, with both halves of the ratio meaningless. Same call as
             * the topbar banner's, and the same open question about the tone
             * (question 23 in `docs/figma-questions-for-design.md`). */}
-          {on ? "On" : "Off"} ·{" "}
-          {apps.length === 0
-            ? "No apps set to route"
-            : `${routed} of ${apps.length} tools routing`}
+          {on ? "On" : "Off"}
+          {showsFraction(state) ? ` · ${routed} of ${apps.length} tools routing` : ""}
         </p>
       </div>
     </div>
@@ -566,14 +582,21 @@ function NotInstalledSection({
   );
 }
 
-/** The shell-environment switch as the tray draws it (735:37341), with the
+/** The shell-environment channel as the tray draws it (735:37341), with the
  * frame's own copy - shorter than the rail card's, and naming the mechanism
- * (`HTTPS_PROXY`) outright. */
-function CliCard({
-  cli,
-}: {
-  cli: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
-}) {
+ * (`HTTPS_PROXY`) outright.
+ *
+ * **A status card, not a switch**, which is the same call the master card makes
+ * one section up and for the same reason: the tray reports what the window
+ * decides, and it introduces no concept of its own. Two switches for one
+ * machine-wide setting is what AG-893 reported, and the window's Settings pane
+ * is where a setting belongs.
+ *
+ * The frame draws a switch here. So does every tray frame for the master card,
+ * at opacity 0 - see this file's header. The drawn control is kept as the
+ * drawn LAYOUT and rendered as state, rather than as a second control that can
+ * disagree with the first. */
+function CliCard({ cli }: { cli: { on: boolean } }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card py-3 pl-3 pr-2">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -582,12 +605,12 @@ function CliCard({
           Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
         </p>
       </div>
-      <BaseSwitch
-        on={cli.on}
-        label="Command-line tools"
-        busy={cli.busy}
-        onClick={() => cli.onToggle(!cli.on)}
-      />
+      {/* The same vocabulary the rows use for a state they report rather than
+        * offer, so the card reads as a reading and not as a control someone
+        * failed to wire. */}
+      <span className="shrink-0 text-base-xs font-medium leading-4 tracking-label-12 text-base-muted-foreground">
+        {cli.on ? "On" : "Off"}
+      </span>
     </div>
   );
 }
@@ -908,18 +931,19 @@ function SecurityCard({
           * first - with a scope on its own line it was the SCOPE that got cut at
           * large text scales, which is the wrong half to lose. */}
         <span className="min-w-0 text-sm font-medium leading-5 text-base-foreground">
-          {/* Principle 6, the last step of it: an offline feed is not reading, so
-            * its zero is not a reading either. "No recent security events" beside
-            * an OFFLINE pill is the same overclaim as the two absolutes above,
-            * just quieter - it asserts a quiet machine when what happened is
-            * that nobody looked. A count that IS a reading still prints while
-            * reconnecting, because the buffer it counts is real and the pill
-            * beside it already says the stream is catching up. */}
-          {security.state === "offline"
-            ? "Security events unavailable"
-            : security.count === 0
-              ? "No recent security events"
-              : `${security.count} recent security event${security.count === 1 ? "" : "s"}`}
+          {/* Principle 6, the last step of it: a feed that is not reading has no
+            * zero to report. "No recent security events" asserted a quiet machine
+            * when what happened is that nobody looked, so that arm is gone - a
+            * live feed with nothing in it draws no card at all (see :241), and
+            * every zero that reaches here is therefore `offline` or
+            * `reconnecting`, neither of which has looked.
+            *
+            * A count that IS a reading still prints in every state, because the
+            * buffer it counts is real and the pill beside it already says
+            * whether the stream is caught up. */}
+          {security.count > 0
+            ? `${security.count} recent security event${security.count === 1 ? "" : "s"}`
+            : "Security events unavailable"}
         </span>
       </span>
       <span

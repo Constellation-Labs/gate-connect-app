@@ -392,6 +392,31 @@ function adaptBillingUrl(billing: unknown): string | null {
 }
 
 /**
+ * The plan, as a person reads it.
+ *
+ * The gateway reports `free` or `paid` - the column is constrained to exactly
+ * those two (`CHK_org_entitlements_plan`), and no endpoint anywhere reports
+ * "pro". The dashboard maps `paid` to **"Pro"** for display, in its sidebar,
+ * its billing page and its billing emails, so that is the word the user has
+ * already seen for this account. Connect title-cased the raw value instead and
+ * said "Paid", which is the same account described by two different products in
+ * two different words - and AG-879 asks for the opposite: what Connect shows
+ * must equal what the dashboard shows.
+ *
+ * Anything else the gateway grows is passed through title-cased rather than
+ * hidden, since an unknown plan name is still the user's plan.
+ *
+ * Null stays null. A plan nobody reported is not "Free": that is the one value
+ * a reader acts on, by going to upgrade something they may already have.
+ */
+export function formatPlan(plan: string | null): string | null {
+  if (plan === null) return null;
+  if (plan === "paid") return "Pro";
+  if (plan === "free") return "Free";
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+/**
  * The credits line for the model card, as Figma 228:89517 words it
  * ("$10.25 available").
  *
@@ -427,10 +452,22 @@ export function formatCredits(credits: Credits | null): string | null {
  * wrong one: principle 6 asks that a figure on screen be something Gate actually
  * measured, and this is the screen someone opens to see spending. Costs nothing
  * while the window is hidden, and one read on return.
+ *
+ * **The two gates are separate on purpose.** `enabled` is "may this be read at
+ * all", and it widened to the whole signed-in session when Settings needed the
+ * plan (AG-891) - that pane's row could not have been wired to anything while
+ * this was gated on an app pane being open. `refreshOnFocus` is the narrower
+ * question of whether to spend a read on every alt-tab, and it stays on the
+ * surface that argued for it: the balance is what moves, the app pane is what
+ * draws it, and a plan does not change while somebody switches windows. Folding
+ * the two together would put a `/v1/me/credits` on every return to the window
+ * for the life of the session, against a throttle bucket the gateway keys on
+ * the source address and therefore shares between everyone behind it.
  */
 export function useCredits(
   enabled: boolean,
   credential = "",
+  refreshOnFocus = false,
 ): { credits: Credits | null; failure: ActivityFailure | null; reload: () => void } {
   const [credits, setCredits] = useState<Credits | null>(null);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
@@ -452,7 +489,15 @@ export function useCredits(
         setCredits(null);
         setFailure(toFailure(e));
       });
-  }, [enabled, credential]);
+    // `refreshOnFocus` is a dependency although the body never reads it, so
+    // that the surface which cares about the balance re-reads on the way in.
+    // `useEffect(reload, [reload])` below is the only thing that fires the
+    // first read, and it fires when this identity changes: while `enabled` was
+    // the app pane, opening the pane re-read for free. `enabled` is the whole
+    // session now (AG-891), so without this the pane would draw whatever was
+    // fetched at sign-in - a balance beside a button that spends it, which is
+    // the figure this hook exists to keep honest.
+  }, [enabled, credential, refreshOnFocus]);
 
   useEffect(() => {
     setCredits(null);
@@ -462,7 +507,7 @@ export function useCredits(
   useEffect(reload, [reload]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !refreshOnFocus) return;
     // Window FOCUS, not `visibilitychange`. The motivating case is alt-tabbing
     // to the tool that spends the credits and back, and that never hides the
     // document: `visibilitychange` fires on minimise and full occlusion only, so
@@ -490,7 +535,7 @@ export function useCredits(
         if (cancelled) unlisten();
       });
     };
-  }, [enabled, reload]);
+  }, [enabled, refreshOnFocus, reload]);
 
   return { credits, failure, reload };
 }

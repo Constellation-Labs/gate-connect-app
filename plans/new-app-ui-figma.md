@@ -486,8 +486,9 @@ ALLOW is `gray/100` over `base/muted-foreground` - a grey non-verdict, not a
 green badge. Built in `AppPane.tsx`: one pill per row, the recorded verdict
 outranking the transport error because a blocked request usually also errors
 client-side, with ERROR reserved for rows where the gateway recorded no
-action. The Model cell is the model name alone (the drawn vendor mark waits on
-open question 2), and the Message cell carries the mono session reference -
+action. The Model cell carries the provider's mark beside the name (see
+`ProviderMark.tsx`; it was a letter monogram while open question 2 was open),
+and the Message cell carries the mono session reference -
 the drawn title over it could only come from prompt text, which AG-574
 excludes. **The Action column is drawn but not wired** (decision, 2026-08-21):
 each row carries the design's View button with the external-link glyph, and
@@ -586,6 +587,10 @@ What the redrawn rail changes, in order of consequence:
   outlined and check-marked. Open question 2 is resolvable: nothing needs
   inventing, but the View seat cannot export SVGs, so the marks need either
   a designer export or a high-DPI browser capture like the onboarding art.
+  **Done 2026-09-16** (`plans/provider-marks-and-credits-gating.md`): the MCP
+  seat *can* export them, so the four the frames draw came out of the file
+  directly and the rest are vendored from lobe-icons, the set the designer
+  built from. `ProviderMark.tsx` holds them; unmapped vendors take the cube.
 - The `sidebar-menu-item` selected variant and the `status-label` trio
   (`Not protected - 2m ago` / `Protected - 25s ago` / `Not routed`) match
   what was built on 2026-08-21.

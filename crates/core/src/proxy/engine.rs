@@ -1634,6 +1634,11 @@ pub(crate) fn apply_rewrite<T>(
     // Credential first: `inject_gate_credential` is what stamps the model header
     // (through `inject_attribution`), so asking whether this request is served
     // before it runs would always answer no.
+    // The engine's half of the established-tool pair. There is no base URL here
+    // to carry a marker - this is a forward proxy - so the tool names itself in
+    // a header Gate wrote into its own config instead. Read before the call,
+    // because `inject_attribution` removes it on the way past.
+    let established = super::header_tool(req.headers());
     let injected_oauth = super::inject_gate_credential(
         req.headers_mut(),
         api_key,
@@ -1641,6 +1646,7 @@ pub(crate) fn apply_rewrite<T>(
         org_id,
         mode,
         domain,
+        established,
     )?;
 
     // Serving is the ABSENCE of the upstream hint: with it the gateway forwards

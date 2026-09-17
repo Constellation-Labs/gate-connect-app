@@ -3,20 +3,19 @@ import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./
 import type { Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
+  PROXY_REOPEN_ADVICE,
   browserTrustRestartAdvice,
   buildGroups,
+  cascadeTargets,
+  describeMember,
+  describeSection,
+  groupSummary,
   hasBrowserSurface,
   hostReloadAdvice,
-  credentialScopeNote,
-  describeMember,
-  groupSummary,
-  cascadeTargets,
+  isSettingsManaged,
   needsSessionConsent,
-  sessionMembers,
   proxyReopenAdvice,
-  PROXY_REOPEN_ADVICE,
-  machineScopeNote,
-  switchScopeNote,
+  sessionMembers,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -316,17 +315,37 @@ describe("sectionStatus", () => {
     expect(sectionStatus(claude, apps)?.kind).toBe("drifted");
   });
 
-  it("says partly routed, a state a per-surface ledger never had to describe", () => {
+  it("says partly protected, a state a per-surface ledger never had to describe", () => {
     const [opencode] = buildGroups(
       [tool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
       [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
       { ...ON, ...sweep("opencode") },
     );
     const apps = new Map([["opencode", { status: { kind: "protected" } } as never]]);
+    // The count, not the adverb: "partly" does not say how much of the app is
+    // covered, and this line used to render as a bare "Not protected" because
+    // the rail drops a `not-protected` detail.
     expect(sectionStatus(opencode, apps)).toEqual({
-      kind: "not-protected",
-      detail: "Partly routed",
+      kind: "partly-protected",
+      detail: "1 of 2",
     });
+  });
+
+  /**
+   * The common shape of a group switch: it writes one config and enables the
+   * hosts beside it, the hosts route immediately, and the tool waits on a
+   * restart. The honest line names the restart rather than counting, and it
+   * names WHICH program - the heading is the app ("Claude"), and the thing to
+   * reopen is Claude Code.
+   */
+  it("names the program to reopen, because the heading is the app", () => {
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain()],
+      ON,
+    );
+    const apps = new Map([["claude-code", { status: { kind: "reopen" } } as never]]);
+    expect(sectionStatus(claude, apps)).toEqual({ kind: "reopen", detail: "CLI" });
   });
 
   it("does not read off as off because a session surface is off", () => {
@@ -394,32 +413,6 @@ describe("member hints", () => {
       ON,
     );
     expect(group.members[0].hint).toBeUndefined();
-  });
-});
-
-describe("machineScopeNote", () => {
-  it("says what the machine-wide row actually reaches", () => {
-    const [group] = buildGroups(
-      [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
-      [],
-      ON,
-    );
-    expect(machineScopeNote(group.members[0])).toContain(
-      "every program started after your next login",
-    );
-  });
-
-  it("says nothing on a host row, which `switchScopeNote` speaks for", () => {
-    // It used to render the host sentence here as well, in copy identical to
-    // `switchScopeNote`'s but for the trailing subject. One of the two had to
-    // go, and the section is the unit that knows every host the switch reaches.
-    const [desktop] = buildGroups([], [domain()], ON);
-    expect(machineScopeNote(desktop.members[0])).toBeUndefined();
-  });
-
-  it("says nothing on a config tool, where the row's name already says it", () => {
-    const [group] = buildGroups([tool("claude-code", "CLI", { kind: "connected" })], [], ON);
-    expect(machineScopeNote(group.members[0])).toBeUndefined();
   });
 });
 
@@ -934,91 +927,6 @@ describe("browserTrustRestartAdvice", () => {
  * The chat rows' scope sentence, which the window shell had no room for and
  * therefore did not say at all.
  */
-describe("credentialScopeNote", () => {
-  const sessionMember = (platformDomain: ProxyDomain): GroupMember => ({
-    key: "claude-web",
-    kind: "proxy",
-    name: "Chat",
-    routed: false,
-    desired: false,
-    attention: null,
-    domain: platformDomain,
-    client: "claude-desktop",
-    scope: "host",
-    credential: "additive",
-    cascade: false,
-  });
-
-  it("names the host, because the row's name is a surface", () => {
-    // "Web" under "Anthropic" says nothing about which traffic moves. The switch
-    // is matched on host by `proxy::decide`, so the host is the scope.
-    const note = credentialScopeNote(
-      sessionMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
-      "macos",
-      true,
-    );
-    expect(note?.body).toContain("claude.ai");
-  });
-
-  it("says the credential is the user's own, not a brokered key", () => {
-    // The whole reason these rows are outside the family cascade: there is no
-    // API key involved, so the reassurance Gate offers elsewhere ("your key is
-    // in the keychain") is not the promise being made here.
-    const note = credentialScopeNote(
-      sessionMember(domain({ slug: "claude-web", hosts: ["claude.ai"] })),
-      "macos",
-      true,
-    );
-    expect(note?.body).toContain("already signed in with");
-  });
-
-  it("carries the browser claim, and takes it from the platform", () => {
-    // The one sentence both shells must not word differently, which is why both
-    // read it out of `browserScopeNote` rather than writing their own.
-    const member = sessionMember(
-      domain({ slug: "claude-web", hosts: ["claude.ai"] }),
-    );
-    expect(credentialScopeNote(member, "macos", true)?.body).toContain(
-      "open in your browser",
-    );
-    expect(credentialScopeNote(member, "linux", true)?.body).toContain(
-      "desktop proxy settings",
-    );
-    // A Linux session with no GNOME proxy schema: the host sentences still
-    // hold and the browser one is absent, because nothing there points a
-    // running browser at the engine.
-    expect(credentialScopeNote(member, "linux", false)?.body).toContain("claude.ai");
-    expect(credentialScopeNote(member, "linux", false)?.body).not.toContain(
-      "browser",
-    );
-    // `unknown` is the first async tick: same treatment, for a different
-    // reason - that is no time to guess at interception.
-    expect(credentialScopeNote(member, "unknown", true)?.body).not.toContain(
-      "browser",
-    );
-  });
-
-  it("says nothing on a brokered row, where Gate does supply the key", () => {
-    // A key-brokered proxy row is covered by its own description, and its host
-    // is not a claim about anybody's browser.
-    const member: GroupMember = {
-      ...sessionMember(domain()),
-      key: "anthropic",
-      name: "API",
-      credential: "brokered",
-      cascade: true,
-    };
-    expect(credentialScopeNote(member, "macos", true)).toBeUndefined();
-  });
-
-  it("says nothing when the catalog named no host", () => {
-    // The host is the scope, so a chat member with no hosts has no sentence to
-    // make - and a note reading "everything on " would be worse than silence.
-    const member = sessionMember(domain({ slug: "claude-web", hosts: [] }));
-    expect(credentialScopeNote(member, "macos", true)).toBeUndefined();
-  });
-});
-
 /**
  * The one card a pane draws over its switch, composed from both notes above.
  *
@@ -1027,180 +935,6 @@ describe("credentialScopeNote", () => {
  * both a signed-in surface and a brokered host, and it is the pane that drew
  * the card twice.
  */
-describe("switchScopeNote", () => {
-  /** Claude: the CLI's config file, the brokered API host, and the chat
-   *  surface Gate holds no key for. */
-  const claude = (): Group =>
-    buildGroups(
-      [tool("claude-code", "CLI", { kind: "connected" })],
-      [domain(), sessionDomain()],
-      ON,
-    ).find((g) => g.id === "claude")!;
-
-  it("is one card, and names every host the switch reaches", () => {
-    // Two cards headed the same thing read as a rendering fault; one host of
-    // two is a false answer on the screen that exists to give it.
-    const note = switchScopeNote(claude(), "macos", true)!;
-    expect(note.title).toBe("What this switch covers");
-    expect(note.body).toContain("claude.ai");
-    expect(note.body).toContain("api.anthropic.com");
-  });
-
-  it("states the mechanism once", () => {
-    // "Matched on host" twice over is what made the two cards read as one
-    // repeated thought.
-    const body = switchScopeNote(claude(), "macos", true)!.body;
-    expect(body.match(/matched on host/gi)).toHaveLength(1);
-  });
-
-  it("does not point a backward reference at the browser sentence", () => {
-    // `browserScopeNote` closes the credential note, so the remaining-hosts
-    // sentence follows the browser claim - and "the same applies to
-    // api.anthropic.com" would then read as calling a brokered API host a site
-    // somebody browses. It names the switch instead.
-    const body = switchScopeNote(claude(), "macos", true)!.body;
-    expect(body).toContain(
-      "This switch also covers everything on api.anthropic.com",
-    );
-    expect(body).not.toContain("The same applies");
-    expect(body.indexOf("open in your browser")).toBeLessThan(
-      body.indexOf("api.anthropic.com"),
-    );
-  });
-
-  it("makes the comparison against the section, not a member", () => {
-    // "not only Claude" is the comparison a reader on this pane is making;
-    // "not only API" is the row label answering itself.
-    expect(switchScopeNote(claude(), "macos", true)!.body).toContain(
-      "not only Claude.",
-    );
-  });
-
-  it("says the mechanism itself where the sentence stands alone", () => {
-    // The OpenAI API section: a brokered host with no signed-in surface above
-    // it, so this sentence is the whole explanation and has to carry the how.
-    const section = buildGroups(
-      [],
-      [
-        domain({
-          slug: "openai",
-          display_name: "API",
-          hosts: ["api.openai.com"],
-          client: "any-app",
-        }),
-      ],
-      ON,
-    ).find((g) => g.id === "openai-api")!;
-    const note = switchScopeNote(section, "macos", true)!;
-    expect(note.title).toBe("What this switch covers");
-    expect(note.body).toContain(
-      "Matched on host, so this covers everything on api.openai.com",
-    );
-  });
-
-  it("adds nothing where the credential note already spoke for every host", () => {
-    // ChatGPT's two host members are both session surfaces on chatgpt.com, so
-    // there is no host left for a second sentence to name.
-    const section = buildGroups(
-      [],
-      [
-        sessionDomain({
-          slug: "chatgpt-apps",
-          display_name: "Chats",
-          hosts: ["chatgpt.com"],
-          client: "chatgpt",
-        }),
-        sessionDomain({
-          slug: "chatgpt",
-          display_name: "Subscription",
-          hosts: ["chatgpt.com"],
-          client: "chatgpt",
-        }),
-      ],
-      ON,
-    ).find((g) => g.id === "chatgpt")!;
-    expect(switchScopeNote(section, "macos", true)!.body).not.toContain(
-      "also covers",
-    );
-  });
-
-  it("keeps the machine-wide sentence for the section that is machine-wide", () => {
-    const section = buildGroups(
-      [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
-      [],
-      ON,
-    ).find((g) => g.id === "terminal")!;
-    expect(switchScopeNote(section, "macos", true)!.body).toContain(
-      "every program started after your next login",
-    );
-  });
-
-  it("names every remaining host, joined, and each of them once", () => {
-    // The join and the dedup had no fixture that reached them: every section
-    // above leaves exactly one host over. Two brokered hosts is the case the
-    // docstring cites as fixed, and a brokered member sitting on the additive
-    // one's host is the case that used to name it twice - the credential note
-    // speaks for claude.ai, so the remainder must not say it again.
-    const section = buildGroups(
-      [],
-      [
-        sessionDomain(),
-        // One catalog entry may name several hosts, and this one also names the
-        // additive member's. A section can only hold the slugs `SECTIONS` lists,
-        // so the multi-host case has to come from a member's own `hosts`.
-        domain({ hosts: ["api.anthropic.com", "cdn.anthropic.com", "claude.ai"] }),
-      ],
-      ON,
-    ).find((g) => g.id === "claude")!;
-    const body = switchScopeNote(section, "macos", true)!.body;
-    expect(body).toContain("api.anthropic.com, cdn.anthropic.com");
-    // claude.ai belongs to the credential sentence and appears there only.
-    expect(body.match(/claude\.ai/g)).toHaveLength(1);
-  });
-
-  it("speaks for a second signed-in surface the credential note did not name", () => {
-    // `credentialScopeNote` takes the FIRST additive member, and the remainder
-    // used to drop every additive member - so a second one on its own host was
-    // spoken for by nobody. Unreachable in the shipped catalog only because
-    // ChatGPT's two session surfaces share chatgpt.com.
-    const section = buildGroups(
-      [],
-      [
-        sessionDomain({ slug: "chatgpt-apps", display_name: "Chats", hosts: ["chatgpt.com"], client: "chatgpt" }),
-        sessionDomain({ slug: "chatgpt", display_name: "Subscription", hosts: ["sora.com"], client: "chatgpt" }),
-      ],
-      ON,
-    ).find((g) => g.id === "chatgpt")!;
-    const body = switchScopeNote(section, "macos", true)!.body;
-    expect(body).toContain("chatgpt.com");
-    expect(body).toContain("sora.com");
-  });
-
-  it("keeps the sentences in order when the browser claim is absent", () => {
-    // The order assertion above reads through "open in your browser", which is
-    // exactly the sentence `browserScopeNote` drops on a Linux session with no
-    // desktop proxy channel - and on `unknown`, the first async tick. So the
-    // one platform the project develops on had the order pinned by nothing.
-    for (const [platform, channel] of [["linux", false], ["unknown", true]] as const) {
-      const body = switchScopeNote(claude(), platform, channel)!.body;
-      expect(body).not.toContain("browser");
-      expect(body.indexOf("claude.ai")).toBeLessThan(body.indexOf("api.anthropic.com"));
-      expect(body.match(/matched on host/gi)).toHaveLength(1);
-    }
-  });
-
-  it("says nothing for a section that is one program's config file", () => {
-    // A `client`-scoped tool covers that tool, which is not news, and its own
-    // description already says it.
-    const section = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
-      [],
-      ON,
-    ).find((g) => g.id === "opencode")!;
-    expect(switchScopeNote(section, "macos", true)).toBeUndefined();
-  });
-});
-
 /** `governingMembers`' rule, restated for the fixtures above. */
 const governing = (members: GroupMember[]): GroupMember[] => {
   const brokered = members.filter((m) => m.cascade);
@@ -1208,3 +942,63 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+describe("describeSection", () => {
+  it("gives the Terminal pane a sentence that says it is machine-wide", () => {
+    // AG-893. The pane used to fall through to `describeMember("env-proxy")` -
+    // "Command line tools that follow your proxy settings" - which never says
+    // the switch reaches every program you start, or that it touches git and
+    // curl. The sentence that says so was already written; it sat in `blurb`,
+    // which only the popover reads.
+    const said = describeSection("terminal");
+
+    expect(said).toMatch(/every program started after your next login/);
+    expect(said).toMatch(/not only AI tools/);
+  });
+
+  it("still prefers a section's own description where it has one", () => {
+    expect(describeSection("claude")).toMatch(/Claude Code in your terminal/);
+  });
+
+  it("falls back to the first member for a section with neither", () => {
+    // `openai-api` carries no description and no blurb, and its member's
+    // sentence is the only place the host is written in the window UI.
+    expect(describeSection("openai-api")).toBeDefined();
+  });
+});
+
+describe("settings-managed members", () => {
+  it("keeps the shell-environment channel out of the app list", () => {
+    // AG-893. A machine-wide setting is not an app, and the rail is a list of
+    // apps. Its control is in Settings now; the tray reports it.
+    expect(isSettingsManaged("env-proxy")).toBe(true);
+    expect(isSettingsManaged("opencode")).toBe(false);
+  });
+
+  it("must filter the TOOL LIST, not the built ledger", () => {
+    // The trap: `buildGroups` gives a member no section claims a section of its
+    // own, so filtering afterwards puts the row back under its raw name with
+    // none of the section copy. Filtering the input is what removes it.
+    const tools = [
+      tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", {
+        scope: "machine",
+      }),
+      tool("opencode", "OpenCode", { kind: "connected" }, "opencode"),
+    ];
+
+    const filtered = buildGroups(
+      tools.filter((t) => !isSettingsManaged(t.slug)),
+      [],
+      { proxyOn: true, caTrusted: true, verdicts: new Map() },
+    );
+    expect(filtered.map((g) => g.id)).not.toContain("terminal");
+
+    // And the trap itself, so a future refactor that filters afterwards fails.
+    const unfiltered = buildGroups(tools, [], {
+      proxyOn: true,
+      caTrusted: true,
+      verdicts: new Map(),
+    });
+    expect(unfiltered.map((g) => g.id)).toContain("terminal");
+  });
+});
