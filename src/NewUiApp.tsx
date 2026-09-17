@@ -829,7 +829,16 @@ export function NewUiApp() {
   const loadPending = useCallback(async () => {
     const [p, s] = await Promise.all([
       pendingRestore().catch(() => null),
-      recoverySummary().catch(() => null),
+      // Three outcomes, not two (AG-890). `.catch(() => null)` collapsed "the
+      // read failed" into "there is nothing pending", and the line below acted
+      // on the second - so one transient failure wiped a summary this window
+      // already held. The tray's recovery card runs off its own
+      // `pendingRestore` read and kept showing the unfinished run, which is how
+      // the two surfaces came to disagree about whether anything had happened.
+      recoverySummary().then(
+        (v) => ({ read: true as const, v }),
+        () => ({ read: false as const, v: null }),
+      ),
     ]);
     if (p) setPending(p);
     // Read alongside the pending state, not lazily on click, for two reasons: the
@@ -837,7 +846,12 @@ export function NewUiApp() {
     // that if it knows whether there is anything to review; and its per-tool rows
     // are part of the notice itself, so fetching them on expand would leave the
     // Show tools control claiming a count it has not read.
-    setSummary(s);
+    //
+    // A successful read of nothing still clears: a master-on runs `restore_all`,
+    // which is what shortens the snapshots, and the notice has to go when the
+    // work finishes. That is the case this guard must NOT swallow, which is why
+    // it turns on `read` rather than on the value.
+    if (s.read) setSummary(s.v);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -1099,6 +1113,11 @@ export function NewUiApp() {
    * tool, what the last checks saw, and what each one still needs. Null when
    * there is nothing to recover, which is the normal case. */
   const [summary, setSummary] = useState<RecoverySummary | null>(null);
+  /** The current summary, for the `recovery-details-requested` listener. That
+   *  effect is subscribed once with no dependencies on purpose (see its doc),
+   *  so it cannot close over this state. */
+  const summaryRef = useRef<RecoverySummary | null>(null);
+  summaryRef.current = summary;
   const [detailsOpen, setDetailsOpen] = useState(false);
   /**
    * Which entry a resume is on, and what it has attempted this pass.
@@ -1919,12 +1938,19 @@ export function NewUiApp() {
       // silently dismissed a failed rename in this window that the user had not
       // read yet - and then, on the refused paths, did nothing else at all.
       setActionError(null);
-      if (fresh) {
-        setSummary(fresh);
+      // The one this window already holds, when the fresh read came back with
+      // nothing. The tray only draws Review details over an unfinished run, so
+      // a press means there is one; answering with whatever we last read beats
+      // answering with a page about something else.
+      const target = fresh ?? summaryRef.current;
+      if (target) {
+        setSummary(target);
         setDetailsOpen(true);
-      } else {
-        setView({ kind: "settings" });
       }
+      // Nothing to show: refused silently, like the two refusals above. It used
+      // to open Settings (AG-890), which has nothing on it about routing
+      // recovery - so the one surface that could answer the question sent the
+      // user somewhere that could not, with no word about why.
     });
     return () => {
       void unlisten.then((off) => off()).catch(() => {});
