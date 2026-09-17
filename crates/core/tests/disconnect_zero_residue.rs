@@ -659,7 +659,7 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     // the upstream hint on the bare host the catalog knows.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1"),
         "openrouter baseURL must keep the slug + /v1: {connected}"
     );
     assert!(

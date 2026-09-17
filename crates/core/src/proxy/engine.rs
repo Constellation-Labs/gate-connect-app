@@ -1641,6 +1641,9 @@ pub(crate) fn apply_rewrite<T>(
         org_id,
         mode,
         domain,
+        // No base URL to carry a marker: the engine is a forward proxy and sees
+        // a CONNECT, so the tool can only ever be the User-Agent guess here.
+        None,
     )?;
 
     // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
