@@ -3,6 +3,8 @@ import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./
 import type { Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
+  appForMember,
+  runsOneModel,
   browserTrustRestartAdvice,
   buildGroups,
   hasBrowserSurface,
@@ -940,3 +942,45 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+/**
+ * AG-898 / AG-888. Two facts about a surface that live on `SECTIONS` because
+ * nothing in the backend reports either one.
+ */
+describe("what app a surface belongs to", () => {
+  it("resolves every ChatGPT / Codex surface to the one app the rail draws", () => {
+    for (const key of ["codex", "chatgpt", "chatgpt-apps"]) {
+      expect(appForMember(key)).toEqual({ id: "chatgpt", name: "ChatGPT / Codex" });
+    }
+  });
+
+  it("resolves the Claude surfaces to Claude", () => {
+    for (const key of ["claude-code", "anthropic", "claude-web"]) {
+      expect(appForMember(key)?.id).toBe("claude");
+    }
+  });
+
+  /** `buildGroups` gives an unplaced member a section of its own, so a null
+   *  here has to mean "no section claims it" rather than "drop it". */
+  it("claims nothing for a key no section names", () => {
+    expect(appForMember("brand-new")).toBeNull();
+  });
+});
+
+describe("how many models an app runs at once (AG-888)", () => {
+  it("gives Claude and ChatGPT / Codex one model, through any of their surfaces", () => {
+    for (const key of ["claude-code", "anthropic", "claude-web", "codex", "chatgpt", "chatgpt-apps"]) {
+      expect(runsOneModel(key)).toBe(true);
+    }
+  });
+
+  /** The Figma draws an `App / Select multiple models (Opencode)` section, so
+   *  this one is multi-model by design rather than by omission. */
+  it("leaves OpenCode on the multi-select picker", () => {
+    expect(runsOneModel("opencode")).toBe(false);
+  });
+
+  it("treats a surface no section claims as multi-model, which is the status quo", () => {
+    expect(runsOneModel("brand-new")).toBe(false);
+  });
+});

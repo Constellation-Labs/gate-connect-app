@@ -687,6 +687,23 @@ const SECTIONS: readonly {
   /** Member keys, in draw order. A key with nothing behind it contributes no
    *  member, and a section with no members is dropped. */
   members: readonly string[];
+  /**
+   * Whether this app runs one model at a time, so its Gate model picker offers
+   * exactly one choice (AG-888).
+   *
+   * A frontend table because the backend has no answer: `model_ids` is a list
+   * for every tool and nothing in `list_tools` reports arity. Absent means the
+   * multi-select picker, which is what every other app gets.
+   *
+   * **This narrows what the gateway supports, deliberately.** `x-gate-model`
+   * carries a set that the gateway treats as an allow-list (AG-746): a request
+   * for an enabled model is served as asked, and only a request outside the set
+   * is rewritten onto the first entry. A single-model app therefore *can* hold
+   * several here in principle. AG-888 is the decision that it should not, on
+   * the grounds that the picker offered a set with nothing on screen saying
+   * what the extra entries did.
+   */
+  singleModel?: boolean;
   /** What this app is, in one sentence, for the pane that opens on it.
    *
    * A section's own line rather than its first member's, WHERE THE TWO DIFFER:
@@ -702,6 +719,7 @@ const SECTIONS: readonly {
     id: "claude",
     name: "Claude",
     band: "apps",
+    singleModel: true,
     members: ["claude-code", "anthropic", "claude-web"],
     description: "Claude Code in your terminal, and the Claude desktop app - its model calls and its chats.",
   },
@@ -709,6 +727,7 @@ const SECTIONS: readonly {
     id: "chatgpt",
     name: "ChatGPT / Codex",
     band: "apps",
+    singleModel: true,
     // Both names, because the switch covers both and neither alone is the
     // whole of it: Codex is a terminal tool with its own config file, and the
     // other two surfaces are the ChatGPT app's chat turn and the endpoint Work
@@ -931,6 +950,18 @@ export function describeSection(id: string): string | undefined {
 export function appForMember(key: string): { id: string; name: string } | null {
   const section = SECTIONS.find((s) => s.members.includes(key));
   return section ? { id: section.id, name: section.name } : null;
+}
+
+/**
+ * Does the app this surface belongs to run one model at a time (AG-888)?
+ *
+ * Keyed on a member key rather than a section id, because that is what the
+ * panes hold: `NewUiApp`'s `openTool` is resolved out of `sectionMemberKeys`
+ * before the picker ever opens. A key no section claims is treated as
+ * multi-model, which is the status quo for anything not yet given a home.
+ */
+export function runsOneModel(memberKey: string): boolean {
+  return SECTIONS.find((s) => s.members.includes(memberKey))?.singleModel === true;
 }
 
 /** The member keys a section claims, in draw order, or empty for an id no
