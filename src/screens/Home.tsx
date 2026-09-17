@@ -386,6 +386,24 @@ export function Home({
               </div>
             )}
 
+            {/* The one thing "Off" does not say by itself.
+                Turning routing off leaves a small local passthrough bound, so
+                that terminals and editors opened while routing was on keep
+                working - unsetting the proxy variables cannot reach a process
+                that already has them. That is a listener the user did not ask
+                for, on a product whose promise is that off means off, so it is
+                stated rather than left to be discovered in Activity Monitor.
+                The second clause is the part that makes it acceptable: it
+                forwards and reads nothing.
+                Only while off, because while on the card above already
+                accounts for what Gate is doing with the traffic. */}
+            {showProxy && !proxyOn && (
+              <div className="px-3.5 pb-3 text-gc-label text-gc-ink-3">
+                A local passthrough stays running so apps that already have
+                Gate’s settings keep working. It forwards traffic untouched and
+                inspects nothing.
+              </div>
+            )}
           </div>
         )}
 

@@ -68,6 +68,11 @@ mod port_persist;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod proxy_env;
 
+/// Re-exported so the per-tool integrations that write their own `NO_PROXY`
+/// use the same list as the machine-wide export. They carried three copies of
+/// it, which is three places to forget when the list grows - and it just did.
+pub(crate) use proxy_env::NO_PROXY_VALUE;
+
 #[cfg(target_os = "macos")]
 pub mod ca;
 #[cfg(target_os = "windows")]

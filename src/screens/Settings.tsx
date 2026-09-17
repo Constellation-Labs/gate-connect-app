@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Account, OAuthStatus } from "../lib/api";
-import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
+import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix, routedAppNames } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { GATEWAY_SERVERS, GATE_DOCS_URL } from "../lib/config";
@@ -78,6 +78,14 @@ function ConfirmPanel({
 /** Settings - workspace + Gate API key management. The key itself is held in
  *  the OS keychain and never returned to the UI, so it shows masked; Replace
  *  key calls save_account, Forget calls clear_account. */
+/** "A", "A and B", "A, B and C" - a bare comma-join reads as a fragment at two
+ *  items. Mirrors `join_names` in the Rust side so the notification and this
+ *  panel phrase the same list the same way. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export function Settings({
   account,
   oauth,
@@ -134,6 +142,11 @@ export function Settings({
   // Armed by the Reset buttons; the destructive clear only runs from the
   // inline confirm panel.
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // The tools Reset will disconnect, read when the confirm is armed so the
+  // panel can name them. `null` until the read lands, which is the ordinary
+  // case for the first frame - the sentence just omits the list until then
+  // rather than flashing an empty one.
+  const [resetAffects, setResetAffects] = useState<string[] | null>(null);
   // Armed by picking a different Dev-mode gateway server; holds the choice
   // until the confirm panel approves the forget-key-and-relaunch.
   const [confirmingServer, setConfirmingServer] = useState<{ url: string; label: string } | null>(
@@ -802,7 +815,16 @@ export function Settings({
         <div className="mt-2.5 flex items-center border-t border-gc-line px-3.5 pb-1 pt-2.5">
           <button
             type="button"
-            onClick={() => setConfirmingReset(true)}
+            onClick={() => {
+              setConfirmingReset(true);
+              setResetAffects(null);
+              void routedAppNames()
+                .then(setResetAffects)
+                // A failed read costs the list, not the confirm: the user is
+                // trying to reset, and refusing to show the panel because we
+                // could not enumerate tools would be the wrong trade.
+                .catch(() => setResetAffects([]));
+            }}
             disabled={submitting}
             className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-error-deep disabled:opacity-45"
           >
@@ -813,7 +835,7 @@ export function Settings({
         {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
-            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You’ll start over from sign-in.`}
+            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You’ll start over from sign-in.${resetAffects?.length ? ` Restart ${joinNames(resetAffects)} afterwards, and any terminal or editor you opened while routing was on.` : ""}`}
             confirmLabel={submitting ? "Resetting…" : "Reset everything"}
             busy={submitting}
             onConfirm={() => void forget()}
