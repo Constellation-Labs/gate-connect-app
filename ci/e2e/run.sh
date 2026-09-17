@@ -1017,21 +1017,29 @@ oauth_login() {
   wait "$lpid"
 }
 
-# run_tool <label> <slug> <path-needle> <mode> [expected-context] -- <invoke cmd...>
+# run_tool <label> <slug> <path-needle> <mode> [expected-context] [client=<slug>] -- <invoke cmd...>
 #
 # `expected-context` is positional rather than an `EXPECTED_CONTEXT=... run_tool`
 # prefix: on bash < 5.1 (macOS ships 3.2.57 as /bin/bash) an assignment prefix on
 # a FUNCTION call persists after the function returns, so the value would leak
 # into every later call in the same shell and demand the 1M beta of tools that
-# never send it.
+# never send it. `client=` is spelled the same way and for the same reason.
+#
+# `client=` overrides the `x-gate-client` value to assert, and `client=` with
+# nothing after it skips that assertion. It defaults to `$slug`, which is right
+# wherever the tool is relay-routed (the marker in the base URL is the slug) or
+# its User-Agent has been captured.
 run_tool() {
   local label="$1" slug="$2" needle="$3" mode="$4"
   shift 4
-  local expected_context=""
-  if [ "$1" != "--" ]; then
-    expected_context="$1"
+  local expected_context="" expected_client="$slug"
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+    case "$1" in
+      client=*) expected_client="${1#client=}" ;;
+      *) expected_context="$1" ;;
+    esac
     shift
-  fi
+  done
   [ "$1" = "--" ] && shift
   echo "::group::$label ($mode)"
   TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
@@ -1045,10 +1053,11 @@ run_tool() {
     ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     ckpt "[$label/$mode] asserting capture"
-    # `$slug` is both the CLI's tool name and the `x-gate-client` value the
-    # gateway should record, so the same argument asserts the attribution.
+    # The CLI's tool name is also the `x-gate-client` value the gateway should
+    # record, so `$expected_client` defaults to it and one argument asserts the
+    # attribution too.
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" \
-      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$slug"; then
+      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context" "$expected_client"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
     else
@@ -1191,7 +1200,14 @@ run_engine_tools() {
     mkdir -p "$HOME/.openclaw"
     printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
       > "$HOME/.openclaw/openclaw.json"
-    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" -- \
+    # `client=` with nothing after it: OpenClaw is proxy-routed, so there is no
+    # base-URL marker and attribution rests entirely on its User-Agent, which
+    # nobody here has captured. The gateway detects OpenClaw from body markers
+    # and has no UA signal at all, which is evidence its agent string may not
+    # spell `openclaw`. Asserting it on that premise would turn this row red
+    # with no product bug behind it. Capture the real User-Agent, add it to the
+    # table in `proxy/mod.rs`, then drop this override.
+    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" client= -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
@@ -1226,7 +1242,9 @@ run_engine_tools() {
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$HOME/.hermes/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
-    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
+    # Same as OpenClaw above: proxy-routed, so the User-Agent is the whole of
+    # the attribution and this run has never captured it.
+    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" client= -- \
       hermes -z "ping" --model openai/gpt-4o-mini
   fi
 }

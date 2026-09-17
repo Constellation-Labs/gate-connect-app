@@ -130,7 +130,9 @@ test.describe("tray popover", () => {
       runningAgentNames: ["codex"],
     });
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    // The card's heading. The tray's own app row carries the phrase now too, so
+    // this names the element rather than the string.
+    await expect(app.page.getByRole("heading", { name: "Reopen to finish" })).toBeVisible();
     // AG-584 asked a pending change to name the route in use, and the card can
     // still print one - but nothing can read where another process is pointed,
     // so the backend sends no `route_in_use` and the card falls back to the
@@ -246,12 +248,28 @@ test.describe("tray popover", () => {
     // popover the only visible effect was the tray closing. The feed has a fixed
     // address now (the Overview's last section), which is what made a
     // destination expressible.
+    // With an event, because the card no longer draws its empty state - a row
+    // saying nothing happened is furniture on a 400px surface.
     const app = await boot({
       windowLabel: "tray",
-      securityFeed: { state: "live", events: [] },
+      securityFeed: {
+        state: "live",
+        events: [
+          {
+            id: "01A",
+            requestId: "req-8f3c",
+            at: "2026-08-31T14:03:00Z",
+            action: "block" as const,
+            category: "credential",
+            tool: "claude-code",
+            model: "claude-opus-4",
+            provider: "anthropic",
+          },
+        ],
+      },
     });
 
-    await app.page.getByText("No recent security events").click();
+    await app.page.getByText(/recent security event/).click();
 
     await expect
       .poll(() => app.lastCall("request_security_events"))

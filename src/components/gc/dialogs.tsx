@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import { providerMarkFor } from "./ProviderMark";
 import { ErrorDetails } from "./banners";
 import { Skeleton } from "./base";
 import {
@@ -896,8 +897,6 @@ export interface GateModelOption {
   /** Who makes the model, for the glyph, the provider filter and grouping in the
    *  reader's head. */
   vendor: string;
-  /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
-  logo?: ReactNode;
   /** Capabilities the gateway advertises; `modelCompatibility` reads them. */
   tags: string[];
 }
@@ -1117,7 +1116,7 @@ export function ModelPickerDialog({
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-          {model.logo ?? <Icon name="cube" size={16} />}
+          {providerMarkFor(model.vendor) ?? <Icon name="cube" size={16} />}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
           {model.id}
@@ -1173,9 +1172,16 @@ export function ModelPickerDialog({
 
   return (
     <Modal
-      icon="layers"
+      // `Icon / Boxes` (665:18403), not layers - the same glyph the App pane's
+      // App default radio and every empty model note draw, which is what makes
+      // the dialog read as the same subject they do.
+      icon="cube"
       tile="lg"
-      title={multiple ? "Choose Gate models" : "Choose a Gate model"}
+      // Singular in both modes, which `665:18405` draws and `665:18400` is the
+      // frame for this dialog. The conditional came from `665:19069`'s "Choose
+      // Gate models", read as the newer frame when the control became a
+      // multi-select; design pointed at this frame on 2026-09-16.
+      title="Choose a Gate model"
       subtitle={`${appName} will be able to use these models`}
       closeButton
       secondary={
@@ -1227,15 +1233,22 @@ export function ModelPickerDialog({
         </ModalNote>
       ) : (
         <>
-          {/* Search and provider filter (Figma 139:66683). Both are client-side
+          {/* Search and provider filter (Figma 665:18408). Both are client-side
            *  over the catalogue already in hand - the endpoint takes no query, and
-           *  344 rows filter faster than a round trip. */}
+           *  413 rows filter faster than a round trip.
+           *
+           *  The two controls are drawn as different things and are not a pair:
+           *  the field is an `Input` (4px, on the `base/background` fill every
+           *  input in the file carries), the filter is a `Button` instance
+           *  (`Variant=Outline, Size=default`, so 8px on white with the moulded
+           *  elevation). Giving them one shared treatment is what made them look
+           *  wrong together. */}
           <div className="flex items-center gap-3">
-            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-base-input bg-base-card px-2.5 shadow-base-xs focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-primary">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-control border border-base-input bg-base-background px-3 shadow-base-xs transition-colors focus-within:border-base-primary">
               <Icon
                 name="search"
                 size={16}
-                className="shrink-0 text-neutral-500"
+                className="shrink-0 text-base-muted-foreground"
               />
               <input
                 ref={searchRef}
@@ -1244,22 +1257,36 @@ export function ModelPickerDialog({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search models"
                 aria-label="Search models"
-                className="w-full bg-transparent text-sm leading-5 text-base-foreground outline-none placeholder:text-neutral-500"
+                className="w-full bg-transparent text-sm leading-5 text-base-foreground outline-none placeholder:text-base-muted-foreground"
               />
             </label>
-            <select
-              value={vendor}
-              onChange={(e) => setVendor(e.target.value)}
-              aria-label="Provider"
-              className="h-9 shrink-0 rounded-sm border border-base-input bg-base-card px-2.5 text-sm font-medium leading-5 text-base-foreground shadow-base-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-            >
-              <option value="all">All providers</option>
-              {vendors.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
+            {/* A native `select` under the drawn Button's clothes: `appearance-none`
+             *  plus our own chevron, because the frame draws `Icon / ChevronDown`
+             *  at 20px and the platform's own double-arrow is what was showing.
+             *  Native rather than a custom listbox - it keeps the OS menu, the
+             *  type-ahead and the touch behaviour on all three platforms, and
+             *  this is a filter over 50 providers where those matter. */}
+            <div className="relative shrink-0">
+              <select
+                value={vendor}
+                onChange={(e) => setVendor(e.target.value)}
+                aria-label="Provider"
+                className="h-9 w-full appearance-none whitespace-nowrap rounded-md border border-base-input bg-base-card py-0 pl-3 pr-9 text-sm font-medium leading-5 tracking-button-sm text-base-foreground shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                <option value="all">All providers</option>
+                {vendors.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+              <Icon
+                name="chevronDown"
+                size={20}
+                aria-hidden
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base-foreground"
+              />
+            </div>
           </div>
 
           {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
@@ -1427,7 +1454,6 @@ export function UseGateModelDialog({
   modelIds,
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
-  vendorLogo,
   onKeepAppDefault,
   onUseGateCredits,
 }: {
@@ -1447,7 +1473,6 @@ export function UseGateModelDialog({
    */
   modelIds: string[];
   credits: string;
-  vendorLogo?: ReactNode;
   onKeepAppDefault: () => void;
   onUseGateCredits: () => void;
 }) {
@@ -1467,7 +1492,9 @@ export function UseGateModelDialog({
     >
       {single ? (
         <ModalSubject
-          icon={vendorLogo ?? <Icon name="cube" size={16} />}
+          // 20px, not the 16 the other marks take: 130:48325 draws this one
+          // larger inside its wrapper.
+          icon={providerMarkFor(vendor, 20) ?? <Icon name="cube" size={20} />}
           title={vendor}
           description={modelIds[0]}
           variant="identity"

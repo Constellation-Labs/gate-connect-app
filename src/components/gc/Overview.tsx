@@ -21,10 +21,10 @@ import type { SecurityEventsProps } from "./SecurityEvents";
  * resolutions - what Gate did with this traffic, in aggregate and event by
  * event - and the pane scrolls, so the feed costs the summaries nothing.
  *
- * It is a required prop rather than a `ReactNode` slot like `alert` and `scope`
- * below. Those two are genuinely optional chrome; this is the section the pane
- * is now the only home for, and a caller that could omit it could lose the
- * feed entirely with nothing failing to say so.
+ * It is a required prop rather than a `ReactNode` slot like `alert` below.
+ * That one is genuinely optional chrome; this is the section the pane is now
+ * the only home for, and a caller that could omit it could lose the feed
+ * entirely with nothing failing to say so.
  */
 
 /**
@@ -93,7 +93,6 @@ export function Overview({
   security,
   alert,
   period = "Last 24 hours",
-  scope,
   pending,
   unavailable,
 }: {
@@ -118,9 +117,6 @@ export function Overview({
   /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
   alert?: ReactNode;
   period?: string;
-  /** Slot for the installation picker, beside the period label: both say what
-   *  the numbers below cover, so they belong on the same line. */
-  scope?: ReactNode;
 }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
@@ -134,7 +130,6 @@ export function Overview({
           Overview
         </h1>
         <div className="flex items-center gap-3">
-          {scope}
           {/* `copy/14`, not `copy/12`: the period label is a 20px-tall text
             * node in both Overview generations (`864:3477`, `121:34782`'s
             * parent), which is 14px type. */}

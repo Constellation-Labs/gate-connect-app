@@ -11,7 +11,7 @@ While routing is on, Gate Connect serves plain HTTP on `127.0.0.1`:
 
 - the MITM engine port (system-proxy traffic),
 - the reverse-proxy relay port (CLI tool configs bake
-  `http://127.0.0.1:<port>/<slug>` as their base URL),
+  `http://127.0.0.1:<port>/__gate/t/<tool>/<slug>` as their base URL),
 - the PAC responder port (macOS/Windows `AutoConfigURL`).
 
 The relay and engine inject the owner's live Gate credential (Cognito bearer
@@ -57,7 +57,13 @@ project). Consequences, stated plainly:
   per-run path token baked into tool configs would close (other users cannot
   read the owner's 0600 configs). Measured earlier: the major CLI tools
   preserve a base-URL path prefix, so `http://127.0.0.1:<port>/<token>/...`
-  is a viable shape if this is ever prioritized.
+  is a viable shape if this is ever prioritized. **That measurement has since
+  shipped as a mechanism**: the tool marker (`/__gate/t/<tool>/`) is a path
+  prefix the relay writes into every tool config and peels back off, proving
+  the shape end to end for Codex and OpenCode. A token would be the same
+  mechanism carrying a secret instead of a name, which also means it inherits
+  the same constraint - the value is only as private as the config file it is
+  written into, so it closes the other-local-user gap and nothing else.
 
 Blast radius in both cases is spend, not theft: the raw key is not
 disclosed, and the catalog-constrained upstream resolution means the relay

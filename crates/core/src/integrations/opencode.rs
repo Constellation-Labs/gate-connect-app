@@ -27,7 +27,7 @@
 //! That single value is the entire write. The `/__gate/t/opencode` marker names
 //! the tool to the relay, which is what lets `x-gate-client` be read off the
 //! route we wrote rather than guessed from OpenCode's `User-Agent`; see
-//! [`crate::proxy::relay`]'s `TOOL_PATH_PREFIX`. The rest comes from
+//! `proxy::relay`'s `TOOL_PATH_PREFIX`. The rest comes from
 //! [`crate::proxy::resolve_endpoint`]: `<slug>` names the catalog domain, which
 //! is how the relay knows where to forward, and `<client-path>` is whatever sits
 //! between the upstream host and the SDK's own suffix - `/v1` for Anthropic and
@@ -347,9 +347,17 @@ impl Integration for OpenCode {
                 drifted.push(provider_id.clone());
             }
         }
+        // Neither message blames the user for the edit. A hand edit is one cause
+        // of this state and the loud one, but the other is a base URL of ours
+        // that has gone stale - a new relay port, or the tool marker the URL now
+        // carries - and that one is ours, arrives for everybody at once on an
+        // upgrade, and is repaired without the user doing anything. Saying
+        // "edited by hand" there is both wrong and alarming. The first message
+        // also used to name headers, which this integration stopped writing when
+        // the baseURL became the whole test.
         if healthy == 0 {
             return Ok(Status::Drifted(format!(
-                "no providers carry Gate headers; expected: {}",
+                "no providers point at the Gate relay; expected: {}",
                 state
                     .providers
                     .keys()
@@ -360,7 +368,7 @@ impl Integration for OpenCode {
         }
         if !drifted.is_empty() {
             return Ok(Status::Drifted(format!(
-                "some providers were edited by hand and no longer route via Gate: {}",
+                "some providers no longer point at the Gate relay: {}",
                 drifted.join(", ")
             )));
         }
@@ -410,6 +418,21 @@ impl Integration for OpenCode {
         // user-custom gateways like `gateway` are already outside
         // KNOWN_PROVIDERS, so this only ever fires on collisions
         // inside the allowlist.
+        //
+        // Except when the private endpoint is *ours*. The relay lives on
+        // `http://127.0.0.1:<port>`, which `looks_local` answers `true` for, so
+        // without this exemption the guard fires on every already-connected
+        // provider and a re-apply finds nothing left to target. That is not
+        // theoretical: it is what a re-apply always is - the reconcile pass
+        // rewriting a base URL of our own that has gone stale, which is exactly
+        // how an existing install picks up a new relay port, or the tool marker
+        // this file now writes.
+        //
+        // `is_relay_base_url` and not "is it in the sidecar", which would have
+        // been the easy test and the wrong one: a provider we connected and the
+        // user has since repointed at their own local server is in the sidecar
+        // too, and exempting it would take their endpoint back. It asks whether
+        // the string is one we could have written, at whatever port it names.
         let mut skipped_local: Vec<&str> = Vec::new();
         let targets: Vec<&KnownProvider> = candidates
             .into_iter()
@@ -424,7 +447,9 @@ impl Integration for OpenCode {
                     .and_then(|o| o.get("baseURL"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if !existing.is_empty() && looks_local(existing) {
+                let ours = crate::proxy::resolve_endpoint(p.endpoint)
+                    .is_some_and(|r| r.is_relay_base_url(existing, ToolId::OpenCode));
+                if !existing.is_empty() && looks_local(existing) && !ours {
                     skipped_local.push(p.id);
                     false
                 } else {

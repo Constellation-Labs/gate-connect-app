@@ -270,10 +270,14 @@ impl Integration for Codex {
     }
 
     fn config_is_managed(&self) -> Result<bool> {
-        // Codex's config is TOML with no schema policing it, so unlike OpenCode
-        // - which needs a sidecar plus a loopback check because opencode.json
-        // rejects unknown keys - the marker can live in the file it describes
-        // and cannot go stale against it.
+        // Two-part marker, the same shape OpenCode, Hermes and OpenClaw use and
+        // for the same reason. Codex's config is TOML with no schema policing
+        // it, so unlike OpenCode - which needs a sidecar because opencode.json
+        // rejects unknown keys - the marker can live in the file it describes.
+        // That buys the first half only: the marker records who *created* the
+        // block, not who wrote the values in it now, so on its own it cannot
+        // tell our stale write apart from a config the user has since repointed
+        // by hand. So also require that the config still aims at us.
         //
         // The connect keys are the marker, not the `[model_providers.gate]`
         // block: `connect` adopts a hand-written block under that name and
@@ -282,13 +286,21 @@ impl Integration for Codex {
         // there was no prior `model_provider` to stash.
         //
         // The stub `disconnect` leaves behind carries its own key and is
-        // excluded: it routes nowhere near Gate on purpose, and reapplying over
-        // it would reconnect a tool the user disconnected.
+        // excluded by [`is_connected_marker`]. Do not read more into that than
+        // it says: it keeps this answer consistent with `status`, which reports
+        // the stub as `Detected`, and it is *not* what keeps a disconnected
+        // Codex disconnected. `reconcile_enabled` reapplies `Detected`
+        // unconditionally, without ever asking this question, so a machine whose
+        // OpenAI domains are still enabled reconnects Codex on the next pass by
+        // that other branch. That is the provider flag working as designed - the
+        // enabled domain is the intent it reads - and it is a separate decision
+        // from this one.
         let path = config_path()?;
         if !path.exists() {
             return Ok(false);
         }
-        Ok(is_connected_marker(&read_doc(&path)?))
+        let doc = read_doc(&path)?;
+        Ok(is_connected_marker(&doc) && still_aims_at_us(&doc))
     }
 
     fn status(&self) -> Result<Status> {
@@ -473,14 +485,7 @@ impl Integration for Codex {
         // and a re-connect that ignored it would re-snapshot our own
         // `"gate"` pointer - disconnect would then "restore" `model_provider
         // = "gate"` after deleting the provider block.
-        let marker_has_prev = doc
-            .get("_gate_connect")
-            .and_then(|i| i.as_table_like())
-            .map(|t| {
-                t.contains_key("previous_model_provider")
-                    || t.contains_key("previous_model_provider_absent")
-            })
-            .unwrap_or(false);
+        let marker_has_prev = has_connect_key(&doc);
         // A pre-existing `"gate"` pointer is never worth restoring: it came
         // from a hand-written setup whose block we adopt and later delete,
         // so treat it like no prior value.
@@ -766,9 +771,15 @@ fn passthrough_stub(mode: AuthMode) -> Table {
     t
 }
 
-/// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
 /// Whether `doc` carries the marker `connect` leaves, i.e. this is a config
 /// Gate Connect wrote and has not disconnected.
+///
+/// The stub exclusion is unconditional here, where [`Integration::status`]'s is
+/// qualified by `model_provider != PROVIDER_ID`. The asymmetry is deliberate and
+/// conservative: a config carrying both the stub marker and a `"gate"` pointer
+/// is something none of our own writes can produce (`connect` clears
+/// [`PASSTHROUGH_MARKER`]), so it reads as drift there and is not reapplied
+/// here - which is the right way round for a shape we cannot explain.
 ///
 /// Split out from [`Integration::config_is_managed`] so it can be tested on a
 /// parsed document like the rest of this module, rather than needing a config
@@ -777,14 +788,72 @@ fn is_connected_marker(doc: &DocumentMut) -> bool {
     if is_passthrough_stub(doc) {
         return false;
     }
-    doc.get("_gate_connect")
+    has_connect_key(doc)
+}
+
+/// Whether the config still points at Gate: `model_provider` is ours, and our
+/// block's `base_url` is still one we would have written.
+///
+/// The second half of [`Integration::config_is_managed`], and the half that
+/// decides whether `reconcile_enabled` may rewrite this file without asking.
+/// Both tests are about values the *user* could have changed to mean "stop
+/// routing Codex through Gate": pointing `model_provider` at another provider is
+/// how you turn Gate off without running disconnect, and repointing `base_url`
+/// is how you send the traffic somewhere else. Either one, and the config stops
+/// being ours to silently reapply.
+///
+/// `is_relay_base_url` rather than the loopback test [`super::hermes`] uses for
+/// the same job: a user who repoints Codex at their own local server is still on
+/// loopback, and that answer would hand the reapply a licence to take it back.
+/// It judges the URL at its own origin, so a relay that came back on a different
+/// port - the drift this exists to repair - still reads as ours.
+///
+/// Both auth modes count. Each writes a different upstream and therefore a
+/// different path, and a config in the other one is drift `status` already
+/// reports; what matters here is only that the URL is one of ours.
+///
+/// Split out for the same testability reason as [`is_connected_marker`].
+fn still_aims_at_us(doc: &DocumentMut) -> bool {
+    let points_at_gate = doc
+        .get("model_provider")
+        .and_then(|i| i.as_str())
+        .is_some_and(|p| p == PROVIDER_ID);
+    if !points_at_gate {
+        return false;
+    }
+    let Some(base_url) = doc
+        .get("model_providers")
         .and_then(|i| i.as_table_like())
-        .is_some_and(|t| {
-            t.contains_key("previous_model_provider")
-                || t.contains_key("previous_model_provider_absent")
+        .and_then(|t| t.get(PROVIDER_ID))
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("base_url"))
+        .and_then(|i| i.as_str())
+    else {
+        return false;
+    };
+    [AuthMode::Apikey, AuthMode::Chatgpt]
+        .into_iter()
+        .any(|mode| {
+            crate::proxy::resolve_endpoint(&direct_base_url(mode))
+                .is_some_and(|r| r.is_relay_base_url(base_url, ToolId::Codex))
         })
 }
 
+/// The `[_gate_connect]` keys `connect` records, either of which says the table
+/// is one we wrote. Spelled once: a third key added to `connect` and missed at
+/// one of the two read sites would silently narrow the marker.
+fn has_connect_key(doc: &DocumentMut) -> bool {
+    doc.get("_gate_connect")
+        .and_then(|i| i.as_table_like())
+        .is_some_and(has_connect_key_in)
+}
+
+fn has_connect_key_in(table: &dyn toml_edit::TableLike) -> bool {
+    table.contains_key("previous_model_provider")
+        || table.contains_key("previous_model_provider_absent")
+}
+
+/// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
 fn is_passthrough_stub(doc: &DocumentMut) -> bool {
     doc.get("_gate_connect")
         .and_then(|i| i.as_table_like())
