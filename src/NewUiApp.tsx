@@ -571,9 +571,18 @@ export function NewUiApp() {
     modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
   );
   /** The org's Gate credit balance, for the card and the billing confirmation.
-   *  Read whenever an app pane is open - it is what a switch to a Gate model
-   *  starts spending. */
-  const credits = useCredits(canRead && openTool !== null, credential);
+   *  Read whenever the account can be read at all, not only while an app pane
+   *  is open. It was gated on `openTool !== null`, which was right when the
+   *  balance had one reader: the pane is what a switch to a Gate model starts
+   *  spending. Settings needs the same payload for its Gate plan row (AG-891),
+   *  and on that pane `openTool` is null - so the row could not have been wired
+   *  to anything, whatever it was passed.
+   *
+   *  The cost is one `/v1/me/credits` per focus on panes that do not draw a
+   *  balance. It is a small read behind the same `canRead` gate as every other,
+   *  and the alternative - fetching lazily per pane - would make the Settings
+   *  row flash a loading state every time it is opened. */
+  const credits = useCredits(canRead, credential);
 
   /**
    * What the open app is set to, or null when we do not know.
