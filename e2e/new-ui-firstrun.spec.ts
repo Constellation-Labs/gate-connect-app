@@ -390,7 +390,7 @@ test.describe("new UI: the diagnostic-data step", () => {
       auth_mode: "api_key" as const,
     },
     preferences: {
-      routing_health_notifications: true,
+      notifications: true,
       share_diagnostics: true,
       share_diagnostics_recorded: false,
     },

@@ -2220,13 +2220,14 @@ respectively.
 ### Rows deliberately not built, and why
 
 - ~~**Blocked-event, flagged-event and sound switches.**~~ **Built 2026-08-31
-  with AG-578.** The entry is kept rather than deleted because the reason it gave
-  is the reason they waited: a switch for an event that cannot arrive tells the
-  user they turned something off, so they landed with the feed that fires them
-  and not before. All four AG-594 switches now exist. The `Notifications` row
-  keeps its narrower routing wording and the drawn "Alert me when a request is
-  blocked or flagged" moved to the two rows that actually gate that - see the
-  2026-08-31 sync below.
+  with AG-578, and the first two removed again on 2026-09-17.** The entry is kept
+  rather than deleted because the reason it gave is the reason they waited: a
+  switch for an event that cannot arrive tells the user they turned something
+  off, so they landed with the feed that fires them and not before. What changed
+  is the count: the Figma draws **one** Notifications row (`116:29086`), product
+  chose the frame over AG-594's four switches, and the three preferences behind
+  them collapsed into a single `notifications` flag - see the 2026-09-17 sync
+  below. The sound switch stays, undrawn.
 - **The permission row.** `tauri-plugin-notification` hardcodes
   `PermissionState::Granted` on desktop - `desktop.rs` returns it unconditionally,
   the state is only real on mobile. A permission row built on that would report
@@ -2997,7 +2998,38 @@ requests, Flagged requests, Notification sound. That is AG-594's four switches
 complete. The Notifications row's description changed from the drawn "Alert me
 when a request is blocked or flagged" to "Alert me about routing problems",
 because the drawn sentence now belongs to the two rows that gate exactly that and
-one switch cannot honestly claim both.
+one switch cannot honestly claim both. **Superseded 2026-09-17** - the split is
+gone and the drawn sentence is back where it was drawn; see below.
+
+### One Notifications row again, 2026-09-17
+
+**The frame won over the ticket.** `116:29086` draws a single Startup row,
+"Notifications / Alert me when a request is blocked or flagged". AG-594's
+acceptance criteria names four switches - blocked, flagged, routing health and
+sound - and the build above shipped all four. Asked which to follow, product
+chose the frame, so Settings draws the drawn row and the sound beside it.
+
+**The collapse went all the way down, not just to the pane.** Three switches
+writing three preferences that can now only ever move together is dead state,
+and a switch rendered from three booleans has no honest answer when they
+disagree. So `routing_health_notifications`, `blocked_event_notifications` and
+`flagged_event_notifications` became one `notifications`, with one setter, one
+command and one `setNotifications`. `notify.rs` no longer branches on
+`event.action` to pick a preference, and the two routing notifications in
+`lib.rs` read the same flag.
+
+**What the one switch now costs.** The drawn sentence says blocked or flagged
+and the switch also silences the routing notifications, which it does not
+mention. That was accepted knowingly rather than papered over - question 8 in
+`docs/figma-questions-for-design.md` records it as the open half of a resolved
+question.
+
+**One migration consequence, stated rather than guarded.** The three old fields
+are gone from the struct, so a `preferences.json` written by a build between
+2026-09-01 and today loads the new `notifications` at its default, `true`.
+Anyone who had turned a notification off gets it back on once. No fold was
+built: every field in this file already defaults to on and an absent one loads
+as on, so the behaviour is the documented one rather than a new hazard.
 
 ### The tray's activity line, 2026-09-03
 

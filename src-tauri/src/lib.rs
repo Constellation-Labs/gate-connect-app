@@ -2342,30 +2342,13 @@ fn set_device_name(name: String) -> Result<(), String> {
     gate_connect_core::preferences::set_device_name(&name).map_err(|e| format!("{e:#}"))
 }
 
-/// Turn routing-health notifications on or off. Gates the two notifications the
-/// app actually fires: an expired session, and a quit that could not put a tool
-/// back on its own settings.
+/// Turn native notifications on or off. Gates everything the app can put on
+/// screen: a request blocked or flagged by the security feed (AG-578), an
+/// expired session, and a quit that could not put a tool back on its own
+/// settings.
 #[tauri::command]
-fn set_routing_health_notifications(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_routing_health_notifications(enabled)
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Turn blocked-request notifications on or off (AG-578).
-///
-/// Separate from the flagged switch because the two differ in weight: a block
-/// stopped something the user was doing, a flag only noted it.
-#[tauri::command]
-fn set_blocked_event_notifications(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_blocked_event_notifications(enabled)
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Turn flagged-request notifications on or off (AG-578).
-#[tauri::command]
-fn set_flagged_event_notifications(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_flagged_event_notifications(enabled)
-        .map_err(|e| format!("{e:#}"))
+fn set_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
 }
 
 /// Turn the sound on security notifications on or off (AG-578).
@@ -4356,11 +4339,11 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>,
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
-    // Gated on the routing-health preference: this is a notification about
-    // routing, and a switch the user turned off has to actually stop something or
-    // it was never a switch. The list is still returned either way - suppressing
-    // the notification must not suppress the *result*.
-    if gate_connect_core::preferences::load().routing_health_notifications {
+    // Gated on the notifications preference, the one switch Settings draws: a
+    // switch the user turned off has to actually stop something or it was never
+    // a switch. The list is still returned either way - suppressing the
+    // notification must not suppress the *result*.
+    if gate_connect_core::preferences::load().notifications {
         use tauri_plugin_notification::NotificationExt;
         // The clean-teardown wording is only true when the teardown was clean.
         // With a tool left on Gate's settings, telling the user everything is
@@ -4541,7 +4524,7 @@ pub fn run() {
                     launch_at_login_status,
                     set_launch_at_login,
                     get_preferences,
-                    set_routing_health_notifications,
+                    set_notifications,
                     set_share_diagnostics,
                     accept_session_routing,
                     install_id,
@@ -4565,8 +4548,6 @@ pub fn run() {
                     security_feed_history_ok,
                     security_feed_recent,
                     security_feed_retry,
-                    set_blocked_event_notifications,
-                    set_flagged_event_notifications,
                     set_security_notification_sound,
                 ]
             }
@@ -4618,7 +4599,7 @@ pub fn run() {
                     list_providers,
                     set_updater_relaunching,
                     get_preferences,
-                    set_routing_health_notifications,
+                    set_notifications,
                     set_share_diagnostics,
                     accept_session_routing,
                     install_id,
@@ -5316,8 +5297,7 @@ pub fn run() {
                         // Fired once per death by the edge guard above.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
                         if dead
-                            && gate_connect_core::preferences::load()
-                                .routing_health_notifications
+                            && gate_connect_core::preferences::load().notifications
                         {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = refresh_handle

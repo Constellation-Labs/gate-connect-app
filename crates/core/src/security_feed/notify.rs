@@ -91,11 +91,7 @@ impl Grouper {
     ) -> Vec<Notification> {
         let mut out = self.sweep(prefs, now);
 
-        let wanted = match event.action {
-            Action::Block => prefs.blocked_event_notifications,
-            Action::Flag => prefs.flagged_event_notifications,
-        };
-        if !wanted {
+        if !prefs.notifications {
             // A switch the user turned off has to actually stop something, or it
             // was never a switch.
             return out;
@@ -170,11 +166,7 @@ impl Grouper {
                 // notification it fired already told the whole story.
                 continue;
             }
-            let wanted = match key.0 {
-                Action::Block => prefs.blocked_event_notifications,
-                Action::Flag => prefs.flagged_event_notifications,
-            };
-            if !wanted {
+            if !prefs.notifications {
                 continue;
             }
             due.push(Notification::Fire {
@@ -321,10 +313,9 @@ mod tests {
         }
     }
 
-    fn prefs(blocked: bool, flagged: bool, sound: bool) -> preferences::Preferences {
+    fn prefs(on: bool, sound: bool) -> preferences::Preferences {
         preferences::Preferences {
-            blocked_event_notifications: blocked,
-            flagged_event_notifications: flagged,
+            notifications: on,
             security_notification_sound: sound,
             ..Default::default()
         }
@@ -334,7 +325,7 @@ mod tests {
     fn the_first_event_in_a_bucket_speaks() {
         let mut g = Grouper::new();
         let e = event(Action::Block, Some("credential"), Some("codex"));
-        assert!(fired(g.admit(&e, &prefs(true, true, true), Instant::now())));
+        assert!(fired(g.admit(&e, &prefs(true, true), Instant::now())));
     }
 
     #[test]
@@ -344,7 +335,7 @@ mod tests {
         let mut g = Grouper::new();
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let now = Instant::now();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         assert!(fired(g.admit(&e, &p, now)));
         for i in 1..=5 {
             assert!(
@@ -360,7 +351,7 @@ mod tests {
         // A blocked credential and a blocked injection are different problems;
         // collapsing them would report the wrong one.
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let now = Instant::now();
         let cred = event(Action::Block, Some("credential"), Some("codex"));
         let inj = event(Action::Block, Some("injection"), Some("codex"));
@@ -373,7 +364,7 @@ mod tests {
     #[test]
     fn the_bucket_reopens_once_the_window_has_passed() {
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         assert!(fired(g.admit(&e, &p, start)));
@@ -392,22 +383,22 @@ mod tests {
         let now = Instant::now();
         let blocked = event(Action::Block, Some("credential"), Some("codex"));
         let flagged = event(Action::Flag, Some("pii"), Some("codex"));
-        // Blocked off, flagged on: only the flag speaks.
-        let p = prefs(false, true, true);
-        assert!(g.admit(&blocked, &p, now).is_empty());
-        assert!(fired(g.admit(&flagged, &p, now)));
-        // And the reverse.
+        // One switch over both actions, so off silences both.
+        let off = prefs(false, true);
+        assert!(g.admit(&blocked, &off, now).is_empty());
+        assert!(g.admit(&flagged, &off, now).is_empty());
+        // And on lets both speak.
         let mut g = Grouper::new();
-        let p = prefs(true, false, true);
-        assert!(fired(g.admit(&blocked, &p, now)));
-        assert!(g.admit(&flagged, &p, now).is_empty());
+        let on = prefs(true, true);
+        assert!(fired(g.admit(&blocked, &on, now)));
+        assert!(fired(g.admit(&flagged, &on, now)));
     }
 
     #[test]
     fn the_sound_preference_rides_on_the_notification() {
         let mut g = Grouper::new();
         let e = event(Action::Block, Some("credential"), Some("codex"));
-        match one(g.admit(&e, &prefs(true, true, false), Instant::now())) {
+        match one(g.admit(&e, &prefs(true, false), Instant::now())) {
             Some(Notification::Fire { sound, .. }) => assert!(!sound),
             other => panic!("expected a notification, got {other:?}"),
         }
@@ -418,7 +409,7 @@ mod tests {
         // Otherwise a steady stream of repeats would hold the bucket open
         // forever and the next real incident would never speak.
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
@@ -435,7 +426,7 @@ mod tests {
         // The whole point of counting. Thirty blocks in a minute must not read as
         // one incident once the dust settles.
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
@@ -458,7 +449,7 @@ mod tests {
         // One blocked request is one notification, not a notification and a
         // summary saying there were no others.
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
@@ -470,7 +461,7 @@ mod tests {
     #[test]
     fn sweeping_early_retires_nothing() {
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
@@ -484,7 +475,7 @@ mod tests {
     #[test]
     fn a_summary_is_delivered_once() {
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
@@ -501,13 +492,13 @@ mod tests {
         // The switch has to stop something, and a summary landing after the user
         // asked for quiet is the switch failing to.
         let mut g = Grouper::new();
-        let on = prefs(true, true, true);
+        let on = prefs(true, true);
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &on, start);
         g.admit(&e, &on, start);
 
-        let off = prefs(false, true, true);
+        let off = prefs(false, true);
         assert!(g
             .sweep(&off, start + GROUP_WINDOW + Duration::from_secs(1))
             .is_empty());
@@ -516,7 +507,7 @@ mod tests {
     #[test]
     fn the_summary_counts_each_cause_separately() {
         let mut g = Grouper::new();
-        let p = prefs(true, true, true);
+        let p = prefs(true, true);
         let start = Instant::now();
         let cred = event(Action::Block, Some("credential"), Some("codex"));
         let pii = event(Action::Flag, Some("pii"), Some("codex"));

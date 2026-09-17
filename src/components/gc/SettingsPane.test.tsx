@@ -14,7 +14,7 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     gateway: "Managed by Gate",
     apiKeyMasked: "sk-gw***********",
     launchAtLogin: true,
-    routingHealthNotifications: true,
+    notifications: true,
     shareDiagnostics: true,
     version: "v0.1.4",
     onRenameDevice: noop,
@@ -24,7 +24,7 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     onDisconnect: noop,
     onToggleLaunchAtLogin: noop,
     onRetryLaunchAtLogin: noop,
-    onToggleRoutingHealthNotifications: noop,
+    onToggleNotifications: noop,
     onToggleShareDiagnostics: noop,
     onRetryPreferences: noop,
     onReplayTutorial: noop,
@@ -212,12 +212,12 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
     // switch, so an absent handler leaves an inert label.
     const ids = sections({
       onDisconnect: undefined,
-      onToggleRoutingHealthNotifications: undefined,
+      onToggleNotifications: undefined,
     })
       .flatMap((s) => s.rows)
       .map((r) => r.id);
     expect(ids).not.toContain("session");
-    expect(ids).not.toContain("routing-health");
+    expect(ids).not.toContain("notifications");
   });
 
   /**
@@ -237,7 +237,7 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
   it("marks both preference switches unavailable together, since they share one read", () => {
     const built = sections({ preferencesUnavailable: true });
     const rows = built.flatMap((s) => s.rows);
-    expect(rows.find((r) => r.id === "routing-health")?.unavailable).toBeDefined();
+    expect(rows.find((r) => r.id === "notifications")?.unavailable).toBeDefined();
     expect(rows.find((r) => r.id === "share-diagnostics")?.unavailable).toBeDefined();
   });
 
@@ -258,7 +258,7 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
       onRenameDevice: undefined,
       onUpgradePlan: undefined,
       onDisconnect: undefined,
-      onToggleRoutingHealthNotifications: undefined,
+      onToggleNotifications: undefined,
       onToggleShareDiagnostics: undefined,
       onCheckForUpdates: undefined,
       onOpenDocs: undefined,
@@ -292,7 +292,7 @@ describe("SettingsPane", () => {
   it("drives each switch from its own value, not from the row label", () => {
     render(
       <SettingsPane
-        sections={sections({ launchAtLogin: false, routingHealthNotifications: true })}
+        sections={sections({ launchAtLogin: false, notifications: true })}
       />,
     );
 

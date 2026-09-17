@@ -46,7 +46,7 @@ vi.mock("./platform", async (importOriginal) => ({
 // `analytics.test.ts`; here it is only a precondition.
 vi.mock("./api", () => ({
   getPreferences: vi.fn(async () => ({
-    routing_health_notifications: true,
+    notifications: true,
     share_diagnostics: true,
     share_diagnostics_recorded: true,
     device_name: null,

@@ -72,7 +72,7 @@ describe("initAnalytics consent", () => {
   it("starts the client when the user has not opted out", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: true,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics } = await load();
 
@@ -85,7 +85,7 @@ describe("initAnalytics consent", () => {
   it("never constructs the client when the user has opted out", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: false,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics } = await load();
 
@@ -111,7 +111,7 @@ describe("initAnalytics consent", () => {
   it("sends nothing after an opted-out start", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: false,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics, track } = await load();
     await initAnalytics();
@@ -126,7 +126,7 @@ describe("setAnalyticsConsent", () => {
   it("opts a live client out, and stops sending immediately", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: true,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics, setAnalyticsConsent, track } = await load();
     await initAnalytics();
@@ -143,7 +143,7 @@ describe("setAnalyticsConsent", () => {
     // switch on has to do the init rather than only opt back in.
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: false,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics, setAnalyticsConsent, track } = await load();
     await initAnalytics();
@@ -160,7 +160,7 @@ describe("setAnalyticsConsent", () => {
   it("opts back in rather than re-initialising an existing client", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: true,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics, setAnalyticsConsent } = await load();
     await initAnalytics();
@@ -175,7 +175,7 @@ describe("setAnalyticsConsent", () => {
   it("is safe to call with the value already in force", async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: false,
-      routing_health_notifications: true,
+      notifications: true,
     });
     const { initAnalytics, setAnalyticsConsent } = await load();
     await initAnalytics();
@@ -196,7 +196,7 @@ describe("track: the event-prop allowlist", () => {
   beforeEach(async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: true,
-      routing_health_notifications: true,
+      notifications: true,
     });
     await initAnalytics();
   });
@@ -227,7 +227,7 @@ describe("trackError: raw error strings stay on this machine", () => {
   beforeEach(async () => {
     (getPreferences as Mock).mockResolvedValue({
       share_diagnostics: true,
-      routing_health_notifications: true,
+      notifications: true,
     });
     await initAnalytics();
   });

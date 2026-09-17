@@ -828,14 +828,14 @@ export const securityFeedRetry = () => invoke<void>("security_feed_retry");
  * field in the stored file loads as `true` - so a switch reads On before anything
  * has ever been written, which is what lets Settings show a truthful default.
  *
- * Only the preferences that currently gate something are here. The per-category
- * security-event switches gate the notifications the live feed (AG-578) fires;
- * they arrived with it, because a switch that gates nothing would tell the user
- * they had turned something off. */
+ * Only the preferences that currently gate something are here. */
 export interface Preferences {
-  /** Native notifications about routing itself - an expired session, a quit that
-   * could not put a tool back. The two the app actually fires. */
-  routing_health_notifications: boolean;
+  /** Whether Gate Connect may show native notifications at all: a request
+   * blocked or flagged by the live feed (AG-578), an expired session, a quit
+   * that could not put a tool back.
+   *
+   * One flag over all of them because Settings draws one row (`116:29086`). */
+  notifications: boolean;
   /** Whether Gate Connect may send diagnostic data. Onboarding records the first
    * answer; Settings changes it after. Nothing is uploaded by setting it. */
   share_diagnostics: boolean;
@@ -862,13 +862,7 @@ export interface Preferences {
    *  `auth_mode` still `oauth` - so the welcome pane cannot tell them apart
    *  without this, and used to call both "Session expired". */
   signed_out_deliberately: boolean;
-  /** Notify when a request is blocked. Gated per category rather than as one
-   *  switch because the two differ in weight: a block stopped something, a flag
-   *  only noted it. */
-  blocked_event_notifications: boolean;
-  /** Notify when a request is flagged. */
-  flagged_event_notifications: boolean;
-  /** Whether those notifications make a sound. */
+  /** Whether security notifications make a sound. */
   security_notification_sound: boolean;
 }
 
@@ -921,8 +915,8 @@ export const setDeviceName = (name: string) => invoke<void>("set_device_name", {
  *  correct place for the byte count to be decided. */
 export const DEVICE_NAME_MAX_LENGTH = 128;
 
-export const setRoutingHealthNotifications = (enabled: boolean) =>
-  invoke<void>("set_routing_health_notifications", { enabled });
+export const setNotifications = (enabled: boolean) =>
+  invoke<void>("set_notifications", { enabled });
 
 /** Record that the person accepted one section's switch routing a surface they
  *  are signed in to. Idempotent, and never un-recorded - see
@@ -933,11 +927,6 @@ export const acceptSessionRouting = (section: string) =>
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
 
-export const setBlockedEventNotifications = (enabled: boolean) =>
-  invoke<void>("set_blocked_event_notifications", { enabled });
-
-export const setFlaggedEventNotifications = (enabled: boolean) =>
-  invoke<void>("set_flagged_event_notifications", { enabled });
 
 export const setSecurityNotificationSound = (enabled: boolean) =>
   invoke<void>("set_security_notification_sound", { enabled });

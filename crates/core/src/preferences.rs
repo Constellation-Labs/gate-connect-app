@@ -41,11 +41,15 @@ fn default_true() -> bool {
 /// buffer, or a separate file for one label - buys nothing. Callers clone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
-    /// Native notifications about routing itself: a session that expired, a
-    /// quit that could not put a tool back. These are the two the app actually
-    /// fires today.
+    /// Whether Gate Connect may show native notifications at all: a request
+    /// blocked or flagged by the security feed, and routing itself - a session
+    /// that expired, a quit that could not put a tool back.
+    ///
+    /// One switch over all of them because Settings draws one row. An earlier
+    /// build split it three ways, per AG-594's acceptance criteria; the Figma
+    /// draws a single `Notifications` row (`116:29086`) and the frame wins.
     #[serde(default = "default_true")]
-    pub routing_health_notifications: bool,
+    pub notifications: bool,
     /// Whether Gate Connect may send diagnostic data. The onboarding step records
     /// the first answer; Settings changes it afterwards. Storing it here rather
     /// than deriving it means an install that never saw the step still reads as
@@ -111,18 +115,7 @@ pub struct Preferences {
     /// accepted does not re-ask.
     #[serde(default)]
     pub session_routing_accepted: Vec<String>,
-    /// Notify when a request is **blocked**.
-    ///
-    /// Split from the flagged switch rather than shipped as one security toggle
-    /// because the two differ in weight: a block stopped something the user was
-    /// trying to do, a flag only noted it. Someone who wants to hear about the
-    /// first and not the second is asking for something reasonable.
-    #[serde(default = "default_true")]
-    pub blocked_event_notifications: bool,
-    /// Notify when a request is **flagged**.
-    #[serde(default = "default_true")]
-    pub flagged_event_notifications: bool,
-    /// Whether those notifications make a sound.
+    /// Whether security notifications make a sound.
     #[serde(default = "default_true")]
     pub security_notification_sound: bool,
     /// Which model each tool should run on, keyed by tool slug (AG-588).
@@ -219,15 +212,13 @@ pub struct ToolModelChoice {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            routing_health_notifications: true,
+            notifications: true,
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
             // Empty is "never asked", which is the only honest default: an
             // install that has not been asked has not consented.
             session_routing_accepted: Vec::new(),
-            blocked_event_notifications: true,
-            flagged_event_notifications: true,
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
@@ -363,12 +354,12 @@ pub fn reset_cache_for_tests() {
     }
 }
 
-/// Turn routing-health notifications on or off, leaving the other preferences
-/// alone. Read-modify-write rather than taking a whole `Preferences`, so a caller
-/// that only knows about one switch cannot clobber a field it has never heard of.
-pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
+/// Turn native notifications on or off, leaving the other preferences alone.
+/// Read-modify-write rather than taking a whole `Preferences`, so a caller that
+/// only knows about one switch cannot clobber a field it has never heard of.
+pub fn set_notifications(enabled: bool) -> Result<()> {
     let mut prefs = load();
-    prefs.routing_health_notifications = enabled;
+    prefs.notifications = enabled;
     save(&prefs)
 }
 
@@ -380,20 +371,6 @@ pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
 pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
     let mut prefs = load();
     prefs.signed_out_deliberately = deliberate;
-    save(&prefs)
-}
-
-/// Turn blocked-request notifications on or off. Read-modify-write, as above.
-pub fn set_blocked_event_notifications(enabled: bool) -> Result<()> {
-    let mut prefs = load();
-    prefs.blocked_event_notifications = enabled;
-    save(&prefs)
-}
-
-/// Turn flagged-request notifications on or off.
-pub fn set_flagged_event_notifications(enabled: bool) -> Result<()> {
-    let mut prefs = load();
-    prefs.flagged_event_notifications = enabled;
     save(&prefs)
 }
 
@@ -636,7 +613,7 @@ mod tests {
     #[test]
     fn defaults_are_everything_on() {
         let prefs = Preferences::default();
-        assert!(prefs.routing_health_notifications);
+        assert!(prefs.notifications);
         assert!(prefs.share_diagnostics);
     }
 
@@ -662,7 +639,7 @@ mod tests {
         let raw = serde_json::to_string(&Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: true,
-            routing_health_notifications: true,
+            notifications: true,
             device_name: None,
             ..Preferences::default()
         })
@@ -681,7 +658,7 @@ mod tests {
         let partial: Preferences = serde_json::from_str(r#"{"share_diagnostics":false}"#)
             .expect("partial object should parse");
         assert!(
-            partial.routing_health_notifications,
+            partial.notifications,
             "an absent field must not read as off"
         );
         assert!(!partial.share_diagnostics);
@@ -690,7 +667,7 @@ mod tests {
     #[test]
     fn an_explicit_false_survives_a_round_trip() {
         let prefs = Preferences {
-            routing_health_notifications: false,
+            notifications: false,
             share_diagnostics: true,
             share_diagnostics_recorded: true,
             device_name: None,
