@@ -910,6 +910,20 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     },
   };
 
+  /**
+   * AG-886 moved the per-tool readings - stage, last verified route, last
+   * check, process - behind a "Technical details" disclosure. They are still
+   * what AG-570 asks the review for, so this suite still checks them; it just
+   * has to open the disclosure first, because a collapsed `<details>` keeps its
+   * content in the DOM and out of `toBeVisible`.
+   */
+  const openTechnicalDetails = async (dialog: ReturnType<typeof expect> extends never ? never : any) => {
+    const summaries = dialog.getByText("Technical details");
+    for (let i = 0; i < (await summaries.count()); i += 1) {
+      await summaries.nth(i).click();
+    }
+  };
+
   test("it accounts for every entry, including the ones never reached", async ({ boot }) => {
     const app = await boot(withJournal);
 
@@ -918,6 +932,7 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("CLI")).toBeVisible();
+    await openTechnicalDetails(dialog);
     // `.first()`: each stage is drawn twice per row, as the pill and as the
     // Stage line of the diagnostics list under it.
     await expect(dialog.getByText("Configuration written").first()).toBeVisible();
@@ -926,9 +941,10 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     // read as not started, not as fine and not as failed.
     await expect(dialog.getByText("Not started").first()).toBeVisible();
     // The operation itself, which AG-570 asks be named along with its update
-    // time and what it was trying to achieve.
-    await expect(dialog.getByText(/Turning routing back on/)).toBeVisible();
-    await expect(dialog.getByText(/of 3 stages completed/)).toBeVisible();
+    // time. AG-886 says it in the reader's terms rather than the journal's, and
+    // replaces the stage count with which app is not routing.
+    await expect(dialog.getByText(/Gate was turning routing on/)).toBeVisible();
+    await expect(dialog.getByText(/stages completed/)).toHaveCount(0);
   });
 
   /** The rest of what the AC asks the review for: the failure's *category*, the
@@ -941,8 +957,12 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await app.page.getByRole("button", { name: "Review details" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    // Categories, not error strings.
-    await expect(dialog.getByText(/Failures by category/)).toBeVisible();
+    await openTechnicalDetails(dialog);
+    // Categories, not error strings. AG-886 moved the category onto the row it
+    // belongs to instead of summarising them above the fold, where
+    // "Failures by category: Configuration write" was a sentence for whoever
+    // triages Gate rather than for whoever's editor stopped working.
+    await expect(dialog.getByText(/Failures by category/)).toHaveCount(0);
     await expect(dialog.getByText("Configuration write").first()).toBeVisible();
     await expect(dialog.getByText("Last verified route").first()).toBeVisible();
     await expect(dialog.getByText("Last check").first()).toBeVisible();
@@ -1015,11 +1035,16 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(dialog).toBeVisible();
 
     // Waiting, not failed - and said apart from the failures, so the two
-    // deferrals do not read as faults.
+    // deferrals do not read as faults. This line survives AG-886 because it was
+    // already plain, and it is the one that stops a reader hunting a problem
+    // that was a proxy still coming up.
+    await expect(dialog.getByText(/2 of them are waiting for routing/)).toBeVisible();
+
+    await openTechnicalDetails(dialog);
     await expect(dialog.getByText("Waiting for routing").first()).toBeVisible();
-    await expect(dialog.getByText(/2 entries are waiting for routing/)).toBeVisible();
-    // Exactly one entry belongs under the failure heading now.
-    await expect(dialog.getByText(/Failures by category: Configuration write\./)).toBeVisible();
+    // The category is on its row now rather than summarised above the fold.
+    await expect(dialog.getByText(/Failures by category/)).toHaveCount(0);
+    await expect(dialog.getByText("Configuration write").first()).toBeVisible();
 
     // The provider that failed says so about its *routing*, not about a config
     // file - OpenRouter has none, and the sentence was shared.
@@ -1028,8 +1053,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     ).toBeVisible();
     await expect(dialog.getByText(/write this tool's config/)).toHaveCount(0);
 
-    // And it says what went wrong, which the category never could.
-    await dialog.getByRole("group").filter({ hasText: "Details" }).first().click();
+    // And it says what went wrong, which the category never could. Targeted by
+    // its exact summary text: since AG-886 this `<details>` is nested inside the
+    // row's "Technical details" one, so a `hasText: "Details"` filter over the
+    // groups matches the outer one first and leaves this collapsed.
+    await dialog.getByText("Details", { exact: true }).first().click();
     await expect(
       dialog.getByText("configuring Claude Code: permission denied"),
     ).toBeVisible();
@@ -1091,7 +1119,10 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await app.page.getByRole("button", { name: "Review details" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("OpenCode")).toBeVisible();
+    // `exact`: the headline now names the app too ("OpenCode is not routing
+    // through Gate yet"), so a substring match resolves to two nodes.
+    await expect(dialog.getByText("OpenCode", { exact: true })).toBeVisible();
+    await openTechnicalDetails(dialog);
     await expect(dialog.getByText("Not started").first()).toBeVisible();
     // No journal, no update time. Unknown rather than 1970.
     await expect(dialog.getByText(/last updated/)).toHaveCount(0);
