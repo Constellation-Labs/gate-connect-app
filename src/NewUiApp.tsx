@@ -3232,6 +3232,7 @@ export function NewUiApp() {
               app={{
                 name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
               }}
+              plural={runningApps.stage.tools.length !== 1}
               onDone={runningApps.dismiss}
             />
           ) : (
