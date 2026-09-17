@@ -743,7 +743,7 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
-        // The same strip on the other half, which had none. A proxy credential
+        // The same strip on the other arm, which had none. A proxy credential
         // is hop-by-hop: it addresses *this* proxy and must not be forwarded,
         // whatever the request turns out to be.
         //
@@ -755,16 +755,16 @@ impl HttpHandler for GateHandler {
         // downstream removes it: `apply_rewrite` takes off only the two Gate
         // headers, and hudsucker forwards what it is handed.
         //
-        // Deliberately just the proxy pair rather than the full RFC 9110 §7.6.1
+        // Deliberately just this header rather than the full RFC 9110 §7.6.1
         // set. `connection` and `upgrade` are hop-by-hop too, and this engine
         // already gives them meaning of its own a few lines below
-        // (`should_decline_upgrade`); `content-length` is only safe to drop
-        // where the request is rebuilt, which is the relay's case and not this
-        // one. A blanket strip here would break body framing and the upgrade
-        // path to close a leak that is neither.
-        let headers = req.headers_mut();
-        headers.remove("proxy-authorization");
-        headers.remove("proxy-authenticate");
+        // (`is_upgrade_request`); `content-length` is only safe to drop where
+        // the request is rebuilt, which is the relay's case and not this one.
+        // A blanket strip here would break body framing and the upgrade path
+        // to close a leak that is neither. `proxy-authenticate` is the
+        // response half of the pair and never rides a request, so it is not
+        // removed here either.
+        req.headers_mut().remove("proxy-authorization");
         // Fresh verdict per request; only the chatgpt.com block below sets it.
         self.chatgpt_turn = None;
         // Likewise: only a successful OAuth-bearing rewrite below sets this.
