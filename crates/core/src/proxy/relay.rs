@@ -909,6 +909,11 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     // though the passthrough path never stamps it itself.
     headers.remove(GATE_INSTALL_ID_HEADER);
     headers.remove(GATE_CLIENT_HEADER);
+    // Relayed tools are named by the path marker, so this header has no job
+    // here - but a tool configured for both routes could still send it, and a
+    // passthrough hop is the one place a Gate-internal header would reach the
+    // real provider.
+    headers.remove(super::GATE_TOOL_HEADER);
 }
 
 /// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).

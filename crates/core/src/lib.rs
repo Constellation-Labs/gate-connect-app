@@ -77,6 +77,7 @@ pub mod integrations {
     /// The vocabulary for "something the tool ranks higher than our file decides
     /// the route" - shared so five integrations phrase it once.
     pub(crate) mod precedence;
+    pub(crate) mod yaml_block;
 }
 
 pub use registry::{registry, ConnectInput, Integration, Status, ToolId};
