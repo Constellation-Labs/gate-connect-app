@@ -31,6 +31,12 @@ const TEST_HOME: &str = "GATE_CONNECT_TEST_HOME";
 /// - Windows: `%LOCALAPPDATA%\Gate Connect`
 /// - Linux: `$XDG_DATA_HOME/Gate Connect`
 pub fn app_support_dir() -> Result<PathBuf> {
+    // Debug builds only, matching `gate_connect_core::env::test_seam`. A
+    // release binary that honoured this would let anything able to set the
+    // environment - `launchctl setenv`, a mechanism Gate itself uses - redirect
+    // which files the app and the forwarder agree on, and with it which port
+    // the app probes and then exports machine-wide.
+    #[cfg(debug_assertions)]
     if let Some(home) = std::env::var_os(TEST_HOME).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(home).join("app-support").join("Gate Connect"));
     }
@@ -44,8 +50,19 @@ pub fn proxy_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("proxy"))
 }
 
-fn port_file(name: &str) -> Result<PathBuf> {
-    Ok(proxy_dir()?.join(format!("{name}.port")))
+/// The file a port is persisted in.
+///
+/// **No extension.** The app has written `proxy/port`, `proxy/pac-port` and
+/// `proxy/relay-port` since long before this crate existed, and every install
+/// in the field has them. An earlier draft of this function appended `.port`,
+/// which type-checked, passed every test - the tests inject the lookup - and
+/// silently broke the one thing the forwarder is for: it never found the
+/// engine, so every proxied connection went direct, bypassing the MITM engine
+/// and its routing rules while the app still reported routing as on. `core`'s
+/// `port_persist` calls this rather than keeping its own copy, so there is one
+/// definition and it cannot drift again.
+pub fn port_file(name: &str) -> Result<PathBuf> {
+    Ok(proxy_dir()?.join(name))
 }
 
 /// The port persisted under `name`, if any and still parseable. A missing or
@@ -67,7 +84,7 @@ pub fn save_port(name: &str, port: u16) -> Result<()> {
     let path = port_file(name)?;
     let dir = path.parent().context("port file has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let tmp = path.with_extension("port.tmp");
+    let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, port.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
     #[cfg(unix)]
     {
@@ -77,19 +94,56 @@ pub fn save_port(name: &str, port: u16) -> Result<()> {
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
 }
 
-/// Liveness path the forwarder answers, under the same reserved prefix the
-/// relay uses so no real destination can collide with it.
+/// Liveness path the forwarder answers. Under a reserved prefix so it cannot
+/// collide with a real destination - a proxy request names an absolute URI, and
+/// this is origin-form, so nothing a client legitimately proxies reaches it.
 ///
 /// Here rather than in either binary because it is a wire contract between
 /// them: the app probes it to prove the listener on the persisted port is the
 /// forwarder it spawned, and not some other process that bound the port first.
 pub const FORWARDER_HEALTH_PATH: &str = "/__gate/forwarder-health";
 
-/// Header carrying the shared secret on a health probe. The secret lives in a
-/// 0600 file the app writes before spawning; a probe without it is refused the
-/// same way any unroutable request is, so probing cannot tell "wrong token"
-/// from "not a forwarder".
-pub const FORWARDER_HEALTH_TOKEN_HEADER: &str = "x-gate-forwarder-token";
+/// Header carrying the probe's random challenge.
+///
+/// The app never sends the secret. An earlier design did - it put the token on
+/// the request and accepted any `204` - which proved nothing (a squatter can
+/// answer `204` to anything) *and* handed the secret to the very process it was
+/// trying to identify. The challenge is fresh per probe, so a reply cannot be
+/// replayed either.
+pub const FORWARDER_CHALLENGE_HEADER: &str = "x-gate-forwarder-challenge";
+
+/// Header carrying the forwarder's answer: hex SHA-256 of the token followed by
+/// the challenge. Only a process that can read the 0600 token file can produce
+/// it, which is exactly the claim the app needs before exporting the port it
+/// answers on as the machine's `HTTPS_PROXY`.
+pub const FORWARDER_PROOF_HEADER: &str = "x-gate-forwarder-proof";
+
+/// The proof a forwarder holding `token` owes for `challenge`.
+///
+/// Defined here so the two binaries cannot disagree about it, and so the one
+/// property that matters is testable in one place: knowing the challenge is not
+/// enough to produce the answer.
+pub fn forwarder_proof(token: &str, challenge: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hasher.update(challenge.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Compare without an early exit on the first differing byte. Timing a local
+/// comparison over loopback is far-fetched, but one that leaks its own prefix
+/// is not worth keeping.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
 /// Port band a *fresh* listener is picked from. Sits inside IANA's registered
 /// range and below Windows' default dynamic range (49152-65535), clear of
@@ -197,10 +251,24 @@ pub fn bind_fresh(skip: &[u16]) -> std::io::Result<TcpListener> {
 mod tests {
     use super::*;
 
-    struct TestHome(PathBuf);
+    /// The path seam is an environment variable, which is process-global, so
+    /// tests that set it cannot overlap. `core` carries the same lock for the
+    /// same reason; without one these fail under the default parallel runner
+    /// and pass under `--test-threads=1`, which is the worst way to find out.
+    fn path_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct TestHome {
+        dir: PathBuf,
+        /// Held for the test's life; released on drop with the env var.
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestHome {
         fn set(tag: &str) -> Self {
+            let guard = path_env_lock();
             let dir = std::env::temp_dir().join(format!(
                 "gate-connect-paths-{}-{}-{tag}",
                 std::process::id(),
@@ -211,15 +279,36 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_var(TEST_HOME, &dir);
-            TestHome(dir)
+            TestHome { dir, _guard: guard }
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
             std::env::remove_var(TEST_HOME);
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    /// The point of the challenge: the answer cannot be produced from the
+    /// challenge alone, so a process that cannot read the token file cannot
+    /// pass, however it replies.
+    #[test]
+    fn a_proof_needs_the_token_not_just_the_challenge() {
+        let proof = forwarder_proof("the-token", "abc123");
+        assert_eq!(proof.len(), 64);
+        assert_eq!(proof, forwarder_proof("the-token", "abc123"));
+        assert_ne!(proof, forwarder_proof("another-token", "abc123"));
+        // And it is bound to the challenge, so one reply cannot be replayed
+        // against the next probe.
+        assert_ne!(proof, forwarder_proof("the-token", "abc124"));
+    }
+
+    #[test]
+    fn constant_time_eq_is_still_an_equality() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
     }
 
     #[test]

@@ -317,9 +317,10 @@ async fn clear_account() -> Result<(), String> {
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
         // And stop the environment forwarder. It is deliberately left running
         // across a plain routing-off - that is exactly when the processes
-        // holding our exported variables still need it - so sign-out and the
-        // CA untrust are the only places it is retired. Without this, nothing
-        // in an ordinary user flow ever stops it.
+        // holding our exported variables still need it - so this path and the
+        // CA untrust are the only places it is retired. This is the one an
+        // ordinary user reaches: it is what the Reset button runs
+        // (`App.tsx`'s `forget`, which disables routing and then calls here).
         gate_connect_core::proxy::forwarder::stop();
         account::clear().map_err(|e| format!("{e:#}"))
     })

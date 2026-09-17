@@ -47,6 +47,13 @@ jobs:
 
       # fmt is platform-independent; run it once (the Windows runners'
       # git autocrlf setting can also produce false CRLF diffs there).
+      # `externalBin` makes the Tauri build script resolve the forwarder
+      # sidecar, and `src-tauri/binaries/` is gitignored - so clippy and test
+      # both fail on a clean checkout without this. The app's own build stages
+      # it from `beforeDevCommand`/`beforeBuildCommand`; a bare `cargo` run has
+      # no such hook.
+      - name: Stage the forwarder sidecar
+        run: pnpm stage:sidecar
       - name: rustfmt
         if: matrix.os == 'ubuntu-22.04'
         run: cargo fmt --all -- --check

@@ -606,11 +606,11 @@ impl<O: DesktopOps> DesktopManager<O> {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
         // Untrusting the CA is an explicit "Gate should let go of this
-        // machine" action, so the forwarder goes with it. Not the only one, and
-        // not the common one: Reset is a disable plus `clear_account`, which
-        // touches neither the CA nor this, so sign-out retires the forwarder
-        // too. A plain disable must leave it running - that is exactly when the
-        // processes holding our exported variables still need it.
+        // machine" action, so the forwarder goes with it. Not the only one:
+        // forgetting the workspace runs `clear_account`, which retires it too,
+        // and that is the common path (the Reset button). A plain disable must
+        // leave it running - that is exactly when the processes holding our
+        // exported variables still need it.
         self.ops.stop_env_forwarder();
         Ok(())
     }

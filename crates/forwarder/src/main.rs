@@ -307,11 +307,16 @@ mod tests {
                 }
                 seen.push(byte[0]);
             }
+            // A deadline, because "nothing more arrives" is a result these
+            // tests assert rather than an error: without it, the test that
+            // proves a pipelined request is *not* relayed would block forever
+            // waiting for the bytes whose absence is the point.
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(300)));
             for _ in 0..trailing {
-                if sock.read(&mut byte).unwrap_or(0) == 0 {
-                    break;
+                match sock.read(&mut byte) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => seen.push(byte[0]),
                 }
-                seen.push(byte[0]);
             }
             let _ = sock.write_all(reply);
             let _ = sock.flush();
@@ -491,44 +496,82 @@ mod tests {
     }
 
     /// The health path is how the app proves the listener on the persisted port
-    /// is the forwarder it spawned. Without the token it must be
-    /// indistinguishable from any other unroutable request, so a squatter
-    /// cannot learn it is being probed.
+    /// is the forwarder it spawned. The proof has to depend on the token: a
+    /// bare `204` is something any squatter can say, and an earlier design that
+    /// sent the token on the request also handed it to whoever was listening.
     #[tokio::test]
-    async fn the_health_path_answers_only_with_the_token() {
+    async fn the_health_path_answers_with_proof_of_the_token() {
         let port = start_forwarder(Some(dead_port())).await;
 
+        let challenge = "0123456789abcdef";
         let mut good = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         good.write_all(
             format!(
-                "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\n\r\n",
+                "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {challenge}\r\n\r\n",
                 proxy::HEALTH_PATH,
-                proxy::HEALTH_TOKEN_HEADER,
-                TOKEN
+                proxy::CHALLENGE_HEADER,
             )
             .as_bytes(),
         )
         .await
         .unwrap();
-        assert!(read_some(&mut good).await.starts_with("HTTP/1.1 204"));
+        let reply = read_some(&mut good).await;
+        assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+        let expected = gate_connect_paths::forwarder_proof(TOKEN, challenge);
+        assert!(
+            reply.to_lowercase().contains(&expected),
+            "the reply must carry proof of the token: {reply}"
+        );
+        // And the token itself is never on the wire in either direction.
+        assert!(!reply.contains(TOKEN), "{reply}");
 
-        for header in ["", "wrong-token"] {
-            let mut bad = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-            let probe = if header.is_empty() {
-                format!("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", proxy::HEALTH_PATH)
-            } else {
+        // No challenge, no answer - and it looks like any other unroutable
+        // request, so probing cannot tell a forwarder from anything else.
+        let mut bare = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        bare.write_all(
+            format!("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", proxy::HEALTH_PATH).as_bytes(),
+        )
+        .await
+        .unwrap();
+        assert!(read_some(&mut bare).await.starts_with("HTTP/1.1 400"));
+    }
+
+    /// A client may pipeline a second absolute-form request, for a different
+    /// host, behind the first. Splicing would hand it to *this* origin verbatim
+    /// - wrong destination, and carrying the `Proxy-Authorization` that
+    /// `rewrite_direct` strips from request one. `Connection: close` asks the
+    /// origin to hang up but does not stop the client having already sent it.
+    #[tokio::test]
+    async fn a_pipelined_second_request_never_reaches_the_first_origin() {
+        let (origin_port, origin_saw) = one_shot_with(b"HTTP/1.1 204 No Content\r\n\r\n", 256);
+        let port = start_forwarder(Some(dead_port())).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        client
+            .write_all(
                 format!(
-                    "GET {} HTTP/1.1\r\nHost: x\r\n{}: {header}\r\n\r\n",
-                    proxy::HEALTH_PATH,
-                    proxy::HEALTH_TOKEN_HEADER
+                    "GET http://127.0.0.1:{origin_port}/first HTTP/1.1\r\n\
+                     Host: 127.0.0.1\r\n\
+                     Content-Length: 0\r\n\r\n\
+                     GET http://evil.example/second HTTP/1.1\r\n\
+                     Host: evil.example\r\n\
+                     Proxy-Authorization: Basic Z2F0ZQ==\r\n\r\n"
                 )
-            };
-            bad.write_all(probe.as_bytes()).await.unwrap();
-            assert!(
-                read_some(&mut bad).await.starts_with("HTTP/1.1 400"),
-                "a probe without the token must look like any other bad request"
-            );
-        }
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        let seen = String::from_utf8(origin_saw.await.unwrap()).unwrap();
+        assert!(seen.starts_with("GET /first HTTP/1.1"), "{seen}");
+        assert!(
+            !seen.contains("evil.example"),
+            "the second request must not be relayed to the first origin: {seen}"
+        );
+        assert!(
+            !seen.to_lowercase().contains("proxy-authorization"),
+            "and its proxy credential must not leak with it: {seen}"
+        );
     }
 
     /// A request we cannot route gets a refusal, not silence.

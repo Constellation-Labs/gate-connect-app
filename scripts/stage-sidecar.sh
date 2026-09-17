@@ -16,9 +16,16 @@ mkdir -p src-tauri/binaries
 
 # Release for a real build, debug for `tauri dev` - building the release profile
 # on every dev launch would add minutes for a binary nobody is profiling.
-profile="${SIDECAR_PROFILE:-debug}"
+#
+# A flag rather than an environment variable: `tauri build` runs
+# `beforeBuildCommand` through `cmd /C` on Windows, which cannot parse a POSIX
+# `VAR=value cmd` prefix.
+profile="debug"
 flag=""
-[ "$profile" = "release" ] && flag="--release"
+if [ "${1:-}" = "--release" ]; then
+  profile="release"
+  flag="--release"
+fi
 
 # Honour CARGO_TARGET_DIR: a caller that redirected the build output would
 # otherwise have us copy from a directory cargo never wrote to.

@@ -44,7 +44,7 @@ fn token_path() -> Result<PathBuf> {
 
 /// The port the forwarder last bound, if it has ever run.
 pub(crate) fn persisted_port() -> Option<u16> {
-    gate_connect_paths::load_port("forwarder-port")
+    super::port_persist::load("forwarder-port").ok().flatten()
 }
 
 /// Read the shared secret, minting one if this install has none.
@@ -73,20 +73,37 @@ fn load_or_create_token() -> Result<String> {
     Ok(token)
 }
 
-/// Whether the listener on `port` is a forwarder that knows our token.
+/// Whether the listener on `port` can prove it holds our token.
 ///
-/// A plain TCP connect is not enough, and the relay's own prober already says
-/// why: it "would only prove *something* is listening on that port, which after
-/// a port reuse is a claim we cannot support". Here the stakes are higher than
-/// a stale status, because this answer decides what gets exported machine-wide
-/// as `HTTPS_PROXY`: adopting a stranger's listener would hand it every tool's
-/// destinations and the cleartext of every plain-HTTP request.
+/// A plain TCP connect proves only that *something* is listening, which after a
+/// port reuse is not a claim worth making - and here it decides what gets
+/// exported machine-wide as `HTTPS_PROXY`, so adopting a stranger's listener
+/// would hand it every tool's destinations and the cleartext of every
+/// plain-HTTP request.
+///
+/// Challenge-response rather than sending the token. An earlier version put the
+/// secret on the request and accepted any `204`, which proved nothing - any
+/// listener can answer `204` - and handed the secret to the very process it was
+/// trying to identify, so a squatter both passed the check and harvested the
+/// token for next time. Now the app sends a fresh random challenge and requires
+/// the SHA-256 of token-then-challenge back; only a process that can read the
+/// 0600 token file can produce it, and a captured reply cannot be replayed
+/// against the next probe.
 ///
 /// Hand-rolled over a `TcpStream` rather than through `reqwest`: it is one
 /// request on loopback, and a client here would have to be told `.no_proxy()`
 /// anyway, because the app may have just pointed `HTTPS_PROXY` at this port.
 fn health_ok(port: u16, token: &str) -> bool {
+    use rand::Rng;
     use std::io::{Read, Write};
+
+    let challenge: String = {
+        let mut rng = rand::thread_rng();
+        (0..16)
+            .map(|_| format!("{:02x}", rng.gen::<u8>()))
+            .collect()
+    };
+    let expected = gate_connect_paths::forwarder_proof(token, &challenge);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250))
@@ -98,17 +115,39 @@ fn health_ok(port: u16, token: &str) -> bool {
     let req = format!(
         "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nConnection: close\r\n\r\n",
         gate_connect_paths::FORWARDER_HEALTH_PATH,
-        gate_connect_paths::FORWARDER_HEALTH_TOKEN_HEADER,
-        token
+        gate_connect_paths::FORWARDER_CHALLENGE_HEADER,
+        challenge
     );
     if sock.write_all(req.as_bytes()).is_err() {
         return false;
     }
-    let mut buf = [0u8; 64];
-    match sock.read(&mut buf) {
-        Ok(n) => buf[..n].starts_with(b"HTTP/1.1 204"),
-        Err(_) => false,
+    // Bounded: a listener that answers slowly forever must not hold up an
+    // enable, and the proof is 64 hex characters in a short head.
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 512];
+    while buf.len() < 4096 {
+        match sock.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
     }
+    let Ok(text) = std::str::from_utf8(&buf) else {
+        return false;
+    };
+    text.lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.trim()
+                .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_PROOF_HEADER)
+                && gate_connect_paths::constant_time_eq(
+                    value.trim().as_bytes(),
+                    expected.as_bytes(),
+                )
+        })
 }
 
 /// Where the sidecar lives: beside the executable asking for it.
@@ -212,7 +251,15 @@ mod launch_agent {
         if let Some(port) = persisted_port() {
             return Ok(port);
         }
-        let listener = gate_connect_paths::bind_fresh(&[]).context("choosing a forwarder port")?;
+        // Skip what this install already remembers, or launchd would hold the
+        // engine's or relay's port for good and those listeners would move
+        // every run - stranding exactly the baked configs they exist to keep.
+        let taken: Vec<u16> = ["port", "pac-port", "relay-port"]
+            .iter()
+            .filter_map(|n| crate::proxy::port_persist::load(n).ok().flatten())
+            .collect();
+        let listener =
+            gate_connect_paths::bind_fresh(&taken).context("choosing a forwarder port")?;
         let port = listener.local_addr()?.port();
         // Released so launchd can bind it. A third party could take it in the
         // gap, which is why `install` verifies with a health check afterwards
@@ -293,7 +340,7 @@ mod launch_agent {
         }
         // Record the port only once launchd has it, so the file the app reads
         // never names a port nothing is holding.
-        gate_connect_paths::save_port("forwarder-port", port)
+        crate::proxy::port_persist::save("forwarder-port", port)
             .context("recording the forwarder port")?;
         Ok(port)
     }
@@ -434,17 +481,72 @@ mod tests {
         assert_eq!(first, load_or_create_token().expect("reuse"));
     }
 
-    /// The whole point of the token. A listener that is merely *there* must not
-    /// read as ours: adopting one would export a stranger's port machine-wide,
-    /// handing it every tool's destinations.
+    /// The point of the challenge. A listener that merely answers - including
+    /// one that answers `204` to everything, which is exactly what a squatter
+    /// would do - must not be adopted, because adopting it exports a stranger's
+    /// port as the machine's `HTTPS_PROXY`.
     #[test]
-    fn a_listener_that_does_not_know_the_token_is_not_ours() {
+    fn a_listener_that_cannot_prove_the_token_is_not_ours() {
         let _home = TestHome::set("health");
+
+        for reply in [
+            &b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"[..],
+            &b"HTTP/1.1 204 No Content\r\nx-gate-forwarder-proof: nope\r\n\r\n"[..],
+        ] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                if let Ok((mut sock, _)) = listener.accept() {
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf);
+                    let _ = sock.write_all(reply);
+                }
+            });
+            assert!(
+                !health_ok(port, "the-token"),
+                "answering without the proof must not be adopted"
+            );
+        }
+
+        // And a port with nothing on it at all is not ours either.
+        let free = {
+            let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            l.local_addr().unwrap().port()
+        };
+        assert!(!health_ok(free, "the-token"));
+    }
+
+    /// The other half: a listener that *can* prove it is adopted.
+    #[test]
+    fn a_listener_that_proves_the_token_is_ours() {
+        let _home = TestHome::set("health-ok");
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(!health_ok(port, "some-token"));
-        drop(listener);
-        // And a port with nothing on it at all is not ours either.
-        assert!(!health_ok(port, "some-token"));
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let challenge = req
+                .lines()
+                .find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
+                        .then(|| value.trim().to_string())
+                })
+                .unwrap_or_default();
+            let proof = gate_connect_paths::forwarder_proof("the-token", &challenge);
+            let _ = sock.write_all(
+                format!(
+                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nConnection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_PROOF_HEADER
+                )
+                .as_bytes(),
+            );
+        });
+        assert!(health_ok(port, "the-token"));
     }
 }

@@ -15,8 +15,10 @@ use tokio::net::TcpStream;
 
 /// The wire contract with the app, defined once in `gate-connect-paths` so the
 /// two binaries cannot drift.
-pub use gate_connect_paths::FORWARDER_HEALTH_PATH as HEALTH_PATH;
-pub use gate_connect_paths::FORWARDER_HEALTH_TOKEN_HEADER as HEALTH_TOKEN_HEADER;
+pub use gate_connect_paths::{
+    FORWARDER_CHALLENGE_HEADER as CHALLENGE_HEADER, FORWARDER_HEALTH_PATH as HEALTH_PATH,
+    FORWARDER_PROOF_HEADER as PROOF_HEADER,
+};
 
 /// How long to wait for the engine to accept before going direct. A loopback
 /// refusal comes back in microseconds; this only bounds a port held by
@@ -50,11 +52,11 @@ pub enum Target {
     /// An absolute-form request (`GET http://host/path`), which is what a
     /// client given `HTTP_PROXY` sends for plain HTTP.
     Absolute { host: String, port: u16 },
-    /// A health probe carrying the shared secret. Answered here rather than
-    /// forwarded: it is how the app proves the listener on the persisted port
-    /// is the forwarder it spawned, and not some other process that happened to
-    /// bind it first.
-    Health,
+    /// A health probe. Answered here rather than forwarded: it is how the app
+    /// proves the listener on the persisted port is the forwarder it spawned,
+    /// and not some other process that happened to bind it first. Carries the
+    /// proof this forwarder owes for the probe's challenge.
+    Health { proof: String },
 }
 
 /// Everything read from the client before a decision could be made: the head
@@ -68,6 +70,13 @@ pub struct Head {
     /// start of a request body. Never dropped: they belong to whichever
     /// upstream we pick.
     pub leftover: Vec<u8>,
+    /// Declared body length, when the head declares one plainly.
+    ///
+    /// `None` means "no body, or one this hop will not relay": absent
+    /// `Content-Length`, or a `Transfer-Encoding` we would have to decode.
+    /// Only the direct path consults it, and only to stop reading - see
+    /// [`go_direct`].
+    pub body_len: Option<u64>,
 }
 
 /// Split `host:port`, defaulting the port. IPv6 literals arrive bracketed.
@@ -133,26 +142,41 @@ pub async fn read_head(client: &mut TcpStream, token: &str) -> Result<Option<Hea
                     let (host, port) =
                         split_host_port(&uri, 443).context("CONNECT target is not host:port")?;
                     Target::Tunnel { host, port }
-                } else if uri == HEALTH_PATH
-                    && method.eq_ignore_ascii_case("GET")
-                    && req.headers.iter().any(|h| {
-                        h.name.eq_ignore_ascii_case(HEALTH_TOKEN_HEADER)
-                            && constant_time_eq(h.value, token.as_bytes())
-                    })
-                {
-                    Target::Health
+                } else if uri == HEALTH_PATH && method.eq_ignore_ascii_case("GET") {
+                    // Answer only a probe that brought a challenge, and answer
+                    // it with proof of the token rather than a bare status: a
+                    // `204` on its own is something any listener can say.
+                    let challenge = req
+                        .headers
+                        .iter()
+                        .find(|h| h.name.eq_ignore_ascii_case(CHALLENGE_HEADER))
+                        .and_then(|h| std::str::from_utf8(h.value).ok());
+                    match challenge {
+                        Some(challenge) => Target::Health {
+                            proof: gate_connect_paths::forwarder_proof(token, challenge),
+                        },
+                        None => return Ok(None),
+                    }
                 } else {
                     match absolute_parts(&uri) {
                         Some((host, port, _)) => Target::Absolute { host, port },
                         // Origin-form: a client sending this was not configured
                         // to use a proxy, so there is no host to send it to.
-                        // Also where a health probe with a wrong or missing
-                        // token lands, which is deliberate - it is refused the
-                        // same way any other unroutable request is, so probing
-                        // cannot distinguish "wrong token" from "not a
-                        // forwarder".
                         None => return Ok(None),
                     }
+                };
+                let chunked = req
+                    .headers
+                    .iter()
+                    .any(|h| h.name.eq_ignore_ascii_case("transfer-encoding"));
+                let body_len = if chunked {
+                    None
+                } else {
+                    req.headers
+                        .iter()
+                        .find(|h| h.name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|h| std::str::from_utf8(h.value).ok())
+                        .and_then(|v| v.trim().parse::<u64>().ok())
                 };
                 let leftover = buf[end..].to_vec();
                 buf.truncate(end);
@@ -160,6 +184,7 @@ pub async fn read_head(client: &mut TcpStream, token: &str) -> Result<Option<Hea
                     target,
                     raw: buf,
                     leftover,
+                    body_len,
                 }));
             }
             Ok(httparse::Status::Partial) => {}
@@ -180,16 +205,6 @@ pub async fn read_head(client: &mut TcpStream, token: &str) -> Result<Option<Hea
         }
         buf.extend_from_slice(&chunk[..n]);
     }
-}
-
-/// Compare without an early exit on the first differing byte. The token is a
-/// local secret and timing it out over loopback is far-fetched, but a
-/// comparison that leaks its own prefix is not worth keeping.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Rebuild an absolute-form head for a direct hop to the origin.
@@ -233,7 +248,6 @@ pub fn rewrite_direct(head: &[u8]) -> Option<Vec<u8>> {
 /// every branch without persisting ports or starting an engine.
 pub type EngineLookup = Arc<dyn Fn() -> Option<u16> + Send + Sync>;
 
-const HEALTH_OK: &[u8] = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
 const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
 const BAD_GATEWAY: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n";
 const TUNNEL_OK: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
@@ -253,8 +267,15 @@ pub async fn handle(
         return Ok(());
     };
 
-    if matches!(head.target, Target::Health) {
-        let _ = client.write_all(HEALTH_OK).await;
+    if let Target::Health { proof } = &head.target {
+        let _ = client
+            .write_all(
+                format!(
+                    "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n                     Connection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
         return Ok(());
     }
 
@@ -329,7 +350,7 @@ async fn splice_engine(mut client: TcpStream, mut upstream: TcpStream, head: Hea
 async fn go_direct(mut client: TcpStream, head: Head) -> Result<()> {
     let (host, port) = match &head.target {
         Target::Tunnel { host, port } | Target::Absolute { host, port } => (host.clone(), *port),
-        Target::Health => return Ok(()),
+        Target::Health { .. } => return Ok(()),
     };
     let mut origin = match TcpStream::connect((host.as_str(), port)).await {
         Ok(s) => s,
@@ -353,9 +374,44 @@ async fn go_direct(mut client: TcpStream, head: Head) -> Result<()> {
                 return Ok(());
             };
             origin.write_all(&rewritten).await?;
+            // This hop is pinned to one origin, but the client's connection is
+            // not: a client may pipeline a second absolute-form request for a
+            // *different* host behind the first. Splicing would hand that
+            // request to this origin verbatim - wrong destination, and with the
+            // `Proxy-Authorization` that `rewrite_direct` was careful to strip
+            // from request one. `Connection: close` asks the origin not to keep
+            // the connection, but it does not stop the client from having
+            // already sent request two.
+            //
+            // So relay exactly this request's declared body and not one byte
+            // more, then read the response until the origin closes. Anything
+            // the client pipelined behind it is dropped with the connection,
+            // which is what `Connection: close` told it to expect.
+            let declared = head.body_len.unwrap_or(0);
+            let from_leftover = head.leftover.len().min(declared as usize);
+            if from_leftover > 0 {
+                origin.write_all(&head.leftover[..from_leftover]).await?;
+            }
+            let mut remaining = declared - from_leftover as u64;
+            let mut buf = [0u8; 8192];
+            while remaining > 0 {
+                let want = buf.len().min(remaining as usize);
+                let n = client.read(&mut buf[..want]).await?;
+                if n == 0 {
+                    break;
+                }
+                origin.write_all(&buf[..n]).await?;
+                remaining -= n as u64;
+            }
+            tokio::io::copy(&mut origin, &mut client).await?;
+            return Ok(());
         }
-        Target::Health => unreachable!("health is answered before any upstream is chosen"),
+        Target::Health { .. } => {
+            unreachable!("health is answered before any upstream is chosen")
+        }
     }
+    // Tunnel: the client and the origin own the bytes from here, and there is
+    // exactly one destination for the connection's life.
     if !head.leftover.is_empty() {
         origin.write_all(&head.leftover).await?;
     }
@@ -426,12 +482,5 @@ mod tests {
         );
         assert!(out.contains("Host: example.com\r\n"), "{out}");
         assert!(out.contains("Accept: */*\r\n"), "{out}");
-    }
-
-    #[test]
-    fn constant_time_eq_is_still_an_equality() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
     }
 }
