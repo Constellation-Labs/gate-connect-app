@@ -52,8 +52,14 @@ jobs:
       # both fail on a clean checkout without this. The app's own build stages
       # it from `beforeDevCommand`/`beforeBuildCommand`; a bare `cargo` run has
       # no such hook.
+      # Invoked directly rather than through `pnpm stage:sidecar`. This job sets
+      # up Rust and nothing else, so `pnpm` is not on its PATH and the step
+      # exited 127 on all three runners. The script is plain bash over `cargo`
+      # and `rustc`, so there is nothing for Node to do here - and `shell: bash`
+      # is what makes the Windows runner use Git Bash rather than pwsh.
       - name: Stage the forwarder sidecar
-        run: pnpm stage:sidecar
+        shell: bash
+        run: bash scripts/stage-sidecar.sh
       - name: rustfmt
         if: matrix.os == 'ubuntu-22.04'
         run: cargo fmt --all -- --check
