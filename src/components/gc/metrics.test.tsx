@@ -131,7 +131,7 @@ describe("StatTiles", () => {
 
     // Messages answered zero, so it reads zero. The other two never answered.
     expect(screen.getByText("Messages").parentElement?.textContent).toContain("0");
-    expect(screen.getByText("Blocked/Flagged").parentElement?.textContent).toContain(NA);
+    expect(screen.getByText("Blocked/Flagged/Redacted").parentElement?.textContent).toContain(NA);
     expect(screen.getByText("Tokens saved").parentElement?.textContent).toContain(NA);
     // Never a fabricated percentage.
     expect(screen.queryByText("0%")).toBeNull();
@@ -236,5 +236,40 @@ describe("the Tokens saved tile", () => {
     expect(screen.getByText("4%")).toBeTruthy();
     expect(screen.queryByText(/\$/)).toBeNull();
     expect(screen.queryByText(/US\$/)).toBeNull();
+  });
+});
+
+/**
+ * AG-884. The gateway's counter behind this tile matches block, flag AND
+ * redact; the label named two of the three, so an org running its PII policy at
+ * action REDACT read a zero with nothing on screen explaining it.
+ */
+describe("the enforcement tile's label", () => {
+  const stats: UsageStats = {
+    messages: 1204,
+    blockedFlagged: 7,
+    tokensSavedPercent: 4,
+  };
+
+  it("names every action it counts", () => {
+    render(<StatTiles stats={stats} />);
+
+    expect(screen.getByText("Blocked/Flagged/Redacted")).toBeTruthy();
+    expect(screen.queryByText("Blocked/Flagged")).toBeNull();
+  });
+
+  /** The criterion's own phrasing drops "flagged", which is counted. */
+  it("does not use AG-572's two-of-three wording", () => {
+    render(<StatTiles stats={stats} />);
+
+    expect(screen.queryByText(/Blocked or redacted/i)).toBeNull();
+  });
+
+  it("still reads the same counter", () => {
+    render(<StatTiles stats={stats} />);
+
+    expect(
+      screen.getByText("Blocked/Flagged/Redacted").parentElement?.textContent,
+    ).toContain("7");
   });
 });
