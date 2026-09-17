@@ -1332,6 +1332,31 @@ export function ModelPickerDialog({
              *  consequence. */}
           </div>
 
+          {/* What a set of several actually does, said only once there is one
+            * (AG-888).
+            *
+            * The dialog offered a checkbox per model and never explained the
+            * rule, so the reasonable reading was the one the ticket reached:
+            * "the app takes one model, so anything past the first is
+            * ignored". It is not. The set is an ALLOW-LIST (AG-746,
+            * `gateway-proxy`'s `applyUserModelChoice`): a request for a model
+            * in it is served as the model the tool asked for, and only a
+            * request for something outside it is rewritten, onto the first
+            * entry. That is what makes several Codex sessions on several
+            * models keep their own choices instead of collapsing onto one.
+            *
+            * So this sentence carries the two facts the checkboxes cannot: the
+            * tool's own choice survives, and the order is not decoration - the
+            * first entry is what everything else becomes. */}
+          {multiple && draft.length > 1 && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {appName} keeps its own model whenever it asks for one of these.
+              Anything else it asks for is served as{" "}
+              <span className="font-medium text-base-foreground">{draft[0]}</span>, the
+              first in the list.
+            </p>
+          )}
+
           {/* Never hidden silently. The rule that sets models aside is partly
            *  empirical - see `modelCompatibility` - so it will date, and a user
            *  looking for a model that is missing needs to be told it was a
