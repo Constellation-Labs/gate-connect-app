@@ -116,6 +116,14 @@ impl DesktopOps for OsOps {
         system_proxy::disable_env()
     }
 
+    fn ensure_env_forwarder(&self) -> Result<u16> {
+        crate::proxy::forwarder::ensure_running()
+    }
+
+    fn stop_env_forwarder(&self) {
+        crate::proxy::forwarder::stop()
+    }
+
     fn clear_stranded_loopback(&self) -> Result<Vec<String>> {
         system_proxy::clear_stranded_loopback()
     }

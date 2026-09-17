@@ -80,6 +80,42 @@ to DIRECT; a stale `HTTPS_PROXY` makes every CLI request fail to connect. On
 Windows this also has to run above the early return in `reconcile_on_startup`,
 because registry values outlive a reboot where launchd variables do not.
 
+### The variables name the forwarder, not the engine
+
+The ordering rule above is necessary and not sufficient, because `launchctl
+unsetenv` cannot reach a process that is already running. Every shell, editor
+and CLI keeps the exported `HTTPS_PROXY` for its whole life, so whatever
+address it names has to keep answering after the engine goes away - otherwise
+turning routing off, quitting the app, or an engine crash all become "no
+provider is reachable", for tools that were never switched on and for software
+Gate does not manage, since the export is machine-wide.
+
+The two channels failed asymmetrically, and that was the bug. A PAC naming a
+dead port **fails open**: the fetch fails and the client goes DIRECT. An
+exported `HTTPS_PROXY` naming a dead port **fails closed**: the request dies.
+
+So the variables name `proxy::forwarder`, a tiny separate process that hands
+each connection to the engine when it answers and connects the client straight
+to its destination when it does not. That gives the env channel the PAC's
+fail-open behaviour. It holds no credential, reads no traffic and makes no
+routing decision: the engine already blind-tunnels whatever it does not route,
+so "hand it over when it answers" needs no rules, and needs no PAC - which
+matters because the PAC is served *by* the engine and so disappears exactly
+when the fallback is needed.
+
+It is a separate process because the failure includes the GUI going away. This
+is the same shape as the Linux helper daemon and is spawned the same way
+(`<current-exe> --env-forwarder`, detached), so there is no second binary to
+package, sign or locate. Linux does not run one: its engine is already a daemon
+that outlives the GUI, which is why Linux never had this bug.
+
+Lifecycle: started on enable when the export is opted in, deliberately **not**
+stopped on disable (that is precisely when the processes holding our variables
+need it), and stopped by removing the marker file it polls - on untrusting the
+CA, which is the explicit "let go of this machine" action Reset runs. A
+forwarder that will not start is not fatal: the enable falls back to exporting
+the engine's own port, which is the pre-forwarder behaviour.
+
 ## 3. Per-tool status
 
 | Tool                                | Mechanism                         | What Gate writes                                                                             | In UI  |

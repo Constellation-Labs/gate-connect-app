@@ -177,6 +177,17 @@ fn main() -> Result<()> {
         return gate_connect_core::proxy::helper::run_daemon();
     }
 
+    // And as `<current-exe> --env-forwarder` (macOS/Windows): the tiny proxy the
+    // machine-wide variables point at, which has to outlive both the engine and
+    // whichever process enabled it. Same argv trick, same reason - no second
+    // binary to package, sign or locate. See `gate_connect_core::proxy::forwarder`.
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == gate_connect_core::proxy::forwarder::FORWARDER_FLAG)
+    {
+        return gate_connect_core::proxy::forwarder::run();
+    }
+
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Login {

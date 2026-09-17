@@ -68,6 +68,45 @@ macOS/Windows cross-user token as a tracked follow-up rather than a blocker,
 because multi-user desktop machines are rare in the target audience and the
 same-user case is not fixable with a token at all.
 
+## Accepted: the environment forwarder
+
+The machine-wide variables name `proxy::forwarder` rather than the engine, so
+that the env channel fails open the way the PAC channel does (rationale in
+`docs/routing-architecture.md`). It is a separate, detached process, so unlike
+the listeners above it can still be accepting when no other part of Gate is
+running.
+
+What it is: a forward proxy that hands each connection to the engine when the
+engine answers, and connects the client straight to its destination when it
+does not.
+
+- **It cannot spend the Gate credential**, because it never has one. It holds
+  no key, no token and no org; it never terminates TLS, mints no certificate,
+  and rewrites nothing to the gateway. The blast radius that the rest of this
+  document weighs - the ability to *spend* - does not apply to it at all.
+- **It does not read traffic.** Only the first request head is parsed, and only
+  far enough to learn where the connection is going; after that the connection
+  is spliced.
+- **It does not forward the proxy credential when going direct.**
+  `Proxy-Authorization` addresses this hop, so the direct path strips it rather
+  than carrying it to a third party. It is passed through untouched when the
+  connection goes to the engine, which is where it is meant to be read.
+- **It is an open forward proxy to an arbitrary `host:port`**, which is the one
+  capability it does have, and it has it for as long as it runs.
+
+Decision: accepted. The marginal capability over the status quo is small - any
+local process can already open its own outbound socket, so what this adds is
+reaching a host *through* Gate's process rather than directly, which matters
+only where an egress filter distinguishes the two. Weighed against the
+alternative, which is that turning Gate off takes the machine's AI tooling
+(and its curl and its npm) offline until every affected process is restarted.
+
+The macOS/Windows cross-user gap named above applies here too and is smaller in
+consequence: another local user reaching the forwarder gets egress, not the
+owner's credential. The same UID-resolution work
+(`net.inet.tcp.pcblist`, `GetExtendedTcpTable`) would close it here and for the
+engine and relay at once, and is the thing to do first if this is prioritized.
+
 ## Noted: the `claude-web` catalog entry (session cookie)
 
 The opt-in `claude-web` domain MITMs `claude.ai/organizations/*` and forwards

@@ -14,5 +14,20 @@ fn main() {
         return;
     }
 
+    // Likewise the environment forwarder, on the platforms that need one: it
+    // must outlive this GUI process, so it is spawned detached as
+    // `<current-exe> --env-forwarder` and dispatched here before Tauri starts.
+    // See `gate_connect_core::proxy::forwarder`.
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == gate_connect_core::proxy::forwarder::FORWARDER_FLAG)
+    {
+        if let Err(e) = gate_connect_core::proxy::forwarder::run() {
+            eprintln!("gate environment forwarder exited: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     gate_connect_desktop_lib::run()
 }

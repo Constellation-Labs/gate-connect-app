@@ -48,6 +48,10 @@ mod cert_authority;
 /// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
 mod relay;
 
+/// The tiny always-there proxy the machine-wide environment variables point
+/// at, so the env channel fails open the way the PAC channel already does.
+pub mod forwarder;
+
 pub mod config;
 
 pub mod intent;
