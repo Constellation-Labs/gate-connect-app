@@ -605,10 +605,12 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
-        // Untrusting the CA is the explicit "Gate should let go of this
-        // machine" action - it is what Reset runs - so the forwarder goes with
-        // it. This is the one place it is right to stop: a plain disable must
-        // leave it running.
+        // Untrusting the CA is an explicit "Gate should let go of this
+        // machine" action, so the forwarder goes with it. Not the only one, and
+        // not the common one: Reset is a disable plus `clear_account`, which
+        // touches neither the CA nor this, so sign-out retires the forwarder
+        // too. A plain disable must leave it running - that is exactly when the
+        // processes holding our exported variables still need it.
         self.ops.stop_env_forwarder();
         Ok(())
     }
@@ -818,6 +820,8 @@ mod tests {
         forwarder_fails: bool,
         /// The port `ensure_env_forwarder` handed out, if it was asked.
         forwarder_port: Option<u16>,
+        /// The port `enable_env` was actually told to export.
+        exported_port: Option<u16>,
     }
 
     struct FakeOps(StdMutex<FakeState>);
@@ -946,8 +950,13 @@ mod tests {
             None
         }
 
-        fn enable_env(&self, _port: u16) -> Result<()> {
-            self.record("enable_env");
+        fn enable_env(&self, port: u16) -> Result<()> {
+            let mut s = self.0.lock().unwrap();
+            s.calls.push("enable_env".to_string());
+            // Recorded, not discarded: the test that matters here is *which*
+            // port was exported, and a fake that drops it passes just as
+            // happily when production exports the engine's.
+            s.exported_port = Some(port);
             Ok(())
         }
 
@@ -1301,8 +1310,12 @@ mod tests {
         let engine_port = state.port.expect("port");
 
         assert_eq!(mgr.ops.count("ensure_env_forwarder"), 1);
-        let exported = mgr.ops.0.lock().unwrap().forwarder_port;
-        assert_eq!(exported, Some(47_321));
+        let exported = mgr.ops.0.lock().unwrap().exported_port;
+        assert_eq!(
+            exported,
+            Some(47_321),
+            "the forwarder's port, not any other"
+        );
         assert_ne!(
             exported,
             Some(engine_port),
@@ -1327,6 +1340,12 @@ mod tests {
         let state = mgr.enable().expect("enable must still succeed");
         assert!(state.running);
         assert_eq!(mgr.ops.count("enable_env"), 1, "the export still happens");
+        assert_eq!(
+            mgr.ops.0.lock().unwrap().exported_port,
+            state.port,
+            "and falls back to the engine's own port, which is what shipped \
+             before there was a forwarder"
+        );
 
         mgr.disable().expect("disable");
     }

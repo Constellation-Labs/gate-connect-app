@@ -117,7 +117,7 @@ impl DesktopOps for OsOps {
     }
 
     fn ensure_env_forwarder(&self) -> Result<u16> {
-        crate::proxy::forwarder::ensure_running()
+        crate::proxy::env_export_port()
     }
 
     fn stop_env_forwarder(&self) {

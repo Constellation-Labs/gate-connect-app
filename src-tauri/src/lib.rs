@@ -315,6 +315,12 @@ async fn clear_account() -> Result<(), String> {
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // And stop the environment forwarder. It is deliberately left running
+        // across a plain routing-off - that is exactly when the processes
+        // holding our exported variables still need it - so sign-out and the
+        // CA untrust are the only places it is retired. Without this, nothing
+        // in an ordinary user flow ever stops it.
+        gate_connect_core::proxy::forwarder::stop();
         account::clear().map_err(|e| format!("{e:#}"))
     })
     .await

@@ -1723,7 +1723,10 @@ fn candidate_ports(ours: &[u16]) -> Vec<u16> {
 /// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
 /// isn't deferred.
 fn persisted_ports() -> Vec<u16> {
-    let mut ports: Vec<u16> = ["port", "pac-port"]
+    // `forwarder-port` is in here for the same reason as the rest: it is a port
+    // this install remembers and rebinds, so a fresh engine listener taking it
+    // would strand every process holding the exported variables.
+    let mut ports: Vec<u16> = ["port", "pac-port", "forwarder-port"]
         .iter()
         .filter_map(|name| super::port_persist::load(name).ok().flatten())
         .collect();

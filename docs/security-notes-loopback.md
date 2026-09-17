@@ -92,7 +92,10 @@ does not.
   than carrying it to a third party. It is passed through untouched when the
   connection goes to the engine, which is where it is meant to be read.
 - **It is an open forward proxy to an arbitrary `host:port`**, which is the one
-  capability it does have, and it has it for as long as it runs.
+  capability it does have, and it has it for as long as it runs. It applies no
+  peer gate of its own.
+- **It is the same signed executable as the app**, shipped as a sidecar, and it
+  inherits the environment of whichever process spawned it.
 
 Decision: accepted. The marginal capability over the status quo is small - any
 local process can already open its own outbound socket, so what this adds is
@@ -101,11 +104,24 @@ only where an egress filter distinguishes the two. Weighed against the
 alternative, which is that turning Gate off takes the machine's AI tooling
 (and its curl and its npm) offline until every affected process is restarted.
 
-The macOS/Windows cross-user gap named above applies here too and is smaller in
-consequence: another local user reaching the forwarder gets egress, not the
-owner's credential. The same UID-resolution work
-(`net.inet.tcp.pcblist`, `GetExtendedTcpTable`) would close it here and for the
-engine and relay at once, and is the thing to do first if this is prioritized.
+**But do not read "it holds no credential" as containment for the cross-user
+case.** While the engine is up, the forwarder hands the connection straight to
+it, and the engine on macOS and Windows applies no UID gate either - so a
+non-owner peer reaching the forwarder gets exactly what it would get by dialing
+the engine directly, credential injection included. The forwarder neither adds
+that exposure nor removes it; it is parity with an already-accepted gap, which
+is why the decision stands. It does mean the ordering of any future UID work
+matters: gating the engine and relay while leaving the forwarder ungated would
+launder a non-owner peer into an owner-uid connection and undo the gate. The
+forwarder has to be gated first, or at the same time.
+
+Where the forwarder is socket-activated (macOS, via its LaunchAgent) the
+squatting case disappears rather than being detected: launchd holds the port
+from login, so no other process can be there to adopt. On Windows, and on macOS
+when the agent could not be installed, the app instead proves the listener is
+ours with a 0600 shared token on a reserved health path before exporting its
+port - a plain TCP probe would have let any local process that bound the
+remembered port be published as the machine's `HTTPS_PROXY`.
 
 ## Noted: the `claude-web` catalog entry (session cookie)
 

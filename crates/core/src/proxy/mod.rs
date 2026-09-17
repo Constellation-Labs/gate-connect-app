@@ -990,12 +990,24 @@ pub fn set_env_export(enabled: bool) -> Result<()> {
     if enabled {
         // Only ever export against a *live* engine. The persisted port outlives
         // a disable (so the engine can rebind the same address), so exporting
-        // off it with routing off would point every command-line tool at a dead
-        // address - the one failure worse than not routing. With routing off we
-        // just record the choice; `manager.enable()` applies it next time.
-        match engine_port().filter(|_| engine_likely_running()) {
-            None => Ok(()),
-            Some(port) => enable_env_export(port),
+        // off it with routing off would point every command-line tool at an
+        // address with nothing behind it. With routing off we just record the
+        // choice; `manager.enable()` applies it next time.
+        //
+        // The port is `env_export_port`, not the engine's: on macOS and Windows
+        // that is the forwarder, which is the whole point - the variables have
+        // to name something that still answers when the engine does not. Using
+        // the engine port here would quietly re-export the pre-forwarder value
+        // every time this switch was toggled.
+        if !engine_likely_running() {
+            return Ok(());
+        }
+        match env_export_port() {
+            Ok(port) => enable_env_export(port),
+            Err(e) => {
+                eprintln!("gate proxy: {e:#}");
+                Ok(())
+            }
         }
     } else {
         disable_env_export()
@@ -1087,6 +1099,42 @@ pub fn persisted_engine_proxy_url() -> Option<String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn persisted_engine_proxy_url() -> Option<String> {
     None
+}
+
+/// The address the machine-wide variables actually name, whether or not
+/// anything is up. The *identity* of the exported proxy, which is what a drift
+/// check wants.
+///
+/// Not the same as [`persisted_engine_proxy_url`] any more, and that difference
+/// is load-bearing: on macOS and Windows the variables name the forwarder, not
+/// the engine, so that they keep working after the engine goes away. A status
+/// check comparing the export against the engine's address would report every
+/// correctly-exported machine as drifted, permanently. Linux exports the engine
+/// (its daemon already outlives the GUI) and so keeps the old answer.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn exported_proxy_identity_url() -> Option<String> {
+    forwarder::persisted_port().map(|port| format!("http://127.0.0.1:{port}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn exported_proxy_identity_url() -> Option<String> {
+    persisted_engine_proxy_url()
+}
+
+/// The port the machine-wide variables should name, starting a forwarder if
+/// there is not one yet.
+///
+/// `Err` on the platforms with a forwarder means it would not start; callers
+/// fall back to the engine's own port, which is what shipped before there was
+/// one.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn env_export_port() -> Result<u16> {
+    forwarder::ensure_running()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(crate) fn env_export_port() -> Result<u16> {
+    engine_port().context("the proxy engine has never bound a port")
 }
 
 /// Non-secret hint the tool config (or the MITM rewrite) sets, telling the

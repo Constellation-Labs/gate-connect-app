@@ -109,12 +109,33 @@ is the same shape as the Linux helper daemon and is spawned the same way
 package, sign or locate. Linux does not run one: its engine is already a daemon
 that outlives the GUI, which is why Linux never had this bug.
 
+It ships as a **separate small binary** (`gate-connect-forwarder`), installed
+beside the app as a Tauri sidecar. Not the app re-invoked with a flag, which is
+how the Linux helper daemon works, because a running process holds a file lock
+on its own image: if that image were the app's, the Windows updater could not
+replace it. A distinct name in Activity Monitor and Task Manager is the second
+reason, and linking none of the app's machinery is the third.
+
+On macOS it is **socket-activated**: a LaunchAgent declares the socket, launchd
+binds it at login and starts the forwarder on the first connection. So the
+address answers from login onward even with no Gate process running, nothing
+sits resident between uses, and the port cannot be squatted. Best-effort - if
+the agent does not produce a forwarder that answers, it is removed and the app
+spawns one directly, which is what Windows does anyway.
+
 Lifecycle: started on enable when the export is opted in, deliberately **not**
 stopped on disable (that is precisely when the processes holding our variables
-need it), and stopped by removing the marker file it polls - on untrusting the
-CA, which is the explicit "let go of this machine" action Reset runs. A
-forwarder that will not start is not fatal: the enable falls back to exporting
-the engine's own port, which is the pre-forwarder behaviour.
+need it), and retired by removing the marker file it polls (plus the agent on
+macOS). The two places that retire it are signing out and untrusting the CA -
+both explicit "let go of this machine" actions. Note Reset is a disable plus
+`clear_account`, so it is the sign-out half that stops the forwarder, not the
+CA half. A forwarder that will not start is not fatal: the enable falls back to
+exporting the engine's own port, which is the pre-forwarder behaviour.
+
+One consequence worth knowing: the exported address is no longer the engine's,
+so `exported_proxy_identity_url` - not `persisted_engine_proxy_url` - is what a
+drift check must compare against. Comparing against the engine's would report
+every correctly-exported machine as drifted, permanently.
 
 ## 3. Per-tool status
 

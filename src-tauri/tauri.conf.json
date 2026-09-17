@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "identifier": "ai.constellation.gate-connect",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm stage:sidecar && pnpm dev",
+    "beforeBuildCommand": "SIDECAR_PROFILE=release pnpm stage:sidecar && pnpm build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -31,6 +31,7 @@
     }
   },
   "bundle": {
+    "externalBin": ["binaries/gate-connect-forwarder"],
     "active": true,
     "targets": ["app", "dmg", "nsis", "deb", "appimage"],
     "createUpdaterArtifacts": true,

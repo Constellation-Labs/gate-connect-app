@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "typecheck:e2e": "tsc -p e2e --noEmit"
+    "typecheck:e2e": "tsc -p e2e --noEmit",
+    "stage:sidecar": "bash scripts/stage-sidecar.sh"
   },
   "dependencies": {
     "@fontsource/geist": "^5.3.0",
