@@ -933,7 +933,7 @@ test.describe("new UI: reviewing an interrupted restore", () => {
 
   /** The rest of what the AC asks the review for: the failure's *category*, the
    *  last check that concluded, and the process state. Per tool. */
-  test("it leads with what to do and keeps the readings behind a disclosure", async ({
+  test("it shows a category, a last check and a process state per tool", async ({
     boot,
   }) => {
     const app = await boot(withJournal);
@@ -943,22 +943,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     const dialog = app.page.getByRole("dialog");
     // Categories, not error strings.
     await expect(dialog.getByText(/Failures by category/)).toBeVisible();
-
-    // AG-886: the row opens with the one thing to do. It used to open with five
-    // readings - Stage, Last verified route, Last check, Process, Next action -
-    // so the action a reader came for was fifth, behind vocabulary they could
-    // not use.
-    await expect(dialog.getByText(/What to do:/).first()).toBeVisible();
-    await expect(dialog.getByText("Last check").first()).toBeHidden();
-    await expect(
-      dialog.getByText("Gate has no process to look for").first(),
-    ).toBeHidden();
-
-    // Not deleted - a support request needs them, so they are one click away.
-    await dialog.getByText("What Gate recorded").first().click();
+    await expect(dialog.getByText("Configuration write").first()).toBeVisible();
     await expect(dialog.getByText("Last verified route").first()).toBeVisible();
     await expect(dialog.getByText("Last check").first()).toBeVisible();
-    await expect(dialog.getByText("Configuration write").first()).toBeVisible();
+    await expect(dialog.getByText("Not running").first()).toBeVisible();
+    await expect(dialog.getByText("Next action").first()).toBeVisible();
   });
 
   /**
@@ -1044,10 +1033,6 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(
       dialog.getByText("configuring Claude Code: permission denied"),
     ).toBeVisible();
-
-    // The readings moved behind a disclosure (AG-886), so open it before
-    // asserting on them.
-    await dialog.getByText("What Gate recorded").first().click();
 
     // A provider is checked through its members, so "Never checked" would
     // invite the reader to go and check something that has no per-provider

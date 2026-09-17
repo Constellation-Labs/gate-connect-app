@@ -614,24 +614,6 @@ export function CloseAppsDialog({
   );
 }
 
-/**
- * The all-clear, drawn only once every tool is verified.
- *
- * Both of its sentences used to describe an earlier moment than the one it
- * appears in. `NewUiApp` and `TrayApp` raise this only when `allVerified` is
- * true, and `verified` means "Gate checked these after they came back"
- * (`reopen.ts`'s own bucket blurb) - so by the time a reader sees it the app has
- * been closed, reopened AND confirmed on the new route.
- *
- * It said "<app> closed successfully" and "Open <app> whenever you are ready to
- * continue", asking for a step the user had already finished and reporting the
- * first of three things that happened. Someone who had just watched the app
- * reopen had to work out whether Gate had noticed (AG-880).
- *
- * The waiting sentence is not lost - it belongs to `ReopenProgressDialog`,
- * which is what draws while a tool is still in `manual_reopen`, and which says
- * "Open each one and Gate finishes the check" there.
- */
 export function ChangeReadyDialog({
   app,
   onDone,
@@ -644,17 +626,17 @@ export function ChangeReadyDialog({
       tone="success"
       icon="circleCheck"
       title="Change is ready"
-      subtitle={`${app.name} is back on the new route`}
+      subtitle={`${app.name} closed successfully`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
       width={512}
     >
       <ModalNote>
         <p className="font-medium text-base-foreground">
-          The new Gate route is active and in use
+          The new Gate route is active
         </p>
         <p className="mt-1">
-          Gate reopened {app.name} and checked it. There is nothing left to do.
+          Open {app.name} whenever you are ready to continue.
         </p>
       </ModalNote>
     </Modal>
@@ -2416,25 +2398,10 @@ export function RestoreDetailsDialog({
   );
 }
 
-/**
- * One tool's state, in the order a reader needs it: which app, why, what to do.
- *
- * This used to open with a definition list of five readings - Stage, Last
- * verified route, Last check, Process, Next action - carrying strings like
- * "Checked per tool, not per provider" and "Gate has no process to look for".
- * Each is accurate and each is internal vocabulary; together they made a
- * diagnostic dump that answered the dialog's own title for nobody
- * (AG-886). A reader had to know what a stage was to learn whether to act.
- *
- * So the row leads with the sentence `stageDetail` already had, promotes the
- * one thing to do into prose, and puts the readings behind a disclosure. They
- * are not deleted: they are what a support request needs, and the failure
- * message beside them has always been one click away for the same reason.
- *
- * The summary deliberately avoids the word "Details": `ErrorDetails` below uses
- * it, and a selector that filters on it would otherwise match whichever
- * disclosure came first.
- */
+/** One tool's four readings, laid out as a definition list so the labels stay
+ *  legible when a value wraps. Not `ModalSubject`: that row truncates its
+ *  description to one line, which is right for naming a subject and wrong for a
+ *  diagnostic block. */
 function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
   return (
     <div className="rounded-md border border-base-border p-3">
@@ -2453,39 +2420,24 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
         </span>
       </div>
       <p className="mt-1 text-sm leading-5 text-neutral-600">{row.stageDetail}</p>
-      {/* The one thing to do, as a sentence rather than the last term of a
-        * definition list. It is what the reader came for, and "Next action:
-        * Retry" put it fifth behind four readings they could not use.
-        *
-        * Still not a button. Nothing in this dialog acts - its only control is
-        * Close - and the action named here is taken from the banner that opened
-        * it. That mismatch is AG-885's other half and is not this change. */}
-      {row.action && (
-        <p className="mt-2 text-sm leading-5 text-base-foreground">
-          <span className="font-medium">What to do:</span> {row.action}
-        </p>
-      )}
-      <details className="mt-2">
-        <summary className="cursor-pointer py-0.5 text-base-2xs text-base-muted-foreground">
-          What Gate recorded
-        </summary>
-        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
-          <dt className="text-base-muted-foreground">Stage</dt>
-          <dd className="text-base-foreground">{row.stageLine}</dd>
-          {row.errorCategory && (
-            <>
-              <dt className="text-base-muted-foreground">Failure</dt>
-              <dd className="text-base-foreground">{row.errorCategory}</dd>
-            </>
-          )}
-          <dt className="text-base-muted-foreground">Last verified route</dt>
-          <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
-          <dt className="text-base-muted-foreground">Last check</dt>
-          <dd className="text-base-foreground">{row.checkResult}</dd>
-          <dt className="text-base-muted-foreground">Process</dt>
-          <dd className="text-base-foreground">{row.runningState}</dd>
-        </dl>
-      </details>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
+        <dt className="text-base-muted-foreground">Stage</dt>
+        <dd className="text-base-foreground">{row.stageLine}</dd>
+        {row.errorCategory && (
+          <>
+            <dt className="text-base-muted-foreground">Failure</dt>
+            <dd className="text-base-foreground">{row.errorCategory}</dd>
+          </>
+        )}
+        <dt className="text-base-muted-foreground">Last verified route</dt>
+        <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
+        <dt className="text-base-muted-foreground">Last check</dt>
+        <dd className="text-base-foreground">{row.checkResult}</dd>
+        <dt className="text-base-muted-foreground">Process</dt>
+        <dd className="text-base-foreground">{row.runningState}</dd>
+        <dt className="text-base-muted-foreground">Next action</dt>
+        <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
+      </dl>
       {/* The reason, not just the category. "Configuration write" says which
           step and can never say why, which left this dialog unable to answer
           its own title - the message existed, on stderr, where nobody reading
