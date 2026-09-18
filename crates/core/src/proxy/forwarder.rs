@@ -376,6 +376,24 @@ pub(crate) fn ensure_running() -> Result<u16> {
         }
     }
 
+    // Never start one from a test run. `GATE_CONNECT_TEST_HOME` is the seam
+    // that makes every per-user path hermetic, and `audit::` already reads it
+    // as "this is a test, do not reach outside the sandbox"; a forwarder is
+    // the strongest reason yet to do the same, because it is a detached
+    // process that deliberately outlives the run that started it. On Windows
+    // it stays inside the CI runner's job object, so the step waits for a
+    // process built never to exit: a `cargo test` that normally takes three
+    // minutes ran for an hour before this guard existed. Reusing a forwarder
+    // that is genuinely up is checked above and still allowed - this refuses
+    // only to create one - and the callers' fallback is the engine's own port,
+    // which is what they did before there was a forwarder at all.
+    if crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some_and(|v| !v.is_empty()) {
+        anyhow::bail!(
+            "refusing to spawn the environment forwarder under GATE_CONNECT_TEST_HOME; \
+             callers fall back to the engine's own port"
+        );
+    }
+
     // macOS: let launchd own the socket if it will. Verified rather than
     // assumed - if the agent does not produce a forwarder that answers, it is
     // removed and we fall back to spawning one, which is what the other
