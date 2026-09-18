@@ -358,6 +358,14 @@ impl<O: DesktopOps> DesktopManager<O> {
         // "another Gate Connect is on this machine's ports", not "something is
         // on that port".
         //
+        // The wider of the two questions, and why there are two. The refusal
+        // above asks `engine_hosted_elsewhere`, which counts only an instance
+        // that is *routing*, because that is what `status` has to report. An
+        // instance that is merely parked holds the same ports and routes
+        // nothing, so it belongs here and not there. This one cannot move up
+        // beside the other: until `stop_dormant` above, the relay answering
+        // might be our own.
+        //
         // `engine_hosted_elsewhere` above cannot see it: it reads the
         // system-proxy snapshot, and a parked instance cleared that on its way
         // to parking. Without this check the enable proceeded, found the
@@ -1355,43 +1363,10 @@ mod tests {
 
     /// Answer the relay identity challenge the way a second Gate Connect's
     /// parked relay would, so `enable` can tell it from a stranger.
-    ///
-    /// The thread ends with the test: the listener is moved in, and dropping
-    /// the manager is not what stops it - nothing else binds this port during
-    /// the test, so a lingering accept loop cannot affect another one.
-    fn parked_relay_of_another_instance() -> u16 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let dir = crate::env::app_support_dir().unwrap().join("proxy");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("relay-port"), port.to_string()).unwrap();
-        let token = crate::proxy::forwarder::load_or_create_token().unwrap();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            for stream in listener.incoming() {
-                let Ok(mut sock) = stream else { return };
-                let mut buf = [0u8; 2048];
-                let Ok(n) = sock.read(&mut buf) else { continue };
-                let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                let challenge = head
-                    .lines()
-                    .filter_map(|l| l.split_once(':'))
-                    .find(|(name, _)| {
-                        name.trim()
-                            .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
-                    })
-                    .map(|(_, v)| v.trim().to_string())
-                    .unwrap_or_default();
-                let proof = gate_connect_paths::forwarder_proof(&token, &challenge);
-                let resp = format!(
-                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nContent-Length: 0\r\n\
-                     Connection: close\r\n\r\n",
-                    gate_connect_paths::FORWARDER_PROOF_HEADER
-                );
-                let _ = sock.write_all(resp.as_bytes());
-            }
-        });
-        port
+    fn parked_relay_of_another_instance() -> crate::proxy::test_relay::TestRelay {
+        let relay = crate::proxy::test_relay::TestRelay::with_interception(0, false);
+        relay.persist_port();
+        relay
     }
 
     /// A second process must not enable while another Gate Connect holds the
@@ -1402,7 +1377,7 @@ mod tests {
     #[test]
     fn enable_refuses_when_another_instances_relay_is_parked() {
         let _home = TestHome::set();
-        let _port = parked_relay_of_another_instance();
+        let _relay = parked_relay_of_another_instance();
         let mgr = leak(FakeOps::new());
 
         let err = mgr.enable().expect_err("enable must refuse");

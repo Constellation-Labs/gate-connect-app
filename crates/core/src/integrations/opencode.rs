@@ -362,14 +362,19 @@ impl Integration for OpenCode {
         // Detected; keeping the config is what made it the steady state. Left
         // out, the two relay tools disagreed with each other about one parked
         // engine.
-        if !crate::proxy::relay_listening() {
+        // Liveness and interception, from the relay itself - see Codex's
+        // equivalent for why identity alone is not enough and why this is a
+        // measurement rather than the user's stored intent. Left out entirely
+        // until recently, which is how the two relay tools came to disagree
+        // about one parked engine.
+        let Some(report) = crate::proxy::relay_report() else {
             return Ok(Status::Drifted(format!(
                 "the Gate proxy is not running, so OpenCode cannot reach its providers \
                  ({expected_base:?} is a dead address) - turn the proxy on, or disconnect \
                  OpenCode to restore it"
             )));
-        }
-        if !crate::proxy::intent::load_intent() {
+        };
+        if !report.intercepting {
             return Ok(Status::Drifted(format!(
                 "routing is off, so OpenCode reaches its providers directly through \
                  {expected_base:?} rather than through Gate - turn routing on to route it"

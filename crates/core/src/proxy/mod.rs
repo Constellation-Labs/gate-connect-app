@@ -62,6 +62,8 @@ pub mod autostart_optout;
 // `system_proxy` modules wrap it with their platform rationale.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod port_persist;
+#[cfg(test)]
+pub(crate) mod test_relay;
 
 // Shared names/values for the proxy environment variables, which every
 // platform's `system_proxy` exports so CLI tools (Node/Bun/Python) route too.
@@ -785,7 +787,20 @@ pub fn engine_likely_running() -> bool {
 /// a second process adopts it rather than guessing (see `manager_linux`).
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn engine_hosted_elsewhere() -> Option<u16> {
-    if !engine_likely_running() {
+    // A relay that proves itself *and* reports interception is a Gate Connect
+    // that is routing. That is the question this answers, and it is narrower
+    // than "is another instance here": a parked one holds the same ports and
+    // routes nothing, so counting it would make `status` report running with
+    // routing off. `enable` asks the wider question separately, after it has
+    // released its own park, because until then the answer would be itself.
+    //
+    // This used to read the system-proxy snapshot plus a bare connect to the
+    // engine port. Both halves were weaker than they looked: the snapshot is a
+    // file whose presence outlives a crash, and a bare connect cannot tell our
+    // engine from anything else that happens to accept, so a stranger on the
+    // remembered port under a stale snapshot was reported as another Gate
+    // hosting the proxy. The relay is the part that can prove who it is.
+    if !relay_report().is_some_and(|r| r.intercepting) {
         return None;
     }
     let port = system_proxy::load_port().ok().flatten()?;
@@ -915,13 +930,42 @@ pub fn loopback_proxy_answers(url: &str) -> bool {
 /// port. A refused loopback connect returns immediately; the timeout only
 /// bounds pathological states.
 pub fn relay_listening() -> bool {
-    let Some(port) = relay::load_persisted_port() else {
-        return false;
-    };
-    let Ok(token) = forwarder::load_or_create_token() else {
-        return false;
-    };
-    gate_connect_paths::proves_ours(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)
+    relay_report().is_some()
+}
+
+/// What Gate's relay says about itself, or `None` when no relay of ours
+/// answers on the persisted port.
+///
+/// The proof is what makes this ours rather than whatever happens to accept;
+/// the rest is what it reports. `intercepting` is the measurement that replaced
+/// reading the routing intent: a stored preference is what the user asked for,
+/// and a status has to say what is happening. It also gets the headless
+/// `proxy relay` host right, which always intercepts and writes no intent file
+/// at all, so intent read it as not routing on a machine whose last explicit
+/// answer was "off".
+///
+/// An older relay that answers the proof without the header is read as
+/// intercepting: it predates parking, and every relay that could not park was
+/// routing whenever it was up.
+pub fn relay_report() -> Option<RelayReport> {
+    let port = relay::load_persisted_port()?;
+    let token = forwarder::load_or_create_token().ok()?;
+    let headers =
+        gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
+    let intercepting = headers
+        .iter()
+        .find(|(name, _)| name == gate_connect_paths::RELAY_INTERCEPTING_HEADER)
+        .map(|(_, value)| value != "0")
+        .unwrap_or(true);
+    Some(RelayReport { intercepting })
+}
+
+/// What [`relay_report`] learned from a relay that proved itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelayReport {
+    /// Rewriting to the gateway, rather than parked and forwarding straight
+    /// through to the tool's own provider.
+    pub intercepting: bool,
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
@@ -3358,11 +3402,16 @@ mod tests {
         );
     }
 
-    /// The distinction `engine_hosted_elsewhere` exists to draw, and the one
-    /// that decides whether `enable` refuses: a snapshot on disk means Gate
-    /// turned routing on, not that anyone is still serving it. A crashed
-    /// session leaves the file behind, and refusing an enable on that basis
+    /// The distinction `engine_hosted_elsewhere` exists to draw: a file on disk
+    /// means Gate turned routing on, not that anyone is still serving it. A
+    /// crashed session leaves it behind, and refusing an enable on that basis
     /// would lock the user out of the command that fixes their machine.
+    ///
+    /// The signal is the relay now, not the snapshot, so the fixture is a relay
+    /// that proves itself rather than any listener that accepts - and the
+    /// question narrowed to "is it routing", because a parked instance holds
+    /// the same ports and routes nothing. `enable` asks the wider question
+    /// separately.
     ///
     /// macOS/Windows only, like the function - Linux adopts its daemon instead
     /// of probing. Verified on Linux while writing by widening both cfgs, so
@@ -3395,27 +3444,45 @@ mod tests {
         // Nothing on disk at all: nobody has ever routed.
         assert_eq!(engine_hosted_elsewhere(), None, "no snapshot, no engine");
 
-        // A live listener, and a snapshot recording that routing is on. This is
-        // the menubar-app-is-running case, and the only one that must refuse.
+        // A live engine port, and a relay that proves itself and reports it is
+        // routing. This is the menubar-app-is-running case, and the only one
+        // that must refuse.
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binding a probe listener");
         let port = listener.local_addr().expect("listener address").port();
         system_proxy::save_port(port).expect("persisting the port");
         system_proxy::save_snapshot(&system_proxy::snapshot().expect("reading the system proxy"))
             .expect("saving a snapshot");
+        let relay = test_relay::TestRelay::start(0);
+        relay.persist_port();
         assert_eq!(
             engine_hosted_elsewhere(),
             Some(port),
-            "a snapshot plus a live listener is another process hosting the engine"
+            "a routing relay plus a live engine port is another process hosting the engine"
         );
 
-        // Same snapshot, listener gone: the crashed-session case. Enable has to
-        // go through, so this must read as "nobody is hosting".
+        // The same instance, parked. It still holds the ports, so `enable`
+        // still has to refuse against it, but it is routing nothing and must
+        // not be reported as hosting the proxy.
+        relay.set_intercepting(false);
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            None,
+            "a parked instance routes nothing, so nothing is hosting the proxy"
+        );
+        relay.set_intercepting(true);
+
+        // Engine port gone, relay still routing: the crashed-session case.
+        // Enable has to go through, so this must read as "nobody is hosting".
         drop(listener);
         assert_eq!(
             engine_hosted_elsewhere(),
             None,
             "a snapshot left by a crash must not look like a live engine"
         );
+
+        // And a relay that cannot prove itself is not ours, however alive the
+        // engine port looks.
+        drop(relay);
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);

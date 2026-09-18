@@ -334,7 +334,12 @@ fn plain_quit_unions_into_a_pending_snapshot() {
 /// whether the port answers, and a persisted port file on its own is exactly
 /// the state that used to read Connected over a dead address.
 fn bind_relay_port() -> (RelayStub, u16) {
-    let stub = RelayStub::bind(0);
+    bind_relay_port_with(true)
+}
+
+/// A relay on a fresh port, reporting whether it is routing.
+fn bind_relay_port_with(intercepting: bool) -> (RelayStub, u16) {
+    let stub = RelayStub::with_interception(0, intercepting);
     let port = stub.port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
@@ -386,16 +391,17 @@ fn codex_is_not_connected_while_routing_is_off() {
     let (_relay, port) = bind_relay_port();
     connect_codex(port);
 
-    seed_routing_intent(true);
     assert!(
         matches!(
             find(ToolId::Codex).unwrap().status().unwrap(),
             Status::Connected
         ),
-        "a live relay with routing on is Connected"
+        "a relay that reports it is routing is Connected"
     );
 
-    seed_routing_intent(false);
+    // The same relay, now parked: it still proves itself and still answers, and
+    // Codex reaches OpenAI through it, just not through Gate.
+    _relay.set_intercepting(false);
     match find(ToolId::Codex).unwrap().status().unwrap() {
         Status::Drifted(m) => {
             assert!(m.contains("routing is off"), "unexpected message: {m}");
@@ -415,19 +421,18 @@ fn opencode_is_not_connected_while_routing_is_off() {
     let _home = TempHome::set();
     connect_opencode();
     // `connect_opencode` persists 8402 and writes base URLs naming it, so the
-    // listener has to be on that port for the liveness probe to pass.
-    let _relay = RelayStub::bind(8402);
+    // listener has to be on that port for the probe to reach it.
+    let relay = RelayStub::bind(8402);
 
-    seed_routing_intent(true);
     assert!(
         matches!(
             find(ToolId::OpenCode).unwrap().status().unwrap(),
             Status::Connected
         ),
-        "a live relay with routing on is Connected"
+        "a relay that reports it is routing is Connected"
     );
 
-    seed_routing_intent(false);
+    relay.set_intercepting(false);
     match find(ToolId::OpenCode).unwrap().status().unwrap() {
         Status::Drifted(m) => {
             assert!(m.contains("routing is off"), "unexpected message: {m}");
@@ -535,5 +540,53 @@ fn a_listener_that_answers_the_challenge_is_our_relay() {
     assert!(
         gate_connect_core::proxy::relay_listening(),
         "a listener answering the challenge is our relay"
+    );
+}
+
+/// The two questions the manager asks about another instance are different, and
+/// the difference is what keeps `status` honest.
+///
+/// A parked instance holds the ports and routes nothing, so it must not be
+/// reported as hosting the proxy - that is what would put "running" on screen
+/// with routing off. `enable` still has to refuse against it, which it checks
+/// separately once it has released its own park.
+///
+/// macOS and Windows only, because the function is: Linux hosts its engine in a
+/// daemon and adopts it rather than asking whether another process has one. So
+/// this runs on two of the three CI runners and not on a Linux dev machine.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_parked_instance_holds_the_ports_without_hosting_the_proxy() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let (relay, _port) = bind_relay_port();
+    // The engine port has to answer too, or the question is decided by the
+    // probe rather than by the report under test.
+    let engine = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let engine_port = engine.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in engine.incoming() {
+            drop(stream);
+        }
+    });
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::write(dir.join("port"), engine_port.to_string()).unwrap();
+
+    assert_eq!(
+        gate_connect_core::proxy::engine_hosted_elsewhere(),
+        Some(engine_port),
+        "a routing instance is hosting the proxy"
+    );
+
+    relay.set_intercepting(false);
+
+    assert_eq!(
+        gate_connect_core::proxy::engine_hosted_elsewhere(),
+        None,
+        "a parked instance routes nothing, so nothing is hosting the proxy"
+    );
+    assert!(
+        gate_connect_core::proxy::relay_listening(),
+        "but it is still there, which is what keeps a second enable from taking its ports"
     );
 }

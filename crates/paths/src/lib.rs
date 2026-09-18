@@ -120,6 +120,14 @@ pub const FORWARDER_CHALLENGE_HEADER: &str = "x-gate-forwarder-challenge";
 /// base URL.
 pub const RELAY_HEALTH_PATH: &str = "/__gate/relay-health";
 
+/// Header the relay reports interception on: `1` while it rewrites to the
+/// gateway, `0` while it is parked and forwarding straight through.
+///
+/// Readable by any process that can reach the port, which is the same-user
+/// boundary `docs/security-notes-loopback.md` already accepts, and it carries
+/// nothing secret: whether Gate is routing is what the app's own window says.
+pub const RELAY_INTERCEPTING_HEADER: &str = "x-gate-relay-intercepting";
+
 /// Header carrying the forwarder's answer: hex SHA-256 of the token followed by
 /// the challenge. Only a process that can read the 0600 token file can produce
 /// it, which is exactly the claim the app needs before exporting the port it
@@ -268,6 +276,19 @@ pub fn bind_fresh(skip: &[u16]) -> std::io::Result<TcpListener> {
 /// bounded: a listener that answers slowly forever must not hold up an enable
 /// or a status read.
 pub fn proves_ours(port: u16, health_path: &str, token: &str) -> bool {
+    probe_with_proof(port, health_path, token).is_some()
+}
+
+/// [`proves_ours`], keeping the headers the listener returned.
+///
+/// The proof says the listener is ours; the headers are what it reports about
+/// itself. Returned together and only together, so nothing can read a claim
+/// from something that failed to prove it made it.
+pub fn probe_with_proof(
+    port: u16,
+    health_path: &str,
+    token: &str,
+) -> Option<Vec<(String, String)>> {
     use std::io::{Read, Write};
     use std::time::Duration;
 
@@ -281,19 +302,14 @@ pub fn proves_ours(port: u16, health_path: &str, token: &str) -> bool {
     let expected = forwarder_proof(token, &challenge);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250))
-    else {
-        return false;
-    };
+    let mut sock = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = sock.set_write_timeout(Some(Duration::from_millis(500)));
     let req = format!(
         "GET {health_path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{FORWARDER_CHALLENGE_HEADER}: \
          {challenge}\r\nConnection: close\r\n\r\n"
     );
-    if sock.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
+    sock.write_all(req.as_bytes()).ok()?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     while buf.len() < 4096 {
@@ -306,15 +322,16 @@ pub fn proves_ours(port: u16, health_path: &str, token: &str) -> bool {
             break;
         }
     }
-    let Ok(text) = std::str::from_utf8(&buf) else {
-        return false;
-    };
-    text.lines()
+    let text = std::str::from_utf8(&buf).ok()?;
+    let headers: Vec<(String, String)> = text
+        .lines()
         .filter_map(|line| line.split_once(':'))
-        .any(|(name, value)| {
-            name.trim().eq_ignore_ascii_case(FORWARDER_PROOF_HEADER)
-                && constant_time_eq(value.trim().as_bytes(), expected.as_bytes())
-        })
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    let proved = headers.iter().any(|(name, value)| {
+        name == FORWARDER_PROOF_HEADER && constant_time_eq(value.as_bytes(), expected.as_bytes())
+    });
+    proved.then_some(headers)
 }
 
 #[cfg(test)]

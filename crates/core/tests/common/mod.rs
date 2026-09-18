@@ -18,17 +18,32 @@ use std::net::TcpListener;
 pub struct RelayStub {
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    intercepting: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RelayStub {
-    /// Bind `port` (0 for any free one) and answer the proof from the token
-    /// file under the current test home.
+    /// Bind `port` (0 for any free one) and answer as a relay that is routing.
     pub fn bind(port: u16) -> Self {
+        Self::with_interception(port, true)
+    }
+
+    /// Bind and answer as a relay that is *parked*: proving itself, forwarding
+    /// straight through, routing nothing. A tool pointed at it works and is not
+    /// routed, which is a different status from either Connected or dead.
+    pub fn parked(port: u16) -> Self {
+        Self::with_interception(port, false)
+    }
+
+    /// Bind `port` (0 for any free one) and answer the proof from the token
+    /// file under the current test home, reporting `intercepting`.
+    pub fn with_interception(port: u16, intercepting: bool) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", port))
             .unwrap_or_else(|e| panic!("binding 127.0.0.1:{port} for the relay stub: {e}"));
         let port = listener.local_addr().unwrap().port();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
+        let intercepting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(intercepting));
+        let reports = intercepting.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -58,17 +73,36 @@ impl RelayStub {
                 .unwrap_or_default();
                 let proof = gate_connect_paths::forwarder_proof(token.trim(), &challenge);
                 let resp = format!(
-                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    gate_connect_paths::FORWARDER_PROOF_HEADER
+                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\n{}: {}\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_PROOF_HEADER,
+                    gate_connect_paths::RELAY_INTERCEPTING_HEADER,
+                    if reports.load(std::sync::atomic::Ordering::Relaxed) {
+                        "1"
+                    } else {
+                        "0"
+                    },
                 );
                 let _ = sock.write_all(resp.as_bytes());
             }
         });
-        RelayStub { port, stop }
+        RelayStub {
+            port,
+            stop,
+            intercepting,
+        }
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Park or unpark it without rebinding. A real park keeps the same
+    /// listener and stops rewriting, and rebinding a just-dropped stub races
+    /// its accept loop for the port anyway.
+    pub fn set_intercepting(&self, intercepting: bool) {
+        self.intercepting
+            .store(intercepting, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

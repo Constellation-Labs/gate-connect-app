@@ -360,34 +360,29 @@ impl Integration for Codex {
         // Codex dials a dead loopback port (engine crash-reverted, or routing
         // never restored). Drift rather than Connected also keeps the
         // master-off sweep repairing it.
-        if !crate::proxy::relay_listening() {
+        // Liveness and interception, from the relay itself. Identity alone is
+        // not enough: the persisted relay port survives restarts precisely so
+        // configs stay valid, so the check above reads Connected while Codex
+        // dials a port nothing is bound to. And a relay that answers is not a
+        // relay that routes - parked, it forwards every request to the tool's
+        // own provider - so reporting Connected off liveness alone is a green
+        // pill over traffic going direct, which is the one thing this status
+        // exists to prevent.
+        //
+        // The relay reports interception on its health path now. This used to
+        // read `intent::load_intent()`, which is the user's stored preference
+        // rather than a measurement, and got the headless `proxy relay` host
+        // backwards: it always intercepts and writes no intent file, so on a
+        // machine whose last explicit answer was "off" it was reported as not
+        // routing while it routed.
+        let Some(report) = crate::proxy::relay_report() else {
             return Ok(Status::Drifted(format!(
                 "the Gate proxy is not running, so Codex cannot reach its provider \
                  ({expected_base:?} is a dead address) - turn the proxy on, or disconnect Codex \
                  to restore it"
             )));
-        }
-
-        // The port answering is not the same as the port routing, and with the
-        // engine parked it is the ordinary state: routing off leaves the relay
-        // bound and forwarding every request to the tool's real upstream under
-        // the tool's own credential. `relay_listening` is a bare TCP probe, so
-        // on its own it would read a parked relay as Connected - a green pill
-        // over traffic that is not going through Gate, which is the one thing
-        // this integration's status exists to prevent.
-        //
-        // The routing intent is the signal. The relay does publish a health
-        // endpoint now, but it proves *identity* - that the listener can read
-        // the 0600 token - and says nothing about whether it is intercepting,
-        // which is not observable from outside the process hosting it. Having
-        // it report that too would retire the inaccuracy below; it is left for
-        // its own change rather than folded into a status fix. The known inaccuracy
-        // is the headless `proxy relay` host, which always intercepts and
-        // touches no intent file - on a machine whose last explicit answer was
-        // "off" this reports not-routed while it routes. That is the safe
-        // direction of wrong, and it is the same trade `relay_listening`'s own
-        // doc comment makes in the other direction.
-        if !crate::proxy::intent::load_intent() {
+        };
+        if !report.intercepting {
             return Ok(Status::Drifted(format!(
                 "routing is off, so Codex reaches its provider directly through \
                  {expected_base:?} rather than through Gate - turn routing on to route it"
