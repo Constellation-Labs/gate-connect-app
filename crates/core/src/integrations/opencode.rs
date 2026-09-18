@@ -58,6 +58,13 @@
 //! `<app_support_dir>/opencode-state.json` so disconnect restores the
 //! file byte-equivalent.
 
+//! **Config granularity: per process.** Measured 2026-09-18 on OpenCode
+//! 1.18.27, driving a headless `opencode serve` against two loopback listeners
+//! with a custom provider whose `baseURL` was repointed underneath it. A second
+//! message on the same session still went to the original address. So a running
+//! OpenCode has to be restarted; `opencode run` is a fresh process and needs
+//! nothing.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

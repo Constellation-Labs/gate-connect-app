@@ -33,6 +33,15 @@
 //!
 //! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
+//! **Config granularity: per process.** Measured 2026-09-18 on Claude Code
+//! 2.1.276, driving `claude --bare -p --input-format stream-json` against two
+//! loopback listeners and watching which one a turn reached. A fresh
+//! invocation picks up an edited `settings.json` immediately; a session already
+//! running kept the old address across a second turn. That matches the
+//! mechanism - the `env` block becomes process environment variables, which
+//! cannot change under a running process - so "restart it" is the right advice
+//! here, unlike Codex. See `integrations::codex` for the tool where it is not.
+
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::fs;

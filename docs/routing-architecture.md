@@ -387,8 +387,36 @@ restarted, unless the user resumes it. Telling a Codex user to reopen the tool
 is advice that does nothing for either half. `integrations::codex` carries the
 measurement and emits the copy: **"New conversations will go through Gate."**
 
-The same probe is worth running on the other config tools before the UI makes a
-single claim for all of them. It has not been.
+The other config tools were put through the same probe on 2026-09-18, and the
+answer is per tool:
+
+| tool | version | granularity | how |
+| --- | --- | --- | --- |
+| Codex | 0.146.0-alpha.3.1 | **per conversation** | measured |
+| Claude Code | 2.1.276 | per process | measured |
+| OpenCode | 1.18.27 | per process | measured |
+| OpenClaw | 2026.6.11 | per gateway process | vendor-stated, not measured |
+| Hermes | - | unknown | not runnable |
+
+Claude Code and OpenCode behave the way this document always assumed, and
+Claude Code's reason is structural: its `env` block becomes process environment
+variables, which cannot change under a running process. OpenCode was measured
+through a headless `opencode serve` with its provider `baseURL` repointed
+underneath it; a second message on the same session still went to the original
+address.
+
+OpenClaw is the one to be careful with. `openclaw config set proxy.proxyUrl ...`
+answers "Restart the gateway to apply", and a running gateway logged nothing
+about a change made underneath it, but the probe could not be completed: a
+gateway on a fresh profile makes no outbound request at all, and every way to
+force one needs a provider credential. Uncontradicted is not the same as
+measured, and the module doc says so too.
+
+Hermes could not be checked. The only install available had a launcher pointing
+at a venv binary that no longer exists.
+
+So Codex remains the only tool where "restart it" is the wrong thing to say,
+and it is the one whose module doc asserted the opposite hardest.
 
 **The restart hint is invisible.** OpenClaw, Hermes and now Codex emit it via
 `eprintln!`, which goes nowhere in a GUI build.

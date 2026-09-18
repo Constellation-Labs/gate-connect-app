@@ -90,6 +90,16 @@
 //! the original `proxy.proxyUrl` (and whether a `proxy` block existed at all),
 //! keeping our markers out of the user-owned config file.
 
+//! **Config granularity: per gateway process, on OpenClaw's own say-so rather
+//! than on a measurement.** `openclaw config set proxy.proxyUrl ...` answers
+//! "Updated proxy.proxyUrl. Restart the gateway to apply." (2026.6.11), and a
+//! running gateway logged nothing about a change made underneath it. The
+//! two-listener probe that settled Codex, Claude Code and OpenCode could not be
+//! completed here: a gateway on a fresh profile makes no outbound request at
+//! all, and every way to force one needs a provider credential. So this line is
+//! vendor-stated and uncontradicted, not measured. Do not upgrade it to
+//! "measured" without running the probe against a credentialed profile.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

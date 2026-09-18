@@ -60,10 +60,29 @@ than anything shipped so far: `disconnect` does not remove it either, it leaves
 a passthrough stub, because a thread whose provider name stops resolving cannot
 resume at all.
 
-**The probe was run against Codex only.** Claude Code, OpenCode, OpenClaw and
-Hermes are still assumed to read once at startup, on the same kind of comment
-that turned out to be wrong here. The scripts are small and the seam is
-`CODEX_HOME`-shaped for each of them.
+**The other four were then put through the same probe**, and Codex stays the
+only exception:
+
+| tool | version | granularity | how |
+| --- | --- | --- | --- |
+| Codex | 0.146.0-alpha.3.1 | **per conversation** | measured |
+| Claude Code | 2.1.276 | per process | measured |
+| OpenCode | 1.18.27 | per process | measured |
+| OpenClaw | 2026.6.11 | per gateway process | vendor-stated, not measured |
+| Hermes | - | unknown | not runnable |
+
+Claude Code's answer is also structural, which is why it is safe to lean on: the
+`env` block becomes process environment variables, and those cannot change under
+a running process. OpenCode was driven through a headless `opencode serve` with
+its provider `baseURL` repointed underneath it.
+
+**OpenClaw is uncontradicted rather than measured**, and the difference matters
+because that is exactly the footing the Codex claim was on before it turned out
+to be wrong. Its CLI says "Restart the gateway to apply" and a running gateway
+logged nothing about a change made underneath it, but a gateway on a fresh
+profile makes no outbound request at all, and forcing one needs a provider
+credential. **Hermes was not checked**: the only install available had a
+launcher pointing at a venv binary that no longer exists.
 
 ## 2. The teardown, and the premise it rests on
 
