@@ -33,11 +33,7 @@ fn temp_secrets_dir() -> std::path::PathBuf {
 
 /// The seam's file for one entry. Mirrors `keychain::secret_file`: the name is
 /// `{service}__{account}` with the path-separator chars folded.
-fn secret_file(
-    dir: &std::path::Path,
-    service: &str,
-    account: &str,
-) -> std::path::PathBuf {
+fn secret_file(dir: &std::path::Path, service: &str, account: &str) -> std::path::PathBuf {
     dir.join(format!("{service}__{account}").replace(['/', '\\', ':'], "_"))
 }
 
