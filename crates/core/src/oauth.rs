@@ -23,6 +23,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use time::OffsetDateTime;
 
 use crate::env;
@@ -40,6 +41,46 @@ const KEYCHAIN_LABEL: &str = "oauth-tokens";
 /// In-memory only (a restart re-probes); cleared when new tokens are stored
 /// (re-login) or the bundle is cleared (sign-out).
 static SESSION_REJECTED_BY_GATEWAY: AtomicBool = AtomicBool::new(false);
+
+/// The token bundle as last read or written by this process, with the
+/// [`keychain::write_epoch`] it was valid at.
+///
+/// **Why.** [`current`] is on a 30-second timer - the desktop app's background
+/// loop and the CLI relay both tick on [`REFRESH_INTERVAL_SECS`] - and the
+/// bundle is stored chunked, so one read is six separate secret-store lookups.
+/// On Linux each of those is a fresh D-Bus connection that costs
+/// `gnome-keyring-daemon` ~8 KB it never gives back, which is ~130 MB a day of
+/// somebody else's memory for a value that changes once an hour. The read that
+/// matters is the first one; after that this process is the only thing that
+/// changes the bundle, through [`store`] and [`clear`] right here.
+///
+/// **Staleness is bounded and safe.** Another process refreshing the session
+/// does not strand this one: [`refresh_stored`] tests the expiry of whatever it
+/// holds, so a cached bundle that ages out is refreshed here rather than
+/// served, and Cognito does not rotate refresh tokens on refresh (see
+/// `post_token`'s `fallback_refresh`), so the refresh token in a stale bundle
+/// still works. The epoch covers the other direction: any write through
+/// [`keychain`] in this process - including a test resetting the backend -
+/// moves it and this is re-read.
+static CACHED_BUNDLE: Mutex<Option<(u64, Option<OAuthTokens>)>> = Mutex::new(None);
+
+/// Serve the cached bundle if it was filled at the current write epoch.
+fn cached_bundle() -> Option<Option<OAuthTokens>> {
+    let guard = CACHED_BUNDLE
+        .lock()
+        .expect("oauth token cache mutex poisoned");
+    guard
+        .as_ref()
+        .filter(|(epoch, _)| *epoch == keychain::write_epoch())
+        .map(|(_, tokens)| tokens.clone())
+}
+
+/// Remember `tokens` as the bundle in the store, at the current write epoch.
+fn cache_bundle(tokens: Option<OAuthTokens>) {
+    *CACHED_BUNDLE
+        .lock()
+        .expect("oauth token cache mutex poisoned") = Some((keychain::write_epoch(), tokens));
+}
 
 /// Record a gateway verdict that the stored session is dead. [`live_session`]
 /// reports `None` until a new login stores fresh tokens.
@@ -462,19 +503,32 @@ pub fn store(tokens: &OAuthTokens) -> Result<()> {
     let user = env::current_user()?;
     let json = serde_json::to_string(tokens).context("serializing oauth tokens")?;
     keychain::set(&service(), &user, &json)?;
+    // After the write, so the epoch this is recorded at is the one the write
+    // produced. Doing it first would cache the bundle at the *old* epoch and
+    // throw it away again on the next read.
+    cache_bundle(Some(tokens.clone()));
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     Ok(())
 }
 
 /// Load the stored token bundle, if any.
 pub fn current() -> Result<Option<OAuthTokens>> {
-    let user = env::current_user()?;
-    match keychain::get(&service(), &user)? {
-        Some(raw) => Ok(Some(
-            serde_json::from_str(&raw).context("parsing stored oauth tokens")?,
-        )),
-        None => Ok(None),
+    if let Some(tokens) = cached_bundle() {
+        return Ok(tokens);
     }
+    let user = env::current_user()?;
+    // Epoch first, and keep the result only if no write moved it while we read
+    // - the bundle spans six entries, so a read racing a `store` can assemble a
+    // mix of both. Same reasoning as `keychain::get_cached`.
+    let before = keychain::write_epoch();
+    let tokens = match keychain::get(&service(), &user)? {
+        Some(raw) => Some(serde_json::from_str(&raw).context("parsing stored oauth tokens")?),
+        None => None,
+    };
+    if keychain::write_epoch() == before {
+        cache_bundle(tokens.clone());
+    }
+    Ok(tokens)
 }
 
 /// Delete the stored token bundle. Idempotent. Also drops any recorded
@@ -482,6 +536,7 @@ pub fn current() -> Result<Option<OAuthTokens>> {
 pub fn clear() -> Result<()> {
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
+    cache_bundle(None);
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     Ok(())
 }

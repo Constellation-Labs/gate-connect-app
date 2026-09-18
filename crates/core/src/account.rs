@@ -79,11 +79,17 @@ pub fn service() -> String {
 /// Cognito token is the credential, so a missing key is expected and loads as
 /// an empty string . Missing what's required returns None.
 pub fn load() -> Result<Option<Account>> {
-    let Some(file) = read_account_file()? else {
+    let Some((file, raw)) = read_account_file_raw()? else {
         return Ok(None);
     };
     let user = env::current_user()?;
-    let stored_key = keychain::get(&service(), &user)?;
+    // Witnessed by `account.json` rather than read outright: on Linux the
+    // proxy manager calls this every 30 seconds to re-push the intercept
+    // config, and a plain read there costs the secret-store daemon ~8 KB a
+    // time, permanently. `save` writes the file and the key in one breath, so
+    // an unchanged file means an unchanged key - including one written by the
+    // CLI while the app is running. See `keychain::get_cached`.
+    let stored_key = keychain::get_cached(&service(), &user, &raw)?;
     let api_key = match (file.auth_mode, stored_key) {
         (_, Some(key)) => key,
         (AuthMode::OAuth, None) => String::new(),
@@ -134,6 +140,14 @@ pub fn gateway_is_staging() -> bool {
 /// on-disk half of the account (gateway URL + key prefix) that both the UI
 /// state helpers and [`save`] read without touching the keychain.
 fn read_account_file() -> Result<Option<AccountFile>> {
+    Ok(read_account_file_raw()?.map(|(parsed, _)| parsed))
+}
+
+/// [`read_account_file`], also handing back the bytes it parsed. Only [`load`]
+/// wants those, as the witness for the keychain read below: `save` writes this
+/// file and the Gate key together, so the file cannot be byte-identical across
+/// a key change.
+fn read_account_file_raw() -> Result<Option<(AccountFile, String)>> {
     let path = config_path()?;
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -142,7 +156,7 @@ fn read_account_file() -> Result<Option<AccountFile>> {
     };
     let parsed: AccountFile = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    Ok(Some(parsed))
+    Ok(Some((parsed, raw)))
 }
 
 /// Persist account state.
