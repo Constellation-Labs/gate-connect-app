@@ -58,6 +58,13 @@
 //! `<app_support_dir>/opencode-state.json` so disconnect restores the
 //! file byte-equivalent.
 
+//! **Config granularity: per process.** Measured 2026-09-18 on OpenCode
+//! 1.18.27, driving a headless `opencode serve` against two loopback listeners
+//! with a custom provider whose `baseURL` was repointed underneath it. A second
+//! message on the same session still went to the original address. So a running
+//! OpenCode has to be restarted; `opencode run` is a fresh process and needs
+//! nothing.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -66,7 +73,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -255,6 +262,31 @@ impl Integration for OpenCode {
                 .and_then(|v| v.as_str())
                 .is_some_and(looks_local)
         }))
+    }
+
+    /// `provider.<id>.options.baseURL` names the loopback relay, which dies with the engine.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Relay
+    }
+
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        // Every provider's `baseURL`, not only the ones the sidecar says we
+        // wrote: a base URL the user has since repointed is one nothing of
+        // ours is bound to, and the address rule will say so.
+        Ok(load_settings()?
+            .and_then(|s| s.get("provider")?.as_object().cloned())
+            .map(|providers| {
+                providers
+                    .values()
+                    .filter_map(|p| {
+                        p.get("options")?
+                            .get("baseURL")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     fn status(&self) -> Result<Status> {

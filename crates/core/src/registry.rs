@@ -87,6 +87,32 @@ impl fmt::Display for Status {
     }
 }
 
+/// How a tool's traffic reaches Gate, which decides what its config *names* and
+/// therefore what happens to that tool when the thing it names goes away.
+///
+/// The per-tool table in `docs/routing-architecture.md` has stated this in prose
+/// since the proxy rewrites; this is the same fact where code can ask for it.
+/// Declared per integration rather than inferred from which `ConnectInput`
+/// field `connect` reads, because a caller deciding a teardown needs the answer
+/// before any connect runs - and for the reason `requires_engine` gives for
+/// being declared rather than matched off an error string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mechanism {
+    /// The config carries a loopback **base URL** for the reverse-proxy relay,
+    /// which lives in the engine and dies with it. On macOS and Windows the
+    /// engine lives in the GUI process, so a plain quit takes this address
+    /// with it and nothing fronts it.
+    Relay,
+    /// The config carries a **proxy address**: the forwarder's, since tool
+    /// configs moved off the engine's own port. The forwarder is a separate
+    /// process that outlives the GUI on purpose, so this address keeps
+    /// answering across a plain quit and forwards direct.
+    ForwardProxy,
+    /// Not a config at all: the machine-wide exported variables, which also
+    /// name the forwarder and reach only processes started after the export.
+    Environment,
+}
+
 pub trait Integration: Send + Sync {
     fn id(&self) -> ToolId;
     fn display_name(&self) -> &'static str;
@@ -111,6 +137,49 @@ pub trait Integration: Send + Sync {
     /// credential - today that is the CLI's `set-upstream` only.
     fn requires_upstream_credential(&self) -> bool {
         false
+    }
+
+    /// Which mechanism carries this tool's traffic - see [`Mechanism`]. Required
+    /// rather than defaulted: a default would be a trap in exactly the way the
+    /// `requires_upstream_credential` doc above describes, silently filing a
+    /// new integration under a rule that may not fit it.
+    fn mechanism(&self) -> Mechanism;
+
+    /// Every loopback address this tool's configuration currently names for
+    /// reaching Gate, read from the file as it is now. Empty when the tool is
+    /// not installed or carries no Gate values.
+    ///
+    /// The raw material for the one question a plain quit asks: does the
+    /// address this config names die with the process? That is decided by
+    /// `proxy::address_dies_with_gui`, per address, not per tool - because
+    /// which address a config holds is per install (an engine-port fallback,
+    /// a pre-forwarder install, a base URL the user repointed by hand), and
+    /// [`Mechanism`] cannot see any of that. The integration reports what it
+    /// reads; the policy lives in one place.
+    fn configured_addresses(&self) -> Result<Vec<String>>;
+
+    /// Does this tool's `connect` need the forward-proxy engine to be up?
+    ///
+    /// True for the [`Mechanism::ForwardProxy`] integrations - Claude Code,
+    /// OpenClaw, Hermes. They point *all* of their egress at a proxy address
+    /// (the forwarder's now, the engine's before that), so their `connect`
+    /// refuses while the engine is not routing rather than point a tool's
+    /// whole network at something that forwards nowhere useful. That is a
+    /// deliberate refusal, not an error to retry.
+    ///
+    /// Derived from [`mechanism`](Self::mechanism) rather than declared twice:
+    /// it is the same fact. Declared at all, rather than read off the error
+    /// string, so a caller can ask before it calls - the two reconcile passes
+    /// and the master-on restore all want the same question, and matching on a
+    /// message to answer it is how one of them ended up recording a failed
+    /// write for a file it never opened.
+    ///
+    /// False for the relay tools, whose `connect` needs only a persisted relay
+    /// port, and for the environment channel - though note `EnvProxy::connect`
+    /// also refuses without an engine URL; that is pre-existing and left as it
+    /// is, since nothing reconciles that row.
+    fn requires_engine(&self) -> bool {
+        matches!(self.mechanism(), Mechanism::ForwardProxy)
     }
 
     /// Does the tool's current on-disk config carry Gate Connect's own

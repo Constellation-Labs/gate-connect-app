@@ -33,13 +33,22 @@
 //!
 //! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
+//! **Config granularity: per process.** Measured 2026-09-18 on Claude Code
+//! 2.1.276, driving `claude --bare -p --input-format stream-json` against two
+//! loopback listeners and watching which one a turn reached. A fresh
+//! invocation picks up an edited `settings.json` immediately; a session already
+//! running kept the old address across a second turn. That matches the
+//! mechanism - the `env` block becomes process environment variables, which
+//! cannot change under a running process - so "restart it" is the right advice
+//! here, unlike Codex. See `integrations::codex` for the tool where it is not.
+
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "Anthropic";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -138,6 +147,24 @@ impl Integration for ClaudeCode {
         Ok(env::claude_code_config_dir()?.exists())
     }
 
+    /// `settings.json` names the forwarder's proxy address.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::ForwardProxy
+    }
+
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        Ok(load_settings()?
+            .and_then(|s| {
+                s.get("env")?
+                    .as_object()?
+                    .get(KEY_HTTPS_PROXY)?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .into_iter()
+            .collect())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -173,18 +200,31 @@ impl Integration for ClaudeCode {
             )));
         }
 
-        let expected_proxy = match crate::proxy::engine_proxy_url() {
-            Some(proxy) => crate::proxy::claude_code_proxy_url(&proxy)?,
-            None => {
-                return Ok(Status::Drifted(
-                    "the Gate proxy has not been enabled yet - turn it on to route Claude Code"
-                        .into(),
-                ));
-            }
+        // Every address that is ours counts, not only the one `connect` writes
+        // today. `proxy::tool_proxy_identity_urls` says why there is more than
+        // one: an install configured before tool configs moved to the forwarder
+        // holds the engine's address, and that config is correct rather than
+        // drifted. Reporting it otherwise would draw a repair over a working
+        // file and send the reconcile pass to rewrite one that is already right.
+        let ours: Vec<String> = crate::proxy::tool_proxy_identity_urls()
+            .iter()
+            .map(|url| crate::proxy::claude_code_proxy_url(url))
+            .collect::<Result<_>>()?;
+        // The liveness half is still `engine_proxy_url`, which is `None` while
+        // nothing is routing. An empty list means no port has ever been bound,
+        // which reads the same to the user and is folded in here rather than
+        // given a second sentence.
+        let Some(expected_proxy) = ours
+            .first()
+            .filter(|_| crate::proxy::engine_proxy_url().is_some())
+        else {
+            return Ok(Status::Drifted(
+                "the Gate proxy has not been enabled yet - turn it on to route Claude Code".into(),
+            ));
         };
 
         match env_block.get(KEY_HTTPS_PROXY).and_then(|v| v.as_str()) {
-            Some(proxy) if proxy == expected_proxy => {}
+            Some(proxy) if ours.iter().any(|ours| ours == proxy) => {}
             Some(proxy) => {
                 return Ok(Status::Drifted(format!(
                     "{KEY_HTTPS_PROXY} in settings.json is {proxy:?}, expected {expected_proxy:?}"
