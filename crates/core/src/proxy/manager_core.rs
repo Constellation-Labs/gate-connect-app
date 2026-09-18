@@ -178,6 +178,10 @@ impl<O: DesktopOps> DesktopManager<O> {
     fn park_dormant(&self, running: engine::RunningEngine) {
         running.set_intercept(false);
         running.update_domains(&[]);
+        // Not spendable while parked, but it was still resident for the rest
+        // of the session. A re-enable builds a fresh engine, so nothing needs
+        // this copy back.
+        running.clear_credentials();
         let mut slot = self.dormant.lock().expect("dormant engine mutex poisoned");
         // Take the old handle out before joining it: `stop()` blocks, and
         // holding this lock across it would make a second caller wait on a
@@ -294,14 +298,6 @@ impl<O: DesktopOps> DesktopManager<O> {
             drop(guard);
             return self.status();
         }
-        // Release a parked engine before anything probes a port or binds one.
-        // It holds the gateway URL it was started with, which `engine::start`
-        // takes once and never updates, so it cannot be adopted; and its
-        // listener is sitting on exactly the address `preferred_engine_port`
-        // is about to ask for. `stop()` joins, so the address is free by the
-        // time we bind and the re-enable lands back on the port the exported
-        // variables already name.
-        self.stop_dormant();
         // The lock above only orders concurrent enables *within* this process.
         // Across processes there is nothing to hold, so this is where a second
         // one has to be refused: the comment above is exactly what happens
@@ -346,6 +342,16 @@ impl<O: DesktopOps> DesktopManager<O> {
         let snapshot = self.ops.snapshot()?;
         self.ops.save_snapshot(&snapshot)?;
 
+        // Release a parked engine now and not earlier. It has to go before the
+        // bind, because it holds exactly the address `preferred_engine_port`
+        // names and `bind_preferred` refuses to shadow a live listener - the
+        // new engine would land on a fresh band port and rewrite the persisted
+        // files under every tool config. And it has to go *after* the exits
+        // above: a failed enable used to release the park on its way to
+        // refusing, so "turn routing on, cancel the admin prompt" left the
+        // already-running tools with neither routing nor passthrough. Nothing
+        // between here and the bind can fail.
+        self.stop_dormant();
         let running = engine::start(
             engine::EngineConfig {
                 gateway_base_url: account.gateway_base_url.clone(),
@@ -1228,7 +1234,7 @@ mod tests {
 
     /// Crash notifications seen so far, installing the observer on first use.
     ///
-    /// One counter for every test that asserts on it, because the observer is
+    /// One counter shared by every test that asserts on it, because the observer is
     /// a process-global `OnceLock` where the first set wins: a second test
     /// installing its own closure would silently get a counter that never
     /// moves, and would fail or pass depending on test order.
@@ -1266,6 +1272,7 @@ mod tests {
             0,
             "restore path must not force off"
         );
+        mgr.stop_dormant(); // a disable parks; release it so the port band is free for the next test
     }
 
     #[test]
@@ -1282,6 +1289,7 @@ mod tests {
         assert_eq!(mgr.ops.count("point_system_proxy"), 1);
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1365,6 +1373,7 @@ mod tests {
         // Fail-open would strand HTTPS at the dead engine port; the contract
         // is force-off when the exact restore is impossible.
         assert_eq!(mgr.ops.count("force_off"), 1);
+        mgr.stop_dormant(); // a disable parks; release it so the port band is free for the next test
     }
 
     #[test]
@@ -1379,6 +1388,7 @@ mod tests {
         // old port; a restart must come back on the same address.
         assert_eq!(first, second, "the persisted port must be rebound");
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1480,6 +1490,7 @@ mod tests {
         assert!(mgr.ops.index_of("ensure_env_forwarder") < mgr.ops.index_of("enable_env"));
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     /// A forwarder that will not start costs the fail-open property and
@@ -1504,6 +1515,7 @@ mod tests {
         );
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     /// A plain disable must leave the forwarder alone - it is exactly then
@@ -1524,6 +1536,7 @@ mod tests {
 
         mgr.untrust_ca().expect("untrust after disable");
         assert_eq!(mgr.ops.count("stop_env_forwarder"), 1);
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1603,7 +1616,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_and_gateway_switch_release_the_parked_ports() {
+    fn exit_releases_the_ports_and_a_gateway_switch_releases_a_park() {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
