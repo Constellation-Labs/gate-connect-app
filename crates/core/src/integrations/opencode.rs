@@ -353,6 +353,28 @@ impl Integration for OpenCode {
                     .join(", ")
             )));
         }
+        // Liveness and routing, the same pair Codex checks and for the same
+        // reason: the identity check above compares against the *persisted*
+        // relay port, which survives restarts precisely so configs stay valid,
+        // so on its own it reads Connected while OpenCode dials a dead port -
+        // and, with the engine parked, while it reaches its providers directly.
+        // This was invisible until routing-off stopped sweeping OpenCode to
+        // Detected; keeping the config is what made it the steady state. Left
+        // out, the two relay tools disagreed with each other about one parked
+        // engine.
+        if !crate::proxy::relay_listening() {
+            return Ok(Status::Drifted(format!(
+                "the Gate proxy is not running, so OpenCode cannot reach its providers \
+                 ({expected_base:?} is a dead address) - turn the proxy on, or disconnect \
+                 OpenCode to restore it"
+            )));
+        }
+        if !crate::proxy::intent::load_intent() {
+            return Ok(Status::Drifted(format!(
+                "routing is off, so OpenCode reaches its providers directly through \
+                 {expected_base:?} rather than through Gate - turn routing on to route it"
+            )));
+        }
         if !drifted.is_empty() {
             return Ok(Status::Drifted(format!(
                 "some providers were edited by hand and no longer route via Gate: {}",

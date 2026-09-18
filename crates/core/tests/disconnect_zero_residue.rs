@@ -113,6 +113,31 @@ fn seed_engine_port(port: u16) {
     fs::write(&path, port.to_string()).unwrap();
 }
 
+/// Bind the port the fixtures name, so the liveness probes in `status()` find
+/// something listening.
+///
+/// Returned so the caller keeps it alive for the test. Needed since `status`
+/// began asking whether the address a config names is *answering*, rather than
+/// inferring it from a port file plus a running engine: those are two different
+/// processes now that tool configs name the forwarder, and a Connected
+/// precondition that never bound anything was asserting a state the code is
+/// right to refuse.
+fn bind_seeded_port(port: u16) -> std::net::TcpListener {
+    std::net::TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("binding 127.0.0.1:{port} for the liveness probe: {e}"))
+}
+
+/// Record routing intent, which the relay tools consult to tell a parked relay
+/// from a routing one. Without it OpenCode reads the honest "routing is off".
+fn seed_routing_intent() {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("routing-intent.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, r#"{"enabled":true}"#).unwrap();
+}
+
 /// Seed a CA cert, the way a started engine mints one. Hermes needs it so
 /// `ca_bundle::ensure()` has something to append; Claude Code's `connect()`
 /// refuses outright without it, rather than writing a proxy whose leaf the
@@ -608,6 +633,10 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);
+    // Connected now means the relay is answering and routing, not merely that
+    // a port was persisted: see `bind_seeded_port`.
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
 
     let cfg = env::opencode_config_path().unwrap();
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
@@ -807,11 +836,16 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         .connect(&connect_input(9977))
         .expect("a re-connect must be idempotent");
 
-    // Not Connected here: no engine is running against this temp HOME. Drift is
-    // the truthful answer and still counts as managed for the master-off sweep.
+    // Not Connected here: nothing is listening against this temp HOME, and no
+    // engine is running. Drift is the truthful answer and still counts as
+    // managed for the master-off sweep. "nothing is listening" is what that
+    // state says since status began probing the address in the file rather
+    // than inferring reachability from a running engine.
     match integ.status().unwrap() {
         Status::Drifted(m) => assert!(
-            m.contains("not running") || m.contains("does not match"),
+            m.contains("nothing is listening")
+                || m.contains("not running")
+                || m.contains("does not match"),
             "unexpected status message: {m}"
         ),
         other => panic!("expected drift with no engine running, got {other:?}"),

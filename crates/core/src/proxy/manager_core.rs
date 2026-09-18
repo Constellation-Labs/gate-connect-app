@@ -440,6 +440,23 @@ impl<O: DesktopOps> DesktopManager<O> {
                      still route through Gate, but CLI tools that read HTTPS_PROXY will not"
                 );
             }
+        } else if crate::proxy::forwarder_port_persisted() {
+            // The machine-wide export is declined, but the forwarder may still
+            // be named by something: `tool_proxy_url` writes its address into
+            // Claude Code's, OpenClaw's and Hermes's own configs, and those
+            // files outlive the process. The forwarder does not - it goes at
+            // logout - and nothing else here would start it again, so those
+            // tools would come back pointed at a port with nothing behind it
+            // while the engine is up. Ensuring it is idempotent (a live one
+            // answers its health check and is reused), and a failure is not
+            // fatal: `address_health` reads the dead address and the tools say
+            // so instead of reporting Connected over it.
+            if let Err(e) = self.ops.ensure_env_forwarder() {
+                eprintln!(
+                    "gate proxy: could not start the environment forwarder ({e}); tool configs \
+                     that name it cannot reach their providers until it starts"
+                );
+            }
         }
 
         *guard = Some(running);

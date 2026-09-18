@@ -97,6 +97,18 @@ does not.
 - **It is the same signed executable as the app**, shipped as a sidecar, and it
   inherits the environment of whichever process spawned it.
 
+**It fronts tool configurations as well as the variables now.** This section
+first described the forwarder as the address of the machine-wide export alone.
+`proxy::tool_proxy_url` also writes it into Claude Code's `settings.json`,
+OpenClaw's `proxy.proxyUrl` and Hermes's `.env`, so those three explicitly
+connected tools now depend on it too. The capability is unchanged - it is the
+same listener, holding no credential - and the `Proxy-Authorization` handling
+is what keeps it parity rather than escalation: the header is passed verbatim
+to the engine and stripped on the direct path, so a local process sending
+Claude Code's route selector through the forwarder gets exactly what it would
+get by dialing the engine, which is the accepted cross-user gap above and not a
+new one.
+
 Decision: accepted. The marginal capability over the status quo is small - any
 local process can already open its own outbound socket, so what this adds is
 reaching a host *through* Gate's process rather than directly, which matters

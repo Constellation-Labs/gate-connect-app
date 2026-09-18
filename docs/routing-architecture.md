@@ -468,7 +468,7 @@ first table.
 
 | event | Gate |
 | --- | --- |
-| **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder. Configs are already right, so nothing is written. |
+| **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder (including when the machine-wide export is declined, since tool configs may name it). Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
 | **Plain quit** | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses. Linux reverts none; its engine is a daemon. |

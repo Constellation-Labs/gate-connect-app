@@ -68,7 +68,7 @@ pub fn enable() -> Result<(ProxyState, Vec<Warning>)> {
 /// best-effort warnings; a failed disable is the only hard error.
 ///
 /// The provider pass runs BEFORE the proxy goes down, so the domains are still
-/// flippable. It **keeps every tool's configuration** ([`ToolConfigs::Kept`]):
+/// flippable. It **keeps every tool's configuration** (`ToolConfigs::Kept`):
 /// the engine parks rather than stopping, so a config naming the relay or the
 /// forwarder still reaches an address that answers and forwards direct. This
 /// used to be the full sweep, on the reasoning that leaving a tool pointed at

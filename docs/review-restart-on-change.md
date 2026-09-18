@@ -12,6 +12,14 @@ restarted? The short answer is **the config teardown, and almost nothing else**
 
 Read `routing-architecture.md` first. This file is the restart question only.
 
+**Tense note.** Sections 1 to 4 describe the tree as it was when this was
+written, in the present tense, and sections 5 onward say what became of each.
+By the merge of this branch the answers in 2 to 4 are all "done": the teardown
+is gone, the configs name the forwarder, and the writes are idempotent. Kept as
+written rather than back-edited, because the argument is what justifies the
+change and a reader checking the reasoning wants the state it was reasoning
+about. `routing-architecture.md` is the current-state document.
+
 ## 1. What forces a restart
 
 A tool reads its configuration once, at startup. So a tool has to be restarted

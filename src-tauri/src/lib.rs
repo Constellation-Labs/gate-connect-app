@@ -1879,10 +1879,12 @@ fn pending_quit_tools() -> Option<PendingQuit> {
 /// the system proxy.
 ///
 /// One thing is reverted here that the exit handler does not touch. On macOS
-/// and Windows the relay lives in this process, so a config naming it - Codex,
-/// OpenCode - names a port that is about to stop answering, and the tool then
+/// and Windows the relay and the engine both live in this process, so a config
+/// naming either - a relay base URL, or the engine's own proxy port on an
+/// install the forwarder repoint did not reach - names a port about to stop
+/// answering, and the tool then
 /// fails with an error about a loopback address until Gate runs again.
-/// `provider::revert_relay_configs_for_quit` puts exactly those tools back on
+/// `provider::revert_stranded_configs_for_quit` puts exactly those tools back on
 /// their own settings and records them for the startup restore. Everything
 /// naming the forwarder is left alone: that process keeps running and forwards
 /// direct, which is the whole reason it exists. Linux skips it; the relay is a

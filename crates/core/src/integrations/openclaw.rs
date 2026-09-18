@@ -235,7 +235,7 @@ impl Integration for OpenClaw {
             current_proxy_url(&settings).unwrap_or(""),
             proxy_is_enabled(&settings),
             &crate::proxy::tool_proxy_identity_urls(),
-            crate::proxy::engine_proxy_url().is_some(),
+            crate::proxy::address_health(current_proxy_url(&settings).unwrap_or("")),
         ))
     }
 
@@ -444,7 +444,12 @@ impl Integration for OpenClaw {
 /// an install configured before that change holds. Matching any of them is
 /// Connected, because both route; only the first is named in a drift message,
 /// because it is the one a repair would write.
-fn compute_status(configured: &str, enabled: bool, ours: &[String], running: bool) -> Status {
+fn compute_status(
+    configured: &str,
+    enabled: bool,
+    ours: &[String],
+    health: crate::proxy::AddressHealth,
+) -> Status {
     let Some(expected) = ours.first() else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
@@ -474,19 +479,24 @@ fn compute_status(configured: &str, enabled: bool, ours: &[String], running: boo
     // provider), or it may be gone (the app is not running, or the ports were
     // released). Saying "dead address" for both was right when routing off
     // meant the ports went away, and is wrong for the ordinary case now.
-    if !running {
-        if crate::proxy::loopback_proxy_answers(configured) {
-            return Status::Drifted(format!(
-                "routing is off, so OpenClaw reaches its providers directly through \
-                 {configured:?} rather than through Gate -- turn routing on to route it"
-            ));
-        }
-        return Status::Drifted(format!(
-            "the Gate proxy is not running, so OpenClaw has no route out ({configured:?} is a \
-             dead address) -- turn the proxy on, or disconnect OpenClaw to restore it"
-        ));
+    // Three outcomes, not two, and the one that was missing is the dangerous
+    // one. `Dead` is the address in the file answering nothing: tool configs
+    // name the forwarder rather than the engine now, so the engine being up
+    // says nothing about it, and reporting Connected off the engine alone put
+    // a green pill over a tool that could not connect at all. `Parked` is
+    // working but not routed, and calling that a dead address was right only
+    // while routing off released the ports.
+    match health {
+        crate::proxy::AddressHealth::Routing => Status::Connected,
+        crate::proxy::AddressHealth::Parked => Status::Drifted(format!(
+            "routing is off, so OpenClaw reaches its providers directly through \
+             {configured:?} rather than through Gate -- turn routing on to route it"
+        )),
+        crate::proxy::AddressHealth::Dead => Status::Drifted(format!(
+            "nothing is listening at {configured:?}, so OpenClaw has no route out -- turn \
+             routing on, or disconnect OpenClaw to put its own settings back"
+        )),
     }
-    Status::Connected
 }
 
 /// What `connect` prints about Gate's view of this OpenClaw, or `None` when
@@ -772,12 +782,15 @@ mod tests {
         let mine = [ours.to_string()];
         let none: [String; 0] = [];
 
-        assert_eq!(compute_status(ours, true, &mine, true), Status::Connected);
+        assert_eq!(
+            compute_status(ours, true, &mine, crate::proxy::AddressHealth::Routing),
+            Status::Connected
+        );
 
         // Our URL, switch off. The config looks right and the tool is routing
         // nowhere - the exact state that shipped as Connected before, sending
         // traffic to the provider on the user's own key.
-        match compute_status(ours, false, &mine, true) {
+        match compute_status(ours, false, &mine, crate::proxy::AddressHealth::Routing) {
             Status::Drifted(m) => {
                 assert!(m.contains("proxy.enabled"), "must name the key: {m}");
                 assert!(m.contains("directly"), "must say where traffic goes: {m}");
@@ -785,24 +798,44 @@ mod tests {
             other => panic!("expected drift, got {other:?}"),
         }
 
-        // Pointed at us but the engine is down. This is the state that leaves
-        // OpenClaw with no egress at all, so it must never read as Connected.
-        match compute_status(ours, true, &mine, false) {
+        // Pointed at us, address answering, engine parked: OpenClaw reaches its
+        // providers but not through Gate. Never Connected, and never described
+        // as a dead address.
+        match compute_status(ours, true, &mine, crate::proxy::AddressHealth::Parked) {
             Status::Drifted(m) => {
-                assert!(m.contains("no route out"), "unexpected message: {m}");
+                assert!(m.contains("routing is off"), "unexpected message: {m}");
+                assert!(m.contains("directly"), "must say where traffic goes: {m}");
+            }
+            other => panic!("expected drift, got {other:?}"),
+        }
+
+        // Pointed at us and nothing is listening: no egress at all, which the
+        // engine being up cannot rule out now that the config names the
+        // forwarder.
+        match compute_status(ours, true, &mine, crate::proxy::AddressHealth::Dead) {
+            Status::Drifted(m) => {
+                assert!(
+                    m.contains("nothing is listening"),
+                    "unexpected message: {m}"
+                );
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
             }
             other => panic!("expected drift, got {other:?}"),
         }
 
         // Hand-edited to something else - including a real corporate proxy.
-        match compute_status("http://proxy.corp.example:3128", true, &mine, true) {
+        match compute_status(
+            "http://proxy.corp.example:3128",
+            true,
+            &mine,
+            crate::proxy::AddressHealth::Routing,
+        ) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
         // No port ever bound.
-        match compute_status(ours, true, &none, false) {
+        match compute_status(ours, true, &none, crate::proxy::AddressHealth::Dead) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
@@ -819,15 +852,25 @@ mod tests {
         let ours = [forwarder.clone(), engine.clone()];
 
         assert_eq!(
-            compute_status(&engine, true, &ours, true),
+            compute_status(&engine, true, &ours, crate::proxy::AddressHealth::Routing),
             Status::Connected
         );
         assert_eq!(
-            compute_status(&forwarder, true, &ours, true),
+            compute_status(
+                &forwarder,
+                true,
+                &ours,
+                crate::proxy::AddressHealth::Routing
+            ),
             Status::Connected
         );
 
-        match compute_status("http://proxy.corp.example:3128", true, &ours, true) {
+        match compute_status(
+            "http://proxy.corp.example:3128",
+            true,
+            &ours,
+            crate::proxy::AddressHealth::Routing,
+        ) {
             Status::Drifted(m) => {
                 assert!(
                     m.contains(&forwarder),
@@ -849,7 +892,12 @@ mod tests {
         // note instead.
         let ours = "http://127.0.0.1:9977";
         assert_eq!(
-            compute_status(ours, true, &[ours.to_string()], true),
+            compute_status(
+                ours,
+                true,
+                &[ours.to_string()],
+                crate::proxy::AddressHealth::Routing
+            ),
             Status::Connected,
             "a healthy config is Connected regardless of the domain catalog"
         );
@@ -1022,6 +1070,28 @@ mod tests {
             Decision::Rewrite {
                 upstream_url: "https://chatgpt.com/backend-api".into()
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod address_health_tests {
+    use super::*;
+
+    /// A dead address is never Connected, whatever the engine is doing: the
+    /// config names the forwarder, and the engine being up says nothing about
+    /// whether that process is alive.
+    #[test]
+    fn a_dead_address_is_never_connected() {
+        let ours = "http://127.0.0.1:9977";
+        let mine = [ours.to_string()];
+        match compute_status(ours, true, &mine, crate::proxy::AddressHealth::Dead) {
+            Status::Drifted(m) => assert!(m.contains("nothing is listening"), "unexpected: {m}"),
+            other => panic!("expected drift, got {other:?}"),
+        }
+        assert_eq!(
+            compute_status(ours, true, &mine, crate::proxy::AddressHealth::Routing),
+            Status::Connected
         );
     }
 }

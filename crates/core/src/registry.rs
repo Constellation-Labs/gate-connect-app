@@ -65,6 +65,12 @@ pub struct ConnectInput {
     /// whole egress to a proxy rather than repointing a base URL. `None` unless
     /// the proxy is actually routing, so such an integration declines to
     /// connect rather than stranding the tool with no network.
+    /// The proxy address a tool config should name. Historically the MITM
+    /// engine's own; since `proxy::tool_proxy_url` it is the forwarder's, with
+    /// the engine's as the fallback, and the field keeps its name because every
+    /// integration writes it into a variable called `HTTPS_PROXY`. `None` means
+    /// the engine is not routing, which is what makes the proxy integrations'
+    /// `connect` refuse rather than point a tool's whole egress at nothing.
     pub engine_proxy_url: Option<String>,
 }
 

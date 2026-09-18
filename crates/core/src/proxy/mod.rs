@@ -804,6 +804,75 @@ pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
 }
 
+/// How an address of ours is doing, as a status check needs to know it.
+///
+/// Three states rather than a `running: bool`, because since tool configs moved
+/// off the engine's own port ([`tool_proxy_url`]) "the engine is routing" and
+/// "the address this config names is answering" are questions about two
+/// different processes. Asking only the first is how a dead forwarder read as
+/// Connected over a tool that could not connect at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AddressHealth {
+    /// Answering, and Gate is routing through it. The only Connected state.
+    Routing,
+    /// Answering, but Gate is not routing: the engine is parked, so the
+    /// listener forwards straight through and the tool reaches its own
+    /// provider. Working, not routed.
+    Parked,
+    /// Nothing is listening. The tool cannot reach anything at all, which is
+    /// the state that must never read as Connected.
+    Dead,
+}
+
+/// [`AddressHealth`] for the address a tool's configuration actually names.
+///
+/// Probe first, then ask whether Gate is routing: a live address with the
+/// engine parked is Parked, and a dead one is Dead whatever the engine is
+/// doing. Callers pass the value in rather than letting the status rules probe,
+/// so those stay pure functions whose unit tests open no sockets.
+pub fn address_health(configured: &str) -> AddressHealth {
+    if !loopback_proxy_answers(configured) {
+        return AddressHealth::Dead;
+    }
+    if engine_proxy_url().is_some() {
+        AddressHealth::Routing
+    } else {
+        AddressHealth::Parked
+    }
+}
+
+/// Has a forwarder port ever been persisted on this install?
+///
+/// Which is to say: does anything on disk depend on the forwarder answering?
+/// True once either the machine-wide export or a tool config has been written
+/// with its address, and it stays true across a logout that takes the process
+/// itself down, because [`forwarder::stop`] retires the marker and not the
+/// port file.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn forwarder_port_persisted() -> bool {
+    forwarder::persisted_port().is_some()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn forwarder_port_persisted() -> bool {
+    false
+}
+
+/// The port of a `127.0.0.1` proxy address of ours, if that is what `url` is.
+///
+/// Userinfo is stripped before the host is read, which is not a nicety: Claude
+/// Code's address carries the route selector there
+/// (`http://gate-claude-code:route@127.0.0.1:<port>`), and a parser that only
+/// accepted a bare `http://127.0.0.1:` read every Claude Code install as
+/// unreachable. Only the loopback literal is recognised, because the caller is
+/// always comparing against an address this module wrote.
+fn loopback_port_of(url: &str) -> Option<u16> {
+    let authority = url.strip_prefix("http://")?.split('/').next()?;
+    // `rsplit` so a password containing '@' cannot hide the real host.
+    let host_port = authority.rsplit('@').next()?;
+    host_port.strip_prefix("127.0.0.1:")?.parse::<u16>().ok()
+}
+
 /// Is a loopback proxy address of ours still accepting connections?
 ///
 /// The measurement that separates a **parked** listener from a **released**
@@ -811,9 +880,11 @@ pub fn relay_base_url() -> Option<String> {
 /// the user. Routing off no longer takes the ports down: the engine parks with
 /// them bound and forwards straight through, so a tool whose config names one
 /// reaches its own provider exactly as it would with Gate not installed. The
-/// three proxy integrations used to say "`<addr>` is a dead address" for every
-/// not-routing state, which was true when the only way to stop routing was to
-/// release the port and is now false for the ordinary case.
+/// proxy integrations that use it (OpenClaw and Hermes; Codex keeps its own
+/// dead-address branch behind `relay_listening`) used to say "`<addr>` is a
+/// dead address" for every not-routing state, which was true when the only way
+/// to stop routing was to release the port and is now false for the ordinary
+/// case.
 ///
 /// Only the port is read out of `url`, and only a `127.0.0.1` form is
 /// recognised, because the caller is always comparing against an address this
@@ -823,11 +894,7 @@ pub fn relay_base_url() -> Option<String> {
 /// A refused loopback connect returns immediately; the timeout only bounds
 /// pathological states, matching [`relay_listening`].
 pub fn loopback_proxy_answers(url: &str) -> bool {
-    let Some(port) = url
-        .strip_prefix("http://127.0.0.1:")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|p| p.parse::<u16>().ok())
-    else {
+    let Some(port) = loopback_port_of(url) else {
         return false;
     };
     std::net::TcpStream::connect_timeout(
@@ -1193,7 +1260,8 @@ pub fn tool_proxy_url() -> Option<String> {
         Ok(port) => Some(format!("http://127.0.0.1:{port}")),
         Err(e) => {
             eprintln!(
-                "gate proxy: the environment forwarder would not start ({e:#}); pointing tool                  configs at the engine instead, which stops answering when Gate does"
+                "gate proxy: the environment forwarder would not start ({e:#}); pointing tool \
+                 configs at the engine instead, which stops answering when Gate does"
             );
             Some(engine)
         }
@@ -3416,5 +3484,36 @@ mod address_dies_tests {
             Some(ENGINE),
             Some(ENGINE)
         ));
+    }
+}
+
+#[cfg(test)]
+mod loopback_port_tests {
+    use super::loopback_port_of;
+
+    /// The selector form is the one that matters: Claude Code's proxy address
+    /// carries `gate-claude-code:route@` as userinfo, and a parser that missed
+    /// it reported every Claude Code install as having nothing listening.
+    #[test]
+    fn reads_the_port_through_userinfo_and_paths() {
+        assert_eq!(loopback_port_of("http://127.0.0.1:47150"), Some(47150));
+        assert_eq!(
+            loopback_port_of("http://gate-claude-code:route@127.0.0.1:47150"),
+            Some(47150)
+        );
+        assert_eq!(
+            loopback_port_of("http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"),
+            Some(47101)
+        );
+    }
+
+    /// Anything that is not one of ours has no port to probe.
+    #[test]
+    fn rejects_addresses_that_are_not_ours() {
+        assert_eq!(loopback_port_of("https://api.openai.com/v1"), None);
+        assert_eq!(loopback_port_of("http://proxy.corp.example:3128"), None);
+        assert_eq!(loopback_port_of("http://localhost:47150"), None);
+        assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
+        assert_eq!(loopback_port_of(""), None);
     }
 }

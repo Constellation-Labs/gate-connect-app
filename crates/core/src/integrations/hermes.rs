@@ -175,10 +175,11 @@ impl Integration for Hermes {
         if load_state()?.is_none() {
             return Ok(Status::Detected);
         }
+        let configured = configured_proxy()?.unwrap_or_default();
         Ok(compute_status(
-            configured_proxy()?.as_deref().unwrap_or(""),
+            &configured,
             &crate::proxy::tool_proxy_identity_urls(),
-            crate::proxy::engine_proxy_url().is_some(),
+            crate::proxy::address_health(&configured),
         ))
     }
 
@@ -338,7 +339,11 @@ impl Integration for Hermes {
 /// `ours` is every proxy address that belongs to Gate, preferred first - see
 /// [`crate::proxy::tool_proxy_identity_urls`] and the note on OpenClaw's
 /// equivalent, which this mirrors.
-fn compute_status(configured: &str, ours: &[String], running: bool) -> Status {
+fn compute_status(
+    configured: &str,
+    ours: &[String],
+    health: crate::proxy::AddressHealth,
+) -> Status {
     let Some(expected) = ours.first() else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
@@ -356,19 +361,20 @@ fn compute_status(configured: &str, ours: &[String], running: bool) -> Status {
     // provider), or it may be gone (the app is not running, or the ports were
     // released). Saying "dead address" for both was right when routing off
     // meant the ports went away, and is wrong for the ordinary case now.
-    if !running {
-        if crate::proxy::loopback_proxy_answers(configured) {
-            return Status::Drifted(format!(
-                "routing is off, so Hermes reaches its provider directly through {configured:?} \
-                 rather than through Gate -- turn routing on to route it"
-            ));
-        }
-        return Status::Drifted(format!(
-            "the Gate proxy is not running, so Hermes cannot reach its provider ({configured:?} \
-             is a dead address) -- turn the proxy on, or disconnect Hermes to restore it"
-        ));
+    // See OpenClaw's equivalent for why this is three outcomes: `Dead` is the
+    // address in the file answering nothing, which the engine being up cannot
+    // rule out now that tool configs name the forwarder.
+    match health {
+        crate::proxy::AddressHealth::Routing => Status::Connected,
+        crate::proxy::AddressHealth::Parked => Status::Drifted(format!(
+            "routing is off, so Hermes reaches its provider directly through {configured:?} \
+             rather than through Gate -- turn routing on to route it"
+        )),
+        crate::proxy::AddressHealth::Dead => Status::Drifted(format!(
+            "nothing is listening at {configured:?}, so Hermes cannot reach its provider -- \
+             turn routing on, or disconnect Hermes to put its own settings back"
+        )),
     }
-    Status::Connected
 }
 
 /// The proxy Hermes is currently pointed at, per its own `.env`.
@@ -773,25 +779,47 @@ mod tests {
         let mine = [ours.to_string()];
         let none: [String; 0] = [];
 
-        assert_eq!(compute_status(ours, &mine, true), Status::Connected);
+        assert_eq!(
+            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing),
+            Status::Connected
+        );
 
-        // Pointed at us but the engine is down: Hermes' requests go nowhere, so
-        // this must never read as Connected.
-        match compute_status(ours, &mine, false) {
+        // Pointed at us, address answering, engine parked: Hermes reaches its
+        // provider but not through Gate, so this must never read as Connected
+        // and must not claim the address is dead.
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Parked) {
             Status::Drifted(m) => {
-                assert!(m.contains("not running"), "unexpected message: {m}");
+                assert!(m.contains("routing is off"), "unexpected message: {m}");
+                assert!(m.contains("directly"), "must say where traffic goes: {m}");
+            }
+            other => panic!("expected drift, got {other:?}"),
+        }
+
+        // Pointed at us and nothing is listening: no egress at all. Separate
+        // from the parked case because the engine being up cannot rule it out
+        // now that the config names the forwarder.
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead) {
+            Status::Drifted(m) => {
+                assert!(
+                    m.contains("nothing is listening"),
+                    "unexpected message: {m}"
+                );
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
             }
             other => panic!("expected drift, got {other:?}"),
         }
 
         // A corporate proxy the user set by hand is not ours.
-        match compute_status("http://proxy.corp.example:3128", &mine, true) {
+        match compute_status(
+            "http://proxy.corp.example:3128",
+            &mine,
+            crate::proxy::AddressHealth::Routing,
+        ) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
-        match compute_status(ours, &none, false) {
+        match compute_status(ours, &none, crate::proxy::AddressHealth::Dead) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
@@ -807,10 +835,20 @@ mod tests {
         let engine = "http://127.0.0.1:47100".to_string();
         let ours = [forwarder.clone(), engine.clone()];
 
-        assert_eq!(compute_status(&engine, &ours, true), Status::Connected);
-        assert_eq!(compute_status(&forwarder, &ours, true), Status::Connected);
+        assert_eq!(
+            compute_status(&engine, &ours, crate::proxy::AddressHealth::Routing),
+            Status::Connected
+        );
+        assert_eq!(
+            compute_status(&forwarder, &ours, crate::proxy::AddressHealth::Routing),
+            Status::Connected
+        );
 
-        match compute_status("http://proxy.corp.example:3128", &ours, true) {
+        match compute_status(
+            "http://proxy.corp.example:3128",
+            &ours,
+            crate::proxy::AddressHealth::Routing,
+        ) {
             Status::Drifted(m) => {
                 assert!(
                     m.contains(&forwarder),
@@ -839,5 +877,31 @@ mod tests {
         ] {
             assert!(!is_loopback_url(u), "expected non-loopback: {u}");
         }
+    }
+}
+
+#[cfg(test)]
+mod address_health_tests {
+    use super::*;
+
+    /// The regression this branch introduced and this round fixes: the config
+    /// names the forwarder, the engine is up, and nothing is listening at the
+    /// forwarder. Gating on the engine alone reported Connected over a tool
+    /// whose every request failed to connect.
+    #[test]
+    fn a_dead_address_is_never_connected_however_the_engine_is_doing() {
+        let ours = "http://127.0.0.1:9977";
+        let mine = [ours.to_string()];
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead) {
+            Status::Drifted(m) => {
+                assert!(m.contains("nothing is listening"), "unexpected: {m}");
+                assert!(m.contains(ours), "must name the address: {m}");
+            }
+            other => panic!("expected drift, got {other:?}"),
+        }
+        assert_eq!(
+            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing),
+            Status::Connected
+        );
     }
 }
