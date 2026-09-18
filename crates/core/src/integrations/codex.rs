@@ -376,9 +376,12 @@ impl Integration for Codex {
         // over traffic that is not going through Gate, which is the one thing
         // this integration's status exists to prevent.
         //
-        // The routing intent is the signal, because there is nothing better to
-        // ask: the relay publishes no health endpoint, so "intercepting" is not
-        // observable from outside the process hosting it. The known inaccuracy
+        // The routing intent is the signal. The relay does publish a health
+        // endpoint now, but it proves *identity* - that the listener can read
+        // the 0600 token - and says nothing about whether it is intercepting,
+        // which is not observable from outside the process hosting it. Having
+        // it report that too would retire the inaccuracy below; it is left for
+        // its own change rather than folded into a status fix. The known inaccuracy
         // is the headless `proxy relay` host, which always intercepts and
         // touches no intent file - on a machine whose last explicit answer was
         // "off" this reports not-routed while it routes. That is the safe

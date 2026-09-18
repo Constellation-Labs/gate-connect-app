@@ -17,6 +17,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod common;
+
+use common::RelayStub;
 use gate_connect_core::registry::{find, ConnectInput, Mechanism, Status, ToolId};
 use gate_connect_core::{env, provider};
 
@@ -330,13 +333,13 @@ fn plain_quit_unions_into_a_pending_snapshot() {
 /// something. Returned so the caller keeps it alive: a relay tool's status asks
 /// whether the port answers, and a persisted port file on its own is exactly
 /// the state that used to read Connected over a dead address.
-fn bind_relay_port() -> (std::net::TcpListener, u16) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+fn bind_relay_port() -> (RelayStub, u16) {
+    let stub = RelayStub::bind(0);
+    let port = stub.port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
-    (listener, port)
+    (stub, port)
 }
 
 /// Record the user's last explicit routing answer, which is what tells a parked
@@ -413,8 +416,7 @@ fn opencode_is_not_connected_while_routing_is_off() {
     connect_opencode();
     // `connect_opencode` persists 8402 and writes base URLs naming it, so the
     // listener has to be on that port for the liveness probe to pass.
-    let _relay = std::net::TcpListener::bind("127.0.0.1:8402")
-        .expect("binding 127.0.0.1:8402 for the relay liveness probe");
+    let _relay = RelayStub::bind(8402);
 
     seed_routing_intent(true);
     assert!(
@@ -492,4 +494,46 @@ fn opencode_with_nothing_listening_is_not_connected() {
         Status::Drifted(m) => assert!(m.contains("dead address"), "unexpected message: {m}"),
         other => panic!("a dead relay must not read as Connected, got {other:?}"),
     }
+}
+
+/// A stranger on the relay port is not our relay. A bare TCP connect cannot
+/// tell the two apart, so a status check built on one reported somebody else's
+/// listener as a healthy Gate relay; the challenge is what separates "the port
+/// is taken" from "the port is ours".
+#[test]
+fn a_stranger_on_the_relay_port_is_not_our_relay() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_routing_intent(true);
+
+    // Bound and accepting, but it cannot read the token, so it cannot answer.
+    let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = squatter.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in squatter.incoming() {
+            drop(stream);
+        }
+    });
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+
+    assert!(
+        !gate_connect_core::proxy::relay_listening(),
+        "a listener that cannot answer the challenge must not read as our relay"
+    );
+}
+
+/// And the stub that can answer does read as ours, so the test above is about
+/// the proof rather than about the stub being unreachable.
+#[test]
+fn a_listener_that_answers_the_challenge_is_our_relay() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let (_relay, _port) = bind_relay_port();
+
+    assert!(
+        gate_connect_core::proxy::relay_listening(),
+        "a listener answering the challenge is our relay"
+    );
 }

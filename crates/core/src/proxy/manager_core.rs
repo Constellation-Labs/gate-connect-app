@@ -352,6 +352,32 @@ impl<O: DesktopOps> DesktopManager<O> {
         // already-running tools with neither routing nor passthrough. Nothing
         // between here and the bind can fail.
         self.stop_dormant();
+
+        // Our own park is gone by now, so a relay still answering belongs to
+        // somebody else - and it answers a challenge only Gate can, so this is
+        // "another Gate Connect is on this machine's ports", not "something is
+        // on that port".
+        //
+        // `engine_hosted_elsewhere` above cannot see it: it reads the
+        // system-proxy snapshot, and a parked instance cleared that on its way
+        // to parking. Without this check the enable proceeded, found the
+        // persisted ports held, fell back to fresh ones and rewrote the port
+        // files - silently repointing every tool config on the machine at
+        // addresses nothing names any more, and taking them out of reach of the
+        // quit revert, which decides what to put back by comparing against
+        // exactly those files.
+        //
+        // Deliberately not a refusal when a *stranger* holds the port: that is
+        // recoverable on its own, because the fallback port is persisted, the
+        // configs then read as drifted and the reconcile passes repair them.
+        // Refusing there would let any local process keep Gate from starting.
+        if crate::proxy::relay_listening() {
+            anyhow::bail!(
+                "another Gate Connect process is already using this machine's proxy ports; \
+                 use that one, or quit it before enabling routing here"
+            );
+        }
+
         let running = engine::start(
             engine::EngineConfig {
                 gateway_base_url: account.gateway_base_url.clone(),
@@ -1325,6 +1351,90 @@ mod tests {
         // Refused before anything was touched: no snapshot, no CA prompt.
         assert_eq!(mgr.ops.count("snapshot"), 0);
         assert_eq!(mgr.ops.count("ensure_trusted"), 0);
+    }
+
+    /// Answer the relay identity challenge the way a second Gate Connect's
+    /// parked relay would, so `enable` can tell it from a stranger.
+    ///
+    /// The thread ends with the test: the listener is moved in, and dropping
+    /// the manager is not what stops it - nothing else binds this port during
+    /// the test, so a lingering accept loop cannot affect another one.
+    fn parked_relay_of_another_instance() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = crate::env::app_support_dir().unwrap().join("proxy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+        let token = crate::proxy::forwarder::load_or_create_token().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { return };
+                let mut buf = [0u8; 2048];
+                let Ok(n) = sock.read(&mut buf) else { continue };
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let challenge = head
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(name, _)| {
+                        name.trim()
+                            .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
+                    })
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default();
+                let proof = gate_connect_paths::forwarder_proof(&token, &challenge);
+                let resp = format!(
+                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nContent-Length: 0\r\n\
+                     Connection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_PROOF_HEADER
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// A second process must not enable while another Gate Connect holds the
+    /// ports, even when that one is *parked*: parking clears the system-proxy
+    /// snapshot, so `engine_hosted_elsewhere` cannot see it. Without this the
+    /// enable bound fallback ports and rewrote the persisted port files,
+    /// repointing every tool config on the machine at addresses nothing names.
+    #[test]
+    fn enable_refuses_when_another_instances_relay_is_parked() {
+        let _home = TestHome::set();
+        let _port = parked_relay_of_another_instance();
+        let mgr = leak(FakeOps::new());
+
+        let err = mgr.enable().expect_err("enable must refuse");
+        assert!(
+            err.to_string().contains("another Gate Connect process"),
+            "refusal must name the cause: {err:#}"
+        );
+        // Nothing was bound and nothing was persisted, so the tool configs that
+        // name the running instance's ports still name something live.
+        assert_eq!(mgr.ops.count("persist_ports"), 0);
+    }
+
+    /// A stranger on the relay port is not another Gate, and must not keep Gate
+    /// from starting: that case recovers on its own, because the fallback port
+    /// is persisted and the reconcile passes repair the configs that drift.
+    #[test]
+    fn enable_proceeds_when_the_relay_port_holds_a_stranger() {
+        let _home = TestHome::set();
+        let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = squatter.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in squatter.incoming() {
+                drop(stream);
+            }
+        });
+        let dir = crate::env::app_support_dir().unwrap().join("proxy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("a stranger must not block enabling");
+        mgr.disable_quiet().expect("release for the next test");
     }
 
     #[test]

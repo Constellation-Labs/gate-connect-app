@@ -915,13 +915,13 @@ pub fn loopback_proxy_answers(url: &str) -> bool {
 /// port. A refused loopback connect returns immediately; the timeout only
 /// bounds pathological states.
 pub fn relay_listening() -> bool {
-    relay::load_persisted_port().is_some_and(|port| {
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            std::time::Duration::from_millis(300),
-        )
-        .is_ok()
-    })
+    let Some(port) = relay::load_persisted_port() else {
+        return false;
+    };
+    let Ok(token) = forwarder::load_or_create_token() else {
+        return false;
+    };
+    gate_connect_paths::proves_ours(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no

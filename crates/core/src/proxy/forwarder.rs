@@ -53,7 +53,7 @@ pub(crate) fn persisted_port() -> Option<u16> {
 /// port" from "something else got there first". A local process running as the
 /// owner can read it, which is the same-user boundary this subsystem already
 /// accepts; a *different* local user cannot, which is the case that matters.
-fn load_or_create_token() -> Result<String> {
+pub(super) fn load_or_create_token() -> Result<String> {
     let path = token_path()?;
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let existing = existing.trim().to_string();
@@ -94,60 +94,7 @@ fn load_or_create_token() -> Result<String> {
 /// request on loopback, and a client here would have to be told `.no_proxy()`
 /// anyway, because the app may have just pointed `HTTPS_PROXY` at this port.
 fn health_ok(port: u16, token: &str) -> bool {
-    use rand::Rng;
-    use std::io::{Read, Write};
-
-    let challenge: String = {
-        let mut rng = rand::thread_rng();
-        (0..16)
-            .map(|_| format!("{:02x}", rng.gen::<u8>()))
-            .collect()
-    };
-    let expected = gate_connect_paths::forwarder_proof(token, &challenge);
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250))
-    else {
-        return false;
-    };
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = sock.set_write_timeout(Some(Duration::from_millis(500)));
-    let req = format!(
-        "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nConnection: close\r\n\r\n",
-        gate_connect_paths::FORWARDER_HEALTH_PATH,
-        gate_connect_paths::FORWARDER_CHALLENGE_HEADER,
-        challenge
-    );
-    if sock.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    // Bounded: a listener that answers slowly forever must not hold up an
-    // enable, and the proof is 64 hex characters in a short head.
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 512];
-    while buf.len() < 4096 {
-        match sock.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
-        }
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-    }
-    let Ok(text) = std::str::from_utf8(&buf) else {
-        return false;
-    };
-    text.lines()
-        .filter_map(|line| line.split_once(':'))
-        .any(|(name, value)| {
-            name.trim()
-                .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_PROOF_HEADER)
-                && gate_connect_paths::constant_time_eq(
-                    value.trim().as_bytes(),
-                    expected.as_bytes(),
-                )
-        })
+    gate_connect_paths::proves_ours(port, gate_connect_paths::FORWARDER_HEALTH_PATH, token)
 }
 
 /// Where the sidecar lives: beside the executable asking for it.

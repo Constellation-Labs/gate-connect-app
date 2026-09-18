@@ -127,6 +127,26 @@ matters: gating the engine and relay while leaving the forwarder ungated would
 launder a non-owner peer into an owner-uid connection and undo the gate. The
 forwarder has to be gated first, or at the same time.
 
+## The relay proves itself too
+
+The forwarder has always answered a challenge before its port is published. The
+relay did not: `relay_listening` was a bare TCP connect, so anything that
+accepted on the persisted relay port read as a healthy Gate relay, and the tool
+statuses built on it reported Connected over a stranger. It answers the same
+proof now, on its own reserved path, minted from the same 0600 token.
+
+This identifies without authorising. The endpoint reaches no credential,
+resolves no route and returns no traffic, and it sits above the relay's own
+loopback guards so a prober can tell a squatted port from a refused one.
+
+What it does not do is prove the relay is *intercepting*. Parked and routing
+look identical from outside, which is why the relay tools still consult the
+routing intent for that, with the inaccuracy their status comments name.
+
+The engine's own MITM port still has no proof and does not need one on this
+path: `engine_proxy_url` gates on the system-proxy snapshot, which is Gate's
+own file, so a stranger holding that port cannot make a tool read Connected.
+
 Where the forwarder is socket-activated (macOS, via its LaunchAgent) the
 squatting case disappears rather than being detected: launchd holds the port
 from login, so no other process can be there to adopt. On Windows, and on macOS

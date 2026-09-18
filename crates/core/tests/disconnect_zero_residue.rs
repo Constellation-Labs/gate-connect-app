@@ -20,6 +20,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
+mod common;
+
+use common::RelayStub;
 use gate_connect_core::registry::{find, ConnectInput, Status, ToolId};
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -122,9 +125,8 @@ fn seed_engine_port(port: u16) {
 /// processes now that tool configs name the forwarder, and a Connected
 /// precondition that never bound anything was asserting a state the code is
 /// right to refuse.
-fn bind_seeded_port(port: u16) -> std::net::TcpListener {
-    std::net::TcpListener::bind(("127.0.0.1", port))
-        .unwrap_or_else(|e| panic!("binding 127.0.0.1:{port} for the liveness probe: {e}"))
+fn bind_seeded_port(port: u16) -> RelayStub {
+    RelayStub::bind(port)
 }
 
 /// Record routing intent, which the relay tools consult to tell a parked relay
