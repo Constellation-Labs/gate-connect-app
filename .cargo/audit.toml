@@ -1,44 +1,28 @@
 # `cargo audit` config, read by the "Dependency advisories" job in
 # .github/workflows/ci.yml.
 #
-# Every entry below was present before the job existed - the job was added
-# alongside the keyring backend swap, and none of these come from the crates
-# that change brought in. They are ignored so the gate blocks anything NEW
-# rather than being permanently red on inherited debt, which is the only way it
-# does any work. Ignoring is not accepting: three of the four crates are fixed
-# by a plain patch bump that resolves inside the existing semver range, and
-# those are the ones to clear first.
+# The ignore list is EMPTY, and that is the point: every advisory this job can
+# see today is one it should fail on. When it was written against the feature
+# branch's lock it carried five entries - h2, time, crossbeam-epoch and
+# quick-xml twice - all of them inherited debt the job would otherwise have
+# been permanently red on. Every one has since been remediated by an ordinary
+# dependency bump, and the lock on main now carries h2 0.4.19, time 0.3.55,
+# crossbeam-epoch 0.9.21 and quick-xml 0.42.0, each well past its fix. Keeping
+# the entries would have left five permanent blind spots in a gate whose whole
+# value is that a NEW advisory turns it red - including on h2, the one the old
+# comment called genuinely reachable against the relay's loopback listener.
+#
+# Before adding an entry here, try a `cargo update -p <crate>` first: four of
+# the original five needed nothing more than that. An entry is for an advisory
+# with no fix you can reach - a semver boundary a dependency pins, say - and it
+# should say what pulls the crate, how reachable the bug actually is, and what
+# would fix it. Ignoring is not accepting.
 #
 # Deliberately NOT set: `informational_warnings`. Unmaintained and yanked
 # crates stay warnings, so a real vulnerability is the only thing that fails
-# the build.
+# the build. The graph currently carries several of those - proc-macro-error,
+# the unic-* family, and unsoundness notices on anyhow, glib, event-listener
+# and serde_with - and none of them should block a merge.
 
 [advisories]
-ignore = [
-  # h2 0.4.14 -> hyper -> hudsucker, gate-connect-core, reqwest.
-  # Unbounded empty DATA frames: an h2 peer can make the server allocate
-  # without bound. This one is genuinely reachable - the relay is an h2 server
-  # and `hudsucker`'s `http2` feature is why it speaks h2 at all - though only
-  # to a loopback listener, so the caller is already the same user.
-  # Fixed by >= 0.4.16, semver-compatible. Clear this one first.
-  "RUSTSEC-2026-0258",
-
-  # time 0.3.45 -> asn1-rs / x509-parser (certificate parsing, which the CA
-  # and trust paths do use) and cookie -> tauri.
-  # Stack exhaustion, 6.8 medium. Fixed by >= 0.3.47, semver-compatible.
-  "RUSTSEC-2026-0009",
-
-  # crossbeam-epoch 0.9.18 -> moka -> hudsucker.
-  # Invalid pointer dereference in the `fmt::Pointer` impl for `Atomic` and
-  # `Shared`. Only reachable by debug-formatting one of those, which nothing
-  # here does. Fixed by >= 0.9.20, semver-compatible.
-  "RUSTSEC-2026-0204",
-
-  # quick-xml 0.38.4 -> plist -> tauri-utils, both entries below.
-  # Quadratic attribute scan (7.5 high) and unbounded namespace allocation
-  # (7.5 high). The input is our own Info.plist at bundle time, not anything a
-  # user supplies. The only fix is >= 0.41.0, which crosses a semver boundary
-  # `plist` pins, so this one waits on tauri-utils rather than on us.
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
-]
+ignore = []

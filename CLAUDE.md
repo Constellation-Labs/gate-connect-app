@@ -132,11 +132,13 @@ release.
   witnesses the Gate key, the CA certificate witnesses its own private key -
   each written in the same breath as the secret it vouches for. The witness is
   what makes this honest across processes, which a bare cache could not be: the
-  CLI can write a new key while the app runs. With nothing that qualifies,
-  cache at your own layer against `keychain::write_epoch()` the way
-  `oauth.rs` does, and work out what staleness means there before you do -
-  for the token bundle it is safe only because `refresh_stored` re-tests
-  expiry and Cognito does not rotate refresh tokens.
+  CLI can write a new key while the app runs. The OAuth bundle witnesses on
+  `account.json` too, through `account::file_witness()`, because login rewrites
+  that file and sign-out removes it while a token refresh leaves it alone -
+  which is exactly the split between what must not be served stale and what is
+  safe to miss. Work out that split before caching anything new: a cache whose
+  witness cannot move on the transition that matters is worse than no cache,
+  because the stale answer never expires.
   This is the bullet above in its purest form: `pnpm app:local` skips the code
   entirely, CI skips it, and it was found on a dev box only because a daemon
   had been accumulating for three weeks. It reaches production users harder
