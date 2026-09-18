@@ -10,7 +10,7 @@
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
-//! **`config.yaml` is never written.** Hermes loads `$HERMES_HOME/.env` at CLI
+//! **Routing is never written to `config.yaml`.** Hermes loads `$HERMES_HOME/.env` at CLI
 //! startup (`hermes_cli/env_loader.py`, called from `cli.py`) before any client
 //! is constructed, and `agent/process_bootstrap.py` reads `HTTPS_PROXY` /
 //! `HTTP_PROXY` / `ALL_PROXY` (plus lower-case) from the environment, honouring
@@ -32,8 +32,23 @@
 //! protection the old `is_local_url` guard gave, expressed where Hermes can
 //! actually act on it.
 //!
-//! **`config.yaml` is read once, to say what Gate will see - never to change
-//! it.** A correct `.env` is only half of being visible: the engine MITMs a host
+//! **`config.yaml` is read to say what Gate will see, and written only to name
+//! Hermes on the wire.** The distinction is the one the paragraph above draws.
+//! `model.base_url` is a routing directive, and writing it was per-endpoint, so
+//! a config change routed around Gate while status said Connected - that is
+//! what `.env` replaced and it stays replaced. `model.extra_headers` decides
+//! nothing about where a request goes: it adds `x-gate-tool: hermes`, which the
+//! engine reads and consumes, and if it is missing the request routes exactly
+//! the same and arrives unattributed. So the rule that banned the base_url
+//! write does not reach this one, and the header is the only signal the engine
+//! can have for Hermes - no base URL means no path marker, and its User-Agent
+//! is `python-httpx/...` because it is a Python program.
+//!
+//! The write is surgical (`yaml_block`) rather than a `serde_yaml` round-trip,
+//! because a round-trip returns a semantically equal document with every
+//! comment gone, and this is a file the user wrote. A shape that editor will
+//! not touch is left alone, costing the label and nothing else.
+//! A correct `.env` is only half of being visible: the engine MITMs a host
 //! only while an enabled catalog domain claims it, and Hermes' documented default
 //! upstream (`openrouter.ai`) ships off, so the traffic can be routed through
 //! Gate and blind-tunnelled past it at the same time. Connecting Hermes must not
@@ -64,12 +79,18 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::integrations::binaries;
 use crate::integrations::dotenv;
+use crate::integrations::precedence::Override;
+use crate::integrations::yaml_block;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
+/// The row label. Hermes is its own family on the ledger, so the heading
+/// says "Hermes" and this says which of its surfaces the row is.
+const ROW_LABEL: &str = "CLI";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
@@ -105,6 +126,12 @@ struct State {
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
+    /// What the `config.yaml` header edit had to create, so disconnect takes
+    /// back exactly that. Absent on a state file written before the header
+    /// existed, which reads as "we wrote nothing there" - correct, because we
+    /// had not.
+    #[serde(default)]
+    header_created: Option<yaml_block::Created>,
 }
 
 fn default_version() -> u8 {
@@ -122,6 +149,25 @@ impl Integration for Hermes {
         DISPLAY_NAME
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::Hermes
+    }
+
+    fn row_label(&self) -> &'static str {
+        ROW_LABEL
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        // `launcher_on_path` already walks PATH for these names; this is the
+        // same knowledge, shared so the version probe and the detector cannot
+        // disagree about what the binary is called.
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat", "hermes"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["hermes"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -130,14 +176,32 @@ impl Integration for Hermes {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        env_file_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // `launcher_on_path` has no path to watch - a `$PATH` entry is not a
+        // location - so a Hermes somewhere unusual is the one install this
+        // cannot report. The window's read on focus is what covers it.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(launcher_paths().unwrap_or_default());
+        paths.extend(crate::env::hermes_config_dir());
+        paths.extend(crate::env::hermes_config_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // `resolve_binary` subsumes what `launcher_on_path` did by hand - the
+        // same PATH walk for the same names - and adds the packaged paths and
+        // the shell bin directories a GUI process does not inherit.
+        // `launcher_paths` stays: those are Hermes-specific locations no
+        // generic search knows about.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
-        if launcher_paths()?.iter().any(|p| p.exists()) {
-            return Ok(true);
-        }
-        Ok(launcher_on_path())
+        Ok(launcher_paths()?.iter().any(|p| p.exists()))
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -162,6 +226,7 @@ impl Integration for Hermes {
             configured_proxy()?.as_deref().unwrap_or(""),
             crate::proxy::persisted_engine_proxy_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
+            crate::proxy::exported_proxy_url().as_deref(),
         ))
     }
 
@@ -243,6 +308,37 @@ impl Integration for Hermes {
             );
         }
 
+        // Name Hermes on its own requests. This is the one signal the engine
+        // can have for it: Hermes has no base URL for us to write, so there is
+        // no path marker, and its User-Agent is `python-httpx/...` because it
+        // is a Python program - `client_tool`'s needle for it has never once
+        // fired. A header Gate writes into a file only Hermes reads is evidence
+        // of our own making, which is the same standard the relay marker meets.
+        //
+        // `extra_headers` rather than `default_headers`: the two are merged and
+        // aliases of each other, so writing the one the user is less likely to
+        // be keeping means never having to edit a block that is theirs.
+        //
+        // Best-effort on purpose. A config shape `yaml_block` will not edit, or
+        // no write permission, costs the attribution and nothing else - the
+        // routing above is what makes Hermes work, and refusing to connect over
+        // a label would be the wrong trade. `status` reports it.
+        let header_created = write_tool_header()
+            .map_err(|e| {
+                eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
+            })
+            .ok()
+            .flatten();
+        // Same rule as `added_vars` below, and the same trap: on a re-connect
+        // the header is already there and correct, so `write_tool_header`
+        // reports creating nothing - and assigning that would erase the record
+        // of what the FIRST connect created. Disconnect reads this to know how
+        // much to take back out, so erasing it strands our block in the user's
+        // config forever.
+        if state.header_created.is_none() {
+            state.header_created = header_created;
+        }
+
         // Preserve the ORIGINAL record across re-connects: a second connect
         // must not claim credit for variables the first one added.
         if state.added_vars.is_empty() {
@@ -290,6 +386,12 @@ impl Integration for Hermes {
             return Ok(());
         };
         dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
+        // Only if we wrote one. A `None` here is a connect that predates the
+        // header or one whose write was refused, and in both cases the config
+        // is the user's untouched.
+        if let Some(created) = state.header_created {
+            remove_tool_header(created)?;
+        }
         // Only drop the sidecar once the file is back: losing it first would
         // leave our variables in place while status reports the tool clean.
         clear_state()
@@ -318,7 +420,12 @@ impl Integration for Hermes {
 /// engine is actually up. They are separate because "pointed at us but the
 /// engine is down" is a broken tool, not a cosmetic mismatch, and it is reported
 /// as drift rather than Connected so the master-off sweep still disconnects it.
-fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> Status {
+fn compute_status(
+    configured: &str,
+    expected: Option<&str>,
+    running: bool,
+    exported: Option<&str>,
+) -> Status {
     let Some(expected) = expected else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
@@ -336,7 +443,40 @@ fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> St
              is a dead address) -- turn the proxy on, or disconnect Hermes to restore it"
         ));
     }
-    Status::Connected
+    match environment_override(configured, exported) {
+        Some(o) => o.into_status(),
+        None => Status::Connected,
+    }
+}
+
+/// The login environment, when it holds a different `HTTPS_PROXY` than the one
+/// we wrote into `~/.hermes/.env`.
+///
+/// Hermes loads that file with python-dotenv, which does not replace a variable
+/// the process already has: `load_dotenv()` defaults to `override=False`. So a
+/// shell that already exports `HTTPS_PROXY` - a corporate egress proxy, another
+/// tool's setup - wins, our line is inert, and Hermes' traffic goes to whatever
+/// that names. The file says one thing and the wire does another, which is the
+/// whole of AG-674.
+///
+/// Read from the OS rather than from what we last wrote
+/// ([`crate::proxy::exported_proxy_url`] asks `launchctl` / the registry / the
+/// drop-in), because a record of our own write cannot contradict us and this
+/// check exists precisely to be contradicted. The usual case is agreement:
+/// Gate's own environment export puts the same address there, and the same
+/// address is not a conflict.
+fn environment_override(configured: &str, exported: Option<&str>) -> Option<Override> {
+    let exported = exported?;
+    if exported == configured {
+        return None;
+    }
+    Some(Override::new(
+        "the HTTPS_PROXY exported into your login environment",
+        format!(
+            "is {exported:?}, and Hermes keeps an already-set variable over the {configured:?} in \
+             its .env"
+        ),
+    ))
 }
 
 /// The proxy Hermes is currently pointed at, per its own `.env`.
@@ -460,6 +600,94 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
 /// `docs/harness-integration-validation.md`, H6), so all three have to be read.
 const BASE_URL_KEYS: &[&str] = &["base_url", "api", "url"];
 
+/// Where the tool header lives in `config.yaml`, and what it says.
+///
+/// `model.extra_headers` is global - "sent on every request to an
+/// OpenAI-compatible endpoint" - unlike the per-provider `extra_headers`, which
+/// is scoped to one named entry. That distinction is the whole choice: a
+/// per-endpoint setting is what made the old `model.base_url` rewrite unsafe,
+/// because adding a provider silently routed around it. A header that is missing
+/// costs a label; one that is missing *only sometimes* would be worse than
+/// either.
+const HEADER_PARENT: &str = "model";
+const HEADER_CHILD: &str = "extra_headers";
+
+/// Write the header, returning what had to be created for it.
+///
+/// `None` means there was nothing to do or nothing we could safely do; the error
+/// arm is reserved for I/O, so a refused shape is not reported as a failure.
+fn write_tool_header() -> Result<Option<yaml_block::Created>> {
+    let path = crate::env::hermes_config_path()?;
+    let before = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let (after, edit) = match yaml_block::set_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        ToolId::Hermes.slug(),
+    ) {
+        Ok(result) => result,
+        Err(refusal) => {
+            // A shape the editor will not touch. Said once, plainly, because
+            // the user's only visible symptom is otherwise a tool that routes
+            // but never appears by name.
+            eprintln!(
+                "note: left ~/.hermes/config.yaml alone ({refusal:?}); Hermes will route through \
+                 Gate but its traffic will be recorded as unattributed."
+            );
+            return Ok(None);
+        }
+    };
+    match edit {
+        // Already ours and already right - and on a re-connect that is the
+        // usual answer, so it must not rewrite the file to say so.
+        yaml_block::Edit::Unchanged => Ok(None),
+        yaml_block::Edit::Refreshed => {
+            write_config(&path, &after)?;
+            Ok(None)
+        }
+        yaml_block::Edit::Inserted(created) => {
+            write_config(&path, &after)?;
+            Ok(Some(created))
+        }
+    }
+}
+
+/// Take the header back out, per what connect recorded creating.
+fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
+    let path = crate::env::hermes_config_path()?;
+    let Ok(before) = std::fs::read_to_string(&path) else {
+        // Gone already; nothing of ours is left in a file that is not there.
+        return Ok(());
+    };
+    let after = yaml_block::remove_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        created,
+    );
+    if after != before {
+        write_config(&path, &after)?;
+    }
+    Ok(())
+}
+
+/// 0o600 like the `.env` beside it: this file can hold `${VAR}`-interpolated
+/// header values, and the upstream example uses that for access tokens.
+fn write_config(path: &std::path::Path, body: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    crate::primitives::write_file(path, body.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 /// `config.yaml` as YAML, or `None` if it is absent or does not parse. Never an
 /// error: nothing here is load-bearing enough to fail a connect over.
 fn parsed_config() -> Option<serde_yaml::Value> {
@@ -536,29 +764,6 @@ fn launcher_paths() -> Result<Vec<PathBuf>> {
         home.join(".local/bin/hermes"),
         crate::env::hermes_config_dir()?.join("bin/hermes"),
     ])
-}
-
-/// Whether a `hermes` executable is reachable on `$PATH`.
-///
-/// A supplement to [`launcher_paths`], never a replacement: launched from Finder
-/// or launchd the app inherits a minimal `PATH` that excludes `~/.local/bin`, so
-/// this would miss the standard install in exactly the case that matters. It
-/// covers the reverse - Hermes somewhere unusual (a venv, `/opt`, a scratch
-/// HOME) that the absolute paths don't know about.
-fn launcher_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        if dir.as_os_str().is_empty() {
-            return false;
-        }
-        #[cfg(target_os = "windows")]
-        let names: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat"];
-        #[cfg(not(target_os = "windows"))]
-        let names: &[&str] = &["hermes"];
-        names.iter().any(|n| dir.join(n).is_file())
-    })
 }
 
 fn state_path() -> Result<PathBuf> {
@@ -739,11 +944,19 @@ mod tests {
     fn compute_status_covers_the_four_states() {
         let ours = "http://127.0.0.1:9977";
 
-        assert_eq!(compute_status(ours, Some(ours), true), Status::Connected);
+        assert_eq!(
+            compute_status(ours, Some(ours), true, Some(ours)),
+            Status::Connected
+        );
+        // Nothing exported at all is the other agreeing shape.
+        assert_eq!(
+            compute_status(ours, Some(ours), true, None),
+            Status::Connected
+        );
 
         // Pointed at us but the engine is down: Hermes' requests go nowhere, so
         // this must never read as Connected.
-        match compute_status(ours, Some(ours), false) {
+        match compute_status(ours, Some(ours), false, None) {
             Status::Drifted(m) => {
                 assert!(m.contains("not running"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -752,14 +965,35 @@ mod tests {
         }
 
         // A corporate proxy the user set by hand is not ours.
-        match compute_status("http://proxy.corp.example:3128", Some(ours), true) {
+        match compute_status("http://proxy.corp.example:3128", Some(ours), true, None) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
-        match compute_status(ours, None, false) {
+        match compute_status(ours, None, false, None) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
+        }
+    }
+
+    /// AG-674's disagreement case for Hermes. Our four variables are in
+    /// `~/.hermes/.env` and correct, the engine is up - and the shell Hermes
+    /// starts from already exports a different proxy, which python-dotenv will
+    /// not replace. The `.env` is right and the wire is somebody else's.
+    #[test]
+    fn an_exported_proxy_beats_the_env_file_we_wrote() {
+        let ours = "http://127.0.0.1:9977";
+        match compute_status(
+            ours,
+            Some(ours),
+            true,
+            Some("http://proxy.corp.example:3128"),
+        ) {
+            Status::Overridden(m) => {
+                assert!(m.contains("proxy.corp.example:3128"), "unexpected: {m}");
+                assert!(m.contains("HTTPS_PROXY"), "must name the variable: {m}");
+            }
+            other => panic!("expected an override, got {other:?}"),
         }
     }
 

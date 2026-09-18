@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ClientId, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
 import { openExternal } from "../lib/openExternal";
 import { Home } from "./Home";
@@ -30,14 +30,20 @@ function makeTool(
   slug: string,
   name: string,
   status: Tool["status"],
-  upstream = "Anthropic",
+  client: ClientId = "claude-code",
 ): Tool {
   return {
     slug,
     name,
-    upstream_provider_name: upstream,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
+    upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
+    client,
+    scope: "client",
+    credential: "brokered",
   };
 }
 
@@ -51,34 +57,37 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "claude-desktop",
+    credential: "brokered",
+    scope: "host",
     ...overrides,
   };
 }
 
-/** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Other tools". */
-const CATALOG: ProviderState[] = [
-  {
-    slug: "anthropic",
-    display_name: "Claude",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["claude-code"],
-    domain_slugs: ["anthropic"],
-    chat_domain_slugs: [],
-  },
-  {
-    slug: "openai",
-    display_name: "OpenAI",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["codex"],
-    domain_slugs: ["openai"],
-    chat_domain_slugs: [],
-  },
-];
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
 
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
@@ -88,13 +97,15 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
-      consoleUrl="https://app.constellationgate.ai/"
+      dashboardUrl="https://app.constellationgate.ai/"
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
-      providers={CATALOG}
       tools={[]}
       domains={[]}
+      // Gated on the same flag for the reason `FamilyPanel.test` states: the
+      // sweep cannot report `on` while the engine it probes is down.
+      verdicts={props.proxyOn === false ? new Map() : sweep(props.tools ?? [])}
       busy={false}
       error={null}
       changeNotice={null}
@@ -246,7 +257,7 @@ describe("Home master toggle", () => {
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
       ],
       // One enabled app row plus one available-but-off row.
-      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI apps", enabled: false })],
+      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
@@ -274,7 +285,7 @@ describe("Home ledger rows", () => {
     // Four chevrons used to reach one panel that differed only by which family
     // arrived expanded. The id is the destination now, not a hint about where to
     // scroll once you get there.
-    expect(onOpenFamily).toHaveBeenCalledWith("anthropic");
+    expect(onOpenFamily).toHaveBeenCalledWith("claude");
   });
 
   it("keeps the rows off the routing card", () => {
@@ -304,14 +315,14 @@ describe("Home ledger rows", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("codex", "Codex", { kind: "connected" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "connected" }, "codex"),
       ],
       domains: [makeDomain()],
     });
     // The door printed "Claude, OpenAI" as one line of prose. A row per family
     // is what lets each carry its own pill, which is the point of the screen.
     expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "OpenAI details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "ChatGPT / Codex details" })).toBeTruthy();
     expect(screen.queryByText("Claude, OpenAI")).toBeNull();
   });
 
@@ -341,14 +352,14 @@ describe("Home ledger rows", () => {
     });
     const note = screen.getByText("Claude Code failed");
     expect(note.className).toContain("text-gc-error-deep");
-    expect(screen.getByText("Claude")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
   });
 
   it("floats the failure to the top and still shows the quieter exception", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" }),
-        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
       ],
       domains: [makeDomain()],
     });
@@ -376,7 +387,7 @@ describe("Home ledger rows", () => {
 
   it("keeps a hand-written setup in the quieter ink", () => {
     renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex")],
       domains: [],
     });
     const note = screen.getByText("Codex set up elsewhere");
@@ -387,7 +398,10 @@ describe("Home ledger rows", () => {
   it("stops the header claiming green while a tool is failing", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
-      domains: [makeDomain()],
+      // Same client as the tool, so both land in one group: the assertion below
+      // counts the header's roll-up and ONE group pill agreeing with it, which
+      // needs a group holding both a failing member and a routing one.
+      domains: [makeDomain({ client: "claude-code" })],
     });
     // Traffic is flowing (the app row routes) and something failed, so the
     // header reports the honest half-state. It used to fly green "Routing on"
@@ -410,7 +424,7 @@ describe("Home ledger rows", () => {
 
   it("leaves a hand-written setup out of the header pill", () => {
     renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex")],
       domains: [makeDomain()],
     });
     // Drift is a setup the user chose and the family switch deliberately
@@ -444,7 +458,7 @@ describe("Home ledger rows", () => {
     // Was a module constant pinned to production, which is precisely how a
     // staging-routed app sent its user to a dashboard reading a different
     // database.
-    renderHome({ consoleUrl: "https://app-staging.constellationgate.ai/" });
+    renderHome({ dashboardUrl: "https://app-staging.constellationgate.ai/" });
     fireEvent.click(screen.getByRole("button", { name: /Gate dashboard/ }));
     expect(openExternal).toHaveBeenCalledWith("https://app-staging.constellationgate.ai/");
   });
@@ -567,7 +581,7 @@ describe("Home master card is a control that owns up", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
       ],
       domains: [makeDomain()],
     });
@@ -821,22 +835,32 @@ describe("Home command-line tools switch", () => {
 });
 
 describe("Home family roster", () => {
-  it("names the members of the family named by exclusion", () => {
+  it("draws no roster, because every section names what is in it", () => {
+    // There is no group named by exclusion any more. "Other tools", then
+    // "Experimental", then "Any app on this machine" each needed their contents
+    // listed; a section is an app or a mechanism the user has, and its heading
+    // is the answer.
     renderHome({
-      tools: [
-        makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+      tools: [makeTool("env-proxy", "Terminal tools", { kind: "connected" }, "any-app")],
+      domains: [
+        makeDomain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" }),
       ],
     });
-    // "Other tools" is the label on a filter; it is the one row a first-timer
-    // cannot map to anything on their own machine.
-    expect(screen.getByText("Other tools")).toBeTruthy();
-    expect(screen.getByText("OpenCode · OpenClaw")).toBeTruthy();
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByText("OpenRouter")).toBeTruthy();
+    expect(screen.queryByText("Terminal tools · OpenRouter")).toBeNull();
+  });
+
+  it("has no catch-all heading left to reach", () => {
+    renderHome({ tools: [makeTool("hermes", "Hermes", { kind: "connected" }, "hermes")] });
+    expect(screen.queryByText("Other tools")).toBeNull();
+    expect(screen.queryByText("Experimental")).toBeNull();
+    expect(screen.getByText("Hermes")).toBeTruthy();
   });
 
   it("joins with a middot, because a member name can contain a slash", () => {
     renderHome({
-      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers")],
+      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
       domains: [makeDomain({ slug: "anthropic" })],
     });
     // "Claude Desktop / Cowork" is one member. A slash-joined roster would read
@@ -844,23 +868,22 @@ describe("Home family roster", () => {
     expect(screen.queryByText(/OpenCode \/ /)).toBeNull();
   });
 
-  it("stays off a family whose name already says what it covers", () => {
+  it("stays off a group whose name already says what it covers", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // Same rule the panel's blurb follows: "Claude Code · Claude Desktop /
-    // Cowork" under an h3 reading "Anthropic" costs a line for nearly the same
-    // fact, and these are the rows that carry an exception instead.
+    // One section, named for the app: the CLI and the desktop app's API
+    // surface are two surfaces of Claude and ride one switch.
     expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.queryByText("Claude Code · Claude Desktop / Cowork")).toBeNull();
+    expect(screen.queryByText(/Claude Code · /)).toBeNull();
   });
 
   it("yields the line to an exception, which already names a member", () => {
     renderHome({
       tools: [
-        makeTool("opencode", "OpenCode", { kind: "error", message: "bad json" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+        makeTool("opencode", "OpenCode", { kind: "error", message: "bad json" }, "opencode"),
+        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "openclaw"),
       ],
     });
     // Both would put a third line on the row that already grew.

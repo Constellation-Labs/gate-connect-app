@@ -12,6 +12,7 @@ type PillLabel =
   | "Needs trust"
   | "Set up elsewhere"
   | "Waiting on routing"
+  | "Not verified"
   | "Not routed";
 
 /** The pill's skin, including the seam ring tinted from its own hue and
@@ -63,6 +64,14 @@ const SKIN: Record<PillLabel, { wrap: string; dot: string }> = {
   "Waiting on routing": {
     wrap: "bg-gc-sunken text-gc-ink-2 ring-1 ring-gc-ink-4/45",
     dot: "bg-gc-ink-3",
+  },
+  // Nothing known to be wrong, nothing confirmed either. Warning rung rather
+  // than sunken: the switch is on, so this is not a state the user chose, and
+  // the same argument that gives "Waiting on routing" ink-2 gives this the
+  // amber ring - an unanswered check is a half-on for a reason outside the row.
+  "Not verified": {
+    wrap: "bg-gc-warning-wash text-gc-ink-2 ring-1 ring-gc-warning-deep/45",
+    dot: "bg-gc-warning-deep",
   },
   "Not routed": {
     wrap: "bg-gc-sunken text-gc-ink-3 ring-1 ring-gc-ink-4/45",
@@ -148,6 +157,10 @@ export function memberPillLabel(member: GroupMember): PillLabel {
   // running. Not "Routed" (nothing flows) and not "Not routed" (the user
   // didn't turn it off).
   if (member.attention === "master-off") return "Waiting on routing";
+  // Not "Not routed": that is what the pill says for a switch the user turned
+  // off, and this member's switch is on. Nothing could be confirmed, which is a
+  // third thing and the one AG-570 requires be distinguishable from both.
+  if (member.attention === "unverified") return "Not verified";
   return member.routed ? "Routed" : "Not routed";
 }
 

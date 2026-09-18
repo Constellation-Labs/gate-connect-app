@@ -41,6 +41,18 @@ export default defineConfig({
   webServer: {
     command: "pnpm exec vite --port 5599 --strictPort --host 127.0.0.1",
     url: "http://127.0.0.1:5599",
+    // Pin these tests to the popover, which is no longer the app's default.
+    //
+    // They assert on popover flows - first run, the org picker, routing counts -
+    // and the new window UI cannot satisfy them: its routing actions are inert,
+    // so there is nothing for "turn routing on" to observe. Rewriting them
+    // against the new shell before it can route would mean asserting on a UI
+    // that does not work yet, so they keep testing the surface that does.
+    //
+    // Retire this line together with the popover screens. `newUiEnabled()`
+    // reads localStorage first and a fresh browser context has none, so the
+    // build-time default is what decides here.
+    env: { VITE_NEW_UI: "0" },
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     // So the next startup failure says why instead of only that it timed out.

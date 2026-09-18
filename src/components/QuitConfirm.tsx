@@ -24,6 +24,9 @@ function joinNames(names: string[]): string {
 export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
+  /** Tools the teardown could not put back. Not an error - the sweep ran - but
+   * the panel must not quit while claiming the cleanup finished. */
+  const [leftBehind, setLeftBehind] = useState<string[] | null>(null);
   // The user asked to quit, but Enter on an unread panel should not decide
   // how. Cancel takes focus; both quit paths stay one Tab away.
   const safeRef = useRef<HTMLButtonElement>(null);
@@ -31,8 +34,17 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
   async function turnOffAndQuit() {
     setBusy(true);
     setError(null);
+    setLeftBehind(null);
     try {
-      await disconnectToolsForQuit();
+      const failed = await disconnectToolsForQuit();
+      if (failed.length > 0) {
+        // The sweep ran but left a tool pointing at a relay that dies with this
+        // process. Quitting here would strand it silently, so name it and stay
+        // open - the user can retry, or quit anyway now knowing what it costs.
+        setLeftBehind(failed);
+        setBusy(false);
+        return;
+      }
       track("quit_confirmed", { integrations_disabled: true });
       await quitApp();
     } catch (e) {
@@ -88,12 +100,24 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           Gate Connect is closed, then reconnects {plural ? "them" : "it"} when
           Gate Connect starts again.
         </p>
+        {leftBehind && (
+          // Named, not counted, and the panel stays open: a tool left pointing
+          // at Gate will not reach a model once this process exits, so the one
+          // thing this must not do is quit quietly.
+          <p className="text-gc-body-sm leading-snug text-gc-warning-deep" role="status">
+            Couldn’t put {joinNames(leftBehind)} back on{" "}
+            {leftBehind.length > 1 ? "their own settings" : "its own settings"}.{" "}
+            {leftBehind.length > 1 ? "They still point" : "It still points"} at Gate and
+            won’t reach a model until Gate Connect runs again. Try again, or quit knowing
+            that.
+          </p>
+        )}
         {error && <ErrorNote error={error} />}
       </div>
 
       <div className="mt-1 flex w-full flex-col gap-2">
         <Button variant="accent" full disabled={busy} onClick={() => void turnOffAndQuit()}>
-          {busy ? "Working…" : "Disconnect tools and quit"}
+          {busy ? "Working…" : leftBehind ? "Try disconnecting again" : "Disconnect tools and quit"}
         </Button>
         {/* Names what it does instead of "Quit anyway", which said only that
             quitting would happen and left the difference between the two quit

@@ -154,7 +154,8 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -223,6 +224,146 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     );
 }
 
+/// A tool that names itself in its own config is attributed, and the header it
+/// used goes no further.
+///
+/// This is the whole of Hermes' attribution. It has no base URL for Gate to
+/// write, so there is no path marker; and it is a Python program, so its
+/// User-Agent is `python-httpx/...` and `client_tool`'s `hermes` needle has
+/// never once fired - `harnesses.json` has recorded the consequence for as long
+/// as the needle has existed. `model.extra_headers` in `config.yaml` is the one
+/// place Gate can put a value that only Hermes sends.
+///
+/// Two assertions, and the second matters as much as the first. The gateway
+/// must learn `hermes`, and must not learn it twice: `x-gate-tool` is
+/// Gate-internal, it names the user's tooling, and it is consumed at the hop
+/// that reads it.
+#[tokio::test]
+async fn a_tool_that_names_itself_in_its_config_is_attributed() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+            billing_mode: Default::default(),
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    // The User-Agent is deliberately the one Hermes really sends, so this test
+    // fails if attribution ever quietly starts coming from the guess instead.
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("user-agent", "python-httpx/0.27.0")
+        .header("x-gate-tool", "hermes")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(
+        resp.status().is_success(),
+        "gateway returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "gateway should have received one request");
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-client"),
+        Some("hermes"),
+        "the config header is what names a tool the User-Agent cannot"
+    );
+    assert_eq!(
+        r.header("x-gate-tool"),
+        None,
+        "the input header is consumed at this hop, not forwarded"
+    );
+}
+
+/// A slug we do not know is dropped, not passed through.
+///
+/// The value reaches us from a file on the user's disk, so it can say anything.
+/// Whatever lands in the activity column has to be one of ours, and an
+/// unrecognised tool is unattributed rather than a string nobody can map back
+/// to a row - the same rule the relay marker follows.
+#[tokio::test]
+async fn a_tool_header_naming_something_unknown_is_dropped() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+            billing_mode: Default::default(),
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("user-agent", "python-httpx/0.27.0")
+        .header("x-gate-tool", "not-a-tool")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(resp.status().is_success());
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-client"),
+        None,
+        "unrecognised is unattributed"
+    );
+    assert_eq!(r.header("x-gate-tool"), None, "and still not forwarded");
+}
+
 /// A proxy credential must not be forwarded, on either arm.
 ///
 /// `Proxy-Authorization` addresses the proxy itself and stops there. The engine
@@ -261,6 +402,7 @@ async fn a_proxy_credential_is_stripped_on_the_plain_http_arm_too() {
             preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
+            billing_mode: Default::default(),
         },
         || {},
     )
@@ -336,6 +478,7 @@ async fn claude_code_selector_routes_when_desktop_domain_is_off() {
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
             org_id: String::new(),
+            billing_mode: Default::default(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -453,6 +596,7 @@ async fn proxy_accepts_oversized_h2_request_headers() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
@@ -570,7 +714,8 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -710,6 +855,7 @@ async fn exported_proxy_env_routes_an_external_process() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
@@ -874,6 +1020,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             // as x-gate-authorization instead of the API key, with the selected
             // org on x-gate-org-id.
             oauth_token: "cognito-access-token".into(),
+            billing_mode: Default::default(),
             org_id: "org-uuid-1".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
@@ -972,6 +1119,7 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
@@ -1061,6 +1209,7 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
@@ -1137,6 +1286,7 @@ async fn crl_endpoint_serves_a_der_crl() {
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
             org_id: String::new(),
+            billing_mode: Default::default(),
             domains: default_domains(),
             ca_cert_pem,
             ca_key_pem,
@@ -1190,4 +1340,136 @@ async fn crl_endpoint_serves_a_der_crl() {
     );
 
     engine.stop();
+}
+
+/// What happens to a connection that was ALREADY OPEN when its row goes off.
+///
+/// The question the UI could not answer by reading itself. Gate Connect tells a
+/// user whose page was open across a switch-ON that the page keeps the
+/// connection it had and goes around Gate until it is reloaded; whether the
+/// mirror of that is true - a page open across a switch-OFF still going THROUGH
+/// Gate - decides whether the same notice is owed in the other direction, and
+/// the frontend cannot see a socket.
+///
+/// Measured rather than reasoned about, on the same handler a MITM'd tunnel
+/// uses: `handle_request` is what hudsucker calls for a proxied plain request
+/// and for a request inside an intercepted session alike, and the rule lookup
+/// under test is the one in it. Plain HTTP keeps the test hermetic - no CA, no
+/// DNS, two loopback mocks - and keeps the connection provably single, which is
+/// the whole point: one socket, two requests, the row switched off between
+/// them.
+#[tokio::test]
+async fn a_row_switched_off_stops_rewriting_a_connection_already_open() {
+    let _serial = SERIAL.lock().await;
+    // Where a rewritten request lands, and where an unrewritten one does. Two
+    // captures rather than one and an absence: "it stopped being routed" and
+    // "it went to the provider instead" are different findings, and only the
+    // second one says what the user's traffic is actually doing.
+    let gateway = start_mock_gateway().await;
+    let upstream = start_mock_gateway().await;
+    let upstream_port = upstream.base_url.rsplit(':').next().unwrap().to_string();
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let mut domain = default_domains()
+        .into_iter()
+        .find(|d| d.slug == "anthropic")
+        .expect("catalog ships anthropic");
+    // The provider, played by a loopback mock: the host is what `decide`
+    // matches on and what an unrewritten request is forwarded to, so pointing
+    // both at 127.0.0.1 is what keeps this test off the network.
+    domain.hosts = vec!["127.0.0.1".into()];
+    domain.upstream_url = format!("http://127.0.0.1:{upstream_port}");
+    domain.rewrite_prefixes = vec!["/v1/".into()];
+    domain.enabled = true;
+    let on = vec![domain.clone()];
+    let mut off_domain = domain.clone();
+    off_domain.enabled = false;
+    let off = vec![off_domain];
+
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            billing_mode: Default::default(),
+            org_id: String::new(),
+            domains: on,
+            ca_cert_pem,
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", engine.port()))
+        .await
+        .expect("the engine should accept a proxy connection");
+
+    // One request, written by hand in absolute-form, which is what a client
+    // sends a forward proxy. Keep-alive is the HTTP/1.1 default and is the
+    // property under test, so it is not asked for explicitly.
+    async fn send(sock: &mut tokio::net::TcpStream, port: &str, path: &str) -> String {
+        let req = format!(
+            "POST http://127.0.0.1:{port}{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        sock.flush().await.unwrap();
+        // Headers only: both mocks answer with an empty body and a
+        // content-length of zero, so the response ends at the blank line.
+        let mut seen = Vec::new();
+        let mut byte = [0u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            let n = sock.read(&mut byte).await.unwrap();
+            assert_ne!(n, 0, "the engine closed the connection mid-response");
+            seen.push(byte[0]);
+        }
+        String::from_utf8_lossy(&seen).to_string()
+    }
+
+    let first = send(&mut sock, &upstream_port, "/v1/messages").await;
+    assert!(first.starts_with("HTTP/1.1 200"), "first response: {first}");
+    assert_eq!(
+        gateway.captured.lock().unwrap().len(),
+        1,
+        "with the row on, the request is rewritten to the gateway"
+    );
+    assert_eq!(
+        upstream.captured.lock().unwrap().len(),
+        0,
+        "and does not reach the provider directly"
+    );
+
+    // The switch. Live, on the running engine - the same call
+    // `proxy_set_domain` makes when somebody turns the row off.
+    engine.update_domains(&off);
+    assert_eq!(engine.intercepting(), 0);
+
+    let second = send(&mut sock, &upstream_port, "/v1/messages").await;
+    assert!(
+        second.starts_with("HTTP/1.1 200"),
+        "second response: {second}"
+    );
+
+    let to_gateway = gateway.captured.lock().unwrap().len();
+    let to_upstream = upstream.captured.lock().unwrap().len();
+    engine.stop();
+
+    // The finding, and the reason the off-direction notice is not owed: the
+    // rule set is re-read per REQUEST, not per connection, so the very next
+    // request on a socket that was already open is no longer routed. The
+    // connection survives the switch; the routing does not.
+    assert_eq!(
+        to_gateway, 1,
+        "a row switched off must not keep routing an open connection"
+    );
+    assert_eq!(
+        to_upstream, 1,
+        "the unrouted request goes to the provider instead"
+    );
 }

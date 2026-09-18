@@ -11,7 +11,7 @@ While routing is on, Gate Connect serves plain HTTP on `127.0.0.1`:
 
 - the MITM engine port (system-proxy traffic),
 - the reverse-proxy relay port (CLI tool configs bake
-  `http://127.0.0.1:<port>/<slug>` as their base URL),
+  `http://127.0.0.1:<port>/__gate/t/<tool>/<slug>` as their base URL),
 - the PAC responder port (macOS/Windows `AutoConfigURL`).
 
 The relay and engine inject the owner's live Gate credential (Cognito bearer
@@ -57,11 +57,33 @@ project). Consequences, stated plainly:
   per-run path token baked into tool configs would close (other users cannot
   read the owner's 0600 configs). Measured earlier: the major CLI tools
   preserve a base-URL path prefix, so `http://127.0.0.1:<port>/<token>/...`
-  is a viable shape if this is ever prioritized.
+  is a viable shape if this is ever prioritized. **That measurement has since
+  shipped as a mechanism**: the tool marker (`/__gate/t/<tool>/`) is a path
+  prefix the relay writes into every tool config and peels back off, proving
+  the shape end to end for Codex and OpenCode. A token would be the same
+  mechanism carrying a secret instead of a name, which also means it inherits
+  the same constraint - the value is only as private as the config file it is
+  written into, so it closes the other-local-user gap and nothing else.
 
 Blast radius in both cases is spend, not theft: the raw key is not
 disclosed, and the catalog-constrained upstream resolution means the relay
 cannot be aimed at an arbitrary host.
+
+That bound depends on the `GATE_CONNECT_TEST_*` seams being debug-only, and
+for a while five of them were not. `GATE_CONNECT_TEST_{ACTIVITY,TOOL_EVENTS,
+INSTALLATIONS,CREDITS,GATE_MODELS}_ENDPOINT` read `std::env::var_os` directly
+instead of `env::test_seam`, so a release build obeyed them - and each URL goes
+to `gateway_api::call_json`, which attaches the live `x-gate-api-key` or bearer
+with no scheme or host check. One line in a shell profile therefore sent the
+raw `sk-gw-` key in cleartext to an arbitrary host on every later launch:
+theft, persistent, and from a user-writable location rather than for the
+lifetime of one process. Found by review, not in the field.
+
+All five now go through the helper, and the rule is a test rather than a
+sentence - `env::tests::every_seam_is_read_through_the_helper` scans this
+crate's production sources for a bare read of a seam name, so a sixth cannot be
+added the same way. If that test is ever relaxed, this paragraph is the reason
+it exists.
 
 Decision: ship with the browser and cross-user-Linux defenses; treat the
 macOS/Windows cross-user token as a tracked follow-up rather than a blocker,

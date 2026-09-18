@@ -32,11 +32,23 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 /// values in place would let a test escape its temp home and edit the
 /// developer's real `~/.config/opencode/opencode.json`.
 ///
-/// And pins `GATE_CONNECT_TEST_HOME`, because `$HOME` redirects nothing on
-/// Windows: `dirs` reads Known Folders there, so `app_support_dir()` would
-/// resolve the runner's real `%LOCALAPPDATA%\Gate Connect` and let one test's
-/// seeded CA leak into the next. That seam is the portable override - see
-/// `env::test_home_override`.
+/// **And `GATE_CONNECT_TEST_HOME`, which is the only one of the four that works
+/// on Windows.** `env::app_support_dir` and `env::home` consult that seam first
+/// and otherwise fall through to `dirs`, which reads Known Folders rather than
+/// the environment - `env.rs` says so where the seam is defined. So on Windows
+/// the three variables above redirected nothing: `seed_ca_cert` wrote the CA
+/// into the runner's real `%LOCALAPPDATA%\Gate Connect`, `Drop` deleted only
+/// the temp dir, and the file outlived the test that made it. The next test to
+/// run found a CA it had deliberately not seeded.
+///
+/// That is what made `claude_code_connect_refuses_when_the_ca_is_missing` fail
+/// on Windows and nowhere else, and only sometimes: `HOME_LOCK` serialises these
+/// tests but cannot un-write a file in a shared location, and the harness picks
+/// the order. It failed exactly when a seeding test was scheduled first.
+///
+/// The same hole pointed `claude_code_settings_path` at the runner's real
+/// profile, so these tests were reading and deleting a `~/.claude/settings.json`
+/// that only happened to be absent on a fresh runner.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
@@ -63,6 +75,22 @@ impl TempHome {
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         let prev_test_home = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         std::env::set_var("HOME", &dir);
+        // The seam, not just HOME - and it was already set here, which is what
+        // this comment is for rather than a second `set_var`.
+        //
+        // `env::tool_path_override` ignores every published tool-dir variable
+        // while `GATE_CONNECT_TEST_HOME` is set, so an ambient `CODEX_HOME` or
+        // `OPENCODE_CONFIG_DIR` - Orca exports both - cannot punch through the
+        // temp home. That is what makes the XDG pins below redundant: they are
+        // belt and braces from before the seam existed, kept because removing a
+        // guard from the one suite whose job is proving nothing is left behind
+        // needs a better reason than tidiness.
+        //
+        // The incident that motivates the seam belongs to `codex_billing_mode`,
+        // not to this file, and is written up at `crates/core/src/env.rs`. A
+        // previous version of this comment claimed it happened here and credited
+        // the protection to a line that was a duplicate of the one above it,
+        // which would have invited the next reader to delete the real one.
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
         std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
@@ -136,6 +164,7 @@ fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         upstream_url: "https://api.anthropic.com".to_string(),
+        billing_mode: Default::default(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }
@@ -630,7 +659,7 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     // the upstream hint on the bare host the catalog knows.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1"),
         "openrouter baseURL must keep the slug + /v1: {connected}"
     );
     assert!(
@@ -767,9 +796,12 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::write(&launcher, "#!/bin/sh\n").unwrap();
 
-    // A config.yaml and an .env holding the user's own key. Neither the model
-    // block nor the key may be touched: Hermes routes via the proxy now, so
-    // there is no base_url to rewrite and no provider to discover.
+    // A config.yaml and an .env holding the user's own key. The user's model
+    // block and key may not be touched: Hermes routes via the proxy now, so
+    // there is no base_url to rewrite and no provider to discover. Connect does
+    // add one line - `model.extra_headers.x-gate-tool`, which is what names
+    // Hermes on the wire - and disconnect has to take exactly that back out,
+    // which is the assertion at the end of this test.
     let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let original_cfg =
@@ -794,11 +826,20 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
     );
-    assert_eq!(
-        fs::read_to_string(&cfg).unwrap(),
-        original_cfg,
-        "config.yaml must not be touched at all"
+    // The one line connect writes there, and nothing else: the user's own keys
+    // survive verbatim, which is what a surgical edit buys over a YAML
+    // round-trip.
+    let cfg_body = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        cfg_body.contains("x-gate-tool: hermes"),
+        "Hermes must be named in its own config, or nothing can attribute it: {cfg_body}"
     );
+    for line in original_cfg.lines() {
+        assert!(
+            cfg_body.contains(line),
+            "the user's config must survive the edit, lost {line:?}: {cfg_body}"
+        );
+    }
 
     // A re-connect has to be a no-op that succeeds, not a refusal: it is how a
     // drifted Hermes is repaired, including unattended by `reconcile_enabled`.
@@ -832,10 +873,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         after.contains("OPENROUTER_API_KEY=sk-user"),
         "the user's own key must survive: {after}"
     );
+    // Byte-identical, not merely equivalent. A disconnect that left an empty
+    // `extra_headers:` block behind, or reflowed the file, would be residue in
+    // a file Gate does not own - and this is the only test that would notice.
     assert_eq!(
         fs::read_to_string(&cfg).unwrap(),
         original_cfg,
-        "config.yaml must still be untouched after disconnect"
+        "config.yaml must come back byte for byte after disconnect"
     );
     assert!(
         !env::app_support_dir()

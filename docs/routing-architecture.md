@@ -146,7 +146,7 @@ every correctly-exported machine as drifted, permanently.
 | OpenCode                            | relay                             | `provider.<id>.options.baseURL`                                                              | yes    |
 | OpenClaw                            | proxy engine                      | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS`                                                     | yes    |
 | Hermes                              | proxy engine                      | four vars in `~/.hermes/.env`                                                                | yes    |
-| **Environment proxy** (`env-proxy`) | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | hidden |
+| **Terminal tools** (`env-proxy`)     | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | yes    |
 
 Claude Code's proxy URL includes a fixed, non-secret route selector. That lets
 the engine keep intercepting its canonical Anthropic connection when the user
@@ -177,12 +177,26 @@ routed can still resume.
 `env-proxy` is not a tool. It models the *mechanism* - the variables the system
 proxy exports - because some tools cannot be configured at all. OpenCode has no
 proxy or CA setting anywhere in its config schema and loads no dotenv, so those
-variables are the only way to route it; an OpenCode-shaped proxy integration
-would be a fiction, since nothing tool-specific happens. The same export covers
-anything else that reads `HTTPS_PROXY`.
+variables are the only way its sockets reach the *engine*; an OpenCode-shaped
+proxy integration would be a fiction, since nothing tool-specific happens. The
+same export covers anything else that reads `HTTPS_PROXY`.
+
+That qualifier is load-bearing, and this sentence used to drop it and read "the
+only way to route it". The variables are not the only way OpenCode routes:
+`integrations::opencode` rewrites `provider.<id>.options.baseURL` to the relay,
+which needs neither a variable nor the CA, and it predates this section. Without
+the qualifier the sentence denies the relay half outright, which is how it came
+to contradict both the table above and section 6 below.
 
 **OpenCode's own integration is therefore relay-only**, and stays that way. It
 writes `baseURL` and nothing else. The env coverage belongs to `env-proxy`.
+
+Neither mechanism subsumes the other, which is why both are wired. The rewrite
+is a snapshot taken at connect time over `KNOWN_PROVIDERS`, so a provider the
+user adds afterwards, one outside that allowlist, or one the `looks_local` guard
+skips has no rewrite and is the environment's to carry. Going the other way, the
+rewrite routes without the CA and without touching the machine, which is the
+whole reason it is not simply deleted in favour of the channel.
 
 It is a *choice*, not a side effect, because the variables are machine-wide:
 `HTTPS_PROXY` redirects git, curl and npm too. `manager.enable()` consults
@@ -302,13 +316,81 @@ the Routing card, and is absent entirely on Linux (`env_export_separable`),
 where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
-**The harnesses are listed.** OpenCode, OpenClaw and Hermes now appear in the
-ledger, forming the "Other tools" group that was dormant while they were
-hidden. (That group was called "Agent harnesses" until the round-15 design pass:
-it is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
-harness.) `hidden_in_ui` still exists and `env-proxy` still uses it; hiding is
-always a UI-boundary decision (`list_tools`), never removal from the registry,
-because the master-off sweep and `restore_swept_tools` walk it.
+It has a **row** now as well, "Terminal tools", in the Tools band beside
+OpenCode. (It was "Experimental" when this paragraph was written; `BAND_LABELS`
+in `groups.ts` draws Apps and Tools.) The two are there together because the
+channel carries what OpenCode's own config cannot: the `baseURL` rewrite covers
+the providers it found at connect time, the variables cover whatever else it
+sends, and turning OpenCode on turns the channel on with it. (This used to say
+the two "share a mechanism" and that the variables are "how it routes" - which
+contradicted the mechanism table in section 3, where OpenCode is relay. See the
+qualifier there.) `useRouting`'s `opencode-env` prompt says so before either
+write, and the row is what makes that promise checkable. Both controls call
+`proxy::set_env_export`, so they cannot disagree.
+
+**The ledger groups by client, not by vendor.** Every row - a config tool or a
+proxy domain - answers `taxonomy::Client`, and `buildGroups` buckets on it. So
+OpenCode, OpenClaw and Hermes each head a group, Claude Code and Claude Desktop
+are two groups rather than one "Anthropic", and the environment channel sits
+with the host entries that also cover whatever happens to be running, under
+**Any app on this machine**.
+
+This replaced a vendor grouping plus four hand-added headings. A vendor heading
+cannot file a tool that routes whatever providers the user configured in it, so
+OpenClaw, Hermes and an "Experimental" pair were named one at a time in a
+`LEFTOVER_GROUPS` table, behind an `any-provider` catch-all whose whole job was
+to catch what the taxonomy could not place. There is no catch-all now: every row
+names its client, so nothing can fall off the ledger. (The shared group was
+called "Agent harnesses" until the round-15 design pass, then "Other tools".)
+
+**The machine-wide group holds the `openai` domain.** api.openai.com belongs to no
+OpenAI tool: Codex is config-routed through the relay, which resolves routes
+against the whole catalog (`relay.rs` builds from `default_domains()`, not the
+enabled set), so it routes whatever that switch says; the ChatGPT desktop app
+talks to chatgpt.com. What the switch governs is MITM interception of that host
+for any system-proxy-honouring client - and the clients that depend on it are
+OpenClaw and Hermes, which blind-tunnel anything outside the *enabled* catalog.
+So the row sits with them, and `provider.rs` no longer lists the slug: the OpenAI
+family switch governs Codex alone, which is what it was doing in effect already. It
+is labelled **OpenAI API** - the host's role, with `api.openai.com` itself in the
+row's description rather than the label, since the popover already prints it in a
+mono identifier slot.
+
+The grouping is what makes the row labels work. Rows are named for the surface
+they cover - "API" and "Chat" for the two surfaces of the Claude desktop app,
+"CLI" for a terminal tool - and a surface kind is only legible under a heading
+that names the program. The sentence explaining each row is UI copy, in
+`MEMBER_DESCRIPTIONS`.
+
+**Each row also carries a scope and a credential** (`taxonomy::Scope`,
+`taxonomy::Credential`), and both are rendered rather than implied:
+
+- `scope` is the blast radius. Every proxy domain is `host`, which means
+  flipping it intercepts those hosts for *every* proxy-honouring client on the
+  machine, not only the one the row is named for - `should_intercept_host`
+  matches on host alone at CONNECT, before any header exists, and the
+  per-request narrowing in `rules_for_client` decides only what is rewritten.
+  Config tools are `client`; the environment channel is `machine`. The sentence
+  comes from `switchScopeNote` in `groups.ts` for a host section and
+  `machineScopeNote` for the environment channel.
+- `credential` is whose key rides the request, and it is the single thing that
+  decides whether a group switch may flip the row: `provider::cascade_domains`
+  filters on `Credential::Brokered`, and `cascadeTargets` does the same on the
+  frontend. The session surfaces (`claude-web`, `chatgpt-apps`, `chatgpt`) are
+  `Additive`, so they are listed under their client and reachable only from
+  their own switch.
+
+Those two used to be one `chat` boolean plus a second `chat_domain_slugs` array
+on each provider, which is why a row could be silently dropped from the ledger
+by an edit meant to keep it out of a cascade, and why the scope fact had nowhere
+to live at all. A support thread in 2026-09 turned on exactly that gap: `Chat`
+was labelled "Web" and described as the browser tab, so its owner concluded the
+Claude desktop app was uncovered when the row covers it, and covers it more
+fully than a browser.
+
+`hidden_in_ui` still exists; nothing uses it now that `env-proxy` is listed.
+Hiding is always a UI-boundary decision (`list_tools`), never removal from the
+registry, because the master-off sweep and `restore_swept_tools` walk it.
 
 **They were listed ahead of the stated bar.** That bar was one end-to-end run
 against a real install, per tool, and none of the three has had one. What
@@ -339,7 +421,40 @@ how the user learns. Worth revisiting if it reads badly in practice.
    a property of routing rather than a tool). Remaining: it is untested against
    a real macOS or Windows session.
 5. **Verify the effective config, not our own write** - the general fix for the
-   O1 class across relay integrations.
+   O1 class. **Mostly done (AG-674), with one hole named below.**
+
+   Two halves. The *path* half is closed: `status` now reads the file the
+   harness loads, not the one Gate picked. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+   were being ignored - Gate Connect would edit a file the CLI never opens and
+   report `Connected` off that write - and they join `OPENCLAW_CONFIG_PATH`,
+   `HERMES_HOME` and OpenCode's `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` /
+   `XDG_CONFIG_HOME`, which were already honoured.
+
+   The *precedence* half has its own state rather than a green pill:
+   `Status::Overridden(source)` -> `ConfigState::Overridden` ->
+   `Reason::ConfigurationOverridden`, whose next action is
+   `ShowConflictingConfig` and not `ApplyGateConfiguration`, because re-writing a
+   file that is already correct moves nothing. What each integration checks
+   before it says `Connected`:
+
+   | Tool | Layer it can lose to | Seen? |
+   |---|---|---|
+   | Claude Code | enterprise `managed-settings.json` setting `HTTPS_PROXY` or `ANTHROPIC_BASE_URL` | yes |
+   | Claude Code | project `.claude/settings*.json`, CLI flags | **no** |
+   | Codex | the selected `profile`'s own `model_provider` | yes |
+   | Codex | `--profile` / `-c` on the command line | **no** |
+   | OpenCode | managed `/etc/opencode/opencode.json`, `OPENCODE_CONFIG_CONTENT` | yes |
+   | OpenCode | project `./opencode.json`, `.opencode/` - **finding O1 itself** | **no** |
+   | OpenClaw | nothing above its single file; the path override is honoured | n/a |
+   | Hermes | an `HTTPS_PROXY` already in the login environment, which python-dotenv will not replace | yes |
+
+   The hole is one shape, not five: **a layer chosen by the harness's working
+   directory**. Gate Connect is a windowed process and does not know which repo
+   `codex` was started in, so a per-project config is not reachable from here -
+   and O1's own case, a repo-local `opencode.json`, is exactly that. Closing it
+   needs per-tool traffic attribution in the relay, or the harness's cwd from the
+   process table, both larger than this item. Until then the app under-claims
+   rather than over-claims, which is the direction that was wrong before.
 6. **The OpenRouter ALB fix is mock-tested only**; it asserts our side of the
    contract, not Gate's reassembly.
 7. O3: Zen provider IDs.
@@ -355,6 +470,10 @@ crates/core/src/proxy/
   manager*.rs         enable/disable/crash/reconcile orchestration
   ca_bundle.rs        platform roots + our CA, for tools that replace the store
   relay.rs            loopback reverse proxy for base-URL integrations
+crates/core/src/
+  routing_health.rs   the per-tool verdict: what a tool is *doing*
+  verdict_log.rs      what the last sweep concluded, kept across launches
+  recovery.rs         what an interrupted restore did, entry by entry
 crates/core/src/integrations/
   dotenv.rs           shared managed .env edits (never clobbers a user value)
 crates/core/tests/proxy_e2e.rs   engine + exported-env end-to-end

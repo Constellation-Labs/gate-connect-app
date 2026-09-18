@@ -54,6 +54,17 @@ enum Command {
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
+    /// Show or change who pays the upstream provider.
+    ///
+    /// `byok` (the default) forwards each tool's own provider credential and
+    /// the provider bills you directly. `payg` sends neither, so Gate routes
+    /// through your workspace's provider accounts and debits its prepaid
+    /// balance - top up in the dashboard first, since a funded balance is what
+    /// activates it. Run with no argument to print the current mode.
+    BillingMode {
+        /// `byok` or `payg`. Omit to print the current mode.
+        mode: Option<String>,
+    },
     /// Show the currently signed-in gateway URL, if any.
     Whoami,
     /// List supported tools and their current state.
@@ -198,6 +209,7 @@ fn main() -> Result<()> {
             api_key_file,
         } => cmd_set_upstream(&tool, api_key, api_key_file),
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
+        Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
     };
@@ -365,8 +377,65 @@ fn cmd_logout() -> Result<()> {
 
 fn cmd_whoami() -> Result<()> {
     match account::load_base_url()? {
-        Some(url) => println!("Signed in: {url}"),
+        Some(url) => {
+            println!("Signed in: {url}");
+            // Who pays is not visible anywhere else on a headless machine, and
+            // it decides whether traffic spends the workspace balance.
+            println!(
+                "Billing:   {}",
+                billing_mode_label(account::billing_mode()?)
+            );
+        }
         None => println!("Not signed in. Run `gate-connect login --base-url … --api-key …`."),
+    }
+    Ok(())
+}
+
+fn billing_mode_label(mode: account::BillingMode) -> &'static str {
+    match mode {
+        account::BillingMode::Byok => "byok (your own provider keys)",
+        account::BillingMode::Payg => "payg (billed to your Gate balance)",
+    }
+}
+
+/// Print or switch the account's billing mode.
+///
+/// Switching rewrites nothing on its own beyond the account file: the relay and
+/// the MITM engine read the mode per request, so routing follows immediately in
+/// whichever process hosts them - except that Codex's provider block encodes
+/// the mode, so it needs a reconnect, and this says so rather than silently
+/// leaving it on the old shape.
+fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
+    let Some(requested) = mode else {
+        println!("{}", billing_mode_label(account::billing_mode()?));
+        return Ok(());
+    };
+    let mode = match requested.to_ascii_lowercase().as_str() {
+        "byok" => account::BillingMode::Byok,
+        "payg" => account::BillingMode::Payg,
+        other => anyhow::bail!("unknown billing mode {other:?} - expected `byok` or `payg`"),
+    };
+    account::set_billing_mode(mode)?;
+    println!("Billing mode: {}", billing_mode_label(mode));
+
+    // Codex is the one config integration whose file depends on the mode.
+    if matches!(
+        registry::find(ToolId::Codex).map(|i| i.status()),
+        Some(Ok(Status::Connected))
+            | Some(Ok(Status::Drifted(_)))
+            | Some(Ok(Status::Overridden(_)))
+    ) {
+        println!(
+            "note: run `gate-connect connect codex` to rewrite its provider block for this mode."
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous mode until it is toggled off and on."
+            );
+        }
     }
     Ok(())
 }
@@ -434,6 +503,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
+        billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
     };
@@ -626,6 +696,25 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
             }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
+            // The GUI raises a dialog before this exact act, because a row whose
+            // credential does not cascade carries the session the operator is
+            // already signed in with rather than a key Gate brokers. The CLI
+            // cannot ask - the toggle has happened by the time anything could -
+            // so it says what it did. The table below carries the same two facts
+            // in its columns, and somebody toggling one domain by name never
+            // reads it.
+            if enabled {
+                if let Some(d) = st.domains.iter().find(|d| d.slug == slug) {
+                    if !d.credential.cascades() {
+                        println!(
+                            "note: {slug} carries the credential you are already signed in with, \
+                             not a key Gate brokers. Gate now records and inspects that traffic \
+                             on {}.",
+                            d.hosts.join(", ")
+                        );
+                    }
+                }
+            }
             print_proxy_domains(&st.domains);
         }
         ProxyCmd::TrustCa { system_trust } => {
@@ -678,7 +767,15 @@ fn print_proxy_state(state: &proxy::ProxyState) {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
-    println!("{:<12} {:<6} NAME", "PROVIDER", "STATE");
+    // Client, scope and credential beside the flag, for the same reason the
+    // diagnostics report carries them: on/off alone does not say who a row is
+    // for, what else flipping it touches, or whether Gate supplies the key.
+    // A `claude-web off` with none of that is what sent a support thread
+    // looking in the wrong place.
+    println!(
+        "{:<14} {:<6} {:<15} {:<8} {:<10} NAME",
+        "DOMAIN", "STATE", "CLIENT", "SCOPE", "CREDENTIAL"
+    );
     for d in domains {
         let state = if !d.supported {
             "n/a"
@@ -687,7 +784,40 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
         } else {
             "off"
         };
-        println!("{:<12} {:<6} {}", d.slug, state, d.display_name);
+        println!(
+            "{:<14} {:<6} {:<15} {:<8} {:<10} {}",
+            d.slug,
+            state,
+            d.client.slug(),
+            scope_word(d.scope),
+            credential_word(d.credential),
+            d.display_name
+        );
+    }
+}
+
+/// One word per [`Scope`], for the table above.
+///
+/// Spelled out here rather than derived from the serde name so the CLI's
+/// vocabulary is a deliberate choice: "host" is the one a reader has to
+/// understand, because it is the one that reaches past the row's own name.
+fn scope_word(scope: gate_connect_core::taxonomy::Scope) -> &'static str {
+    use gate_connect_core::taxonomy::Scope;
+    match scope {
+        Scope::Host => "host",
+        Scope::Client => "client",
+        Scope::Machine => "machine",
+    }
+}
+
+/// One word per [`Credential`]. `brokered` is also the answer to "will a
+/// provider switch turn this on".
+fn credential_word(credential: gate_connect_core::taxonomy::Credential) -> &'static str {
+    use gate_connect_core::taxonomy::Credential;
+    match credential {
+        Credential::Brokered => "brokered",
+        Credential::Additive => "additive",
+        Credential::Observed => "observed",
     }
 }
 

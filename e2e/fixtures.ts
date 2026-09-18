@@ -56,9 +56,67 @@ export class App {
     return this.page.getByRole("switch", { name: "Route through Gate" });
   }
 
-  /** A family row on Home ("Claude", "OpenAI", "Other tools"). */
+  /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
   familyRow(name: string) {
     return this.page.getByRole("button", { name: `${name} details` });
+  }
+
+  /** The rail switch for one app section. */
+  appSwitch(name: string) {
+    return this.page.getByRole("switch", { name, exact: true });
+  }
+
+  /**
+   * Turn an app section ON, answering the consent dialog if it asks.
+   *
+   * A section switch routes every surface that app uses, and for Claude and
+   * ChatGPT / Codex that includes a surface the person is signed in to - so the
+   * switch asks once before it flips one. Most specs are about something else
+   * and should not each carry that step; the ones testing consent itself click
+   * the switch directly and assert on the dialog.
+   *
+   * Only for turning ON. Switching off needs no permission, and a helper that
+   * hid a confirmation on the way out would hide a bug.
+   */
+  async routeApp(name: string) {
+    const section = SESSION_SECTIONS[name];
+    // Asked once per install, so a second ON in the same test gets no dialog and
+    // waiting for one would hang. Read from the fake backend's own recording
+    // rather than guessed, which is the same thing the app reads.
+    const asked =
+      section !== undefined &&
+      !(await this.state()).preferences.session_routing_accepted.includes(section);
+    await this.appSwitch(name).click();
+    if (!asked) return;
+    // Asserted rather than probed. `isVisible()` does not auto-wait, so a probe
+    // would race the dialog's first paint and silently skip it; clicking waits.
+    // And if consent ever stops being asked for one of these, this is the line
+    // that should fail - that is the regression worth catching, not a helper
+    // quietly carrying on.
+    await this.page.getByRole("button", { name: `Route ${name}`, exact: true }).click();
+  }
+
+  /**
+   * Open a section's pane from the rail.
+   *
+   * The rail draws one row per app section, so a tool is reached through the
+   * section that holds it - Codex through "ChatGPT / Codex". `.first()` because
+   * the row's accessible name is the section name plus its status, and a pane
+   * header can repeat the name once the pane is open.
+   *
+   * Four specs had grown their own copy of this line; the pane is where the
+   * per-tool notices are drawn (#277 and the reopen card), so it is a fixture
+   * now rather than a helper per file.
+   *
+   * It carries the reason those specs open a pane at all, from the copy this
+   * replaced: a 250px rail row cannot fit "Not protected - Configuration update
+   * failed" and truncates the reason mid-word, so the row prints the coloured
+   * phrase alone and the pane carries the reason in full. A spec that wants the
+   * phrase reads the row; one that wants the reason, or a notice, opens the
+   * pane.
+   */
+  openSection(name: string) {
+    return this.page.getByRole("button", { name }).first().click();
   }
 
   openSettings() {
@@ -70,6 +128,21 @@ type Fixtures = {
   /** Install the fake backend, load the popover, wait for it to resolve a
    *  screen. `patch` is merged one level deep into the default state. */
   boot: (patch?: DeepPartial<BackendState>) => Promise<App>;
+};
+
+/**
+ * The sections whose switch asks before it routes, against the default catalog,
+ * and the section id each one records its answer under.
+ *
+ * They are the ones holding a `Credential::Additive` row - a surface the person
+ * is signed in to. Listed here rather than derived because a spec that overrides
+ * `proxy.domains` can change the answer, and such a spec should drive the switch
+ * itself rather than through `routeApp`. The id is what lets the helper tell a
+ * first ON from a later one, since the question is asked once per install.
+ */
+const SESSION_SECTIONS: Record<string, string> = {
+  Claude: "claude",
+  "ChatGPT / Codex": "chatgpt",
 };
 
 export const test = base.extend<Fixtures>({
