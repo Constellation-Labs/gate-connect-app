@@ -75,7 +75,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::integrations::dotenv;
-use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -164,6 +164,10 @@ impl Integration for Hermes {
         Mechanism::ForwardProxy
     }
 
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        Ok(configured_proxy()?.into_iter().collect())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -176,12 +180,6 @@ impl Integration for Hermes {
             &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
-    }
-
-    /// All of this tool's egress goes through the engine's proxy address, so
-    /// `connect` below refuses while nothing is listening there.
-    fn requires_engine(&self) -> bool {
-        true
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -814,7 +812,10 @@ mod tests {
 
         match compute_status("http://proxy.corp.example:3128", &ours, true) {
             Status::Drifted(m) => {
-                assert!(m.contains(&forwarder), "must name the preferred address: {m}");
+                assert!(
+                    m.contains(&forwarder),
+                    "must name the preferred address: {m}"
+                );
                 assert!(!m.contains(&engine), "must not offer the older one: {m}");
             }
             other => panic!("expected drift, got {other:?}"),

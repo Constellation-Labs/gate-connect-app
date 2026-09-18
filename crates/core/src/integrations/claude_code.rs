@@ -48,7 +48,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "Anthropic";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -152,6 +152,19 @@ impl Integration for ClaudeCode {
         Mechanism::ForwardProxy
     }
 
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        Ok(load_settings()?
+            .and_then(|s| {
+                s.get("env")?
+                    .as_object()?
+                    .get(KEY_HTTPS_PROXY)?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .into_iter()
+            .collect())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -201,7 +214,10 @@ impl Integration for ClaudeCode {
         // nothing is routing. An empty list means no port has ever been bound,
         // which reads the same to the user and is folded in here rather than
         // given a second sentence.
-        let Some(expected_proxy) = ours.first().filter(|_| crate::proxy::engine_proxy_url().is_some()) else {
+        let Some(expected_proxy) = ours
+            .first()
+            .filter(|_| crate::proxy::engine_proxy_url().is_some())
+        else {
             return Ok(Status::Drifted(
                 "the Gate proxy has not been enabled yet - turn it on to route Claude Code".into(),
             ));
@@ -255,12 +271,6 @@ impl Integration for ClaudeCode {
             .and_then(|v| v.as_object())
             .and_then(|m| m.get("managed"))
             .is_some())
-    }
-
-    /// All of this tool's egress goes through the engine's proxy address, so
-    /// `connect` below refuses while nothing is listening there.
-    fn requires_engine(&self) -> bool {
-        true
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {

@@ -69,6 +69,12 @@ impl Drop for TempHome {
 fn connect_opencode() {
     let dir = env::opencode_config_dir().unwrap();
     fs::create_dir_all(&dir).unwrap();
+    // The quit predicate reads the persisted relay port to know which origin
+    // is ours; seed it to match the base URL `connect` is given below, so the
+    // address it writes reads as the relay's and not a stranger's.
+    let proxy_dir = env::app_support_dir().unwrap().join("proxy");
+    fs::create_dir_all(&proxy_dir).unwrap();
+    fs::write(proxy_dir.join("relay-port"), "8402").unwrap();
     fs::write(
         env::opencode_config_path().unwrap(),
         r#"{
@@ -201,9 +207,12 @@ fn the_routing_switch_records_no_swept_tools() {
     );
 }
 
-/// Plain quit reverts a tool whose address dies with the GUI, and records it so
-/// the startup restore brings it back. OpenCode names the relay, which lives in
-/// the GUI process on macOS and Windows, so it is exactly the case.
+/// Plain quit reverts a tool whose configured address dies with the GUI, and
+/// records it so the startup restore brings it back. OpenCode's `baseURL`
+/// names the relay origin, which lives in the GUI process on macOS and
+/// Windows, so it is exactly the case. The other half of the rule - a tool
+/// naming the forwarder is left alone - is `plain_quit_leaves_a_forward_proxy_tool_alone`
+/// in `master_cycle_preserves_members.rs`, which has the Claude Code fixture.
 #[test]
 fn plain_quit_reverts_a_relay_tool_and_records_it() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -211,15 +220,19 @@ fn plain_quit_reverts_a_relay_tool_and_records_it() {
     connect_opencode();
     let path = env::opencode_config_path().unwrap();
     assert!(
-        fs::read_to_string(&path).unwrap().contains("127.0.0.1:8402"),
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("127.0.0.1:8402"),
         "premise: connect must have written the relay address"
     );
 
-    let reverted = provider::revert_relay_configs_for_quit().expect("plain quit");
+    let reverted = provider::revert_stranded_configs_for_quit().expect("plain quit");
 
     assert_eq!(reverted, vec!["OpenCode".to_string()]);
     assert!(
-        !fs::read_to_string(&path).unwrap().contains("127.0.0.1:8402"),
+        !fs::read_to_string(&path)
+            .unwrap()
+            .contains("127.0.0.1:8402"),
         "the relay address must be gone from the config"
     );
     let snapshot = env::app_support_dir()
@@ -227,7 +240,10 @@ fn plain_quit_reverts_a_relay_tool_and_records_it() {
         .join("provider")
         .join("restore-tools-snapshot.json");
     let raw = fs::read_to_string(&snapshot).expect("snapshot written");
-    assert!(raw.contains("opencode"), "must be recorded for restore, got {raw}");
+    assert!(
+        raw.contains("opencode"),
+        "must be recorded for restore, got {raw}"
+    );
 }
 
 /// The declared mechanism per tool is the fact the quit teardown keys on, so it
@@ -241,4 +257,71 @@ fn the_mechanism_table_matches_the_routing_doc() {
     assert_eq!(m(ToolId::OpenClaw), Mechanism::ForwardProxy);
     assert_eq!(m(ToolId::Hermes), Mechanism::ForwardProxy);
     assert_eq!(m(ToolId::EnvProxy), Mechanism::Environment);
+}
+
+/// A base URL the user repointed by hand names a port nothing of ours is bound
+/// to, so nothing dies and the file is not touched - even though `status` reads
+/// it as drifted and the disconnect sweep would take it. Plain quit runs every
+/// day and promises less than "disconnect".
+#[test]
+fn plain_quit_leaves_a_hand_repointed_config_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+    let path = env::opencode_config_path().unwrap();
+    let repointed = fs::read_to_string(&path)
+        .unwrap()
+        .replace("http://127.0.0.1:8402", "https://gateway.elsewhere.example");
+    assert_ne!(
+        repointed,
+        fs::read_to_string(&path).unwrap(),
+        "premise: the edit took"
+    );
+    fs::write(&path, &repointed).unwrap();
+    assert!(
+        matches!(
+            find(ToolId::OpenCode).unwrap().status().unwrap(),
+            Status::Drifted(_)
+        ),
+        "premise: a repointed base URL reads as drift"
+    );
+
+    let reverted = provider::revert_stranded_configs_for_quit().expect("plain quit");
+
+    assert!(
+        reverted.is_empty(),
+        "nothing of ours dies, so nothing is reverted: {reverted:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        repointed,
+        "the user's edit must survive"
+    );
+}
+
+/// The swept-tools snapshot is a union: a pending restore from an earlier sweep
+/// must not be shortened by a plain quit that records one more tool.
+#[test]
+fn plain_quit_unions_into_a_pending_snapshot() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+    let snapshot = env::app_support_dir()
+        .unwrap()
+        .join("provider")
+        .join("restore-tools-snapshot.json");
+    fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+    fs::write(&snapshot, r#"["codex"]"#).unwrap();
+
+    provider::revert_stranded_configs_for_quit().expect("plain quit");
+
+    let raw = fs::read_to_string(&snapshot).unwrap();
+    assert!(
+        raw.contains("codex"),
+        "the pending entry must survive: {raw}"
+    );
+    assert!(
+        raw.contains("opencode"),
+        "the new entry must be added: {raw}"
+    );
 }

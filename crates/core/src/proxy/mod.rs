@@ -1237,6 +1237,68 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
     urls
 }
 
+/// Does `configured` name a loopback listener hosted **inside the engine's
+/// process**, so that it stops answering when that process exits?
+///
+/// The question a plain quit asks of each address a tool's configuration
+/// names. Three addresses are ours, and they die differently:
+///
+/// - the **relay** origin (a base URL under it): hosted in the engine, and
+///   nothing fronts it - dies with the engine's process;
+/// - the **engine's own** proxy address, plain or with Claude Code's route
+///   selector in the userinfo: same process - dies. Configs still name it on
+///   an install written before tool configs moved to the forwarder, and on a
+///   machine where the forwarder would not start and `tool_proxy_url` fell
+///   back. Neither is drift ([`tool_proxy_identity_urls`] says why), but both
+///   die exactly as the relay does, which is the case a per-tool constant
+///   could not see;
+/// - the **forwarder's** address, plain or with the selector: a separate
+///   process, left running on purpose - survives.
+///
+/// Anything else is not ours: a base URL the user repointed by hand names a
+/// port nothing of ours is bound to, so nothing dies and nothing is rewritten.
+///
+/// This answers about the addresses. Whether the GUI *is* the engine's process
+/// is the caller's platform question - it is on macOS and Windows, and on Linux
+/// the engine is a daemon that outlives the GUI, so a quit strands nothing -
+/// and `quit_app` gates on exactly that. Keeping the platform out of here is
+/// what lets the rule be tested on any CI runner.
+pub fn address_dies_with_gui(configured: &str) -> bool {
+    address_dies_given(
+        configured,
+        relay_base_url().as_deref(),
+        persisted_engine_proxy_url().as_deref(),
+        exported_proxy_identity_url().as_deref(),
+    )
+}
+
+/// [`address_dies_with_gui`] with its three identities passed in, so the rule
+/// itself can be pinned by a unit test.
+pub fn address_dies_given(
+    configured: &str,
+    relay_origin: Option<&str>,
+    engine_url: Option<&str>,
+    forwarder_url: Option<&str>,
+) -> bool {
+    let is_or_selects = |ours: &str| {
+        configured == ours || claude_code_proxy_url(ours).is_ok_and(|c| c == configured)
+    };
+    // The survivor is checked first and wins. Where no forwarder has ever run
+    // it is simply absent; on Linux the exported identity is the engine's, so
+    // the engine's address reads as surviving there, which is the truth.
+    if forwarder_url.is_some_and(is_or_selects) {
+        return false;
+    }
+    // A base URL under the relay origin. `starts_with` alone would let port
+    // 4710 claim 47101, hence the slash.
+    if let Some(r) = relay_origin {
+        if configured == r || configured.starts_with(&format!("{r}/")) {
+            return true;
+        }
+    }
+    engine_url.is_some_and(is_or_selects)
+}
+
 /// The port the machine-wide variables should name, starting a forwarder if
 /// there is not one yet.
 ///
@@ -3289,5 +3351,70 @@ mod tests {
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod address_dies_tests {
+    use super::address_dies_given;
+
+    const RELAY: &str = "http://127.0.0.1:47101";
+    const ENGINE: &str = "http://127.0.0.1:47100";
+    const FWD: &str = "http://127.0.0.1:47150";
+
+    fn dies(configured: &str) -> bool {
+        address_dies_given(configured, Some(RELAY), Some(ENGINE), Some(FWD))
+    }
+
+    /// The two addresses hosted in the engine's process die; the forwarder's
+    /// does not; a stranger's does not.
+    #[test]
+    fn relay_and_engine_die_forwarder_and_strangers_do_not() {
+        assert!(dies("http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"));
+        assert!(dies(RELAY));
+        assert!(dies(ENGINE));
+        assert!(dies("http://gate-claude-code:route@127.0.0.1:47100"));
+        assert!(!dies(FWD));
+        assert!(!dies("http://gate-claude-code:route@127.0.0.1:47150"));
+        assert!(!dies("https://api.openai.com/v1"));
+        assert!(!dies("http://proxy.corp.example:3128"));
+    }
+
+    /// A port that is a prefix of ours is not ours.
+    #[test]
+    fn a_longer_port_is_not_under_the_relay_origin() {
+        assert!(!dies("http://127.0.0.1:471010/x"));
+    }
+
+    /// An install written before tool configs moved to the forwarder, or one
+    /// whose forwarder never started: the engine address is all there is, and
+    /// it dies. This is the case a per-tool constant got wrong.
+    #[test]
+    fn with_no_forwarder_the_engine_address_still_dies() {
+        assert!(address_dies_given(ENGINE, Some(RELAY), Some(ENGINE), None));
+        assert!(address_dies_given(
+            "http://gate-claude-code:route@127.0.0.1:47100",
+            Some(RELAY),
+            Some(ENGINE),
+            None
+        ));
+    }
+
+    /// Linux: the exported identity is the engine's own, so the engine address
+    /// reads as surviving, which matches a daemon that outlives the GUI.
+    #[test]
+    fn when_the_forwarder_identity_is_the_engine_the_engine_survives() {
+        assert!(!address_dies_given(
+            ENGINE,
+            Some(RELAY),
+            Some(ENGINE),
+            Some(ENGINE)
+        ));
+        assert!(address_dies_given(
+            RELAY,
+            Some(RELAY),
+            Some(ENGINE),
+            Some(ENGINE)
+        ));
     }
 }

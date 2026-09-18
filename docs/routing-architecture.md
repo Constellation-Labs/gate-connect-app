@@ -471,7 +471,7 @@ first table.
 | **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder. Configs are already right, so nothing is written. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Plain quit** | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if the address it names dies with the process**: the relay-named ones, Codex and OpenCode, are put back on their own settings and recorded for the startup restore (`provider::revert_relay_configs_for_quit`). Forwarder-named configs are untouched. Linux reverts none; its relay is a daemon. |
+| **Plain quit** | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses. Linux reverts none; its engine is a daemon. |
 | **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
 
 **What the user does:**
@@ -498,14 +498,19 @@ Three things to read off this:
  platform; a shell that was already open keeps the forwarder address the whole
  way through and needs nothing.
 - **Plain quit reverts by one rule: does the address die with the process.**
- Everything naming the forwarder keeps working, because that process is left
- running on purpose. Codex and OpenCode name the relay, which lives in the GUI
- on macOS and Windows, so those two go back to their own settings on the way
- out and come back at the next start. Before that rule they were simply broken
- until Gate ran again, with an error naming a loopback port - which reads as
- the tool being broken rather than Gate being off. The quit dialog's plain
- branch now says "work without Gate", which is true for both halves of the
- list, and a notification names what was rewritten.
+ Decided per *configured address*, not per tool, because which address a
+ config holds is per install: Codex and OpenCode name the relay origin, and a
+ Claude Code, OpenClaw or Hermes install written before the forwarder repoint
+ (or whose forwarder would not start) still names the engine's own port. All
+ of those live in the GUI process on macOS and Windows, go back to their own
+ settings on the way out, and come back at the next start. A config naming
+ the forwarder keeps working, because that process is left running on
+ purpose; one the user repointed by hand names nothing of ours and is not
+ touched. Before this rule the stranded ones were simply broken until Gate
+ ran again, with an error naming a loopback port, which reads as the tool
+ being broken rather than Gate being off. The quit dialog names which tools
+ will be put back and which keep working, from the same predicate, and a
+ notification repeats what was rewritten.
 - **Disconnect and quit is deliberately the harsh column.** Stopping the
  forwarder is what makes it "Gate is out of the path", and it means a process
  that inherited the forwarder address fails closed rather than falling back.

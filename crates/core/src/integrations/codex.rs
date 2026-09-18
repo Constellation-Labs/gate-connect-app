@@ -65,7 +65,7 @@ use toml_edit::{value, DocumentMut, Item, Table, Value};
 
 use crate::env;
 use crate::primitives;
-use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 /// File name of the auth-helper script older Gate Connect versions wrote
 /// and pointed Codex's `[auth] command` at. We no longer write it - Codex
@@ -247,6 +247,25 @@ impl Integration for Codex {
     /// `base_url` names the loopback relay, which dies with the engine.
     fn mechanism(&self) -> Mechanism {
         Mechanism::Relay
+    }
+
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        // The gate block's own `base_url`, whatever it says now: the relay
+        // while connected, OpenAI direct once the passthrough stub is in.
+        Ok(read_doc(&path)?
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .and_then(|t| t.get(PROVIDER_ID))
+            .and_then(|i| i.as_table_like())
+            .and_then(|b| b.get("base_url"))
+            .and_then(|i| i.as_str())
+            .map(str::to_owned)
+            .into_iter()
+            .collect())
     }
 
     fn status(&self) -> Result<Status> {

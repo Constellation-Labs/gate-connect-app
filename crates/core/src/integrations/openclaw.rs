@@ -108,7 +108,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env;
 use crate::integrations::dotenv;
-use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -213,6 +213,16 @@ impl Integration for OpenClaw {
         Mechanism::ForwardProxy
     }
 
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        Ok(load_settings()?
+            .and_then(|s| {
+                let url = current_proxy_url(&s).map(str::to_owned);
+                url
+            })
+            .into_iter()
+            .collect())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -227,12 +237,6 @@ impl Integration for OpenClaw {
             &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
-    }
-
-    /// All of this tool's egress goes through the engine's proxy address, so
-    /// `connect` below refuses while nothing is listening there.
-    fn requires_engine(&self) -> bool {
-        true
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -768,10 +772,7 @@ mod tests {
         let mine = [ours.to_string()];
         let none: [String; 0] = [];
 
-        assert_eq!(
-            compute_status(ours, true, &mine, true),
-            Status::Connected
-        );
+        assert_eq!(compute_status(ours, true, &mine, true), Status::Connected);
 
         // Our URL, switch off. The config looks right and the tool is routing
         // nowhere - the exact state that shipped as Connected before, sending
@@ -817,7 +818,10 @@ mod tests {
         let engine = "http://127.0.0.1:47100".to_string();
         let ours = [forwarder.clone(), engine.clone()];
 
-        assert_eq!(compute_status(&engine, true, &ours, true), Status::Connected);
+        assert_eq!(
+            compute_status(&engine, true, &ours, true),
+            Status::Connected
+        );
         assert_eq!(
             compute_status(&forwarder, true, &ours, true),
             Status::Connected
@@ -825,7 +829,10 @@ mod tests {
 
         match compute_status("http://proxy.corp.example:3128", true, &ours, true) {
             Status::Drifted(m) => {
-                assert!(m.contains(&forwarder), "must name the preferred address: {m}");
+                assert!(
+                    m.contains(&forwarder),
+                    "must name the preferred address: {m}"
+                );
                 assert!(!m.contains(&engine), "must not offer the older one: {m}");
             }
             other => panic!("expected drift, got {other:?}"),

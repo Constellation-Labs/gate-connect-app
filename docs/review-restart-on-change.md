@@ -239,10 +239,11 @@ forwards direct. For the two relay-named tools nothing fronts the port, and the
 options were weighed on the branch stacked on this one
 (`fix/plain-quit-reverts-relay-configs`): fronting the relay at TCP level only
 turns "refused" into a 503, a passthrough forwarder changes what that process
-is, and a daemon is a packaging project. What landed is the narrow rule - plain
-quit reverts a config if and only if the address it names dies with the process
-- expressed as `Integration::mechanism` so the quit path asks rather than
-hard-coding two slugs. It costs Codex a thread-list flip per quit/launch and a
+is, and a daemon is a packaging project. What landed is the narrow rule: plain
+quit reverts a config if and only if an address it names dies with the process,
+decided per configured address (`proxy::address_dies_with_gui`) rather than per
+tool, because which address a config holds is per install. It costs Codex a
+thread-list flip per quit/launch and a
 running OpenCode a restart after relaunch, both already the price of the
 quit-and-disconnect choice, now paid by two tools instead of five.
 
