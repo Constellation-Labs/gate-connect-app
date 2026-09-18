@@ -456,6 +456,61 @@ has a branch for it so the message names the remedy instead of suggesting a
 retry, but there is no pre-emptive guard: the row is clickable and the error is
 how the user learns. Worth revisiting if it reads badly in practice.
 
+### Who does what, per event
+
+The two tables below are the answer to "does the user have to restart anything",
+per tool and per event, on the tree that parks the engine and keeps tool configs
+across a routing toggle. They are what the UI is allowed to claim. Written
+2026-09-18, off the measurements in section 7 and the code paths named in the
+first table.
+
+**What Gate does:**
+
+| event | Gate |
+| --- | --- |
+| **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder. Configs are already right, so nothing is written. |
+| **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
+| **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
+| **Plain quit** | Reverts the PAC and the env, stops the engine and the relay. The forwarder keeps running. Configs untouched (`disable_quiet`). |
+| **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
+
+**What the user does:**
+
+| tool | start | routing off | routing on | plain quit | disconnect and quit |
+| --- | --- | --- | --- | --- | --- |
+| **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
+| **Codex** | nothing, even conversations left open | nothing | nothing, open conversations route again | **broken** until Gate runs again | resume open conversations |
+| **OpenCode** | nothing | nothing | nothing | **broken** until Gate runs again | restart |
+| **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
+| **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
+| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
+
+Starting Gate *after* a disconnect-and-quit is the one start that costs
+something: `restore_all` rewrites every config, so the last column applies
+again in reverse.
+
+Three things to read off this:
+
+- **The routing columns are empty but for one cell.** A shell opened while
+ routing was off never received the variables, and turning routing back on
+ cannot reach it. That is inherent to environment variables and holds on every
+ platform; a shell that was already open keeps the forwarder address the whole
+ way through and needs nothing.
+- **Plain quit is where the relay tools stand out.** Everything else names the
+ forwarder, a separate process that keeps answering. Codex and OpenCode name
+ the relay, which dies with the GUI on macOS and Windows. With autostart on and
+ crash relaunch (`crash_restart.rs`) this window opens only on a deliberate
+ quit, which is the moment the quit dialog already offers the other choice.
+- **Disconnect and quit is deliberately the harsh column.** Stopping the
+ forwarder is what makes it "Gate is out of the path", and it means a process
+ that inherited the forwarder address fails closed rather than falling back.
+ That is the existing design, now visible as the only column with real work.
+
+Confidence: the two routing columns rest on the park keeping its ports and on
+the master-cycle mtime test, verified separately, not on a live toggle with a
+tool open. The OpenClaw row is vendor-stated rather than measured. Everything
+else is measured or read directly off the code path named.
+
 ## 7. Open items
 
 1. **Compile and test the Windows env path.** Highest risk in the change.
