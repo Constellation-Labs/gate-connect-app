@@ -107,9 +107,44 @@ pub trait DesktopOps: Send + Sync + 'static {
 /// `stat` per tick against a file in the app-support dir.
 const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
 
+/// What a teardown does with the engine this process is hosting.
+///
+/// The distinction exists because `launchctl unsetenv` (and the Windows
+/// registry write beside it) only changes what processes started *afterwards*
+/// inherit. Every shell, editor and CLI already running keeps the
+/// `HTTPS_PROXY` we exported, so releasing the port under them turns "routing
+/// off" into "no provider is reachable" - for tools that were never switched
+/// on, and for software Gate does not manage, since the variables are
+/// machine-wide.
+enum Teardown {
+    /// Keep the listeners bound and drop them to their credential-free
+    /// fallbacks, so a process still holding our variables reaches its
+    /// provider by the path it would have taken with Gate not installed.
+    ///
+    /// This is what Linux has always done - `manager_linux::disable_inner`
+    /// ends in `set_passthrough()` rather than a stop - and the divergence is
+    /// the whole of the bug. `helper::set_passthrough` is the same pair of
+    /// calls against the daemon.
+    Dormant,
+    /// Join the engine and release its ports. For the paths where a parked
+    /// listener would be wrong rather than merely idle: app exit (the process
+    /// is going away, so there is nothing to park), and a gateway switch,
+    /// whose whole point is that the engine must not outlive the account it
+    /// was started with.
+    Stop,
+}
+
 pub struct DesktopManager<O: DesktopOps> {
     ops: O,
     engine: Mutex<Option<engine::RunningEngine>>,
+    /// An engine kept bound after routing was turned off, intercepting
+    /// nothing. Separate from `engine` rather than a flag on it, because every
+    /// reader of that field means "is this process routing?" - `status`,
+    /// `hosts_live_engine`, the enable's idempotence check and the domain
+    /// watcher's retirement all answer wrongly if a parked engine sits there.
+    ///
+    /// Lock order where both are taken: `engine`, then this.
+    dormant: Mutex<Option<engine::RunningEngine>>,
     /// Whether a domain watcher is already running, so repeated enables don't
     /// stack them. Per-instance (not a process static) so tests can build
     /// managers side by side.
@@ -121,7 +156,54 @@ impl<O: DesktopOps> DesktopManager<O> {
         Self {
             ops,
             engine: Mutex::new(None),
+            dormant: Mutex::new(None),
             watcher_alive: AtomicBool::new(false),
+        }
+    }
+
+    /// Park a no-longer-routing engine with its ports still bound.
+    ///
+    /// `set_intercept(false)` is what makes it a plain proxy: every CONNECT is
+    /// blind-tunnelled instead of decrypted, and the relay forwards to the
+    /// tool's real upstream under the tool's own credential. No leaf cert is
+    /// minted, nothing is rewritten to the gateway, and the user's Gate
+    /// credential is never attached.
+    ///
+    /// Clearing the domains is *not* what does that, and on its own would do
+    /// the opposite: `route_rules` force-enables Claude Code's own entry
+    /// exactly when the live set does not claim the host, so an empty set makes
+    /// the selector path fire. It is cleared anyway so the engine's own
+    /// `intercepting()` count reads zero, which is what `status` and the
+    /// debug log report.
+    fn park_dormant(&self, running: engine::RunningEngine) {
+        running.set_intercept(false);
+        running.update_domains(&[]);
+        // Not spendable while parked, but it was still resident for the rest
+        // of the session. A re-enable builds a fresh engine, so nothing needs
+        // this copy back.
+        running.clear_credentials();
+        let mut slot = self.dormant.lock().expect("dormant engine mutex poisoned");
+        // Take the old handle out before joining it: `stop()` blocks, and
+        // holding this lock across it would make a second caller wait on a
+        // thread join for no reason. Unreachable today - a routing engine
+        // implies an empty `dormant` - but the ordering is free.
+        let previous = slot.replace(running);
+        drop(slot);
+        if let Some(previous) = previous {
+            previous.stop();
+        }
+    }
+
+    /// Release a parked engine's ports, joining it so the address is free
+    /// before a caller rebinds it. No-op when nothing is parked.
+    fn stop_dormant(&self) {
+        let parked = self
+            .dormant
+            .lock()
+            .expect("dormant engine mutex poisoned")
+            .take();
+        if let Some(parked) = parked {
+            parked.stop();
         }
     }
 
@@ -260,6 +342,42 @@ impl<O: DesktopOps> DesktopManager<O> {
         let snapshot = self.ops.snapshot()?;
         self.ops.save_snapshot(&snapshot)?;
 
+        // Release a parked engine now and not earlier. It has to go before the
+        // bind, because it holds exactly the address `preferred_engine_port`
+        // names and `bind_preferred` refuses to shadow a live listener - the
+        // new engine would land on a fresh band port and rewrite the persisted
+        // files under every tool config. And it has to go *after* the exits
+        // above: a failed enable used to release the park on its way to
+        // refusing, so "turn routing on, cancel the admin prompt" left the
+        // already-running tools with neither routing nor passthrough. Nothing
+        // between here and the bind can fail.
+        self.stop_dormant();
+
+        // Our own park is gone by now, so a relay still answering belongs to
+        // somebody else - and it answers a challenge only Gate can, so this is
+        // "another Gate Connect is on this machine's ports", not "something is
+        // on that port".
+        //
+        // `engine_hosted_elsewhere` above cannot see it: it reads the
+        // system-proxy snapshot, and a parked instance cleared that on its way
+        // to parking. Without this check the enable proceeded, found the
+        // persisted ports held, fell back to fresh ones and rewrote the port
+        // files - silently repointing every tool config on the machine at
+        // addresses nothing names any more, and taking them out of reach of the
+        // quit revert, which decides what to put back by comparing against
+        // exactly those files.
+        //
+        // Deliberately not a refusal when a *stranger* holds the port: that is
+        // recoverable on its own, because the fallback port is persisted, the
+        // configs then read as drifted and the reconcile passes repair them.
+        // Refusing there would let any local process keep Gate from starting.
+        if crate::proxy::relay_listening() {
+            anyhow::bail!(
+                "another Gate Connect process is already using this machine's proxy ports; \
+                 use that one, or quit it before enabling routing here"
+            );
+        }
+
         let running = engine::start(
             engine::EngineConfig {
                 gateway_base_url: account.gateway_base_url.clone(),
@@ -348,6 +466,23 @@ impl<O: DesktopOps> DesktopManager<O> {
                      still route through Gate, but CLI tools that read HTTPS_PROXY will not"
                 );
             }
+        } else if crate::proxy::forwarder_port_persisted() {
+            // The machine-wide export is declined, but the forwarder may still
+            // be named by something: `tool_proxy_url` writes its address into
+            // Claude Code's, OpenClaw's and Hermes's own configs, and those
+            // files outlive the process. The forwarder does not - it goes at
+            // logout - and nothing else here would start it again, so those
+            // tools would come back pointed at a port with nothing behind it
+            // while the engine is up. Ensuring it is idempotent (a live one
+            // answers its health check and is reused), and a failure is not
+            // fatal: `address_health` reads the dead address and the tools say
+            // so instead of reporting Connected over it.
+            if let Err(e) = self.ops.ensure_env_forwarder() {
+                eprintln!(
+                    "gate proxy: could not start the environment forwarder ({e}); tool configs \
+                     that name it cannot reach their providers until it starts"
+                );
+            }
         }
 
         *guard = Some(running);
@@ -385,11 +520,16 @@ impl<O: DesktopOps> DesktopManager<O> {
         self.status()
     }
 
-    /// Stop the engine and restore the prior system proxy. Promptless and
+    /// Restore the prior system proxy and stop intercepting. Promptless and
     /// unconditional - the revert happens first and never depends on admin,
     /// so it can't be canceled and strand traffic. The CA is left trusted.
+    ///
+    /// The engine's ports stay bound, intercepting nothing, until something
+    /// explicitly releases them - a quit, a gateway switch, a re-enable, or an
+    /// untrust. See [`Teardown::Dormant`] for why releasing them *here* is
+    /// what breaks every already-running tool.
     pub fn disable(&self) -> Result<ProxyState> {
-        self.disable_inner()?;
+        self.disable_inner(Teardown::Dormant)?;
 
         // Best-effort audit, deliberately here rather than in `disable_inner`:
         // `disable_quiet` shares that body and runs at app exit, which is not an
@@ -413,8 +553,14 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// on the shutdown path - where the child can be torn down mid-read and
     /// hang the quit. Reverting the proxy and stopping the engine never needs
     /// certutil.
+    ///
+    /// Stops rather than parks: the listeners live in this process, so they go
+    /// when it does whatever we ask for here. Tools still holding our
+    /// variables are stranded by the quit itself, which is the residual this
+    /// change does not reach - closing it needs a listener that outlives the
+    /// GUI, as Linux's daemon already is.
     pub fn disable_quiet(&self) -> Result<()> {
-        self.disable_inner()
+        self.disable_inner(Teardown::Stop)
     }
 
     /// Stop the engine so the next [`enable`](Self::enable) builds a fresh one
@@ -430,13 +576,13 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// engine lives in this process; the Linux manager has to go further and
     /// replace the daemon that outlives the GUI.
     pub fn shutdown_engine(&self) -> Result<()> {
-        self.disable_inner()
+        self.disable_inner(Teardown::Stop)
     }
 
     /// Shared body of [`disable`](Self::disable) /
-    /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and stop
-    /// the engine, without computing status.
-    fn disable_inner(&self) -> Result<()> {
+    /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and put
+    /// the engine down the way `teardown` says, without computing status.
+    fn disable_inner(&self, teardown: Teardown) -> Result<()> {
         // Hold the lock for the whole teardown, mirroring `enable`. Taking the
         // handle and releasing early left two windows for a concurrent enable:
         // before `stop()` it was falsely refused as "hosted by another
@@ -467,18 +613,34 @@ impl<O: DesktopOps> DesktopManager<O> {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
         });
-        // Revert first, stop second - a live engine behind a reverted proxy is
-        // harmless, the reverse strands HTTPS at a dead port. But the engine has
-        // already been taken out of the guard, so returning early on a failed
-        // revert would drop it, and `RunningEngine::drop` does not join: the
-        // listeners would stay up with no handle left to stop them, while our
-        // own state says nothing is running. Keep the result, stop, then report.
+        // Revert first, put the engine down second - a live engine behind a
+        // reverted proxy is harmless, the reverse strands HTTPS at a dead
+        // port. But the engine has already been taken out of the guard, so
+        // returning early on a failed revert would drop it, and
+        // `RunningEngine::drop` does not join: the listeners would stay up
+        // with no handle left to stop them, while our own state says nothing
+        // is running. Keep the result, put it down, then report.
         let reverted = match snapshot {
             Some(snapshot) => self.ops.restore(&snapshot),
             None => self.ops.force_off(),
         };
+        // Park only when the revert worked. A failed one returns early below
+        // with the snapshot still on disk, so the next launch's reconcile can
+        // retry it - and a live snapshot plus a live listener is exactly what
+        // `engine_hosted_elsewhere` reads as "another process is routing",
+        // which would make `status` report running with routing off. The
+        // failure path keeps the old behaviour and releases the ports.
+        let park = matches!(teardown, Teardown::Dormant) && reverted.is_ok();
         if let Some(running) = running {
-            running.stop();
+            if park {
+                self.park_dormant(running);
+            } else {
+                running.stop();
+            }
+        } else if !park {
+            // Nothing routing, but a previous disable may have parked one -
+            // an exit or a gateway switch has to take that down too.
+            self.stop_dormant();
         }
         reverted?;
         let _ = self.ops.clear_snapshot();
@@ -582,7 +744,7 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// mints leaf certs the OS would then reject. This is the explicit way to
     /// remove the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.prepare_untrust()?;
         self.ops.ca_untrust()?;
         self.status()
     }
@@ -591,12 +753,12 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// [`trust_ca_system`](Self::trust_ca_system), and refuses while running
     /// for the same reason [`untrust_ca`](Self::untrust_ca) does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.prepare_untrust()?;
         self.ops.ca_untrust_system()?;
         self.status()
     }
 
-    fn refuse_untrust_while_running(&self) -> Result<()> {
+    fn prepare_untrust(&self) -> Result<()> {
         if self
             .engine
             .lock()
@@ -605,12 +767,21 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
-        // Untrusting the CA is an explicit "Gate should let go of this
-        // machine" action, so the forwarder goes with it. Not the only one:
-        // forgetting the workspace runs `clear_account`, which retires it too,
-        // and that is the common path (the Reset button). A plain disable must
-        // leave it running - that is exactly when the processes holding our
-        // exported variables still need it.
+        // Untrusting the CA is the explicit "Gate should let go of this
+        // machine" action (it is what Reset runs), so both things Gate leaves
+        // bound on this machine go with it.
+        //
+        // Not a refusal for a *parked* engine, which mints no leaf certs and so
+        // cannot be invalidated by this - but leaving a listener bound
+        // afterwards would be Gate still holding a port the user just asked it
+        // to drop.
+        self.stop_dormant();
+        // The forwarder is the other one, and it is retired here for the same
+        // reason. Not the only path: forgetting the workspace runs
+        // `clear_account`, which retires it too, and that is the common one
+        // (the Reset button). A plain disable must leave it running - that is
+        // exactly when the processes holding our exported variables still need
+        // it.
         self.ops.stop_env_forwarder();
         Ok(())
     }
@@ -619,7 +790,9 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// deliberate stop. Drops the dead handle and reverts the system proxy so
     /// HTTPS isn't stranded. Promptless and best-effort.
     pub(crate) fn handle_engine_crash(&self) {
-        eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
+        // Deliberately not logged until we know *which* engine died: a parked
+        // pass-through engine reaches this callback too, and there the line
+        // below would claim a revert that neither happens nor is wanted.
         // Briefly retry the lock: short holders (status) clear in ms. If
         // enable or disable still holds it after that, defer - enable
         // re-checks the engine before returning and runs this same revert
@@ -641,6 +814,32 @@ impl<O: DesktopOps> DesktopManager<O> {
             eprintln!("gate proxy: engine lock busy; deferring revert to the operation holding it");
             return;
         };
+        // A parked engine carries this same callback, so its death lands here
+        // too - and there is nothing to revert, because the disable that parked
+        // it already did all of it. Falling through would be actively harmful:
+        // the snapshot is gone by now, so the `force_off` below would fire and
+        // switch off a system proxy the user owns, which the disable had
+        // faithfully restored. Say nothing; routing is already off and the
+        // shell is already drawing it that way.
+        //
+        // Gated on a parked engine actually being held, not merely on "no
+        // routing engine": a crash *during* `enable` also arrives with an empty
+        // guard, and that one still wants the revert below.
+        //
+        // The dead handle is deliberately not reaped here. `on_unexpected_exit`
+        // runs on the engine's own thread, so `is_finished()` is still false at
+        // this point and any check for it would never match; the next
+        // `stop_dormant` (enable, exit, or untrust) joins it instead.
+        if guard.is_none()
+            && self
+                .dormant
+                .lock()
+                .expect("dormant engine mutex poisoned")
+                .is_some()
+        {
+            return;
+        }
+        eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
         // Join the engine instead of dropping it. `RunningEngine::drop` only
         // signals shutdown and returns - deliberately, to avoid blocking - so a
         // dropped engine's listeners stay bound for an unbounded moment after
@@ -1076,6 +1275,20 @@ mod tests {
         Box::leak(Box::new(DesktopManager::new(ops)))
     }
 
+    /// Crash notifications seen so far, installing the observer on first use.
+    ///
+    /// One counter shared by every test that asserts on it, because the observer is
+    /// a process-global `OnceLock` where the first set wins: a second test
+    /// installing its own closure would silently get a counter that never
+    /// moves, and would fail or pass depending on test order.
+    fn notifications() -> usize {
+        static NOTIFIED: AtomicUsize = AtomicUsize::new(0);
+        crate::proxy::set_engine_crash_observer(|| {
+            NOTIFIED.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+        NOTIFIED.load(AtomicOrdering::SeqCst)
+    }
+
     #[test]
     fn enable_snapshots_before_pointing_and_disable_restores_exactly() {
         let _home = TestHome::set();
@@ -1102,6 +1315,7 @@ mod tests {
             0,
             "restore path must not force off"
         );
+        mgr.stop_dormant(); // a disable parks; release it so the port band is free for the next test
     }
 
     #[test]
@@ -1118,6 +1332,7 @@ mod tests {
         assert_eq!(mgr.ops.count("point_system_proxy"), 1);
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1136,6 +1351,90 @@ mod tests {
         // Refused before anything was touched: no snapshot, no CA prompt.
         assert_eq!(mgr.ops.count("snapshot"), 0);
         assert_eq!(mgr.ops.count("ensure_trusted"), 0);
+    }
+
+    /// Answer the relay identity challenge the way a second Gate Connect's
+    /// parked relay would, so `enable` can tell it from a stranger.
+    ///
+    /// The thread ends with the test: the listener is moved in, and dropping
+    /// the manager is not what stops it - nothing else binds this port during
+    /// the test, so a lingering accept loop cannot affect another one.
+    fn parked_relay_of_another_instance() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = crate::env::app_support_dir().unwrap().join("proxy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+        let token = crate::proxy::forwarder::load_or_create_token().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { return };
+                let mut buf = [0u8; 2048];
+                let Ok(n) = sock.read(&mut buf) else { continue };
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let challenge = head
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(name, _)| {
+                        name.trim()
+                            .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
+                    })
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default();
+                let proof = gate_connect_paths::forwarder_proof(&token, &challenge);
+                let resp = format!(
+                    "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nContent-Length: 0\r\n\
+                     Connection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_PROOF_HEADER
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// A second process must not enable while another Gate Connect holds the
+    /// ports, even when that one is *parked*: parking clears the system-proxy
+    /// snapshot, so `engine_hosted_elsewhere` cannot see it. Without this the
+    /// enable bound fallback ports and rewrote the persisted port files,
+    /// repointing every tool config on the machine at addresses nothing names.
+    #[test]
+    fn enable_refuses_when_another_instances_relay_is_parked() {
+        let _home = TestHome::set();
+        let _port = parked_relay_of_another_instance();
+        let mgr = leak(FakeOps::new());
+
+        let err = mgr.enable().expect_err("enable must refuse");
+        assert!(
+            err.to_string().contains("another Gate Connect process"),
+            "refusal must name the cause: {err:#}"
+        );
+        // Nothing was bound and nothing was persisted, so the tool configs that
+        // name the running instance's ports still name something live.
+        assert_eq!(mgr.ops.count("persist_ports"), 0);
+    }
+
+    /// A stranger on the relay port is not another Gate, and must not keep Gate
+    /// from starting: that case recovers on its own, because the fallback port
+    /// is persisted and the reconcile passes repair the configs that drift.
+    #[test]
+    fn enable_proceeds_when_the_relay_port_holds_a_stranger() {
+        let _home = TestHome::set();
+        let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = squatter.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in squatter.incoming() {
+                drop(stream);
+            }
+        });
+        let dir = crate::env::app_support_dir().unwrap().join("proxy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("a stranger must not block enabling");
+        mgr.disable_quiet().expect("release for the next test");
     }
 
     #[test]
@@ -1160,23 +1459,15 @@ mod tests {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
-        // The observer is a process-global OnceLock; first set wins, which is
-        // fine here - this is the only test that asserts on it, and it only
-        // asserts the count *increased* across the crash.
-        static NOTIFIED: AtomicUsize = AtomicUsize::new(0);
-        crate::proxy::set_engine_crash_observer(|| {
-            NOTIFIED.fetch_add(1, AtomicOrdering::SeqCst);
-        });
-
         mgr.enable().expect("enable");
-        let before = NOTIFIED.load(AtomicOrdering::SeqCst);
+        let before = notifications();
         mgr.handle_engine_crash();
 
         // Traffic made safe: env reverted, exact snapshot restored, nothing
         // left persisted - and the shell was told, after the fact.
         assert_eq!(mgr.ops.count("restore:user-proxy-state"), 1);
         assert!(mgr.ops.0.lock().unwrap().persisted_snapshot.is_none());
-        assert!(NOTIFIED.load(AtomicOrdering::SeqCst) > before);
+        assert!(notifications() > before);
         let state = mgr.status().expect("status");
         assert!(!state.running, "the dead handle must be dropped");
     }
@@ -1209,6 +1500,7 @@ mod tests {
         // Fail-open would strand HTTPS at the dead engine port; the contract
         // is force-off when the exact restore is impossible.
         assert_eq!(mgr.ops.count("force_off"), 1);
+        mgr.stop_dormant(); // a disable parks; release it so the port band is free for the next test
     }
 
     #[test]
@@ -1223,6 +1515,7 @@ mod tests {
         // old port; a restart must come back on the same address.
         assert_eq!(first, second, "the persisted port must be rebound");
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1324,6 +1617,7 @@ mod tests {
         assert!(mgr.ops.index_of("ensure_env_forwarder") < mgr.ops.index_of("enable_env"));
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     /// A forwarder that will not start costs the fail-open property and
@@ -1348,6 +1642,7 @@ mod tests {
         );
 
         mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     /// A plain disable must leave the forwarder alone - it is exactly then
@@ -1368,6 +1663,7 @@ mod tests {
 
         mgr.untrust_ca().expect("untrust after disable");
         assert_eq!(mgr.ops.count("stop_env_forwarder"), 1);
+        mgr.stop_dormant(); // release the park for the next test
     }
 
     #[test]
@@ -1384,5 +1680,144 @@ mod tests {
         let state = mgr.status().expect("status");
         assert!(state.running);
         assert_eq!(state.port, Some(47150));
+    }
+
+    /// Whether anything is still accepting on a loopback port - the same
+    /// question `engine_hosted_elsewhere` asks, and the one a tool holding a
+    /// stale `HTTPS_PROXY` asks by dialing it.
+    fn answering(port: u16) -> bool {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(250),
+        )
+        .is_ok()
+    }
+
+    #[test]
+    fn disable_parks_the_engine_so_stale_clients_still_reach_their_provider() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let port = mgr.enable().expect("enable").port.expect("port");
+        assert!(answering(port), "the engine should accept while routing");
+
+        let state = mgr.disable().expect("disable");
+
+        // Routing is off by every user-visible measure: the switch reads off,
+        // the system proxy is back, and nothing says Gate is serving.
+        assert!(!state.running);
+        assert_eq!(mgr.ops.count("restore:user-proxy-state"), 1);
+        assert_eq!(mgr.ops.count("disable_env"), 1);
+        assert!(mgr.ops.0.lock().unwrap().persisted_snapshot.is_none());
+        assert!(!mgr.hosts_live_engine(), "a parked engine is not routing");
+
+        // But the port still accepts. `launchctl unsetenv` cannot reach a
+        // process that is already running, so every shell, editor and CLI
+        // started before the toggle keeps dialing this address - including
+        // tools that were never switched on, and software Gate does not
+        // manage. Releasing it here is what turned "routing off" into "no
+        // provider is reachable".
+        assert!(
+            answering(port),
+            "disable must leave the exported port answering"
+        );
+
+        // And it answers as a plain proxy. Clearing the domains is the visible
+        // half; `set_intercept(false)` is the half that matters, because
+        // `route_rules` force-enables Claude Code's entry exactly when the live
+        // set is empty - an engine parked by clearing domains alone would still
+        // decrypt and bill a `claude` session that predates the toggle.
+        // `a_parked_engine_routes_nothing_even_with_the_selector` in `engine`
+        // pins that; here we check the manager asked for both.
+        assert_eq!(
+            mgr.dormant
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|e| e.intercepting()),
+            Some(0),
+            "a parked engine must claim no domains"
+        );
+
+        mgr.disable_quiet().expect("release for the next test");
+    }
+
+    #[test]
+    fn exit_releases_the_ports_and_a_gateway_switch_releases_a_park() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        // App exit: the listeners live in this process, so there is nothing to
+        // park - they go when it does.
+        let port = mgr.enable().expect("enable").port.expect("port");
+        mgr.disable_quiet().expect("exit teardown");
+        assert!(!answering(port), "exit must release the port");
+
+        // A gateway switch reaches through a park: the engine holds the old
+        // environment's base URL, which `engine::start` never updates.
+        let port = mgr.enable().expect("re-enable").port.expect("port");
+        mgr.disable().expect("disable parks it");
+        assert!(answering(port), "the park is what disable does");
+        mgr.shutdown_engine().expect("gateway switch");
+        assert!(
+            !answering(port),
+            "a gateway switch must not leave the old account's engine bound"
+        );
+    }
+
+    #[test]
+    fn untrusting_the_ca_releases_a_parked_engine() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let port = mgr.enable().expect("enable").port.expect("port");
+        mgr.disable().expect("disable");
+        mgr.untrust_ca().expect("untrust after disable");
+
+        assert_eq!(mgr.ops.count("untrust"), 1);
+        // Untrusting is the explicit "let go of this machine" action - it is
+        // what Reset runs - so Gate must not still be holding a port after it.
+        assert!(!answering(port), "untrust must release the parked port");
+    }
+
+    #[test]
+    fn the_crash_fail_safe_stands_down_while_parked() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let port = mgr.enable().expect("enable").port.expect("port");
+        mgr.disable().expect("disable");
+        let before = notifications();
+
+        // The parked engine carries the same crash callback the routing one
+        // did, so its death lands in the same handler. Calling it directly is
+        // the only way to drive that branch from a test: `on_unexpected_exit`
+        // runs on the engine's own thread, so a genuinely dying engine could
+        // not be observed as finished from here anyway.
+        mgr.handle_engine_crash();
+
+        // Nothing to revert, and reverting anyway would be destructive: the
+        // snapshot is already cleared, so the force-off fallback would fire
+        // and switch off a system proxy the *user* owns - the one the disable
+        // had just faithfully restored.
+        assert_eq!(
+            mgr.ops.count("force_off"),
+            0,
+            "must not force the proxy off"
+        );
+        assert_eq!(
+            mgr.ops.count("restore:user-proxy-state"),
+            1,
+            "the disable's restore is the only one"
+        );
+        assert_eq!(
+            notifications(),
+            before,
+            "routing is already off; a crash banner would be a lie"
+        );
+        // Still live, so it is still doing its job for stale clients.
+        assert!(answering(port));
+
+        mgr.disable_quiet().expect("release for the next test");
     }
 }

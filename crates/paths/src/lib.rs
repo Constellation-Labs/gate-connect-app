@@ -112,6 +112,14 @@ pub const FORWARDER_HEALTH_PATH: &str = "/__gate/forwarder-health";
 /// replayed either.
 pub const FORWARDER_CHALLENGE_HEADER: &str = "x-gate-forwarder-challenge";
 
+/// Reserved path the **relay** answers the same proof on.
+///
+/// A separate path from the forwarder's so a probe cannot mistake one listener
+/// for the other, and under the same `/__gate/` prefix the relay already
+/// reserves for its own routing segments, so it can never collide with a tool's
+/// base URL.
+pub const RELAY_HEALTH_PATH: &str = "/__gate/relay-health";
+
 /// Header carrying the forwarder's answer: hex SHA-256 of the token followed by
 /// the challenge. Only a process that can read the 0600 token file can produce
 /// it, which is exactly the claim the app needs before exporting the port it
@@ -245,6 +253,68 @@ pub fn bind_fresh(skip: &[u16]) -> std::io::Result<TcpListener> {
          It may not survive a restart."
     );
     TcpListener::bind(("127.0.0.1", 0))
+}
+
+/// Does the listener on `port` prove it holds `token`?
+///
+/// The client half of the challenge-response both of Gate's loopback listeners
+/// answer: a random challenge goes out on one header, and only a process that
+/// can read the 0600 token file can return the matching hash. A bare TCP
+/// connect cannot tell our listener from anything else that happens to accept,
+/// which is the difference between "the port is taken" and "the port is ours".
+///
+/// Shared rather than written twice because the forwarder and the relay differ
+/// only in which reserved path they answer on. Every timeout is short and
+/// bounded: a listener that answers slowly forever must not hold up an enable
+/// or a status read.
+pub fn proves_ours(port: u16, health_path: &str, token: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let challenge: String = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..16)
+            .map(|_| format!("{:02x}", rng.gen::<u8>()))
+            .collect()
+    };
+    let expected = forwarder_proof(token, &challenge);
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250))
+    else {
+        return false;
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = sock.set_write_timeout(Some(Duration::from_millis(500)));
+    let req = format!(
+        "GET {health_path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{FORWARDER_CHALLENGE_HEADER}: \
+         {challenge}\r\nConnection: close\r\n\r\n"
+    );
+    if sock.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 512];
+    while buf.len() < 4096 {
+        match sock.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let Ok(text) = std::str::from_utf8(&buf) else {
+        return false;
+    };
+    text.lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case(FORWARDER_PROOF_HEADER)
+                && constant_time_eq(value.trim().as_bytes(), expected.as_bytes())
+        })
 }
 
 #[cfg(test)]

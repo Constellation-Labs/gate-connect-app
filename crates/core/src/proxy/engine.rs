@@ -123,10 +123,10 @@ pub struct RunningEngine {
     /// Captured chatgpt.com `cf_clearance` cookie for app turns; empty when
     /// none is held. See [`update_cf_clearance`](Self::update_cf_clearance).
     cf_clearance_tx: watch::Sender<Arc<str>>,
-    /// Whether the relay rewrites inference to the gateway (true) or forwards
-    /// everything straight to the real upstream (false). See
-    /// [`set_relay_intercept`](Self::set_relay_intercept).
-    relay_intercept_tx: watch::Sender<bool>,
+    /// Whether the engine routes through Gate (true) or forwards everything
+    /// untouched (false) with its ports still bound. See
+    /// [`set_intercept`](Self::set_intercept).
+    intercept_tx: watch::Sender<bool>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -197,16 +197,40 @@ impl RunningEngine {
         let _ = self.cf_clearance_tx.send(Arc::from(cf_clearance));
     }
 
-    /// Flip the relay between gateway interception (rewrite inference and
-    /// inject the Gate credential - the default) and direct forwarding (every
-    /// request goes to the tool's real upstream under its own credential, the
-    /// relay's analogue of the MITM port's blind tunnel). The Linux helper
-    /// daemon flips this alongside the domain set: with no GUI connected
-    /// there's nothing keeping the injected token fresh, so routing to Gate
-    /// would quietly decay into 401s - going direct keeps the tools working,
-    /// just not through Gate. Cheap - no restart.
-    pub fn set_relay_intercept(&self, intercept: bool) {
-        let _ = self.relay_intercept_tx.send(intercept);
+    /// Flip the whole engine between routing through Gate (the default) and
+    /// plain forwarding: the MITM port blind-tunnels every CONNECT instead of
+    /// decrypting, and the relay sends every request to the tool's real
+    /// upstream under its own credential. The ports stay bound either way.
+    ///
+    /// Two callers, for the same reason. The Linux helper daemon flips this
+    /// alongside the domain set: with no GUI connected there's nothing keeping
+    /// the injected token fresh, so routing to Gate would quietly decay into
+    /// 401s - going direct keeps the tools working, just not through Gate. The
+    /// desktop managers flip it when the user switches routing off, so tools
+    /// that still hold the exported `HTTPS_PROXY` keep reaching their provider.
+    ///
+    /// **Not the same as clearing the domain set**, which is why this exists:
+    /// [`route_rules`] force-enables Claude Code's entry exactly when the live
+    /// set does *not* claim the host, so an empty set makes the selector path
+    /// fire rather than stop. Clearing domains alone would leave a running
+    /// `claude` session decrypted and billed after the user switched off.
+    /// Cheap - no restart.
+    pub fn set_intercept(&self, intercept: bool) {
+        let _ = self.intercept_tx.send(intercept);
+    }
+
+    /// Drop the API key, OAuth token and org from the engine's watch channels.
+    ///
+    /// For a park. A parked engine injects nothing - the relay is forced to
+    /// passthrough and the MITM port claims no host - so the credential it
+    /// holds is not spendable, but it was still *resident* for as long as the
+    /// park lasted, which is now the rest of the session rather than until
+    /// disable. Clearing it costs nothing: a re-enable starts a fresh engine
+    /// from the current account rather than reviving this one.
+    pub fn clear_credentials(&self) {
+        let _ = self.key_tx.send(Arc::from(""));
+        let _ = self.token_tx.send(Arc::from(""));
+        let _ = self.org_tx.send(Arc::from(""));
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -216,7 +240,17 @@ impl RunningEngine {
             let _ = tx.send(());
         }
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // `on_unexpected_exit` runs on the engine's own thread, and the
+            // crash handler it reaches calls this. Joining that thread from
+            // inside itself is `EDEADLK`: `join` returns `Err` on some
+            // platforms and blocks forever on others, and either way the
+            // revert the handler exists to run never happens. Signalling is
+            // enough there - the thread is already on its way out, which is
+            // why the callback fired. Every other caller is on another thread
+            // and still waits, so the address is free before it rebinds.
+            if t.thread().id() != std::thread::current().id() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -471,6 +505,17 @@ struct GateHandler {
     /// Set from the explicit proxy selector on Claude Code's CONNECT request.
     /// The handler is cloned with this value for the decrypted inner requests.
     claude_code_route: bool,
+    /// Whether this engine routes through Gate at all. False once the engine is
+    /// parked: the ports stay bound so already-running tools still reach their
+    /// provider, but nothing is decrypted and no Gate credential is spent.
+    ///
+    /// Read here as well as by the relay, because an empty rule set is *not*
+    /// enough to stop intercepting. [`route_rules`] force-enables Claude Code's
+    /// own entry exactly when the live set does not claim the host, so clearing
+    /// the domains makes the selector path fire rather than stop - the parked
+    /// engine would go on decrypting and billing a `claude` session that was
+    /// started before the user switched routing off.
+    intercept: watch::Receiver<bool>,
     /// One-shot latch for the "Anthropic without the selector" line in
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
@@ -481,6 +526,23 @@ struct GateHandler {
 }
 
 impl GateHandler {
+    /// Whether this engine is routing through Gate. A parked engine answers
+    /// `false` and behaves like a plain proxy: blind-tunnel, no rewrite, no
+    /// credential.
+    fn intercepting(&self) -> bool {
+        *self.intercept.borrow()
+    }
+
+    /// The rule set this connection is actually decided against: none at all
+    /// while parked, otherwise [`route_rules`].
+    fn effective_rules<'a>(
+        &self,
+        live: &'a [ProxyDomain],
+        host: Option<&str>,
+    ) -> Cow<'a, [ProxyDomain]> {
+        effective_rules(live, self.intercepting(), self.claude_code_route, host)
+    }
+
     /// Whether the peer behind `ctx` may be intercepted. `true` when no owner
     /// restriction is set; otherwise the peer's UID (resolved from its loopback
     /// socket) must match the owner. Fails **closed**: if the UID can't be
@@ -519,6 +581,9 @@ impl GateHandler {
     /// and noise is what stops a real regression being read.
     fn warn_if_anthropic_is_unselected(&self, intercept: bool, host: Option<&str>) {
         if intercept
+            // Parked, so *everything* is tunnelled by design. The line below
+            // names a regression that only means something while routing is on.
+            || !self.intercepting()
             || self.claude_code_route
             || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
             || self
@@ -610,6 +675,26 @@ fn app_shell_is_unrecognised(
 /// widening anything: a selected connection to any other host sees the live
 /// catalog untouched. It also means only Claude Code's host pays for the clone;
 /// everything else borrows.
+/// [`route_rules`], plus the park.
+///
+/// Split out from the handler so the one thing that must hold while parked -
+/// that *nothing* is claimed, selector or not - is a pure function with a test
+/// beside it. Returning an empty set rather than a "don't intercept" boolean is
+/// deliberate: both call sites go on to ask `should_intercept_host` and
+/// `decide`, and an empty set is the answer that makes both say tunnel without
+/// either needing to know about parking.
+fn effective_rules<'a>(
+    live: &'a [ProxyDomain],
+    intercepting: bool,
+    claude_code_route: bool,
+    host: Option<&str>,
+) -> Cow<'a, [ProxyDomain]> {
+    if !intercepting {
+        return Cow::Owned(Vec::new());
+    }
+    route_rules(live, claude_code_route, host)
+}
+
 fn route_rules<'a>(
     live: &'a [ProxyDomain],
     claude_code_route: bool,
@@ -691,7 +776,7 @@ impl HttpHandler for GateHandler {
             .authority()
             .map(|a| a.host())
             .or_else(|| req.uri().host());
-        let rules = route_rules(&live_rules, self.claude_code_route, host);
+        let rules = self.effective_rules(&live_rules, host);
         let intercept = host
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
@@ -779,10 +864,11 @@ impl HttpHandler for GateHandler {
         let ua = header("user-agent").unwrap_or_default();
         let host = req.uri().host().map(str::to_owned);
         let live_rules = self.rules.borrow().clone();
-        let rules = rules_for_client(
-            &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
-            client,
-        );
+        // `effective_rules` again rather than the CONNECT's verdict: this arm
+        // is reached without passing `should_intercept` at all - a client given
+        // `HTTP_PROXY` sends plain-HTTP requests straight here in absolute
+        // form - so a parked engine has to be enforced here too.
+        let rules = rules_for_client(&self.effective_rules(&live_rules, host.as_deref()), client);
         // Gated like the rewrite below: a plain-HTTP request from a non-owner
         // local peer reaches here without passing `should_intercept`, and its
         // user-agent does not belong in the owner's log.
@@ -2048,7 +2134,7 @@ where
     ));
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
-    let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
+    let (intercept_tx, intercept_rx) = watch::channel(true);
     // The relay shares the same credential channels , so a
     // token refresh, key rotation, or org switch reaches CLI tools and GUI apps
     // alike. Clone before the handler moves the originals.
@@ -2070,6 +2156,7 @@ where
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
+        intercept: intercept_rx.clone(),
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
         app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
@@ -2231,7 +2318,7 @@ where
                     relay_key_rx,
                     relay_token_rx,
                     relay_org_rx,
-                    relay_intercept_rx,
+                    intercept_rx,
                     relay_owner_uid,
                 ) {
                     Ok(handle) => detached.push(handle),
@@ -2277,7 +2364,7 @@ where
             token_tx,
             org_tx,
             cf_clearance_tx,
-            relay_intercept_tx,
+            intercept_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -2738,6 +2825,67 @@ mod tests {
             &route_rules(&live, true, Some("api.anthropic.com")),
             "api.anthropic.com"
         ));
+    }
+
+    /// Parking must beat the selector, which clearing the domain set does not.
+    ///
+    /// `route_rules` force-enables Claude Code's entry *precisely* when the
+    /// live set does not claim the host, so "turn everything off" is the input
+    /// that makes the selector fire. A desktop manager that parked an engine by
+    /// clearing domains alone would leave a `claude` session started before the
+    /// user switched routing off still decrypted, still rewritten to the
+    /// gateway, and still billed - which is what `set_intercept(false)` exists
+    /// to prevent. The pair below is the whole contract.
+    #[test]
+    fn a_parked_engine_routes_nothing_even_with_the_selector() {
+        let live = all_off();
+        let host = Some("api.anthropic.com");
+
+        // Routing, selector present: forced on. This is the behaviour the
+        // `claude_code_selector_routes_when_desktop_domain_is_off` e2e pins.
+        let routing = effective_rules(&live, true, true, host);
+        assert!(should_intercept_host(&routing, "api.anthropic.com"));
+
+        // Parked, same input: nothing is claimed, so the CONNECT tunnels and
+        // `decide` has no entry to rewrite against.
+        let parked = effective_rules(&live, false, true, host);
+        assert!(parked.is_empty(), "a parked engine claims no host at all");
+        assert!(
+            !should_intercept_host(&parked, "api.anthropic.com"),
+            "the selector must not survive the park"
+        );
+        assert!(matches!(
+            decide(&parked, "api.anthropic.com", "/v1/messages"),
+            Decision::Tunnel
+        ));
+    }
+
+    /// Parking is not selective: a domain the user really did have switched on
+    /// stops routing too, because the park is the user saying "off".
+    #[test]
+    fn a_parked_engine_routes_nothing_for_an_enabled_domain() {
+        let live = crate::proxy::default_domains();
+        assert!(
+            live.iter().any(|d| d.enabled),
+            "the catalog ships something enabled, or this proves nothing"
+        );
+        let enabled_host = live
+            .iter()
+            .find(|d| d.enabled)
+            .and_then(|d| d.hosts.first().cloned())
+            .expect("an enabled entry with a host");
+
+        assert!(should_intercept_host(
+            &effective_rules(&live, true, false, Some(&enabled_host)),
+            &enabled_host
+        ));
+        assert!(
+            !should_intercept_host(
+                &effective_rules(&live, false, false, Some(&enabled_host)),
+                &enabled_host
+            ),
+            "parked means parked, enabled entry or not"
+        );
     }
 
     /// The forced entry is pushed with `enabled: true`, so the one thing that

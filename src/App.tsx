@@ -33,6 +33,7 @@ import {
   staleAgentsCount,
   drainBackendErrors,
   pendingQuitTools,
+  type PendingQuit,
 } from "./lib/api";
 import { consoleUrlFor } from "./lib/config";
 import { FirstRun } from "./screens/FirstRun";
@@ -326,12 +327,12 @@ export function App() {
   // takeover. The names are swept from a backend buffer (once at mount, then
   // on each nudge) rather than carried on the event, so a Quit clicked
   // before this listener registered isn't lost.
-  const [quitTools, setQuitTools] = useState<string[] | null>(null);
+  const [quitTools, setQuitTools] = useState<PendingQuit | null>(null);
   useEffect(() => {
     const sweep = () => {
       pendingQuitTools()
-        .then((tools) => {
-          if (tools && tools.length > 0) setQuitTools(tools);
+        .then((pending) => {
+          if (pending && pending.tools.length > 0) setQuitTools(pending);
         })
         .catch(() => {});
     };
@@ -536,7 +537,7 @@ export function App() {
     }
   }, [routingNotice]);
   useEffect(() => {
-    if (quitTools !== null) track("quit_warning_shown", { tool_count: quitTools.length });
+    if (quitTools !== null) track("quit_warning_shown", { tool_count: quitTools.tools.length });
   }, [quitTools]);
 
   // The popover webview persists across tray hide/show, so the initial-load
@@ -1438,7 +1439,7 @@ export function App() {
         />
       )}
       {quitTools !== null && (
-        <QuitConfirm tools={quitTools} onCancel={() => setQuitTools(null)} />
+        <QuitConfirm pending={quitTools} onCancel={() => setQuitTools(null)} />
       )}
       {/* The pre-flight for the OS certificate dialog. Not gated on a screen:
           the master switch, a tool row and a family switch can all reach it, and

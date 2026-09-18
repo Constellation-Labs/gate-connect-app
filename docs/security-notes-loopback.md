@@ -97,6 +97,18 @@ does not.
 - **It is the same signed executable as the app**, shipped as a sidecar, and it
   inherits the environment of whichever process spawned it.
 
+**It fronts tool configurations as well as the variables now.** This section
+first described the forwarder as the address of the machine-wide export alone.
+`proxy::tool_proxy_url` also writes it into Claude Code's `settings.json`,
+OpenClaw's `proxy.proxyUrl` and Hermes's `.env`, so those three explicitly
+connected tools now depend on it too. The capability is unchanged - it is the
+same listener, holding no credential - and the `Proxy-Authorization` handling
+is what keeps it parity rather than escalation: the header is passed verbatim
+to the engine and stripped on the direct path, so a local process sending
+Claude Code's route selector through the forwarder gets exactly what it would
+get by dialing the engine, which is the accepted cross-user gap above and not a
+new one.
+
 Decision: accepted. The marginal capability over the status quo is small - any
 local process can already open its own outbound socket, so what this adds is
 reaching a host *through* Gate's process rather than directly, which matters
@@ -115,6 +127,26 @@ matters: gating the engine and relay while leaving the forwarder ungated would
 launder a non-owner peer into an owner-uid connection and undo the gate. The
 forwarder has to be gated first, or at the same time.
 
+## The relay proves itself too
+
+The forwarder has always answered a challenge before its port is published. The
+relay did not: `relay_listening` was a bare TCP connect, so anything that
+accepted on the persisted relay port read as a healthy Gate relay, and the tool
+statuses built on it reported Connected over a stranger. It answers the same
+proof now, on its own reserved path, minted from the same 0600 token.
+
+This identifies without authorising. The endpoint reaches no credential,
+resolves no route and returns no traffic, and it sits above the relay's own
+loopback guards so a prober can tell a squatted port from a refused one.
+
+What it does not do is prove the relay is *intercepting*. Parked and routing
+look identical from outside, which is why the relay tools still consult the
+routing intent for that, with the inaccuracy their status comments name.
+
+The engine's own MITM port still has no proof and does not need one on this
+path: `engine_proxy_url` gates on the system-proxy snapshot, which is Gate's
+own file, so a stranger holding that port cannot make a tool read Connected.
+
 Where the forwarder is socket-activated (macOS, via its LaunchAgent) the
 squatting case disappears rather than being detected: launchd holds the port
 from login, so no other process can be there to adopt. On Windows, and on macOS
@@ -122,6 +154,63 @@ when the agent could not be installed, the app instead proves the listener is
 ours with a 0600 shared token on a reserved health path before exporting its
 port - a plain TCP probe would have let any local process that bound the
 remembered port be published as the machine's `HTTPS_PROXY`.
+
+## Accepted: the parked state (macOS and Windows, routing off)
+
+Turning routing off **parks** the engine rather than stopping it: the three
+ports stay bound and `set_intercept(false)` drops both listeners to plain
+forwarding. This is not a convenience. `launchctl unsetenv` cannot reach a
+process that is already running, so releasing the ports strands every shell,
+editor and CLI that already inherited `HTTPS_PROXY` - including tools the user
+never switched on, and software Gate does not manage, because the export is
+machine-wide. Linux has always parked (`helper::set_passthrough`).
+
+The question this section answers is what a parked listener can be used for,
+since it outlives the user's "off".
+
+- **It cannot spend the credential.** This is the property the rest of this
+  document is about, and the park does not weaken it. The MITM port claims no
+  host at all - `engine::effective_rules` returns an empty set while parked -
+  so nothing is decrypted, no leaf cert is minted, and `decide` never reaches
+  a rewrite. The relay forces `Route::Passthrough` (`relay.rs`, on
+  `state.intercept`), strips the Gate headers, and forwards under the tool's
+  own credential.
+- **The relay is still not an open proxy.** Catalog resolution runs *before*
+  the intercept check, so a parked relay can only ever be aimed at a known
+  upstream, exactly as while routing is on.
+- **The MITM port remains a general forward proxy.** A CONNECT to an
+  arbitrary `host:port` is tunnelled, as it is while routing is on. This is
+  the one capability the park extends in time - from "while routing is on" to
+  "for the rest of the app session".
+- **The PAC responder is inert.** `pac_script` is built from the live rules,
+  which are empty while parked, so it names the engine for no host.
+
+Decision: accepted. The comparison that matters is parked versus *routing*,
+not parked versus nothing bound - the alternative to parking is not a quiet
+machine, it is a broken one. A parked engine is strictly less capable than the
+engine it replaces: egress only, no spend. Egress is also what any local
+process already has by opening its own socket, so the marginal capability is
+reaching an arbitrary host *through* Gate's process rather than directly,
+which matters only where an egress filter treats the two differently.
+
+The macOS/Windows cross-user gap named above is therefore unchanged in kind
+and smaller in consequence while parked: another local user reaching a parked
+port gets a forward proxy, not the owner's credential. The same UID-resolution
+work (`net.inet.tcp.pcblist`, `GetExtendedTcpTable`) would close it for both
+states at once.
+
+The park does not outlive the app: the ports are released on app exit, on a
+gateway switch, on a re-enable, and on untrusting the CA. Exit is also the
+residual - quitting still strands already-running tools, because on these two
+platforms the listeners live in the GUI process.
+
+The section below is the design this paragraph asked to have assessed before
+it existed. The forwarder is a listener that outlives the GUI, it carries no
+credential, and it is accepted - so the forward-proxy capability is already
+permanent rather than session-scoped on any machine that exports the
+variables, and a park that ended at app exit was never what bounded it.
+What the park still decides on its own is the *engine* and *relay* ports,
+which no forwarder currently fronts.
 
 ## Noted: the `claude-web` catalog entry (session cookie)
 

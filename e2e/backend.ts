@@ -107,7 +107,11 @@ export interface BackendState {
   routedClientsStale: boolean;
   runningAgents: number;
   staleAgents: number;
-  pendingQuitTools: string[] | null;
+  /** What `pending_quit_tools` hands the quit dialog: every tool still routed
+   *  through Gate, and the subset a plain quit will put back on its own
+   *  settings because the address its config names dies with the app. Mirrors
+   *  `PendingQuit` in `src/lib/api.ts`. */
+  pendingQuitTools: { tools: string[]; reverting: string[] } | null;
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */

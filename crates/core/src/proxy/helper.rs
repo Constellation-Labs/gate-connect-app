@@ -293,7 +293,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                     running.update_token(&oauth_token);
                     running.update_org(&org_id);
                     running.update_domains(&domains);
-                    running.set_relay_intercept(true);
+                    running.set_intercept(true);
                     Response::Intercepting {
                         port: running.port(),
                         relay_port: running.relay_port(),
@@ -372,12 +372,18 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
 }
 
 /// Drop both listeners to their credential-free fallbacks, without stopping
-/// the engine (the ports stay bound). MITM port: clear the domain set so it
-/// blind-tunnels everything. Relay port: forward direct to the real upstream
-/// under the tool's own credential instead of rewriting to the gateway - with
-/// no GUI connected nothing keeps the injected token fresh, so routing to
-/// Gate would quietly decay into 401s; going direct keeps CLI tools working,
-/// just not through Gate. No-op if the engine isn't running.
+/// the engine (the ports stay bound). MITM port: blind-tunnel every CONNECT.
+/// Relay port: forward direct to the real upstream under the tool's own
+/// credential instead of rewriting to the gateway - with no GUI connected
+/// nothing keeps the injected token fresh, so routing to Gate would quietly
+/// decay into 401s; going direct keeps CLI tools working, just not through
+/// Gate. No-op if the engine isn't running.
+///
+/// `set_intercept` is what does both. Clearing the domain set does not, and
+/// could not: `route_rules` force-enables Claude Code's entry exactly when the
+/// live set does not claim the host, so an empty set makes the selector path
+/// fire rather than stop. The domains are cleared as well so the engine's own
+/// `intercepting()` count reads zero.
 fn set_passthrough(engine: &Shared) {
     if let Some(running) = engine
         .lock()
@@ -385,8 +391,8 @@ fn set_passthrough(engine: &Shared) {
         .as_ref()
         .filter(|e| !e.is_finished())
     {
+        running.set_intercept(false);
         running.update_domains(&[]);
-        running.set_relay_intercept(false);
     }
 }
 
