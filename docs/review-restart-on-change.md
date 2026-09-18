@@ -69,7 +69,7 @@ only exception:
 | Claude Code | 2.1.276 | per process | measured |
 | OpenCode | 1.18.27 | per process | measured |
 | OpenClaw | 2026.6.11 | per gateway process | vendor-stated, not measured |
-| Hermes | - | unknown | not runnable |
+| Hermes | - | per process | measured |
 
 Claude Code's answer is also structural, which is why it is safe to lean on: the
 `env` block becomes process environment variables, and those cannot change under
@@ -81,8 +81,10 @@ because that is exactly the footing the Codex claim was on before it turned out
 to be wrong. Its CLI says "Restart the gateway to apply" and a running gateway
 logged nothing about a change made underneath it, but a gateway on a fresh
 profile makes no outbound request at all, and forcing one needs a provider
-credential. **Hermes was not checked**: the only install available had a
-launcher pointing at a venv binary that no longer exists.
+credential. **Hermes was measured** once a working install existed: a
+`hermes chat` session against a fake proxy named by `HTTPS_PROXY`, repointed
+mid-session, produced nine fresh requests that all still went to the old proxy.
+Per process, as its own connect note always said.
 
 ## 2. The teardown, and the premise it rests on
 

@@ -61,6 +61,14 @@
 //! which variables we added, so disconnect removes exactly those and leaves a
 //! pre-existing `HTTPS_PROXY` (a corporate egress proxy, say) alone.
 
+//! **Config granularity: per process.** Measured 2026-09-18 by running a
+//! `hermes chat` session against a fake proxy named by `HTTPS_PROXY` in an
+//! isolated `HERMES_HOME`, repointing that variable at a second proxy
+//! mid-session, and sending another turn. Nine fresh requests followed the
+//! repoint and every one still went to the *old* proxy. The `.env` is loaded
+//! into the environment once at startup, so this matches the mechanism, and
+//! "restart it" is the right advice - which is what `connect` already prints.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

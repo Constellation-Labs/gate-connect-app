@@ -396,7 +396,7 @@ answer is per tool:
 | Claude Code | 2.1.276 | per process | measured |
 | OpenCode | 1.18.27 | per process | measured |
 | OpenClaw | 2026.6.11 | per gateway process | vendor-stated, not measured |
-| Hermes | - | unknown | not runnable |
+| Hermes | - | per process | measured |
 
 Claude Code and OpenCode behave the way this document always assumed, and
 Claude Code's reason is structural: its `env` block becomes process environment
@@ -412,8 +412,11 @@ gateway on a fresh profile makes no outbound request at all, and every way to
 force one needs a provider credential. Uncontradicted is not the same as
 measured, and the module doc says so too.
 
-Hermes could not be checked. The only install available had a launcher pointing
-at a venv binary that no longer exists.
+Hermes was measured once a working install was available: a `hermes chat`
+session against a fake proxy named by `HTTPS_PROXY`, repointed mid-session.
+Nine fresh requests followed the repoint and every one still went to the old
+proxy, so it is per process like the others, which its `connect` note already
+said.
 
 So Codex remains the only tool where "restart it" is the wrong thing to say,
 and it is the one whose module doc asserted the opposite hardest.
