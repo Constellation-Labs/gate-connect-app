@@ -325,3 +325,171 @@ fn plain_quit_unions_into_a_pending_snapshot() {
         "the new entry must be added: {raw}"
     );
 }
+
+/// Bind a port and persist it as the relay's, so `relay_listening()` finds
+/// something. Returned so the caller keeps it alive: a relay tool's status asks
+/// whether the port answers, and a persisted port file on its own is exactly
+/// the state that used to read Connected over a dead address.
+fn bind_relay_port() -> (std::net::TcpListener, u16) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+    (listener, port)
+}
+
+/// Record the user's last explicit routing answer, which is what tells a parked
+/// relay from a routing one.
+fn seed_routing_intent(enabled: bool) {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("routing-intent.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, format!(r#"{{"enabled":{enabled}}}"#)).unwrap();
+}
+
+/// Route Codex through a live relay, the way `connect` does.
+fn connect_codex(port: u16) {
+    let dir = env::codex_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    // `connect` reads the login mode from here; without it the mode probe is
+    // what fails, and the test would be about something else entirely.
+    fs::write(dir.join("auth.json"), r#"{"auth_mode":"apikey"}"#).unwrap();
+
+    let integ = find(ToolId::Codex).expect("codex integration registered");
+    integ
+        .connect(&ConnectInput {
+            gateway_base_url: "https://gateway.example.com".into(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            relay_base_url: Some(format!("http://127.0.0.1:{port}")),
+            engine_proxy_url: None,
+        })
+        .expect("connect codex");
+}
+
+/// A relay that answers is not a relay that routes. With the engine parked the
+/// port stays bound and forwards straight through, so the probe alone reads
+/// Connected over traffic going direct - a green pill over the one thing this
+/// status exists to catch. The user's last explicit answer is the signal.
+///
+/// Both directions asserted, because a check that only ever says "not routing"
+/// would pass this test by being uniformly wrong.
+#[test]
+fn codex_is_not_connected_while_routing_is_off() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let (_relay, port) = bind_relay_port();
+    connect_codex(port);
+
+    seed_routing_intent(true);
+    assert!(
+        matches!(
+            find(ToolId::Codex).unwrap().status().unwrap(),
+            Status::Connected
+        ),
+        "a live relay with routing on is Connected"
+    );
+
+    seed_routing_intent(false);
+    match find(ToolId::Codex).unwrap().status().unwrap() {
+        Status::Drifted(m) => {
+            assert!(m.contains("routing is off"), "unexpected message: {m}");
+            assert!(m.contains("directly"), "must say where traffic goes: {m}");
+        }
+        other => panic!("a parked relay must not read as Connected, got {other:?}"),
+    }
+}
+
+/// The same for OpenCode, which had neither this check nor the liveness one
+/// until the two relay tools were found disagreeing about a single parked
+/// engine. Invisible before, because routing-off used to sweep OpenCode to
+/// Detected; keeping the config is what made it the steady state.
+#[test]
+fn opencode_is_not_connected_while_routing_is_off() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+    // `connect_opencode` persists 8402 and writes base URLs naming it, so the
+    // listener has to be on that port for the liveness probe to pass.
+    let _relay = std::net::TcpListener::bind("127.0.0.1:8402")
+        .expect("binding 127.0.0.1:8402 for the relay liveness probe");
+
+    seed_routing_intent(true);
+    assert!(
+        matches!(
+            find(ToolId::OpenCode).unwrap().status().unwrap(),
+            Status::Connected
+        ),
+        "a live relay with routing on is Connected"
+    );
+
+    seed_routing_intent(false);
+    match find(ToolId::OpenCode).unwrap().status().unwrap() {
+        Status::Drifted(m) => {
+            assert!(m.contains("routing is off"), "unexpected message: {m}");
+            assert!(m.contains("directly"), "must say where traffic goes: {m}");
+        }
+        other => panic!("a parked relay must not read as Connected, got {other:?}"),
+    }
+}
+
+/// `requires_engine` is derived from `mechanism` rather than declared twice.
+/// The reconcile passes ask it before re-asserting a drifted config, so a new
+/// integration that declared one and forgot the other would be gated by a rule
+/// that does not describe it.
+#[test]
+fn requires_engine_follows_the_declared_mechanism() {
+    for id in [
+        ToolId::ClaudeCode,
+        ToolId::Codex,
+        ToolId::OpenCode,
+        ToolId::OpenClaw,
+        ToolId::Hermes,
+        ToolId::EnvProxy,
+    ] {
+        let integ = find(id).unwrap();
+        assert_eq!(
+            integ.requires_engine(),
+            integ.mechanism() == Mechanism::ForwardProxy,
+            "{} disagrees with its own mechanism",
+            integ.display_name()
+        );
+    }
+}
+
+/// A persisted relay port is not a live one. The port file survives restarts
+/// precisely so configs stay valid across them, so comparing a config against
+/// it proves identity and says nothing about reachability: on its own it reads
+/// Connected while the tool dials a port nothing is bound to.
+#[test]
+fn codex_with_nothing_listening_is_not_connected() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_routing_intent(true);
+    let (relay, port) = bind_relay_port();
+    connect_codex(port);
+    // Connect against a live relay, then let it go: the config is untouched and
+    // still correct, which is exactly the state that must not read Connected.
+    drop(relay);
+
+    match find(ToolId::Codex).unwrap().status().unwrap() {
+        Status::Drifted(m) => assert!(m.contains("dead address"), "unexpected message: {m}"),
+        other => panic!("a dead relay must not read as Connected, got {other:?}"),
+    }
+}
+
+/// The same for OpenCode, whose fixture persists a port that nothing binds.
+#[test]
+fn opencode_with_nothing_listening_is_not_connected() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_routing_intent(true);
+    connect_opencode();
+
+    match find(ToolId::OpenCode).unwrap().status().unwrap() {
+        Status::Drifted(m) => assert!(m.contains("dead address"), "unexpected message: {m}"),
+        other => panic!("a dead relay must not read as Connected, got {other:?}"),
+    }
+}
