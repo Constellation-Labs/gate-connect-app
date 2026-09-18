@@ -62,6 +62,8 @@ pub mod autostart_optout;
 // `system_proxy` modules wrap it with their platform rationale.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod port_persist;
+#[cfg(test)]
+pub(crate) mod test_relay;
 
 // Shared names/values for the proxy environment variables, which every
 // platform's `system_proxy` exports so CLI tools (Node/Bun/Python) route too.
@@ -3400,11 +3402,16 @@ mod tests {
         );
     }
 
-    /// The distinction `engine_hosted_elsewhere` exists to draw, and the one
-    /// that decides whether `enable` refuses: a snapshot on disk means Gate
-    /// turned routing on, not that anyone is still serving it. A crashed
-    /// session leaves the file behind, and refusing an enable on that basis
+    /// The distinction `engine_hosted_elsewhere` exists to draw: a file on disk
+    /// means Gate turned routing on, not that anyone is still serving it. A
+    /// crashed session leaves it behind, and refusing an enable on that basis
     /// would lock the user out of the command that fixes their machine.
+    ///
+    /// The signal is the relay now, not the snapshot, so the fixture is a relay
+    /// that proves itself rather than any listener that accepts - and the
+    /// question narrowed to "is it routing", because a parked instance holds
+    /// the same ports and routes nothing. `enable` asks the wider question
+    /// separately.
     ///
     /// macOS/Windows only, like the function - Linux adopts its daemon instead
     /// of probing. Verified on Linux while writing by widening both cfgs, so
@@ -3437,27 +3444,45 @@ mod tests {
         // Nothing on disk at all: nobody has ever routed.
         assert_eq!(engine_hosted_elsewhere(), None, "no snapshot, no engine");
 
-        // A live listener, and a snapshot recording that routing is on. This is
-        // the menubar-app-is-running case, and the only one that must refuse.
+        // A live engine port, and a relay that proves itself and reports it is
+        // routing. This is the menubar-app-is-running case, and the only one
+        // that must refuse.
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binding a probe listener");
         let port = listener.local_addr().expect("listener address").port();
         system_proxy::save_port(port).expect("persisting the port");
         system_proxy::save_snapshot(&system_proxy::snapshot().expect("reading the system proxy"))
             .expect("saving a snapshot");
+        let relay = test_relay::TestRelay::start(0);
+        relay.persist_port();
         assert_eq!(
             engine_hosted_elsewhere(),
             Some(port),
-            "a snapshot plus a live listener is another process hosting the engine"
+            "a routing relay plus a live engine port is another process hosting the engine"
         );
 
-        // Same snapshot, listener gone: the crashed-session case. Enable has to
-        // go through, so this must read as "nobody is hosting".
+        // The same instance, parked. It still holds the ports, so `enable`
+        // still has to refuse against it, but it is routing nothing and must
+        // not be reported as hosting the proxy.
+        relay.set_intercepting(false);
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            None,
+            "a parked instance routes nothing, so nothing is hosting the proxy"
+        );
+        relay.set_intercepting(true);
+
+        // Engine port gone, relay still routing: the crashed-session case.
+        // Enable has to go through, so this must read as "nobody is hosting".
         drop(listener);
         assert_eq!(
             engine_hosted_elsewhere(),
             None,
             "a snapshot left by a crash must not look like a live engine"
         );
+
+        // And a relay that cannot prove itself is not ours, however alive the
+        // engine port looks.
+        drop(relay);
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
