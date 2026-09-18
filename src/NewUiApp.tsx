@@ -28,6 +28,7 @@ import {
   launchAtLoginStatus,
   listProviders,
   listTools,
+  oauthCancelLogin,
   oauthStatus,
   openOnboardingWindow,
   proxyBrowserStore,
@@ -367,6 +368,10 @@ export function NewUiApp() {
   const [offerOpen, setOfferOpen] = useState(false);
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState<ClassifiedError | null>(null);
+  /** The decline cancelled an in-flight login, so its rejection is expected and
+   *  must not be drawn as a failure. A ref, not state: `acceptOffer`'s catch
+   *  reads it in the same tick the click set it. */
+  const declinedRef = useRef(false);
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -2092,6 +2097,7 @@ export function NewUiApp() {
 
   const acceptOffer = useCallback(async () => {
     setOfferError(null);
+    declinedRef.current = false;
     setOfferBusy(true);
     try {
       await settings.upgradeToOAuth();
@@ -2101,7 +2107,8 @@ export function NewUiApp() {
       markOAuthOfferSeen();
       setOfferOpen(false);
     } catch (e) {
-      setOfferError(classifyError(e, "sign_in"));
+      // Silent when the user cancelled it themselves - see `declineOffer`.
+      if (!declinedRef.current) setOfferError(classifyError(e, "sign_in"));
     } finally {
       setOfferBusy(false);
     }
@@ -2127,10 +2134,27 @@ export function NewUiApp() {
     }
   }, [settings]);
 
+  /**
+   * Decline the offer, including while a browser sign-in is still waiting.
+   *
+   * The cancel is what makes the decline mean anything mid-flow: `login` waits
+   * five minutes for the callback, so without it the dialog could only stop
+   * *showing* the wait while the flow ran on - and a sign-in that then
+   * completed would upgrade the account the user had just declined to upgrade.
+   *
+   * `declined` suppresses the rejection that cancel causes. It is not a failure
+   * to report: the user asked for it, the dialog is already gone, and a banner
+   * afterwards would be the app arguing with the button they pressed.
+   */
   const declineOffer = useCallback(() => {
+    if (offerBusy) {
+      declinedRef.current = true;
+      void oauthCancelLogin().catch(() => {});
+    }
     markOAuthOfferSeen();
+    setOfferError(null);
     setOfferOpen(false);
-  }, []);
+  }, [offerBusy]);
 
   /**
    * Build the diagnostics report against live probes.

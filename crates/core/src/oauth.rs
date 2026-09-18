@@ -621,6 +621,25 @@ pub const REDIRECT_PORTS: &[u16] = &[8977, 8978, 8979];
 /// giving up on an interactive login.
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
+/// Set by [`cancel_login`] to stop [`LoopbackListener::wait_for_code`] early.
+///
+/// Five minutes is a long time to be unable to leave a modal, and the common
+/// way to reach that is not a slow user: it is the sign-in page opening in a
+/// browser profile they are not signed into, which they abandon. Without this
+/// the UI could only *look* away from a flow that went on waiting, and any
+/// later success would upgrade an account the user had already declined to
+/// upgrade.
+static LOGIN_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// Abandon an interactive login that is still waiting for the browser.
+///
+/// Idempotent and safe to call when no login is running: [`login`] clears the
+/// flag before it starts waiting, so a cancel that arrives late cannot kill the
+/// next attempt.
+pub fn cancel_login() {
+    LOGIN_CANCELLED.store(true, Ordering::Release);
+}
+
 const SUCCESS_HTML: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title>\
 <body style=\"font:15px system-ui;margin:4rem auto;max-width:24rem;text-align:center;color:#1a1a1a\">\
 <h1 style=\"font-size:1.1rem\">You're signed in</h1>\
@@ -698,6 +717,13 @@ impl LoopbackListener {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(e).context("accepting loopback callback"),
                 }
+            }
+            // Checked on the same 100ms tick the accept loop already runs on,
+            // so a cancel lands within a tick rather than at the deadline.
+            // `swap` rather than `load`: consuming it here means the flag never
+            // outlives the login it stopped.
+            if LOGIN_CANCELLED.swap(false, Ordering::AcqRel) {
+                bail!("the browser sign-in was stopped from Gate Connect");
             }
             if std::time::Instant::now() >= deadline {
                 bail!("timed out waiting for the login redirect");
@@ -792,6 +818,10 @@ where
     let listener = LoopbackListener::bind(candidate_ports)?;
     let req = begin_login(cfg, listener.redirect_uri())?;
     open_url(&req.authorize_url).context("opening the sign-in page in the browser")?;
+    // Cleared here, not in `wait_for_code`: a cancel pressed while the browser
+    // was opening must still stop this attempt, and only a *stale* one - left by
+    // an attempt that already ended - may be discarded.
+    LOGIN_CANCELLED.store(false, Ordering::Release);
     let code = listener.wait_for_code(
         &req.state,
         std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),

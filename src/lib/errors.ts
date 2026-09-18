@@ -220,6 +220,24 @@ export function classifyError(
     };
   }
 
+  // The browser login was never finished.
+  //
+  // Ahead of the network branch on purpose: `oauth.rs` gives up after
+  // `LOGIN_TIMEOUT_SECS` with "timed out waiting for the login redirect", and
+  // that sentence contains "timed out", so the connectivity arm below claimed
+  // it and told the user to check that they were online and that the gateway
+  // URL was right. Neither was the problem - the gateway was never asked. The
+  // most common cause is the one that produced this: the sign-in page opened in
+  // a browser profile the person was not signed into, and they walked away from
+  // it.
+  if (lc.includes("login redirect") || lc.includes("waiting for the login")) {
+    return {
+      title: "The browser sign-in was not finished",
+      hint: "Gate stopped waiting after five minutes. Try again, and complete the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
   // Network: gateway unreachable.
   if (
     lc.includes("connection refused") ||
