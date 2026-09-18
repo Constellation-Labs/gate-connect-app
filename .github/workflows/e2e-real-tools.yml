@@ -36,7 +36,7 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
@@ -51,7 +51,7 @@ jobs:
           node-version: 22
 
       - name: Build gate-connect CLI
-        run: cargo build -p gate-connect-cli
+        run: cargo build --locked -p gate-connect-cli
 
       # Every CLI now talks to the relay over plaintext loopback, so codex no
       # longer needs the OS trust store for a custom CA (the old macOS blocker,

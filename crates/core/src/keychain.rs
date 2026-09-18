@@ -3,7 +3,8 @@
 //!
 //! - macOS Keychain (via `apple-native` → Security.framework)
 //! - Windows Credential Manager (via `windows-native`)
-//! - Linux Secret Service (via `sync-secret-service`, vendored libdbus)
+//! - Linux Secret Service (via `async-secret-service` → `zbus`, on an
+//!   encrypted DH session; see the `keyring` entry in the root `Cargo.toml`)
 //!
 //! Every secret Gate Connect writes uses the same service prefix
 //! (`ai.constellation.gate-connect.*`) so the user can audit / nuke
@@ -11,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -70,6 +72,7 @@ static IN_MEMORY: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 #[doc(hidden)]
 pub fn use_in_memory_backend() {
     *IN_MEMORY.lock().expect("in-memory keychain mutex poisoned") = Some(HashMap::new());
+    invalidate_cache();
 }
 
 fn mem_key(service: &str, account: &str) -> String {
@@ -181,6 +184,88 @@ fn parse_manifest(value: &str) -> Option<usize> {
     value.strip_prefix(CHUNK_MARKER)?.parse().ok()
 }
 
+/// Values already read from the secret store this process, each remembered
+/// alongside the *witness* its caller vouched for it with. See [`get_cached`]
+/// for what a witness is and why this exists.
+static WITNESS_CACHE: Mutex<Option<HashMap<String, CachedRead>>> = Mutex::new(None);
+
+/// One remembered read: the witness its caller vouched for the value with, and
+/// the value itself (`None` being a perfectly cacheable "no such secret").
+type CachedRead = (String, Option<String>);
+
+/// Drop every cached read. Called whenever this process writes or deletes a
+/// secret, because the value a witness vouched for is no longer the value in
+/// the store. Clearing the whole map rather than one entry keeps this correct
+/// for the chunked layout, where one logical secret owns several accounts.
+fn invalidate_cache() {
+    *WITNESS_CACHE
+        .lock()
+        .expect("keychain witness cache mutex poisoned") = None;
+    WRITE_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Bumped at both ends of every write and delete, and by the test-backend
+/// reset. Read either side of a cached read to detect a write that overlapped
+/// it.
+static WRITE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// How many writes this process has begun or finished against the secret store.
+/// Only meaningful as a comparison between two readings: equal means no write
+/// touched the store in between.
+fn write_epoch() -> u64 {
+    WRITE_EPOCH.load(Ordering::SeqCst)
+}
+
+/// Read a secret, reusing the value from an earlier read while `witness` is
+/// unchanged.
+///
+/// **Why this exists.** On Linux every [`get`] is a fresh D-Bus connection and
+/// Secret Service session, and `gnome-keyring-daemon` (46.1, measured) never
+/// frees the ~8 KB of per-client state a closed connection leaves behind. A
+/// caller on a 30-second timer therefore grows the *daemon* by ~180 MB/day
+/// without leaking a byte itself. Reads over one connection are free, so the
+/// fix is to open fewer connections, not to change the session type: plain and
+/// encrypted sessions both leak, and only the connection count matters.
+///
+/// **What a witness is.** Something cheap, already at hand, and guaranteed to
+/// change whenever the secret does - in practice the on-disk file written in
+/// the same breath as the secret (`account.json` for the Gate key, the CA
+/// certificate for its private key). Passing one keeps this honest across
+/// processes, which a bare cache could not be: the CLI can write a new key
+/// while the app is running, and the witness is how this process notices.
+/// A caller with nothing that qualifies must not use this - cache at its own
+/// layer, where it knows what invalidates .
+pub fn get_cached(service: &str, account: &str, witness: &str) -> Result<Option<String>> {
+    let key = mem_key(service, account);
+    {
+        let guard = WITNESS_CACHE
+            .lock()
+            .expect("keychain witness cache mutex poisoned");
+        if let Some((seen, value)) = guard.as_ref().and_then(|c| c.get(&key)) {
+            if seen == witness {
+                return Ok(value.clone());
+            }
+        }
+    }
+    // Read the epoch *before* the read, and keep what came back only if no
+    // write moved it meanwhile. A `set` is several entry writes with the value
+    // briefly absent between them , so a
+    // read overlapping one can see a torn store - and unlike an uncached read,
+    // which the next tick corrects, a cached one would sit there until the
+    // witness changed. Dropping it costs one re-read on a race that is already
+    // rare.
+    let before = write_epoch();
+    let value = get(service, account)?;
+    if write_epoch() == before {
+        WITNESS_CACHE
+            .lock()
+            .expect("keychain witness cache mutex poisoned")
+            .get_or_insert_with(HashMap::new)
+            .insert(key, (witness.to_string(), value.clone()));
+    }
+    Ok(value)
+}
+
 /// Delete the secret at `(service, account)`, whether stored as a single entry
 /// or a chunk manifest plus its chunks. Returns whether anything was present.
 fn remove(service: &str, account: &str) -> Result<bool> {
@@ -196,11 +281,19 @@ fn remove(service: &str, account: &str) -> Result<bool> {
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
+    // Invalidated at BOTH ends, and the second one is the load-bearing half: a
+    // reader that samples the epoch *after* this first call sees it hold steady
+    // across the torn store below, and would cache what it read there for as
+    // long as its witness stood. The bump on the way out is what such a reader
+    // trips over. See `get_cached`.
+    invalidate_cache();
     // Clear any prior value first so a shrinking chunk count - or a single->chunk
     // (or chunk->single) transition - never leaves orphaned chunk entries behind.
     remove(service, account)?;
     if value.chars().count() <= MAX_CHUNK_CHARS {
-        return set_raw(service, account, value);
+        set_raw(service, account, value)?;
+        invalidate_cache();
+        return Ok(());
     }
     let chunks = split_chunks(value, MAX_CHUNK_CHARS);
     for (i, chunk) in chunks.iter().enumerate() {
@@ -208,7 +301,9 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
     }
     // Write the manifest last: until it exists a torn write reads as "no secret"
     // rather than a manifest pointing at chunks that aren't all there yet.
-    set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len()))
+    set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len()))?;
+    invalidate_cache();
+    Ok(())
 }
 
 pub fn get(service: &str, account: &str) -> Result<Option<String>> {
@@ -229,7 +324,10 @@ pub fn get(service: &str, account: &str) -> Result<Option<String>> {
 }
 
 pub fn delete(service: &str, account: &str) -> Result<bool> {
-    remove(service, account)
+    invalidate_cache();
+    let removed = remove(service, account)?;
+    invalidate_cache();
+    Ok(removed)
 }
 
 pub fn tool_service(tool: &str, label: &str) -> String {

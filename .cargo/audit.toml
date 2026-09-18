@@ -1,0 +1,28 @@
+# `cargo audit` config, read by the "Dependency advisories" job in
+# .github/workflows/ci.yml.
+#
+# The ignore list is EMPTY, and that is the point: every advisory this job can
+# see today is one it should fail on. When it was written against the feature
+# branch's lock it carried five entries - h2, time, crossbeam-epoch and
+# quick-xml twice - all of them inherited debt the job would otherwise have
+# been permanently red on. Every one has since been remediated by an ordinary
+# dependency bump, and the lock on main now carries h2 0.4.19, time 0.3.55,
+# crossbeam-epoch 0.9.21 and quick-xml 0.42.0, each well past its fix. Keeping
+# the entries would have left five permanent blind spots in a gate whose whole
+# value is that a NEW advisory turns it red - including on h2, the one the old
+# comment called genuinely reachable against the relay's loopback listener.
+#
+# Before adding an entry here, try a `cargo update -p <crate>` first: four of
+# the original five needed nothing more than that. An entry is for an advisory
+# with no fix you can reach - a semver boundary a dependency pins, say - and it
+# should say what pulls the crate, how reachable the bug actually is, and what
+# would fix it. Ignoring is not accepting.
+#
+# Deliberately NOT set: `informational_warnings`. Unmaintained and yanked
+# crates stay warnings, so a real vulnerability is the only thing that fails
+# the build. The graph currently carries several of those - proc-macro-error,
+# the unic-* family, and unsoundness notices on anyhow, glib, event-listener
+# and serde_with - and none of them should block a merge.
+
+[advisories]
+ignore = []
