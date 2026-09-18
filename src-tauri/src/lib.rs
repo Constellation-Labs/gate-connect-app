@@ -151,7 +151,7 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
             gateway_base_url: account.gateway_base_url,
             upstream_url,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
-            engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
+            engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
         };
         integ.connect(&input).map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))

@@ -160,7 +160,7 @@ impl Integration for Hermes {
         }
         Ok(compute_status(
             configured_proxy()?.as_deref().unwrap_or(""),
-            crate::proxy::persisted_engine_proxy_url().as_deref(),
+            &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
     }
@@ -318,13 +318,16 @@ impl Integration for Hermes {
 /// engine is actually up. They are separate because "pointed at us but the
 /// engine is down" is a broken tool, not a cosmetic mismatch, and it is reported
 /// as drift rather than Connected so the master-off sweep still disconnects it.
-fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> Status {
-    let Some(expected) = expected else {
+/// `ours` is every proxy address that belongs to Gate, preferred first - see
+/// [`crate::proxy::tool_proxy_identity_urls`] and the note on OpenClaw's
+/// equivalent, which this mirrors.
+fn compute_status(configured: &str, ours: &[String], running: bool) -> Status {
+    let Some(expected) = ours.first() else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
         );
     };
-    if configured != expected {
+    if !ours.iter().any(|ours| ours == configured) {
         return Status::Drifted(format!(
             "Hermes config does not match Gate settings (HTTPS_PROXY: {configured:?}, expected: \
              {expected:?})"
@@ -738,12 +741,14 @@ mod tests {
     #[test]
     fn compute_status_covers_the_four_states() {
         let ours = "http://127.0.0.1:9977";
+        let mine = [ours.to_string()];
+        let none: [String; 0] = [];
 
-        assert_eq!(compute_status(ours, Some(ours), true), Status::Connected);
+        assert_eq!(compute_status(ours, &mine, true), Status::Connected);
 
         // Pointed at us but the engine is down: Hermes' requests go nowhere, so
         // this must never read as Connected.
-        match compute_status(ours, Some(ours), false) {
+        match compute_status(ours, &mine, false) {
             Status::Drifted(m) => {
                 assert!(m.contains("not running"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -752,13 +757,35 @@ mod tests {
         }
 
         // A corporate proxy the user set by hand is not ours.
-        match compute_status("http://proxy.corp.example:3128", Some(ours), true) {
+        match compute_status("http://proxy.corp.example:3128", &mine, true) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
-        match compute_status(ours, None, false) {
+        match compute_status(ours, &none, false) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
+            other => panic!("expected drift, got {other:?}"),
+        }
+    }
+
+    /// The address an install written before the forwarder repoint holds is
+    /// still ours, so it reads Connected rather than sending a repair over a
+    /// config that routes. Only the preferred address is named when something
+    /// really has drifted.
+    #[test]
+    fn an_older_address_of_ours_is_not_drift() {
+        let forwarder = "http://127.0.0.1:47101".to_string();
+        let engine = "http://127.0.0.1:47100".to_string();
+        let ours = [forwarder.clone(), engine.clone()];
+
+        assert_eq!(compute_status(&engine, &ours, true), Status::Connected);
+        assert_eq!(compute_status(&forwarder, &ours, true), Status::Connected);
+
+        match compute_status("http://proxy.corp.example:3128", &ours, true) {
+            Status::Drifted(m) => {
+                assert!(m.contains(&forwarder), "must name the preferred address: {m}");
+                assert!(!m.contains(&engine), "must not offer the older one: {m}");
+            }
             other => panic!("expected drift, got {other:?}"),
         }
     }

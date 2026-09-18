@@ -209,7 +209,7 @@ impl Integration for OpenClaw {
         Ok(compute_status(
             current_proxy_url(&settings).unwrap_or(""),
             proxy_is_enabled(&settings),
-            crate::proxy::persisted_engine_proxy_url().as_deref(),
+            &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
     }
@@ -413,18 +413,19 @@ impl Integration for OpenClaw {
 /// that no re-connect can clear while `provider::reconcile_unmapped_tools`
 /// retried one on every pass. `connect` prints [`coverage_note`] instead, and the
 /// domain's own ledger row carries its state from then on.
-fn compute_status(
-    configured: &str,
-    enabled: bool,
-    expected: Option<&str>,
-    running: bool,
-) -> Status {
-    let Some(expected) = expected else {
+/// `ours` is every proxy address that belongs to Gate, preferred first - see
+/// [`crate::proxy::tool_proxy_identity_urls`]. More than one is legitimate: the
+/// forwarder's address is what `connect` writes now, and the engine's is what
+/// an install configured before that change holds. Matching any of them is
+/// Connected, because both route; only the first is named in a drift message,
+/// because it is the one a repair would write.
+fn compute_status(configured: &str, enabled: bool, ours: &[String], running: bool) -> Status {
+    let Some(expected) = ours.first() else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
         );
     };
-    if configured != expected {
+    if !ours.iter().any(|ours| ours == configured) {
         return Status::Drifted(format!(
             "OpenClaw config does not match Gate settings (proxy.proxyUrl: {configured:?}, \
              expected: {expected:?})"
@@ -731,16 +732,18 @@ mod tests {
     #[test]
     fn compute_status_covers_the_five_states() {
         let ours = "http://127.0.0.1:9977";
+        let mine = [ours.to_string()];
+        let none: [String; 0] = [];
 
         assert_eq!(
-            compute_status(ours, true, Some(ours), true),
+            compute_status(ours, true, &mine, true),
             Status::Connected
         );
 
         // Our URL, switch off. The config looks right and the tool is routing
         // nowhere - the exact state that shipped as Connected before, sending
         // traffic to the provider on the user's own key.
-        match compute_status(ours, false, Some(ours), true) {
+        match compute_status(ours, false, &mine, true) {
             Status::Drifted(m) => {
                 assert!(m.contains("proxy.enabled"), "must name the key: {m}");
                 assert!(m.contains("directly"), "must say where traffic goes: {m}");
@@ -750,7 +753,7 @@ mod tests {
 
         // Pointed at us but the engine is down. This is the state that leaves
         // OpenClaw with no egress at all, so it must never read as Connected.
-        match compute_status(ours, true, Some(ours), false) {
+        match compute_status(ours, true, &mine, false) {
             Status::Drifted(m) => {
                 assert!(m.contains("no route out"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -759,14 +762,39 @@ mod tests {
         }
 
         // Hand-edited to something else - including a real corporate proxy.
-        match compute_status("http://proxy.corp.example:3128", true, Some(ours), true) {
+        match compute_status("http://proxy.corp.example:3128", true, &mine, true) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
         // No port ever bound.
-        match compute_status(ours, true, None, false) {
+        match compute_status(ours, true, &none, false) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
+            other => panic!("expected drift, got {other:?}"),
+        }
+    }
+
+    /// The address an install written before the forwarder repoint holds is
+    /// still ours, so it reads Connected rather than sending a repair over a
+    /// config that routes. Only the preferred address is named when something
+    /// really has drifted.
+    #[test]
+    fn an_older_address_of_ours_is_not_drift() {
+        let forwarder = "http://127.0.0.1:47101".to_string();
+        let engine = "http://127.0.0.1:47100".to_string();
+        let ours = [forwarder.clone(), engine.clone()];
+
+        assert_eq!(compute_status(&engine, true, &ours, true), Status::Connected);
+        assert_eq!(
+            compute_status(&forwarder, true, &ours, true),
+            Status::Connected
+        );
+
+        match compute_status("http://proxy.corp.example:3128", true, &ours, true) {
+            Status::Drifted(m) => {
+                assert!(m.contains(&forwarder), "must name the preferred address: {m}");
+                assert!(!m.contains(&engine), "must not offer the older one: {m}");
+            }
             other => panic!("expected drift, got {other:?}"),
         }
     }
@@ -781,7 +809,7 @@ mod tests {
         // note instead.
         let ours = "http://127.0.0.1:9977";
         assert_eq!(
-            compute_status(ours, true, Some(ours), true),
+            compute_status(ours, true, &[ours.to_string()], true),
             Status::Connected,
             "a healthy config is Connected regardless of the domain catalog"
         );

@@ -141,11 +141,17 @@ every correctly-exported machine as drifted, permanently.
 
 The forwarder above answers the same premise for the *exported variables*: a
 process already running keeps whatever address it inherited, so that address
-has to keep answering. It does nothing for the addresses a **tool config**
-names, which are the engine's and the relay's own ports - Claude Code's
-`settings.json`, OpenClaw's `proxy.proxyUrl`, Hermes's `.env`, and every
-relay `base_url`. Releasing those under a running tool is the same failure by
-a different route.
+has to keep answering. A **tool config** outlives its writer the same way, so
+the three proxy integrations name the forwarder too - Claude Code's
+`settings.json`, OpenClaw's `proxy.proxyUrl` and Hermes's `.env` all take
+`proxy::tool_proxy_url`, which is the forwarder's address with the engine's as
+the fallback when one will not start. Two addresses are therefore ours at once,
+and `proxy::tool_proxy_identity_urls` is what a status check compares against:
+an install written before that change holds the engine's, and it routes, so
+calling it drift would draw a repair over a working file.
+
+What no forwarder fronts is the **relay** port, which every `base_url` names -
+Codex and OpenCode. That one is the park's alone.
 
 So the routing toggle **parks** the engine: the ports stay bound and
 `set_intercept(false)` drops both listeners to plain forwarding, which is the

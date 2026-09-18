@@ -1126,6 +1126,84 @@ pub fn exported_proxy_identity_url() -> Option<String> {
     persisted_engine_proxy_url()
 }
 
+/// The proxy address a **tool's own configuration** should name, or `None`
+/// while the engine is not routing.
+///
+/// Two questions in one answer, and they used to be conflated because one
+/// function happened to serve both. *May we write at all* is still
+/// [`engine_proxy_url`]: OpenClaw and Hermes point their whole egress at this
+/// value, so writing it while nothing is up takes the tool's network down
+/// rather than merely un-routing it, and the `None` here is what makes their
+/// `connect` refuse. *What address do we write* is the part that changed.
+///
+/// It is the forwarder's, for the reason the machine-wide export already names
+/// it (see [`exported_proxy_identity_url`]): a config outlives the process that
+/// wrote it, and an address that stops answering fails **closed** for a tool
+/// that holds it. Claude Code's `settings.json`, OpenClaw's `proxy.proxyUrl`
+/// and Hermes's `.env` sat next to that export, under the same variable name,
+/// naming the engine's own port instead - so one of the pair was hardened and
+/// the other was not.
+///
+/// Falls back to the engine's port when the forwarder will not start, which is
+/// exactly what the export does and what shipped before there was a forwarder.
+/// Linux keeps the engine's address outright: its engine is a daemon that
+/// already outlives the GUI, which is why Linux never had this failure.
+///
+/// **Spawns**, via [`forwarder::ensure_running`]. That is why this is separate
+/// from [`tool_proxy_identity_urls`] rather than one function used by both:
+/// every caller here is about to write a config file, and no status read may
+/// start a process.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn tool_proxy_url() -> Option<String> {
+    let engine = engine_proxy_url()?;
+    match forwarder::ensure_running() {
+        Ok(port) => Some(format!("http://127.0.0.1:{port}")),
+        Err(e) => {
+            eprintln!(
+                "gate proxy: the environment forwarder would not start ({e:#}); pointing tool                  configs at the engine instead, which stops answering when Gate does"
+            );
+            Some(engine)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn tool_proxy_url() -> Option<String> {
+    engine_proxy_url()
+}
+
+/// Every proxy address that is *ours*, preferred first, whether or not anything
+/// is up. What a status check compares a tool's configured value against.
+///
+/// A list rather than one value because two addresses are legitimately ours at
+/// the same time, and calling either one drift would be wrong in a different
+/// direction. The forwarder's is what [`tool_proxy_url`] writes now. The
+/// engine's is what every install written before that change holds, and what a
+/// machine whose forwarder will not start still gets - so treating it as drift
+/// would put a repair banner over a config that is correct, and a reconcile
+/// pass behind it rewriting a file that is already right.
+///
+/// The consequence, stated rather than hidden: an existing install is not
+/// migrated by being told it is broken. It moves to the forwarder's address the
+/// next time something writes its config - connecting the tool, reconnecting
+/// it, or a master-on restore - and until then it keeps the behaviour it
+/// already had.
+///
+/// Never spawns, unlike [`tool_proxy_url`]. Reads persisted ports only.
+pub fn tool_proxy_identity_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(url) = exported_proxy_identity_url() {
+        urls.push(url);
+    }
+    if let Some(url) = persisted_engine_proxy_url() {
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
 /// The port the machine-wide variables should name, starting a forwarder if
 /// there is not one yet.
 ///
