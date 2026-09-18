@@ -471,12 +471,12 @@ first table.
 | **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder (including when the machine-wide export is declined, since tool configs may name it). Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Plain quit** | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses. Linux reverts none; its engine is a daemon. |
+| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
 | **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
 
 **What the user does:**
 
-| tool | start | routing off | routing on | plain quit | disconnect and quit |
+| tool | start | routing off | routing on | any exit | disconnect and quit |
 | --- | --- | --- | --- | --- | --- |
 | **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
 | **Codex** | nothing; a conversation opened while Gate was closed keeps its direct route until resumed | nothing | nothing, open conversations route again | nothing; new conversations go direct, open ones need resuming | resume open conversations |
@@ -497,7 +497,15 @@ Three things to read off this:
  cannot reach it. That is inherent to environment variables and holds on every
  platform; a shell that was already open keeps the forwarder address the whole
  way through and needs nothing.
-- **Plain quit reverts by one rule: does the address die with the process.**
+- **Every exit reverts by one rule: does the address die with the process.**
+ Every exit, not only the one that goes through the panel: `quit_app` is
+ reached by the tray's Quit and the crash screen's and by nothing else, while
+ Cmd+Q comes from Tauri's default menu and a logout comes from the OS. Both
+ land in `RunEvent::Exit` having touched none of our own code, so the revert
+ runs there too. It deliberately does not *veto* the exit - `ExitRequested`
+ can be prevented, but the same event carries a logout, and an app that puts a
+ dialog in front of a logout is an app that hangs it. Cmd+Q therefore means
+ "quit without disconnecting", the safe half of the panel.
  Decided per *configured address*, not per tool, because which address a
  config holds is per install: Codex and OpenCode name the relay origin, and a
  Claude Code, OpenClaw or Hermes install written before the forwarder repoint
