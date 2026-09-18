@@ -91,6 +91,7 @@ import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
+import { appProviderMarkFor } from "./components/gc/ProviderMark";
 import { orgLabel } from "./lib/orgLabel";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
@@ -3500,6 +3501,9 @@ export function NewUiApp() {
           // surfaces, and this is the only place that says which.
           description={describeSection(view.slug)}
           logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
+          // The header tile above is black, so `logo` stays monochrome; the
+          // App-default row's tile is light and draws the vendor's own colour.
+          appVendorMark={appProviderMarkFor(view.slug, 20)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off

@@ -67,6 +67,33 @@ const NO_REFERENCE = "-";
 const NO_MODEL = "Unknown model";
 
 /**
+ * The vendor namespace of a canonical model id, for a row the gateway named no
+ * provider on.
+ *
+ * `provider` is null far more often than it looks: the column holds the
+ * pipeline's `unknown` sentinel on a substantial share of rows - the gateway's
+ * own comment counts 42 of 102 in a dev database - and the endpoint maps that
+ * to null rather than let a client draw a mark for a provider nobody has. The
+ * mark slot then rendered an empty spacer, which is what "the Model column has
+ * no vendor icon" turned out to be: not a missing mark, a missing reading.
+ *
+ * But the vendor is right there in the id. Model ids are canonical
+ * `provider/model` (`anthropic/claude-opus-5`), and `NewUiApp` already splits
+ * them this way in two places for the same reason. Deriving it is not guessing:
+ * `providerMarkFor` returns undefined for a namespace it has no mark for, so a
+ * spelling this does not recognise falls back to the cube exactly as before.
+ *
+ * Only the namespace of a *namespaced* id. A bare `gpt-5` names no vendor, and
+ * inventing one from the model family is the kind of guess principle 6 forbids.
+ */
+function vendorFromModelId(model: string | null | undefined): string | null {
+  if (!model) return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash);
+}
+
+/**
  * The gateway's action verbs, in the pane's own vocabulary.
  *
  * The gateway records what a criterion *did* (`block`, `redact`) because that is
@@ -215,7 +242,7 @@ function toEntry(raw: RawEvent): ActivityEntry {
     categoryTitle:
       !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
     model: raw.model ?? NO_MODEL,
-    provider: raw.provider,
+    provider: raw.provider ?? vendorFromModelId(raw.model),
     title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };

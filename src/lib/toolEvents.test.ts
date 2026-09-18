@@ -264,3 +264,40 @@ describe("the Type column's categories", () => {
     expect(categoryTone("credentials")).toContain("purple-600");
   });
 });
+
+/**
+ * The vendor mark's provider, when the gateway names none.
+ *
+ * Reported as "the Model column doesn't include the provider icon". The
+ * component was right all along - `VendorMark` resolves `providerMarkFor` - and
+ * the data was the problem: `provider` holds the pipeline's `unknown` sentinel
+ * on a large share of rows, the endpoint maps that to null rather than have a
+ * client draw a mark for a provider nobody has, and the cell then rendered an
+ * empty spacer.
+ */
+describe("the model row's provider", () => {
+  const providerOf = (o: Record<string, unknown>) =>
+    adaptEvents(envelope([raw(o)])).entries[0].provider;
+
+  it("prefers what the gateway said", () => {
+    expect(providerOf({ provider: "openai", model: "anthropic/claude-opus-5" })).toBe(
+      "openai",
+    );
+  });
+
+  it("falls back to the model id's own namespace", () => {
+    // The id is canonical `provider/model`, so the vendor is already on the
+    // row - the same split `NewUiApp` makes in two other places.
+    expect(providerOf({ provider: null, model: "anthropic/claude-opus-5" })).toBe(
+      "anthropic",
+    );
+  });
+
+  it("names no vendor for a model id that carries none", () => {
+    // A bare id names no vendor, and inferring one from the model family would
+    // be a guess about whose mark to draw.
+    expect(providerOf({ provider: null, model: "gpt-5" })).toBeNull();
+    expect(providerOf({ provider: null, model: null })).toBeNull();
+    expect(providerOf({ provider: null, model: "/leading-slash" })).toBeNull();
+  });
+});

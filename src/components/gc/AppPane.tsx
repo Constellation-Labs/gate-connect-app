@@ -61,6 +61,7 @@ export function AppPane({
   status,
   since,
   logo,
+  appVendorMark,
   busy,
   onToggleProtected,
   stats,
@@ -116,6 +117,17 @@ export function AppPane({
   since?: string;
   /** 16px brand mark for the header tile. */
   logo?: ReactNode;
+  /**
+   * The app vendor's full-colour mark, for the App-default row alone.
+   *
+   * Separate from `logo` because the two tiles want opposite treatments and
+   * one prop cannot serve both: the pane header is a black tile with white
+   * ink, so it takes the monochrome `BrandMark`; the App-default row
+   * (`408:25491`) is a light tile and draws the provider's own colour -
+   * `#E8704E` for Anthropic. Absent for an app with no single vendor behind
+   * it, where the row falls back to `logo` and then the cube.
+   */
+  appVendorMark?: ReactNode;
   /** A routing write is in flight, so the switch refuses a second click. */
   busy?: boolean;
   onToggleProtected: () => void;
@@ -261,7 +273,11 @@ export function AppPane({
       {onChooseModel && onChangeModel && onAddCredits && (
         <ModelSelection
           appName={name}
-          appLogo={logo}
+          // The colour mark where the app has one vendor, the rail's
+          // monochrome one where it does not (AG-879). This row used to take
+          // `logo` outright, which is the set built for the header's dark tile
+          // and renders flat on this one.
+          appLogo={appVendorMark ?? logo}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
