@@ -804,6 +804,39 @@ pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
 }
 
+/// Is a loopback proxy address of ours still accepting connections?
+///
+/// The measurement that separates a **parked** listener from a **released**
+/// one, and it exists because the difference is what a status message says to
+/// the user. Routing off no longer takes the ports down: the engine parks with
+/// them bound and forwards straight through, so a tool whose config names one
+/// reaches its own provider exactly as it would with Gate not installed. The
+/// three proxy integrations used to say "`<addr>` is a dead address" for every
+/// not-routing state, which was true when the only way to stop routing was to
+/// release the port and is now false for the ordinary case.
+///
+/// Only the port is read out of `url`, and only a `127.0.0.1` form is
+/// recognised, because the caller is always comparing against an address this
+/// module wrote. Anything else answers `false`, which routes the caller to the
+/// conservative message rather than to a claim.
+///
+/// A refused loopback connect returns immediately; the timeout only bounds
+/// pathological states, matching [`relay_listening`].
+pub fn loopback_proxy_answers(url: &str) -> bool {
+    let Some(port) = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|p| p.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
 /// Whether something is accepting connections on the persisted relay port
 /// right now - the engine-hosted relay or a standalone `proxy relay` host,
 /// either counts (which is why this probes the port instead of reading

@@ -290,3 +290,87 @@ fn a_restore_that_could_not_run_yet_keeps_its_snapshot() {
          turns on the members the user had switched off"
     );
 }
+
+/// The whole point of the routing toggle keeping tool configs: a full off/on
+/// cycle must not touch the file, so nothing tells a running `claude` that it
+/// missed a change and has to be reopened.
+///
+/// Asserted on the mtime, not on the bytes, because the mtime is what carries
+/// the claim. A tool reads its configuration once at startup, so a later reader
+/// compares that timestamp against the process's start time to decide whether
+/// the process is still on the route it loaded. Identical bytes with a newer
+/// timestamp is indistinguishable from a real change, and that is what a
+/// reopen prompt for nothing is made of.
+///
+/// Two halves have to hold for this to pass. `snapshot_and_park_everything`
+/// must not revert the config, and `restore_all`'s re-connect must not rewrite
+/// bytes that are already right (`primitives::write_file` declines to).
+#[test]
+fn a_master_cycle_does_not_touch_a_tools_config_file() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+
+    provider::enable("anthropic").unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+
+    let settings = env::claude_code_settings_path().unwrap();
+    let before = fs::read_to_string(&settings).expect("settings.json after connect");
+    assert!(
+        before.contains("HTTPS_PROXY"),
+        "premise: connect must have written the proxy, got {before}"
+    );
+    // Backdate so a same-second rewrite cannot pass by accident, then read the
+    // stored value back - the setter's precision is not the filesystem's.
+    let stamp = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    set_mtime(&settings, stamp);
+    let mtime_before = fs::metadata(&settings).unwrap().modified().unwrap();
+
+    provider::snapshot_and_park_everything().unwrap();
+    provider::restore_all().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        before,
+        "a master cycle must leave the config byte-identical"
+    );
+    assert_eq!(
+        fs::metadata(&settings).unwrap().modified().unwrap(),
+        mtime_before,
+        "a master cycle must not move the config's mtime, or every running tool \
+         is told to reopen for nothing"
+    );
+}
+
+/// Set a file's mtime without taking a dependency for it.
+#[cfg(unix)]
+fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
+    let secs = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let tv = libc::timeval {
+        tv_sec: secs,
+        tv_usec: 0,
+    };
+    let times = [tv, tv];
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: both pointers are valid for the duration of the call.
+    assert_eq!(
+        unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) },
+        0,
+        "utimes failed"
+    );
+}
+
+#[cfg(not(unix))]
+fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+}

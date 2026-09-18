@@ -370,28 +370,61 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
     Ok((Applied::Enabled, state))
 }
 
+/// Whether a teardown puts each tool back on its own configuration.
+///
+/// The distinction the proxy layer draws between a park and a release
+/// (`proxy::manager_core::Teardown`), one level up. The two are the same
+/// question asked of two different things Gate leaves behind: a bound port, and
+/// a line in somebody's `settings.json`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolConfigs {
+    /// Leave them naming Gate.
+    ///
+    /// For the routing toggle. The engine parks rather than stopping, so the
+    /// addresses those configs hold keep answering and forward straight
+    /// through - which is what the tool would have done with Gate not
+    /// installed. Rewriting them would move no traffic and would cost every
+    /// running tool a restart, because a tool reads its configuration once and
+    /// the file's mtime is what says it missed a change.
+    ///
+    /// It also makes the switch *live*: a `codex` that was running before the
+    /// toggle passes through while parked and routes again when the engine
+    /// unparks, with no restart at either edge. Reverting the config is what
+    /// used to break that, by handing the next-started process a different
+    /// answer from the one the running process holds.
+    Kept,
+    /// Put each tool back on its own settings.
+    ///
+    /// For the explicit "Gate should let go of this machine" actions - the
+    /// quit-and-disconnect choice, signing out, Reset. The same line
+    /// `proxy::forwarder::stop` is on, and drawn in the same place.
+    Reverted,
+}
+
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
 /// running, disables the provider's proxy domains. Promptless and idempotent.
 pub fn disable(slug: &str) -> Result<ProviderState> {
-    disable_inner(slug, true)
+    disable_inner(slug, true, ToolConfigs::Reverted)
 }
 
 /// [`disable`] with the audit emit optional: the master-off sweep passes
 /// `false`, because that sweep is one operator action (the master switch) that
 /// already emits a single `proxy_disabled` - see the one-event-per-action rule
 /// in [`crate::audit`].
-fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
+fn disable_inner(slug: &str, audit: bool, configs: ToolConfigs) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
 
-    for &id in p.tool_ids {
-        let Some(integ) = registry::find(id) else {
-            continue;
-        };
-        let connected = matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)));
-        if connected || integ.detect().unwrap_or(false) {
-            integ
-                .disconnect()
-                .with_context(|| format!("disconnecting {}", integ.display_name()))?;
+    if configs == ToolConfigs::Reverted {
+        for &id in p.tool_ids {
+            let Some(integ) = registry::find(id) else {
+                continue;
+            };
+            let connected = matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)));
+            if connected || integ.detect().unwrap_or(false) {
+                integ
+                    .disconnect()
+                    .with_context(|| format!("disconnecting {}", integ.display_name()))?;
+            }
         }
     }
 
@@ -444,6 +477,27 @@ fn domains_enabled_persisted(_p: &Provider) -> bool {
     false
 }
 
+/// Can this integration's `connect` succeed right now, as far as the engine is
+/// concerned?
+///
+/// Only a question for the tools that route through the forward proxy, and
+/// [`Integration::requires_engine`] is what says which those are. It matters to
+/// the reconcile passes because they act on `Drifted`, and drift is the steady
+/// state for those three while routing is off: their `status` asks whether the
+/// engine is *routing*, it is not, and the config Gate wrote is still on disk
+/// now that master-off keeps it there. Without this the pass would call
+/// `connect` on every startup and every window focus, get the refusal those
+/// integrations raise by design, and log a failure about a machine with nothing
+/// wrong with it.
+///
+/// A relay tool is unaffected and deliberately so: its `connect` needs only a
+/// persisted relay port, which it has whether or not anything is up, and
+/// re-asserting a base URL that is already correct writes nothing (see
+/// `primitives::write_file`).
+fn engine_up_if_needed(integ: &dyn registry::Integration) -> bool {
+    !integ.requires_engine() || crate::proxy::engine_proxy_url().is_some()
+}
+
 /// Configure any installed-but-unconfigured tool of a provider the user has
 /// turned on. Closes the "installed the tool *after* enabling the provider" gap:
 /// [`enable`] only wires up tools present at that instant, so a tool that shows
@@ -485,7 +539,9 @@ pub fn reconcile_enabled() -> Result<()> {
                 // a relay to point at (connect() bails without one, and this
                 // drift may *be* "relay not enabled yet").
                 Ok(Status::Drifted(_)) => {
-                    relay_base_url.is_some() && integ.config_is_managed().unwrap_or(false)
+                    relay_base_url.is_some()
+                        && integ.config_is_managed().unwrap_or(false)
+                        && engine_up_if_needed(integ.as_ref())
                 }
                 _ => false, // NotInstalled / Connected / status error - leave as-is
             };
@@ -541,6 +597,9 @@ fn reconcile_unmapped_tools(
         }
         if !integ.config_is_managed().unwrap_or(false) {
             continue; // drift in a config we didn't write - leave it alone
+        }
+        if !engine_up_if_needed(integ.as_ref()) {
+            continue;
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
@@ -661,7 +720,7 @@ fn off_members(p: &Provider) -> Vec<String> {
 /// claims, and every caller wants [`snapshot_and_disable_everything`]. Master
 /// off used to call the provider pass alone, which is how OpenCode and friends
 /// ended up stranded on a dead relay.
-fn snapshot_and_disable_all_locked() -> Result<()> {
+fn snapshot_and_disable_all_locked(configs: ToolConfigs) -> Result<()> {
     let enabled: Vec<String> = list()
         .into_iter()
         .filter(|p| p.enabled)
@@ -703,9 +762,9 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
     }
 
     for slug in &enabled {
-        // `disable_inner(_, false)`: the sweep is the master switch's doing,
-        // and that one operator action already emits `proxy_disabled`.
-        if let Err(e) = disable_inner(slug, false) {
+        // `audit: false`: the sweep is the master switch's doing, and that one
+        // operator action already emits `proxy_disabled`.
+        if let Err(e) = disable_inner(slug, false, configs) {
             eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
         }
     }
@@ -728,7 +787,7 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
 /// pointed at a dead port while the UI reported "not routing".
 pub fn snapshot_and_disable_everything() -> Result<()> {
     let _guard = master_flow_guard();
-    snapshot_and_disable_all_locked()?;
+    snapshot_and_disable_all_locked(ToolConfigs::Reverted)?;
     let mut disconnected = Vec::new();
     for integ in registry::registry() {
         if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
@@ -750,6 +809,32 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
         }
     }
     save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
+}
+
+/// Master OFF via the routing switch: record what was on and turn the domains
+/// off, and **leave every tool's configuration alone**.
+///
+/// The counterpart of [`snapshot_and_disable_everything`], which is what the
+/// quit-and-disconnect choice still runs. The two used to be one function,
+/// because they used to be the same event: the engine stopped either way, so a
+/// config naming the loopback relay was about to point at nothing, and putting
+/// it back was the only way to leave the tool working.
+///
+/// The engine parks now (`proxy::manager_core`, `Teardown::Dormant`). The ports
+/// stay bound and forward straight through, so a config naming them still
+/// works and still reaches the tool's own provider. Rewriting it moves no
+/// traffic, and it costs something real: a tool reads its configuration once,
+/// so the write tells every running process that it missed a change and has to
+/// be reopened. Routing off is not a reason to restart somebody's editor.
+///
+/// Nothing is recorded in [`SWEPT_TOOLS_SNAPSHOT`], because nothing was swept.
+/// [`restore_all`] still runs on master-on and still re-enables the providers;
+/// the tool half of it finds an empty snapshot and does nothing, and the
+/// provider half re-writes configs that already hold the right bytes, which
+/// `primitives::write_file` declines to turn into a write.
+pub fn snapshot_and_park_everything() -> Result<()> {
+    let _guard = master_flow_guard();
+    snapshot_and_disable_all_locked(ToolConfigs::Kept)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last

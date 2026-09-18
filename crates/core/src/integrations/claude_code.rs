@@ -243,6 +243,12 @@ impl Integration for ClaudeCode {
             .is_some())
     }
 
+    /// All of this tool's egress goes through the engine's proxy address, so
+    /// `connect` below refuses while nothing is listening there.
+    fn requires_engine(&self) -> bool {
+        true
+    }
+
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(

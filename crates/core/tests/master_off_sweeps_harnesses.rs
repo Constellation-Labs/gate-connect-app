@@ -142,3 +142,61 @@ fn master_off_records_the_swept_harness_so_master_on_can_restore_it() {
         "swept tools must be recorded for restore, got {raw}"
     );
 }
+
+/// The routing switch is the other half, and it must do the opposite.
+///
+/// `snapshot_and_park_everything` is what the routing toggle runs now: the
+/// engine parks with its ports bound and forwarding straight through, so a
+/// config naming them still reaches the tool's own provider. Rewriting it would
+/// move no traffic and would tell every running process that it missed a change
+/// and has to be reopened.
+///
+/// Asserted on the file, not on `status`: status is allowed to say "configured
+/// but not routing" here, and does. What must not happen is Gate editing
+/// somebody's config to say it.
+#[test]
+fn the_routing_switch_leaves_a_harness_config_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+
+    let path = env::opencode_config_path().unwrap();
+    let before = fs::read_to_string(&path).expect("opencode config after connect");
+    assert!(
+        before.contains("127.0.0.1:8402"),
+        "premise: connect must have written the relay address, got {before}"
+    );
+
+    provider::snapshot_and_park_everything().expect("routing off");
+
+    let after = fs::read_to_string(&path).expect("opencode config after routing off");
+    assert_eq!(
+        before, after,
+        "the routing switch must not rewrite a tool's configuration"
+    );
+}
+
+/// And it records nothing to restore, because it reverted nothing.
+///
+/// A slug left in this snapshot would be restored on master-on, which for a
+/// config that was never changed means a write for nothing - and before
+/// `write_file` learned to decline an identical write, that was a bumped mtime
+/// and a reopen prompt per toggle.
+#[test]
+fn the_routing_switch_records_no_swept_tools() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+
+    provider::snapshot_and_park_everything().expect("routing off");
+
+    let snapshot = env::app_support_dir()
+        .unwrap()
+        .join("provider")
+        .join("restore-tools-snapshot.json");
+    let raw = fs::read_to_string(&snapshot).unwrap_or_default();
+    assert!(
+        !raw.contains("opencode"),
+        "nothing was swept, so nothing may be recorded for restore, got {raw}"
+    );
+}

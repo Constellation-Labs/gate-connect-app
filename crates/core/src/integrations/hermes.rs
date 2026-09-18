@@ -165,6 +165,12 @@ impl Integration for Hermes {
         ))
     }
 
+    /// All of this tool's egress goes through the engine's proxy address, so
+    /// `connect` below refuses while nothing is listening there.
+    fn requires_engine(&self) -> bool {
+        true
+    }
+
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(
@@ -333,7 +339,19 @@ fn compute_status(configured: &str, ours: &[String], running: bool) -> Status {
              {expected:?})"
         ));
     }
+    // Not routing. Two different facts hide under that, and they need
+    // different sentences: the address may still be answering (the engine is
+    // parked, so it forwards straight through and the tool reaches its own
+    // provider), or it may be gone (the app is not running, or the ports were
+    // released). Saying "dead address" for both was right when routing off
+    // meant the ports went away, and is wrong for the ordinary case now.
     if !running {
+        if crate::proxy::loopback_proxy_answers(configured) {
+            return Status::Drifted(format!(
+                "routing is off, so Hermes reaches its provider directly through {configured:?} \
+                 rather than through Gate -- turn routing on to route it"
+            ));
+        }
         return Status::Drifted(format!(
             "the Gate proxy is not running, so Hermes cannot reach its provider ({configured:?} \
              is a dead address) -- turn the proxy on, or disconnect Hermes to restore it"

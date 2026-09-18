@@ -326,6 +326,29 @@ impl Integration for Codex {
             )));
         }
 
+        // The port answering is not the same as the port routing, and with the
+        // engine parked it is the ordinary state: routing off leaves the relay
+        // bound and forwarding every request to the tool's real upstream under
+        // the tool's own credential. `relay_listening` is a bare TCP probe, so
+        // on its own it would read a parked relay as Connected - a green pill
+        // over traffic that is not going through Gate, which is the one thing
+        // this integration's status exists to prevent.
+        //
+        // The routing intent is the signal, because there is nothing better to
+        // ask: the relay publishes no health endpoint, so "intercepting" is not
+        // observable from outside the process hosting it. The known inaccuracy
+        // is the headless `proxy relay` host, which always intercepts and
+        // touches no intent file - on a machine whose last explicit answer was
+        // "off" this reports not-routed while it routes. That is the safe
+        // direction of wrong, and it is the same trade `relay_listening`'s own
+        // doc comment makes in the other direction.
+        if !crate::proxy::intent::load_intent() {
+            return Ok(Status::Drifted(format!(
+                "routing is off, so Codex reaches its provider directly through \
+                 {expected_base:?} rather than through Gate - turn routing on to route it"
+            )));
+        }
+
         Ok(Status::Connected)
     }
 

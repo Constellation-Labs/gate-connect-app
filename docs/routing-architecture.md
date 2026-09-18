@@ -153,6 +153,50 @@ calling it drift would draw a repair over a working file.
 What no forwarder fronts is the **relay** port, which every `base_url` names -
 Codex and OpenCode. That one is the park's alone.
 
+### The routing toggle keeps tool configs; disconnect reverts them
+
+Master-off used to revert every tool's configuration on its way out, on the
+reasoning in `routing::disable`'s own doc: a config naming "the relay we are
+about to kill" would strand the tool while the UI reported "not routing". The
+park is what retired that reason, and `provider::ToolConfigs` is the split it
+left behind.
+
+`snapshot_and_park_everything` is the routing switch: snapshot the enabled
+providers, turn the domains off, leave every tool config alone. The addresses
+those configs hold still answer, and they forward direct, so the tool reaches
+its own provider exactly as it would with Gate not installed. Reverting them
+moves no traffic and costs a restart of every running tool, because a tool
+reads its configuration once and the file's mtime is what says it missed a
+change.
+
+`snapshot_and_disable_everything` is the full sweep, and the quit-and-disconnect
+choice still runs it. Signing out and Reset are on the same side of that line,
+which is where `forwarder::stop` already sat.
+
+Keeping the configs makes the switch **live**: a `codex` running before the
+toggle passes through while parked and routes again when the engine unparks,
+without being restarted at either edge. Reverting was what broke that, by
+handing the next-started process a different answer from the one the running
+process holds.
+
+Three consequences are handled rather than discovered:
+
+- **Drift is the steady state while parked** for the three proxy tools, since
+ their `status` asks whether the engine is *routing*. So the reconcile passes
+ ask `Integration::requires_engine` before re-asserting a drifted config;
+ otherwise they would call a `connect` that refuses by design, on every
+ startup and every window focus.
+- **"Dead address" became false.** All three said the configured address was
+ dead for every not-routing state, which was true when the ports went away.
+ `proxy::loopback_proxy_answers` is the measurement that separates a parked
+ listener from a released one, and the message now says which it is.
+- **A bare TCP probe reads a parked relay as routing.** `relay_listening` is
+ that probe, so Codex would have reported Connected with routing off - a green
+ pill over traffic going direct, which is the one thing its status exists to
+ prevent. It asks the routing intent as well now. The known inaccuracy is the
+ headless `proxy relay` host, which always intercepts and writes no intent
+ file.
+
 So the routing toggle **parks** the engine: the ports stay bound and
 `set_intercept(false)` drops both listeners to plain forwarding, which is the
 path those tools would have taken with Gate not installed. Linux has always

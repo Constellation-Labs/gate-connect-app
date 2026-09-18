@@ -113,6 +113,26 @@ pub trait Integration: Send + Sync {
         false
     }
 
+    /// Does this tool's `connect` need the forward-proxy engine to be up?
+    ///
+    /// True for the integrations that write the engine's proxy address into
+    /// their own config and route *all* of their egress through it - Claude
+    /// Code, OpenClaw, Hermes. Their `connect` refuses when the engine is down
+    /// rather than pointing a tool's whole network at a port nothing answers,
+    /// which is a deliberate refusal and not an error to retry.
+    ///
+    /// Declared here rather than read off the error string, so a caller can ask
+    /// before it calls. The two reconcile passes and the master-on restore all
+    /// want the same question, and matching on an error message to answer it is
+    /// how one of them ended up recording a failed write for a file it never
+    /// opened.
+    ///
+    /// False for the relay tools: a persisted relay port is all their `connect`
+    /// needs, and it is there whether or not anything is listening.
+    fn requires_engine(&self) -> bool {
+        false
+    }
+
     /// Does the tool's current on-disk config carry Gate Connect's own
     /// management marker? Distinguishes drift in config *we* wrote (a stale
     /// scheme from an older build, a changed relay port) from a setup the
