@@ -469,7 +469,24 @@ pub fn store(tokens: &OAuthTokens) -> Result<()> {
 /// Load the stored token bundle, if any.
 pub fn current() -> Result<Option<OAuthTokens>> {
     let user = env::current_user()?;
-    match keychain::get(&service(), &user)? {
+    // Witnessed by `account.json` rather than read outright. This is on a
+    // 30-second timer - the desktop app's background loop and the CLI relay
+    // both tick on `REFRESH_INTERVAL_SECS` - and the bundle is stored chunked,
+    // so one read is six secret-store lookups. On Linux each lookup opens a
+    // Secret Service session that costs `gnome-keyring-daemon` ~8 KB it never
+    // gives back, which came to ~130 MB a day for a value that changes once an
+    // hour.
+    //
+    // The witness moves on exactly what must not be served stale: login
+    // rewrites `account.json` and sign-out removes it, in this process or in
+    // the CLI. What it deliberately does not catch is another process
+    // *refreshing* the bundle, because that one is harmless here - `ensure_fresh`
+    // re-tests the expiry of whatever comes back, so a bundle that ages out is
+    // refreshed rather than served, and Cognito does not rotate refresh tokens
+    // (see `post_token`'s `fallback_refresh`), so the refresh token in an older
+    // copy still works.
+    let witness = crate::account::file_witness()?;
+    match keychain::get_cached(&service(), &user, &witness)? {
         Some(raw) => Ok(Some(
             serde_json::from_str(&raw).context("parsing stored oauth tokens")?,
         )),
