@@ -11,7 +11,20 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Delegates the filename to `gate-connect-paths`, which the standalone
+/// forwarder binary also uses. Two copies of this rule is how the forwarder
+/// came to look for `proxy/port.port` while the app wrote `proxy/port`, so
+/// there is deliberately only one now.
+///
+/// The directory still comes from `crate::env`, which carries the
+/// process-global override the tests install; inside this process that is the
+/// answer of record.
 fn path(name: &str) -> Result<PathBuf> {
+    let file = gate_connect_paths::port_file(name)?;
+    let name = file
+        .file_name()
+        .context("port file has no name")?
+        .to_owned();
     Ok(crate::env::app_support_dir()?.join("proxy").join(name))
 }
 

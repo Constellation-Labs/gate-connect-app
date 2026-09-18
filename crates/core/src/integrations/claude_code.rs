@@ -93,7 +93,7 @@ const MANAGED_KEYS: [&str; 5] = [
 /// would be dialled through the engine, and an engine that is down would take
 /// every HTTPS request from `claude` and its children with it rather than just
 /// the Anthropic ones.
-const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+use crate::proxy::NO_PROXY_VALUE;
 
 const MARKER_KEY: &str = "_gateConnect";
 

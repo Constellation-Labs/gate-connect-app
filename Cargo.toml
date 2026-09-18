@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "src-tauri"]
+members = ["crates/paths", "crates/core", "crates/cli", "crates/forwarder", "src-tauri"]
 
 [workspace.package]
 # Placeholder. The real version is injected from the git tag at release time

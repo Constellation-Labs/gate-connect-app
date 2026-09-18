@@ -40,10 +40,30 @@ use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 use std::collections::BTreeMap;
 
-/// Keep loopback off the proxy. Required, not merely polite: OpenCode's TUI
-/// talks to its own local HTTP server, and routing that through the engine
-/// forms a loop (their own docs call this out).
-pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+/// Hosts that must never reach the engine, in either routing state.
+///
+/// Loopback is required rather than polite: OpenCode's TUI talks to its own
+/// local HTTP server, and routing that through the engine forms a loop (their
+/// own docs call this out).
+///
+/// The private, link-local and carrier-grade-NAT ranges are here because a
+/// machine on your own network is not Gate's business. The report that prompted
+/// this had an app pointed at a model server on a Tailscale host: with only
+/// loopback bypassed it rode the engine, so it broke when the engine went away
+/// and was visible to the engine when it did not. `100.64.0.0/10` is
+/// Tailscale's range and `.ts.net` its MagicDNS suffix; `.local` is mDNS, which
+/// is how a machine on the LAN is usually named.
+///
+/// **Honoured unevenly, and written that way on purpose.** Suffix entries like
+/// `.local` are respected almost everywhere; CIDR entries are respected by Go
+/// and by curl since 7.86, and ignored by several Node and Python clients,
+/// which compare the host string instead. An ignored entry costs nothing - the
+/// engine blind-tunnels what it does not route either way - so this lists what
+/// the clients that *do* honour it need, rather than trimming to the lowest
+/// common denominator.
+pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1,\
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,\
+fc00::/7,fe80::/10,.local,.ts.net,.internal";
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
