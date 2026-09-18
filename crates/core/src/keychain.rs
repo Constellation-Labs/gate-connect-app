@@ -183,8 +183,6 @@ fn parse_manifest(value: &str) -> Option<usize> {
     value.strip_prefix(CHUNK_MARKER)?.parse().ok()
 }
 
-/// Delete the secret at `(service, account)`, whether stored as a single entry
-/// or a chunk manifest plus its chunks. Returns whether anything was present.
 /// Values already read from the secret store this process, each remembered
 /// alongside the *witness* its caller vouched for it with. See [`get_cached`]
 /// for what a witness is and why this exists.
@@ -205,17 +203,15 @@ fn invalidate_cache() {
     WRITE_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Bumped by every write, delete and test-backend reset in this process.
+/// Bumped at both ends of every write and delete, and by the test-backend
+/// reset. Read either side of a cached read to detect a write that overlapped
+/// it.
 static WRITE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// How many times this process has written to the secret store. A module
-/// holding a decoded secret of its own - [`crate::oauth`]'s token bundle is the
-/// one - records this alongside it and drops what it holds when the number
-/// moves, so it cannot serve a value this process has since overwritten. The
-/// witness in [`get_cached`] covers the other direction (another process
-/// writing); this covers ours, including a test swapping the backend out from
-/// under it.
-pub fn write_epoch() -> u64 {
+/// How many writes this process has begun or finished against the secret store.
+/// Only meaningful as a comparison between two readings: equal means no write
+/// touched the store in between.
+fn write_epoch() -> u64 {
     WRITE_EPOCH.load(Ordering::SeqCst)
 }
 
@@ -269,6 +265,8 @@ pub fn get_cached(service: &str, account: &str, witness: &str) -> Result<Option<
     Ok(value)
 }
 
+/// Delete the secret at `(service, account)`, whether stored as a single entry
+/// or a chunk manifest plus its chunks. Returns whether anything was present.
 fn remove(service: &str, account: &str) -> Result<bool> {
     if let Some(n) = get_raw(service, account)?
         .as_deref()
@@ -282,12 +280,19 @@ fn remove(service: &str, account: &str) -> Result<bool> {
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
+    // Invalidated at BOTH ends, and the second one is the load-bearing half: a
+    // reader that samples the epoch *after* this first call sees it hold steady
+    // across the torn store below, and would cache what it read there for as
+    // long as its witness stood. The bump on the way out is what such a reader
+    // trips over. See `get_cached`.
     invalidate_cache();
     // Clear any prior value first so a shrinking chunk count - or a single->chunk
     // (or chunk->single) transition - never leaves orphaned chunk entries behind.
     remove(service, account)?;
     if value.chars().count() <= MAX_CHUNK_CHARS {
-        return set_raw(service, account, value);
+        set_raw(service, account, value)?;
+        invalidate_cache();
+        return Ok(());
     }
     let chunks = split_chunks(value, MAX_CHUNK_CHARS);
     for (i, chunk) in chunks.iter().enumerate() {
@@ -295,7 +300,9 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
     }
     // Write the manifest last: until it exists a torn write reads as "no secret"
     // rather than a manifest pointing at chunks that aren't all there yet.
-    set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len()))
+    set_raw(service, account, &format!("{CHUNK_MARKER}{}", chunks.len()))?;
+    invalidate_cache();
+    Ok(())
 }
 
 pub fn get(service: &str, account: &str) -> Result<Option<String>> {
@@ -317,7 +324,9 @@ pub fn get(service: &str, account: &str) -> Result<Option<String>> {
 
 pub fn delete(service: &str, account: &str) -> Result<bool> {
     invalidate_cache();
-    remove(service, account)
+    let removed = remove(service, account)?;
+    invalidate_cache();
+    Ok(removed)
 }
 
 pub fn tool_service(tool: &str, label: &str) -> String {

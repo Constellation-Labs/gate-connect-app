@@ -16,6 +16,7 @@
 //! answer proves no read happened, and a fresh one proves it did. One test
 //! function, because the seam is a process-global env var.
 
+use gate_connect_core::oauth::OAuthTokens;
 use gate_connect_core::{keychain, oauth};
 
 fn temp_secrets_dir() -> std::path::PathBuf {
@@ -41,6 +42,14 @@ fn secret_file(dir: &std::path::Path, service: &str, account: &str) -> std::path
 fn cached_reads_skip_the_store_until_something_says_otherwise() {
     let dir = temp_secrets_dir();
     std::env::set_var("GATE_CONNECT_TEST_SECRETS", &dir);
+    // `account.json` is the OAuth bundle's witness, so it has to resolve
+    // somewhere disposable rather than at the developer's real one.
+    let home = dir.join("home");
+    std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+    let account_json = home
+        .join("app-support")
+        .join("Gate Connect")
+        .join("account.json");
 
     let service = "ai.constellation.gate-connect.test.witness";
     let account = "tester";
@@ -91,7 +100,7 @@ fn cached_reads_skip_the_store_until_something_says_otherwise() {
     // `store` is the only writer in-process, so `current` should answer from
     // memory afterwards. The bundle is chunked across six entries, so this is
     // the read that costs the most to repeat.
-    let tokens = oauth::OAuthTokens {
+    let tokens = OAuthTokens {
         access_token: "access-1".to_string(),
         refresh_token: "refresh-1".to_string(),
         id_token: Some("id-1".to_string()),
@@ -103,6 +112,20 @@ fn cached_reads_skip_the_store_until_something_says_otherwise() {
     let user = gate_connect_core::env::current_user().expect("current user");
     let oauth_file = secret_file(&dir, &oauth_service, &user);
 
+    // One real read to fill the cache. `store` deliberately does not write
+    // through - `keychain::set` invalidates, so the read after a refresh is a
+    // real one, which costs six lookups an hour and keeps one mechanism
+    // instead of two.
+    assert_eq!(
+        oauth::current()
+            .expect("first read after store")
+            .expect("a bundle is stored")
+            .access_token,
+        "access-1"
+    );
+
+    // Prove the NEXT one is not re-reading, by making the stored bytes
+    // unusable. A re-read would fail to parse; a cached answer cannot notice.
     std::fs::write(&oauth_file, "{\"not\":\"json we would accept\"}")
         .expect("corrupt the stored bundle behind the cache");
     let served = oauth::current()
@@ -110,7 +133,37 @@ fn cached_reads_skip_the_store_until_something_says_otherwise() {
         .expect("a bundle is stored");
     assert_eq!(
         served.access_token, "access-1",
-        "current() must answer from what store() put in memory"
+        "current() must answer from the read it already made"
+    );
+
+    // ...but a login in ANOTHER process must still be seen. That is what the
+    // witness buys over a plain cache: the CLI (`gate-connect login --oauth`)
+    // writes both the bundle and `account.json`, and the moved file is how this
+    // process learns to look again. Simulated by writing a valid bundle behind
+    // the cache and then moving the witness, which is what the CLI's write
+    // looks like from here.
+    let replacement = OAuthTokens {
+        access_token: "access-2-from-the-cli".to_string(),
+        ..tokens.clone()
+    };
+    std::fs::write(
+        &oauth_file,
+        serde_json::to_string(&replacement).expect("serialize"),
+    )
+    .expect("write the CLI's bundle behind the cache");
+    std::fs::create_dir_all(account_json.parent().expect("parent")).expect("app support dir");
+    std::fs::write(
+        &account_json,
+        "{\"gateway_base_url\":\"https://example.test\"}",
+    )
+    .expect("the CLI's account.json");
+    let after_login = oauth::current()
+        .expect("current after the witness moved")
+        .expect("a bundle is stored");
+    assert_eq!(
+        after_login.access_token, "access-2-from-the-cli",
+        "a moved account.json must send current() back to the store, or a CLI \
+         login goes unnoticed until the app restarts"
     );
 
     // Signing out drops it, rather than leaving the last session readable.
@@ -121,4 +174,5 @@ fn cached_reads_skip_the_store_until_something_says_otherwise() {
     );
 
     std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
+    std::env::remove_var("GATE_CONNECT_TEST_HOME");
 }

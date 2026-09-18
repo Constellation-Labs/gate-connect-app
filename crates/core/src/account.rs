@@ -87,8 +87,13 @@ pub fn load() -> Result<Option<Account>> {
     // proxy manager calls this every 30 seconds to re-push the intercept
     // config, and a plain read there costs the secret-store daemon ~8 KB a
     // time, permanently. `save` writes the file and the key in one breath, so
-    // an unchanged file means an unchanged key - including one written by the
-    // CLI while the app is running. See `keychain::get_cached`.
+    // in practice an unchanged file means an unchanged key - including a key
+    // written by the CLI while the app is running, which is the case a bare
+    // cache would miss. Not a proof: the file records only the key's first 12
+    // characters, so a rotation that collides on those and changes nothing
+    // else would go unseen until the next in-process write. Pick a stronger
+    // witness if you reuse this pattern on a value whose file records less.
+    // See `keychain::get_cached`.
     let stored_key = keychain::get_cached(&service(), &user, &raw)?;
     let api_key = match (file.auth_mode, stored_key) {
         (_, Some(key)) => key,
@@ -139,14 +144,24 @@ pub fn gateway_is_staging() -> bool {
 /// Read and parse `account.json`, or `None` when no account is on disk. The
 /// on-disk half of the account (gateway URL + key prefix) that both the UI
 /// state helpers and [`save`] read without touching the keychain.
+/// The bytes of `account.json`, or `""` when there is no account file, for use
+/// as a [`keychain::get_cached`] witness. Login rewrites this file (URL, then
+/// auth mode, then org) and sign-out removes it, so it moves on exactly the
+/// transitions a cached credential must not outlive - including ones made by
+/// the CLI in another process. A token refresh does not touch it, which is the
+/// case [`crate::oauth::current`] documents as safe to miss.
+pub(crate) fn file_witness() -> Result<String> {
+    Ok(read_account_file_raw()?
+        .map(|(_, raw)| raw)
+        .unwrap_or_default())
+}
+
 fn read_account_file() -> Result<Option<AccountFile>> {
     Ok(read_account_file_raw()?.map(|(parsed, _)| parsed))
 }
 
-/// [`read_account_file`], also handing back the bytes it parsed. Only [`load`]
-/// wants those, as the witness for the keychain read below: `save` writes this
-/// file and the Gate key together, so the file cannot be byte-identical across
-/// a key change.
+/// [`read_account_file`], also handing back the bytes it parsed, for use as a
+/// keychain-read witness (see [`file_witness`] and [`keychain::get_cached`]).
 fn read_account_file_raw() -> Result<Option<(AccountFile, String)>> {
     let path = config_path()?;
     let raw = match fs::read_to_string(&path) {
