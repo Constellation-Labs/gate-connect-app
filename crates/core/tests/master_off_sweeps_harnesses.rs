@@ -590,3 +590,40 @@ fn a_parked_instance_holds_the_ports_without_hosting_the_proxy() {
         "but it is still there, which is what keeps a second enable from taking its ports"
     );
 }
+
+/// The revert runs twice on the panel's path now: `quit_app` does it so it can
+/// name what changed in a notification, and `RunEvent::Exit` does it because
+/// every other way out of the app reaches that and nothing else. The second
+/// run has to be a no-op rather than an error or a second snapshot entry.
+#[test]
+fn reverting_twice_is_a_no_op_the_second_time() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+
+    let first = provider::revert_stranded_configs_for_quit().expect("first revert");
+    assert_eq!(first, vec!["OpenCode".to_string()]);
+    let after_first = fs::read_to_string(env::opencode_config_path().unwrap()).unwrap();
+    let snapshot = env::app_support_dir()
+        .unwrap()
+        .join("provider")
+        .join("restore-tools-snapshot.json");
+    let recorded_once = fs::read_to_string(&snapshot).expect("recorded for restore");
+
+    let second = provider::revert_stranded_configs_for_quit().expect("second revert must succeed");
+
+    assert!(
+        second.is_empty(),
+        "nothing is left to revert, so nothing may be named again: {second:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(env::opencode_config_path().unwrap()).unwrap(),
+        after_first,
+        "the second run must not touch the config again"
+    );
+    assert_eq!(
+        fs::read_to_string(&snapshot).unwrap(),
+        recorded_once,
+        "and must not record a second entry for the same tool"
+    );
+}

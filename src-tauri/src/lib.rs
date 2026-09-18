@@ -2885,7 +2885,56 @@ pub fn run() {
             // is promptless and leaves the CA trusted.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
-                // First, and unconditionally: reaching this event at all is what
+                // Put stranded tools back on *every* exit, not only the one
+                // that goes through the quit panel.
+                //
+                // `quit_app` is reached by the tray's Quit and by the crash
+                // screen's, and by nothing else: macOS Cmd+Q comes from Tauri's
+                // default app menu, and a logout or a shutdown comes from the
+                // OS, and both land here having touched none of our own code.
+                // Those exits take the relay and the engine down with the
+                // process and leave Codex and OpenCode pointed at a port with
+                // nothing behind it, which is the state the revert exists to
+                // prevent. Doing it here makes every path safe by default and
+                // leaves the panel to do what it is for, which is offering the
+                // *other* choice.
+                //
+                // Before `disable_quiet` below, deliberately: the revert decides
+                // what to put back by comparing each config against the
+                // persisted port files, and that reasoning should not race a
+                // teardown running beside it.
+                //
+                // Not on an updater relaunch: the app is coming straight back,
+                // so reverting would rewrite every relay tool's config and the
+                // restore would undo it, costing each of them a restart for
+                // nothing.
+                //
+                // Deliberately does not *veto* the exit. `ExitRequested` can be
+                // prevented - `code` is `None` exactly when something outside
+                // our own code asked to quit, so Cmd+Q could be routed into the
+                // same panel the tray raises. It is not, because that event
+                // also carries a logout and a shutdown, and an app that puts a
+                // dialog in front of those is an app that hangs the user's
+                // logout. Cmd+Q means "quit without disconnecting" now, which
+                // is the safe half of the panel anyway.
+                //
+                // No notification either. `quit_app` can fire one because it
+                // runs before the exit; by the time this runs the process is
+                // going away and a notification would be a promise we cannot
+                // keep.
+                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
+                    match gate_connect_core::provider::revert_stranded_configs_for_quit() {
+                        Ok(names) if !names.is_empty() => eprintln!(
+                            "[gate] put {} back on their own settings on exit",
+                            join_names(&names)
+                        ),
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("[gate] putting stranded tools back on exit failed: {e:#}")
+                        }
+                    }
+                }
+                // Reaching this event at all is what
                 // makes the exit clean. Recording it clears the unclean streak,
                 // so a user who quits normally after a crash gets the restart
                 // policy back rather than carrying the streak forever.
