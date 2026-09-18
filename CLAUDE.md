@@ -108,4 +108,38 @@ release.
   touching `keyring` or `keychain.rs` has to be checked with `pnpm app` on each
   OS, and nothing green proves otherwise.
 
+- **Never read a secret on a timer.** On Linux every `keychain::get` opens a
+  fresh D-Bus connection and Secret Service session, and `gnome-keyring-daemon`
+  never frees what a session leaves behind. Measured on 46.1: **~7.85 KB per
+  session, and zero for a thousand reads or three hundred writes over one
+  session that stays open** (16 B and 55 B per op, which is noise). The unit is
+  the *session*, not the connection and not the operation - reusing a
+  connection while opening a session per call still leaks ~4.7 KB a call, and
+  closing the session politely still leaks ~3.4 KB, so this is an upstream bug
+  rather than a client mistake. Two things therefore look like fixes and are
+  not: swapping the encrypted session for a plain one removes about a quarter
+  of it and puts the secret on the bus in cleartext, and nothing on the client
+  side helps, because the client is already disconnecting cleanly. No fix
+  upstream through gnome-keyring 50.0.
+  The app's 30s background loop used to open eight sessions per tick: six for the OAuth
+  bundle (stored chunked, so one logical read is six lookups), one for the Gate
+  key, one for the CA key, the last two from `manager_linux::refresh_token`
+  rebuilding the whole intercept config to re-push an unchanged token. That is
+  ~180 MB a day of *somebody else's* process; a dev machine running the app on
+  and off for three weeks had `gnome-keyring-daemon` at 2.43 GB.
+  Read through **`keychain::get_cached`**, which takes a *witness*: something
+  cheap you already have that must change when the secret does. `account.json`
+  witnesses the Gate key, the CA certificate witnesses its own private key -
+  each written in the same breath as the secret it vouches for. The witness is
+  what makes this honest across processes, which a bare cache could not be: the
+  CLI can write a new key while the app runs. With nothing that qualifies,
+  cache at your own layer against `keychain::write_epoch()` the way
+  `oauth.rs` does, and work out what staleness means there before you do -
+  for the token bundle it is safe only because `refresh_stored` re-tests
+  expiry and Cognito does not rotate refresh tokens.
+  This is the bullet above in its purest form: `pnpm app:local` skips the code
+  entirely, CI skips it, and it was found on a dev box only because a daemon
+  had been accumulating for three weeks. It reaches production users harder
+  than developers.
+
 NOTE: never use "—"
