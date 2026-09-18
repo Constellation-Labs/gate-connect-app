@@ -315,6 +315,13 @@ async fn clear_account() -> Result<(), String> {
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // And stop the environment forwarder. It is deliberately left running
+        // across a plain routing-off - that is exactly when the processes
+        // holding our exported variables still need it - so this path and the
+        // CA untrust are the only places it is retired. This is the one an
+        // ordinary user reaches: it is what the Reset button runs
+        // (`App.tsx`'s `forget`, which disables routing and then calls here).
+        gate_connect_core::proxy::forwarder::stop();
         account::clear().map_err(|e| format!("{e:#}"))
     })
     .await
@@ -691,6 +698,10 @@ fn arm_crash_safety_net(app: &tauri::AppHandle) {
                         if let Err(e) = autostart_optout::set_pending(false) {
                             eprintln!("[gate] clearing safety-net marker failed: {e}");
                         }
+                    } else {
+                        // A fresh LaunchAgent, so it carries none of our policy.
+                        #[cfg(target_os = "macos")]
+                        arm_crash_restart(app);
                     }
                 }
                 Err(e) => {
@@ -809,6 +820,80 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, 
     })
 }
 
+/// Re-apply the crash-restart policy to the LaunchAgent.
+///
+/// That file belongs to `tauri-plugin-autostart`, which writes it from a fixed
+/// template and truncates whatever was there, so every enable erases the
+/// policy. Hence this runs after each one and again at startup, which also
+/// picks up an install that had launch-at-login on before this feature
+/// existed. `arm` is idempotent and treats a missing plist as nothing to do,
+/// so it is always safe to call.
+///
+/// Best-effort: failing to arm costs the next crash its relaunch, which is the
+/// behaviour every build before this one had.
+#[cfg(target_os = "macos")]
+fn arm_crash_restart(app: &tauri::AppHandle) {
+    use gate_connect_core::crash_restart;
+    let result = crash_restart::launch_agent_plist(&app.package_info().name)
+        .and_then(|plist| crash_restart::arm(&plist));
+    if let Err(e) = result {
+        eprintln!("[gate] arming crash restart failed: {e:#}");
+    }
+}
+
+/// Stop asking launchd to bring us back, leaving the rest of the LaunchAgent
+/// alone so the user's launch-at-login choice survives. Called when the streak
+/// of launches that never got off the ground hits its ceiling; a clean exit
+/// clears that streak and the next startup arms again.
+#[cfg(target_os = "macos")]
+fn disarm_crash_restart(app: &tauri::AppHandle, streak: u32) {
+    use gate_connect_core::crash_restart;
+    let result = crash_restart::launch_agent_plist(&app.package_info().name)
+        .and_then(|plist| crash_restart::disarm(&plist));
+    match result {
+        Ok(_) => report_backend_error(
+            "crash_restart",
+            format!("automatic restart after a crash is off: {streak} launches in a row ended before the app was up"),
+        ),
+        Err(e) => eprintln!("[gate] disarming crash restart failed: {e:#}"),
+    }
+}
+
+/// Ask Windows Error Reporting to relaunch us after a crash or a hang.
+///
+/// The macOS half of this is a file; Windows has none, and this one call is
+/// the whole mechanism. The flags are subtractive, and the two we pass narrow
+/// it to the cases we want: an installer patch or a system reboot must not
+/// bring the app back on its own, because neither is a crash and the user's
+/// launch-at-login setting already answers whether it starts at boot.
+///
+/// `--silent` so the relaunch comes up in the tray the way a login launch
+/// does, rather than throwing a window in front of whatever the user is doing.
+#[cfg(target_os = "windows")]
+fn register_application_restart() {
+    // Declared rather than pulled from a crate: it is one function in
+    // kernel32, which std already links on this target.
+    extern "system" {
+        fn RegisterApplicationRestart(pwz_commandline: *const u16, dw_flags: u32) -> i32;
+    }
+    /// Do not restart after an installer patch.
+    const RESTART_NO_PATCH: u32 = 4;
+    /// Do not restart after a system reboot.
+    const RESTART_NO_REBOOT: u32 = 8;
+
+    let mut command_line: Vec<u16> = "--silent".encode_utf16().collect();
+    command_line.push(0);
+    // SAFETY: a documented kernel32 entry point, passed a null-terminated
+    // UTF-16 buffer that outlives the call and a flags word. It only records a
+    // preference with the OS and touches nothing of ours.
+    let hr = unsafe {
+        RegisterApplicationRestart(command_line.as_ptr(), RESTART_NO_PATCH | RESTART_NO_REBOOT)
+    };
+    if hr != 0 {
+        eprintln!("[gate] registering automatic restart failed (hresult {hr:#x})");
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
@@ -819,7 +904,12 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
     let mgr = app.autolaunch();
     if enabled {
         autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
-        mgr.enable().map_err(|e| format!("{e:#}"))
+        mgr.enable().map_err(|e| format!("{e:#}"))?;
+        // The plugin has just rewritten the LaunchAgent from its template,
+        // taking the crash-restart policy with it. Put it back.
+        #[cfg(target_os = "macos")]
+        arm_crash_restart(&app);
+        Ok(())
     } else if autostart_optout::record_disable().map_err(|e| format!("{e:#}"))? {
         mgr.disable().map_err(|e| format!("{e:#}"))
     } else {
@@ -1788,8 +1878,17 @@ fn quit_app(app: tauri::AppHandle) {
 #[tauri::command]
 async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
     // Off the main thread: disconnect does config-file I/O.
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
+    let names = tauri::async_runtime::spawn_blocking(|| {
+        // Collected before the disconnect, which is what makes them stop being
+        // managed.
+        let names = gate_connect_core::registry::managed_tool_names();
+        gate_connect_core::provider::snapshot_and_disable_everything()
+            .map_err(|e| format!("{e:#}"))?;
+        // This is a disconnect, not a routing-off: the user asked Gate out of
+        // the path, so the passthrough listener goes too. The plain quit
+        // deliberately leaves it running - see `proxy::forwarder::stop`.
+        gate_connect_core::proxy::forwarder::stop();
+        Ok::<_, String>(names)
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
@@ -1804,13 +1903,51 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
                 // nowhere else in the product, and this notification arrives
                 // seconds after a panel that called them tools. The rest of the
                 // wording is shared with QuitConfirm on purpose.
-                "Your tools are back on their own settings while Gate Connect is \
-                 closed. Restart any running CLI agents; everything reconnects \
-                 when Gate Connect starts again.",
+                //
+                // The tools are named when we know them, because "restart any
+                // running CLI agents" asks the user to work out which - and a
+                // disconnect stops the passthrough too, so a session that was
+                // working a moment ago stops, which is worth being precise
+                // about. Anything else started while routing was on still holds
+                // the proxy variables, hence the sentence after the list.
+                &if names.is_empty() {
+                    "Your tools are back on their own settings while Gate \
+                     Connect is closed. Restart any terminal or editor you \
+                     opened while routing was on; everything reconnects when \
+                     Gate Connect starts again."
+                        .to_string()
+                } else {
+                    format!(
+                        "Your tools are back on their own settings while Gate \
+                         Connect is closed. Restart {} - and any other terminal \
+                         or editor you opened while routing was on. Everything \
+                         reconnects when Gate Connect starts again.",
+                        join_names(&names)
+                    )
+                },
             )
             .show();
     }
     Ok(())
+}
+
+/// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
+/// comma-join reads as a fragment at two items.
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The tools Gate Connect currently manages, for copy that has to name what a
+/// disconnect will interrupt.
+#[tauri::command]
+async fn routed_app_names() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::registry::managed_tool_names)
+        .await
+        .map_err(|e| format!("join error: {e}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1884,6 +2021,7 @@ pub fn run() {
                     proxy_set_env_export,
                     proxy_trust_ca,
                     proxy_untrust_ca,
+            routed_app_names,
                     launch_at_login_status,
                     set_launch_at_login,
                     set_updater_relaunching,
@@ -2006,6 +2144,42 @@ pub fn run() {
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            // Open the crash-restart session before anything that could itself
+            // crash, and decide from the last one whether to keep asking the OS
+            // to bring us back. macOS and Windows only: Linux has no exit
+            // handler to close the session with, so every start would read as
+            // unclean, and its engine is a detached daemon that a GUI crash
+            // does not strand anyway.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            match gate_connect_core::crash_restart::record_start() {
+                Ok(verdict) => {
+                    if verdict.previous_was_unclean {
+                        eprintln!(
+                            "[gate] previous session ended without a clean exit ({} in a row)",
+                            verdict.unclean_streak
+                        );
+                    }
+                    #[cfg(target_os = "macos")]
+                    if verdict.exhausted {
+                        disarm_crash_restart(app.handle(), verdict.unclean_streak);
+                    } else {
+                        arm_crash_restart(app.handle());
+                    }
+                    #[cfg(target_os = "windows")]
+                    if verdict.exhausted {
+                        eprintln!(
+                            "[gate] not registering automatic restart: {} launches in a row ended before the app was up",
+                            verdict.unclean_streak
+                        );
+                    } else {
+                        register_application_restart();
+                    }
+                }
+                // Losing the bookkeeping costs a relaunch after the next crash,
+                // which is what every build before this one did.
+                Err(e) => eprintln!("[gate] crash-restart bookkeeping failed: {e:#}"),
+            }
+
             // Engine crash fail-safe UI: the manager reverts the system proxy
             // on its own, but it has no window handle - without this observer
             // the tray kept its green "routing on" dot and an open popover
@@ -2122,6 +2296,11 @@ pub fn run() {
                         if let Err(e) = app.autolaunch().enable() {
                             eprintln!("[gate] enabling launch-at-login default failed: {e}");
                             report_backend_error("launch_at_login", format!("{e}"));
+                        } else {
+                            // Same rewrite as every other enable; see
+                            // `arm_crash_restart`.
+                            #[cfg(target_os = "macos")]
+                            arm_crash_restart(app.handle());
                         }
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = std::fs::write(&marker, b"1");
@@ -2628,6 +2807,13 @@ pub fn run() {
             // is promptless and leaves the CA trusted.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
+                // First, and unconditionally: reaching this event at all is what
+                // makes the exit clean. Recording it clears the unclean streak,
+                // so a user who quits normally after a crash gets the restart
+                // policy back rather than carrying the streak forever.
+                if let Err(e) = gate_connect_core::crash_restart::record_clean_exit() {
+                    eprintln!("[gate] recording clean exit failed: {e:#}");
+                }
                 if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
@@ -3176,10 +3362,31 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 
 /// Raise and key the popover without activating the app - set_focus() alone
 /// won't raise a background app's window.
+///
+/// Main thread only, and it puts itself there. Unlike the Tauri calls beside
+/// it (`show`, `set_focus`, `unminimize`), which post to the event loop from
+/// any thread, the two messages below go straight to the NSWindow on the
+/// calling thread, and AppKit traps window ordering off the main thread
+/// ("Must only be used from the main thread", SIGILL). `request_quit` hit
+/// exactly that: it probes tool configs on a blocking thread and revealed the
+/// quit dialog from the same thread, so quitting with a connected tool crashed
+/// the app before `RunEvent::Exit` could revert the system proxy. The hop is a
+/// post rather than a wait, so it never blocks the thread that called it, and
+/// it can only fail once the event loop has shut down - which is why the `Err`
+/// is dropped: by then there is no window left to raise.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
+
+    if objc2::MainThreadMarker::new().is_none() {
+        let window = window.clone();
+        let _ = window
+            .app_handle()
+            .clone()
+            .run_on_main_thread(move || order_front_regardless(&window));
+        return;
+    }
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
@@ -3188,6 +3395,11 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         return;
     }
 
+    // SAFETY: on the main thread, by the guard above. Both messages are
+    // documented public NSWindow selectors taking no arguments and returning
+    // void; the pointer comes from this window's own `ns_window()`, which
+    // errors rather than answering for a window that is gone, and is
+    // null-checked before it is messaged.
     unsafe {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];

@@ -75,7 +75,7 @@ const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
 
 /// Keep loopback off the proxy so a self-hosted provider is reached directly.
-const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+use crate::proxy::NO_PROXY_VALUE;
 
 /// The variable status compares against; the others move with it.
 const PRIMARY_VAR: &str = "HTTPS_PROXY";
