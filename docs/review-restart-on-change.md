@@ -28,6 +28,43 @@ meant**. Three things can do that:
 3. **Gate rewrites the config out from under the running process.** Not
    retired. This is the whole of what is left.
 
+### The premise itself was a comment, not a measurement
+
+"Reads it once, at startup" is what everything above rests on, and for Codex it
+is wrong. Measured 2026-09-18 on codex-cli 0.146.0-alpha.3.1, driving `codex
+app-server` against two loopback listeners and watching which one a turn
+reached:
+
+| | picks up an edited `config.toml`? |
+| --- | --- |
+| a new thread in a running process | yes, immediately, no restart |
+| a thread already open | no, it keeps the address it started with |
+| that thread resumed after a restart | yes, it re-resolves |
+
+The unit is the **conversation**, not the process. A thread pins the provider
+*name* and re-resolves it against whatever is on disk when it starts or
+resumes, which is also why the passthrough stub has to survive disconnect.
+
+**Nothing in sections 2 to 6 changes.** Every claim there is about an address
+that stops answering or stops meaning what it meant, and that holds per
+conversation exactly as it held per process. What changes is **what the UI may
+say**: "reopen Codex" helps neither half, and the copy is now "New conversations
+will go through Gate." Section 7 of `routing-architecture.md` carries the
+measurement.
+
+It also settles the `[model_providers.gate]` question section 6 leaves open, in
+favour of keeping the block. Conversations already open are pinned to the relay
+address, and the parked relay forwards them straight through, so keeping it is
+what lets them go on working. Removing it on a routing toggle would be worse
+than anything shipped so far: `disconnect` does not remove it either, it leaves
+a passthrough stub, because a thread whose provider name stops resolving cannot
+resume at all.
+
+**The probe was run against Codex only.** Claude Code, OpenCode, OpenClaw and
+Hermes are still assumed to read once at startup, on the same kind of comment
+that turned out to be wrong here. The scripts are small and the seam is
+`CODEX_HOME`-shaped for each of them.
+
 ## 2. The teardown, and the premise it rests on
 
 `routing::disable` runs the full config sweep before the proxy comes down:
@@ -186,12 +223,15 @@ injects none. The policy this follows is already written for the forwarder at
 `manager_core.rs:87-89`: a plain disable is not "let go of this machine", and
 the paths that are keep their teardown.
 
-**It is still a product question**, and it is the one to put to design rather
-than settle here: after item 3, a user who switches routing off and opens
-`~/.codex/config.toml` finds `[model_providers.gate]` still there. It routes
-nothing, and the row says so, but the file says Gate is configured. Principle 1
-argues both ways - the user should feel where things live, and the file is now
-telling the truth about a thing that is parked rather than gone.
+**This was raised as a product question and is now answered by measurement.**
+After item 3, a user who switches routing off and opens `~/.codex/config.toml`
+finds `[model_providers.gate]` still there. That is not new - `disconnect` has
+always left the block behind, as a passthrough stub - and it is load-bearing:
+a Codex conversation pins its provider by name, so a conversation open across
+the toggle needs the block to keep resolving, and the parked relay is what
+carries it. See the measurement under section 1. What is left for design is
+narrower: not whether the block stays, but whether a parked tool should read as
+a problem in the UI at all.
 
 ## 7. What is verified here, and what is not
 
@@ -218,6 +258,12 @@ back to the engine's address when `ensure_running` fails, and that fallback has
 been reasoned about rather than provoked. Note also that `pnpm app:local`
 cannot see it - the seam that makes the keychain safe also skips this - so the
 check has to be `pnpm app` on each OS.
+
+**Measured here.** Codex's config-reload granularity, under section 1: a new
+thread picks up an edit immediately, an open one never does, and a resumed one
+re-resolves. Driven against a throwaway `CODEX_HOME` and two loopback listeners,
+so no account and no network were involved. It is an alpha build
+(0.146.0-alpha.3.1) and worth re-running on a version bump.
 
 **Not measured, and named as a question rather than a finding.** Whether a GUI
 app re-resolves the PAC without a restart. `feat/new-app-ui`'s

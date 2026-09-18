@@ -360,14 +360,38 @@ proxy harnesses compute this explicitly. The UI needs a state for "configured
 but not routing" that reads as a problem, and the copy should offer the way
 out (turn routing on, or disconnect).
 
-**Relaunch is required and currently unsaid.** Environment variables only reach
-processes started *after* the change - on every platform, and nothing can fix
-that. A user who turns routing on with OpenCode already open will see no effect
-and no explanation. This is the single most likely support question, and it is
-worth a line in the UI at the moment routing is enabled.
+**Relaunch is required and currently unsaid - but the unit is per tool, and
+for Codex it is not the process.** This paragraph used to say relaunch was
+required, flatly, on every platform. That is right for the environment channel
+and wrong for at least one config tool, and the difference decides what the UI
+is allowed to say.
 
-**The restart hint is invisible.** OpenClaw and Hermes emit it via `eprintln!`,
-which goes nowhere in a GUI build.
+Environment variables only reach processes started *after* the change, on every
+platform, and nothing can fix that: a user who turns routing on with OpenCode
+already open sees no effect and no explanation.
+
+Codex is the measured exception, and it is a conversation rather than a
+process. Measured 2026-09-18 on codex-cli 0.146.0-alpha.3.1, driving
+`codex app-server` against two loopback listeners and watching which one a turn
+reached:
+
+| | picks up an edited `config.toml`? |
+| --- | --- |
+| a new thread in a running process | yes, immediately, no restart |
+| a thread already open | no, it keeps the address it started with |
+| that thread resumed after a restart | yes, it re-resolves |
+
+So a routing change reaches every conversation started after it with no restart
+at all, and no conversation already open, however often the process is
+restarted, unless the user resumes it. Telling a Codex user to reopen the tool
+is advice that does nothing for either half. `integrations::codex` carries the
+measurement and emits the copy: **"New conversations will go through Gate."**
+
+The same probe is worth running on the other config tools before the UI makes a
+single claim for all of them. It has not been.
+
+**The restart hint is invisible.** OpenClaw, Hermes and now Codex emit it via
+`eprintln!`, which goes nowhere in a GUI build.
 
 **Degraded routing is silent.** The env export is deliberately best-effort: if
 `launchctl` or the registry write fails, routing still succeeds for GUI apps

@@ -27,8 +27,26 @@
 //! through and forwards to OpenAI per the upstream hint the relay injects.
 //! Therefore [`requires_upstream_credential`] is `false`.
 //!
-//! Codex reads `config.toml` at startup, so the user must restart any
-//! running `codex` sessions after connecting/disconnecting.
+//! **Codex re-reads `config.toml` per THREAD, not per process**, so "restart
+//! Codex" is the wrong thing to tell anyone. Measured 2026-09-18 on codex-cli
+//! 0.146.0-alpha.3.1 by driving `codex app-server` against two loopback
+//! listeners and watching which one a turn reached:
+//!
+//! | | picks up an edited `config.toml`? |
+//! | --- | --- |
+//! | a new thread in a running process | yes, immediately |
+//! | a thread that was already open | no, it keeps the address it started with |
+//! | that thread resumed after a restart | yes, it re-resolves |
+//!
+//! So the unit is the conversation. A routing change reaches every conversation
+//! started after it, with no restart at all, and reaches none that are already
+//! open, however many times the process is restarted, unless the user resumes
+//! them. This entry used to say the config was read at startup and that running
+//! sessions had to be restarted, which is wrong in both directions.
+//!
+//! It is also the mechanism behind the two facts below: the thread pins the
+//! provider *name* and re-resolves it against whatever is on disk, which is why
+//! the name has to keep resolving and why the stub exists.
 //!
 //! `disconnect` is the one place we stop short of zero residue: it leaves a
 //! `[model_providers.gate]` passthrough stub pointed at OpenAI (see
@@ -474,7 +492,19 @@ impl Integration for Codex {
         // No Gate-managed provider list is recorded; the marker above is
         // sufficient.
 
-        write_doc(&path, &doc)
+        write_doc(&path, &doc)?;
+
+        // What the user has to know, and the only tool in the registry where
+        // it is about conversations rather than processes. See the module docs
+        // for the measurement: a new thread reads this file, one that is
+        // already open never will. Telling them to restart Codex would be
+        // advice that does nothing for either half.
+        eprintln!(
+            "note: New conversations will go through Gate. Codex pins a conversation to its \
+             provider when it starts, so any you already have open keep the route they started \
+             with."
+        );
+        Ok(())
     }
 
     fn disconnect(&self) -> Result<()> {
