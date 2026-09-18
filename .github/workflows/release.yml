@@ -13,12 +13,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `--locked` on every leg: these are the artefacts that ship, and
+          # without it cargo is free to resolve something the reviewed
+          # `Cargo.lock` does not name. CI builds gained it alongside the
+          # advisory gate; a release built off a lock nobody screened would
+          # walk straight past both.
+          #
+          # It goes after `--` because it is cargo's flag, not Tauri's:
+          # `tauri build` has no `--locked`, and passes anything after the
+          # separator to the runner. Putting it before would fail the build on
+          # an unexpected argument - and this workflow only runs on a tag, so
+          # nothing before the release itself would have said so.
           - platform: 'macos-latest'
-            args: '--target universal-apple-darwin'
+            args: '--target universal-apple-darwin -- --locked'
           - platform: 'ubuntu-22.04'
-            args: ''
+            args: '-- --locked'
           - platform: 'windows-latest'
-            args: ''
+            args: '-- --locked'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
