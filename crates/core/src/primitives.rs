@@ -55,6 +55,36 @@ pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     // pre-exist with the tool's own looser umask (commonly 0o644).
     #[cfg(not(unix))]
     let _ = mode;
+
+    // Identical content is not a write, and this is about the mtime rather
+    // than the I/O. A tool reads its configuration once, at startup, so that
+    // timestamp is the only durable record of whether a running process missed
+    // a change - it is what tells a later reader to say "reopen it", and it
+    // survives restarts of Gate, reboots and reinstalls, which is why it was
+    // picked over anything Gate remembers in-process. Re-emitting the same
+    // bytes moves it, and an unattended re-connect then looks exactly like a
+    // change the user needs to act on.
+    //
+    // `integrations::dotenv` has declined to rewrite an already-correct value
+    // since it was written, for the same reason stated one level up ("or every
+    // unattended re-connect would announce itself as a repair"). It is a
+    // property of writing config files, not of that one format, so it belongs
+    // here where every integration passes through.
+    //
+    // The `mode` fix is deliberately NOT skipped with it. Correcting
+    // permissions is the other thing an overwrite does, and it has to happen on
+    // a file that already holds the right bytes under the tool's own umask -
+    // otherwise a config that converged before this check existed keeps 0o644
+    // forever, which is the one state a skip could make permanent.
+    if fs::read(path).is_ok_and(|current| current == bytes) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .with_context(|| format!("chmod {}", path.display()))?;
+        }
+        return Ok(());
+    }
     let parent = path
         .parent()
         .with_context(|| format!("path has no parent: {}", path.display()))?;
@@ -340,6 +370,96 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    /// Re-writing the same bytes leaves the modification time alone.
+    ///
+    /// The mtime is the durable record of whether a running tool missed a
+    /// change to its configuration, so moving it on a write that changed
+    /// nothing is what turns an unattended re-connect into "reopen this tool".
+    /// Asserted on the timestamp rather than on a call count because the
+    /// timestamp is the thing another process reads.
+    #[test]
+    fn write_file_leaves_mtime_alone_when_content_is_unchanged() {
+        let dir = TmpDir::new("idempotent");
+        let path = dir.path("config.json");
+        write_file(&path, b"same", 0o600).unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Filesystems this runs on carry second granularity at worst, so a
+        // same-second rewrite could pass a stale assertion by accident. Push
+        // the recorded time backwards instead of sleeping: if the write were
+        // to happen, it would land at "now" and the comparison would fail.
+        filetime_set(&path, before - std::time::Duration::from_secs(60));
+        // Read back rather than asserting against what was asked for: the
+        // setter carries whole seconds and the filesystem may store fewer
+        // digits still, so the stored value is the only fair comparand.
+        let backdated = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(backdated < before, "backdating did not take");
+
+        write_file(&path, b"same", 0o600).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            backdated,
+            "an identical write must not move the mtime"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"same");
+    }
+
+    /// Different bytes still write, which is the half that must not regress.
+    #[test]
+    fn write_file_writes_when_content_differs() {
+        let dir = TmpDir::new("changed");
+        let path = dir.path("config.json");
+        write_file(&path, b"old", 0o600).unwrap();
+        write_file(&path, b"new", 0o600).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+    }
+
+    /// The skip still corrects permissions. A config that already holds the
+    /// right bytes under the tool's own umask is exactly the file a naive skip
+    /// would leave world-readable forever.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_tightens_mode_even_when_content_is_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TmpDir::new("mode");
+        let path = dir.path("config.json");
+        fs::write(&path, b"same").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_file(&path, b"same", 0o600).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    /// Set a file's mtime without pulling in a dependency for it.
+    #[cfg(unix)]
+    fn filetime_set(path: &Path, when: std::time::SystemTime) {
+        use std::time::UNIX_EPOCH;
+        let secs = when.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let times = [
+            libc::timeval {
+                tv_sec: secs,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: secs,
+                tv_usec: 0,
+            },
+        ];
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: both pointers are valid for the duration of the call.
+        let rc = unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) };
+        assert_eq!(rc, 0, "utimes failed");
+    }
+
+    #[cfg(not(unix))]
+    fn filetime_set(path: &Path, when: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
     }
 
     /// A symlink that stays inside its own directory is benign and still
