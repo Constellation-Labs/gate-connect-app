@@ -542,3 +542,51 @@ fn a_listener_that_answers_the_challenge_is_our_relay() {
         "a listener answering the challenge is our relay"
     );
 }
+
+/// The two questions the manager asks about another instance are different, and
+/// the difference is what keeps `status` honest.
+///
+/// A parked instance holds the ports and routes nothing, so it must not be
+/// reported as hosting the proxy - that is what would put "running" on screen
+/// with routing off. `enable` still has to refuse against it, which it checks
+/// separately once it has released its own park.
+///
+/// macOS and Windows only, because the function is: Linux hosts its engine in a
+/// daemon and adopts it rather than asking whether another process has one. So
+/// this runs on two of the three CI runners and not on a Linux dev machine.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_parked_instance_holds_the_ports_without_hosting_the_proxy() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let (relay, _port) = bind_relay_port();
+    // The engine port has to answer too, or the question is decided by the
+    // probe rather than by the report under test.
+    let engine = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let engine_port = engine.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in engine.incoming() {
+            drop(stream);
+        }
+    });
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::write(dir.join("port"), engine_port.to_string()).unwrap();
+
+    assert_eq!(
+        gate_connect_core::proxy::engine_hosted_elsewhere(),
+        Some(engine_port),
+        "a routing instance is hosting the proxy"
+    );
+
+    relay.set_intercepting(false);
+
+    assert_eq!(
+        gate_connect_core::proxy::engine_hosted_elsewhere(),
+        None,
+        "a parked instance routes nothing, so nothing is hosting the proxy"
+    );
+    assert!(
+        gate_connect_core::proxy::relay_listening(),
+        "but it is still there, which is what keeps a second enable from taking its ports"
+    );
+}

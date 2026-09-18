@@ -358,6 +358,14 @@ impl<O: DesktopOps> DesktopManager<O> {
         // "another Gate Connect is on this machine's ports", not "something is
         // on that port".
         //
+        // The wider of the two questions, and why there are two. The refusal
+        // above asks `engine_hosted_elsewhere`, which counts only an instance
+        // that is *routing*, because that is what `status` has to report. An
+        // instance that is merely parked holds the same ports and routes
+        // nothing, so it belongs here and not there. This one cannot move up
+        // beside the other: until `stop_dormant` above, the relay answering
+        // might be our own.
+        //
         // `engine_hosted_elsewhere` above cannot see it: it reads the
         // system-proxy snapshot, and a parked instance cleared that on its way
         // to parking. Without this check the enable proceeded, found the

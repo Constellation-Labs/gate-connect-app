@@ -785,7 +785,20 @@ pub fn engine_likely_running() -> bool {
 /// a second process adopts it rather than guessing (see `manager_linux`).
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn engine_hosted_elsewhere() -> Option<u16> {
-    if !engine_likely_running() {
+    // A relay that proves itself *and* reports interception is a Gate Connect
+    // that is routing. That is the question this answers, and it is narrower
+    // than "is another instance here": a parked one holds the same ports and
+    // routes nothing, so counting it would make `status` report running with
+    // routing off. `enable` asks the wider question separately, after it has
+    // released its own park, because until then the answer would be itself.
+    //
+    // This used to read the system-proxy snapshot plus a bare connect to the
+    // engine port. Both halves were weaker than they looked: the snapshot is a
+    // file whose presence outlives a crash, and a bare connect cannot tell our
+    // engine from anything else that happens to accept, so a stranger on the
+    // remembered port under a stale snapshot was reported as another Gate
+    // hosting the proxy. The relay is the part that can prove who it is.
+    if !relay_report().is_some_and(|r| r.intercepting) {
         return None;
     }
     let port = system_proxy::load_port().ok().flatten()?;
