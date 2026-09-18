@@ -17,7 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use gate_connect_core::registry::{find, ConnectInput, Status, ToolId};
+use gate_connect_core::registry::{find, ConnectInput, Mechanism, Status, ToolId};
 use gate_connect_core::{env, provider};
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -199,4 +199,46 @@ fn the_routing_switch_records_no_swept_tools() {
         !raw.contains("opencode"),
         "nothing was swept, so nothing may be recorded for restore, got {raw}"
     );
+}
+
+/// Plain quit reverts a tool whose address dies with the GUI, and records it so
+/// the startup restore brings it back. OpenCode names the relay, which lives in
+/// the GUI process on macOS and Windows, so it is exactly the case.
+#[test]
+fn plain_quit_reverts_a_relay_tool_and_records_it() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+    let path = env::opencode_config_path().unwrap();
+    assert!(
+        fs::read_to_string(&path).unwrap().contains("127.0.0.1:8402"),
+        "premise: connect must have written the relay address"
+    );
+
+    let reverted = provider::revert_relay_configs_for_quit().expect("plain quit");
+
+    assert_eq!(reverted, vec!["OpenCode".to_string()]);
+    assert!(
+        !fs::read_to_string(&path).unwrap().contains("127.0.0.1:8402"),
+        "the relay address must be gone from the config"
+    );
+    let snapshot = env::app_support_dir()
+        .unwrap()
+        .join("provider")
+        .join("restore-tools-snapshot.json");
+    let raw = fs::read_to_string(&snapshot).expect("snapshot written");
+    assert!(raw.contains("opencode"), "must be recorded for restore, got {raw}");
+}
+
+/// The declared mechanism per tool is the fact the quit teardown keys on, so it
+/// is pinned against the table in `docs/routing-architecture.md` section 3.
+#[test]
+fn the_mechanism_table_matches_the_routing_doc() {
+    let m = |id| find(id).unwrap().mechanism();
+    assert_eq!(m(ToolId::Codex), Mechanism::Relay);
+    assert_eq!(m(ToolId::OpenCode), Mechanism::Relay);
+    assert_eq!(m(ToolId::ClaudeCode), Mechanism::ForwardProxy);
+    assert_eq!(m(ToolId::OpenClaw), Mechanism::ForwardProxy);
+    assert_eq!(m(ToolId::Hermes), Mechanism::ForwardProxy);
+    assert_eq!(m(ToolId::EnvProxy), Mechanism::Environment);
 }

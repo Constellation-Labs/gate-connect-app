@@ -22,7 +22,7 @@ describe("QuitConfirm copy", () => {
   it("names a single connected tool in the singular", () => {
     renderConfirm(["Claude Code"]);
     expect(screen.getByText(/Claude Code still routes through Gate/)).toBeTruthy();
-    expect(screen.getByText(/it can’t connect until Gate Connect runs again/)).toBeTruthy();
+    expect(screen.getByText(/it works without Gate until Gate Connect runs again/)).toBeTruthy();
   });
 
   it("lists two tools joined with and, in the plural", () => {

@@ -87,6 +87,32 @@ impl fmt::Display for Status {
     }
 }
 
+/// How a tool's traffic reaches Gate, which decides what its config *names* and
+/// therefore what happens to that tool when the thing it names goes away.
+///
+/// The per-tool table in `docs/routing-architecture.md` has stated this in prose
+/// since the proxy rewrites; this is the same fact where code can ask for it.
+/// Declared per integration rather than inferred from which `ConnectInput`
+/// field `connect` reads, because a caller deciding a teardown needs the answer
+/// before any connect runs, and because inference is how one of these passes
+/// once recorded a failed write for a file it never opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mechanism {
+    /// The config carries a loopback **base URL** for the reverse-proxy relay,
+    /// which lives in the engine and dies with it. On macOS and Windows the
+    /// engine lives in the GUI process, so a plain quit takes this address
+    /// with it and nothing fronts it.
+    Relay,
+    /// The config carries a **proxy address**: the forwarder's, since tool
+    /// configs moved off the engine's own port. The forwarder is a separate
+    /// process that outlives the GUI on purpose, so this address keeps
+    /// answering across a plain quit and forwards direct.
+    ForwardProxy,
+    /// Not a config at all: the machine-wide exported variables, which also
+    /// name the forwarder and reach only processes started after the export.
+    Environment,
+}
+
 pub trait Integration: Send + Sync {
     fn id(&self) -> ToolId;
     fn display_name(&self) -> &'static str;
@@ -112,6 +138,12 @@ pub trait Integration: Send + Sync {
     fn requires_upstream_credential(&self) -> bool {
         false
     }
+
+    /// Which mechanism carries this tool's traffic - see [`Mechanism`]. Required
+    /// rather than defaulted: a default would be a trap in exactly the way the
+    /// `requires_upstream_credential` doc below describes, silently filing a
+    /// new integration under a teardown rule that may not fit it.
+    fn mechanism(&self) -> Mechanism;
 
     /// Does this tool's `connect` need the forward-proxy engine to be up?
     ///

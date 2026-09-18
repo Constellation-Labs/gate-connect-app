@@ -43,7 +43,7 @@
 
 use anyhow::Result;
 
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 const DISPLAY_NAME: &str = "Environment proxy";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -72,6 +72,11 @@ impl Integration for EnvProxy {
     /// look for: the capability is the OS, not a tool.
     fn detect(&self) -> Result<bool> {
         Ok(supported())
+    }
+
+    /// Nothing per tool; this row *is* the machine-wide export.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Environment
     }
 
     fn status(&self) -> Result<Status> {

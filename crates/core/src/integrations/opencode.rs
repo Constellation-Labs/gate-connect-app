@@ -73,7 +73,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -262,6 +262,11 @@ impl Integration for OpenCode {
                 .and_then(|v| v.as_str())
                 .is_some_and(looks_local)
         }))
+    }
+
+    /// `provider.<id>.options.baseURL` names the loopback relay, which dies with the engine.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Relay
     }
 
     fn status(&self) -> Result<Status> {

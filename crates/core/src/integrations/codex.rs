@@ -65,7 +65,7 @@ use toml_edit::{value, DocumentMut, Item, Table, Value};
 
 use crate::env;
 use crate::primitives;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 /// File name of the auth-helper script older Gate Connect versions wrote
 /// and pointed Codex's `[auth] command` at. We no longer write it - Codex
@@ -242,6 +242,11 @@ impl Integration for Codex {
             return Ok(true);
         }
         Ok(env::codex_config_dir()?.exists())
+    }
+
+    /// `base_url` names the loopback relay, which dies with the engine.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Relay
     }
 
     fn status(&self) -> Result<Status> {

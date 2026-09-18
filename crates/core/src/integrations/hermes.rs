@@ -75,7 +75,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::integrations::dotenv;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 const DISPLAY_NAME: &str = "Hermes";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -157,6 +157,11 @@ impl Integration for Hermes {
             return Ok(false);
         }
         Ok(configured_proxy()?.as_deref().is_some_and(is_loopback_url))
+    }
+
+    /// `HTTPS_PROXY` in `.env` names the forwarder's proxy address.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::ForwardProxy
     }
 
     fn status(&self) -> Result<Status> {

@@ -48,7 +48,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 const UPSTREAM_PROVIDER_NAME: &str = "Anthropic";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -145,6 +145,11 @@ impl Integration for ClaudeCode {
         // launch. Catches Volta/asdf/npx installs that don't land a binary
         // in the well-known paths above.
         Ok(env::claude_code_config_dir()?.exists())
+    }
+
+    /// `settings.json` names the forwarder's proxy address.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::ForwardProxy
     }
 
     fn status(&self) -> Result<Status> {

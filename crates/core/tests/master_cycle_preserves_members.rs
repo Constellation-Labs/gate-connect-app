@@ -374,3 +374,30 @@ fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
         .set_modified(when)
         .unwrap();
 }
+
+/// The other half of plain quit: a tool naming the forwarder is not touched,
+/// because the forwarder is a separate process that keeps answering after the
+/// GUI is gone. Claude Code's `settings.json` is the case.
+#[test]
+fn plain_quit_leaves_a_forward_proxy_tool_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+    provider::enable("anthropic").unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+    let settings = env::claude_code_settings_path().unwrap();
+    let before = fs::read_to_string(&settings).unwrap();
+
+    let reverted = provider::revert_relay_configs_for_quit().unwrap();
+
+    assert!(reverted.is_empty(), "only relay tools are reverted, got {reverted:?}");
+    assert_eq!(fs::read_to_string(&settings).unwrap(), before);
+    assert_eq!(claude_status(), Status::Connected);
+    let recorded = read_snapshot("restore-tools-snapshot.json").unwrap_or_default();
+    assert!(
+        !recorded.iter().any(|s| s == "claude-code"),
+        "nothing to restore for a tool that was never reverted, got {recorded:?}"
+    );
+}

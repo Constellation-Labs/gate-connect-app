@@ -108,7 +108,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env;
 use crate::integrations::dotenv;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Status, ToolId, Mechanism};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -206,6 +206,11 @@ impl Integration for OpenClaw {
         }
         let settings = load_settings()?.unwrap_or_default();
         Ok(current_proxy_url(&settings).is_some_and(is_loopback_url))
+    }
+
+    /// `proxy.proxyUrl` names the forwarder's proxy address.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::ForwardProxy
     }
 
     fn status(&self) -> Result<Status> {

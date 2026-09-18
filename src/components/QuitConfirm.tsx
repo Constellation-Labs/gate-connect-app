@@ -76,8 +76,16 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           Quit Gate Connect?
         </h1>
         <p className="text-gc-body-sm leading-snug text-gc-ink-3">
+          {/* "work without Gate", not "can't connect": that sentence dated from
+              when quitting took every loopback address down with it. Now a tool
+              naming the forwarder keeps working through a process that outlives
+              the app, and a tool naming the relay is put back on its own
+              settings on the way out - so both halves of the list work, just
+              not through Gate. See the plain-quit column in
+              docs/routing-architecture.md, "Who does what, per event". */}
           {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
-          {plural ? "they" : "it"} can’t connect until Gate Connect runs again.
+          {plural ? "they" : "it"} {plural ? "work" : "works"} without Gate until Gate
+          Connect runs again.
         </p>
         <p className="text-gc-caption leading-snug text-gc-ink-3">
           {/* "when Gate Connect starts again", not "at the next start": the next

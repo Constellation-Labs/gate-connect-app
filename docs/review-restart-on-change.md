@@ -232,11 +232,19 @@ routing was to release the port. `proxy::loopback_proxy_answers` is the
 measurement that separates a parked listener from a released one, and the
 message now says which one it is.
 
-**App exit is the residual, and item 2 is what closes it.** On macOS and
-Windows the listeners live in the GUI process, so quitting releases the ports
-and a config naming them is stranded until the app is next opened. The park
-cannot fix this; a listener that outlives the GUI can, and the forwarder is
-one. That is the argument for doing item 2 before item 3, not after.
+**App exit was the residual, and it split in two.** On macOS and Windows the
+listeners live in the GUI process, so quitting releases the ports. For the three
+forwarder-named tools item 2 closes it: the forwarder outlives the GUI and
+forwards direct. For the two relay-named tools nothing fronts the port, and the
+options were weighed on the branch stacked on this one
+(`fix/plain-quit-reverts-relay-configs`): fronting the relay at TCP level only
+turns "refused" into a 503, a passthrough forwarder changes what that process
+is, and a daemon is a packaging project. What landed is the narrow rule - plain
+quit reverts a config if and only if the address it names dies with the process
+- expressed as `Integration::mechanism` so the quit path asks rather than
+hard-coding two slugs. It costs Codex a thread-list flip per quit/launch and a
+running OpenCode a restart after relaunch, both already the price of the
+quit-and-disconnect choice, now paid by two tools instead of five.
 
 **Leaving Gate's values in a config while parked is not a credential
 question.** No tool config anywhere holds a credential, and a parked relay

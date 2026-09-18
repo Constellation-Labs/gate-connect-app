@@ -19,7 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::audit;
-use crate::registry::{self, ConnectInput, Status, ToolId};
+use crate::registry::{self, ConnectInput, Mechanism, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
 /// domains that route one model provider through Gate.
@@ -835,6 +835,69 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 pub fn snapshot_and_park_everything() -> Result<()> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked(ToolConfigs::Kept)
+}
+
+/// Plain quit's teardown, on the platforms where the relay dies with the GUI.
+///
+/// [`ToolConfigs::Kept`] is the routing toggle's rule: leave a config alone,
+/// because the address it names keeps answering. A plain quit breaks that
+/// premise for exactly one mechanism. Everything that names the forwarder keeps
+/// working, because the forwarder is a separate process and is deliberately
+/// left running (`proxy::forwarder::stop` is not called here). A config that
+/// names the relay names a port in the GUI process, and nothing fronts it, so
+/// the tool cannot connect until Gate runs again - and the error it shows names
+/// a loopback port the user has never heard of, which reads as the tool being
+/// broken rather than Gate being off.
+///
+/// So this reverts a config **if and only if the address it names dies with
+/// this process**: [`Mechanism::Relay`], and nothing else. Reverted tools are
+/// recorded in [`SWEPT_TOOLS_SNAPSHOT`] so the startup restore brings them back
+/// exactly as it brings back the quit-and-disconnect sweep. No provider is
+/// snapshotted, because no provider was turned off.
+///
+/// Not called on Linux, where the engine is a daemon that outlives the GUI and
+/// the relay address keeps answering; the caller gates on platform. Not called
+/// from `RunEvent::Exit` either, which also runs on an updater relaunch and a
+/// crash restart, neither of which is the user choosing to leave Gate off.
+///
+/// Returns the display names of what it reverted, for the notification the
+/// caller fires: the popover is gone by the time this has run, and a rewrite of
+/// somebody's config file is worth a sentence.
+pub fn revert_relay_configs_for_quit() -> Result<Vec<String>> {
+    let _guard = master_flow_guard();
+    let mut reverted = Vec::new();
+    let mut slugs = Vec::new();
+    for integ in registry::registry() {
+        if integ.mechanism() != Mechanism::Relay {
+            continue;
+        }
+        if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+            continue;
+        }
+        match integ.disconnect() {
+            Ok(()) => {
+                reverted.push(integ.display_name().to_string());
+                slugs.push(integ.id().slug().to_string());
+            }
+            Err(e) => eprintln!(
+                "[gate] reverting {} for quit failed: {e}",
+                integ.display_name()
+            ),
+        }
+    }
+    if slugs.is_empty() {
+        return Ok(reverted);
+    }
+    // Union, for the same reason both sweeps union: an existing snapshot is a
+    // pending restore, and overwriting it would drop tools from it.
+    let mut snapshot = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
+    for slug in slugs {
+        if !snapshot.contains(&slug) {
+            snapshot.push(slug);
+        }
+    }
+    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)?;
+    Ok(reverted)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last

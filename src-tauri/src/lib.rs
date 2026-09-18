@@ -1860,10 +1860,68 @@ fn pending_quit_tools() -> Option<Vec<String>> {
     PENDING_QUIT_TOOLS.lock().ok().and_then(|mut p| p.take())
 }
 
-/// Finish a quit that [`request_quit`] deferred to the popover. Plain exit;
-/// the `RunEvent::Exit` handler still reverts the system proxy.
+/// Finish a quit that [`request_quit`] deferred to the popover: the "quit
+/// without disconnecting" choice. The `RunEvent::Exit` handler still reverts
+/// the system proxy.
+///
+/// One thing is reverted here that the exit handler does not touch. On macOS
+/// and Windows the relay lives in this process, so a config naming it - Codex,
+/// OpenCode - names a port that is about to stop answering, and the tool then
+/// fails with an error about a loopback address until Gate runs again.
+/// `provider::revert_relay_configs_for_quit` puts exactly those tools back on
+/// their own settings and records them for the startup restore. Everything
+/// naming the forwarder is left alone: that process keeps running and forwards
+/// direct, which is the whole reason it exists. Linux skips it; the relay is a
+/// daemon there and keeps answering.
+///
+/// Off the main thread, like `disconnect_tools_for_quit`: it is config-file
+/// I/O. A notification rather than silence, because a rewrite of somebody's
+/// config file is worth a sentence and the popover is gone before it lands.
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle) {
+async fn quit_app(app: tauri::AppHandle) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let reverted: Result<Vec<String>, String> = tauri::async_runtime::spawn_blocking(|| {
+            gate_connect_core::provider::revert_relay_configs_for_quit()
+                .map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("join error: {e}")));
+        match reverted {
+            Ok(names) if !names.is_empty() => {
+                use tauri_plugin_notification::NotificationExt;
+                let plural = names.len() > 1;
+                // Codex pins a conversation to its provider when the
+                // conversation starts, so the ones already open are not
+                // moved by this rewrite - measured, see `integrations::codex`.
+                // Said only when Codex is in the list, because it is the one
+                // tool where "reconnects when it starts again" is per
+                // conversation rather than per process.
+                let codex_note = if names.iter().any(|n| n == "Codex") {
+                    " Codex conversations already open keep the route they started with \
+                     until you resume them."
+                } else {
+                    ""
+                };
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Gate Connect")
+                    .body(&format!(
+                        "{} {} back on {} own settings while Gate Connect is closed, and \
+                         reconnect{} when it starts again.{}",
+                        join_names(&names),
+                        if plural { "are" } else { "is" },
+                        if plural { "their" } else { "its" },
+                        if plural { "" } else { "s" },
+                        codex_note,
+                    ))
+                    .show();
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[gate] reverting relay tool configs for quit failed: {e}"),
+        }
+    }
     app.exit(0);
 }
 
