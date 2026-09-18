@@ -415,9 +415,12 @@ fn plain_quit_follows_the_address_rule_for_claude_code() {
             vec!["Claude Code".to_string()],
             "an install naming the engine's own port dies with the GUI and is put back"
         );
+        // Reverted means "not what connect wrote": `disconnect` removes a
+        // settings.json that Gate itself created, so absence counts, and the
+        // first version of this branch panicked on exactly that NotFound.
         assert_ne!(
-            fs::read_to_string(&settings).unwrap(),
-            before,
+            fs::read_to_string(&settings).ok(),
+            Some(before),
             "the config must have been reverted"
         );
         let recorded = read_snapshot("restore-tools-snapshot.json").unwrap_or_default();
