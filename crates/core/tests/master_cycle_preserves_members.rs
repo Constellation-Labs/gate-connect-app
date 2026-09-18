@@ -375,18 +375,22 @@ fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
         .unwrap();
 }
 
-/// The other half of plain quit: a tool whose configured address outlives the
-/// GUI is not touched. Claude Code's `settings.json` is the case; the relay
-/// half is `plain_quit_reverts_a_relay_tool_and_records_it` in
+/// The other half of plain quit, for a forward-proxy tool: the rule follows the
+/// **configured address**, not the tool. Claude Code's `settings.json` is the
+/// case; the relay half is `plain_quit_reverts_a_relay_tool_and_records_it` in
 /// `master_off_sweeps_harnesses.rs`, which has the OpenCode fixture.
 ///
-/// On this runner the address `connect` writes is the engine's own, and the
-/// exported identity is the engine's too (no forwarder on Linux), so the rule
-/// reads it as surviving - which is the truth of a daemon that outlives the
-/// GUI. The macOS shape, where an engine-port install *does* die, is pinned
-/// by the pure-function tests on `proxy::address_dies_given`.
+/// What `connect` writes here depends on where this runs, so the test asks the
+/// same predicate the quit does and checks the file did exactly what that
+/// answer says, rather than asserting one platform's outcome. On Linux the
+/// exported identity is the engine's own, so the address reads as surviving
+/// (the truth of a daemon that outlives the GUI) and nothing is touched. On a
+/// macOS runner no forwarder runs under test, so `connect` falls back to the
+/// engine's port, which dies with the GUI - and the config is put back and
+/// recorded. That second branch is the one a per-tool constant got wrong, and
+/// it is why the first version of this test failed on macOS while passing here.
 #[test]
-fn plain_quit_leaves_a_forward_proxy_tool_alone() {
+fn plain_quit_follows_the_address_rule_for_claude_code() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
@@ -396,19 +400,44 @@ fn plain_quit_leaves_a_forward_proxy_tool_alone() {
     assert_eq!(claude_status(), Status::Connected);
     let settings = env::claude_code_settings_path().unwrap();
     let before = fs::read_to_string(&settings).unwrap();
+    let https_proxy = serde_json::from_str::<serde_json::Value>(&before).unwrap()["env"]
+        ["HTTPS_PROXY"]
+        .as_str()
+        .expect("connect wrote a proxy address")
+        .to_owned();
+    let dies = gate_connect_core::proxy::address_dies_with_gui(&https_proxy);
 
     let reverted = provider::revert_stranded_configs_for_quit().unwrap();
 
-    assert!(
-        reverted.is_empty(),
-        "only relay tools are reverted, got {reverted:?}"
-    );
-    assert_eq!(fs::read_to_string(&settings).unwrap(), before);
-    assert_eq!(claude_status(), Status::Connected);
-    // No file at all, not merely no entry: a no-op revert must not leave an
-    // empty snapshot behind for the next start to read as "nothing pending".
-    assert!(
-        read_snapshot("restore-tools-snapshot.json").is_none(),
-        "nothing was reverted, so no snapshot may be written"
-    );
+    if dies {
+        assert_eq!(
+            reverted,
+            vec!["Claude Code".to_string()],
+            "an install naming the engine's own port dies with the GUI and is put back"
+        );
+        assert_ne!(
+            fs::read_to_string(&settings).unwrap(),
+            before,
+            "the config must have been reverted"
+        );
+        let recorded = read_snapshot("restore-tools-snapshot.json").unwrap_or_default();
+        assert!(
+            recorded.iter().any(|s| s == "claude-code"),
+            "and recorded for the startup restore, got {recorded:?}"
+        );
+    } else {
+        assert!(
+            reverted.is_empty(),
+            "an install naming an address that outlives the GUI is left alone, got {reverted:?}"
+        );
+        assert_eq!(fs::read_to_string(&settings).unwrap(), before);
+        assert_eq!(claude_status(), Status::Connected);
+        // No file at all, not merely no entry: a no-op revert must not leave
+        // an empty snapshot behind for the next start to read as "nothing
+        // pending".
+        assert!(
+            read_snapshot("restore-tools-snapshot.json").is_none(),
+            "nothing was reverted, so no snapshot may be written"
+        );
+    }
 }

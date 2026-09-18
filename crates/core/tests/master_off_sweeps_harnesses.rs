@@ -211,7 +211,7 @@ fn the_routing_switch_records_no_swept_tools() {
 /// records it so the startup restore brings it back. OpenCode's `baseURL`
 /// names the relay origin, which lives in the GUI process on macOS and
 /// Windows, so it is exactly the case. The other half of the rule - a tool
-/// naming the forwarder is left alone - is `plain_quit_leaves_a_forward_proxy_tool_alone`
+/// naming the forwarder is left alone - is `plain_quit_follows_the_address_rule_for_claude_code`
 /// in `master_cycle_preserves_members.rs`, which has the Claude Code fixture.
 #[test]
 fn plain_quit_reverts_a_relay_tool_and_records_it() {
