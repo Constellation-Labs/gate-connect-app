@@ -139,9 +139,15 @@ This identifies without authorising. The endpoint reaches no credential,
 resolves no route and returns no traffic, and it sits above the relay's own
 loopback guards so a prober can tell a squatted port from a refused one.
 
-What it does not do is prove the relay is *intercepting*. Parked and routing
-look identical from outside, which is why the relay tools still consult the
-routing intent for that, with the inaccuracy their status comments name.
+It reports one thing about itself as well: whether it is intercepting. That is
+not secret - whether Gate is routing is what the app's own window says - and it
+replaced the relay tools reading the user's stored routing intent, which is a
+preference standing in for a measurement and got the headless `proxy relay`
+host backwards, since that host always intercepts and writes no intent file.
+
+The challenge authenticates the *listener*, not the caller, so any process that
+can reach the port can read that flag. Nothing credential-bearing may be added
+on those terms.
 
 The engine's own MITM port still has no proof and does not need one on this
 path: `engine_proxy_url` gates on the system-proxy snapshot, which is Gate's

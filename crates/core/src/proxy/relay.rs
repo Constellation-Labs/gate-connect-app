@@ -468,6 +468,14 @@ async fn proxy(
         if let Some(proof) = proof {
             builder = builder.header(gate_connect_paths::FORWARDER_PROOF_HEADER, proof);
         }
+        // What this relay is actually doing, which is the thing a status check
+        // wants and could not otherwise learn: parked and routing look
+        // identical from outside, so the tools were reading the user's stored
+        // intent instead - a preference standing in for a measurement.
+        builder = builder.header(
+            gate_connect_paths::RELAY_INTERCEPTING_HEADER,
+            if *state.intercept.borrow() { "1" } else { "0" },
+        );
         return Ok(builder
             .body(
                 Full::new(Bytes::new())

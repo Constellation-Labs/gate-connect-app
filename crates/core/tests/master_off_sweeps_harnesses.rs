@@ -334,7 +334,12 @@ fn plain_quit_unions_into_a_pending_snapshot() {
 /// whether the port answers, and a persisted port file on its own is exactly
 /// the state that used to read Connected over a dead address.
 fn bind_relay_port() -> (RelayStub, u16) {
-    let stub = RelayStub::bind(0);
+    bind_relay_port_with(true)
+}
+
+/// A relay on a fresh port, reporting whether it is routing.
+fn bind_relay_port_with(intercepting: bool) -> (RelayStub, u16) {
+    let stub = RelayStub::with_interception(0, intercepting);
     let port = stub.port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
@@ -386,16 +391,17 @@ fn codex_is_not_connected_while_routing_is_off() {
     let (_relay, port) = bind_relay_port();
     connect_codex(port);
 
-    seed_routing_intent(true);
     assert!(
         matches!(
             find(ToolId::Codex).unwrap().status().unwrap(),
             Status::Connected
         ),
-        "a live relay with routing on is Connected"
+        "a relay that reports it is routing is Connected"
     );
 
-    seed_routing_intent(false);
+    // The same relay, now parked: it still proves itself and still answers, and
+    // Codex reaches OpenAI through it, just not through Gate.
+    _relay.set_intercepting(false);
     match find(ToolId::Codex).unwrap().status().unwrap() {
         Status::Drifted(m) => {
             assert!(m.contains("routing is off"), "unexpected message: {m}");
@@ -415,19 +421,18 @@ fn opencode_is_not_connected_while_routing_is_off() {
     let _home = TempHome::set();
     connect_opencode();
     // `connect_opencode` persists 8402 and writes base URLs naming it, so the
-    // listener has to be on that port for the liveness probe to pass.
-    let _relay = RelayStub::bind(8402);
+    // listener has to be on that port for the probe to reach it.
+    let relay = RelayStub::bind(8402);
 
-    seed_routing_intent(true);
     assert!(
         matches!(
             find(ToolId::OpenCode).unwrap().status().unwrap(),
             Status::Connected
         ),
-        "a live relay with routing on is Connected"
+        "a relay that reports it is routing is Connected"
     );
 
-    seed_routing_intent(false);
+    relay.set_intercepting(false);
     match find(ToolId::OpenCode).unwrap().status().unwrap() {
         Status::Drifted(m) => {
             assert!(m.contains("routing is off"), "unexpected message: {m}");

@@ -915,13 +915,42 @@ pub fn loopback_proxy_answers(url: &str) -> bool {
 /// port. A refused loopback connect returns immediately; the timeout only
 /// bounds pathological states.
 pub fn relay_listening() -> bool {
-    let Some(port) = relay::load_persisted_port() else {
-        return false;
-    };
-    let Ok(token) = forwarder::load_or_create_token() else {
-        return false;
-    };
-    gate_connect_paths::proves_ours(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)
+    relay_report().is_some()
+}
+
+/// What Gate's relay says about itself, or `None` when no relay of ours
+/// answers on the persisted port.
+///
+/// The proof is what makes this ours rather than whatever happens to accept;
+/// the rest is what it reports. `intercepting` is the measurement that replaced
+/// reading the routing intent: a stored preference is what the user asked for,
+/// and a status has to say what is happening. It also gets the headless
+/// `proxy relay` host right, which always intercepts and writes no intent file
+/// at all, so intent read it as not routing on a machine whose last explicit
+/// answer was "off".
+///
+/// An older relay that answers the proof without the header is read as
+/// intercepting: it predates parking, and every relay that could not park was
+/// routing whenever it was up.
+pub fn relay_report() -> Option<RelayReport> {
+    let port = relay::load_persisted_port()?;
+    let token = forwarder::load_or_create_token().ok()?;
+    let headers =
+        gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
+    let intercepting = headers
+        .iter()
+        .find(|(name, _)| name == gate_connect_paths::RELAY_INTERCEPTING_HEADER)
+        .map(|(_, value)| value != "0")
+        .unwrap_or(true);
+    Some(RelayReport { intercepting })
+}
+
+/// What [`relay_report`] learned from a relay that proved itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelayReport {
+    /// Rewriting to the gateway, rather than parked and forwarding straight
+    /// through to the tool's own provider.
+    pub intercepting: bool,
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
