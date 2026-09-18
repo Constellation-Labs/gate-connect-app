@@ -219,6 +219,20 @@ impl RunningEngine {
         let _ = self.intercept_tx.send(intercept);
     }
 
+    /// Drop the API key, OAuth token and org from the engine's watch channels.
+    ///
+    /// For a park. A parked engine injects nothing - the relay is forced to
+    /// passthrough and the MITM port claims no host - so the credential it
+    /// holds is not spendable, but it was still *resident* for as long as the
+    /// park lasted, which is now the rest of the session rather than until
+    /// disable. Clearing it costs nothing: a re-enable starts a fresh engine
+    /// from the current account rather than reviving this one.
+    pub fn clear_credentials(&self) {
+        let _ = self.key_tx.send(Arc::from(""));
+        let _ = self.token_tx.send(Arc::from(""));
+        let _ = self.org_tx.send(Arc::from(""));
+    }
+
     /// Signal graceful shutdown and wait for the engine thread to exit.
     pub fn stop(mut self) {
         self.stopping.store(true, Ordering::Release);
@@ -226,7 +240,17 @@ impl RunningEngine {
             let _ = tx.send(());
         }
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // `on_unexpected_exit` runs on the engine's own thread, and the
+            // crash handler it reaches calls this. Joining that thread from
+            // inside itself is `EDEADLK`: `join` returns `Err` on some
+            // platforms and blocks forever on others, and either way the
+            // revert the handler exists to run never happens. Signalling is
+            // enough there - the thread is already on its way out, which is
+            // why the callback fired. Every other caller is on another thread
+            // and still waits, so the address is free before it rebinds.
+            if t.thread().id() != std::thread::current().id() {
+                let _ = t.join();
+            }
         }
     }
 }
