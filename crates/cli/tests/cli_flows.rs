@@ -108,6 +108,27 @@ impl Harness {
     /// redirect listener was answering this probe and letting these tests pass
     /// on a socket belonging to another test - in parallel runs only, which is
     /// the worst way to find out.
+    /// The proxy address `connect` is expected to have written.
+    ///
+    /// Not always the engine's own port: on macOS and Windows `tool_proxy_url`
+    /// prefers the forwarder, because a tool config outlives the engine and an
+    /// address that stops answering fails closed for whatever holds it. The
+    /// forwarder persists its port when it starts, so read that when it is
+    /// there and fall back to the engine's, which is what `tool_proxy_url`
+    /// itself does when the forwarder will not start.
+    fn expected_proxy_port(&self, engine_port: u16) -> u16 {
+        let forwarder = self
+            .home()
+            .join("app-support")
+            .join("Gate Connect")
+            .join("proxy")
+            .join("forwarder-port");
+        fs::read_to_string(forwarder)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u16>().ok())
+            .unwrap_or(engine_port)
+    }
+
     fn seed_engine_proxy(&self) -> TcpListener {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -154,11 +175,12 @@ fn claude_code_connect_then_disconnect() {
 
     let settings: PathBuf = h.home().join(".claude").join("settings.json");
     let body = read(&settings);
+    let proxy_port = h.expected_proxy_port(engine_port);
     assert!(
         body.contains(&format!(
-            r#""HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:{engine_port}""#
+            r#""HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:{proxy_port}""#
         )),
-        "forward proxy URL missing: {body}"
+        "forward proxy URL missing (expected port {proxy_port}): {body}"
     );
     assert!(
         !body.contains(r#""ANTHROPIC_BASE_URL":"#),
