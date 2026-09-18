@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { disconnectToolsForQuit, quitApp } from "../lib/api";
+import { disconnectToolsForQuit, quitApp, type PendingQuit } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { Takeover, TAKEOVER_Z } from "./Takeover";
@@ -14,14 +14,26 @@ function joinNames(names: string[]): string {
 }
 
 /** Full-popover takeover shown when the user picks Quit from the tray while
- *  config-routed CLI tools are still connected. Their configs point at the
- *  loopback relay, which dies with the app, so those tools can't connect
- *  until Gate Connect runs again. Offer to disconnect the tools for the
- *  downtime (snapshot + disconnect, routing intent untouched, so the startup
- *  restore reapplies them) or quit with them in place. Sits above the other
+ *  tools are still routed through Gate. Two things can happen to a tool when
+ *  the app closes, and which one depends on the address its config names, so
+ *  the backend tells us per tool (`pending.reverting`): a config naming the
+ *  relay or the engine's own port names something that dies with the app, so
+ *  a plain quit puts that tool back on its own settings on the way out and
+ *  the startup restore reconnects it; a config naming the forwarder keeps
+ *  working without Gate, because that process outlives the app. The other
+ *  button disconnects everything for the downtime. Sits above the other
  *  takeovers (z-30) - a pending quit decision should never be obscured by an
  *  update prompt or routing notice. */
-export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
+export function QuitConfirm({
+  pending,
+  onCancel,
+}: {
+  pending: PendingQuit;
+  onCancel: () => void;
+}) {
+  const tools = pending.tools;
+  const reverting = pending.reverting;
+  const keeping = tools.filter((t) => !reverting.includes(t));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
   // The user asked to quit, but Enter on an unread panel should not decide
@@ -76,8 +88,36 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           Quit Gate Connect?
         </h1>
         <p className="text-gc-body-sm leading-snug text-gc-ink-3">
-          {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
-          {plural ? "they" : "it"} can’t connect until Gate Connect runs again.
+          {/* Says what the plain quit will do to each tool, by name, because
+              it does two different things. A config naming the relay or the
+              engine's own port dies with the app, so those tools go back to
+              their own settings on the way out (and reconnect at the next
+              start); a config naming the forwarder keeps working without Gate.
+              The backend decides which is which off the configured address,
+              and this is the same list `quit_app` will act on. See the
+              plain-quit column in docs/routing-architecture.md, "Who does
+              what, per event". */}
+          {names} still {plural ? "route" : "routes"} through Gate.{" "}
+          {reverting.length === 0 ? (
+            <>
+              If you quit now, {plural ? "they keep" : "it keeps"} working without Gate until
+              Gate Connect runs again.
+            </>
+          ) : (
+            <>
+              If you quit now, {joinNames(reverting)}{" "}
+              {reverting.length > 1 ? "go" : "goes"} back to{" "}
+              {reverting.length > 1 ? "their" : "its"} own settings until Gate Connect runs
+              again
+              {keeping.length > 0 ? (
+                <>
+                  ; {joinNames(keeping)} {keeping.length > 1 ? "keep" : "keeps"} working without
+                  Gate
+                </>
+              ) : null}
+              .
+            </>
+          )}
         </p>
         <p className="text-gc-caption leading-snug text-gc-ink-3">
           {/* "when Gate Connect starts again", not "at the next start": the next
@@ -95,11 +135,12 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
         <Button variant="accent" full disabled={busy} onClick={() => void turnOffAndQuit()}>
           {busy ? "Working…" : "Disconnect tools and quit"}
         </Button>
-        {/* Names what it does instead of "Quit anyway", which said only that
-            quitting would happen and left the difference between the two quit
-            buttons to be inferred. */}
+        {/* Plain "Quit": this button used to say "without disconnecting", which
+            stopped being true when a plain quit began putting relay-named tools
+            back on their own settings. The sentence above says exactly what it
+            does per tool; the label should not make a second claim. */}
         <Button variant="secondary" full disabled={busy} onClick={() => void quitAnyway()}>
-          Quit without disconnecting
+          Quit
         </Button>
         {/* A full secondary button, not a text link, so the safe option is the
             equal of the two that quit. This panel already focuses Cancel on

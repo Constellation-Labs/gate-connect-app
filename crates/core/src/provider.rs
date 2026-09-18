@@ -654,7 +654,11 @@ fn save_snapshot(file: &str, slugs: &[String]) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let raw = serde_json::to_string(slugs).context("serializing provider snapshot")?;
-    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+    // Atomic, like every other file under app support: a torn snapshot reads
+    // back as empty and leaves swept tools reverted with nothing to restore
+    // them. 0o600 to match its neighbours; the contents are slugs, not secrets.
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn load_snapshot(file: &str) -> Result<Vec<String>> {
@@ -685,6 +689,25 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
     MASTER_FLOW_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// [`master_flow_guard`] that gives up after `wait`, for the one caller that
+/// must not block indefinitely: the quit path. A restore or a toggle mid-flight
+/// when the user quits is unlikely and short, but "the app will not close" is
+/// the worst outcome on that path, and quitting *without* the revert is only
+/// the behaviour every release before this one had.
+fn try_master_flow_guard(wait: std::time::Duration) -> Option<MutexGuard<'static, ()>> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match MASTER_FLOW_LOCK.try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        }
+    }
 }
 
 /// Members of `p` that are not carrying traffic right now.
@@ -801,9 +824,20 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
             ),
         }
     }
-    // Union for the same reason as the provider snapshot.
+    record_swept(disconnected)
+}
+
+/// Add `slugs` to the swept-tools snapshot so the startup restore reconnects
+/// them. A union, for the same reason the provider snapshot unions: an existing
+/// file is a pending restore, and overwriting it would drop tools from it. No
+/// write at all when there is nothing to add, so a no-op sweep leaves no empty
+/// snapshot behind.
+fn record_swept(slugs: Vec<String>) -> Result<()> {
+    if slugs.is_empty() {
+        return Ok(());
+    }
     let mut snapshot = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
-    for slug in disconnected {
+    for slug in slugs {
         if !snapshot.contains(&slug) {
             snapshot.push(slug);
         }
@@ -835,6 +869,98 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 pub fn snapshot_and_park_everything() -> Result<()> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked(ToolConfigs::Kept)
+}
+
+/// Is this tool pointed at an address that stops answering when the GUI quits?
+///
+/// Managed at all (its status is one the sweeps act on), and at least one
+/// address its configuration names is hosted in the engine's process -
+/// [`crate::proxy::address_dies_with_gui`], per address. Not the declared
+/// [`registry::Mechanism`]: a forward-proxy tool whose install still names the
+/// engine's own port dies exactly like a relay tool, and a relay tool the user
+/// has repointed by hand dies not at all.
+fn stranded_by_quit(integ: &dyn registry::Integration) -> bool {
+    if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+        return false;
+    }
+    integ
+        .configured_addresses()
+        .unwrap_or_default()
+        .iter()
+        .any(|a| crate::proxy::address_dies_with_gui(a))
+}
+
+/// Display names of the tools a plain quit would put back on their own
+/// settings. Read-only, for the quit dialog: the same predicate the revert
+/// applies, so what the dialog names is exactly what gets rewritten.
+pub fn tools_stranded_by_quit() -> Vec<String> {
+    registry::registry()
+        .into_iter()
+        .filter(|i| stranded_by_quit(i.as_ref()))
+        .map(|i| i.display_name().to_string())
+        .collect()
+}
+
+/// Plain quit's teardown, on the platforms where the engine lives in the GUI.
+///
+/// [`ToolConfigs::Kept`] is the routing toggle's rule: leave a config alone,
+/// because the address it names keeps answering. A plain quit breaks that
+/// premise for some addresses and not others, and the line between them is
+/// not a tool boundary. Everything naming the forwarder keeps working, because
+/// the forwarder is a separate process and is deliberately left running
+/// (`proxy::forwarder::stop` is not called here). A config naming the relay, or
+/// the engine's own port, names a listener inside this process, and nothing
+/// fronts it: the tool cannot connect until Gate runs again, with an error
+/// about a loopback port the user has never heard of.
+///
+/// So this reverts a config **if and only if an address it names dies with
+/// this process** - [`stranded_by_quit`], which is also what the quit dialog
+/// used to name these tools a moment ago. Reverted tools are recorded in
+/// [`SWEPT_TOOLS_SNAPSHOT`] so the startup restore brings them back exactly as
+/// it brings back the quit-and-disconnect sweep. No provider is snapshotted,
+/// because no provider was turned off.
+///
+/// Not called on Linux, where the engine is a daemon and the GUI hosts none of
+/// these addresses; the caller gates on platform. Not called from
+/// `RunEvent::Exit` either, which also runs on an updater relaunch and a crash
+/// restart, neither of which is the user choosing to leave Gate off.
+///
+/// Returns the display names of what it reverted, for the notification the
+/// caller fires: the popover is gone by then, and a rewrite of somebody's
+/// config file is worth a sentence. A failure to *record* what was reverted is
+/// logged and does not hide the names - that is the one case the sentence
+/// matters most, since nothing will restore those tools on the next start.
+pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
+    let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
+        anyhow::bail!(
+            "another routing operation is still running; quitting without putting relay \
+             tools back on their own settings"
+        );
+    };
+    let mut reverted: Vec<(String, String)> = Vec::new();
+    for integ in registry::registry() {
+        if !stranded_by_quit(integ.as_ref()) {
+            continue;
+        }
+        match integ.disconnect() {
+            Ok(()) => reverted.push((
+                integ.display_name().to_string(),
+                integ.id().slug().to_string(),
+            )),
+            Err(e) => eprintln!(
+                "[gate] reverting {} for quit failed: {e}",
+                integ.display_name()
+            ),
+        }
+    }
+    let (names, slugs): (Vec<String>, Vec<String>) = reverted.into_iter().unzip();
+    if let Err(e) = record_swept(slugs) {
+        eprintln!(
+            "[gate] recording reverted tools for the next start failed: {e:#}; they will need \
+             reconnecting by hand"
+        );
+    }
+    Ok(names)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last

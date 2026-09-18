@@ -1840,7 +1840,10 @@ fn request_quit(app: &tauri::AppHandle) {
                 return;
             }
             if let Ok(mut pending) = PENDING_QUIT_TOOLS.lock() {
-                *pending = Some(connected);
+                *pending = Some(PendingQuit {
+                    reverting: gate_connect_core::provider::tools_stranded_by_quit(),
+                    tools: connected,
+                });
             }
             reveal_popover_window(&app);
             let _ = app.emit("quit-requested", ());
@@ -1851,19 +1854,92 @@ fn request_quit(app: &tauri::AppHandle) {
 /// Quit request buffered by [`request_quit`] for the frontend to sweep; the
 /// connected tool names to show in the quit takeover. `None` when no quit is
 /// pending.
-static PENDING_QUIT_TOOLS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+/// What the deferred quit would do, for the dialog to say before the user
+/// chooses. `tools` still route through Gate; `reverting` is the subset whose
+/// configuration names an address that dies with this process and will be put
+/// back on its own settings on the way out - the same predicate `quit_app`
+/// applies, so the dialog names exactly what gets rewritten.
+#[derive(Clone, serde::Serialize)]
+struct PendingQuit {
+    tools: Vec<String>,
+    reverting: Vec<String>,
+}
+
+static PENDING_QUIT_TOOLS: Mutex<Option<PendingQuit>> = Mutex::new(None);
 
 /// Hand the buffered quit request (connected tool names) to the frontend and
 /// clear it.
 #[tauri::command]
-fn pending_quit_tools() -> Option<Vec<String>> {
+fn pending_quit_tools() -> Option<PendingQuit> {
     PENDING_QUIT_TOOLS.lock().ok().and_then(|mut p| p.take())
 }
 
-/// Finish a quit that [`request_quit`] deferred to the popover. Plain exit;
-/// the `RunEvent::Exit` handler still reverts the system proxy.
+/// Finish a quit that [`request_quit`] deferred to the popover: the "quit
+/// without disconnecting" choice. The `RunEvent::Exit` handler still reverts
+/// the system proxy.
+///
+/// One thing is reverted here that the exit handler does not touch. On macOS
+/// and Windows the relay lives in this process, so a config naming it - Codex,
+/// OpenCode - names a port that is about to stop answering, and the tool then
+/// fails with an error about a loopback address until Gate runs again.
+/// `provider::revert_relay_configs_for_quit` puts exactly those tools back on
+/// their own settings and records them for the startup restore. Everything
+/// naming the forwarder is left alone: that process keeps running and forwards
+/// direct, which is the whole reason it exists. Linux skips it; the relay is a
+/// daemon there and keeps answering.
+///
+/// Off the main thread, like `disconnect_tools_for_quit`: it is config-file
+/// I/O. A notification rather than silence, because a rewrite of somebody's
+/// config file is worth a sentence and the popover is gone before it lands.
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle) {
+async fn quit_app(app: tauri::AppHandle) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let reverted = tauri::async_runtime::spawn_blocking(|| {
+            gate_connect_core::provider::revert_stranded_configs_for_quit()
+                .map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("join error: {e}")));
+        match reverted {
+            Ok(names) if !names.is_empty() => {
+                use tauri_plugin_notification::NotificationExt;
+                // Both shapes spelled out, as `disconnect_tools_for_quit` does,
+                // rather than assembled from plural conditionals. The Codex
+                // sentence is added only when Codex is in the list: it is the
+                // one tool where "reconnects when it starts again" is per
+                // conversation rather than per process - a conversation pins
+                // its provider when it starts, measured in `integrations::codex`.
+                let mut body = if names.len() == 1 {
+                    format!(
+                        "{} is back on its own settings while Gate Connect is closed, and \
+                         reconnects when it starts again.",
+                        names[0]
+                    )
+                } else {
+                    format!(
+                        "{} are back on their own settings while Gate Connect is closed, and \
+                         reconnect when it starts again.",
+                        join_names(&names)
+                    )
+                };
+                if names.iter().any(|n| n == "Codex") {
+                    body.push_str(
+                        " Codex conversations already open keep the route they started with \
+                         until you resume them.",
+                    );
+                }
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Gate Connect")
+                    .body(&body)
+                    .show();
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[gate] putting stranded tools back for quit failed: {e}"),
+        }
+    }
     app.exit(0);
 }
 
