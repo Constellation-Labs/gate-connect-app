@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { adaptEvents } from "./toolEvents";
+import { adaptEvents, categoryTone } from "./toolEvents";
 
 /**
  * What a row in the tool feed is allowed to say.
@@ -211,5 +211,56 @@ describe("adaptEvents", () => {
     const view = adaptEvents({ ...envelope([]), events: undefined });
 
     expect(view.entries).toEqual([]);
+  });
+});
+
+/**
+ * The Type column's ink and its glyph, both keyed on the gateway's own
+ * spellings.
+ *
+ * Found on the functional-review build: the column drew one ink for every
+ * category where `661:16450` colours each, and two of the five spellings the
+ * gateway can send matched nothing in the glyph table, so Credential and PHI
+ * rows fell through to the generic shield.
+ */
+describe("the Type column's categories", () => {
+  it("colours each category the way the frame draws it", () => {
+    // Measured off `661:16450` and matched to the variables it resolves:
+    // red/600, green/600, purple/600.
+    expect(categoryTone("injection")).toContain("red-600");
+    expect(categoryTone("pii")).toContain("green-600");
+    expect(categoryTone("credential")).toContain("purple-600");
+  });
+
+  it("leaves the ink alone where no guardrail fired", () => {
+    // A colour is what a guardrail firing looks like. "Regular" is the case
+    // where one ran and matched nothing, and `other` is a category the frame
+    // never drew.
+    expect(categoryTone("Regular")).toBe("text-base-foreground");
+    expect(categoryTone("other")).toBe("text-base-foreground");
+    expect(categoryTone(null)).toBe("text-base-foreground");
+  });
+
+  it("knows every spelling the gateway can actually send", () => {
+    // `toCategory` in `activity.controller.ts` narrows to exactly these five.
+    // `credential` and `phi` used to match nothing here - the table was keyed
+    // `credentials` and `pii-phi`, which are the *policy row* ids - so two of
+    // the five drew the fallback shield instead of their own glyph.
+    const iconFor = (c: string) =>
+      adaptEvents(envelope([raw({ securityCategory: c })])).entries[0].categoryIcon;
+
+    expect(iconFor("injection")).toBe("shieldAlert");
+    expect(iconFor("pii")).toBe("userRound");
+    expect(iconFor("phi")).toBe("userRound");
+    expect(iconFor("credential")).toBe("key");
+    // `other` has no glyph of its own and keeps the fallback, which is what
+    // the frame's "a glyph in every Type cell" asks for.
+    expect(iconFor("other")).toBe("shieldCheck");
+  });
+
+  it("still answers for the policy-row spellings, which are a second vocabulary", () => {
+    expect(categoryTone("pii-phi")).toContain("green-600");
+    expect(categoryTone("prompt-injection")).toContain("red-600");
+    expect(categoryTone("credentials")).toContain("purple-600");
   });
 });

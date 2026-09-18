@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
+import { categoryTone } from "../../lib/toolEvents";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
@@ -836,7 +837,15 @@ function RecentActivity({
                       title={entry.categoryTitle ?? undefined}
                     >
                       {entry.categoryIcon && (
-                        <Icon name={entry.categoryIcon} size={20} />
+                        // Coloured per category (`661:16450`), not inked from
+                        // the span: the frame draws Injection red, PII green
+                        // and Credential purple, and one ink for all of them
+                        // was what this column shipped. See `categoryTone`.
+                        <Icon
+                          name={entry.categoryIcon}
+                          size={20}
+                          className={`shrink-0 ${categoryTone(entry.category)}`}
+                        />
                       )}
                       <span className="truncate">{entry.category}</span>
                     </span>
