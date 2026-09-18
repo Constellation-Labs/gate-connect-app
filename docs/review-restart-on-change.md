@@ -99,39 +99,80 @@ start time against the config file's mtime, so a byte-identical rewrite is
 indistinguishable from a real change and raises "Reopen required" on a tool
 nothing happened to.
 
-## 5. Plan
+## 5. Plan, and what it became
 
-In dependency order. Each is separately revertable.
+All three landed on this branch, in this order. Each is a separate commit and
+separately revertable.
 
-1. **Make the writes idempotent.** Compare before writing; keep the `0o600`
-   chmod on the skip path, because `write_file` also fixes mode on overwrite.
-   Independent of everything else, and the one item that is pure subtraction.
-2. **Point the proxy-tool configs at the forwarder.** `provider.rs`'s four
-   sites and the Tauri one. Drift and `status` then have to compare against
-   `exported_proxy_identity_url`, not `persisted_engine_proxy_url`; section 2
-   of `routing-architecture.md` already warns that comparing against the
-   engine's reports every correctly-exported machine as permanently drifted.
-3. **Stop tearing down tool configs on a routing toggle.** `routing.rs:79`.
-   Disconnect stays what it is: a per-tool action, and the explicit "let go of
-   this machine" paths (sign-out, Reset, untrusting the CA) keep sweeping.
-   Read section 6 before doing this one.
+1. **Make the writes idempotent.** Done in `primitives::write_file`, one place
+   rather than five, because it is a property of writing config files and not of
+   any one format. The `mode` fix is deliberately not skipped with the write: a
+   config that already holds the right bytes under the tool's own umask is
+   exactly the file a naive skip would leave at 0o644 forever.
+2. **Point the proxy-tool configs at the forwarder.** Done, as two functions
+   rather than one, because the old single call was answering two questions:
+   `tool_proxy_url` is the write path and may spawn, `tool_proxy_identity_urls`
+   is the read path and never does. The second returns a *list*, because two
+   addresses are legitimately ours at once - every install written before this
+   holds the engine's, and it routes.
+3. **Stop tearing down tool configs on a routing toggle.** Done via
+   `provider::ToolConfigs`, so the routing switch parks and the
+   quit-and-disconnect choice still sweeps. Section 6 was written before this
+   was attempted and named one of the three traps; the other two are recorded
+   there now as well.
 
-## 6. Traps, for whoever takes item 3
+**The residual, stated plainly.** An existing install is not migrated onto the
+forwarder's address by being told it is broken - both addresses read Connected,
+so nothing drifts and nothing repairs. It moves the next time something writes
+its config: connecting the tool, reconnecting it, or a master-on restore. Until
+then it keeps the behaviour it already had, which is the pre-forwarder
+behaviour rather than a regression. Forcing it would mean reporting a working
+config as drifted, and a reconcile pass rewriting a file that is already right.
 
-**`relay_listening` cannot tell parked from routing.** `mod.rs:817` is a bare
-TCP probe with no snapshot gate, so a parked relay reads as alive.
-`codex::status` (`codex.rs:321`) treats that as "the proxy is running", so once
-the teardown stops rewriting Codex's config, Codex would report **Connected
-while routing is off**. Today the identity check fails first, which is the only
-reason this is invisible. `engine::intercepting()` (`engine.rs:169`) already
-computes the distinction and is not reachable from the status path.
+## 6. Traps, found by following item 3
+
+Section 5's third item turned up three of these. One was predicted here before
+the work started; the other two were not, and they are the reason this section
+is longer than the plan above.
+
+**`relay_listening` cannot tell parked from routing.** `mod.rs` is a bare TCP
+probe with no snapshot gate, so a parked relay reads as alive. `codex::status`
+treated that as "the proxy is running", so once the teardown stopped rewriting
+Codex's config, Codex reported **Connected while routing is off** - a green pill
+over traffic going direct, which is the single thing that status exists to
+prevent. Fixed by asking the routing intent as well. The intent rather than
+anything measured, because the relay publishes no health endpoint on this branch
+and "is it intercepting" is not observable from outside the hosting process. The
+known inaccuracy is the headless `proxy relay` host: it always intercepts and
+writes no intent file, so on a machine whose last explicit answer was "off" it
+under-claims. That is the safe direction.
 
 `engine_proxy_url` does not have this problem and it is worth knowing why: it
-gates on `engine_likely_running()` (`mod.rs:761`), which reads the system-proxy
-snapshot, and `disable_inner` clears that snapshot at `manager_core.rs:597`
-while parking. So OpenClaw and Hermes still correctly refuse to connect while
-parked. Any fix for `relay_listening` should use the same signal rather than a
-second one.
+gates on `engine_likely_running()`, which reads the system-proxy snapshot, and
+`disable_inner` clears that snapshot while parking. So OpenClaw and Hermes still
+correctly refuse to connect while parked. The fix for `relay_listening` uses a
+separate signal rather than that one on purpose - `relay_listening`'s own doc
+explains that it probes the port precisely because a standalone relay host
+leaves no snapshot.
+
+**Drift is the steady state while parked**, which no longer had anywhere safe to
+land. The three proxy tools' `status` asks whether the engine is *routing*; it
+is not, so each reads `Drifted`, and each is `config_is_managed`. Both reconcile
+passes act on exactly that pair, so they would have called a `connect` that
+refuses by design, on every startup and every window focus, logging a failure
+about a machine with nothing wrong with it. `Integration::requires_engine` is
+the guard, declared rather than matched off an error string for the reason
+`restore_swept_tools` already gives in place.
+
+The first attempt was blunter - skip reconcile entirely whenever routing is off
+- and it broke five tests in `reconcile_enabled` that exercise reconcile without
+setting the intent. They were right to break.
+
+**"`<addr>` is a dead address" became false.** All three proxy integrations said
+it for every not-routing state, which was accurate when the only way to stop
+routing was to release the port. `proxy::loopback_proxy_answers` is the
+measurement that separates a parked listener from a released one, and the
+message now says which one it is.
 
 **App exit is the residual, and item 2 is what closes it.** On macOS and
 Windows the listeners live in the GUI process, so quitting releases the ports
@@ -154,13 +195,29 @@ telling the truth about a thing that is parked rather than gone.
 
 ## 7. What is verified here, and what is not
 
-**Verified in this tree.** The merge: clippy `-D warnings` clean, and
-`cargo test --workspace -- --test-threads=1` green at 382 tests across 31
-binaries. Every file:line in this document was read at the merge commit.
+**Verified in this tree.** clippy `-D warnings` clean and
+`cargo test --workspace -- --test-threads=1` green at every commit: 382 tests
+at the merge, 390 with this branch's own. Every file:line in this document was
+read at the merge commit; the line numbers moved afterwards and the symbol
+names are the durable reference.
 
-**Read, not run.** The park's own behaviour. Its branch carries tests pinning
-that a park beats the Claude Code selector and beats an enabled domain; this
-review did not drive a live toggle.
+**Mutation-checked, not just green.** The headline assertion is that a full
+master off/on cycle does not move a tool config's mtime
+(`master_cycle_preserves_members`). It needs both halves of the branch, and
+each was broken separately to confirm the test notices: reverting the park to
+`ToolConfigs::Reverted`, and disabling `write_file`'s identical-write skip. An
+earlier version of that test used OpenCode and passed under both mutations,
+because no provider claims OpenCode so the provider pass never reaches it. It
+was replaced rather than kept as decoration.
+
+**Read, not run.** The park's own behaviour, and everything this branch does on
+macOS and Windows. The park carries tests pinning that it beats the Claude Code
+selector and beats an enabled domain, but no live toggle was driven here, and
+the forwarder repoint is the half that most wants one: `tool_proxy_url` falls
+back to the engine's address when `ensure_running` fails, and that fallback has
+been reasoned about rather than provoked. Note also that `pnpm app:local`
+cannot see it - the seam that makes the keychain safe also skips this - so the
+check has to be `pnpm app` on each OS.
 
 **Not measured, and named as a question rather than a finding.** Whether a GUI
 app re-resolves the PAC without a restart. `feat/new-app-ui`'s
