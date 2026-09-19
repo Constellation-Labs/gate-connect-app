@@ -609,6 +609,20 @@ async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, Stri
     .map_err(|e| format!("login join error: {e}"))?
 }
 
+/// Stop an interactive login that is still waiting for the browser.
+///
+/// The offer dialog's own decline calls this: the flow waits five minutes for a
+/// callback, and the usual reason it never comes is the sign-in page opening in
+/// a browser profile the person is not signed into. Without this the dialog
+/// could only stop *showing* the wait - the login would go on, and a late
+/// success would upgrade an account the user had just declined to upgrade.
+///
+/// Not async and not blocking: it sets a flag the login's own poll loop reads.
+#[tauri::command]
+fn oauth_cancel_login() {
+    gate_connect_core::oauth::cancel_login();
+}
+
 /// Current OAuth sign-in status (signed in, email, expiry).
 #[tauri::command]
 async fn oauth_status() -> Result<OAuthStatusDto, String> {
@@ -4486,6 +4500,7 @@ pub fn run() {
                     clear_account,
                     switch_gateway,
                     oauth_begin_login,
+                    oauth_cancel_login,
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,

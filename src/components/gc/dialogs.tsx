@@ -335,19 +335,32 @@ export function OAuthOfferDialog({
       icon="shieldCheck"
       title="Sign in instead of pasting a key"
       subtitle={`Constellation sign-in keeps your session in ${secretStore} and refreshes it on its own, so there is nothing to rotate when a key expires.`}
-      // Guarded rather than `disabled`: `Modal` does not honour that on the
-      // secondary, and a decline that lands mid-flow would close the offer over
-      // a browser sign-in that is still going to finish.
+      // The decline works mid-flow, and that is the whole point of it.
+      //
+      // It used to be guarded as `() => !busy && onKeepKey()`, on the reasoning
+      // that a decline landing mid-flow "would close the offer over a browser
+      // sign-in that is still going to finish". The goal was right and the
+      // mechanism was not: the button went on rendering as a live control and
+      // silently did nothing, while the primary was disabled and `onDismiss`
+      // was undefined - so for the five minutes `LOGIN_TIMEOUT_SECS` allows,
+      // this dialog had no working exit at all, and the way to discover that
+      // was to press the one button that looked available and watch nothing
+      // happen.
+      //
+      // `onKeepKey` now cancels the login first (see `NewUiApp`), which is what
+      // makes declining honest: the flow stops rather than continuing under a
+      // closed dialog and upgrading an account the user just declined to
+      // upgrade.
       secondary={{
         label: "Keep using my API key",
-        onClick: () => !busy && onKeepKey(),
+        onClick: onKeepKey,
       }}
       primary={{
         label: busy ? "Waiting for browser..." : "Sign in with Constellation",
         onClick: onSignIn,
         disabled: busy,
       }}
-      onDismiss={busy ? undefined : onKeepKey}
+      onDismiss={onKeepKey}
     >
       <p className="text-sm leading-5 text-neutral-600">
         Your gateway and your routing stay exactly as they are. You can switch
