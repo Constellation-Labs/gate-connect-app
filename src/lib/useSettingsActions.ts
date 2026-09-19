@@ -91,7 +91,7 @@ export interface SettingsActions {
    *  opened, and `false` when there was nothing to ask - a single-org account, a
    *  call while busy, or a failed read. A caller that navigated to get here
    *  needs to know, or the user lands on a surface showing nothing. */
-  openSwitchOrg: () => Promise<boolean>;
+  openSwitchOrg: (opts?: { evenWhenSingle?: boolean }) => Promise<boolean>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
   openDisconnect: () => void;
@@ -234,7 +234,7 @@ export function useSettingsActions({
     }
   }, [account, newKey, busy, onAccount, onError]);
 
-  const openSwitchOrg = useCallback(async () => {
+  const openSwitchOrg = useCallback(async (opts?: { evenWhenSingle?: boolean }) => {
     if (busy) return false;
     setBusy(true);
     try {
@@ -249,7 +249,20 @@ export function useSettingsActions({
       // nothing at all - and for a single-org account, which is most accounts.
       // The caller decides where to land instead; this function still declines
       // to ask a question with one answer.
-      if (orgs.length < 2) return false;
+      //
+      // `evenWhenSingle` is the rail's exception, and it is about a different
+      // question (AG-915). Its control is a button with a pointer cursor sitting
+      // under the org's own name, so a click that opens nothing reads as broken
+      // rather than as "there is nothing to switch to". Shown the picker, a
+      // single-org account can see its one organization, see the primary refused
+      // against it, and learn where switching lives. The tray keeps the
+      // hand-over behaviour above: it has already closed a popover and pulled a
+      // window forward, and landing that on a dialog with one disabled button
+      // would be a worse answer than Settings.
+      //
+      // Zero orgs is not an exception either way: there is nothing to draw.
+      if (orgs.length === 0) return false;
+      if (orgs.length < 2 && !opts?.evenWhenSingle) return false;
       setPrompt({
         kind: "switch-org",
         orgs,

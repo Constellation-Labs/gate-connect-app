@@ -3095,7 +3095,11 @@ export function NewUiApp() {
         account?.auth_mode === "oauth"
           ? () => {
               setActionError(null);
-              void settings.openSwitchOrg();
+              // The rail's own control, so it opens even for a single-org
+              // account (AG-915). It is a button under the org's name with a
+              // pointer cursor: a click that opens nothing reads as broken.
+              // The tray hand-over above keeps falling back to Settings.
+              void settings.openSwitchOrg({ evenWhenSingle: true });
             }
           : undefined
       }

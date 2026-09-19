@@ -257,6 +257,41 @@ describe("useSettingsActions: switching organization", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("opens over a single organization when the caller asks it to", async () => {
+    // AG-915. The rail's control is a button under the org's own name with a
+    // pointer cursor, so a click that opens nothing reads as broken rather than
+    // as "there is nothing to switch to". Shown the picker, the reader sees
+    // their one organization and a refused primary, and learns where switching
+    // lives. `SwitchOrganizationDialog` disables the primary against the
+    // current org already, so the dialog is informational by construction.
+    (oauthListOrgs as Mock).mockResolvedValue([ORGS[0]]);
+    const { api, onError } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(true);
+    expect(api.current!.prompt).toMatchObject({ kind: "switch-org", orgs: [ORGS[0]] });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("still draws nothing when there is no organization at all", async () => {
+    // Not an exception either way: an empty picker has nothing to show, and the
+    // tray's fallback is the right landing for it too.
+    (oauthListOrgs as Mock).mockResolvedValue([]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(false);
+    expect(api.current!.prompt).toBeNull();
+  });
+
   it("reports that the picker opened when there is something to choose", async () => {
     const { api } = harness();
 
