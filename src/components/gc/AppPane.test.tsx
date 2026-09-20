@@ -631,3 +631,25 @@ describe("AppPane draws what the helpers resolve", () => {
     expect(screen.getAllByTestId("brand-mark")).toHaveLength(2);
   });
 });
+
+describe("the App-default row's mark size", () => {
+  it("draws the fallback at the same size as the vendor mark", () => {
+    // The row's tile is 36px around a 20px glyph (`683:20439`). The first
+    // version of this passed 20 only to the colour mark, so Claude and ChatGPT
+    // drew 20 while every other app drew `BrandMark`'s default 16 in the same
+    // slot - a size step between rows that did not exist before the change.
+    render(
+      pane({
+        modelChoice: "app",
+        appVendorMark: undefined,
+        appFallbackMark: <svg data-testid="sized-fallback" width={20} height={20} />,
+        logo: <svg data-testid="header-only" />,
+      }),
+    );
+
+    expect(screen.getByTestId("sized-fallback").getAttribute("width")).toBe("20");
+    // `logo` stays the header's, and does not reach the row once a sized
+    // fallback exists.
+    expect(screen.getAllByTestId("header-only")).toHaveLength(1);
+  });
+});

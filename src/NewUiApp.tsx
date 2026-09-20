@@ -2102,6 +2102,16 @@ export function NewUiApp() {
     setOfferBusy(true);
     try {
       await settings.upgradeToOAuth();
+      // Not an accept if they declined while it was landing.
+      //
+      // `oauth.rs` refuses after the callback, which closes the wide half of
+      // this window, but the token exchange and the keychain write still run
+      // after that check - so a decline pressed in those few hundred
+      // milliseconds can be followed by a login that succeeds anyway. The
+      // upgrade is then a fact and the shell will show it, which is right; what
+      // would be wrong is counting it as an answer to a question the user
+      // answered the other way, and burning the one-time offer on it.
+      if (declinedRef.current) return;
       track("oauth_offer_accepted");
       // Seen whichever way the user leaves, so a completed upgrade cannot be
       // offered again on the next launch either.
@@ -2153,17 +2163,21 @@ export function NewUiApp() {
         declinedRef.current = true;
         void oauthCancelLogin().catch(() => {});
       }
-      // Pressing the decline is an answer and is remembered. Escape and the
-      // scrim are not.
+      // Pressing the decline is an answer and is remembered. Escape is not.
       //
-      // They became live mid-flow in the same change that made the decline
+      // Escape became live mid-flow in the same change that made the decline
       // work, and that combination is sharper than it looks: while the browser
-      // tab is open and the person is typing their password, a stray Escape in
-      // this window would cancel the sign-in *and* burn a one-time offer they
+      // tab is open and the person is typing their password, a stray keypress
+      // in this window would cancel the sign-in *and* burn a one-time offer they
       // never answered - `hasSeenOAuthOffer` gates it forever - with no message,
       // because the cancel's own rejection is deliberately suppressed. Losing
       // the sign-in to a keypress is recoverable; losing the offer with it is
       // not.
+      //
+      // Escape only: `Modal` hands `onDismiss` to `useFocusTrap` and to the
+      // optional close button, and its scrim carries no click handler - in this
+      // dialog or any other. An earlier version of this comment said "and the
+      // scrim", which was wrong about every dialog in the app.
       //
       // Principle 5's shape: the dialog stays dismissable, and the irreversible
       // half needs the button.
@@ -3521,7 +3535,18 @@ export function NewUiApp() {
           logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.
+          //
+          // Both at 20, and the fallback too (`appFallbackMark`): the row's tile
+          // is 36px around a 20px glyph (`683:20439`), and the first version of
+          // this passed 20 only to the colour mark. That left Claude and ChatGPT
+          // at 20 while OpenCode, OpenClaw and Hermes drew 16 in the same slot -
+          // a size step between rows that did not exist before the change.
           appVendorMark={appProviderMarkFor(view.slug, 20)}
+          appFallbackMark={brandMarkForSection(
+            view.slug,
+            sectionMemberKeys(view.slug),
+            20,
+          )}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off

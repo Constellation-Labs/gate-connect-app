@@ -61,7 +61,7 @@ describe("OAuthOfferDialog", () => {
     expect(onSignIn).not.toHaveBeenCalled();
   });
 
-  it("lets Escape and the scrim close it mid-flow, without spending the offer", () => {
+  it("lets Escape close it mid-flow, without spending the offer", () => {
     // Both halves matter. Dismissal was dead while busy, which is half of what
     // was reported - and making it live is sharp on its own, because the
     // decline permanently marks a one-time offer seen. A stray Escape while

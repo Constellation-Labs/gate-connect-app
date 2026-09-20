@@ -330,10 +330,12 @@ export function OAuthOfferDialog({
   error?: ReactNode;
   onSignIn: () => void;
   onKeepKey: () => void;
-  /** Escape and the scrim. Separate from `onKeepKey` because they are not an
-   *  answer: a stray keypress must be able to close this without spending the
-   *  one-time offer. Defaults to the decline for callers with no such
-   *  distinction to make. */
+  /** Escape. Separate from `onKeepKey` because it is not an answer: a stray
+   *  keypress must be able to close this without spending the one-time offer.
+   *  Defaults to the decline for callers with no such distinction to make.
+   *
+   *  Escape and the close button, precisely - `Modal` passes `onDismiss` to
+   *  `useFocusTrap` and to `closeButton`, and its scrim has no click handler. */
   onDismissOffer?: () => void;
 }) {
   return (

@@ -62,6 +62,7 @@ export function AppPane({
   since,
   logo,
   appVendorMark,
+  appFallbackMark,
   busy,
   onToggleProtected,
   stats,
@@ -128,6 +129,15 @@ export function AppPane({
    * it, where the row falls back to `logo` and then the cube.
    */
   appVendorMark?: ReactNode;
+  /**
+   * The rail's section mark at the App-default row's own size, for an app with
+   * no single vendor.
+   *
+   * Separate from `logo` only because of the size: `logo` is the pane header's,
+   * drawn at 16 into a 44px black tile, and this row's tile is 36px around a
+   * 20px glyph. Sharing one prop put two sizes in one slot.
+   */
+  appFallbackMark?: ReactNode;
   /** A routing write is in flight, so the switch refuses a second click. */
   busy?: boolean;
   onToggleProtected: () => void;
@@ -277,7 +287,7 @@ export function AppPane({
           // monochrome one where it does not (AG-879). This row used to take
           // `logo` outright, which is the set built for the header's dark tile
           // and renders flat on this one.
-          appLogo={appVendorMark ?? logo}
+          appLogo={appVendorMark ?? appFallbackMark ?? logo}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
@@ -428,9 +438,23 @@ function ModelSelection({
   onManageBilling,
 }: {
   appName: string;
-  /** The app's own brand mark, for the App-default row. The section's mark, the
-   *  same one the pane header wears - this row is about the app, not about a
-   *  provider, so `ProviderMark` is the wrong family here. */
+  /**
+   * The mark for the App-default row, already resolved by the caller.
+   *
+   * **The provider's full-colour mark where the app has one vendor**
+   * (`408:25491` draws Anthropic's `#E8704E`), the rail's monochrome section
+   * mark otherwise. This doc used to say the opposite - "this row is about the
+   * app, not about a provider, so `ProviderMark` is the wrong family here" -
+   * which is the reasoning the frame overturns, and it sat on the prop rather
+   * than the call site, so it was what the next person editing this component
+   * would read. Left as it was, the next "fix" to match the doc would restore
+   * the flat mark.
+   *
+   * The distinction that IS real: the pane header's tile is black and takes the
+   * monochrome family, because those marks render in `currentColor` so a dark
+   * tile can ink them. This row's tile is light. One prop cannot serve both,
+   * which is why the caller resolves it and `logo` stays separate.
+   */
   appLogo?: ReactNode;
   choice: ModelChoice | null;
   pending?: boolean;
@@ -853,12 +877,17 @@ function RecentActivity({
                 <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                {/* Type. The frame draws a 20px glyph 8px from the label, both at
-                  `base/foreground` - the downloaded asset's own stroke is
-                  #030712, and the glyph takes it from this span. Spelled as the
-                  gateway spelled it, like `SecurityEvents` does with the same
-                  field: a display vocabulary for values only the gateway knows
-                  would be invented here. */}
+                {/* Type. The frame draws a 20px glyph 8px from the label, and the
+                  two take DIFFERENT inks: the label is `base/foreground`, the
+                  glyph is its category's colour (see `categoryTone`).
+                  This comment used to claim both were `base/foreground`, citing
+                  "the downloaded asset's own stroke is #030712" - which is what
+                  an *export* carries, not what the frame renders. Sampling the
+                  asset instead of the frame is how one ink ended up on five
+                  categories.
+                  Spelled as the gateway spelled it, like `SecurityEvents` does
+                  with the same field: a display vocabulary for values only the
+                  gateway knows would be invented here. */}
                 <td className="py-[1.125rem] pr-4">
                   {entry.category ? (
                     <span
