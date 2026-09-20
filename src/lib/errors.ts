@@ -159,6 +159,25 @@ export function classifyError(
     };
   }
 
+  // The sign-in page's own Cancel, which is a browser button and not a system
+  // prompt.
+  //
+  // Ahead of the prompt branch below, and that order is the fix: Cognito
+  // answers a declined authorization with `access_denied`, `oauth.rs` wraps it
+  // as "authorization failed (access_denied)", and the branch below matches
+  // "authorization" AND "denied" - so pressing Cancel in the browser produced
+  // "The system prompt was cancelled - approve your system password prompt",
+  // naming a dialog the user never saw. It is the same misdiagnosis as the
+  // timeout one below, on the likelier path: declining takes a click, walking
+  // away takes five minutes.
+  if (lc.includes("access_denied") || lc.includes("access denied")) {
+    return {
+      title: "The sign-in was declined",
+      hint: "Try again and approve the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
   // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
   // credential prompts report their own cancels through the same branch).
   if (

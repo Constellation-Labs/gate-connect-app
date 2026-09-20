@@ -191,10 +191,32 @@ const CATEGORY_TONES: Record<string, string> = {
   credentials: "text-purple-600",
 };
 
-/** The ink for a category, or `base.foreground` where the frame draws none. */
+/**
+ * The ink for a category, or `base.foreground` where the frame draws none.
+ *
+ * `Object.hasOwn` and not a bare index, for the reason `providerNameFor` gives
+ * at length: the key is a gateway string, and `constructor` and `__proto__`
+ * both survive `toLowerCase()` and come back truthy off `Object.prototype`, so
+ * `??` never fires and the class attribute is handed a function. This shipped
+ * guarded in `ProviderMark` and unguarded here, in the same change.
+ */
 export function categoryTone(category: string | null): string {
   if (category === null) return "text-base-foreground";
-  return CATEGORY_TONES[category.toLowerCase()] ?? "text-base-foreground";
+  return lookup(CATEGORY_TONES, category) ?? "text-base-foreground";
+}
+
+/**
+ * One normalisation for both category tables.
+ *
+ * The glyph and its ink have to agree, and they did not: this function's
+ * callers used to disagree about case, so a row the gateway spelled `PII` took
+ * the fallback *shield* in PII *green* - a combination neither table intends.
+ * A PR whose premise is that spellings drift between producers is the wrong
+ * place to normalise one lookup and not its neighbour.
+ */
+function lookup<T>(table: Record<string, T>, key: string): T | undefined {
+  const k = key.toLowerCase();
+  return Object.hasOwn(table, k) ? table[k] : undefined;
 }
 
 /** What the Type column says for a request no guardrail matched.
@@ -235,14 +257,15 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // withholding the `security` line above makes, and CLAUDE.md principle 6.
     category: raw.securityCategory ?? (raw.securityAction === "allow" ? REGULAR : null),
     categoryIcon: raw.securityCategory
-      ? (CATEGORY_ICONS[raw.securityCategory] ?? CATEGORY_FALLBACK)
+      ? (lookup(CATEGORY_ICONS, raw.securityCategory) ?? CATEGORY_FALLBACK)
       : raw.securityAction === "allow"
         ? REGULAR_ICON
         : null,
     categoryTitle:
       !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
     model: raw.model ?? NO_MODEL,
-    provider: raw.provider ?? vendorFromModelId(raw.model),
+    provider: raw.provider,
+    vendor: raw.provider ?? vendorFromModelId(raw.model),
     title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };

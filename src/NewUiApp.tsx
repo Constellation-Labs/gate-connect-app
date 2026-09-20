@@ -2147,15 +2147,32 @@ export function NewUiApp() {
    * to report: the user asked for it, the dialog is already gone, and a banner
    * afterwards would be the app arguing with the button they pressed.
    */
-  const declineOffer = useCallback(() => {
-    if (offerBusy) {
-      declinedRef.current = true;
-      void oauthCancelLogin().catch(() => {});
-    }
-    markOAuthOfferSeen();
-    setOfferError(null);
-    setOfferOpen(false);
-  }, [offerBusy]);
+  const declineOffer = useCallback(
+    (reason: "declined" | "dismissed" = "declined") => {
+      if (offerBusy) {
+        declinedRef.current = true;
+        void oauthCancelLogin().catch(() => {});
+      }
+      // Pressing the decline is an answer and is remembered. Escape and the
+      // scrim are not.
+      //
+      // They became live mid-flow in the same change that made the decline
+      // work, and that combination is sharper than it looks: while the browser
+      // tab is open and the person is typing their password, a stray Escape in
+      // this window would cancel the sign-in *and* burn a one-time offer they
+      // never answered - `hasSeenOAuthOffer` gates it forever - with no message,
+      // because the cancel's own rejection is deliberately suppressed. Losing
+      // the sign-in to a keypress is recoverable; losing the offer with it is
+      // not.
+      //
+      // Principle 5's shape: the dialog stays dismissable, and the irreversible
+      // half needs the button.
+      if (reason === "declined") markOAuthOfferSeen();
+      setOfferError(null);
+      setOfferOpen(false);
+    },
+    [offerBusy],
+  );
 
   /**
    * Build the diagnostics report against live probes.
@@ -3486,7 +3503,8 @@ export function NewUiApp() {
               )
             }
             onSignIn={() => void acceptOffer()}
-            onKeepKey={declineOffer}
+            onKeepKey={() => declineOffer("declined")}
+            onDismissOffer={() => declineOffer("dismissed")}
           />
         ) : undefined
       }

@@ -274,6 +274,30 @@ describe("an unfinished browser sign-in", () => {
     expect(c.title).toMatch(/reach the gateway/i);
   });
 
+  it("names the browser's own Cancel, not a system password prompt", () => {
+    // Cognito answers a declined authorization with `access_denied`, which
+    // `oauth.rs` wraps as "authorization failed (access_denied)". The
+    // prompt-cancelled branch matches "authorization" AND "denied", so this
+    // used to tell the user to approve a system password prompt they never
+    // saw - the same misdiagnosis as the timeout, on the likelier path.
+    const c = classifyError(
+      new Error("authorization failed (access_denied)"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/system prompt/i);
+    expect(c.hint).not.toMatch(/password prompt/i);
+    expect(c.title).toMatch(/declined/i);
+  });
+
+  it("still calls a real cancelled system prompt what it is", () => {
+    // The branch below must keep working: trusting the CA raises an actual OS
+    // prompt, and cancelling that one really is a system prompt.
+    const c = classifyError(new Error("User canceled the operation"), "trust_ca");
+
+    expect(c.title).toMatch(/system prompt/i);
+  });
+
   it("says nothing about the gateway when the user stopped it themselves", () => {
     // `cancel_login`'s message. It deliberately avoids "cancelled", which the
     // system-prompt branch above claims.

@@ -350,13 +350,27 @@ function AppStatusLine({
  * provider the one thing on the row a screen reader could not get at. The
  * tooltip stays for pointer users.
  */
-function VendorMark({ provider }: { provider: string | null }) {
-  if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
+function VendorMark({
+  provider,
+  vendor,
+}: {
+  /** What the gateway said served the request, and the only thing this row is
+   *  allowed to put into words. Null when it named none. */
+  provider: string | null;
+  /** The namespace whose mark to draw - the provider where there is one, the
+   *  model id's own namespace otherwise. See `ToolEventRow.vendor`. */
+  vendor: string | null;
+}) {
+  if (!vendor) return <span aria-hidden className="size-4 shrink-0" />;
   return (
     <>
       <span
         aria-hidden
-        title={provider}
+        // Only where the gateway named it. A derived vendor draws its mark and
+        // says nothing: the mark sits beside the model id it was taken from, so
+        // it identifies the model, while a tooltip would be asserting who
+        // served a request that may never have reached anyone.
+        title={provider ?? undefined}
         // `base.foreground`, not the muted grey the Overview's row glyphs take.
         // A brand mark is not a glyph: the colour ones carry their own fills and
         // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
@@ -365,9 +379,9 @@ function VendorMark({ provider }: { provider: string | null }) {
         // black, stayed black in both. Same ink as `dialogs.tsx`'s row now.
         className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
       >
-        {providerMarkFor(provider) ?? <Icon name="cube" size={16} />}
+        {providerMarkFor(vendor) ?? <Icon name="cube" size={16} />}
       </span>
-      <span className="sr-only">{provider}</span>
+      {provider && <span className="sr-only">{provider}</span>}
     </>
   );
 }
@@ -929,7 +943,7 @@ function RecentActivity({
                     minimum. The cap lives on the `th` as a share rather than a
                     pixel count, so it holds at every size above that. */}
                   <span className="flex items-center gap-2">
-                    <VendorMark provider={entry.provider} />
+                    <VendorMark provider={entry.provider} vendor={entry.vendor} />
                     <span className="truncate text-sm leading-5 text-base-foreground">
                       {entry.model}
                     </span>

@@ -322,6 +322,7 @@ export function OAuthOfferDialog({
   error,
   onSignIn,
   onKeepKey,
+  onDismissOffer,
 }: {
   /** "the keychain" / "Credential Manager", named per platform. */
   secretStore: string;
@@ -329,6 +330,11 @@ export function OAuthOfferDialog({
   error?: ReactNode;
   onSignIn: () => void;
   onKeepKey: () => void;
+  /** Escape and the scrim. Separate from `onKeepKey` because they are not an
+   *  answer: a stray keypress must be able to close this without spending the
+   *  one-time offer. Defaults to the decline for callers with no such
+   *  distinction to make. */
+  onDismissOffer?: () => void;
 }) {
   return (
     <Modal
@@ -360,7 +366,7 @@ export function OAuthOfferDialog({
         onClick: onSignIn,
         disabled: busy,
       }}
-      onDismiss={onKeepKey}
+      onDismiss={onDismissOffer ?? onKeepKey}
     >
       <p className="text-sm leading-5 text-neutral-600">
         Your gateway and your routing stay exactly as they are. You can switch

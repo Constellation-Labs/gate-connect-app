@@ -815,17 +815,58 @@ pub fn login<F>(cfg: &OAuthConfig, candidate_ports: &[u16], open_url: F) -> Resu
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    login_waiting(
+        cfg,
+        candidate_ports,
+        open_url,
+        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
+    )
+}
+
+/// [`login`] with the callback deadline as an argument.
+///
+/// A seam, not an API: the deadline is five minutes, and a test that exercises
+/// the paths where no callback ever arrives would otherwise sit through it.
+/// `login` is the only caller outside tests and pins the real value.
+fn login_waiting<F>(
+    cfg: &OAuthConfig,
+    candidate_ports: &[u16],
+    open_url: F,
+    wait_for: std::time::Duration,
+) -> Result<OAuthTokens>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    // Cleared BEFORE anything the caller can cancel against, which means before
+    // `open_url`. It used to sit after it, directly under a comment saying a
+    // cancel pressed "while the browser was opening must still stop this
+    // attempt" - the code did the opposite of its own sentence and wiped
+    // exactly that cancel. `open_url` is not instant: it hands off to the
+    // desktop's opener, and `xdg-open` with no default handler can block for
+    // seconds. The UI arms its decline the moment the click is sent, so that
+    // window is reachable.
+    //
+    // Only a *stale* flag is discarded here - one left by an attempt that has
+    // already ended.
+    LOGIN_CANCELLED.store(false, Ordering::Release);
     let listener = LoopbackListener::bind(candidate_ports)?;
     let req = begin_login(cfg, listener.redirect_uri())?;
     open_url(&req.authorize_url).context("opening the sign-in page in the browser")?;
-    // Cleared here, not in `wait_for_code`: a cancel pressed while the browser
-    // was opening must still stop this attempt, and only a *stale* one - left by
-    // an attempt that already ended - may be discarded.
-    LOGIN_CANCELLED.store(false, Ordering::Release);
-    let code = listener.wait_for_code(
-        &req.state,
-        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
-    )?;
+    let code = listener.wait_for_code(&req.state, wait_for)?;
+    // Checked again after the callback lands, and this is the half that was
+    // missing. `wait_for_code` returning means the browser answered - but the
+    // token exchange and the keychain write are still ahead, and a decline
+    // pressed in that window used to be ignored outright: the login completed,
+    // the account was upgraded, and nothing said so, because the UI had already
+    // closed the dialog and suppresses the error it asked for.
+    //
+    // Refusing here is what makes "declining stops the sign-in" true rather
+    // than merely likely. Nothing has been persisted at this point - `store`
+    // runs below - so abandoning the code is clean; it simply goes unused and
+    // expires.
+    if LOGIN_CANCELLED.swap(false, Ordering::AcqRel) {
+        bail!("the browser sign-in was stopped from Gate Connect");
+    }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
     Ok(tokens)
@@ -841,6 +882,69 @@ mod tests {
             client_id: "client123".to_string(),
             scopes: vec!["openid".to_string(), "email".to_string()],
         }
+    }
+
+    /// The cancel path, which shipped with no test at all and had two defects
+    /// that one would have caught.
+    ///
+    /// `login` is driven through its `open_url` seam: the closure runs at the
+    /// exact moment the browser would be handed the URL, so cancelling from
+    /// inside it reproduces "the user pressed decline while the opener was
+    /// still working" - the case the clear used to wipe by running after it.
+    #[test]
+    fn a_cancel_during_the_browser_handoff_stops_the_login() {
+        let _guard = cancel_flag_guard();
+        // `&[0]` binds an ephemeral port, so this needs no fixed port and
+        // cannot collide with a real login or another test.
+        let err = login(&cfg(), &[0], |_url| {
+            cancel_login();
+            Ok(())
+        })
+        .expect_err("a cancelled login must not return tokens");
+
+        assert!(
+            err.to_string().contains("stopped from Gate Connect"),
+            "expected the cancel's own message, got: {err}"
+        );
+    }
+
+    /// A cancel left behind by an attempt that already ended must not kill the
+    /// next one. This is what the clear at the top of `login` is for, and why
+    /// it has to be a clear rather than an assert.
+    #[test]
+    fn a_stale_cancel_does_not_kill_the_next_attempt() {
+        let _guard = cancel_flag_guard();
+        cancel_login();
+
+        // No cancel this time: the stale flag is discarded on entry, so the
+        // wait runs and fails on its own terms (nothing ever hits the
+        // callback) rather than on the previous attempt's cancel.
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(150),
+        )
+        .expect_err("no callback arrives here");
+
+        assert!(
+            !err.to_string().contains("stopped from Gate Connect"),
+            "a stale cancel leaked into the next login: {err}"
+        );
+    }
+
+    /// Leaves the flag as it found it, so a failure here cannot make an
+    /// unrelated test look cancelled. The flag is process-global and these
+    /// tests share a process.
+    fn cancel_flag_guard() -> impl Drop {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                LOGIN_CANCELLED.store(false, Ordering::Release);
+            }
+        }
+        LOGIN_CANCELLED.store(false, Ordering::Release);
+        Guard
     }
 
     #[test]

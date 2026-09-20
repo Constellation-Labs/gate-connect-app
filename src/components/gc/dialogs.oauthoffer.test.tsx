@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { OAuthOfferDialog } from "./dialogs";
 
 const noop = () => {};
@@ -59,6 +59,31 @@ describe("OAuthOfferDialog", () => {
     expect(primary.getAttribute("aria-disabled")).toBe("true");
     primary.click();
     expect(onSignIn).not.toHaveBeenCalled();
+  });
+
+  it("lets Escape and the scrim close it mid-flow, without spending the offer", () => {
+    // Both halves matter. Dismissal was dead while busy, which is half of what
+    // was reported - and making it live is sharp on its own, because the
+    // decline permanently marks a one-time offer seen. A stray Escape while
+    // the person is typing their password in the browser must not burn an
+    // offer they never answered.
+    const onKeepKey = vi.fn();
+    const onDismissOffer = vi.fn();
+    offer({ busy: true, onKeepKey, onDismissOffer });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onDismissOffer).toHaveBeenCalled();
+    expect(onKeepKey).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the decline for a caller that draws no distinction", () => {
+    const onKeepKey = vi.fn();
+    offer({ busy: true, onKeepKey });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onKeepKey).toHaveBeenCalled();
   });
 
   it("names the platform's secret store in the subtitle", () => {

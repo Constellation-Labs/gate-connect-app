@@ -276,28 +276,63 @@ describe("the Type column's categories", () => {
  * empty spacer.
  */
 describe("the model row's provider", () => {
-  const providerOf = (o: Record<string, unknown>) =>
-    adaptEvents(envelope([raw(o)])).entries[0].provider;
+  const rowFor = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries[0];
 
   it("prefers what the gateway said", () => {
-    expect(providerOf({ provider: "openai", model: "anthropic/claude-opus-5" })).toBe(
-      "openai",
+    const row = rowFor({ provider: "openai", model: "anthropic/claude-opus-5" });
+
+    expect(row.vendor).toBe("openai");
+    expect(row.provider).toBe("openai");
+  });
+
+  it("falls back to the model id's own namespace for the mark", () => {
+    // The id is canonical `provider/model`, so the vendor is already on the
+    // row - the same split `NewUiApp` makes in two other places.
+    expect(rowFor({ provider: null, model: "anthropic/claude-opus-5" }).vendor).toBe(
+      "anthropic",
     );
   });
 
-  it("falls back to the model id's own namespace", () => {
-    // The id is canonical `provider/model`, so the vendor is already on the
-    // row - the same split `NewUiApp` makes in two other places.
-    expect(providerOf({ provider: null, model: "anthropic/claude-opus-5" })).toBe(
-      "anthropic",
-    );
+  it("does not turn a derived vendor into a claim about who served it", () => {
+    // The half the first version of this got wrong. `VendorMark` puts
+    // `provider` in a `title` and an `sr-only` string, so deriving into that
+    // field made the row *say* "anthropic" for a request that never reached
+    // anyone - and rows with no provider are disproportionately exactly those,
+    // since the gateway writes its sentinel on the paths that failed before
+    // routing. The mark is decorative and sits beside the id it came from; the
+    // words are a reading and stay null.
+    const row = rowFor({ provider: null, model: "anthropic/claude-opus-5" });
+
+    expect(row.provider).toBeNull();
+    expect(row.vendor).toBe("anthropic");
   });
 
   it("names no vendor for a model id that carries none", () => {
     // A bare id names no vendor, and inferring one from the model family would
     // be a guess about whose mark to draw.
-    expect(providerOf({ provider: null, model: "gpt-5" })).toBeNull();
-    expect(providerOf({ provider: null, model: null })).toBeNull();
-    expect(providerOf({ provider: null, model: "/leading-slash" })).toBeNull();
+    expect(rowFor({ provider: null, model: "gpt-5" }).vendor).toBeNull();
+    expect(rowFor({ provider: null, model: null }).vendor).toBeNull();
+    expect(rowFor({ provider: null, model: "/leading-slash" }).vendor).toBeNull();
+  });
+});
+
+describe("the category tables' shared lookup", () => {
+  it("does not hand a prototype member to the class attribute", () => {
+    // `constructor` and `__proto__` both survive `toLowerCase()` and come back
+    // truthy off `Object.prototype`, so a bare index made `??` unreachable and
+    // `className` received a function. Guarded in `ProviderMark` and, until
+    // now, not here - in the same change.
+    for (const key of ["constructor", "__proto__", "valueOf"]) {
+      expect(categoryTone(key)).toBe("text-base-foreground");
+    }
+  });
+
+  it("matches a spelling whatever its case, in both tables at once", () => {
+    // The glyph and its ink have to agree. One lookup lowercased and the other
+    // did not, so `PII` took the fallback shield in PII green.
+    const row = adaptEvents(envelope([raw({ securityCategory: "PII" })])).entries[0];
+
+    expect(row.categoryIcon).toBe("userRound");
+    expect(categoryTone(row.category!)).toContain("green-600");
   });
 });
