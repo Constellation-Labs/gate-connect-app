@@ -525,11 +525,11 @@ describe("intent versus flow", () => {
     // Its config points at a relay that isn't running: switched on, not routing.
     expect(m.desired).toBe(true);
     expect(m.routed).toBe(false);
-    expect(m.attention).toBe("master-off");
+    expect(m.attention).toBe("not-routing");
     expect(groupSummary(group)).toEqual({
       count: "0 of 1 routing",
-      exception: "waiting on routing",
-      kind: "master-off",
+      exception: "not routing",
+      kind: "not-routing",
     });
   });
 

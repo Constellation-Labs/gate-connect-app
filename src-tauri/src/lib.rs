@@ -5179,14 +5179,45 @@ pub fn run() {
                         return;
                     }
 
-                    // Restart persistence: bring routing back if the user last
-                    // left it on. The exit-time disable reverts the *system
-                    // proxy* only and never touches the routing intent, so
-                    // every launch - login item, manual, updater relaunch -
-                    // restores routing as the user left it. No intent recorded
-                    // means first run, or the user last turned routing off -
-                    // stay passthrough.
-                    if !gate_connect_core::proxy::intent::load_intent() {
+                    // Routing follows the app: it is on for exactly as long
+                    // as Gate Connect is running, so every launch - login
+                    // item, manual, updater relaunch - enables it. There is no
+                    // persisted choice to consult, because there is no longer
+                    // a switch for the user to have made one with.
+                    //
+                    // This used to read the routing intent and return early
+                    // when it was false. The intent file still exists and
+                    // `routing::enable`/`disable` still keep it current, but it
+                    // now records what is true *right now* rather than a choice
+                    // to restore - `autostart_optout::record_disable` reads it
+                    // as exactly that, and diagnostics reports it.
+                    //
+                    // The way off is the exit, which is where it already was:
+                    // `RunEvent::Exit` reverts the configs whose address dies
+                    // with this process and then `disable_quiet`s the system
+                    // proxy. This change is only about the way *on* no longer
+                    // being a thing the user sets.
+                    //
+                    // A launch that cannot complete the enable unattended (a
+                    // prompt we will not raise, an engine that cannot bind)
+                    // still degrades quietly - see the error arm below. That is
+                    // the one state where the app runs and routing does not,
+                    // and the panes report it per tool as `not-routing`.
+                    //
+                    // No account is not that state, and is the one case still
+                    // gated here. `routing::enable` needs a gateway to point
+                    // the relay at, so on a machine that has never signed in
+                    // it fails every time - and the error arm reports a
+                    // backend failure, which would put "Couldn't restore
+                    // routing at startup" in front of a first-run user who has
+                    // not been asked for an account yet. The setup flow's own
+                    // "Turn on routing" step is what enables it the first
+                    // time; every launch after that comes through here.
+                    if gate_connect_core::account::load_base_url()
+                        .ok()
+                        .flatten()
+                        .is_none()
+                    {
                         return;
                     }
                     // Snapshot the persisted ports before enable overwrites

@@ -1,12 +1,7 @@
 import type { ReactNode } from "react";
 import { RoutingBanner, UpdateBanner } from "./banners";
 import { Sidebar } from "./Sidebar";
-import type {
-  InventoryState,
-  MasterRouting,
-  SidebarGroup,
-  SidebarView,
-} from "./Sidebar";
+import type { InventoryState, SidebarGroup, SidebarView } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import type { TopnavAction } from "./Topbar";
 
@@ -32,7 +27,6 @@ export function AppShell({
   view,
   onNavigate,
   appGroups,
-  master,
   onSelectApp,
   onToggleApp,
   onRefreshApps,
@@ -56,9 +50,6 @@ export function AppShell({
   onNavigate: (view: SidebarView) => void;
   /** The rail's app rows, grouped under their family eyebrows. */
   appGroups: SidebarGroup[];
-  /** The engine's switch, drawn above the app groups. Passed straight through
-   * to the sidebar, which owns routing's controls. */
-  master?: MasterRouting;
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
   /** Re-run tool detection. Passed straight through to the sidebar, which owns
@@ -131,7 +122,6 @@ export function AppShell({
           view={view}
           onNavigate={onNavigate}
           groups={appGroups}
-          master={master}
           onSelectApp={onSelectApp}
           onToggleApp={onToggleApp}
           onRefresh={onRefreshApps}

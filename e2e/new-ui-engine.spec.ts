@@ -1,11 +1,11 @@
 import { test, expect } from "./fixtures";
 
 /**
- * The controls the window shell was drawn with and never wired: the engine's own
- * switch - now in the navigation rail, above the families it governs - the
+ * The controls the window shell was drawn with and never wired: the
  * certificate, the app pane's switch, the diagnostics probes, and the one-time
  * OAuth offer. (The shell-environment channel had a card here too, until it
- * turned out no frame drew it.)
+ * turned out no frame drew it. So did the engine's own switch, until routing
+ * started following the app.)
  *
  * All of these existed as backend commands the whole time - the popover reaches
  * every one of them. What could not be tested at the hook level is exactly what
@@ -36,27 +36,20 @@ test.describe("new UI engine controls", () => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
-  test("the master switch starts the engine", async ({ boot }) => {
+  /**
+   * Routing follows the app: it starts at launch and stops at quit, so there is
+   * nothing on screen for the user to set. The rail drew this switch above the
+   * families it governed, and it is the thing this branch removes.
+   */
+  test("the rail draws no routing switch", async ({ boot }) => {
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    const master = app.page.getByRole("switch", { name: "Route traffic through Gate" });
-    await expect(master).toHaveAttribute("aria-checked", "false");
-
-    await master.click();
-
-    await expect.poll(() => app.lastCall("proxy_enable")).not.toBeNull();
-    await expect(master).toHaveAttribute("aria-checked", "true");
-  });
-
-  test("and stops it, without asking about the certificate", async ({ boot }) => {
-    // Disabling is promptless: the certificate stays trusted so re-enabling does
-    // not raise the OS dialog again.
-    const app = await boot({ proxy: { running: true, ca_trusted: false } });
-
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
-
-    await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
-    expect(await app.lastCall("proxy_trust_ca")).toBeNull();
+    await expect(
+      app.page.getByRole("switch", { name: "Route traffic through Gate" }),
+    ).toHaveCount(0);
+    // And nothing took its place: a window whose launch enable failed reports
+    // it per app, it does not offer a machine-wide control.
+    await expect(app.page.getByText("Everything below stays off")).toHaveCount(0);
   });
 
   /**
@@ -65,16 +58,31 @@ test.describe("new UI engine controls", () => {
    * Read back from the configs rather than assembled from what the sweep
    * believed it wrote - a sweep that returns success having written nothing is
    * the failure this report exists to catch.
+   *
+   * Driven from Reset rather than from routing-off, which is where it used to
+   * be driven from. There is no routing-off control any more; the quit's own
+   * teardown reports on its own dialog (`new-ui-quit.spec.ts`), and Reset is
+   * the remaining caller of `onTeardown("teardown")`.
+   *
+   * A reset that *finishes* has nothing to report - `clear_account`
+   * disconnects on its way through - so this is the branch where it aborts
+   * with a tool still on Gate's settings. `confirmReset` reports on that path
+   * deliberately: the error says the reset stopped, the report says which tool
+   * stopped it.
    */
-  test("routing off lists the tools it could not put back", async ({ boot }) => {
+  test("a teardown lists the tools it could not put back", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       // Left connected by the sweep, which is what a best-effort teardown does
       // when one tool's write fails.
       tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
+      failures: { clear_account: "permission denied writing ~/.claude/settings.json" },
     });
 
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Review reset" }).click();
+    await app.page.getByRole("checkbox").check();
+    await app.page.getByRole("button", { name: "Reset Gate Connect" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -85,44 +93,11 @@ test.describe("new UI engine controls", () => {
     await expect(dialog.getByText("Retry disconnect")).toBeVisible();
   });
 
-  test("a clean routing-off reports nothing, because there is nothing to report", async ({
-    boot,
-  }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [CLAUDE_CODE],
-    });
-
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
-
-    await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
-    await expect(app.page.getByRole("dialog")).toHaveCount(0);
-  });
-
-  /** A tool that is clean on disk but still running is its own bucket: it is
-   *  not on its own settings yet, however the file reads. */
-  test("routing off separates a tool waiting to be reopened", async ({ boot }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [CLAUDE_CODE],
-      staleAgents: 1,
-      runningAgents: 1,
-      runningAgentNames: ["claude"],
-    });
-
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
-
-    // The close-and-reopen offer comes first (the master toggle has always
-    // raised it); dismissing it reveals the report behind.
-    await app.page.getByRole("button", { name: /reopen later/i }).click();
-    const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("Waiting to be reopened")).toBeVisible();
-    await expect(dialog.getByText("Reopen tool")).toBeVisible();
-  });
-
   test("a chat domain starts the engine rather than routing nothing", async ({ boot }) => {
-    // `proxy_set_domain` only records the flag, so with the engine off this used
-    // to write intent and route nothing, with no control anywhere to start it.
+    // `proxy_set_domain` only records the flag, so with the engine off this
+    // writes intent and routes nothing. Rare now that the launch enables the
+    // engine, and this is the window where it is not rare: a launch whose
+    // enable did not complete.
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
     // A row whose surfaces are all host-intercepted: no config file to write, so
@@ -210,9 +185,8 @@ test.describe("new UI certificate and diagnostics", () => {
 
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    // Exact: the rail's master card says "the certificate is not trusted" in a
-    // sentence on every screen now, and this assertion is about the Settings
-    // row's own value.
+    // Exact: this assertion is about the Settings row's own value, not about
+    // any other surface that happens to use the same words in a sentence.
     await expect(app.page.getByText("Not trusted", { exact: true })).toBeVisible();
     await expect(app.page.getByRole("button", { name: "Remove certificate" })).toHaveCount(0);
   });

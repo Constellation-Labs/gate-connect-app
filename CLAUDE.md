@@ -63,6 +63,58 @@ warning was sound about the frame and wrong about the intent.
 Theme: **light only**. Dark mode is not on the roadmap for the first
 release.
 
+### Routing follows the app
+
+**There is no master routing switch.** Routing is on for exactly as long as
+Gate Connect is open. This replaced a switch in the rail (`Sidebar`'s
+`MasterCard`) and one on the popover's Home card, and it is why neither is in
+the file any more.
+
+Only the way *on* changed here. `src-tauri/src/lib.rs`'s startup thread runs
+`routing::enable()` on every launch; it used to read `routing-intent.json` and
+return early when it was false. The intent file still exists and
+`routing::enable`/`disable` still keep it current, but it now records what is
+true right now rather than a choice to restore -
+`autostart_optout::record_disable` reads it as exactly that, and diagnostics
+reports it.
+
+**One gate survives, and it is not a preference**: no stored gateway means the
+enable has nothing to point the relay at, fails every time, and reports
+"Couldn't restore routing at startup" to a first-run user who has not been
+asked for an account yet. The setup flow's own "Turn on routing" step is what
+enables it the first time.
+
+The way off was already there and is untouched: `RunEvent::Exit` reverts the
+configs whose address dies with this process (`revert_stranded_configs_for_quit`,
+keyed on `address_dies_with_gui`) and then `disable_quiet`s the system proxy,
+on every exit including Cmd+Q, logout and shutdown. **Linux is still outside
+that arm**, for the reason `record_start` gives: its engine is a detached
+helper daemon that outlives the GUI, so a GUI death strands nothing and
+`reconcile_on_startup` there re-honors the leftover snapshot rather than
+reverting it. Whether routing should also end with the app on Linux is open,
+and is not settled by this entry.
+
+Two things follow, and both are deviations from the frames rather than
+readings of them. **Raise these with design; do not "correct" them back.**
+
+- **`master-off` is now `not-routing`**, in `lib/groups.ts` and everywhere that
+  reads it. The old name described a switch. The state it describes now is a
+  launch enable that did not complete: no account yet, a declined certificate
+  prompt, an engine that could not bind. Rarer than it was, and worse when it
+  happens.
+- **The copy that said "off" now says "didn't start".** `116:30663` draws
+  "Routing is set to off. Reconnect to restore protection." for the single-app
+  alert, and the popover's routing card drew "Off - N waiting". Both name a
+  control the user set, and there is no such control, so someone sent looking
+  for a switch would not find one. They read "Routing didn't start when Gate
+  Connect opened..." and "Didn't start - N unprotected". The member pill moved
+  with them, from "Waiting on routing" to "Not routing" - waiting promises an
+  arrival, and a refused admin prompt is not a wait.
+
+**One cost, accepted deliberately.** The first launch after sign-in raises the
+certificate trust prompt with no user action behind it, because the enable is
+what prompts.
+
 ### Aesthetic Direction
 
 **The Figma is the source of truth**, not this file and not the older

@@ -51,11 +51,6 @@ export class App {
     }, patch as Record<string, unknown>);
   }
 
-  /** The switch that turns routing on and off. */
-  get routingSwitch() {
-    return this.page.getByRole("switch", { name: "Route through Gate" });
-  }
-
   /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
   familyRow(name: string) {
     return this.page.getByRole("button", { name: `${name} details` });

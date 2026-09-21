@@ -406,7 +406,18 @@ export type MemberAttention =
    */
   | "overridden"
   | "needs-trust"
-  | "master-off"
+  /**
+   * Switched on, and the engine is not running.
+   *
+   * This used to be `master-off` and used to be ordinary: the user had left the
+   * master switch off, and the remedy was to turn it on. There is no such
+   * switch any more - routing is on for exactly as long as the app is open - so
+   * reaching this state means the launch enable did not complete: no account
+   * yet, a certificate prompt that was declined, an engine that could not bind.
+   * Rarer than it was, and worse when it happens, which is why it still
+   * outranks the sweep's own vocabulary below.
+   */
+  | "not-routing"
   /**
    * Nothing is known to be wrong, and nothing could be confirmed either.
    *
@@ -432,7 +443,7 @@ export interface GroupMember {
   name: string;
   /** Traffic is actually flowing through Gate right now. Drives the pill.
    * Strictly narrower than `desired`: a member can be switched on and still
-   * not be routing, because the master is off or the certificate is not
+   * not be routing, because the engine never came up or the certificate is not
    * trusted. */
   routed: boolean;
   /** What the user asked for: the persisted `enabled` / connected value.
@@ -596,17 +607,17 @@ function memberFromTool(
         : tool.status.kind === "drifted"
           ? "drifted"
           : tool.status.kind === "overridden"
-            ? // Above master-off and unverified on purpose: those describe a
+            ? // Above not-routing and unverified on purpose: those describe a
               // route that would carry this tool's traffic once something is
               // switched on, and this one says the traffic is not on our route
               // at all.
               "overridden"
-            : // Master-off outranks the sweep's own vocabulary because it is the
-            // better sentence for the same fact: the sweep would report a dead
-            // relay as a connection problem, and "routing is off" is what the
-            // user needs to hear.
+            : // `not-routing` outranks the sweep's own vocabulary because it
+            // is the better sentence for the same fact: the sweep would report
+            // a dead relay as a connection problem, and "routing did not
+            // start" is what the user needs to hear.
             connected && !proxyOn
-            ? "master-off"
+            ? "not-routing"
             : connected && !routed
               ? "unverified"
               : null,
@@ -645,7 +656,7 @@ function memberFromDomain(
     attention: domain.enabled && proxyOn && !caTrusted
       ? "needs-trust"
       : domain.enabled && !proxyOn
-        ? "master-off"
+        ? "not-routing"
         : null,
     domain,
     client: domain.client,
@@ -1079,7 +1090,7 @@ export function sessionMembers(group: Group): GroupMember[] {
 export type GroupException =
   | "error"
   | "needs-trust"
-  | "master-off"
+  | "not-routing"
   | "drifted"
   | "overridden"
   | "unverified";
@@ -1100,7 +1111,7 @@ export function groupSummary(group: Group): {
   const drifted = group.members.filter((m) => m.attention === "drifted");
   const overridden = group.members.filter((m) => m.attention === "overridden");
   const untrusted = group.members.filter((m) => m.attention === "needs-trust");
-  const masterOff = group.members.filter((m) => m.attention === "master-off");
+  const notRouting = group.members.filter((m) => m.attention === "not-routing");
   if (errors.length > 0) {
     return {
       count,
@@ -1111,8 +1122,8 @@ export function groupSummary(group: Group): {
   if (untrusted.length > 0) {
     return { count, exception: "certificate not trusted", kind: "needs-trust" };
   }
-  if (masterOff.length > 0) {
-    return { count, exception: "waiting on routing", kind: "master-off" };
+  if (notRouting.length > 0) {
+    return { count, exception: "not routing", kind: "not-routing" };
   }
   if (drifted.length > 0) {
     return {

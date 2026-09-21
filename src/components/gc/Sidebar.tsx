@@ -204,30 +204,20 @@ export interface SidebarGroup {
   apps: SidebarApp[];
 }
 
-/**
- * The engine itself, above the families that ride on it.
+/*
+ * The engine's own switch used to live here, above the families that ride on
+ * it, as the one control the Figma does not draw. It is gone, and so is the
+ * argument for it: routing is not a thing the user sets any more, it runs for
+ * exactly as long as Gate Connect is open. There is no state the window can
+ * reach that it has no control for, because there is nothing to control - the
+ * rail is now the org header, Overview/Settings and the app groups, which is
+ * what the drawn sidebar (`440:953`) has always been.
  *
- * Not in the Figma, and the omission is load-bearing: with routing off, a family
- * switch can still start the engine (a config member's connect does it
- * implicitly) but a chat domain cannot, so the window could reach a state it had
- * no control for.
- *
- * The shell-environment sub-setting used to sit at the foot of the rail, as a
- * second card. No frame draws it - the drawn sidebar (`440:953`) is the org
- * header, Overview/Settings and the app groups, and nothing else - so it came
- * out on 2026-09-16. `proxy.env_export_opted_in` is untouched by the removal:
- * the backend still honours whatever it holds, there is just no control for it
- * in the window.
+ * The shell-environment sub-setting sat at the foot of the rail as a second
+ * card and came out on 2026-09-16 for the same reason.
+ * `proxy.env_export_opted_in` is untouched by either removal: the backend still
+ * honours whatever it holds, there is just no control for it in the window.
  */
-export interface MasterRouting {
-  on: boolean;
-  busy?: boolean;
-  onToggle: (next: boolean) => void;
-  /** Whether the certificate is in the system trust store. Routing without it
-   * inspects nothing, so the card says so rather than leaving the switch to
-   * imply otherwise. */
-  caTrusted?: boolean;
-}
 
 export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
   protected: { label: "Protected", className: "text-green-600" },
@@ -273,7 +263,6 @@ export function Sidebar({
   view,
   onNavigate,
   groups,
-  master,
   onSelectApp,
   onToggleApp,
   onRefresh,
@@ -287,10 +276,6 @@ export function Sidebar({
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
   groups: SidebarGroup[];
-  /** The engine's switch, above the families it carries. Omit on a platform with
-   * no proxy subsystem, where there is nothing to turn on and the card would
-   * describe nothing. */
-  master?: MasterRouting;
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
@@ -349,8 +334,6 @@ export function Sidebar({
        * section scrolls on its own: the set draws a scroll indicator over this
        * region and the header and nav stay put above it. */}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-4">
-        {master && <MasterCard master={master} />}
-
         {inventory && inventory.kind !== "ok" ? (
           <InventoryState
             state={inventory}
@@ -490,39 +473,6 @@ function NavItem({
       <Icon name={icon} size={16} />
       {label}
     </button>
-  );
-}
-
-/**
- * The engine's switch.
- *
- * Laid out label-over-description rather than the pane's label-beside-switch:
- * the rail is 256px, and the certificate warning is a sentence, not a phrase.
- * Above the app groups because that is what it governs - "everything below
- * stays off until this is on" is literally true of what follows it.
- */
-function MasterCard({ master }: { master: MasterRouting }) {
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-base-xs font-medium leading-4 text-base-foreground">
-          Route traffic through Gate
-        </p>
-        <BaseSwitch
-          on={master.on}
-          label="Route traffic through Gate"
-          busy={master.busy}
-          onClick={() => master.onToggle(!master.on)}
-        />
-      </div>
-      <p className="text-base-2xs leading-4 text-base-muted-foreground">
-        {master.on
-          ? master.caTrusted === false
-            ? "Running, but the certificate is not trusted - nothing is being inspected"
-            : "The local engine is running"
-          : "Everything below stays off until this is on"}
-      </p>
-    </div>
   );
 }
 

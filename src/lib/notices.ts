@@ -55,17 +55,23 @@ export interface RoutingNotice {
 function noticeFor(member: GroupMember): RoutingNotice | null {
   const name = member.name;
   switch (member.attention) {
-    case "master-off":
+    case "not-routing":
       return {
-        id: `master-off:${member.key}`,
-        // The drawn copy (banner/alert/single-app, read 2026-08-23). "Routing"
-        // is the master: the app is switched on and routing is not, which is
-        // exactly the divergence this notice exists to explain.
+        id: `not-routing:${member.key}`,
         // Typographic apostrophe, as drawn (`228:90612`, "Codex isn’t
         // protected"). The file uses it throughout and `lib/errors.ts` already
         // matches; this line and its plural below did not.
         title: `${name} isn’t protected`,
-        body: "Routing is set to off. Reconnect to restore protection.",
+        // The drawn body (banner/alert/single-app, read 2026-08-23) says
+        // "Routing is set to off. Reconnect to restore protection." It
+        // describes a setting the user could have left off, and there is no
+        // such setting any more: routing runs for as long as the app is open,
+        // so the only way to be here is that the launch enable did not
+        // complete. Telling the user they turned something off would send them
+        // looking for a switch that is not on any screen. Recorded in
+        // CLAUDE.md under "Routing follows the app" - raise it with design
+        // rather than "correcting" it back to the frame.
+        body: "Routing didn’t start when Gate Connect opened, so this app’s traffic isn’t protected.",
         switchLabel: "Turn routing on",
         action: { kind: "enable-routing" },
       };
@@ -123,7 +129,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
   }
 }
 
-const RANK = ["master-off", "needs-trust", "drifted", "error"] as const;
+const RANK = ["not-routing", "needs-trust", "drifted", "error"] as const;
 
 function attentive(groups: Group[]): GroupMember[] {
   return groups.flatMap((g) => g.members).filter((m) => m.attention !== null);
@@ -132,7 +138,7 @@ function attentive(groups: Group[]): GroupMember[] {
 /**
  * The whole-machine causes, one card each, for Overview.
  *
- * `master-off` and `needs-trust` are one switch and fix every affected tool at
+ * `not-routing` and `needs-trust` are one switch and fix every affected tool at
  * once, so twelve copies of "turn routing on" would be noise, not information:
  * the card counts the tools instead. Nothing per-tool is included - a drifted
  * config is about one tool and is drawn on that tool's pane.
@@ -140,7 +146,7 @@ function attentive(groups: Group[]): GroupMember[] {
 export function machineNotices(groups: Group[]): RoutingNotice[] {
   const members = attentive(groups);
   const ordered: RoutingNotice[] = [];
-  for (const kind of ["master-off", "needs-trust"] as const) {
+  for (const kind of ["not-routing", "needs-trust"] as const) {
     const affected = members.filter((m) => m.attention === kind);
     const notice = affected[0] ? noticeFor(affected[0]) : null;
     if (!notice) continue;
@@ -150,7 +156,7 @@ export function machineNotices(groups: Group[]): RoutingNotice[] {
             ...notice,
             id: kind,
             title:
-              kind === "master-off"
+              kind === "not-routing"
                 ? `${affected.length} apps aren’t protected`
                 : `${affected.length} apps need the Gate certificate`,
           }
