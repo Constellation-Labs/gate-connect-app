@@ -694,3 +694,39 @@ describe("useSettingsActions: no account", () => {
     expect(saveAccount).not.toHaveBeenCalled();
   });
 });
+
+describe("useSettingsActions: the two entry points agree", () => {
+  it("opens for a single org from the tray hand-over as well as the rail", async () => {
+    // Both callers pass `evenWhenSingle`, so neither can answer the same
+    // question differently. The tray's used to fall back to Settings, on the
+    // reasoning that Settings explains the account - which stopped being true
+    // when the org row was removed from that pane for repeating the sidebar.
+    (oauthListOrgs as Mock).mockResolvedValue([ORGS[0]]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    // `true` is what stops the caller navigating away: the hand-over only
+    // lands on Settings when this resolves `false`.
+    expect(opened).toBe(true);
+    expect(api.current!.prompt).toMatchObject({ kind: "switch-org" });
+  });
+
+  it("still reports nothing to ask for the three real nothings", async () => {
+    // Zero orgs, and by the same path a failed read - the cases where the
+    // fallback is still the right landing, flag or no flag.
+    (oauthListOrgs as Mock).mockResolvedValue([]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(false);
+    expect(api.current!.prompt).toBeNull();
+  });
+});

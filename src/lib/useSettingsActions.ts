@@ -87,10 +87,20 @@ export interface SettingsActions {
   replaceKey: () => Promise<void>;
   openRenameDevice: (currentName: string) => void;
   renameDevice: () => Promise<void>;
-  /** Opens the organization picker. Resolves `true` when a dialog actually
-   *  opened, and `false` when there was nothing to ask - a single-org account, a
-   *  call while busy, or a failed read. A caller that navigated to get here
-   *  needs to know, or the user lands on a surface showing nothing. */
+  /**
+   * Opens the organization picker. Resolves `true` when a dialog actually
+   * opened, and `false` when there was nothing to ask.
+   *
+   * `false` means: no organization at all, a call while another is in flight,
+   * or a read that failed. A caller that navigated to get here needs to know,
+   * or the user lands on a surface showing nothing.
+   *
+   * **`evenWhenSingle` moves the one-organization case from `false` to
+   * `true`** - the picker draws that single row with its primary refused, which
+   * is how a reader learns where switching lives. Without it, one organization
+   * is "nothing to ask" and resolves `false` with the other three. The three
+   * genuine nothings are not affected by the flag.
+   */
   openSwitchOrg: (opts?: { evenWhenSingle?: boolean }) => Promise<boolean>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
@@ -255,10 +265,15 @@ export function useSettingsActions({
       // under the org's own name, so a click that opens nothing reads as broken
       // rather than as "there is nothing to switch to". Shown the picker, a
       // single-org account can see its one organization, see the primary refused
-      // against it, and learn where switching lives. The tray keeps the
-      // hand-over behaviour above: it has already closed a popover and pulled a
-      // window forward, and landing that on a dialog with one disabled button
-      // would be a worse answer than Settings.
+      // against it, and learn where switching lives.
+      //
+      // The tray's hand-over passes it too, and that is the half that changed.
+      // Its fallback used to land on Settings, on the reasoning that Settings
+      // is where the account explains itself - which stopped being true when
+      // the org row was removed from that pane for repeating the sidebar.
+      // `SettingsPane` says nothing about organizations now, so a popover
+      // closed and a window pulled forward to land there is the symptom this
+      // `false` exists to prevent rather than an instance of it.
       //
       // Zero orgs is not an exception either way: there is nothing to draw.
       if (orgs.length === 0) return false;
