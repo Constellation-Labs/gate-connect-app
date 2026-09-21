@@ -54,8 +54,19 @@ AUTH_PORT="${GATE_UI_HARNESS_AUTH_PORT:-8454}"
 # it and mint certificates every browser on the machine would trust. The `-m` is
 # on the create so there is no window between mkdir and chmod.
 rm -rf "$WORK"
-mkdir -m 700 -p "$WORK"
-mkdir -m 700 -p "$WORK/home" "$WORK/secrets" "$WORK/ca"
+if [ "$OS" = "Windows" ]; then
+  # `mkdir -m` is a chmod folded into the create, and that chmod fails outright
+  # under Git Bash - "cannot change permissions of '/tmp/gc-ui-e2e': Permission
+  # denied" - which took the whole Windows run down before the first spec ran.
+  # The mode has nothing to protect there anyway: Git Bash maps /tmp to the
+  # per-user %TEMP%, already ACL'd to the one account, not a shared world-
+  # writable /tmp. The paragraph above is a Unix threat model.
+  mkdir -p "$WORK"
+  mkdir -p "$WORK/home" "$WORK/secrets" "$WORK/ca"
+else
+  mkdir -m 700 -p "$WORK"
+  mkdir -m 700 -p "$WORK/home" "$WORK/secrets" "$WORK/ca"
+fi
 
 # --- 1. Throwaway CA + leaf for the mock gateway. --------------------------
 # Bare filenames from inside the dir, so it works with either the msys or the
