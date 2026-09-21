@@ -4341,13 +4341,29 @@ fn pending_quit_tools() -> Option<PendingQuit> {
 /// `quit_app` will actually rewrite.
 ///
 /// Off the main thread, like [`request_quit`]'s own sweep: it reads tool config
-/// files. An empty answer is the honest default for a read that could not
-/// complete - it names no tool rather than naming the wrong one.
+/// files. `None` when the read could not complete, so the dialog can say it
+/// does not know rather than naming no tool: an empty list is the ordinary
+/// answer for an install whose configs all name the forwarder, and a failure
+/// read as that answer told the user their configs stay put when the exit was
+/// about to rewrite them.
+///
+/// Empty on Linux without asking, where the engine is a daemon that outlives
+/// this window and [`quit_app`] reverts nothing. The provider function reads
+/// the addresses without the platform so the rule can be tested on any CI
+/// runner; whether this GUI is the engine's process is the caller's question
+/// here, exactly as it is in [`quit_app`] and [`request_quit`].
 #[tauri::command]
-async fn tools_stranded_by_quit() -> Vec<String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::provider::tools_stranded_by_quit)
-        .await
-        .unwrap_or_default()
+async fn tools_stranded_by_quit() -> Option<Vec<String>> {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Some(Vec::new())
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        tauri::async_runtime::spawn_blocking(gate_connect_core::provider::tools_stranded_by_quit)
+            .await
+            .ok()
+    }
 }
 
 /// Finish a quit that [`request_quit`] deferred to the popover: the "quit
@@ -4373,49 +4389,91 @@ async fn tools_stranded_by_quit() -> Vec<String> {
 async fn quit_app(app: tauri::AppHandle) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        let reverted = tauri::async_runtime::spawn_blocking(|| {
-            gate_connect_core::provider::revert_stranded_configs_for_quit()
-                .map_err(|e| format!("{e:#}"))
+        use tauri_plugin_notification::NotificationExt;
+        // What the dialog named a moment ago, read again on this side of the
+        // revert: `promised` is the same predicate the revert applies, so a
+        // tool in it and not in the answer is one the user was told would be
+        // put back and was not.
+        let (promised, reverted) = tauri::async_runtime::spawn_blocking(|| {
+            let promised = gate_connect_core::provider::tools_stranded_by_quit();
+            let reverted = gate_connect_core::provider::revert_stranded_configs_for_quit()
+                .map_err(|e| format!("{e:#}"));
+            (promised, reverted)
         })
         .await
-        .unwrap_or_else(|e| Err(format!("join error: {e}")));
-        match reverted {
-            Ok(names) if !names.is_empty() => {
-                use tauri_plugin_notification::NotificationExt;
-                // Both shapes spelled out, as `disconnect_tools_for_quit` does,
-                // rather than assembled from plural conditionals. The Codex
-                // sentence is added only when Codex is in the list: it is the
-                // one tool where "reconnects when it starts again" is per
-                // conversation rather than per process - a conversation pins
-                // its provider when it starts, measured in `integrations::codex`.
-                let mut body = if names.len() == 1 {
-                    format!(
-                        "{} is back on its own settings while Gate Connect is closed, and \
-                         reconnects when it starts again.",
-                        names[0]
-                    )
-                } else {
-                    format!(
-                        "{} are back on their own settings while Gate Connect is closed, and \
-                         reconnect when it starts again.",
-                        join_names(&names)
-                    )
-                };
-                if names.iter().any(|n| n == "Codex") {
-                    body.push_str(
-                        " Codex conversations already open keep the route they started with \
-                         until you resume them.",
-                    );
-                }
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title("Gate Connect")
-                    .body(&body)
-                    .show();
+        .unwrap_or_else(|e| (Vec::new(), Err(format!("join error: {e}"))));
+        let put_back = match reverted {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("[gate] putting stranded tools back for quit failed: {e}");
+                Vec::new()
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("[gate] putting stranded tools back for quit failed: {e}"),
+        };
+        let missed: Vec<String> = promised
+            .into_iter()
+            .filter(|p| !put_back.contains(p))
+            .collect();
+        if !put_back.is_empty() {
+            let names = put_back;
+            // Both shapes spelled out, as `disconnect_tools_for_quit` does,
+            // rather than assembled from plural conditionals. The Codex
+            // sentence is added only when Codex is in the list: it is the
+            // one tool where "reconnects when it starts again" is per
+            // conversation rather than per process - a conversation pins
+            // its provider when it starts, measured in `integrations::codex`.
+            let mut body = if names.len() == 1 {
+                format!(
+                    "{} is back on its own settings while Gate Connect is closed, and \
+                         reconnects when it starts again.",
+                    names[0]
+                )
+            } else {
+                format!(
+                    "{} are back on their own settings while Gate Connect is closed, and \
+                         reconnect when it starts again.",
+                    join_names(&names)
+                )
+            };
+            if names.iter().any(|n| n == "Codex") {
+                body.push_str(
+                    " Codex conversations already open keep the route they started with \
+                         until you resume them.",
+                );
+            }
+            let _ = app
+                .notification()
+                .builder()
+                .title("Gate Connect")
+                .body(&body)
+                .show();
+        }
+        // The dialog promised these by name and this is the last message
+        // before the process is gone, so a broken promise is said rather than
+        // logged: the whole list when the revert could not run at all (another
+        // routing operation held the guard), or the one tool whose rewrite
+        // failed and was logged out of the answer.
+        if !missed.is_empty() {
+            let body = if missed.len() == 1 {
+                format!(
+                    "{} could not be put back on its own settings before Gate Connect closed. \
+                     It stays pointed at Gate and cannot reach its provider until Gate Connect \
+                     runs again.",
+                    missed[0]
+                )
+            } else {
+                format!(
+                    "{} could not be put back on their own settings before Gate Connect closed. \
+                     They stay pointed at Gate and cannot reach their providers until Gate \
+                     Connect runs again.",
+                    join_names(&missed)
+                )
+            };
+            let _ = app
+                .notification()
+                .builder()
+                .title("Gate Connect")
+                .body(&body)
+                .show();
         }
     }
     app.exit(0);

@@ -105,6 +105,15 @@ describe("the quit chooser", () => {
     expect(row()).toContain(
       "Claude Code and Codex keep working without Gate until Gate Connect runs again",
     );
+    cleanup();
+
+    // The read did not complete. Not the empty case: that sentence tells the
+    // user their configs stay put, on an exit that may be about to rewrite
+    // them, and the teardown's own notification then contradicts it.
+    renderChooser({ reverting: null });
+    expect(row()).toContain("couldn't check which tools it puts back");
+    expect(row()).not.toContain("keep working without Gate");
+    expect(row()).not.toContain("Gate puts");
   });
 
   it("says that closing the window is a different thing", () => {
@@ -181,6 +190,22 @@ describe("the safe-to-close confirmation", () => {
     expect(note).toContain("except for Codex");
     expect(note).toContain("puts its own settings back");
     expect(note).toContain("reconnects it when Gate Connect starts again");
+  });
+
+  /** A read that failed says so, on the last screen before the app closes,
+   * rather than borrowing the sentence for "nothing reverts". */
+  it("admits when it could not check what closing will put back", () => {
+    render(
+      <QuitSafeToCloseDialog
+        disconnected={false}
+        reverting={null}
+        onClose={noop}
+        onCancel={noop}
+      />,
+    );
+    const note = screen.getByRole("dialog").textContent ?? "";
+    expect(note).toContain("couldn't check which those are");
+    expect(note).not.toContain("Some tools may need Gate Connect running");
   });
 
   it("closes on the primary and stays open on Cancel", () => {

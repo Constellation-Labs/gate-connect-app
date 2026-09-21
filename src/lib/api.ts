@@ -744,8 +744,14 @@ export const pendingQuitTools = () => invoke<PendingQuit | null>("pending_quit_t
  * entry raises the flow itself and knows which tools are routed from the rows
  * on screen, but not which of them a plain quit puts back: that depends on the
  * address each config holds, which is per install and decided in one place in
- * Rust. */
-export const toolsStrandedByQuit = () => invoke<string[]>("tools_stranded_by_quit");
+ * Rust.
+ *
+ * `null` when the read could not complete. Not `[]`: that is the ordinary
+ * answer for an install whose configs all name the forwarder, and the dialog
+ * words the two differently - one says the configs stay put, the other says it
+ * could not check. Empty on Linux, where a quit reverts nothing. */
+export const toolsStrandedByQuit = () =>
+  invoke<string[] | null>("tools_stranded_by_quit");
 
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent

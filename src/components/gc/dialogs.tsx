@@ -2843,8 +2843,10 @@ export function QuitDialog({
    * off the configured address and `quit_app` acts on the same list, so the
    * second choice below can name what it will actually rewrite. Empty is an
    * ordinary answer: on Linux the relay is a daemon that outlives the window,
-   * and a config naming the forwarder keeps answering everywhere. */
-  reverting: string[];
+   * and a config naming the forwarder keeps answering everywhere. `null` is
+   * the read failing, and gets its own sentence: reading it as empty told the
+   * user their configs stay put on an exit that was about to rewrite them. */
+  reverting: string[] | null;
   choice: QuitChoice;
   onChoose: (next: QuitChoice) => void;
   busy?: boolean;
@@ -2856,7 +2858,7 @@ export function QuitDialog({
   platform: Platform;
 }) {
   const plural = tools.length > 1;
-  const keeping = tools.filter((t) => !reverting.includes(t));
+  const keeping = tools.filter((t) => !(reverting ?? []).includes(t));
   return (
     <Modal
       tone="warning"
@@ -2912,19 +2914,21 @@ export function QuitDialog({
              question 25 in docs/figma-questions-for-design.md rather than
              decided here. */
           description={
-            reverting.length === 0
-              ? `Leave configurations pointed at Gate. ${joinNames(tools)} ${
-                  plural ? "keep" : "keeps"
-                } working without Gate until Gate Connect runs again.`
-              : keeping.length === 0
-                ? `Gate puts ${joinNames(reverting)} back on ${
-                    reverting.length > 1 ? "their" : "its"
-                  } own settings until Gate Connect runs again.`
-                : `Gate puts ${joinNames(reverting)} back on ${
-                    reverting.length > 1 ? "their" : "its"
-                  } own settings; ${joinNames(keeping)} ${
-                    keeping.length > 1 ? "keep" : "keeps"
+            reverting === null
+              ? "Leave configurations pointed at Gate. Gate Connect couldn't check which tools it puts back on their own settings as it closes."
+              : reverting.length === 0
+                ? `Leave configurations pointed at Gate. ${joinNames(tools)} ${
+                    plural ? "keep" : "keeps"
                   } working without Gate until Gate Connect runs again.`
+                : keeping.length === 0
+                  ? `Gate puts ${joinNames(reverting)} back on ${
+                      reverting.length > 1 ? "their" : "its"
+                    } own settings until Gate Connect runs again.`
+                  : `Gate puts ${joinNames(reverting)} back on ${
+                      reverting.length > 1 ? "their" : "its"
+                    } own settings; ${joinNames(keeping)} ${
+                      keeping.length > 1 ? "keep" : "keeps"
+                    } working without Gate until Gate Connect runs again.`
           }
           selected={choice === "leave"}
           onSelect={() => onChoose("leave")}
@@ -2981,8 +2985,9 @@ export function QuitSafeToCloseDialog({
   /** On the declined branch, the tools the exit itself puts back on their own
    * settings - the ones whose configured address dies with this process. Always
    * empty on the disconnected branch, where the teardown already put every
-   * config back and the exit has nothing left to do. */
-  reverting: string[];
+   * config back and the exit has nothing left to do. `null` when the read
+   * failed, which the note says instead of claiming the settings stay put. */
+  reverting: string[] | null;
   busy?: boolean;
   onClose: () => void;
   onCancel: () => void;
@@ -3028,9 +3033,11 @@ export function QuitSafeToCloseDialog({
       <ModalNote tone="neutral">
         {disconnected
           ? "Tools are disconnected and their previous settings are restored. You will still be signed in the next time you open the app."
-          : reverting.length === 0
-            ? "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."
-            : `Routing settings were left in place, except for ${joinNames(
+          : reverting === null
+            ? "Routing settings were left in place, except for the tools Gate Connect puts back on their own settings as it closes. It couldn't check which those are; a notification will name them."
+            : reverting.length === 0
+              ? "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."
+              : `Routing settings were left in place, except for ${joinNames(
                 reverting,
               )}: closing Gate Connect puts ${
                 reverting.length > 1 ? "their" : "its"

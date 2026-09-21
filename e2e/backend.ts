@@ -231,8 +231,9 @@ export interface BackendState {
    *  `pendingQuitTools.reverting`, for the window's own Quit entry, which
    *  raises the flow itself and so has no buffer to drain. Separate here
    *  because the buffer is consumed on read and this is not; in Rust both come
-   *  from one predicate over the configured address. */
-  strandedByQuit: string[];
+   *  from one predicate over the configured address. `null` is the read
+   *  failing, which the dialog words differently from an empty list. */
+  strandedByQuit: string[] | null;
   /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
       Empty = a clean teardown. A spec that cares about the partial-teardown
       result sets it; the teardown itself still succeeds, which is the point. */
