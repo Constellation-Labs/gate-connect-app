@@ -421,6 +421,8 @@ async fn handle(
         .get("payload")
         .cloned()
         .unwrap_or(serde_json::Value::Object(Default::default()));
+    // For the log line below: the response consumes `cmd`.
+    let cmd_name = cmd.clone();
 
     // `get_ipc_response` parks the calling thread on a channel until the
     // command resolves, so it cannot run on a reactor thread: a blocking
@@ -461,7 +463,16 @@ async fn handle(
         // A command that returned `Err` is a normal outcome the UI renders, so
         // it comes back as a 200 with `err` rather than an HTTP error: the page
         // has to see the same rejection shape Tauri gives it.
-        Ok(Err(e)) => serde_json::json!({ "err": e }),
+        //
+        // Said on stderr as well, because the app swallows most of these by
+        // design - a failed `proxy_status` read becomes a missing master
+        // switch, and nothing on the page says why. Playwright pipes this
+        // process's stderr into the run log, so this is the one place a spec's
+        // reader can learn what the backend actually answered.
+        Ok(Err(e)) => {
+            eprintln!("ui-harness: {cmd_name} rejected: {e}");
+            serde_json::json!({ "err": e })
+        }
         // A command that PANICKED lands here, not above: `get_ipc_response`
         // itself panics when the responder is dropped, which `spawn_blocking`
         // reports as a join error. Saying so matters because the causes are
