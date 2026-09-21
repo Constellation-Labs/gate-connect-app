@@ -966,45 +966,55 @@ impl HttpHandler for GateHandler {
             // multipart body, so routing an upload sends the upstream an empty
             // form and the user is told their file cannot be uploaded. See
             // [`carries_multipart_body`].
-            let decision = decide(&rules, host, &path);
-            let upload = carries_multipart_body(&req);
-            if debug_log() && upload && matches!(decision, Decision::Rewrite { .. }) {
-                eprintln!(
-                    "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
-                );
-            }
-            if let (Decision::Rewrite { upstream_url }, true, false, false) =
-                (decision, self.peer_allowed(ctx), navigation, upload)
-            {
-                let api_key = self.api_key.borrow().clone();
-                let token = self.token.borrow().clone();
-                let oauth_token = (!token.is_empty()).then(|| token.as_ref());
-                let org = self.org.borrow().clone();
-                let org_id = (!org.is_empty()).then(|| org.as_ref());
-                match apply_rewrite(
-                    &mut req,
-                    &self.gateway,
-                    &upstream_url,
-                    &api_key,
-                    oauth_token,
-                    org_id,
-                ) {
-                    Ok(injected_oauth) => {
-                        action = "rewrite->gateway";
-                        // Remember that the gateway is answering *our*
-                        // credential, so a 401 on the way back can be read as
-                        // evidence about the session (see `handle_response`).
-                        // Taken from the injection itself: holding a token is
-                        // not the same as sending it, and a client that
-                        // brought its own `x-gate-api-key` gets nothing of
-                        // ours - not even when it also sent an
-                        // `x-gate-authorization` of its own.
-                        self.injected_oauth = injected_oauth;
+            if let (Decision::Rewrite { upstream_url }, true, false) = (
+                decide(&rules, host, &path),
+                self.peer_allowed(ctx),
+                navigation,
+            ) {
+                // Asked INSIDE the pattern rather than as a fourth arm of it, so
+                // reaching this line means every other reason to withhold the
+                // rewrite has already been ruled out and the log below can only
+                // name the operative one. Beside it, a non-owner peer's upload -
+                // or a chatgpt.com navigation that happened to carry a form -
+                // printed "multipart" for a request multipart had nothing to do
+                // with.
+                if carries_multipart_body(&req) {
+                    if debug_log() {
+                        eprintln!(
+                            "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
+                        );
                     }
-                    Err(e) => {
-                        action = "rewrite-FAILED";
-                        if debug_log() {
-                            eprintln!("[gate-proxy] rewrite failed: {e}");
+                } else {
+                    let api_key = self.api_key.borrow().clone();
+                    let token = self.token.borrow().clone();
+                    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+                    let org = self.org.borrow().clone();
+                    let org_id = (!org.is_empty()).then(|| org.as_ref());
+                    match apply_rewrite(
+                        &mut req,
+                        &self.gateway,
+                        &upstream_url,
+                        &api_key,
+                        oauth_token,
+                        org_id,
+                    ) {
+                        Ok(injected_oauth) => {
+                            action = "rewrite->gateway";
+                            // Remember that the gateway is answering *our*
+                            // credential, so a 401 on the way back can be read as
+                            // evidence about the session (see `handle_response`).
+                            // Taken from the injection itself: holding a token is
+                            // not the same as sending it, and a client that
+                            // brought its own `x-gate-api-key` gets nothing of
+                            // ours - not even when it also sent an
+                            // `x-gate-authorization` of its own.
+                            self.injected_oauth = injected_oauth;
+                        }
+                        Err(e) => {
+                            action = "rewrite-FAILED";
+                            if debug_log() {
+                                eprintln!("[gate-proxy] rewrite failed: {e}");
+                            }
                         }
                     }
                 }
@@ -1499,8 +1509,13 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
         })
 }
 
-/// True when the request carries a `multipart/form-data` body - a file upload,
-/// which is the one body shape Gate cannot forward today.
+/// True when the request carries a `multipart/*` body - in practice a file
+/// upload, which is the one body shape this guard WITHHOLDS from the gateway.
+///
+/// Not the one body shape Gate cannot forward: the two parsers below drop every
+/// non-JSON body alike, and this doc said otherwise for a while. The narrower
+/// claim is the true one and the only one *Keyed on multipart alone* below
+/// argues for - everything else Gate cannot carry stays broken on purpose.
 ///
 /// The gateway installs `express.json()` and `express.urlencoded()` and nothing
 /// else (gate: apps/gateway-proxy/src/main.ts), so a multipart body is captured
@@ -1533,9 +1548,9 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
 /// own 404 - an artefact of egressing from the user's address without a cookie
 /// jar, not of this guard. The client this is for carries one.
 ///
-/// Deliberately keyed on multipart alone rather than on "a content type the
-/// gateway will not parse". Every other non-JSON body is dropped by those same
-/// parsers, but a rule that wide turns an unrecognised content type into a
+/// **Keyed on multipart alone**, deliberately, rather than on "a content type
+/// the gateway will not parse". Every other non-JSON body is dropped by those
+/// same parsers, but a rule that wide turns an unrecognised content type into a
 /// SILENT BYPASS - inference leaving for the vendor with the switch on, which is
 /// the one failure this engine exists to prevent. A body Gate cannot carry that
 /// is not multipart stays broken and visible instead.
@@ -1551,9 +1566,17 @@ pub(crate) fn carries_multipart_body<T>(req: &Request<T>) -> bool {
             // Media type without its parameters, like `wants_html`: the boundary
             // rides in the same header and every real upload carries one.
             value.split(';').next().is_some_and(|media_type| {
+                // The whole `multipart/` tree, not `form-data` alone. The
+                // gateway's parsers key on the TYPE, so every subtype arrives
+                // empty by the same mechanism, and matching the exact one left
+                // `multipart/mixed` and `multipart/related` routed - this bug
+                // wearing a different subtype. Widening buys a client no bypass
+                // the narrow match did not already sell it: anything wanting out
+                // could always have said `form-data`.
                 media_type
                     .trim()
-                    .eq_ignore_ascii_case("multipart/form-data")
+                    .get(.."multipart/".len())
+                    .is_some_and(|tree| tree.eq_ignore_ascii_case("multipart/"))
             })
         })
 }
@@ -2582,6 +2605,35 @@ mod tests {
             .body(())
             .unwrap();
         assert!(carries_multipart_body(&shouty));
+    }
+
+    #[test]
+    fn every_multipart_subtype_is_withheld_not_just_form_data() {
+        // The gateway's parsers key on the type, so `mixed` and `related` arrive
+        // as empty as `form-data` does. Matching the exact subtype left them
+        // routed, which is this bug under a different name; `multipart-ish` is
+        // the near miss that keeps the prefix from swallowing its neighbours.
+        for (content_type, withheld) in [
+            ("multipart/form-data; boundary=x", true),
+            ("multipart/mixed; boundary=x", true),
+            ("multipart/related; boundary=x", true),
+            ("Multipart/Byteranges", true),
+            ("multipart-ish/form-data", false),
+            ("application/multipart/form-data", false),
+        ] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("https://claude.ai/api/organizations/b44129f9/upload")
+                .header("content-type", content_type)
+                .body(())
+                .unwrap();
+            assert_eq!(
+                carries_multipart_body(&req),
+                withheld,
+                "{content_type} should{} be withheld",
+                if withheld { "" } else { " not" }
+            );
+        }
     }
 
     #[test]
