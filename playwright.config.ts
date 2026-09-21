@@ -11,6 +11,11 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e",
+  // The live suite has its own config (`playwright.live.config.ts`): it needs a
+  // different webServer set, and Playwright resolves `webServer` per CONFIG and
+  // not per project, so a project here would have started the Rust harness on
+  // every `pnpm test:e2e` - including the CI job that installs no Rust.
+  testIgnore: "live/**",
   // The popover is one room: 360px wide, ~520px tall. Layout assertions are
   // only meaningful at the size the window actually is.
   use: {
@@ -44,10 +49,10 @@ export default defineConfig({
     // Pin these tests to the popover, which is no longer the app's default.
     //
     // They assert on popover flows - first run, the org picker, routing counts -
-    // and the new window UI cannot satisfy them: its routing actions are inert,
-    // so there is nothing for "turn routing on" to observe. Rewriting them
-    // against the new shell before it can route would mean asserting on a UI
-    // that does not work yet, so they keep testing the surface that does.
+    // in the popover's own copy and layout, so they keep testing the surface
+    // they were written against. This line used to say the new shell's
+    // routing was inert and could not satisfy them; it is wired
+    // (`src/lib/useRouting.ts`), and `playwright.live.config.ts` drives it.
     //
     // Retire this line together with the popover screens. `newUiEnabled()`
     // reads localStorage first and a fresh browser context has none, so the

@@ -40,3 +40,17 @@ tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"
+
+# The UI-e2e harness (`examples/ui-harness.rs`) only. `tauri/test` brings in the
+# mock runtime, which hosts the real command table with no window and no
+# WebDriver; keeping it a dev-dependency is what keeps it out of shipped builds.
+# hyper/bytes are already direct dependencies of gate-connect-core at these
+# versions, so the harness adds nothing to the dependency graph `cargo audit`
+# screens.
+[dev-dependencies]
+tauri = { version = "~2.11", features = ["tray-icon", "image-png", "test"] }
+tokio = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
