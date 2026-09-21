@@ -214,11 +214,16 @@ export function CertificateNotice({
         >
           One prompt to expect
         </h1>
+        {/* Two short sentences: what is about to happen, then why it is safe.
+            The old copy opened on "Apps with no gateway setting of their own",
+            which asks the reader to hold a category they have no use for at the
+            moment a system dialog is about to steal focus. The mechanism lives
+            on Home's certificate card, where there is room to read it. */}
         <p className="text-gc-body-sm leading-snug text-gc-ink-3">
-          Apps with no gateway setting of their own route through a proxy on this
-          machine, and your {trustStoreName(platform)} has to trust its certificate.
-          Generated here, never leaves this machine, removable from Settings
-          whenever routing is off.
+          Gate Connect routes some apps through a proxy on this machine, so your
+          {" "}
+          {trustStoreName(platform)} needs to trust its certificate. It is made
+          here, never leaves your computer, and you can remove it in Settings.
         </p>
         {/* The handoff sentence, in the same words Home's card and the family
             panel's banner use, so the three surfaces do not describe one

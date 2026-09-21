@@ -97,7 +97,13 @@ describe("CertificateNotice warns before the system dialog", () => {
 
   it("says where the certificate is trusted in the platform's own vocabulary", () => {
     renderNotice({ platform: "macos" });
-    expect(screen.getByText(/your keychain has to trust its certificate/i)).toBeTruthy();
+    // The store name is interpolated, so the sentence is split across nodes:
+    // match on the paragraph's own text rather than on a single node.
+    expect(
+      screen.getByText((_t, el) =>
+        el?.tagName === "P" && /keychain needs to trust its certificate/i.test(el.textContent ?? ""),
+      ),
+    ).toBeTruthy();
     expect(screen.getByText(/macOS will ask for your login password/i)).toBeTruthy();
   });
 });
