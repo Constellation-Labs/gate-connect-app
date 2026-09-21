@@ -25,6 +25,8 @@ handoffs, backend events arriving unprompted, a command rejecting.
   the seam *between* the two - a click reaching a real command, and the
   backend's own state deciding what the UI shows next - see `live/`, which
   runs the same frontend against the real command table on all three OSes.
+  It has its own config (`playwright.live.config.ts`) and its own command,
+  `pnpm test:e2e:live`; `pnpm test:e2e` does not run it.
 - **Cross-browser rendering.** One Chromium project. The app ships in one
   webview per platform and none of them is Chromium; a matrix here would be
   coverage of something we don't ship. `platform.spec.ts` covers what the app

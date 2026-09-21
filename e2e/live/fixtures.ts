@@ -18,7 +18,12 @@ import { test as base, expect, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import { installLiveTauri } from "./install";
 
-const HARNESS = process.env.GATE_UI_HARNESS_URL ?? "http://127.0.0.1:5610";
+const HARNESS =
+  process.env.GATE_UI_HARNESS_URL ??
+  `http://127.0.0.1:${process.env.GATE_UI_HARNESS_PORT ?? 5610}`;
+
+/** Required on every harness route; `playwright.live.config.ts` mints it. */
+const TOKEN = process.env.GATE_UI_HARNESS_TOKEN ?? "";
 
 /** The HTTPS mock gateway the relay forwards to. Its cert is the throwaway CA's. */
 export const MOCK_GATEWAY = `https://127.0.0.1:${process.env.GATE_UI_HARNESS_MOCK_PORT ?? 8453}`;
@@ -48,7 +53,7 @@ export class Harness {
    * ~108 bytes - which a checkout a few directories deep already exceeds.
    */
   async load(): Promise<void> {
-    const res = await fetch(`${HARNESS}/health`);
+    const res = await fetch(`${HARNESS}/health`, { headers: { "x-gate-harness-token": TOKEN } });
     const body = (await res.json()) as { home: string; secrets: string; capture: string };
     this.home = body.home;
     this.secrets = body.secrets;
@@ -64,7 +69,7 @@ export class Harness {
   async invoke<T = unknown>(cmd: string, payload: Record<string, unknown> = {}): Promise<T> {
     const res = await fetch(`${HARNESS}/invoke`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-gate-harness-token": TOKEN },
       body: JSON.stringify({ cmd, payload }),
     });
     const body = (await res.json()) as { ok?: T; err?: unknown };
@@ -76,7 +81,9 @@ export class Harness {
 
   /** How many events the backend has emitted so far. */
   async eventCount(): Promise<number> {
-    const res = await fetch(`${HARNESS}/events?since=0`);
+    const res = await fetch(`${HARNESS}/events?since=0`, {
+      headers: { "x-gate-harness-token": TOKEN },
+    });
     return ((await res.json()) as { next: number }).next;
   }
 
@@ -143,11 +150,6 @@ export class LiveApp {
     const trust = this.page.getByRole("button", { name: "Trust certificate", exact: true });
     await trust.click({ timeout: 2_000 }).catch(() => {});
   }
-
-  /** Open a section's pane from the rail. */
-  openSection(name: string) {
-    return this.page.getByRole("button", { name }).first().click();
-  }
 }
 
 type Fixtures = {
@@ -188,6 +190,7 @@ export const test = base.extend<Fixtures>({
       const since = await harness.eventCount();
       await page.addInitScript(installLiveTauri, {
         harness: HARNESS,
+        token: TOKEN,
         windowLabel: "main",
         since,
       });

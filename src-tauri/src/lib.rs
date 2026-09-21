@@ -1274,7 +1274,7 @@ async fn proxy_enable<R: tauri::Runtime>(
 /// point clears it. The window is milliseconds wide and both sites are
 /// driven by one user in one popover; not worth a lock.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn arm_crash_safety_net(app: &tauri::AppHandle) {
+fn arm_crash_safety_net<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
     let mgr = app.autolaunch();
@@ -1427,7 +1427,7 @@ fn launch_at_login_status<R: tauri::Runtime>(
 /// Best-effort: failing to arm costs the next crash its relaunch, which is the
 /// behaviour every build before this one had.
 #[cfg(target_os = "macos")]
-fn arm_crash_restart(app: &tauri::AppHandle) {
+fn arm_crash_restart<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use gate_connect_core::crash_restart;
     let result = crash_restart::launch_agent_plist(&app.package_info().name)
         .and_then(|plist| crash_restart::arm(&plist));
@@ -5936,7 +5936,7 @@ fn update_tray_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>, proxy_on: bo
 /// don't have to thread it through. The macOS status dot is handled in
 /// `update_tray_status`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
+fn update_tray_tooltip<R: tauri::Runtime>(app: &tauri::AppHandle<R>, proxy_on: bool) {
     if let Some(tray) = app.tray_by_id("main") {
         let text = if SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
             "Gate Connect · sign in required"
@@ -6092,7 +6092,7 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 /// it can only fail once the event loop has shut down - which is why the `Err`
 /// is dropped: by then there is no window left to raise.
 #[cfg(target_os = "macos")]
-fn order_front_regardless(window: &tauri::WebviewWindow) {
+fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
 

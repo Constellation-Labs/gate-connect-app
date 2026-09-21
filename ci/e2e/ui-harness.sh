@@ -29,6 +29,14 @@ esac
 # Native path for consumers that aren't msys-aware (node, the Rust binaries).
 winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
+if [ "$OS" = "Windows" ]; then
+  # Git Bash rewrites anything that looks like a path, which corrupts openssl's
+  # `-subj "/CN=..."` into a Windows path. `ci/e2e/run.sh` documents the same
+  # guard; dropping it here made the CA subject nonsense and the leaf unusable.
+  export MSYS2_ARG_CONV_EXCL="*"
+  export MSYS_NO_PATHCONV=1
+fi
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Under the system temp dir, NOT in the repo, and that is load-bearing on Linux:
 # the helper daemon binds `$HOME/run/gate-connect/proxyd.sock`, and a Unix socket
@@ -40,8 +48,14 @@ WORK="${WORK%/}"
 MOCK_PORT="${GATE_UI_HARNESS_MOCK_PORT:-8453}"
 AUTH_PORT="${GATE_UI_HARNESS_AUTH_PORT:-8454}"
 
+# 0700, and that is not hygiene. With GATE_UI_HARNESS_ROUTING the run installs
+# a root CA whose PRIVATE KEY the secrets seam writes here as a plain file; in a
+# world-writable temp dir at a predictable path, any other local user could read
+# it and mint certificates every browser on the machine would trust. The `-m` is
+# on the create so there is no window between mkdir and chmod.
 rm -rf "$WORK"
-mkdir -p "$WORK/home" "$WORK/secrets" "$WORK/ca"
+mkdir -m 700 -p "$WORK"
+mkdir -m 700 -p "$WORK/home" "$WORK/secrets" "$WORK/ca"
 
 # --- 1. Throwaway CA + leaf for the mock gateway. --------------------------
 # Bare filenames from inside the dir, so it works with either the msys or the
@@ -87,6 +101,16 @@ AUTH_PID=$!
 cleanup() { kill "$MOCK_PID" "$AUTH_PID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
+# Supplied by playwright.live.config.ts and inherited through the environment;
+# generated here only for a manual run, which then has no test to share it with.
+# The harness refuses to start without it: `/invoke` reaches every command the
+# app has, and a loopback port with no token is reachable from any page in the
+# developer's browser.
+if [ -z "${GATE_UI_HARNESS_TOKEN:-}" ]; then
+  GATE_UI_HARNESS_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  export GATE_UI_HARNESS_TOKEN
+fi
+
 cargo build --locked -p gate-connect-desktop --example ui-harness
 
 # --- 3. Trust the app's own proxy CA. --------------------------------------
@@ -131,9 +155,10 @@ env \
   GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")" \
   GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")" \
   GATE_CONNECT_TEST_CA="$(winpath "$WORK/ca/ca.pem")" \
-  GATE_UI_HARNESS_CAPTURE="$CAPTURE" \
+  GATE_UI_HARNESS_CAPTURE="$(winpath "$CAPTURE")" \
   GATE_CONNECT_TEST_AUDIT_ENDPOINT="http://127.0.0.1:$AUTH_PORT/audit/emit" \
   GATE_CONNECT_TEST_TOKEN_ENDPOINT="http://127.0.0.1:$AUTH_PORT/oauth2/token" \
   GATE_CONNECT_TEST_ORGS_ENDPOINT="http://127.0.0.1:$AUTH_PORT/v1/me/orgs" \
   GATE_UI_HARNESS_PORT="${GATE_UI_HARNESS_PORT:-5610}" \
+  GATE_UI_HARNESS_TOKEN="$GATE_UI_HARNESS_TOKEN" \
   "$BIN"

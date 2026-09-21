@@ -247,11 +247,13 @@ jobs:
       # The Rust side is covered by the `rust` job above and by
       # e2e-real-tools.yml.
       #
-      # `--project=chromium` rather than `pnpm test:e2e`, which would also run
-      # the live project: that one needs a Rust build and belongs on the
-      # three-OS matrix in `ui-e2e` below, not a second time here.
+      # The live suite is NOT here. It has its own config file, because
+      # Playwright resolves `webServer` per config and never per project: as a
+      # project it started the Rust harness on this job too, which has no Rust
+      # toolchain and no webkit deps, and the failure arrived as a webServer
+      # timeout. `ui-e2e` below owns it.
       - name: E2E (UI)
-        run: pnpm exec playwright test --project=chromium
+        run: pnpm test:e2e
 
       - name: Upload Playwright report
         if: failure()
@@ -342,18 +344,34 @@ jobs:
       # throwaway, but a machine-wide root is not the kind of thing to leave
       # lying around on the strength of that - the same reasoning, and the same
       # `if: always()`, as `win-system-trust` above.
+      # The paths go through cygpath on Windows: `gate-connect.exe` is a native
+      # binary and cannot read the `/c/...` form Git Bash hands it, so the
+      # untrust ran against a home that did not exist and left the root
+      # installed while reporting success.
+      #
+      # It does not fail the job - the tests' verdict is the job's - but it says
+      # loudly what happened, because a silent `|| true` is how a machine-wide
+      # root survives a run nobody looked at.
       - name: Remove the CA from the machine store
         if: always()
         shell: bash
         run: |
+          native() { if [ "$RUNNER_OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
           W="${TMPDIR:-/tmp}/gc-ui-e2e"
           CLI="target/debug/gate-connect"
           [ -x "$CLI" ] || CLI="$CLI.exe"
-          [ -x "$CLI" ] || exit 0
-          GATE_CONNECT_TEST_HOME="$W/home" GATE_CONNECT_TEST_SECRETS="$W/secrets" \
-            "$CLI" proxy disable || true
-          GATE_CONNECT_TEST_HOME="$W/home" GATE_CONNECT_TEST_SECRETS="$W/secrets" \
-            "$CLI" proxy untrust-ca --system-trust || true
+          if [ ! -x "$CLI" ]; then
+            echo "::warning::gate-connect CLI not built; nothing to untrust"
+            exit 0
+          fi
+          export GATE_CONNECT_TEST_HOME="$(native "$W/home")"
+          export GATE_CONNECT_TEST_SECRETS="$(native "$W/secrets")"
+          "$CLI" proxy disable || echo "note: proxy disable failed (may not have been on)"
+          if "$CLI" proxy untrust-ca --system-trust; then
+            echo "CA removed from the machine store"
+          else
+            echo "::warning::could not remove the Gate CA from this runner's trust store"
+          fi
           exit 0
 
       - name: Upload Playwright report

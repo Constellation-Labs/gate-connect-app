@@ -88,6 +88,22 @@ backend directly rather than trusting the UI's account of itself.
 ## Running
 
 ```sh
-pnpm test:e2e:live       # this project only
-pnpm test:e2e            # both projects
+pnpm test:e2e:live                          # this suite
+GATE_UI_HARNESS_ROUTING=1 pnpm test:e2e:live  # ...including the routing arc
 ```
+
+`pnpm test:e2e` runs the popover suite and **not** this one. They are separate
+config files (`playwright.live.config.ts`) rather than two projects in one,
+because Playwright resolves `webServer` per config and never per project: as a
+project, this suite's Rust harness started on every popover run too, including
+the CI job that installs no Rust.
+
+## The port is a remote control, and it is guarded
+
+`/invoke` reaches every command the app has, several of which leave the
+throwaway home: a real login item, a machine-wide certificate, the system proxy,
+a process sweep that kills agents. Any page in the developer's browser can post
+to loopback, so every route requires `x-gate-harness-token`, minted per run in
+`playwright.live.config.ts`. The harness also refuses to start without
+`GATE_CONNECT_TEST_HOME` and `GATE_CONNECT_TEST_SECRETS`, since without them
+those same commands would drive the real machine.

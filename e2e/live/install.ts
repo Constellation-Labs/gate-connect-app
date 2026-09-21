@@ -28,6 +28,8 @@
 export interface LiveOptions {
   /** Base URL of the harness, e.g. `http://127.0.0.1:5610`. */
   harness: string;
+  /** Required on every harness route; see `playwright.live.config.ts`. */
+  token: string;
   /** `getCurrentWindow().label`, which `main.tsx` reads to pick its shell. */
   windowLabel: string;
   /**
@@ -38,6 +40,12 @@ export interface LiveOptions {
    * dialogs the previous page had already answered. The fixture reads the
    * current offset before navigating, so each page sees only what the backend
    * emits from its own boot onwards.
+   *
+   * This value seeds the FIRST page of a browser context only. An init script
+   * runs again on every navigation with the same baked number, so a
+   * `page.reload()` would replay everything since the original boot - the very
+   * problem this option exists to avoid. The live offset therefore lives in
+   * `sessionStorage`, which survives a reload and dies with the context.
    */
   since: number;
 }
@@ -74,7 +82,7 @@ export function installLiveTauri(opts: LiveOptions): void {
   async function call(cmd: string, args: Record<string, unknown>): Promise<unknown> {
     const res = await fetch(`${opts.harness}/invoke`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-gate-harness-token": opts.token },
       body: JSON.stringify({ cmd, payload: args }),
     });
     const body = await res.json();
@@ -142,7 +150,24 @@ export function installLiveTauri(opts: LiveOptions): void {
 
   // Drain the harness's event log into the page. Long-polls, so an idle run
   // costs one request a second rather than a spin; it dies with the page.
-  let since = opts.since;
+  const OFFSET_KEY = "gc.live.eventOffset";
+  const readOffset = () => {
+    try {
+      const saved = window.sessionStorage.getItem(OFFSET_KEY);
+      return saved === null ? opts.since : Number(saved);
+    } catch {
+      return opts.since;
+    }
+  };
+  const saveOffset = (n: number) => {
+    try {
+      window.sessionStorage.setItem(OFFSET_KEY, String(n));
+    } catch {
+      /* noop */
+    }
+  };
+
+  let since = readOffset();
   let stopped = false;
   window.addEventListener("beforeunload", () => {
     stopped = true;
@@ -150,13 +175,27 @@ export function installLiveTauri(opts: LiveOptions): void {
   void (async () => {
     while (!stopped) {
       try {
-        const res = await fetch(`${opts.harness}/events?since=${since}`);
+        const res = await fetch(`${opts.harness}/events?since=${since}`, {
+          headers: { "x-gate-harness-token": opts.token },
+        });
         const body = (await res.json()) as {
           next: number;
           events: { event: string; payload: unknown }[];
         };
+        // Deliver first, then advance. The other order dropped the rest of a
+        // batch whenever a listener threw, and swallowed the error with it:
+        // `since` had already moved past events nobody received.
+        for (const e of body.events) {
+          try {
+            emit(e.event, e.payload);
+          } catch (err) {
+            // A handler that throws is the app's bug, not the bridge's. Say so
+            // where a spec can see it rather than losing it in this catch.
+            console.error(`[live] listener for ${e.event} threw`, err);
+          }
+        }
         since = body.next;
-        for (const e of body.events) emit(e.event, e.payload);
+        saveOffset(since);
       } catch {
         // The harness going away ends the run; sleeping keeps this from
         // spinning against a dead port while Playwright tears the page down.

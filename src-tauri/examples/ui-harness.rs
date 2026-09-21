@@ -27,15 +27,42 @@
 //! that emit through their own `app` argument work normally, and `/events`
 //! below replays them.
 //!
-//! Secrets, home and the gateway all come from the existing env seams
-//! (`GATE_CONNECT_TEST_SECRETS`, `GATE_CONNECT_TEST_HOME`, `GATE_CONNECT_TEST_CA`,
-//! `GATE_CONNECT_TEST_UPSTREAM`), so this touches no real keychain and no real
-//! gateway. It is a dev-dependency example, never part of a shipped build.
+//! ## What this port is, and why it is guarded
 //!
-//! Wire protocol, all on loopback:
+//! `/invoke` reaches EVERY command the app has, including ones that leave the
+//! throwaway home: `set_launch_at_login` writes a real login item,
+//! `close_running_agents` scans and kills processes machine-wide, `proxy_enable`
+//! sets the system proxy and installs a certificate. A page in the developer's
+//! browser can make cross-origin requests to loopback, so an unauthenticated
+//! port here would hand any web page that whole surface for as long as a test
+//! run lasts. Hence `GATE_UI_HARNESS_TOKEN`: required on every route, supplied
+//! by `playwright.live.config.ts`, and unguessable. The permissive CORS header
+//! stays, because with the token the browser's same-origin policy is not what
+//! is protecting this.
+//!
+//! It refuses to start without the file seams for the same reason. Without
+//! them these commands drive the developer's REAL home, keychain, gateway and
+//! system proxy, which is precisely the configuration nobody wants behind a
+//! loopback port. `GATE_CONNECT_TEST_HOME` roots every per-user path,
+//! `GATE_CONNECT_TEST_SECRETS` replaces the OS secret store with files, and
+//! `GATE_CONNECT_TEST_CA` is what lets the relay trust the mock gateway's
+//! throwaway CA. All three are inert in release builds (`crates/core/src/env.rs`).
+//! It is a dev-dependency example and never part of a shipped build.
+//!
+//! ## One limitation worth knowing before writing a spec
+//!
+//! `app.run()` is never called, so the mock runtime only ENQUEUES what
+//! `run_on_main_thread` is given and never runs it (`tauri::test`'s
+//! `mock_runtime`). `lib.rs` uses that hop for window work on macOS and Linux,
+//! so those call sites are silent no-ops here. Nothing in the routing path
+//! depends on one; a command that WAITED on such a task would park its blocking
+//! thread for the life of the run, so do not add one without checking.
+//!
+//! Wire protocol, all on loopback, every route requiring
+//! `x-gate-harness-token`:
 //!   POST /invoke   {"cmd": "...", "payload": {...}}  -> {"ok": <json>} | {"err": <json>}
 //!   GET  /events?since=N                             -> {"next": M, "events": [...]}
-//!   GET  /health                                     -> {"ok": true}
+//!   GET  /health                                     -> {"ok": true, "home": …, …}
 //!
 //! `/events` long-polls: it parks for up to a second when there is nothing new,
 //! so the page's loop costs one idle request per second instead of a spin. SSE
@@ -91,9 +118,33 @@ fn json(status: StatusCode, v: serde_json::Value) -> Response<Full<Bytes>> {
         // The page is served from Vite on another port, so every call is
         // cross-origin. Loopback-only and test-only, hence the blanket allow.
         .header("access-control-allow-origin", "*")
-        .header("access-control-allow-headers", "content-type")
+        .header(
+            "access-control-allow-headers",
+            "content-type, x-gate-harness-token",
+        )
         .body(Full::new(Bytes::from(v.to_string())))
         .unwrap()
+}
+
+/// Refuse to run without the seams that keep this off the developer's real
+/// machine, and without the token that keeps other pages off this port.
+///
+/// A panic rather than a warning: every one of these is the difference between
+/// a hermetic test and a loopback port that drives the real thing, and a
+/// harness that started anyway would be found out by what it broke.
+fn required_env(name: &str) -> String {
+    match std::env::var(name) {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!(
+                "ui-harness: {name} is required. This example is started by \
+                 `ci/e2e/ui-harness.sh`, which sets it along with a throwaway \
+                 home; running it by hand would point every command at your \
+                 real home, keychain and gateway."
+            );
+            std::process::exit(2);
+        }
+    }
 }
 
 fn main() {
@@ -156,6 +207,11 @@ fn main() {
         });
     }
 
+    let token = required_env("GATE_UI_HARNESS_TOKEN");
+    for seam in ["GATE_CONNECT_TEST_HOME", "GATE_CONNECT_TEST_SECRETS"] {
+        let _ = required_env(seam);
+    }
+
     let port: u16 = std::env::var("GATE_UI_HARNESS_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -183,8 +239,10 @@ fn main() {
             };
             let webview = webview.clone();
             let log = log.clone();
+            let token = token.clone();
             tokio::spawn(async move {
-                let service = service_fn(move |req| handle(req, webview.clone(), log.clone()));
+                let service =
+                    service_fn(move |req| handle(req, webview.clone(), log.clone(), token.clone()));
                 if let Err(e) = http1::Builder::new()
                     .serve_connection(TokioIo::new(stream), service)
                     .await
@@ -205,12 +263,29 @@ async fn handle(
     req: Request<hyper::body::Incoming>,
     webview: tauri::WebviewWindow<MockRuntime>,
     log: Arc<Mutex<EventLog>>,
+    token: String,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
 
+    // The preflight carries no custom header by definition, so it is answered
+    // before the check; it reveals nothing and grants nothing.
     if req.method() == Method::OPTIONS {
         return Ok(json(StatusCode::NO_CONTENT, serde_json::Value::Null));
+    }
+
+    // Every other route, including /health, which reports where the seams put
+    // the developer's throwaway home.
+    let presented = req
+        .headers()
+        .get("x-gate-harness-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if presented != token {
+        return Ok(json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({ "err": "bad or missing x-gate-harness-token" }),
+        ));
     }
 
     if path == "/health" {
@@ -239,6 +314,19 @@ async fn handle(
             .find_map(|kv| kv.strip_prefix("since="))
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
+        // A `since` past the end can only come from a client that is out of
+        // step with a restarted harness. Answering with the current offset
+        // resynchronises it; parking for the full second on every poll, which
+        // is what the loop below would do, looks like a hang.
+        {
+            let l = log.lock().unwrap();
+            if since > l.events.len() {
+                return Ok(json(
+                    StatusCode::OK,
+                    serde_json::json!({ "next": l.events.len(), "events": [] }),
+                ));
+            }
+        }
         // Long-poll: up to ~1s in 20ms slices.
         for _ in 0..50 {
             let out = {
@@ -335,6 +423,17 @@ async fn handle(
         // it comes back as a 200 with `err` rather than an HTTP error: the page
         // has to see the same rejection shape Tauri gives it.
         Ok(Err(e)) => serde_json::json!({ "err": e }),
+        // A command that PANICKED lands here, not above: `get_ipc_response`
+        // itself panics when the responder is dropped, which `spawn_blocking`
+        // reports as a join error. Saying so matters because the causes are
+        // different - a panic is usually a Tauri plugin this harness does not
+        // register (`state() called before manage()`), and reporting it as an
+        // ordinary rejection sends the reader looking in the command instead.
+        Err(e) if e.is_panic() => serde_json::json!({
+            "err": format!(
+                "command panicked (often a plugin the harness does not register): {e}"
+            ),
+        }),
         Err(e) => serde_json::json!({ "err": format!("harness join error: {e}") }),
     };
     Ok(json(StatusCode::OK, response))

@@ -28,7 +28,7 @@ import * as path from "node:path";
  *
  * `manager::enable()` calls `ca::ensure_trusted()`, which installs a root CA
  * and needs root on Linux and macOS. `ci/e2e/ui-harness.sh` does that up front
- * when `GATE_UI_HARNESS_TRUST_CA=1`, which `ui-e2e` in ci.yml sets and a local
+ * when `GATE_UI_HARNESS_ROUTING=1`, which `ui-e2e` in ci.yml sets and a local
  * run does not. Skipping is the honest outcome: the alternative is a suite that
  * fails on every developer machine for a reason that is not a bug.
  */
@@ -75,6 +75,13 @@ test.describe("routing, end to end", () => {
       baseUrl: MOCK_GATEWAY,
       apiKey: "sk-gw-000000000000000000000000",
     });
+    // The shell is gated on the diagnostics question having been answered, and
+    // `boot.spec.ts` answers it by clicking. Arranging it again here is what
+    // lets this file run alone, or survive a failure in that one: the
+    // alternative is a locator timeout naming a switch, on a screen that is
+    // actually the consent step. Setting the same value twice is a no-op.
+    await harness.invoke("set_share_diagnostics", { enabled: true });
+
     // Codex is "installed" as far as `detect()` is concerned (it falls back to
     // the config directory existing), and "logged in" as far as `connect()` is:
     // it reads `auth.json` to choose the API-key vs ChatGPT path, and refuses
@@ -86,7 +93,14 @@ test.describe("routing, end to end", () => {
       JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-codex-own-upstream-key" }),
     );
 
-    const before = harness.captured().length;
+    // Matched on method and path rather than counted. The capture log is
+    // global: the Overview's own boot reads go to the same gateway, and they
+    // only stay out of it today because `gateway_api` does not read
+    // `GATE_CONNECT_TEST_CA` (only the relay and engine do) so their TLS fails.
+    // A count would turn that implementation detail into this test's premise.
+    const isOurs = (c: { method: string; path: string }) =>
+      c.method === "POST" && c.path.endsWith("/responses");
+    const before = harness.captured().filter(isOurs).length;
     const app = await boot();
 
     await app.routeApp(SECTION);
@@ -106,10 +120,14 @@ test.describe("routing, end to end", () => {
 
     // The message. This is the assertion the whole harness is for.
     const sent = await sendAsCodex(baseUrl!);
-    expect(sent.ok, `relay answered ${sent.status}`).toBe(true);
+    expect(sent.status, "the relay should have forwarded and answered 200").toBe(200);
 
-    const arrived = harness.captured().slice(before);
-    expect(arrived, "the gateway received the request").toHaveLength(1);
+    // Polled, not read once: `mock-gateway.mjs` appends on header arrival, and
+    // the relay answers us on its own schedule.
+    await expect
+      .poll(() => harness.captured().filter(isOurs).length, { timeout: 10_000 })
+      .toBe(before + 1);
+    const arrived = harness.captured().filter(isOurs).slice(before);
     // The credential was injected by the relay, never written into a config
     // file - the product's central claim, asserted at the gateway.
     expect(arrived[0].headers["x-gate-api-key"]).toBe("sk-gw-000000000000000000000000");
@@ -159,7 +177,7 @@ test.describe("routing, end to end", () => {
     expect(harness.captured().length, "no request reached the gateway").toBe(before);
   });
 
-  test("after Gate Connect is gone, the tool still reaches its provider", async ({ harness }) => {
+  test("what Gate leaves behind is a config the tool can still use", async ({ harness }) => {
     // What "shut down" leaves behind, asserted on disk rather than by killing
     // the harness - Playwright owns that process, and killing it would end the
     // run rather than test it.
