@@ -560,9 +560,11 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
-    // Answered by the relay itself, ahead of catalog resolution: this is the
-    // liveness check `routing_health` probes, so it must not need a catalog
-    // entry, must not reach the gateway, and must not spend a token. Under the
+    // Answered by the relay itself, ahead of catalog resolution: a liveness
+    // check must not need a catalog entry, must not reach the gateway, and must
+    // not spend a token. The identity probes use the proof-carrying path
+    // handled far above instead; this one stays because it answers the weaker
+    // question without a token, which is all the e2e suite needs. Under the
     // reserved `/__gate/` prefix, which no catalog domain can claim, so it can
     // never shadow a real upstream path. GET only - a stray POST to this path
     // is a tool misconfigured, not a health check, and should fall through to
@@ -1046,9 +1048,15 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-/// Liveness path, served by the relay itself. Under a reserved prefix that the
-/// domain catalog cannot name, so adding a real upstream can never collide with
-/// it. Public so the prober and its tests spell it once.
+/// Unauthenticated liveness path, served by the relay itself. Under a reserved
+/// prefix that the domain catalog cannot name, so adding a real upstream can
+/// never collide with it. Public so the e2e suite spells it once.
+///
+/// A bare 204 to anybody, so it says a relay of ours serves this port and
+/// nothing about who is asking. The status probes want the opposite and use
+/// [`gate_connect_paths::RELAY_HEALTH_PATH`], whose challenge only a process
+/// that can read the 0600 token can answer; see
+/// [`super::probe_relay_route`], which used to ask here.
 pub const HEALTH_PATH: &str = "/__gate/health";
 
 /// Marker a relay base URL carries ahead of the catalog slug to name the tool

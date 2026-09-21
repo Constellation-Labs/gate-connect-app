@@ -738,6 +738,15 @@ export interface PendingQuit {
 }
 export const pendingQuitTools = () => invoke<PendingQuit | null>("pending_quit_tools");
 
+/** [`PendingQuit.reverting`] on its own, for the window's own Quit entry.
+ *
+ * `pendingQuitTools` drains a buffer only a tray-raised quit fills. The menu
+ * entry raises the flow itself and knows which tools are routed from the rows
+ * on screen, but not which of them a plain quit puts back: that depends on the
+ * address each config holds, which is per install and decided in one place in
+ * Rust. */
+export const toolsStrandedByQuit = () => invoke<string[]>("tools_stranded_by_quit");
+
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent
  * untouched so the next startup restore reapplies them. Fires the "restart

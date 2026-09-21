@@ -4328,6 +4328,28 @@ fn pending_quit_tools() -> Option<PendingQuit> {
     PENDING_QUIT_TOOLS.lock().ok().and_then(|mut p| p.take())
 }
 
+/// The tools a plain quit would put back on their own settings, asked directly
+/// rather than drained from a buffer.
+///
+/// [`pending_quit_tools`] answers this for a quit the **tray** raised, because
+/// [`request_quit`] filled the buffer on the way. The window's own menu entry
+/// raises the flow itself with nothing buffered, and it can derive the routed
+/// list from the rows it already has - but not this one: which address a
+/// config holds is per install, and `proxy::address_dies_with_gui` is the one
+/// place that decides whether it survives the exit. A frontend guess here would
+/// be a second copy of that policy, and the dialog's whole job is to name what
+/// `quit_app` will actually rewrite.
+///
+/// Off the main thread, like [`request_quit`]'s own sweep: it reads tool config
+/// files. An empty answer is the honest default for a read that could not
+/// complete - it names no tool rather than naming the wrong one.
+#[tauri::command]
+async fn tools_stranded_by_quit() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::provider::tools_stranded_by_quit)
+        .await
+        .unwrap_or_default()
+}
+
 /// Finish a quit that [`request_quit`] deferred to the popover: the "quit
 /// without disconnecting" choice. The `RunEvent::Exit` handler still reverts
 /// the system proxy.
@@ -4608,6 +4630,7 @@ pub fn run() {
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,
+                    tools_stranded_by_quit,
                     request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,
@@ -4693,6 +4716,7 @@ pub fn run() {
                     request_switch_org,
                     quit_app,
                     pending_quit_tools,
+                    tools_stranded_by_quit,
                     request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,

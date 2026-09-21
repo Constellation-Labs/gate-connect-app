@@ -529,6 +529,14 @@ fn a_stranger_on_the_relay_port_is_not_our_relay() {
         !gate_connect_core::proxy::relay_listening(),
         "a listener that cannot answer the challenge must not read as our relay"
     );
+    // And the routing verdict says `Unknown` rather than `Unreachable`: the port
+    // is occupied, so claiming it is dead would be a claim the probe cannot
+    // support. This is the outcome that distinguishes the two negatives.
+    assert_eq!(
+        gate_connect_core::proxy::probe_relay_route(),
+        gate_connect_core::routing_health::RouteHealth::Unknown,
+        "an occupied port that cannot prove itself is unknown, not unreachable"
+    );
 }
 
 /// And the stub that can answer does read as ours, so the test above is about
@@ -542,6 +550,25 @@ fn a_listener_that_answers_the_challenge_is_our_relay() {
     assert!(
         gate_connect_core::proxy::relay_listening(),
         "a listener answering the challenge is our relay"
+    );
+    assert_eq!(
+        gate_connect_core::proxy::probe_relay_route(),
+        gate_connect_core::routing_health::RouteHealth::Reachable,
+        "the routing verdict reads the same proof"
+    );
+}
+
+/// No port has ever been bound, so nothing can be pointed at one: a confirmed
+/// negative rather than the `Unknown` an occupied port earns.
+#[test]
+fn a_relay_port_that_was_never_bound_is_unreachable() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    assert_eq!(
+        gate_connect_core::proxy::probe_relay_route(),
+        gate_connect_core::routing_health::RouteHealth::Unreachable,
+        "no persisted port is a definite negative"
     );
 }
 

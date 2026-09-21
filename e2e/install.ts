@@ -703,6 +703,9 @@ export function installFakeTauri(state: BackendState): void {
       state.pendingQuitTools = null;
       return pending;
     },
+    // Not drained, unlike the buffer above: the menu entry asks this every time
+    // it raises the flow.
+    tools_stranded_by_quit: () => state.strandedByQuit,
     disconnect_tools_for_quit: () => {
       // A tool the teardown could not put back stays connected, which is what
       // leaves it pointing at a relay about to die.

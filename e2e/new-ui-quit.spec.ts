@@ -81,19 +81,36 @@ test.describe("new UI quit", () => {
     await expect.poll(() => app.lastCall("quit_app")).not.toBeNull();
   });
 
-  test("quitting without disconnecting touches no config", async ({ boot }) => {
+  /**
+   * Choosing to leave runs no teardown *here* - which is not the same as
+   * touching nothing, and used to be described as if it were. The exit itself
+   * puts back any config naming an address that dies with the process, so both
+   * screens on this branch name those tools rather than promising the whole set
+   * stays pointed at Gate.
+   */
+  test("quitting without disconnecting runs no teardown, and says what the exit puts back", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: { tools: ["Claude Code"], reverting: ["Claude Code"] },
+      pendingQuitTools: { tools: ["Claude Code", "Codex"], reverting: ["Codex"] },
     });
 
-    await app.page.getByRole("radio", { name: /Quit without disconnecting/ }).click();
+    const leave = app.page.getByRole("radio", { name: /Quit without disconnecting/ });
+    // Both halves of the backend's split, on the row that carries out the
+    // choice: one tool is handed its own settings back, the other goes on
+    // working through the forwarder.
+    await expect(leave).toContainText("Gate puts Codex back on its own settings");
+    await expect(leave).toContainText("Claude Code keeps working without Gate");
+    await leave.click();
     // The primary is named for what it does, so choosing the other branch
     // renames it - "Disconnect" over this choice would be the wrong word.
     await app.page.getByRole("button", { name: "Continue" }).click();
 
-    await expect(app.page.getByText(/Routing settings were left in place/)).toBeVisible();
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("Routing settings were left in place, except for Codex");
+    await expect(dialog).toContainText("reconnects it when Gate Connect starts again");
     await app.page.getByRole("button", { name: "Close Gate Connect" }).click();
 
     await expect.poll(() => app.lastCall("quit_app")).not.toBeNull();
@@ -145,11 +162,18 @@ test.describe("new UI quit", () => {
    * The menu entry the file drew into `topnav/menu` on 2026-08-28. Its list of
    * routed tools is derived here rather than swept from the backend buffer,
    * which only fills when the *tray* deferred a quit.
+   *
+   * The other half it cannot derive: whether a plain quit puts a config back
+   * depends on the address that config holds, not on the tool, so it asks
+   * `tools_stranded_by_quit` rather than keeping a second copy of the rule.
    */
-  test("the topnav menu raises the same chooser", async ({ boot }) => {
+  test("the topnav menu raises the same chooser, asking which configs the exit reverts", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
+      strandedByQuit: ["Codex"],
     });
 
     await app.page.getByRole("button", { name: "More" }).click();
@@ -157,6 +181,10 @@ test.describe("new UI quit", () => {
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText("2 protected apps are still routed through Gate")).toBeVisible();
+    await expect.poll(() => app.lastCall("tools_stranded_by_quit")).not.toBeNull();
+    await expect(
+      dialog.getByRole("radio", { name: /Quit without disconnecting/ }),
+    ).toContainText("Gate puts Codex back on its own settings");
     expect(await app.lastCall("quit_app")).toBeNull();
   });
 

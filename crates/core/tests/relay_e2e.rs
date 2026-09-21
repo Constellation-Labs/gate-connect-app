@@ -581,12 +581,14 @@ async fn relay_forwards_direct_when_not_intercepting() {
     );
 }
 
-/// The liveness path the routing verdict probes: answered by the relay itself,
-/// with a 204 and no body, without the request ever reaching the gateway.
+/// The relay's unauthenticated liveness path: answered by the relay itself, with
+/// a 204 and no body, without the request ever reaching the gateway.
 ///
-/// This is what separates "the relay is up" from "something is listening on that
-/// port", which is the whole reason `probe_relay_route` asks for a specific path
-/// rather than opening a socket.
+/// It proves that a relay of ours serves this port at all, and deliberately not
+/// *who* is answering - anything that accepts on the port can return a 204. The
+/// status probes ask `gate_connect_paths::RELAY_HEALTH_PATH` instead, where only
+/// a process that can read the 0600 token can reply; `probe_relay_route` used to
+/// ask here and was moved for exactly that reason.
 #[tokio::test]
 async fn relay_answers_its_own_health_path_without_calling_the_gateway() {
     let gateway = start_mock_gateway().await;
@@ -601,7 +603,7 @@ async fn relay_answers_its_own_health_path_without_calling_the_gateway() {
         .get(format!(
             "http://127.0.0.1:{}{}",
             engine.relay_port(),
-            gate_connect_core::proxy::RELAY_HEALTH_PATH
+            gate_connect_core::proxy::RELAY_LIVENESS_PATH
         ))
         .send()
         .await
@@ -643,7 +645,7 @@ async fn relay_health_path_is_get_only() {
         .post(format!(
             "http://127.0.0.1:{}{}",
             engine.relay_port(),
-            gate_connect_core::proxy::RELAY_HEALTH_PATH
+            gate_connect_core::proxy::RELAY_LIVENESS_PATH
         ))
         .send()
         .await

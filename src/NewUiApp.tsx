@@ -40,6 +40,7 @@ import {
   routingVerdicts,
   runningAgents as fetchRunningAgents,
   pendingQuitTools,
+  toolsStrandedByQuit,
   disconnectToolsForQuit,
   quitApp,
   pendingRestore,
@@ -420,8 +421,8 @@ export function NewUiApp() {
    * registered is not lost - the same reasoning as `App.tsx`.
    */
   const [quit, setQuit] = useState<
-    | { kind: "choose"; tools: string[]; choice: QuitChoice }
-    | { kind: "confirm"; disconnected: boolean }
+    | { kind: "choose"; tools: string[]; reverting: string[]; choice: QuitChoice }
+    | { kind: "confirm"; disconnected: boolean; reverting: string[] }
     | { kind: "left-behind"; tools: string[] }
     | null
   >(null);
@@ -1030,8 +1031,18 @@ export function NewUiApp() {
           // Only ever opens the chooser: a sweep landing mid-flow must not
           // throw the user back to step one of a quit they are already past.
           if (pending && pending.tools.length > 0)
-            setQuit((q) =>
-              q ?? { kind: "choose", tools: pending.tools, choice: "disconnect" },
+            setQuit(
+              (q) =>
+                q ?? {
+                  kind: "choose",
+                  tools: pending.tools,
+                  // The subset a plain quit puts back on its own settings,
+                  // because the address its config names dies with this
+                  // process. The dialogs below say which tools those are, so
+                  // neither branch describes the other's outcome.
+                  reverting: pending.reverting,
+                  choice: "disconnect",
+                },
             );
         })
         .catch(() => {});
@@ -1243,7 +1254,9 @@ export function NewUiApp() {
       setQuit(
         failed.length > 0
           ? { kind: "left-behind", tools: failed }
-          : { kind: "confirm", disconnected: true },
+          : // A clean teardown already put every config back, so the exit has
+            // nothing left to revert and the report says so on its own branch.
+            { kind: "confirm", disconnected: true, reverting: [] },
       );
     } catch (e) {
       setActionError(classifyError(e, "quit_disable"));
@@ -1260,9 +1273,15 @@ export function NewUiApp() {
   const continueQuit = useCallback(() => {
     if (quit?.kind !== "choose") return;
     if (quit.choice === "leave") {
-      // Nothing to carry out - the choice is to touch nothing - so this is a
-      // step rather than an operation.
-      setQuit({ kind: "confirm", disconnected: false });
+      // Nothing to carry out *here* - no teardown runs on this step - so it is
+      // a step rather than an operation. Not the same as touching nothing,
+      // which it used to say: `quit_app` reverts the stranded configs on the
+      // way out, which is why `reverting` travels to the report.
+      setQuit({
+        kind: "confirm",
+        disconnected: false,
+        reverting: quit.reverting,
+      });
       return;
     }
     void runDisconnect();
@@ -2859,11 +2878,23 @@ export function NewUiApp() {
         // with no work in it would be a dialog for its own sake.
         if (routedForQuit.length === 0) void quitApp().catch(() => {});
         else
-          setQuit({
-            kind: "choose",
-            tools: routedForQuit,
-            choice: "disconnect",
-          });
+          // Which of them a plain quit puts back is the one half this shell
+          // cannot derive - it depends on the address each config holds, not on
+          // the tool - so it is asked for rather than guessed. An unanswered
+          // read names no tool, which leaves the dialog on its no-revert
+          // wording: the same sentence it drew before either list existed.
+          void toolsStrandedByQuit()
+            .catch(() => [] as string[])
+            .then((reverting) =>
+              setQuit((q) =>
+                q ?? {
+                  kind: "choose",
+                  tools: routedForQuit,
+                  reverting,
+                  choice: "disconnect",
+                },
+              ),
+            );
       }
     },
     [openLink, openDashboard, routedForQuit],
@@ -3198,6 +3229,7 @@ export function NewUiApp() {
         ) : quit?.kind === "confirm" ? (
           <QuitSafeToCloseDialog
             disconnected={quit.disconnected}
+            reverting={quit.reverting}
             busy={quitBusy}
             onClose={() => void finishQuit()}
             onCancel={cancelQuit}
@@ -3205,6 +3237,7 @@ export function NewUiApp() {
         ) : quit?.kind === "choose" ? (
           <QuitDialog
             tools={quit.tools}
+            reverting={quit.reverting}
             platform={platform}
             choice={quit.choice}
             onChoose={(choice) =>

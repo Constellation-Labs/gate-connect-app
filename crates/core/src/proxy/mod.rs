@@ -1055,23 +1055,35 @@ pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
 }
 
-/// The relay's own liveness path, re-exported so callers and the e2e suite spell
-/// it once.
-pub use relay::HEALTH_PATH as RELAY_HEALTH_PATH;
+/// The relay's unauthenticated liveness path, re-exported so the e2e suite
+/// spells it once.
+///
+/// **Not** `gate_connect_paths::RELAY_HEALTH_PATH`, which is the separate
+/// *proof-carrying* path [`relay_report`] and [`probe_relay_route`] ask on. This
+/// one answers a bare 204 to anybody who asks, so it says that a relay of ours
+/// is serving this port and nothing about who is on the other end. The two are
+/// deliberately different paths - see the note on the constant in
+/// `gate-connect-paths` - so a probe cannot mistake one answer for the other.
+pub use relay::HEALTH_PATH as RELAY_LIVENESS_PATH;
 
 /// Is the relay actually answering on the port config-routed tools are pointed
 /// at?
 ///
 /// A TCP connect would only prove *something* is listening on that port, which
-/// after a port reuse is a claim we cannot support. Asking for
-/// [`RELAY_HEALTH_PATH`] and requiring a 204 proves it is our relay. The request
-/// never leaves the loopback interface and never reaches the gateway, so this is
-/// free to run on a status refresh.
+/// after a port reuse is a claim we cannot support. Neither would a 204 on
+/// [`RELAY_LIVENESS_PATH`], which is what this asked for before: a squatter can
+/// answer 204 to anything, so that identified nothing it claimed to. So this
+/// asks the listener to prove it can read the 0600 token, on the same
+/// challenge-response [`relay_report`] uses. A raw loopback socket carries it,
+/// which also settles what `.no_proxy()` used to: there is no client here for an
+/// `HTTPS_PROXY` of our own to route back through.
 ///
-/// `.no_proxy()` for the same reason every control-plane client in this codebase
-/// sets it: the app may have pointed `HTTPS_PROXY` at its own engine, and a
-/// loopback health check routed back through that would be measuring the wrong
-/// hop.
+/// Three outcomes rather than two, because "nothing is there" and "somebody
+/// else's process is there" are different claims and the failed proof does not
+/// tell them apart on its own. A refused connect is a confirmed negative; a
+/// connect that lands on a listener which cannot prove itself is a port
+/// collision, or a build old enough to predate the challenge, and reporting
+/// `Unreachable` for it would claim the port is dead when it is occupied.
 ///
 /// Scope: this is the route for *config* integrations, which write the relay
 /// base URL into their config. Proxy-routed members (the catalog domains) hang
@@ -1079,25 +1091,18 @@ pub use relay::HEALTH_PATH as RELAY_HEALTH_PATH;
 pub fn probe_relay_route() -> crate::routing_health::RouteHealth {
     use crate::routing_health::RouteHealth;
 
-    let Some(base) = relay_base_url() else {
+    let Some(port) = relay::load_persisted_port() else {
         // No port has ever been bound, so there is nothing for a tool to be
         // pointed at. That is a definite negative, not an unknown.
         return RouteHealth::Unreachable;
     };
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    else {
-        return RouteHealth::Unknown;
-    };
-    match client.get(format!("{base}{RELAY_HEALTH_PATH}")).send() {
-        Ok(resp) if resp.status() == reqwest::StatusCode::NO_CONTENT => RouteHealth::Reachable,
-        // Something answered but not our relay - a port collision, or a build
-        // old enough to predate this path. Reporting `Unreachable` would claim
-        // the port is dead when it is occupied; neither is confirmed, so say so.
-        Ok(_) => RouteHealth::Unknown,
-        Err(_) => RouteHealth::Unreachable,
+    if relay_listening() {
+        return RouteHealth::Reachable;
+    }
+    if loopback_proxy_answers(&relay::base_url(port)) {
+        RouteHealth::Unknown
+    } else {
+        RouteHealth::Unreachable
     }
 }
 

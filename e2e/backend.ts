@@ -227,6 +227,12 @@ export interface BackendState {
    *  settings because the address its config names dies with the app. Mirrors
    *  `PendingQuit` in `src/lib/api.ts`. */
   pendingQuitTools: { tools: string[]; reverting: string[] } | null;
+  /** What `tools_stranded_by_quit` answers: the same subset as
+   *  `pendingQuitTools.reverting`, for the window's own Quit entry, which
+   *  raises the flow itself and so has no buffer to drain. Separate here
+   *  because the buffer is consumed on read and this is not; in Rust both come
+   *  from one predicate over the configured address. */
+  strandedByQuit: string[];
   /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
       Empty = a clean teardown. A spec that cares about the partial-teardown
       result sets it; the teardown itself still succeeds, which is the point. */
@@ -638,6 +644,7 @@ export function defaultState(): BackendState {
     runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    strandedByQuit: [],
     quitLeftBehind: [],
     backendErrors: [],
     pendingRestore: { providers: [], tools: [] },

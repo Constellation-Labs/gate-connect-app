@@ -2827,6 +2827,7 @@ export type QuitChoice = "disconnect" | "leave";
 
 export function QuitDialog({
   tools,
+  reverting,
   platform,
   choice,
   onChoose,
@@ -2837,6 +2838,13 @@ export function QuitDialog({
   /** Config-routed tools still pointed at Gate. Never empty - the shell only
    * raises this dialog when the backend reports at least one. */
   tools: string[];
+  /** The subset of `tools` a plain quit puts back on its own settings, because
+   * the address its config names dies with this process. The backend decides it
+   * off the configured address and `quit_app` acts on the same list, so the
+   * second choice below can name what it will actually rewrite. Empty is an
+   * ordinary answer: on Linux the relay is a daemon that outlives the window,
+   * and a config naming the forwarder keeps answering everywhere. */
+  reverting: string[];
   choice: QuitChoice;
   onChoose: (next: QuitChoice) => void;
   busy?: boolean;
@@ -2848,6 +2856,7 @@ export function QuitDialog({
   platform: Platform;
 }) {
   const plural = tools.length > 1;
+  const keeping = tools.filter((t) => !reverting.includes(t));
   return (
     <Modal
       tone="warning"
@@ -2891,7 +2900,32 @@ export function QuitDialog({
         />
         <ModalChoice
           title="Quit without disconnecting"
-          description="Leave configurations pointed at Gate. Requests that depend on the local proxy may pause."
+          /* The drawn description is "Leave configurations pointed at Gate.
+             Requests that depend on the local proxy may pause.", and it stopped
+             being true of this branch when a plain quit began putting the
+             stranded configs back. Saying it anyway tells someone their tools
+             may pause when Gate has in fact handed them back their own
+             settings - and understates the other half, where the forwarder
+             keeps answering and the tool goes on working. So the row names
+             which tools get which outcome, the same split the popover's
+             `QuitConfirm` paragraph draws from the same two lists. Raised as
+             question 25 in docs/figma-questions-for-design.md rather than
+             decided here. */
+          description={
+            reverting.length === 0
+              ? `Leave configurations pointed at Gate. ${joinNames(tools)} ${
+                  plural ? "keep" : "keeps"
+                } working without Gate until Gate Connect runs again.`
+              : keeping.length === 0
+                ? `Gate puts ${joinNames(reverting)} back on ${
+                    reverting.length > 1 ? "their" : "its"
+                  } own settings until Gate Connect runs again.`
+                : `Gate puts ${joinNames(reverting)} back on ${
+                    reverting.length > 1 ? "their" : "its"
+                  } own settings; ${joinNames(keeping)} ${
+                    keeping.length > 1 ? "keep" : "keeps"
+                  } working without Gate until Gate Connect runs again.`
+          }
           selected={choice === "leave"}
           onSelect={() => onChoose("leave")}
         />
@@ -2937,12 +2971,18 @@ export function QuitDialog({
  */
 export function QuitSafeToCloseDialog({
   disconnected,
+  reverting,
   busy,
   onClose,
   onCancel,
 }: {
-  /** Which branch got here: the teardown ran cleanly, or nothing was touched. */
+  /** Which branch got here: the teardown ran cleanly, or it was declined. */
   disconnected: boolean;
+  /** On the declined branch, the tools the exit itself puts back on their own
+   * settings - the ones whose configured address dies with this process. Always
+   * empty on the disconnected branch, where the teardown already put every
+   * config back and the exit has nothing left to do. */
+  reverting: string[];
   busy?: boolean;
   onClose: () => void;
   onCancel: () => void;
@@ -2977,10 +3017,26 @@ export function QuitSafeToCloseDialog({
         * asks for a third to be raised, and it was. See
         * `docs/figma-questions-for-design.md`. Do not "fix" it back to
         * `694:33002`. */}
+      {/* The declined branch's drawn sentence has the same problem as the
+        * chooser's second row, and for the same reason: "Routing settings were
+        * left in place" describes what a plain quit used to do. It now puts the
+        * configs that name a dying address back on their own settings on the
+        * way out, so on that branch the sentence is false about the tools it is
+        * most about. Named rather than counted, because this is the last screen
+        * before the app closes and "some tools" is not something the user can
+        * go and check afterwards. Question 25, with the row above. */}
       <ModalNote tone="neutral">
         {disconnected
           ? "Tools are disconnected and their previous settings are restored. You will still be signed in the next time you open the app."
-          : "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."}
+          : reverting.length === 0
+            ? "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."
+            : `Routing settings were left in place, except for ${joinNames(
+                reverting,
+              )}: closing Gate Connect puts ${
+                reverting.length > 1 ? "their" : "its"
+              } own settings back, and reconnects ${
+                reverting.length > 1 ? "them" : "it"
+              } when Gate Connect starts again.`}
       </ModalNote>
     </Modal>
   );
