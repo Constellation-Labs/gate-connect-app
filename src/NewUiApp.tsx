@@ -3323,9 +3323,36 @@ export function NewUiApp() {
             }}
             onDismiss={() => routing.resolvePrompt(false)}
           >
+            {/* "Routing turns off", not "routing itself stays on", which is
+                what this said until `untrust_ca` grew a `prepare_untrust`. The
+                engine mints leaf certificates the OS rejects the moment this
+                root stops being trusted, so the two cannot overlap; the app
+                now sequences that itself rather than refusing and asking the
+                user to pre-arrange it. The sentence has to follow the
+                behaviour. Configuration is untouched either way, which is the
+                half that makes this reversible. */}
             <p className="text-sm leading-5 text-neutral-600">
-              Routing itself stays on, and your tools keep their configuration.
-              Your operating system may ask for permission to remove it.
+              Routing turns off while the certificate is gone, and your tools
+              keep their configuration. Your operating system may ask for
+              permission to remove it.
+            </p>
+            {/* The step after the one they are about to take, said here because
+                this is where they are standing and nothing later says it. A
+                tool loads Gate's certificate bundle once, when it builds its
+                HTTP client, so a process that was already running keeps the
+                old one and every intercepted host fails its handshake inside
+                that tool - while Gate's own rows still read Protected, because
+                from Gate's side nothing is wrong. Measured on 2026-09-21: an
+                hour of `APIConnectionError` in Hermes against a proxy that
+                answered an identical replayed request in under a second.
+
+                Weighted like the trust dialog's `trustPromptHint` above, and
+                for the same reason: it is the sentence that prevents the
+                support thread. */}
+            <p className="text-sm font-medium leading-5 text-base-foreground">
+              When you trust a new certificate, quit and reopen any AI tools
+              that are running. They read the certificate when they start, so
+              one that is already open will fail to connect until you do.
             </p>
           </Modal>
         ) : runningApps.stage?.kind === "offer" ? (
