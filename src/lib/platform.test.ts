@@ -99,6 +99,17 @@ describe("trustPromptWaiting", () => {
     expect(trustPromptWaiting("windows")).toContain("Yes");
   });
 
+  it("names the process macOS actually shows, which is not ours", () => {
+    // The Security Agent titles the prompt `security`, the binary
+    // `ca::ensure_trusted` shells out to. A user told to expect something from
+    // Gate Connect would be hunting for a name that is not on the screen, so
+    // both strings have to name `security` instead.
+    expect(trustPromptWaiting("macos")).toContain("security");
+    expect(trustPromptHint("macos")).toContain("security");
+    // And must not promise our own name on the one platform that never shows it.
+    expect(trustPromptWaiting("macos")).not.toContain("Gate Connect Local CA");
+  });
+
   it("is present tense on every platform, because the dialog is already up", () => {
     for (const p of PLATFORMS) {
       const waiting = trustPromptWaiting(p);

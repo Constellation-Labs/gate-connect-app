@@ -23,6 +23,61 @@ function renderNotice(
   return { onInstall, onDecline };
 }
 
+describe("CertificateNotice depicts the prompt the platform actually raises", () => {
+  // The depictions are `aria-hidden`, so they are unreachable through the
+  // queries the rest of this file uses. Reaching for them by container is the
+  // point: nothing else in the suite notices if a platform silently swaps the
+  // capture for the drawing, which is exactly what happened when the capture
+  // landed and all eight existing cases stayed green.
+  function depiction() {
+    return document.querySelector("figure");
+  }
+
+  it("shows Windows the captured dialog, not a drawing", () => {
+    renderNotice({ platform: "windows" });
+    const img = depiction()?.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img?.getAttribute("src")).toMatch(/windows-certificate-warning/);
+    // Intrinsic size reserves the box before the PNG decodes; a capture that
+    // lost these would reflow the tallest panel in the app on load.
+    expect(img?.getAttribute("width")).toBe("516");
+    expect(img?.getAttribute("height")).toBe("475");
+  });
+
+  it.each([
+    ["macos", "Certificate Trust Settings"],
+    ["linux", "Authentication Required"],
+  ] as const)("draws %s a password field under its own title", (platform, title) => {
+    renderNotice({ platform });
+    const fig = depiction();
+    expect(fig?.querySelector("img")).toBeNull();
+    expect(fig?.textContent).toContain(title);
+    // The field is the claim this drawing makes: these two ask for a password
+    // rather than for a judgement.
+    expect(fig?.textContent).toContain("Password");
+  });
+
+  it("draws no password field for an unknown platform", () => {
+    renderNotice({ platform: "unknown" });
+    // `trustPromptHint` promises only that something will ask the user to
+    // confirm, so the drawing must not promise a password the copy will not.
+    expect(depiction()?.textContent).not.toContain("Password");
+    expect(screen.getByText(/Your system will ask you to confirm/i)).toBeTruthy();
+  });
+
+  it("hides every depiction from the accessibility tree, caption included", () => {
+    renderNotice({ platform: "linux" });
+    // The caption used to sit outside the hidden node, so a screen reader was
+    // told what a picture it was never given roughly shows. `queryByText` does
+    // not honour `aria-hidden`, so assert the containment directly rather than
+    // the absence.
+    const fig = depiction();
+    expect(fig?.getAttribute("aria-hidden")).toBe("true");
+    const caption = screen.getByText(/Roughly what your system will show/i);
+    expect(fig?.contains(caption)).toBe(true);
+  });
+});
+
 describe("CertificateNotice warns before the system dialog", () => {
   it("names the dialog the platform is about to raise, in future tense", () => {
     renderNotice();
@@ -42,7 +97,13 @@ describe("CertificateNotice warns before the system dialog", () => {
 
   it("says where the certificate is trusted in the platform's own vocabulary", () => {
     renderNotice({ platform: "macos" });
-    expect(screen.getByText(/your keychain has to trust its certificate/i)).toBeTruthy();
+    // The store name is interpolated, so the sentence is split across nodes:
+    // match on the paragraph's own text rather than on a single node.
+    expect(
+      screen.getByText((_t, el) =>
+        el?.tagName === "P" && /keychain needs to trust its certificate/i.test(el.textContent ?? ""),
+      ),
+    ).toBeTruthy();
     expect(screen.getByText(/macOS will ask for your login password/i)).toBeTruthy();
   });
 });
