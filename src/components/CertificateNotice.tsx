@@ -45,12 +45,9 @@ type TrustDialog = { kind: "capture"; src: string; width: number; height: number
 
 const TRUST_DIALOG: Record<Platform, TrustDialog> = {
   windows: { kind: "capture", src: windowsTrustDialog, width: 516, height: 475 },
-  // Both strings are the Security Agent's own, for the *user* trust domain,
-  // which is the one we write: `ca::ensure_trusted` installs into the login
-  // keychain, so it is "your Certificate Trust Settings" and not the "System"
-  // wording the admin domain uses. Drawn from a published screenshot rather
-  // than from a machine in hand - newer Macs offer Touch ID first, so this is
-  // the password path, which is still where declining Touch ID lands.
+  // Verified against a capture of the real prompt, including the user-domain
+  // wording. Newer Macs offer Touch ID first; this is the password path, which
+  // is where declining Touch ID lands.
   macos: {
     kind: "security-agent",
     title: "You are making changes to your Certificate Trust Settings.",
@@ -180,53 +177,51 @@ function PolkitSketch({ dialog }: { dialog: Drawn }) {
 }
 
 /** macOS: the Security Agent prompt that `security add-trusted-cert` raises
- * when it changes trust settings.
+ * when it changes trust settings. Drawn from a capture of the real one.
  *
- * Nothing like polkit's, which is why it gets its own drawing rather than
- * sharing Linux's: the content is left of an icon rather than centred, there
- * are two fields and not one, and the confirm is the *highlighted* default
- * where polkit's is dimmed. Sharing one "password prompt" between the two put
- * Ubuntu's chrome on macOS.
+ * Nothing like polkit's, and nothing like the older macOS screenshots that
+ * circulate either - those put the icon left of the text with the buttons
+ * bottom right. The current one is a narrow vertical card: a gold padlock on
+ * top, the process name under it, two stacked full-width fields, and the
+ * buttons stacked full-width with the confirm *above* Cancel. Neither button
+ * is a coloured default.
  *
- * Both sentences are real, because here we know them exactly. The user name is
- * drawn as an empty bar for the reason the polkit avatar is drawn blank: the
- * real field is filled with this user's own account name. */
+ * Both sentences are the Security Agent's own, and they are the user trust
+ * domain's wording ("your Certificate Trust Settings", not the admin domain's
+ * "System"), which is the domain `ca::ensure_trusted` writes to: it installs
+ * into the login keychain. */
 function SecurityAgentSketch({ dialog }: { dialog: Drawn }) {
   return (
     <Depiction>
-      <div className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border">
-        <div className="flex gap-2">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gc-accent-wash text-gc-accent">
-            <Icon name="key" size={14} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <span className="block text-gc-label font-medium leading-snug text-gc-ink">
-              {dialog.title}
-            </span>
-            <span className="mt-0.5 block text-gc-label leading-snug text-gc-ink-3">
-              {dialog.body}
-            </span>
-          </div>
-        </div>
+      <div className="mx-auto w-full max-w-[208px] rounded-[10px] bg-gc-page p-3 text-left shadow-border">
+        {/* The gold padlock is the first thing on screen. Warning wash is the
+            nearest this palette has to it, and it is depicting macOS's icon
+            rather than claiming a status of our own. */}
+        <span className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-gc-warning-wash text-gc-warning-deep">
+          <Icon name="key" size={18} />
+        </span>
+        {/* macOS puts the *process* name in bold, and it is `security` - the
+            binary `ca::ensure_trusted` shells out to - not "Gate Connect". A
+            user hunting for our name will not find it, which is worth drawing
+            rather than quietly improving. */}
+        <span className="block text-gc-label font-semibold text-gc-ink">security</span>
+        <span className="mt-1.5 block text-gc-label leading-snug text-gc-ink-2">
+          {dialog.title}
+        </span>
+        <span className="mt-1.5 block text-gc-label leading-snug text-gc-ink-2">{dialog.body}</span>
         <div className="mt-2.5 flex flex-col gap-1">
-          {/* Filled but blank: the real field carries this user's account name. */}
-          <div className="flex items-center gap-1.5">
-            <span className="w-[54px] shrink-0 whitespace-nowrap text-right text-gc-label text-gc-ink-3">User Name</span>
-            <span className="h-[18px] flex-1 rounded bg-gc-sunken shadow-border" />
-          </div>
-          {/* Empty and focused, which is where the caret actually is. */}
-          <div className="flex items-center gap-1.5">
-            <span className="w-[54px] shrink-0 whitespace-nowrap text-right text-gc-label text-gc-ink-3">Password</span>
-            <span className="h-[18px] flex-1 rounded bg-gc-surface shadow-border ring-1 ring-gc-accent/40" />
-          </div>
+          {/* Filled but nameless: the real field carries this user's own
+              account name, which is why this stays a drawing. */}
+          <span className="flex h-[18px] items-center rounded bg-gc-sunken px-1.5">
+            <span className="block h-[5px] w-2/5 rounded-full bg-gc-line-strong" />
+          </span>
+          <span className="flex h-[18px] items-center rounded bg-gc-sunken px-1.5 text-gc-label text-gc-ink-4">
+            Password
+          </span>
         </div>
-        <div className="mt-2.5 flex items-center justify-end gap-1.5">
-          <span className="rounded bg-gc-sunken px-2 py-0.5 text-gc-label text-gc-ink-3">
-            {dialog.dismiss}
-          </span>
-          <span className="rounded bg-gc-accent px-2 py-0.5 text-gc-label font-medium text-white">
-            {dialog.confirm}
-          </span>
+        <div className="mt-2 flex flex-col gap-1 text-center text-gc-label text-gc-ink">
+          <span className="rounded bg-gc-surface py-1 shadow-border">{dialog.confirm}</span>
+          <span className="rounded bg-gc-surface py-1 shadow-border">{dialog.dismiss}</span>
         </div>
       </div>
     </Depiction>
