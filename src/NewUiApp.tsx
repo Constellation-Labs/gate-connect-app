@@ -71,7 +71,6 @@ import {
   BAND_LABELS,
   browserTrustRestartAdvice,
   buildGroups,
-  describeSection,
   hintForMember,
   isSettingsManaged,
   proxyReopenAdvice,
@@ -3549,10 +3548,6 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          // The section's own sentence. The h1 is an app name now ("Claude"),
-          // which is legible on its own - but the switch under it covers three
-          // surfaces, and this is the only place that says which.
-          description={describeSection(view.slug)}
           logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.

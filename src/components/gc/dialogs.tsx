@@ -1897,11 +1897,15 @@ export function SessionConsentDialog({
     hosts.length > 2
       ? `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`
       : hosts.join(" and ");
-  // The taxonomy's whole point, and the tray's only chance to hear it: a
-  // `host`-scoped row is matched at CONNECT, before any header exists, so it
+  // The taxonomy's whole point, and now the only place either shell says it:
+  // a `host`-scoped row is matched at CONNECT, before any header exists, so it
   // covers every client on the machine that talks to those hosts. The window's
-  // pane says this beside the switch; the tray has no pane, and this dialog is
-  // the one surface both shells raise.
+  // pane used to say this beside the switch; #273 removed the scope card and
+  // #315 the header sentence, so this dialog - asked once per section, never
+  // again once `session_routing_accepted` holds the id - and the rail row's
+  // hover are what is left. Product intends to drop the dialog too (routing
+  // sessions by default, 2026-09-21), at which point the disclosure has no home
+  // until design draws one.
   const wide = surfaces.some((m) => m.scope === "host") && hosts.length > 0;
   return (
     <Modal

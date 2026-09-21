@@ -7,8 +7,6 @@ import {
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
-  describeMember,
-  describeSection,
   groupSummary,
   hasBrowserSurface,
   hostReloadAdvice,
@@ -203,18 +201,6 @@ describe("buildGroups", () => {
     expect(chat.scope).toBe("host");
     expect(chat.cascade).toBe(false);
     expect(claude.members.find((m) => m.key === "anthropic")!.cascade).toBe(true);
-  });
-
-  it("describes every row it can, because the labels no longer describe themselves", () => {
-    // Asked of `describeMember` rather than of a member's own field: the field
-    // was carried on every member and read by nothing - the pane describes the
-    // SECTION now - so it went, and this is where the copy lives.
-    expect(describeMember("claude-code")).toBe("Claude Code in your terminal.");
-    expect(describeMember("opencode")).toBe("The OpenCode editor.");
-    // The line that was wrong, and the direction it was wrong in: this row
-    // covers the desktop app too, and said "browser tab".
-    expect(describeMember("claude-web")).toContain("desktop app");
-    expect(describeMember("claude-web")).toContain("browser tab");
   });
 
   it("drops sections with nothing routable and leaves out what cannot route", () => {
@@ -942,18 +928,6 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
-
-describe("describeSection", () => {
-  it("prefers a section's own description where it has one", () => {
-    expect(describeSection("claude")).toMatch(/Claude Code in your terminal/);
-  });
-
-  it("falls back to the first member for a section with neither", () => {
-    // `openai-api` carries no description and no blurb, and its member's
-    // sentence is the only place the host is written in the window UI.
-    expect(describeSection("openai-api")).toBeDefined();
-  });
-});
 
 describe("settings-managed members", () => {
   it("keeps the shell-environment channel out of the app list", () => {

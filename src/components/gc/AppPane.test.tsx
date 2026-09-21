@@ -63,21 +63,18 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
 }
 
 describe("AppPane header", () => {
-  it("says what the app is, because its name no longer does", () => {
-    // The h1 is a surface kind now ("CLI"), which the rail makes legible with a
-    // vendor eyebrow the pane does not have. Without the sentence this header
-    // is one word and no way to tell which terminal tool it means.
-    render(pane({ name: "CLI", description: "Claude Code in your terminal." }));
-    expect(screen.getByRole("heading", { level: 1, name: "CLI" })).toBeTruthy();
-    expect(screen.getByText("Claude Code in your terminal.")).toBeTruthy();
-  });
-
-  it("draws no line at all for a row nobody wrote copy for", () => {
-    // Absent means absent: a placeholder under a one-word heading is worse than
-    // the heading alone.
-    render(pane({ name: "OpenCode Zen / Go" }));
-    expect(screen.getByRole("heading", { level: 1, name: "OpenCode Zen / Go" })).toBeTruthy();
+  it("draws the title and the status line, and nothing between them", () => {
+    // The frame's `app-info` (408:25099) is two lines. A coverage sentence
+    // ("Claude Code in your terminal.") sat between them from #221 until
+    // design asked for it to go on 2026-09-21; this pins that it stays gone.
+    render(pane({ name: "Claude" }));
+    const heading = screen.getByRole("heading", { level: 1, name: "Claude" });
+    expect(heading).toBeTruthy();
     expect(screen.getByText("Protected")).toBeTruthy();
+    // Structural, not textual: the header block holds the h1 and the status
+    // line and nothing else, so any reinserted element fails both checks.
+    expect(heading.parentElement?.children).toHaveLength(2);
+    expect(heading.nextElementSibling?.textContent).toMatch(/Protected/);
   });
 });
 

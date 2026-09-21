@@ -492,8 +492,11 @@ mono identifier slot.
 The grouping is what makes the row labels work. Rows are named for the surface
 they cover - "API" and "Chat" for the two surfaces of the Claude desktop app,
 "CLI" for a terminal tool - and a surface kind is only legible under a heading
-that names the program. The sentence explaining each row is UI copy, in
-`MEMBER_DESCRIPTIONS`.
+that names the program. The sentence explaining each row used to be UI copy in
+`MEMBER_DESCRIPTIONS`, drawn under the App pane's title; design asked for that
+line to go on 2026-09-21 (the frame's header is title and status only) and the
+table went with it, since nothing else read it. The rail row's hover
+(`hintForMember`) is what still names the programs behind a row.
 
 **Each row also carries a scope and a credential** (`taxonomy::Scope`,
 `taxonomy::Credential`), and both are rendered rather than implied:

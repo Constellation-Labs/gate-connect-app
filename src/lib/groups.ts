@@ -37,62 +37,24 @@ import { trustStoreName, type Platform } from "./platform";
  */
 
 
-/**
- * What each row is, in one sentence.
- *
- * The row labels are surface kinds - "API", "Chat", "CLI" - which is what makes
- * a group readable at a glance and useless in isolation: "Chat" under "Claude
- * Desktop" is only a word until something says it means claude.ai. This is that
- * something, and it is the reason the labels can be one word at all.
- *
- * Keyed by member key, so tool slugs and domain slugs share one namespace -
- * which they already do on the rail, where a row is one or the other and the
- * user cannot tell which. Copy rather than catalog data: the backend names the
- * surface it routes, and this says what the surface is to the person reading.
- *
- * A slug with no entry gets no sentence rather than a placeholder.
+/*
+ * There used to be a `MEMBER_DESCRIPTIONS` table here: one sentence per row
+ * ("Claude Code in your terminal.", "Anything on this machine that calls
+ * api.openai.com directly ..."), drawn under the App pane's title. Design
+ * asked for that line to go on 2026-09-21 - the frame's header (`app-info`,
+ * 408:25099) is title and status only - and nothing else read the table, so it
+ * went with the line rather than staying as copy with no reader. It is in the
+ * history at the commit that removed it. The window now has no per-app
+ * statement of what a switch covers; AG-892, AG-889/AG-897 and the
+ * session-routing default all want one, and where it goes is design's to draw.
  */
-export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  anthropic: "Model calls from the Claude desktop app, Cowork included, on api.anthropic.com.",
-  // Both clients, because the row covers both and the heading above it now
-  // says "Claude Desktop". This line used to read "Your Claude chats, in the
-  // browser tab", which was wrong in the direction that cost a support thread:
-  // the entry is `claude.ai`, matched on host, so it covers the desktop app's
-  // chat turns AND a browser tab - and it covers the app MORE fully, since
-  // `rules_for_client` narrows only the browser to the completion path.
-  "claude-web": "Your Claude chats on claude.ai - in the desktop app, and in a browser tab.",
-  "claude-code": "Claude Code in your terminal.",
-  chatgpt: "Your ChatGPT Desktop App.",
-  "chatgpt-apps":
-    "Your ChatGPT conversations, in a browser tab, plus the tools Codex runs there.",
-  codex: "Codex in your terminal.",
-  openrouter:
-    "Any app that goes through OpenRouter. Gate sees the traffic first, so you get its security and compression on the way.",
-  openclaw: "OpenClaw in your terminal.",
-  hermes: "Hermes in your terminal.",
-  opencode: "The OpenCode editor.",
-  "env-proxy": "Command line tools that follow your proxy settings.",
-  // The one row whose subject is a host rather than a product, so its sentence
-  // is the only place the host is written in the window UI - the rail and the
-  // pane show it nowhere else. The label stays "OpenAI API" and the identifier
-  // lands here, which is also the rule about mono: the popover prints
-  // `api.openai.com` in a mono slot on this row already, and a sans label
-  // repeating it would say it twice and set an identifier in body type.
-  openai:
-    "Anything on this machine that calls api.openai.com directly. Gate intercepts that host, so apps with no gateway setting of their own still route.",
-};
-
-/** The sentence for one row, or nothing where no copy exists for it. */
-export function describeMember(key: string): string | undefined {
-  return MEMBER_DESCRIPTIONS[key];
-}
 
 /**
  * The programs behind a row, named, for the hover on its label.
  *
- * Shorter and more concrete than {@link MEMBER_DESCRIPTIONS}, and it exists
- * because the two answer different questions. A description says what the
- * surface IS, and the pane has room to draw one. A rail row has room for one
+ * Shorter and more concrete than the pane sentence that used to exist (see the
+ * note above `SECTIONS`), and it exists because the two answer different
+ * questions. A description says what the surface IS. A rail row has room for one
  * word - "API", "Chat", "CLI" - and the question a user actually arrives with
  * is "which of the things on my machine is that", which a surface kind cannot
  * answer however well it is chosen.
@@ -723,15 +685,6 @@ const SECTIONS: readonly {
   /** Member keys, in draw order. A key with nothing behind it contributes no
    *  member, and a section with no members is dropped. */
   members: readonly string[];
-  /** What this app is, in one sentence, for the pane that opens on it.
-   *
-   * A section's own line rather than its first member's, WHERE THE TWO DIFFER:
-   * the heading is an app now, and "Claude Code in your terminal." under a
-   * heading reading "Claude" describes a third of what the switch does. Omit it
-   * on a single-surface section and {@link describeSection} falls through to the
-   * member's own line - four sections used to carry a copy of it instead, which
-   * is two places to edit and one to forget. */
-  description?: string;
   blurb?: string;
 }[] = [
   {
@@ -739,7 +692,6 @@ const SECTIONS: readonly {
     name: "Claude",
     band: "apps",
     members: ["claude-code", "anthropic", "claude-web"],
-    description: "Claude Code in your terminal, and the Claude desktop app - its model calls and its chats.",
   },
   {
     id: "chatgpt",
@@ -750,7 +702,6 @@ const SECTIONS: readonly {
     // other two surfaces are the ChatGPT app's chat turn and the endpoint Work
     // mode calls.
     members: ["codex", "chatgpt-apps", "chatgpt"],
-    description: "Codex in your terminal, and the ChatGPT desktop app - its chats and the model calls Work makes.",
   },
   {
     id: "openrouter",
@@ -763,7 +714,6 @@ const SECTIONS: readonly {
     name: "OpenRouter",
     band: "tools",
     members: ["openrouter"],
-    description: "Any app you have pointed at OpenRouter.",
   },
   {
     id: "openclaw",
@@ -782,7 +732,6 @@ const SECTIONS: readonly {
     name: "OpenCode",
     band: "tools",
     members: ["opencode"],
-    description: "The OpenCode editor, and OpenCode's own Zen and Go models.",
   },
   {
     // Still here although the window's rail no longer draws it - see
@@ -993,31 +942,6 @@ function intended(m: GroupMember): boolean {
   return m.desired || m.attention === "drifted";
 }
 
-/**
- * What a section is, in one sentence.
- *
- * A section carries its own line only where it needs one, which is where it
- * holds more than one surface: "Claude Code in your terminal" under a heading
- * reading "Claude" describes a third of what the switch does. A single-surface
- * section falls through to its member's description instead of repeating it -
- * four of them used to carry a byte-identical copy, one of them 137 characters
- * long, where editing one and not the other was silent.
- *
- * Through {@link sectionMemberKeys} rather than the id, because three of those
- * four ids are not their member's key (`terminal` holds `env-proxy`,
- * `openai-api` holds `openai`). An id no section owns is a section
- * `buildGroups` synthesised for an unplaced member, whose id IS its member key,
- * which the same lookup answers.
- */
-export function describeSection(id: string): string | undefined {
-  const section = SECTIONS.find((s) => s.id === id);
-  if (section?.description) return section.description;
-  // Not `blurb`. A branch here read it for the Terminal pane (AG-893), and the
-  // same change then moved that pane's control to Settings and filtered the
-  // section out of both new shells - so the branch had no caller left. The
-  // popover renders `group.blurb` itself, from the built ledger.
-  return describeMember(sectionMemberKeys(id)[0] ?? id);
-}
 
 /**
  * The app a routable surface belongs to, or null when no section claims it.
