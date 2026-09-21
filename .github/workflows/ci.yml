@@ -246,13 +246,120 @@ jobs:
       # Drives the real frontend against a fake Tauri backend (e2e/install.ts).
       # The Rust side is covered by the `rust` job above and by
       # e2e-real-tools.yml.
+      #
+      # `--project=chromium` rather than `pnpm test:e2e`, which would also run
+      # the live project: that one needs a Rust build and belongs on the
+      # three-OS matrix in `ui-e2e` below, not a second time here.
       - name: E2E (UI)
-        run: pnpm test:e2e
+        run: pnpm exec playwright test --project=chromium
 
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # The seam neither other suite covers: a CLICK in the real frontend reaching
+  # the real Rust command, and the real backend's state deciding what the UI
+  # then shows. `web` drives the frontend against a fake backend; `rust` and
+  # e2e-real-tools.yml drive the backend with no UI.
+  #
+  # Three OSes because that is the whole point - the commands under test fork on
+  # the platform (the engine is in-process on macOS/Windows and a detached
+  # helper daemon on Linux), and a suite that only proved it on ubuntu would
+  # miss exactly the divergence worth testing.
+  #
+  # No WebDriver and no display: `src-tauri/examples/ui-harness.rs` hosts the
+  # app's own command table on `tauri::test`'s mock runtime and answers IPC over
+  # loopback, so the browser is Playwright's Chromium on every runner. Read that
+  # file's header for what that covers and what it cannot.
+  ui-e2e:
+    name: UI e2e, live backend (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-ui-e2e
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `externalBin` in tauri.conf.json: the desktop crate's build script will
+      # not resolve without it, and `src-tauri/binaries/` is gitignored.
+      - name: Stage the forwarder sidecar
+        shell: bash
+        run: bash scripts/stage-sidecar.sh
+
+      # Built here rather than left to the webServer, so a compile failure reads
+      # as a compile failure instead of as a harness that never came up.
+      - name: Build the UI harness
+        run: cargo build --locked -p gate-connect-desktop --example ui-harness
+
+      # `--with-deps` installs the system libraries Chromium needs, and is
+      # Ubuntu-only; elsewhere the browser download is all that is wanted.
+      - name: Install Playwright browser
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-22.04" ]; then
+            pnpm exec playwright install --with-deps chromium
+          else
+            pnpm exec playwright install chromium
+          fi
+
+      # `GATE_UI_HARNESS_ROUTING=1` is consent for this runner to install a root
+      # CA, which `manager::enable()` requires and which therefore gates the
+      # routing arc (the boot specs run either way). `ci/e2e/ui-harness.sh`
+      # installs it promptlessly with `sudo -n`, which works here and not on a
+      # desktop - see that script and e2e/live/routing.spec.ts.
+      - name: E2E (UI vs live backend)
+        run: pnpm test:e2e:live
+        env:
+          GATE_UI_HARNESS_ROUTING: "1"
+
+      # A run that fails midway can leave the root installed. The runner is
+      # throwaway, but a machine-wide root is not the kind of thing to leave
+      # lying around on the strength of that - the same reasoning, and the same
+      # `if: always()`, as `win-system-trust` above.
+      - name: Remove the CA from the machine store
+        if: always()
+        shell: bash
+        run: |
+          W="${TMPDIR:-/tmp}/gc-ui-e2e"
+          CLI="target/debug/gate-connect"
+          [ -x "$CLI" ] || CLI="$CLI.exe"
+          [ -x "$CLI" ] || exit 0
+          GATE_CONNECT_TEST_HOME="$W/home" GATE_CONNECT_TEST_SECRETS="$W/secrets" \
+            "$CLI" proxy disable || true
+          GATE_CONNECT_TEST_HOME="$W/home" GATE_CONNECT_TEST_SECRETS="$W/secrets" \
+            "$CLI" proxy untrust-ca --system-trust || true
+          exit 0
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-live-${{ matrix.os }}
           path: playwright-report/
           retention-days: 7

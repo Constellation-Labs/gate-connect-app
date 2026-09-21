@@ -1,0 +1,93 @@
+# Live UI e2e
+
+The real frontend, driven by clicks, against the **real Rust command table**.
+
+```
+Playwright (Chromium, 1280x800)        cargo run --example ui-harness
+  real bundle, real NewUiApp             tauri::test mock runtime
+  __TAURI_INTERNALS__.invoke  ──POST──►  the app's own invoke_handler()
+                              ◄──poll──  every event it emits
+                                                  │
+                                                  ▼
+                                         gate-connect-core: the real
+                                         engine, relay, config writes,
+                                         on a throwaway $HOME
+```
+
+## Why it exists
+
+The other two suites each cover one half and neither covers the join:
+
+| | frontend | backend | the join |
+|---|---|---|---|
+| `e2e/*.spec.ts` | real | **fake** (`install.ts`) | asserts a command was *called* |
+| `ci/e2e/run.sh` | **none** | real, real CLIs, real relay | asserts the gateway *received* it |
+| this suite | real | real | asserts the click did it |
+
+"Turning the switch on actually routes traffic" is the question a user asks,
+and before this nothing answered it.
+
+## Why not drive the shipped app
+
+A WebDriver would be the obvious way, and macOS has none: WKWebView implements
+no `webdriver` protocol, so a GUI-driving suite would cover Linux and Windows
+and miss the platform with the most platform-specific behaviour. Driving the
+real binary would also want a display, a tray icon, an updater, and an autostart
+plugin that writes a real login item on the runner.
+
+`tauri::test::mock_builder` takes the same `invoke_handler` the app registers
+(`gate_connect_desktop_lib::invoke_handler`, shared rather than copied) and
+answers IPC with no window and no plugins, on every platform. So `ui-e2e` in
+`ci.yml` is a real three-OS matrix.
+
+## What it does not cover
+
+- **Rendering.** The browser is Chromium, never WKWebView / WebView2 /
+  WebKitGTK. This proves interaction and wiring; how any of it paints is
+  covered by nothing, same as the popover suite.
+- **The tray, window lifecycle, OS trust dialogs, the updater.** No window
+  exists. `quit-requested` and friends can still be exercised, because the
+  backend emits them and `/events` replays them.
+- **The keychain.** `GATE_CONNECT_TEST_SECRETS` is set, for the reason
+  CLAUDE.md gives: a real keychain read would prompt per rebuild on macOS.
+  Nothing green here says anything about `keychain.rs`.
+- **`APP_HANDLE`.** It is a `OnceLock<AppHandle<Wry>>` in `lib.rs` that this
+  runtime cannot fill, so the few backend-initiated emits routed through it are
+  inert. Commands that emit through their own `app` argument work normally.
+
+## The routing arc, and its one opt-in
+
+`routing.spec.ts` drives the thing the harness exists for: switch on, a real
+request reaching the mock gateway with the credential injected, switch off, not
+routed, and what Gate leaves behind when it is gone. It needs
+`GATE_UI_HARNESS_ROUTING=1`, which means one thing - **this run may install a
+root CA on this machine**, because `manager::enable()` calls
+`ca::ensure_trusted()`. CI sets it and removes the root afterwards. Without it
+the arc skips and the boot specs still run.
+
+Two things it exploits, both worth knowing before writing another one:
+
+- **Codex needs no install.** `detect()` falls back to `$HOME/.codex` existing
+  and `connect()` reads `auth.json` for its auth mode, so two files in the
+  throwaway home are a "logged-in, installed" Codex. It also routes through the
+  loopback relay, so a plain `fetch` from Node is the exact shape of its own
+  request. Claude Code would need `HTTPS_PROXY` plus a CA inside Node's bundle.
+- **"Not routed" is not "port closed."** Measured: after a master-off, Linux's
+  helper daemon keeps the listener and answers 502 in pass-through, while
+  macOS and Windows tear the in-process engine down and refuse the connection.
+  The assertion that holds everywhere is that the gateway received nothing.
+
+## Shape of a spec
+
+One harness process per run, one throwaway home, wiped by
+`ci/e2e/ui-harness.sh` at startup. State accumulates across tests on purpose -
+the project is serial and specs read as a sequence, like `ci/e2e/run.sh` and
+like a person. Arrange and read back through `harness.invoke`, which asks the
+backend directly rather than trusting the UI's account of itself.
+
+## Running
+
+```sh
+pnpm test:e2e:live       # this project only
+pnpm test:e2e            # both projects
+```

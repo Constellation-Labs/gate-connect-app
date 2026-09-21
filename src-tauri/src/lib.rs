@@ -574,7 +574,9 @@ fn oauth_status_now() -> Result<OAuthStatusDto, String> {
 /// until the user finishes signing in or the flow times out.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, String> {
+async fn oauth_begin_login<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<OAuthStatusDto, String> {
     use tauri_plugin_opener::OpenerExt;
 
     let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env()
@@ -1202,8 +1204,8 @@ async fn proxy_browser_store() -> Result<Option<gate_connect_core::proxy::NssTru
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-async fn proxy_enable(
-    app: tauri::AppHandle,
+async fn proxy_enable<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: enable can block on the CA-trust admin prompt
     // and waits up to 10s for engine readiness.
@@ -1316,8 +1318,8 @@ fn arm_crash_safety_net(app: &tauri::AppHandle) {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-async fn proxy_disable(
-    app: tauri::AppHandle,
+async fn proxy_disable<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: disable runs system-proxy subprocesses and joins
     // the engine thread.
@@ -1364,7 +1366,7 @@ async fn proxy_disable(
 /// (routing off or already reverted). On failure the marker is kept so a
 /// later safe point retries.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn complete_pending_autostart_disable(app: &tauri::AppHandle) {
+fn complete_pending_autostart_disable<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
     if !autostart_optout::pending() {
@@ -1398,7 +1400,9 @@ struct LaunchAtLoginStatus {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, String> {
+fn launch_at_login_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<LaunchAtLoginStatus, String> {
     use tauri_plugin_autostart::ManagerExt;
     let registered = app
         .autolaunch()
@@ -1487,7 +1491,10 @@ fn register_application_restart() {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+fn set_launch_at_login<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
     // This marker/login-item read-then-write and `arm_crash_safety_net`
@@ -1672,7 +1679,7 @@ static DECOR_SAVED_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// and the backend-error drain all live in it - so it cannot simply be created
 /// on demand.
 #[cfg(target_os = "linux")]
-fn map_maximized_for_decorations(window: &tauri::WebviewWindow) {
+fn map_maximized_for_decorations<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     // A reveal of a window that is already up needs nothing, and toggling its
     // state would be destructive.
     if window.is_visible().unwrap_or(false) {
@@ -1721,7 +1728,7 @@ fn map_maximized_for_decorations(window: &tauri::WebviewWindow) {
 /// Takes `&Window`, not `&WebviewWindow`: that is what `on_window_event` hands
 /// out, and the state calls live on both.
 #[cfg(target_os = "linux")]
-fn restore_after_repair(window: &tauri::Window) {
+fn restore_after_repair<R: tauri::Runtime>(window: &tauri::Window<R>) {
     if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
         return;
     }
@@ -1824,7 +1831,7 @@ fn clamp_to_minimum(window: &tauri::Window) {
 /// `run_on_main_thread`. Bounded, so a window whose state never changes stops
 /// being polled rather than being watched forever.
 #[cfg(target_os = "linux")]
-fn poll_restore_after_repair(app: &tauri::AppHandle) {
+fn poll_restore_after_repair<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let handle = app.clone();
     std::thread::spawn(move || {
         for _ in 0..20 {
@@ -1998,7 +2005,7 @@ fn drain_for_label(label: &str) -> Vec<BackendError> {
 /// this. The label comes from the window tauri resolved for the invoke, not
 /// from the payload, so one webview cannot name another's.
 #[tauri::command]
-fn drain_backend_errors(window: tauri::Window) -> Vec<BackendError> {
+fn drain_backend_errors<R: tauri::Runtime>(window: tauri::Window<R>) -> Vec<BackendError> {
     drain_for_label(window.label())
 }
 
@@ -3586,7 +3593,10 @@ fn pin_popover() {
 /// a query param so the flow can report whether it was a first launch or a
 /// replay from Settings.
 #[tauri::command]
-async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
+async fn open_onboarding_window<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    source: String,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("onboarding") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -3981,7 +3991,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
 /// tray is going away, and `TrayApp` hides itself with a frontend
 /// `getCurrentWindow().hide()` that Rust never sees as a window event. Without
 /// this the flag leaked `true` past every Expand-app and every Quit.
-fn reveal_popover_window(app: &tauri::AppHandle) {
+fn reveal_popover_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     POPOVER_VISIBLE.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -4002,7 +4012,7 @@ fn reveal_popover_window(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn reveal_popover(app: tauri::AppHandle) {
+fn reveal_popover<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     reveal_popover_window(&app);
 }
 
@@ -4063,7 +4073,7 @@ fn reveal_tray_window(app: &tauri::AppHandle) {
 /// those want a payload rather than another bespoke command. When that lands,
 /// this collapses into it.
 #[tauri::command]
-fn request_switch_org(app: tauri::AppHandle) {
+fn request_switch_org<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     reveal_popover_window(&app);
     let _ = app.emit("switch-org-requested", ());
     if let Some(tray) = app.get_webview_window("tray") {
@@ -4089,7 +4099,7 @@ fn request_switch_org(app: tauri::AppHandle) {
 /// effect was the tray closing. Revealing is half the job; the window has to be
 /// told what was asked for.
 #[tauri::command]
-fn request_recovery_details(app: tauri::AppHandle) {
+fn request_recovery_details<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     reveal_popover_window(&app);
     let _ = app.emit("recovery-details-requested", ());
     if let Some(tray) = app.get_webview_window("tray") {
@@ -4107,7 +4117,7 @@ fn request_recovery_details(app: tauri::AppHandle) {
 /// a click. AG-853 gave the feed a fixed home - the last section of the Overview
 /// - which is what made a destination expressible at all.
 #[tauri::command]
-fn request_security_events(app: tauri::AppHandle) {
+fn request_security_events<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     reveal_popover_window(&app);
     let _ = app.emit("security-events-requested", ());
     if let Some(tray) = app.get_webview_window("tray") {
@@ -4258,7 +4268,7 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// clicked before the webview's listener is up would otherwise be silently
 /// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
 /// each `quit-requested` nudge (mirrors the backend-error seam).
-fn request_quit(app: &tauri::AppHandle) {
+fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // **Linux exits outright, and that is correct.** It looks like the flow
     // being skipped on one platform, and it is not: there the engine is a
     // DETACHED helper daemon that outlives this process (see the note at
@@ -4386,7 +4396,7 @@ async fn tools_stranded_by_quit() -> Option<Vec<String>> {
 /// I/O. A notification rather than silence, because a rewrite of somebody's
 /// config file is worth a sentence and the popover is gone before it lands.
 #[tauri::command]
-async fn quit_app(app: tauri::AppHandle) {
+async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         use tauri_plugin_notification::NotificationExt;
@@ -4483,7 +4493,7 @@ async fn quit_app(app: tauri::AppHandle) {
 /// item runs, so both entrances exit outright or defer to the main window's
 /// dialog when config-routed tools would be left pointing at a dead relay.
 #[tauri::command]
-fn request_app_quit(app: tauri::AppHandle) {
+fn request_app_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     request_quit(&app);
 }
 
@@ -4501,7 +4511,9 @@ fn request_app_quit(app: tauri::AppHandle) {
 /// error - the rest of the sweep still ran - but the caller must not report the
 /// quit as tidy, and must not quit without saying so.
 #[tauri::command]
-async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+async fn disconnect_tools_for_quit<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<String>, String> {
     // Off the main thread: disconnect does config-file I/O.
     let (names, failed): (Vec<String>, Vec<String>) = tauri::async_runtime::spawn_blocking(|| {
         // Collected before the disconnect, which is what makes them stop being
@@ -4594,6 +4606,165 @@ async fn routed_app_names() -> Result<Vec<String>, String> {
         .map_err(|e| format!("join error: {e}"))
 }
 
+/// The command table, shared by the app and by `examples/ui-harness.rs`.
+///
+/// Generic over the runtime so the harness can register this identical list
+/// on `tauri::test::MockRuntime`. A UI e2e that drove a hand-maintained copy
+/// would be asserting against a backend the app does not have, and the copy
+/// would rot from the first command added on either side.
+pub fn invoke_handler<R: tauri::Runtime>(
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    // The proxy subsystem (and its commands) only exists on the three
+    // desktop OSes; the handler forks on that single axis. Forking the
+    // whole generate_handler! invocation (rather than per-item cfg)
+    // preserves Tauri's compile-time arg/return type-checking.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        tauri::generate_handler![
+            list_tools,
+            tool_versions,
+            tool_status,
+            connect_tool,
+            disconnect_tool,
+            get_account,
+            get_account_key_prefix,
+            backfill_account_key_prefix,
+            save_account,
+            clear_account,
+            switch_gateway,
+            oauth_begin_login,
+            oauth_status,
+            oauth_sign_out,
+            set_auth_mode,
+            set_billing_mode,
+            oauth_list_orgs,
+            activity_overview,
+            activity_installations,
+            activity_cached_overview,
+            activity_cached_tool_overviews,
+            activity_tool_events,
+            tool_model_preferences,
+            set_tool_model,
+            gate_model_catalogue,
+            gate_credits,
+            log_message,
+            log_file_path,
+            set_org,
+            app_platform,
+            os_name,
+            diagnostics,
+            unpin_popover,
+            pin_popover,
+            open_onboarding_window,
+            reveal_popover,
+            request_recovery_details,
+            request_security_events,
+            request_switch_org,
+            quit_app,
+            pending_quit_tools,
+            tools_stranded_by_quit,
+            request_app_quit,
+            disconnect_tools_for_quit,
+            list_providers,
+            proxy_status,
+            proxy_browser_store,
+            proxy_enable,
+            proxy_disable,
+            proxy_set_domain,
+            proxy_set_env_export,
+            proxy_trust_ca,
+            proxy_untrust_ca,
+            routed_app_names,
+            launch_at_login_status,
+            set_launch_at_login,
+            get_preferences,
+            set_notifications,
+            set_share_diagnostics,
+            accept_session_routing,
+            install_id,
+            device_name,
+            set_device_name,
+            set_updater_relaunching,
+            routed_clients_stale,
+            routing_verdicts,
+            pending_restore,
+            resume_restore,
+            recovery_summary,
+            retry_restore_entry,
+            teardown_report,
+            running_agents_count,
+            stale_agents_count,
+            running_agents,
+            close_running_agents,
+            reopen_running_agents,
+            drain_backend_errors,
+            security_feed_state,
+            security_feed_history_ok,
+            security_feed_recent,
+            security_feed_retry,
+            set_security_notification_sound,
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        tauri::generate_handler![
+            list_tools,
+            tool_versions,
+            tool_status,
+            connect_tool,
+            disconnect_tool,
+            get_account,
+            get_account_key_prefix,
+            backfill_account_key_prefix,
+            save_account,
+            clear_account,
+            switch_gateway,
+            oauth_status,
+            oauth_sign_out,
+            set_auth_mode,
+            set_billing_mode,
+            oauth_list_orgs,
+            activity_overview,
+            activity_installations,
+            activity_cached_overview,
+            activity_cached_tool_overviews,
+            activity_tool_events,
+            tool_model_preferences,
+            set_tool_model,
+            gate_model_catalogue,
+            gate_credits,
+            log_message,
+            log_file_path,
+            set_org,
+            app_platform,
+            os_name,
+            diagnostics,
+            unpin_popover,
+            pin_popover,
+            open_onboarding_window,
+            reveal_popover,
+            request_recovery_details,
+            request_security_events,
+            request_switch_org,
+            quit_app,
+            pending_quit_tools,
+            tools_stranded_by_quit,
+            request_app_quit,
+            disconnect_tools_for_quit,
+            list_providers,
+            set_updater_relaunching,
+            get_preferences,
+            set_notifications,
+            set_share_diagnostics,
+            accept_session_routing,
+            install_id,
+            device_name,
+            set_device_name,
+            drain_backend_errors,
+        ]
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4638,158 +4809,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--silent"]),
         ))
-        .invoke_handler({
-            // The proxy subsystem (and its commands) only exists on the three
-            // desktop OSes; the handler forks on that single axis. Forking the
-            // whole generate_handler! invocation (rather than per-item cfg)
-            // preserves Tauri's compile-time arg/return type-checking.
-            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            {
-                tauri::generate_handler![
-                    list_tools,
-                    tool_versions,
-                    tool_status,
-                    connect_tool,
-                    disconnect_tool,
-                    get_account,
-                    get_account_key_prefix,
-                    backfill_account_key_prefix,
-                    save_account,
-                    clear_account,
-                    switch_gateway,
-                    oauth_begin_login,
-                    oauth_cancel_login,
-                    oauth_status,
-                    oauth_sign_out,
-                    set_auth_mode,
-                    set_billing_mode,
-                    oauth_list_orgs,
-                    activity_overview,
-                    activity_installations,
-                    activity_cached_overview,
-                    activity_cached_tool_overviews,
-                    activity_tool_events,
-                    tool_model_preferences,
-                    set_tool_model,
-                    gate_model_catalogue,
-                    gate_credits,
-                    log_message,
-                    log_file_path,
-                    set_org,
-                    app_platform,
-                    os_name,
-                    diagnostics,
-                    unpin_popover,
-                    pin_popover,
-                    open_onboarding_window,
-                    reveal_popover,
-                    request_recovery_details,
-                    request_security_events,
-                    request_switch_org,
-                    quit_app,
-                    pending_quit_tools,
-                    tools_stranded_by_quit,
-                    request_app_quit,
-                    disconnect_tools_for_quit,
-                    list_providers,
-                    proxy_status,
-                    proxy_browser_store,
-                    proxy_enable,
-                    proxy_disable,
-                    proxy_set_domain,
-                    proxy_set_env_export,
-                    proxy_trust_ca,
-                    proxy_untrust_ca,
-            routed_app_names,
-                    launch_at_login_status,
-                    set_launch_at_login,
-                    get_preferences,
-                    set_notifications,
-                    set_share_diagnostics,
-                    accept_session_routing,
-                    install_id,
-                    device_name,
-                    set_device_name,
-                    set_updater_relaunching,
-                    routed_clients_stale,
-                    routing_verdicts,
-                    pending_restore,
-                    resume_restore,
-                    recovery_summary,
-                    retry_restore_entry,
-                    teardown_report,
-                    running_agents_count,
-                    stale_agents_count,
-                    running_agents,
-                    close_running_agents,
-                    reopen_running_agents,
-                    drain_backend_errors,
-                    security_feed_state,
-                    security_feed_history_ok,
-                    security_feed_recent,
-                    security_feed_retry,
-                    set_security_notification_sound,
-                ]
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-            {
-                tauri::generate_handler![
-                    list_tools,
-                    tool_versions,
-                    tool_status,
-                    connect_tool,
-                    disconnect_tool,
-                    get_account,
-                    get_account_key_prefix,
-                    backfill_account_key_prefix,
-                    save_account,
-                    clear_account,
-                    switch_gateway,
-                    oauth_status,
-                    oauth_sign_out,
-                    set_auth_mode,
-                    set_billing_mode,
-                    oauth_list_orgs,
-                    activity_overview,
-                    activity_installations,
-                    activity_cached_overview,
-                    activity_cached_tool_overviews,
-                    activity_tool_events,
-                    tool_model_preferences,
-                    set_tool_model,
-                    gate_model_catalogue,
-                    gate_credits,
-                    log_message,
-                    log_file_path,
-                    set_org,
-                    app_platform,
-                    os_name,
-                    diagnostics,
-                    unpin_popover,
-                    pin_popover,
-                    open_onboarding_window,
-                    reveal_popover,
-                    request_recovery_details,
-                    request_security_events,
-                    request_switch_org,
-                    quit_app,
-                    pending_quit_tools,
-                    tools_stranded_by_quit,
-                    request_app_quit,
-                    disconnect_tools_for_quit,
-                    list_providers,
-                    set_updater_relaunching,
-                    get_preferences,
-                    set_notifications,
-                    set_share_diagnostics,
-                    accept_session_routing,
-                    install_id,
-                    device_name,
-                    set_device_name,
-                    drain_backend_errors,
-                ]
-            }
-        })
+        .invoke_handler(invoke_handler())
         .on_window_event(|window, event| {
             // A system Light/Dark switch must re-tint the tray mark at once:
             // the routing-status refresh only fires on proxy changes, so
@@ -5872,7 +5892,7 @@ fn tray_image(proxy_on: bool, needs_signin: bool, dark_menubar: bool) -> Option<
 /// the red sign-in-required dot when the OAuth session is dead - see
 /// `tray_image`). Also refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
+fn update_tray_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>, proxy_on: bool) {
     use tauri::Manager;
     let needs_signin = SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed);
     let system_dark = || {

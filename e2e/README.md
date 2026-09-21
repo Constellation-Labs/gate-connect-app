@@ -21,7 +21,10 @@ handoffs, backend events arriving unprompted, a command rejecting.
 ## What it is not for
 
 - **The Rust backend.** Covered by the workspace crates' own integration
-  tests and, against real AI CLIs and a real relay, by `ci/e2e/run.sh`.
+  tests and, against real AI CLIs and a real relay, by `ci/e2e/run.sh`. For
+  the seam *between* the two - a click reaching a real command, and the
+  backend's own state deciding what the UI shows next - see `live/`, which
+  runs the same frontend against the real command table on all three OSes.
 - **Cross-browser rendering.** One Chromium project. The app ships in one
   webview per platform and none of them is Chromium; a matrix here would be
   coverage of something we don't ship. `platform.spec.ts` covers what the app
