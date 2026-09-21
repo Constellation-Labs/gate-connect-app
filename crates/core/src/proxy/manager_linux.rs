@@ -571,28 +571,36 @@ impl ProxyManager {
     /// leaf certs the OS would then reject. This is the explicit way to remove
     /// the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.stop_before_untrust()?;
         ca::untrust()?;
         self.status()
     }
 
     /// Remove a machine-wide trust install with no prompt. The counterpart of
-    /// [`ProxyManager::trust_ca_system`], and refuses while running for the same
-    /// reason [`ProxyManager::untrust_ca`] does.
+    /// [`ProxyManager::trust_ca_system`], and stops a running proxy first for the
+    /// same reason [`ProxyManager::untrust_ca`] does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        self.stop_before_untrust()?;
         ca::untrust_system()?;
         self.status()
     }
 
-    fn refuse_untrust_while_running(&self) -> Result<()> {
+    /// Stops a running proxy so the untrust can proceed, rather than refusing.
+    ///
+    /// Same change and same reasoning as the desktop manager's
+    /// `prepare_untrust`: untrusting under a live engine breaks every
+    /// connection it carries, which is this function's problem to sequence
+    /// rather than a precondition to put on the user - especially with the
+    /// master routing switch on its way out, which would leave the old refusal
+    /// naming a control that no longer exists.
+    fn stop_before_untrust(&self) -> Result<()> {
         if self
             .client
             .lock()
             .expect("proxy client mutex poisoned")
             .is_some()
         {
-            anyhow::bail!("turn the proxy off before untrusting the CA");
+            self.disable_quiet()?;
         }
         Ok(())
     }

@@ -173,6 +173,20 @@ test.describe("new UI certificate and diagnostics", () => {
     await expect(
       app.page.getByRole("heading", { name: "Remove the Gate certificate?" }),
     ).toBeVisible();
+
+    // The two sentences the dialog exists to say, both of which have been
+    // wrong in the tree. Routing does NOT stay on: `untrust_ca` sequences a
+    // stop of its own, because the engine mints leaves the OS rejects the
+    // moment the root is untrusted. And a tool that is already running keeps
+    // the certificate bundle it loaded at startup, so it fails to connect
+    // after a new one is trusted while Gate's rows still read Protected -
+    // an hour of `APIConnectionError` in Hermes, measured 2026-09-21.
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Routing turns off")).toBeVisible();
+    await expect(
+      dialog.getByText("quit and reopen any AI tools"),
+    ).toBeVisible();
+
     expect(await app.lastCall("proxy_untrust_ca")).toBeNull();
 
     await app.page.getByRole("button", { name: "Remove certificate" }).last().click();
