@@ -172,18 +172,21 @@ fi
 BIN="$ROOT/target/debug/examples/ui-harness$EXE"
 
 # --- Preflight, Windows only. ----------------------------------------------
-# A native exe that dies in the Windows loader - a DLL it cannot find, an entry
-# point a system DLL lacks, a side-by-side manifest that does not resolve - is
-# reported by Git Bash as exit 127 with nothing on stderr, the same as "command
-# not found" (Cygwin maps STATUS_DLL_NOT_FOUND and STATUS_ENTRYPOINT_NOT_FOUND
-# to 127 on purpose). Playwright then has one sentence to offer, and it is not
-# a diagnosis. So the harness runs once here with the token withheld, which it
-# refuses with exit 2 and a sentence (`required_env`, reached only after the
-# mock runtime has built): that exit proves the exe loads and gets as far as
-# reading its environment. Anything else is read out the way Windows reports
-# it - the raw exit status from cmd.exe, the exe's import table from dumpbin
-# where Visual Studio is installed, and the loader's own event-log entries -
-# before failing with a message of our own.
+# A native exe that dies with an NTSTATUS - a DLL it cannot find, an entry
+# point a system DLL lacks, a Rust abort, a stack overflow - is reported by
+# Git Bash as exit 127 with nothing on stderr, the same as "command not
+# found": Cygwin's `status_exit` folds every 0xC0000000 status other than an
+# access violation or illegal instruction into 127, and the one message it
+# prints (for a missing DLL) goes to the console rather than the pipe.
+# Playwright then has one sentence to offer, and it is not a diagnosis. So the
+# harness runs once here with the token withheld, which it refuses with exit 2
+# and a sentence (`required_env`, reached only after the mock runtime has
+# built): that exit proves the exe loads and gets as far as reading its
+# environment. Anything else is read out the way Windows reports it - the raw
+# status from a native parent (PowerShell hands the child's code through
+# untouched), the child's own stderr, the exe's import table from dumpbin where
+# Visual Studio is installed, and the last few minutes of error-level
+# application events - before failing with a message of our own.
 if [ "$OS" = "Windows" ]; then
   BINW="$(winpath "$BIN")"
   set +e
@@ -196,7 +199,27 @@ if [ "$OS" = "Windows" ]; then
   if [ "$PRE" -ne 2 ]; then
     echo "ui-harness preflight: expected exit 2 with the token withheld, got $PRE" >&2
     ls -la "$BIN" >&2 || true
-    cmd.exe /v:on /c "\"$BINW\" & echo raw exit code: !ERRORLEVEL!" >&2 || true
+    # Base64 of UTF-16LE rather than a quoted `-Command`: the script has to
+    # cross bash, the MSYS argument rewriter and PowerShell's own parser, and
+    # each has a different idea of what a quote is. `-EncodedCommand` skips all
+    # three. The seams stay set and the token stays withheld, so this is the
+    # same run as the one above, minus Cygwin's translation of its exit.
+    PS_PROBE='
+      "session: " + (Get-Process -Id $PID).SessionId + ", interactive: " + [Environment]::UserInteractive
+      $p = Start-Process -FilePath $env:GC_BINW -Wait -PassThru -NoNewWindow -RedirectStandardError $env:GC_PRE_ERR
+      "raw exit code: 0x{0:X8} ({1})" -f ($p.ExitCode -band 0xFFFFFFFF), $p.ExitCode
+      "child stderr:"
+      Get-Content $env:GC_PRE_ERR -ErrorAction SilentlyContinue
+      "error-level application events, last 10 minutes:"
+      Get-WinEvent -FilterHashtable @{LogName="Application"; Level=2; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
+        Format-List TimeCreated, ProviderName, Message
+    '
+    GC_BINW="$BINW" GC_PRE_ERR="$(winpath "$WORK/preflight.err")" \
+    env -u GATE_UI_HARNESS_TOKEN \
+      GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")" \
+      GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")" \
+      powershell.exe -NoProfile -EncodedCommand \
+        "$(printf '%s' "$PS_PROBE" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)" >&2 || true
     VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
     if [ -x "$VSWHERE" ]; then
       DUMPBIN="$("$VSWHERE" -latest -find '**\dumpbin.exe' 2>/dev/null | head -1 | tr -d '\r')"
@@ -204,9 +227,6 @@ if [ "$OS" = "Windows" ]; then
         "$(cygpath -u "$DUMPBIN")" /dependents "$BINW" >&2 || true
       fi
     fi
-    powershell.exe -NoProfile -Command \
-      "Get-WinEvent -LogName Application -MaxEvents 40 | Where-Object { \$_.ProviderName -match 'SideBySide|Application Error|Windows Error Reporting' } | Format-List TimeCreated, ProviderName, Message" \
-      >&2 || true
     exit 1
   fi
 fi
