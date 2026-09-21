@@ -3,36 +3,73 @@ import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { Button } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 import { trustPromptHint, trustPromptWaiting, trustStoreName, type Platform } from "../lib/platform";
+import windowsTrustDialog from "../assets/windows-certificate-warning.png";
 
-/** The shape of the system dialog each platform raises for the CA trust, as
- * the buttons the user has to pick between. Windows is the one that prompted
- * this screen: `certutil -user -addstore Root` raises a red "Security Warning"
- * quoting the certificate's name, which reads as something having gone wrong
- * unless the user was told to expect it. */
-const TRUST_DIALOG: Record<
-  Platform,
-  { title: string; confirm: string; dismiss: string; password: boolean }
-> = {
-  windows: { title: "Security Warning", confirm: "Yes", dismiss: "No", password: false },
-  macos: { title: "Gate Connect", confirm: "OK", dismiss: "Cancel", password: true },
+/** How each platform's trust prompt is depicted, and what it is.
+ *
+ * Two shapes, because the platforms split in two. Windows raises a "Security
+ * Warning" asking the user to weigh something, and we have a capture of the
+ * real one - which is worth more than a drawing, because it quotes
+ * `CA_COMMON_NAME` ("Gate Connect Local CA") back at the user four times, and
+ * that is the detail that lets them match the window in front of them to this
+ * app. The rest raise a password entry: macOS through `osascript … with
+ * administrator privileges` (primitives.rs:169), Linux through `pkexec`
+ * (ca_linux.rs:225). Neither asks the user to weigh anything, so they are
+ * drawn as a field rather than as a warning, in that platform's own words.
+ *
+ * Keyed on the whole of `Platform` so a new OS has to answer this question, and
+ * so the day one of the drawn platforms gets a capture it is a one-row change
+ * with nothing to touch in the renderer. */
+type TrustDialog =
+  | { kind: "capture"; src: string; width: number; height: number }
+  | { kind: "drawn"; title: string; confirm: string; dismiss: string };
+
+const TRUST_DIALOG: Record<Platform, TrustDialog> = {
+  windows: { kind: "capture", src: windowsTrustDialog, width: 516, height: 475 },
+  macos: { kind: "drawn", title: "Gate Connect", confirm: "OK", dismiss: "Cancel" },
   linux: {
+    kind: "drawn",
     title: "Authentication required",
     confirm: "Authenticate",
     dismiss: "Cancel",
-    password: true,
   },
-  unknown: { title: "Confirm", confirm: "OK", dismiss: "Cancel", password: true },
+  unknown: { kind: "drawn", title: "Confirm", confirm: "OK", dismiss: "Cancel" },
 };
 
-/** The system dialog, drawn rather than screenshotted.
+/** The system prompt, drawn or captured per `TRUST_DIALOG`.
  *
- * A capture would be wrong on half the machines that see it (the warning is
- * worded and framed differently across Windows versions), and the point is not
- * pixel fidelity - it is that a window of roughly this shape is about to
- * appear, and which button ends it. Drawn in the app's own tokens and
- * `aria-hidden`, with the instruction carried in the panel's real copy. */
+ * The point of the drawn ones is not pixel fidelity - it is that a window of
+ * roughly this shape is about to appear, that it wants a password rather than a
+ * decision, and which button ends it. The captured one carries the certificate
+ * name on top of that; its one per-machine line is the thumbprint, which
+ * nothing asks the user to check, and the caption is hedged for it. Either way
+ * the depiction is `aria-hidden`, with the instruction carried in the panel's
+ * real copy. */
 function DialogSketch({ platform }: { platform: Platform }) {
   const dialog = TRUST_DIALOG[platform];
+  if (dialog.kind === "capture") {
+    return (
+      <figure>
+        <img
+          aria-hidden
+          alt=""
+          src={dialog.src}
+          // Intrinsic size of the capture, so the box is reserved before the PNG
+          // decodes; `w-full` still drives the rendered width. 280px rather than
+          // the drawing's 248 - wider reads better and the panel does not
+          // scroll, so the ceiling is what is left of the 620px window: 258px of
+          // dialog plus the title, the two paragraphs and the two buttons is
+          // ~560. The full 324px of content width would be ~600 and too close.
+          width={dialog.width}
+          height={dialog.height}
+          className="mx-auto block h-auto w-full max-w-[280px] rounded-[10px] shadow-border"
+        />
+        <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
+          Roughly what your system will show
+        </figcaption>
+      </figure>
+    );
+  }
   return (
     <figure>
       <div
@@ -40,8 +77,8 @@ function DialogSketch({ platform }: { platform: Platform }) {
         className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border"
       >
         <div className="flex items-center gap-2">
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gc-warning-wash text-gc-warning-deep">
-            <Icon name="info" size={12} />
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gc-accent-wash text-gc-accent">
+            <Icon name="key" size={12} />
           </span>
           <span className="text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>
         </div>
@@ -51,7 +88,21 @@ function DialogSketch({ platform }: { platform: Platform }) {
           <span className="block h-[5px] w-full rounded-full bg-gc-line" />
           <span className="block h-[5px] w-4/5 rounded-full bg-gc-line" />
         </div>
-        {dialog.password && <div className="mt-2 h-[22px] rounded bg-gc-sunken" />}
+        {/* The password entry, which is the whole point of this drawing: both
+            platforms ask for a password rather than for a judgement, and a bare
+            sunken bar read as one more skeleton line. "Password" is real text
+            because both of them really do write that word; the value is drawn
+            as dots, since the OS never shows characters either. The caret sits
+            after them so the field reads as focused and waiting. */}
+        <div className="mt-2.5">
+          <span className="block text-gc-label text-gc-ink-3">Password</span>
+          <div className="mt-1 flex h-[22px] items-center gap-[3px] rounded bg-gc-sunken px-1.5 shadow-border">
+            {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+              <span key={i} className="h-[4px] w-[4px] rounded-full bg-gc-ink-3" />
+            ))}
+            <span className="ml-[1px] h-[11px] w-px bg-gc-ink" />
+          </div>
+        </div>
         <div className="mt-2.5 flex items-center justify-end gap-1.5">
           <span className="rounded bg-gc-sunken px-2 py-0.5 text-gc-label text-gc-ink-3">
             {dialog.dismiss}
@@ -112,10 +163,11 @@ export function CertificateNotice({
     >
       {/* The sketch is this panel's tile. The other takeovers open on a 56px
           glyph; here the thing being warned about has a shape, and drawing it is
-          worth more than a shield. Its own glyph is `info` in warning wash, this
-          system's mark for "read before you confirm" (the routing notice and
-          Home's certificate card both pick it) - a shieldCheck would promise the
-          protection this step has not granted yet. */}
+          worth more than a shield. The drawn platforms carry `key` in accent
+          wash rather than a status colour: what they raise is a password entry,
+          and warning wash would promise an alarm that only Windows actually
+          rings. A shieldCheck would be wrong on all of them - it would promise
+          the protection this step has not granted yet. */}
       <DialogSketch platform={platform} />
 
       <div className="flex flex-col gap-1.5">
