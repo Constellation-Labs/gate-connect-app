@@ -32,26 +32,36 @@ import windowsTrustDialog from "../assets/windows-certificate-warning.png";
  * `trustPromptHint` deliberately promises only that "your system will ask you
  * to confirm", so the drawing must not show a password field the copy declines
  * to promise. */
-type Drawn = { kind: "password" | "confirm"; title: string; confirm: string; dismiss: string };
+type Drawn = {
+  kind: "polkit" | "security-agent" | "confirm";
+  title: string;
+  /** The second, quieter line, where we know it exactly. */
+  body?: string;
+  confirm: string;
+  dismiss: string;
+};
 
 type TrustDialog = { kind: "capture"; src: string; width: number; height: number } | Drawn;
 
 const TRUST_DIALOG: Record<Platform, TrustDialog> = {
   windows: { kind: "capture", src: windowsTrustDialog, width: 516, height: 475 },
-  // UNVERIFIED: raised by `/usr/bin/security`, not by this app, and not
-  // reachable from a Linux dev box. Check against a real Mac before trusting
-  // these three strings; the shape (a password is wanted) is the part that is
-  // certain.
+  // Both strings are the Security Agent's own, for the *user* trust domain,
+  // which is the one we write: `ca::ensure_trusted` installs into the login
+  // keychain, so it is "your Certificate Trust Settings" and not the "System"
+  // wording the admin domain uses. Drawn from a published screenshot rather
+  // than from a machine in hand - newer Macs offer Touch ID first, so this is
+  // the password path, which is still where declining Touch ID lands.
   macos: {
-    kind: "password",
-    title: "Certificate Trust Settings",
+    kind: "security-agent",
+    title: "You are making changes to your Certificate Trust Settings.",
+    body: "Enter your password to allow this.",
     confirm: "Update Settings",
     dismiss: "Cancel",
   },
   // Verified against a capture of the real prompt on Ubuntu (GNOME/polkit),
   // down to the capital R.
   linux: {
-    kind: "password",
+    kind: "polkit",
     title: "Authentication Required",
     confirm: "Authenticate",
     dismiss: "Cancel",
@@ -112,12 +122,13 @@ function DialogSketch({ platform }: { platform: Platform }) {
       </Depiction>
     );
   }
-  if (dialog.kind === "password") return <PasswordSketch dialog={dialog} />;
+  if (dialog.kind === "polkit") return <PolkitSketch dialog={dialog} />;
+  if (dialog.kind === "security-agent") return <SecurityAgentSketch dialog={dialog} />;
   return <ConfirmSketch dialog={dialog} />;
 }
 
-/** The password prompt, drawn from a capture of the real GNOME/polkit dialog
- * on Ubuntu rather than from the shape of the code.
+/** Linux: the GNOME/polkit prompt, drawn from a capture of the real dialog on
+ * Ubuntu rather than from the shape of the code.
  *
  * It is drawn and not shipped as that capture for the reason the Windows one
  * is shipped: the Windows warning is about *our* certificate, so it says the
@@ -131,7 +142,7 @@ function DialogSketch({ platform }: { platform: Platform }) {
  * foot where the confirm is *dimmed* until a password is typed, rather than a
  * coloured default. Drawing the confirm as the bright, obvious button taught
  * the user to look for something that is not there until they have typed. */
-function PasswordSketch({ dialog }: { dialog: Drawn }) {
+function PolkitSketch({ dialog }: { dialog: Drawn }) {
   return (
     <Depiction>
       <div className="mx-auto w-full max-w-[248px] overflow-hidden rounded-[10px] bg-gc-surface text-center shadow-border">
@@ -149,9 +160,7 @@ function PasswordSketch({ dialog }: { dialog: Drawn }) {
           {/* The empty state, which is the dialog as it appears: "Password" is
               the field's own placeholder rather than a label above it, and it
               pairs with the dimmed confirm below - that button is dimmed
-              precisely because nothing has been typed yet. Drawing dots in the
-              field would have shown a moment that never coexists with a dimmed
-              Authenticate. */}
+              precisely because nothing has been typed yet. */}
           <div className="mt-2.5 flex h-[22px] items-center justify-between rounded bg-gc-sunken px-1.5 shadow-border">
             <span className="text-gc-label text-gc-ink-4">Password</span>
             <Icon name="eye" size={11} />
@@ -164,6 +173,60 @@ function PasswordSketch({ dialog }: { dialog: Drawn }) {
           <span className="flex-1 py-1.5 text-gc-ink-3">{dialog.dismiss}</span>
           <span className="w-px self-stretch bg-gc-line" />
           <span className="flex-1 py-1.5 text-gc-ink-5">{dialog.confirm}</span>
+        </div>
+      </div>
+    </Depiction>
+  );
+}
+
+/** macOS: the Security Agent prompt that `security add-trusted-cert` raises
+ * when it changes trust settings.
+ *
+ * Nothing like polkit's, which is why it gets its own drawing rather than
+ * sharing Linux's: the content is left of an icon rather than centred, there
+ * are two fields and not one, and the confirm is the *highlighted* default
+ * where polkit's is dimmed. Sharing one "password prompt" between the two put
+ * Ubuntu's chrome on macOS.
+ *
+ * Both sentences are real, because here we know them exactly. The user name is
+ * drawn as an empty bar for the reason the polkit avatar is drawn blank: the
+ * real field is filled with this user's own account name. */
+function SecurityAgentSketch({ dialog }: { dialog: Drawn }) {
+  return (
+    <Depiction>
+      <div className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border">
+        <div className="flex gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gc-accent-wash text-gc-accent">
+            <Icon name="key" size={14} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <span className="block text-gc-label font-medium leading-snug text-gc-ink">
+              {dialog.title}
+            </span>
+            <span className="mt-0.5 block text-gc-label leading-snug text-gc-ink-3">
+              {dialog.body}
+            </span>
+          </div>
+        </div>
+        <div className="mt-2.5 flex flex-col gap-1">
+          {/* Filled but blank: the real field carries this user's account name. */}
+          <div className="flex items-center gap-1.5">
+            <span className="w-[54px] shrink-0 whitespace-nowrap text-right text-gc-label text-gc-ink-3">User Name</span>
+            <span className="h-[18px] flex-1 rounded bg-gc-sunken shadow-border" />
+          </div>
+          {/* Empty and focused, which is where the caret actually is. */}
+          <div className="flex items-center gap-1.5">
+            <span className="w-[54px] shrink-0 whitespace-nowrap text-right text-gc-label text-gc-ink-3">Password</span>
+            <span className="h-[18px] flex-1 rounded bg-gc-surface shadow-border ring-1 ring-gc-accent/40" />
+          </div>
+        </div>
+        <div className="mt-2.5 flex items-center justify-end gap-1.5">
+          <span className="rounded bg-gc-sunken px-2 py-0.5 text-gc-label text-gc-ink-3">
+            {dialog.dismiss}
+          </span>
+          <span className="rounded bg-gc-accent px-2 py-0.5 text-gc-label font-medium text-white">
+            {dialog.confirm}
+          </span>
         </div>
       </div>
     </Depiction>
