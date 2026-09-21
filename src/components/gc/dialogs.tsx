@@ -1871,6 +1871,95 @@ export function OpenCodeEnvDialog({
 }
 
 /**
+ * Turning on Hermes also turns on the provider Hermes talks to.
+ *
+ * **Why this row needs a dialog when Claude and ChatGPT do not.** `groups.ts`
+ * bundles a tool with its provider domains - `claude` is
+ * `["claude-code", "anthropic", "claude-web"]`, `chatgpt` is
+ * `["codex", "chatgpt-apps", "chatgpt"]` - so one switch routes the tool and
+ * intercepts what the tool talks to, and the gap cannot open. `hermes` is
+ * `["hermes"]`. Its upstream is whatever the person put in `config.yaml`, and
+ * that provider is a row in a different section. So turning Hermes on routed
+ * Hermes and inspected nothing, and the app said Protected while every request
+ * tunnelled past unseen. Observed for an afternoon on 2026-09-21 before anyone
+ * worked out that `openrouter` was simply off.
+ *
+ * `integrations::hermes::Coverage` has known this all along and printed it to
+ * stderr from `connect`. The window could not see it. This dialog is that
+ * reading, asked instead of printed.
+ *
+ * **It is allowed to enable the domain because it asks.** `Coverage`'s own doc
+ * refuses to let the integration flip a domain, on the grounds that it widens
+ * what Gate MITMs for every other client on the machine. That is an argument
+ * against a silent side effect, and putting the question to the person answers
+ * it: the breadth is disclosed in the body, in the section's own words, and
+ * nothing is written until they say yes.
+ *
+ * `OpenCodeEnvDialog` is the precedent and a broader one - it turns on a
+ * machine-wide environment channel reaching git, curl and npm, where this turns
+ * on interception for one provider host.
+ *
+ * **Declining is a real answer**, unlike the drift and certificate gates. Hermes
+ * routed with its provider uninspected is a coherent state, so the secondary
+ * lets the connect proceed rather than abandoning it, and says which of the two
+ * it is doing. `useRouting`'s `askOptional` exists for that difference.
+ *
+ * Only ever raised for a provider Gate has a domain for. An upstream no domain
+ * claims - Bedrock, a self-hosted endpoint - has no remedy, and offering one
+ * would be a lie; `Coverage` keeps those in `unknown` and this never sees them.
+ *
+ * Shared by both shells from the outset. The tray raises the same prompt through
+ * the same `setAppRouted`, and a prompt only one shell renders is a switch that
+ * spins forever - which is exactly how `OpenCodeEnvDialog` came to be shared.
+ */
+export function HermesProviderDialog({
+  domains,
+  onSkip,
+  onConfirm,
+}: {
+  domains: { host: string; slug: string }[];
+  onSkip: () => void;
+  onConfirm: () => void;
+}) {
+  // The hosts, not the slugs: `openrouter.ai` is what the person typed into
+  // `config.yaml`, and the slug is Gate's internal name for the row.
+  const hosts = domains.map((d) => d.host);
+  const list =
+    hosts.length === 1
+      ? hosts[0]
+      : `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`;
+  const plural = hosts.length !== 1;
+
+  return (
+    <Modal
+      tone="neutral"
+      icon="squareCode"
+      title={`Also inspect ${list}?`}
+      secondary={{ label: "Route Hermes only", onClick: onSkip }}
+      primary={{ label: plural ? "Inspect both" : "Inspect it", onClick: onConfirm }}
+      onDismiss={onSkip}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Hermes sends its requests to {list}, so Gate has to inspect{" "}
+        {plural ? "those" : "that"} to see them. Without{" "}
+        {plural ? "them" : "it"}, Hermes still goes through Gate and its traffic
+        passes straight out, uninspected.
+      </p>
+      {/* The breadth, in the provider section's own words - its description
+          reads "Any app you have pointed at OpenRouter". That sentence is the
+          disclosure the `Coverage` objection asks for, and it was already
+          written. */}
+      <p className="mt-3 text-sm font-medium leading-5 text-base-foreground">
+        This covers any app on this machine you have pointed{" "}
+        {plural ? "at those providers" : "there"}, not just Hermes. You can turn{" "}
+        {plural ? "them" : "it"} off again from{" "}
+        {plural ? "their own rows" : "its own row"}.
+      </p>
+    </Modal>
+  );
+}
+
+/**
  * The one place an app switch is allowed to route a surface the person is
  * signed in to.
  *

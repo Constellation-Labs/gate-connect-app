@@ -5,6 +5,7 @@ import {
   disconnectTool,
   listTools,
   proxyEnable,
+  hermesUpstreamCoverage,
   proxySetDomain,
   proxySetEnvExport,
   proxyStatus,
@@ -80,6 +81,23 @@ export type RoutingPrompt =
    * OpenCode toggle for the majority of users, for whom the channel is on by
    * default. */
   | { kind: "opencode-env" }
+  /** Turning Hermes on, when the provider Hermes talks to is a domain Gate
+   * knows and has switched off.
+   *
+   * Hermes is one of two rows (with OpenClaw) whose upstream is chosen by the
+   * user and lives in a *different* section: `groups.ts` bundles Claude's tool
+   * with `anthropic` and `claude-web`, and ChatGPT's with its own provider
+   * rows, so for those one switch routes the tool AND intercepts what it talks
+   * to. `hermes` is `["hermes"]`. Turning it on routes Hermes and inspects
+   * nothing, and the app says Protected while every request tunnels past
+   * unseen - which is exactly what happened on the machine that prompted this,
+   * for an afternoon.
+   *
+   * Carries the domains rather than a boolean, because the dialog names the
+   * provider and the confirm enables those specific slugs. Only raised for
+   * `switched_off`: an upstream no domain claims (Bedrock, a self-hosted
+   * endpoint) has no remedy, and a dialog offering one would be lying. */
+  | { kind: "hermes-provider"; domains: { host: string; slug: string }[] }
   | { kind: "trust" }
   /** Removing the certificate, which is not a gate on the way to something
    * else: it is the action, and it stops every routed domain. Confirmed for
@@ -95,6 +113,11 @@ export interface RoutingSnapshot {
  *  once rather than spelled inline, because the dialog copy and the action have
  *  to be talking about the same row. */
 const OPENCODE_SLUG = "opencode";
+
+/** The tool whose provider lives in another section, so its switch alone
+ *  routes it without inspecting anything. OpenClaw has the same shape and the
+ *  same CLI-only coverage note; it is not wired here yet. */
+const HERMES_SLUG = "hermes";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
@@ -162,6 +185,31 @@ export function useRouting({
       });
     });
   }, []);
+
+  /**
+   * The same gate, for a question whose "no" is a real answer rather than an
+   * abandonment.
+   *
+   * `ask` rejects with `Declined` because its callers - the drift review, the
+   * certificate - are gates *on the way to* something: saying no means the
+   * action does not happen. The Hermes provider question is not that. Routing
+   * Hermes without inspecting OpenRouter is a coherent state a person may
+   * want, so declining has to let the connect proceed. Returning a boolean
+   * rather than throwing is what keeps that difference visible at the call
+   * site instead of hiding it in a `catch`.
+   */
+  const askOptional = useCallback(
+    (next: RoutingPrompt) =>
+      new Promise<boolean>((resolve) => {
+        setPrompt(next);
+        setDecide(() => (allow: boolean) => {
+          setPrompt(null);
+          setDecide(null);
+          resolve(allow);
+        });
+      }),
+    [],
+  );
 
   /** Answer the open prompt. `false` abandons the action. */
   const resolvePrompt = useCallback(
@@ -302,6 +350,30 @@ export function useRouting({
         const couplesEnvExport =
           routed && slug === OPENCODE_SLUG && proxy !== null && !proxy.env_export_opted_in;
         if (couplesEnvExport) await ask({ kind: "opencode-env" });
+
+        // Hermes's provider, asked in the same place and for the same reason:
+        // a question about what else this click needs to reach, answered
+        // before anything is written.
+        //
+        // Declining is an answer here, not an abort. The person may want
+        // Hermes routed and their provider left alone, and that is a coherent
+        // state - Hermes still goes through Gate, Gate still does not inspect
+        // OpenRouter. So this is not wrapped in the `Declined` throw the drift
+        // and trust gates use; it just skips the enable.
+        let providerDomains: string[] = [];
+        if (routed && slug === HERMES_SLUG) {
+          const coverage = await hermesUpstreamCoverage().catch(() => null);
+          const off = coverage?.switched_off ?? [];
+          if (off.length > 0) {
+            const domains = off.map(([host, domainSlug]) => ({
+              host,
+              slug: domainSlug,
+            }));
+            const yes = await askOptional({ kind: "hermes-provider", domains });
+            if (yes) providerDomains = domains.map((d) => d.slug);
+          }
+        }
+
         if (routed) {
           if (!force && tool?.status.kind === "drifted") {
             await ask({
@@ -322,6 +394,14 @@ export function useRouting({
           // connect refuses without a live engine, and a refusal here would
           // fail an OpenCode connect that had already succeeded.
           if (couplesEnvExport) await proxySetEnvExport(true);
+          // After the connect, like the channel above and for the same reason:
+          // the engine has to be up. Each slug separately because
+          // `proxy_set_domain` takes one, and a failure on the second must not
+          // undo the first - a partially inspected provider set is still
+          // better than none, and `settle` re-reads the truth either way.
+          for (const domainSlug of providerDomains) {
+            await proxySetDomain(domainSlug, true);
+          }
         } else {
           await disconnectTool(slug);
         }

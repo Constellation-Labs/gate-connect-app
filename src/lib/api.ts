@@ -482,6 +482,22 @@ export const proxySetDomain = (slug: string, enabled: boolean) =>
 
 export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
 
+/** What Gate would and would not see of the current Hermes install.
+ *
+ * `switched_off` is `[host, slug]` pairs: a provider domain claims that host
+ * and its switch is off, so turning it on is the whole remedy. `unknown` is
+ * hosts no domain claims at all (Bedrock, a self-hosted endpoint), where no
+ * switch helps and the honest answer is to say so.
+ *
+ * Read fresh at the moment it is needed rather than polled. Both inputs move
+ * after a toggle - the person repoints Hermes, or a domain flips elsewhere. */
+export type HermesCoverage = {
+  switched_off: [string, string][];
+  unknown: string[];
+};
+export const hermesUpstreamCoverage = () =>
+  invoke<HermesCoverage>("hermes_upstream_coverage");
+
 /** Turn the shell-environment channel on or off. Applies immediately rather
  * than at the next routing toggle, and the choice persists across restarts. */
 export const proxySetEnvExport = (enabled: boolean) =>
