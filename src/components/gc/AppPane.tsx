@@ -233,8 +233,10 @@ export function AppPane({
           {/* Title, then status, and nothing between: the frame's `app-info`
               (408:25099) is exactly those two 24px lines. A coverage sentence
               sat here from #221 until 2026-09-21, when design asked for the
-              header to match; the sentence lives on in `lib/groups.ts` for the
-              popover. */}
+              header to match. Nothing else drew it, so it is gone rather than
+              parked; the window says nowhere now what a switch covers, and
+              `SessionConsentDialog` is the one place that still discloses a
+              routed sign-in. See the note above `SECTIONS` in `lib/groups.ts`. */}
           <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">

@@ -71,8 +71,9 @@ describe("AppPane header", () => {
     const heading = screen.getByRole("heading", { level: 1, name: "Claude" });
     expect(heading).toBeTruthy();
     expect(screen.getByText("Protected")).toBeTruthy();
-    expect(screen.queryByText(/in your terminal/)).toBeNull();
-    // The status line is the heading's next sibling: no element in between.
+    // Structural, not textual: the header block holds the h1 and the status
+    // line and nothing else, so any reinserted element fails both checks.
+    expect(heading.parentElement?.children).toHaveLength(2);
     expect(heading.nextElementSibling?.textContent).toMatch(/Protected/);
   });
 });
