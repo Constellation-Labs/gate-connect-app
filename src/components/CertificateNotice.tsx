@@ -328,6 +328,23 @@ export function CertificateNotice({
           {trustStoreName(platform)} needs to trust its certificate. It is made
           here, never leaves your computer, and you can remove it in Settings.
         </p>
+        {/* The one instruction this panel gives about *after*. A browser that
+            is already running read the trust store when it started and may
+            keep that reading for as long as it runs: on a fresh Mac, Chrome
+            answered the first intercepted page with
+            NET::ERR_CERT_AUTHORITY_INVALID until it was quit and reopened,
+            with the trust setting itself correct the whole time. Nothing else
+            says this. The post-toggle banners say "reload any pages you have
+            open", which is the right remedy for a stale connection and the
+            wrong one here, since the cache is per process; and the explicit
+            Trust buttons show nothing at all on success. Said before the
+            dialog rather than after because this is the surface every
+            auto-trust path shares, and hedged ("may") because whether a given
+            browser notices a live trust change is its business, not ours. */}
+        <p className="text-gc-caption leading-snug text-gc-ink-3">
+          A browser that is already open may not notice the new certificate
+          until you quit and reopen it.
+        </p>
         {/* The handoff sentence, in the same words Home's card and the family
             panel's banner use, so the three surfaces do not describe one
             certificate three ways. `aria-live` because a screen-reader user is
