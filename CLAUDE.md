@@ -469,6 +469,28 @@ is a dev script rather than the default. **Use a staging key here, never a
 production one.** `GATE_CONNECT_TEST_SECRETS` is unset in shipped builds,
 so released copies always use the real keychain.
 
+**The certificate follows the key.** `GATE_CONNECT_TEST_SECRETS` also moves the
+CA's certificate, to `proxy/dev` under the data dir (`env::ca_material_dir`),
+because a certificate belongs wherever its private key is. Until 2026-09-21 it
+did not: a dev build kept its key in the file store above while an installed
+release build kept its in the login keychain, and both wrote the same
+`ca-cert.pem`. Whoever ran last left the other with a mismatched pair, and that
+failure is invisible. `Issuer::from_ca_cert_pem` accepts it, the engine starts,
+leaves carry the certificate's own Authority Key Identifier so every fingerprint
+check passes, and the signature verifies against nothing. Every intercepted host
+then fails its handshake while the app reports Protected, and only tunnelled
+hosts still work, so the one thing working is the thing Gate is not inspecting.
+`proxy::ca` now refuses a pair whose halves disagree, but that alone only turns
+a silent breakage into a re-mint, and two installs take turns re-minting over
+each other, breaking every tool that was running each time. Separating the
+material is the fix; the check is the net.
+
+Two consequences worth expecting. A machine running both builds carries two
+trusted Gate roots, one per install. And a tool that was already running keeps
+the certificate bundle it loaded at startup, so **any re-mint means quitting and
+reopening your tools** - an HTTP client reads `ca-bundle.pem` once, when it is
+built.
+
 ## Migration status
 
 `plans/new-app-ui-figma.md` is the working plan: what is built, what is

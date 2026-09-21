@@ -1338,9 +1338,7 @@ pub fn probe_browser_store() -> Option<NssTrust> {
 /// trust bundle instead of using the OS trust store (Node, Python) have to be
 /// pointed at this to accept the engine's minted leaf certs.
 pub fn ca_cert_path() -> Result<std::path::PathBuf> {
-    Ok(crate::env::app_support_dir()?
-        .join("proxy")
-        .join("ca-cert.pem"))
+    Ok(crate::env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 /// The proxy environment variables the system proxy exports for an engine on

@@ -21,6 +21,20 @@
 # store. The key is entered once and persists across rebuilds, and the keychain
 # is never touched, so the prompt cannot appear.
 #
+# That seam now also decides where the CA's *certificate* goes: `env.rs`'s
+# `ca_material_dir` puts it in `proxy/dev` whenever secrets are file-backed and
+# the data dir is not redirected. The certificate has to live wherever its
+# private key lives. Before it did, a dev build (key in a file here) and an
+# installed release build (key in the login keychain) shared one `ca-cert.pem`,
+# and whichever ran last left the other holding a pair that does not match.
+# Nothing detected it: the engine started, leaves were minted, every status said
+# Protected, and every intercepted host failed its TLS handshake.
+#
+# The cost is that a machine running both ends up with two trusted Gate roots,
+# one per install, and this one asks for the login password the first time.
+# That is the honest price of two installs; sharing the file was not cheaper,
+# it was broken.
+
 # THE TRADE, STATED PLAINLY. The Gate key is then a plaintext file rather than a
 # keychain item. That is a real reduction in protection and the reason this is a
 # dev script and not a default: `GATE_CONNECT_TEST_SECRETS` is unset in every
