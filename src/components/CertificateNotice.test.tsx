@@ -46,7 +46,7 @@ describe("CertificateNotice depicts the prompt the platform actually raises", ()
 
   it.each([
     ["macos", "Certificate Trust Settings"],
-    ["linux", "Authentication required"],
+    ["linux", "Authentication Required"],
   ] as const)("draws %s a password field under its own title", (platform, title) => {
     renderNotice({ platform });
     const fig = depiction();

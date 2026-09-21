@@ -32,9 +32,9 @@ import windowsTrustDialog from "../assets/windows-certificate-warning.png";
  * `trustPromptHint` deliberately promises only that "your system will ask you
  * to confirm", so the drawing must not show a password field the copy declines
  * to promise. */
-type TrustDialog =
-  | { kind: "capture"; src: string; width: number; height: number }
-  | { kind: "password" | "confirm"; title: string; confirm: string; dismiss: string };
+type Drawn = { kind: "password" | "confirm"; title: string; confirm: string; dismiss: string };
+
+type TrustDialog = { kind: "capture"; src: string; width: number; height: number } | Drawn;
 
 const TRUST_DIALOG: Record<Platform, TrustDialog> = {
   windows: { kind: "capture", src: windowsTrustDialog, width: 516, height: 475 },
@@ -48,9 +48,11 @@ const TRUST_DIALOG: Record<Platform, TrustDialog> = {
     confirm: "Update Settings",
     dismiss: "Cancel",
   },
+  // Verified against a capture of the real prompt on Ubuntu (GNOME/polkit),
+  // down to the capital R.
   linux: {
     kind: "password",
-    title: "Authentication required",
+    title: "Authentication Required",
     confirm: "Authenticate",
     dismiss: "Cancel",
   },
@@ -110,38 +112,81 @@ function DialogSketch({ platform }: { platform: Platform }) {
       </Depiction>
     );
   }
+  if (dialog.kind === "password") return <PasswordSketch dialog={dialog} />;
+  return <ConfirmSketch dialog={dialog} />;
+}
+
+/** The password prompt, drawn from a capture of the real GNOME/polkit dialog
+ * on Ubuntu rather than from the shape of the code.
+ *
+ * It is drawn and not shipped as that capture for the reason the Windows one
+ * is shipped: the Windows warning is about *our* certificate, so it says the
+ * same thing on every machine, while this one is about *the user* - it carries
+ * their own photo and login name, which would be a stranger's on every screen
+ * but the one it was taken on. So the account is drawn blank.
+ *
+ * What the earlier drawing got wrong, all of it visible in the real dialog:
+ * the content is centred, not left-aligned; there is no status glyph, the
+ * account avatar is the only mark; and the buttons are a split bar across the
+ * foot where the confirm is *dimmed* until a password is typed, rather than a
+ * coloured default. Drawing the confirm as the bright, obvious button taught
+ * the user to look for something that is not there until they have typed. */
+function PasswordSketch({ dialog }: { dialog: Drawn }) {
+  return (
+    <Depiction>
+      <div className="mx-auto w-full max-w-[248px] overflow-hidden rounded-[10px] bg-gc-surface text-center shadow-border">
+        <div className="px-3 pb-2.5 pt-3">
+          <span className="block text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>
+          {/* Skeleton lines, not lorem text: inventing sentences the OS does
+              not say would teach the user to look for words that never appear.
+              The real line names the command being run as root, which is ours
+              and unreadable at this size either way. */}
+          <div className="mt-2 flex flex-col items-center gap-1">
+            <span className="block h-[5px] w-4/5 rounded-full bg-gc-line" />
+            <span className="block h-[5px] w-3/5 rounded-full bg-gc-line" />
+          </div>
+          <span className="mx-auto mt-2.5 block h-6 w-6 rounded-full bg-gc-sunken" />
+          {/* The empty state, which is the dialog as it appears: "Password" is
+              the field's own placeholder rather than a label above it, and it
+              pairs with the dimmed confirm below - that button is dimmed
+              precisely because nothing has been typed yet. Drawing dots in the
+              field would have shown a moment that never coexists with a dimmed
+              Authenticate. */}
+          <div className="mt-2.5 flex h-[22px] items-center justify-between rounded bg-gc-sunken px-1.5 shadow-border">
+            <span className="text-gc-label text-gc-ink-4">Password</span>
+            <Icon name="eye" size={11} />
+          </div>
+        </div>
+        {/* A hairline rather than the `shadow-border` stack: this is depicting
+            another OS's chrome, not dressing one of our own surfaces. */}
+        <div className="h-px w-full bg-gc-line" />
+        <div className="flex text-gc-label">
+          <span className="flex-1 py-1.5 text-gc-ink-3">{dialog.dismiss}</span>
+          <span className="w-px self-stretch bg-gc-line" />
+          <span className="flex-1 py-1.5 text-gc-ink-5">{dialog.confirm}</span>
+        </div>
+      </div>
+    </Depiction>
+  );
+}
+
+/** The fallback shape for `unknown`, where we do not know what will appear:
+ * something will ask, and there are two ways out of it. No password field,
+ * because `trustPromptHint` declines to promise one. */
+function ConfirmSketch({ dialog }: { dialog: Drawn }) {
   return (
     <Depiction>
       <div className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border">
         <div className="flex items-center gap-2">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gc-accent-wash text-gc-accent">
-            <Icon name={dialog.kind === "password" ? "key" : "info"} size={12} />
+            <Icon name="info" size={12} />
           </span>
           <span className="text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>
         </div>
-        {/* Skeleton lines, not lorem text: inventing sentences the OS does not
-            say would teach the user to look for words that never appear. */}
         <div className="mt-2 flex flex-col gap-1">
           <span className="block h-[5px] w-full rounded-full bg-gc-line" />
           <span className="block h-[5px] w-4/5 rounded-full bg-gc-line" />
         </div>
-        {/* The password entry, on the two platforms that ask for one. A bare
-            sunken bar read as one more skeleton line, so the field is labelled:
-            "Password" is real text because macOS and Linux both really do write
-            that word, while the value stays drawn as dots, since neither shows
-            characters either. `unknown` is excluded on purpose - we do not know
-            that its prompt wants a password, and `trustPromptHint` promises
-            only that something will ask the user to confirm. */}
-        {dialog.kind === "password" && (
-          <div className="mt-2.5">
-            <span className="block text-gc-label text-gc-ink-3">Password</span>
-            <div className="mt-1 flex h-[22px] items-center gap-[3px] rounded bg-gc-sunken px-1.5 shadow-border">
-              {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-                <span key={i} className="h-[4px] w-[4px] rounded-full bg-gc-ink-3" />
-              ))}
-            </div>
-          </div>
-        )}
         <div className="mt-2.5 flex items-center justify-end gap-1.5">
           <span className="rounded bg-gc-sunken px-2 py-0.5 text-gc-label text-gc-ink-3">
             {dialog.dismiss}
