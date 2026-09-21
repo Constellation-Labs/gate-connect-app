@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
+import { categoryTone } from "../../lib/toolEvents";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
@@ -60,6 +61,8 @@ export function AppPane({
   status,
   since,
   logo,
+  appVendorMark,
+  appFallbackMark,
   busy,
   onToggleProtected,
   stats,
@@ -115,6 +118,26 @@ export function AppPane({
   since?: string;
   /** 16px brand mark for the header tile. */
   logo?: ReactNode;
+  /**
+   * The app vendor's full-colour mark, for the App-default row alone.
+   *
+   * Separate from `logo` because the two tiles want opposite treatments and
+   * one prop cannot serve both: the pane header is a black tile with white
+   * ink, so it takes the monochrome `BrandMark`; the App-default row
+   * (`408:25491`) is a light tile and draws the provider's own colour -
+   * `#E8704E` for Anthropic. Absent for an app with no single vendor behind
+   * it, where the row falls back to `logo` and then the cube.
+   */
+  appVendorMark?: ReactNode;
+  /**
+   * The rail's section mark at the App-default row's own size, for an app with
+   * no single vendor.
+   *
+   * Separate from `logo` only because of the size: `logo` is the pane header's,
+   * drawn at 16 into a 44px black tile, and this row's tile is 36px around a
+   * 20px glyph. Sharing one prop put two sizes in one slot.
+   */
+  appFallbackMark?: ReactNode;
   /** A routing write is in flight, so the switch refuses a second click. */
   busy?: boolean;
   onToggleProtected: () => void;
@@ -260,7 +283,11 @@ export function AppPane({
       {onChooseModel && onChangeModel && onAddCredits && (
         <ModelSelection
           appName={name}
-          appLogo={logo}
+          // The colour mark where the app has one vendor, the rail's
+          // monochrome one where it does not (AG-879). This row used to take
+          // `logo` outright, which is the set built for the header's dark tile
+          // and renders flat on this one.
+          appLogo={appVendorMark ?? appFallbackMark ?? logo}
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
@@ -333,13 +360,27 @@ function AppStatusLine({
  * provider the one thing on the row a screen reader could not get at. The
  * tooltip stays for pointer users.
  */
-function VendorMark({ provider }: { provider: string | null }) {
-  if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
+function VendorMark({
+  provider,
+  vendor,
+}: {
+  /** What the gateway said served the request, and the only thing this row is
+   *  allowed to put into words. Null when it named none. */
+  provider: string | null;
+  /** The namespace whose mark to draw - the provider where there is one, the
+   *  model id's own namespace otherwise. See `ToolEventRow.vendor`. */
+  vendor: string | null;
+}) {
+  if (!vendor) return <span aria-hidden className="size-4 shrink-0" />;
   return (
     <>
       <span
         aria-hidden
-        title={provider}
+        // Only where the gateway named it. A derived vendor draws its mark and
+        // says nothing: the mark sits beside the model id it was taken from, so
+        // it identifies the model, while a tooltip would be asserting who
+        // served a request that may never have reached anyone.
+        title={provider ?? undefined}
         // `base.foreground`, not the muted grey the Overview's row glyphs take.
         // A brand mark is not a glyph: the colour ones carry their own fills and
         // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
@@ -348,9 +389,9 @@ function VendorMark({ provider }: { provider: string | null }) {
         // black, stayed black in both. Same ink as `dialogs.tsx`'s row now.
         className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
       >
-        {providerMarkFor(provider) ?? <Icon name="cube" size={16} />}
+        {providerMarkFor(vendor) ?? <Icon name="cube" size={16} />}
       </span>
-      <span className="sr-only">{provider}</span>
+      {provider && <span className="sr-only">{provider}</span>}
     </>
   );
 }
@@ -397,9 +438,23 @@ function ModelSelection({
   onManageBilling,
 }: {
   appName: string;
-  /** The app's own brand mark, for the App-default row. The section's mark, the
-   *  same one the pane header wears - this row is about the app, not about a
-   *  provider, so `ProviderMark` is the wrong family here. */
+  /**
+   * The mark for the App-default row, already resolved by the caller.
+   *
+   * **The provider's full-colour mark where the app has one vendor**
+   * (`408:25491` draws Anthropic's `#E8704E`), the rail's monochrome section
+   * mark otherwise. This doc used to say the opposite - "this row is about the
+   * app, not about a provider, so `ProviderMark` is the wrong family here" -
+   * which is the reasoning the frame overturns, and it sat on the prop rather
+   * than the call site, so it was what the next person editing this component
+   * would read. Left as it was, the next "fix" to match the doc would restore
+   * the flat mark.
+   *
+   * The distinction that IS real: the pane header's tile is black and takes the
+   * monochrome family, because those marks render in `currentColor` so a dark
+   * tile can ink them. This row's tile is light. One prop cannot serve both,
+   * which is why the caller resolves it and `logo` stays separate.
+   */
   appLogo?: ReactNode;
   choice: ModelChoice | null;
   pending?: boolean;
@@ -822,12 +877,17 @@ function RecentActivity({
                 <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                {/* Type. The frame draws a 20px glyph 8px from the label, both at
-                  `base/foreground` - the downloaded asset's own stroke is
-                  #030712, and the glyph takes it from this span. Spelled as the
-                  gateway spelled it, like `SecurityEvents` does with the same
-                  field: a display vocabulary for values only the gateway knows
-                  would be invented here. */}
+                {/* Type. The frame draws a 20px glyph 8px from the label, and the
+                  two take DIFFERENT inks: the label is `base/foreground`, the
+                  glyph is its category's colour (see `categoryTone`).
+                  This comment used to claim both were `base/foreground`, citing
+                  "the downloaded asset's own stroke is #030712" - which is what
+                  an *export* carries, not what the frame renders. Sampling the
+                  asset instead of the frame is how one ink ended up on five
+                  categories.
+                  Spelled as the gateway spelled it, like `SecurityEvents` does
+                  with the same field: a display vocabulary for values only the
+                  gateway knows would be invented here. */}
                 <td className="py-[1.125rem] pr-4">
                   {entry.category ? (
                     <span
@@ -836,7 +896,15 @@ function RecentActivity({
                       title={entry.categoryTitle ?? undefined}
                     >
                       {entry.categoryIcon && (
-                        <Icon name={entry.categoryIcon} size={20} />
+                        // Coloured per category (`661:16450`), not inked from
+                        // the span: the frame draws Injection red, PII green
+                        // and Credential purple, and one ink for all of them
+                        // was what this column shipped. See `categoryTone`.
+                        <Icon
+                          name={entry.categoryIcon}
+                          size={20}
+                          className={`shrink-0 ${categoryTone(entry.category)}`}
+                        />
                       )}
                       <span className="truncate">{entry.category}</span>
                     </span>
@@ -904,7 +972,7 @@ function RecentActivity({
                     minimum. The cap lives on the `th` as a share rather than a
                     pixel count, so it holds at every size above that. */}
                   <span className="flex items-center gap-2">
-                    <VendorMark provider={entry.provider} />
+                    <VendorMark provider={entry.provider} vendor={entry.vendor} />
                     <span className="truncate text-sm leading-5 text-base-foreground">
                       {entry.model}
                     </span>

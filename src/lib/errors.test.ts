@@ -243,3 +243,69 @@ describe("open_external", () => {
     expect(c.raw).toContain("forbidden path");
   });
 });
+
+/**
+ * An abandoned browser sign-in is not a network fault.
+ *
+ * `oauth.rs` gives up with "timed out waiting for the login redirect", and the
+ * connectivity branch matches any message containing "timed out" - so the one
+ * failure whose cause is entirely inside the browser was reported as the
+ * gateway being unreachable, sending the reader to check a URL that was never
+ * asked for anything. Found on the release build by abandoning a sign-in that
+ * had opened in the wrong browser profile.
+ */
+describe("an unfinished browser sign-in", () => {
+  it("is not reported as the gateway being unreachable", () => {
+    const c = classifyError(
+      new Error("timed out waiting for the login redirect"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/reach the gateway/i);
+    expect(c.title).toMatch(/sign-in/i);
+    expect(c.hint).not.toMatch(/gateway URL/i);
+  });
+
+  it("still calls a real connectivity failure what it is", () => {
+    // The branch below it has to keep working: this one is narrowed to the
+    // login's own sentence, not to every timeout.
+    const c = classifyError(new Error("connection timed out"), "sign_in");
+
+    expect(c.title).toMatch(/reach the gateway/i);
+  });
+
+  it("names the browser's own Cancel, not a system password prompt", () => {
+    // Cognito answers a declined authorization with `access_denied`, which
+    // `oauth.rs` wraps as "authorization failed (access_denied)". The
+    // prompt-cancelled branch matches "authorization" AND "denied", so this
+    // used to tell the user to approve a system password prompt they never
+    // saw - the same misdiagnosis as the timeout, on the likelier path.
+    const c = classifyError(
+      new Error("authorization failed (access_denied)"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/system prompt/i);
+    expect(c.hint).not.toMatch(/password prompt/i);
+    expect(c.title).toMatch(/declined/i);
+  });
+
+  it("still calls a real cancelled system prompt what it is", () => {
+    // The branch below must keep working: trusting the CA raises an actual OS
+    // prompt, and cancelling that one really is a system prompt.
+    const c = classifyError(new Error("User canceled the operation"), "trust_ca");
+
+    expect(c.title).toMatch(/system prompt/i);
+  });
+
+  it("says nothing about the gateway when the user stopped it themselves", () => {
+    // `cancel_login`'s message. It deliberately avoids "cancelled", which the
+    // system-prompt branch above claims.
+    const c = classifyError(
+      new Error("the browser sign-in was stopped from Gate Connect"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/reach the gateway/i);
+  });
+});

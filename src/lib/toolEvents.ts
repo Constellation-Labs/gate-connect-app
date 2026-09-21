@@ -67,6 +67,33 @@ const NO_REFERENCE = "-";
 const NO_MODEL = "Unknown model";
 
 /**
+ * The vendor namespace of a canonical model id, for a row the gateway named no
+ * provider on.
+ *
+ * `provider` is null far more often than it looks: the column holds the
+ * pipeline's `unknown` sentinel on a substantial share of rows - the gateway's
+ * own comment counts 42 of 102 in a dev database - and the endpoint maps that
+ * to null rather than let a client draw a mark for a provider nobody has. The
+ * mark slot then rendered an empty spacer, which is what "the Model column has
+ * no vendor icon" turned out to be: not a missing mark, a missing reading.
+ *
+ * But the vendor is right there in the id. Model ids are canonical
+ * `provider/model` (`anthropic/claude-opus-5`), and `NewUiApp` already splits
+ * them this way in two places for the same reason. Deriving it is not guessing:
+ * `providerMarkFor` returns undefined for a namespace it has no mark for, so a
+ * spelling this does not recognise falls back to the cube exactly as before.
+ *
+ * Only the namespace of a *namespaced* id. A bare `gpt-5` names no vendor, and
+ * inventing one from the model family is the kind of guess principle 6 forbids.
+ */
+function vendorFromModelId(model: string | null | undefined): string | null {
+  if (!model) return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash);
+}
+
+/**
  * The gateway's action verbs, in the pane's own vocabulary.
  *
  * The gateway records what a criterion *did* (`block`, `redact`) because that is
@@ -122,13 +149,75 @@ function eventTime(at: string): string {
  */
 const CATEGORY_ICONS: Record<string, IconName> = {
   pii: "userRound",
+  phi: "userRound",
   "pii-phi": "userRound",
   injection: "shieldAlert",
   "prompt-injection": "shieldAlert",
+  credential: "key",
   credentials: "key",
 };
 
 const CATEGORY_FALLBACK: IconName = "shieldCheck";
+
+/**
+ * The glyph's ink, per category, as `card/recent-activity` draws it
+ * (`661:16450`).
+ *
+ * Measured off that frame and matched against the variables it resolves:
+ * Injection `tailwind colors/red/600` #dc2626, PII `green/600` #16a34a,
+ * Credential `purple/600` #9333ea. None of those ramps is redefined in
+ * `tailwind.config.ts` - only `blue` is - so the classes render the values the
+ * variables name.
+ *
+ * The column drew every glyph at `base.foreground` before this, and the reason
+ * is worth recording: the ink was taken from the *exported asset's* own stroke,
+ * which is #030712, rather than from the glyph as the frame renders it. An
+ * export is not the frame.
+ *
+ * `phi` shares PII's ink as well as its glyph: the gateway scans them from one
+ * criterion pair and the frame draws no PHI row, so splitting them here would
+ * invent a distinction the taxonomy does not make. Recorded as inferred rather
+ * than drawn. Anything else - `other`, an unrecognised spelling, and our own
+ * "Regular" - keeps `base.foreground`: a colour is what a guardrail firing
+ * looks like, and those are the cases where none did.
+ */
+const CATEGORY_TONES: Record<string, string> = {
+  pii: "text-green-600",
+  phi: "text-green-600",
+  "pii-phi": "text-green-600",
+  injection: "text-red-600",
+  "prompt-injection": "text-red-600",
+  credential: "text-purple-600",
+  credentials: "text-purple-600",
+};
+
+/**
+ * The ink for a category, or `base.foreground` where the frame draws none.
+ *
+ * `Object.hasOwn` and not a bare index, for the reason `providerNameFor` gives
+ * at length: the key is a gateway string, and `constructor` and `__proto__`
+ * both survive `toLowerCase()` and come back truthy off `Object.prototype`, so
+ * `??` never fires and the class attribute is handed a function. This shipped
+ * guarded in `ProviderMark` and unguarded here, in the same change.
+ */
+export function categoryTone(category: string | null): string {
+  if (category === null) return "text-base-foreground";
+  return lookup(CATEGORY_TONES, category) ?? "text-base-foreground";
+}
+
+/**
+ * One normalisation for both category tables.
+ *
+ * The glyph and its ink have to agree, and they did not: this function's
+ * callers used to disagree about case, so a row the gateway spelled `PII` took
+ * the fallback *shield* in PII *green* - a combination neither table intends.
+ * A PR whose premise is that spellings drift between producers is the wrong
+ * place to normalise one lookup and not its neighbour.
+ */
+function lookup<T>(table: Record<string, T>, key: string): T | undefined {
+  const k = key.toLowerCase();
+  return Object.hasOwn(table, k) ? table[k] : undefined;
+}
 
 /** What the Type column says for a request no guardrail matched.
  *
@@ -168,7 +257,7 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // withholding the `security` line above makes, and CLAUDE.md principle 6.
     category: raw.securityCategory ?? (raw.securityAction === "allow" ? REGULAR : null),
     categoryIcon: raw.securityCategory
-      ? (CATEGORY_ICONS[raw.securityCategory] ?? CATEGORY_FALLBACK)
+      ? (lookup(CATEGORY_ICONS, raw.securityCategory) ?? CATEGORY_FALLBACK)
       : raw.securityAction === "allow"
         ? REGULAR_ICON
         : null,
@@ -176,6 +265,7 @@ function toEntry(raw: RawEvent): ActivityEntry {
       !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
     model: raw.model ?? NO_MODEL,
     provider: raw.provider,
+    vendor: raw.provider ?? vendorFromModelId(raw.model),
     title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };

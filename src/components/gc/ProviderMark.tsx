@@ -390,6 +390,43 @@ export function providerMarkFor(vendor: string, size?: number): JSX.Element | un
 }
 
 /**
+ * The vendor whose model an app runs on its own, keyed by section id.
+ *
+ * For the App-default row (`408:25491`, "Using Claude Desktop model"), which
+ * draws the provider's FULL-COLOUR mark - `#E8704E` for Anthropic - in a light
+ * tile. The row had been given `brandMarkForSection`, the rail's *monochrome*
+ * set: those marks render in `currentColor` so a dark 32px tile can ink them,
+ * which is exactly why they come out flat here. CLAUDE.md keeps the two apart
+ * for this reason; this row asked for the wrong one.
+ *
+ * Only the sections whose app has one vendor behind it. OpenCode and OpenClaw
+ * are harnesses that call whatever provider they are configured with, so there
+ * is no single mark to draw and the caller keeps its existing fallback.
+ *
+ * Kept here beside `PROVIDER_BY_VENDOR` for the reason `BRAND_BY_SECTION`
+ * gives for living in `BrandMark.tsx`: the branding tables stay in the branding
+ * files, and `lib/groups.ts` owes nothing to a component.
+ */
+const VENDOR_BY_SECTION: Record<string, string> = {
+  claude: "anthropic",
+  chatgpt: "openai",
+};
+
+/**
+ * The full-colour mark for the app a section is named for, or `undefined`
+ * where its app has no single vendor.
+ */
+export function appProviderMarkFor(
+  sectionId: string,
+  size?: number,
+): JSX.Element | undefined {
+  const vendor = Object.hasOwn(VENDOR_BY_SECTION, sectionId)
+    ? VENDOR_BY_SECTION[sectionId]
+    : undefined;
+  return vendor ? providerMarkFor(vendor, size) : undefined;
+}
+
+/**
  * The resolution on its own, without the element.
  *
  * `Object.hasOwn`, not a bare index. `vendor` is the gateway's `owned_by` or the

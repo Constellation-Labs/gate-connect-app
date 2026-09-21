@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
-import { MARK_NAMES, ProviderMark, providerMarkFor, providerNameFor } from "./ProviderMark";
+import {
+  MARK_NAMES,
+  ProviderMark,
+  appProviderMarkFor,
+  providerMarkFor,
+  providerNameFor,
+} from "./ProviderMark";
 
 afterEach(cleanup);
 
@@ -151,5 +157,42 @@ describe("every mark's geometry", () => {
       expect(mask.getAttribute("height"), `${name} mask height`).toBeTruthy();
       expect(mask.style.maskType, `${name} mask-type`).toBe("alpha");
     }
+  });
+});
+
+/**
+ * The App-default row's mark (`408:25491`).
+ *
+ * Reported against the functional-review build as "Using Claude model has no
+ * colours". The row was given `brandMarkForSection` - the rail's monochrome
+ * set, whose marks render in `currentColor` so a dark tile can ink them - on a
+ * light tile that the frame draws in Anthropic's own `#E8704E`.
+ */
+describe("appProviderMarkFor", () => {
+  it("gives the app's vendor mark for a section with one vendor behind it", () => {
+    expect(appProviderMarkFor("claude")).toBeTruthy();
+    expect(appProviderMarkFor("chatgpt")).toBeTruthy();
+  });
+
+  it("draws Anthropic's own colour rather than inheriting the tile's", () => {
+    const { container } = render(<>{appProviderMarkFor("claude")}</>);
+
+    // The value CLAUDE.md records for `anthropic 2`, and the one the frame
+    // draws. A mark that inherited would carry no fill of its own.
+    expect(container.innerHTML.toUpperCase()).toContain("E8704E");
+  });
+
+  it("answers for nothing where the app has no single vendor", () => {
+    // OpenCode and OpenClaw call whatever provider they are configured with,
+    // so there is no one mark. The caller keeps its own fallback.
+    expect(appProviderMarkFor("opencode")).toBeUndefined();
+    expect(appProviderMarkFor("openclaw")).toBeUndefined();
+    expect(appProviderMarkFor("terminal")).toBeUndefined();
+  });
+
+  it("cannot be tricked by a prototype key", () => {
+    // Same guard as `providerNameFor`: the id reaches this from a ledger.
+    expect(appProviderMarkFor("constructor")).toBeUndefined();
+    expect(appProviderMarkFor("__proto__")).toBeUndefined();
   });
 });

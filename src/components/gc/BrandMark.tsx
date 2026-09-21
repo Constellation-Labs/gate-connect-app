@@ -105,9 +105,9 @@ const BRAND_BY_SLUG: Record<string, BrandName> = {
  * The mark for a slug, or undefined for one with none (Hermes), which keeps
  * the tile's initial fallback.
  */
-export function brandMarkFor(slug: string): JSX.Element | undefined {
+export function brandMarkFor(slug: string, size?: number): JSX.Element | undefined {
   const name = BRAND_BY_SLUG[slug];
-  return name ? <BrandMark name={name} /> : undefined;
+  return name ? <BrandMark name={name} size={size} /> : undefined;
 }
 
 /**
@@ -152,9 +152,13 @@ const BRAND_BY_SECTION: Record<string, BrandName> = {
 export function brandMarkForSection(
   id: string,
   memberKeys: readonly string[],
+  /** The glyph's size. Omitted takes `BrandMark`'s own 16, which is what the
+   *  rail and the pane header want; a caller drawing into a 36px tile passes
+   *  the 20 that tile is built around (`683:20439`). */
+  size?: number,
 ): JSX.Element | undefined {
   const named = BRAND_BY_SECTION[id];
-  if (named) return <BrandMark name={named} />;
+  if (named) return <BrandMark name={named} size={size} />;
   const key = [...memberKeys, id].find((k) => BRAND_BY_SLUG[k]);
-  return key ? brandMarkFor(key) : undefined;
+  return key ? brandMarkFor(key, size) : undefined;
 }
