@@ -257,6 +257,41 @@ describe("useSettingsActions: switching organization", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("opens over a single organization when the caller asks it to", async () => {
+    // AG-915. The rail's control is a button under the org's own name with a
+    // pointer cursor, so a click that opens nothing reads as broken rather than
+    // as "there is nothing to switch to". Shown the picker, the reader sees
+    // their one organization and a refused primary, and learns where switching
+    // lives. `SwitchOrganizationDialog` disables the primary against the
+    // current org already, so the dialog is informational by construction.
+    (oauthListOrgs as Mock).mockResolvedValue([ORGS[0]]);
+    const { api, onError } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(true);
+    expect(api.current!.prompt).toMatchObject({ kind: "switch-org", orgs: [ORGS[0]] });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("still draws nothing when there is no organization at all", async () => {
+    // Not an exception either way: an empty picker has nothing to show, and the
+    // tray's fallback is the right landing for it too.
+    (oauthListOrgs as Mock).mockResolvedValue([]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(false);
+    expect(api.current!.prompt).toBeNull();
+  });
+
   it("reports that the picker opened when there is something to choose", async () => {
     const { api } = harness();
 
@@ -657,5 +692,41 @@ describe("useSettingsActions: no account", () => {
     });
 
     expect(saveAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("useSettingsActions: the two entry points agree", () => {
+  it("opens for a single org from the tray hand-over as well as the rail", async () => {
+    // Both callers pass `evenWhenSingle`, so neither can answer the same
+    // question differently. The tray's used to fall back to Settings, on the
+    // reasoning that Settings explains the account - which stopped being true
+    // when the org row was removed from that pane for repeating the sidebar.
+    (oauthListOrgs as Mock).mockResolvedValue([ORGS[0]]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    // `true` is what stops the caller navigating away: the hand-over only
+    // lands on Settings when this resolves `false`.
+    expect(opened).toBe(true);
+    expect(api.current!.prompt).toMatchObject({ kind: "switch-org" });
+  });
+
+  it("still reports nothing to ask for the three real nothings", async () => {
+    // Zero orgs, and by the same path a failed read - the cases where the
+    // fallback is still the right landing, flag or no flag.
+    (oauthListOrgs as Mock).mockResolvedValue([]);
+    const { api } = harness();
+
+    let opened: boolean | undefined;
+    await act(async () => {
+      opened = await api.current!.openSwitchOrg({ evenWhenSingle: true });
+    });
+
+    expect(opened).toBe(false);
+    expect(api.current!.prompt).toBeNull();
   });
 });

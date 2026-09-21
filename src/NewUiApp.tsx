@@ -3151,7 +3151,12 @@ export function NewUiApp() {
         account?.auth_mode === "oauth"
           ? () => {
               setActionError(null);
-              void settings.openSwitchOrg();
+              // Opens even for a single-org account (AG-915). It is a button
+              // under the org's name with a pointer cursor: a click that opens
+              // nothing reads as broken. The tray's hand-over above now says
+              // the same, so the two entry points cannot answer the same
+              // question differently.
+              void settings.openSwitchOrg({ evenWhenSingle: true });
             }
           : undefined
       }

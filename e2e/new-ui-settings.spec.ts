@@ -101,19 +101,37 @@ test.describe("new UI settings", () => {
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
-  test("no picker opens when there is only one organization", async ({ boot }) => {
-    // A question with one answer.
+  test("the picker still opens for a single organization, and refuses the switch", async ({
+    boot,
+  }) => {
+    // AG-915, and it reverses what this test used to assert. The rail's control
+    // is a button under the org's own name with a pointer cursor, so a click
+    // that opened nothing read as broken rather than as "there is nothing to
+    // switch to" - which is what was reported.
+    //
+    // Opening it is safe because the dialog is informational by construction:
+    // `SwitchOrganizationDialog` refuses its primary while the selection is the
+    // current org, so a single-org account can see where switching lives and
+    // cannot fire a no-op switch from it.
+    //
+    // The tray's hand-over keeps the old behaviour and lands on Settings - it
+    // has already closed a popover and pulled a window forward, and a dialog
+    // with one disabled button is a worse answer there.
     const app = await boot({
       orgs: [{ orgId: "org-1", name: "Constellation Labs", slug: "constellation", role: "admin" }],
     });
 
     await app.page.getByRole("button", { name: /Constellation Labs/ }).click();
 
-    // The list is read - the click is not ignored - and then nothing opens.
     await expect
       .poll(() => app.calls().then((c) => c.some((x) => x.cmd === "oauth_list_orgs")))
       .toBe(true);
-    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      app.page.getByRole("heading", { name: "Switch organization" }),
+    ).toBeVisible();
+    await expect(
+      app.page.getByRole("button", { name: "Switch organization", exact: true }),
+    ).toHaveAttribute("aria-disabled", "true");
   });
 
   /**

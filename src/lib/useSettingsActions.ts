@@ -87,11 +87,21 @@ export interface SettingsActions {
   replaceKey: () => Promise<void>;
   openRenameDevice: (currentName: string) => void;
   renameDevice: () => Promise<void>;
-  /** Opens the organization picker. Resolves `true` when a dialog actually
-   *  opened, and `false` when there was nothing to ask - a single-org account, a
-   *  call while busy, or a failed read. A caller that navigated to get here
-   *  needs to know, or the user lands on a surface showing nothing. */
-  openSwitchOrg: () => Promise<boolean>;
+  /**
+   * Opens the organization picker. Resolves `true` when a dialog actually
+   * opened, and `false` when there was nothing to ask.
+   *
+   * `false` means: no organization at all, a call while another is in flight,
+   * or a read that failed. A caller that navigated to get here needs to know,
+   * or the user lands on a surface showing nothing.
+   *
+   * **`evenWhenSingle` moves the one-organization case from `false` to
+   * `true`** - the picker draws that single row with its primary refused, which
+   * is how a reader learns where switching lives. Without it, one organization
+   * is "nothing to ask" and resolves `false` with the other three. The three
+   * genuine nothings are not affected by the flag.
+   */
+  openSwitchOrg: (opts?: { evenWhenSingle?: boolean }) => Promise<boolean>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
   openDisconnect: () => void;
@@ -234,7 +244,7 @@ export function useSettingsActions({
     }
   }, [account, newKey, busy, onAccount, onError]);
 
-  const openSwitchOrg = useCallback(async () => {
+  const openSwitchOrg = useCallback(async (opts?: { evenWhenSingle?: boolean }) => {
     if (busy) return false;
     setBusy(true);
     try {
@@ -249,7 +259,25 @@ export function useSettingsActions({
       // nothing at all - and for a single-org account, which is most accounts.
       // The caller decides where to land instead; this function still declines
       // to ask a question with one answer.
-      if (orgs.length < 2) return false;
+      //
+      // `evenWhenSingle` is the rail's exception, and it is about a different
+      // question (AG-915). Its control is a button with a pointer cursor sitting
+      // under the org's own name, so a click that opens nothing reads as broken
+      // rather than as "there is nothing to switch to". Shown the picker, a
+      // single-org account can see its one organization, see the primary refused
+      // against it, and learn where switching lives.
+      //
+      // The tray's hand-over passes it too, and that is the half that changed.
+      // Its fallback used to land on Settings, on the reasoning that Settings
+      // is where the account explains itself - which stopped being true when
+      // the org row was removed from that pane for repeating the sidebar.
+      // `SettingsPane` says nothing about organizations now, so a popover
+      // closed and a window pulled forward to land there is the symptom this
+      // `false` exists to prevent rather than an instance of it.
+      //
+      // Zero orgs is not an exception either way: there is nothing to draw.
+      if (orgs.length === 0) return false;
+      if (orgs.length < 2 && !opts?.evenWhenSingle) return false;
       setPrompt({
         kind: "switch-org",
         orgs,
