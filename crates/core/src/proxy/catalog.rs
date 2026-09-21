@@ -107,6 +107,13 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // surface and forwards the sibling calls (skills, usage,
             // conversation reads) as ordinary passthrough, which it has explicit
             // coverage for. They add audit rows, not behaviour changes.
+            //
+            // One carve-out, made by the engine rather than by this list: a
+            // multipart body anywhere in the tree - in practice the app's file
+            // upload - is passed through, because the gateway captures no
+            // multipart body and would forward an empty form - measured on a
+            // real upload, not inferred. See `carries_multipart_body` in
+            // `engine.rs`.
             rewrite_prefixes: vec!["/organizations/".into()],
             // Everything here would be pure noise or actively harmful to route:
             // the updater channel, telemetry batches, and the bootstrap/account
