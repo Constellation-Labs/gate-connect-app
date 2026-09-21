@@ -421,8 +421,8 @@ export function NewUiApp() {
    * registered is not lost - the same reasoning as `App.tsx`.
    */
   const [quit, setQuit] = useState<
-    | { kind: "choose"; tools: string[]; reverting: string[]; choice: QuitChoice }
-    | { kind: "confirm"; disconnected: boolean; reverting: string[] }
+    | { kind: "choose"; tools: string[]; reverting: string[] | null; choice: QuitChoice }
+    | { kind: "confirm"; disconnected: boolean; reverting: string[] | null }
     | { kind: "left-behind"; tools: string[] }
     | null
   >(null);
@@ -1039,8 +1039,11 @@ export function NewUiApp() {
                   // The subset a plain quit puts back on its own settings,
                   // because the address its config names dies with this
                   // process. The dialogs below say which tools those are, so
-                  // neither branch describes the other's outcome.
-                  reverting: pending.reverting,
+                  // neither branch describes the other's outcome. Narrowed to
+                  // the rows the dialog lists: the backend walks the whole
+                  // registry, including tools hidden from the UI, and the
+                  // dialog's "keeps working" half is `tools` minus this list.
+                  reverting: pending.reverting.filter((r) => pending.tools.includes(r)),
                   choice: "disconnect",
                 },
             );
@@ -2856,7 +2859,13 @@ export function NewUiApp() {
             // is the whole subject of the takeover. Mirrors `request_quit`.
             t.status.kind === "overridden",
         )
-        .map((t) => t.name),
+        // The product name, not the row label: `name` is the ledger's one-word
+        // label under a vendor heading ("CLI"), and two tools share it, so the
+        // chooser read "CLI and CLI". The backend names these same tools by
+        // display name in `request_quit` and `tools_stranded_by_quit`, and the
+        // dialog's "keeps working" half is this list minus that one - it has
+        // to be the same vocabulary or nothing ever matches.
+        .map((t) => t.product_name),
     [tools],
   );
 
@@ -2876,28 +2885,39 @@ export function NewUiApp() {
         // offer - which is the rule the tray's own Quit already follows, where
         // Rust exits outright on an empty list. Asking "how?" about a teardown
         // with no work in it would be a dialog for its own sake.
-        if (routedForQuit.length === 0) void quitApp().catch(() => {});
+        //
+        // Linux exits outright too, as the tray's Quit does in `request_quit`:
+        // the engine there is a detached daemon that outlives this window, so
+        // quitting strands nothing and there is no question to ask. Offering
+        // the chooser anyway is worse than silence - its first row tears down
+        // routing the user never needed to lose, and its second promised a
+        // revert `quit_app` skips on that platform.
+        if (platform === "linux" || routedForQuit.length === 0)
+          void quitApp().catch(() => {});
         else
           // Which of them a plain quit puts back is the one half this shell
           // cannot derive - it depends on the address each config holds, not on
-          // the tool - so it is asked for rather than guessed. An unanswered
-          // read names no tool, which leaves the dialog on its no-revert
-          // wording: the same sentence it drew before either list existed.
+          // the tool - so it is asked for rather than guessed. A read that did
+          // not complete arrives as `null` and the dialog says so; reading it
+          // as "nothing reverts" told the user their configs stay put on an
+          // exit about to rewrite them. Narrowed to the rows on screen for the
+          // reason the tray path gives.
           void toolsStrandedByQuit()
-            .catch(() => [] as string[])
+            .catch(() => null)
             .then((reverting) =>
               setQuit((q) =>
                 q ?? {
                   kind: "choose",
                   tools: routedForQuit,
-                  reverting,
+                  reverting:
+                    reverting?.filter((r) => routedForQuit.includes(r)) ?? null,
                   choice: "disconnect",
                 },
               ),
             );
       }
     },
-    [openLink, openDashboard, routedForQuit],
+    [openLink, openDashboard, routedForQuit, platform],
   );
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;

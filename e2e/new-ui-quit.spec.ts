@@ -185,7 +185,56 @@ test.describe("new UI quit", () => {
     await expect(
       dialog.getByRole("radio", { name: /Quit without disconnecting/ }),
     ).toContainText("Gate puts Codex back on its own settings");
+    // Named by product, as the backend names them. The rows' own `name` is
+    // the one-word ledger label both of these share, and the chooser used to
+    // read "CLI and CLI" here.
+    await expect(
+      dialog.getByRole("radio", { name: /Quit without disconnecting/ }),
+    ).toContainText("Claude Code keeps working without Gate");
     expect(await app.lastCall("quit_app")).toBeNull();
+  });
+
+  /** A read that did not complete must not borrow the "nothing reverts"
+   * sentence: that one tells the user their configs stay put, and the exit may
+   * be about to rewrite them. */
+  test("the menu chooser admits when it could not check what the exit reverts", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: connectedTools,
+      strandedByQuit: null,
+    });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await app.page.getByRole("menuitem", { name: "Quit Gate Connect" }).click();
+
+    const row = app.page
+      .getByRole("dialog")
+      .getByRole("radio", { name: /Quit without disconnecting/ });
+    await expect(row).toContainText("couldn't check which tools it puts back");
+    await expect(row).not.toContainText("keep working without Gate");
+  });
+
+  /** Linux mirrors the tray's `request_quit`, which exits outright there: the
+   * engine is a detached daemon that outlives the window, so a quit strands
+   * nothing and the chooser's first row would tear down routing the user never
+   * needed to lose. Its second row also promised a revert `quit_app` skips on
+   * that platform. */
+  test("on Linux the menu quits outright, even with tools routed", async ({ boot }) => {
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true },
+      tools: connectedTools,
+      strandedByQuit: ["Codex"],
+    });
+
+    await app.page.getByRole("button", { name: "More" }).click();
+    await app.page.getByRole("menuitem", { name: "Quit Gate Connect" }).click();
+
+    await expect.poll(() => app.lastCall("quit_app")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    expect(await app.lastCall("tools_stranded_by_quit")).toBeNull();
   });
 
   test("with nothing routed, the menu quits without asking how", async ({ boot }) => {
