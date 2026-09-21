@@ -29,6 +29,18 @@ esac
 # Native path for consumers that aren't msys-aware (node, the Rust binaries).
 winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
+# Executable suffix, by name rather than by probing for it. `[ -x "$BIN" ]`
+# looks like the safe way to add `.exe` only when needed, and is not: MSYS
+# stat() silently falls back to `NAME.exe` when `NAME` is missing, so the test
+# passes for a path that does not literally exist and the suffix never gets
+# appended. Bash then papers over it, because its exec does the same fallback -
+# which is why `"$CLI" proxy trust-ca` below ran fine on Windows. `env` does
+# not, so the extensionless harness path reached it as a command that is not
+# there: a bare 127, no message, and Playwright reporting only "Process from
+# config.webServer was not able to start".
+EXE=""
+if [ "$OS" = "Windows" ]; then EXE=".exe"; fi
+
 if [ "$OS" = "Windows" ]; then
   # Git Bash rewrites anything that looks like a path, which corrupts openssl's
   # `-subj "/CN=..."` into a Windows path. `ci/e2e/run.sh` documents the same
@@ -147,16 +159,14 @@ cargo build --locked -p gate-connect-desktop --example ui-harness
 # what the opt-in is consenting to.
 if [ "${GATE_UI_HARNESS_ROUTING:-0}" = "1" ]; then
   cargo build --locked -p gate-connect-cli
-  CLI="$ROOT/target/debug/gate-connect"
-  [ -x "$CLI" ] || CLI="$CLI.exe"
+  CLI="$ROOT/target/debug/gate-connect$EXE"
   GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")" \
   GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")" \
     "$CLI" proxy trust-ca --system-trust \
     || echo "note: promptless CA trust failed; enable() will try its own escalation"
 fi
 
-BIN="$ROOT/target/debug/examples/ui-harness"
-[ -x "$BIN" ] || BIN="$BIN.exe"
+BIN="$ROOT/target/debug/examples/ui-harness$EXE"
 
 # The secrets seam keeps this off the real keychain, which on macOS would
 # otherwise prompt per rebuild (see CLAUDE.md, "Running the app locally"); the
