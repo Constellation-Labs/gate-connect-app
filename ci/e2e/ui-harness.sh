@@ -38,9 +38,12 @@ winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1
 # not, so the extensionless harness path reached it as a command that is not
 # there: a bare 127, no message, and Playwright reporting only "Process from
 # config.webServer was not able to start". Naming the suffix was right and was
-# not the whole story: the 127 survived it. A bare 127 is also what Git Bash
-# reports for a native exe that died in the Windows loader, and that case is
-# what the preflight below exists to read.
+# not the whole story: the 127 survived it, because a bare 127 is also what Git
+# Bash reports for a native exe that died with an NTSTATUS. The preflight
+# below read that one out as STATUS_ENTRYPOINT_NOT_FOUND: an example target
+# gets no application manifest, so it was handed the 5.82 comctl32, which does
+# not export the `TaskDialogIndirect` the desktop library imports. Fixed in
+# `src-tauri/build.rs`; the preflight stays, for the next silent 127.
 EXE=""
 if [ "$OS" = "Windows" ]; then EXE=".exe"; fi
 
