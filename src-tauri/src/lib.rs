@@ -4633,6 +4633,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             clear_account,
             switch_gateway,
             oauth_begin_login,
+            oauth_cancel_login,
             oauth_status,
             oauth_sign_out,
             set_auth_mode,

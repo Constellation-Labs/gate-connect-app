@@ -139,14 +139,10 @@ test.describe("routing, end to end", () => {
     expect(fs.readFileSync(codexConfig(harness), "utf8")).not.toContain("sk-gw-");
   });
 
-  test("turning the switch off stops the routing and leaves no residue", async ({
-    boot,
-    harness,
-  }) => {
+  test("turning the app off leaves no residue", async ({ boot, harness }) => {
     const routedUrl = codexBaseUrl(harness);
     expect(routedUrl, "the previous test should have left Codex routed").not.toBeNull();
 
-    const before = harness.captured().length;
     const app = await boot();
 
     await app.appSwitch(SECTION).click();
@@ -159,22 +155,13 @@ test.describe("routing, end to end", () => {
     await expect.poll(() => codexBaseUrl(harness)).not.toBe(routedUrl);
     expect(fs.readFileSync(codexConfig(harness), "utf8")).not.toContain("127.0.0.1");
 
-    // Now the master, which is what actually stops the engine.
-    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
-    await expect
-      .poll(() => harness.invoke<{ running: boolean }>("proxy_status"), { timeout: 30_000 })
-      .toMatchObject({ running: false });
-
-    // The same request that routed a moment ago is not routed now. Note what
-    // is NOT asserted: that the port is closed. On Linux the helper daemon owns
-    // the listener and outlives a disable by design, dropping to pass-through
-    // (measured: it answers 502), where macOS and Windows tear the in-process
-    // engine down and the connection is refused. Both are "not routed", and the
-    // assertion that holds on all three is the one that matters anyway - the
-    // gateway received nothing.
-    const sent = await sendAsCodex(routedUrl!);
-    expect(sent.ok, `expected no routing, got ${sent.status}`).toBe(false);
-    expect(harness.captured().length, "no request reached the gateway").toBe(before);
+    // What is NOT asserted, and used to be: that the engine stops. Since #317
+    // routing runs for exactly as long as the app is open - the rail has no
+    // master switch to click, and this spec once clicked one here - so the
+    // relay stays up by design, and "off" for one app means its config no
+    // longer names it. Whether the port still answers is therefore not a fact
+    // about this app; the backend's own reading of the config is, and it is
+    // the next test's subject.
   });
 
   test("what Gate leaves behind is a config the tool can still use", async ({ harness }) => {

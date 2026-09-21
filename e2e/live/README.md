@@ -57,9 +57,10 @@ answers IPC with no window and no plugins, on every platform. So `ui-e2e` in
 
 ## The routing arc, and its one opt-in
 
-`routing.spec.ts` drives the thing the harness exists for: switch on, a real
-request reaching the mock gateway with the credential injected, switch off, not
-routed, and what Gate leaves behind when it is gone. It needs
+`routing.spec.ts` drives the thing the harness exists for: switch an app on, a
+real request reaching the mock gateway with the credential injected, switch it
+off, nothing of ours left in its config, and what Gate leaves behind when it is
+gone. It needs
 `GATE_UI_HARNESS_ROUTING=1`, which means one thing - **this run may install a
 root CA on this machine**, because `manager::enable()` calls
 `ca::ensure_trusted()`. CI sets it and removes the root afterwards. Without it
@@ -72,10 +73,14 @@ Two things it exploits, both worth knowing before writing another one:
   throwaway home are a "logged-in, installed" Codex. It also routes through the
   loopback relay, so a plain `fetch` from Node is the exact shape of its own
   request. Claude Code would need `HTTPS_PROXY` plus a CA inside Node's bundle.
-- **"Not routed" is not "port closed."** Measured: after a master-off, Linux's
-  helper daemon keeps the listener and answers 502 in pass-through, while
-  macOS and Windows tear the in-process engine down and refuse the connection.
-  The assertion that holds everywhere is that the gateway received nothing.
+- **There is no off switch for the engine.** Since #317 routing runs for as
+  long as the app is open, so the arc never asserts that a port closes or that
+  a request stops being forwarded: it once clicked a master switch and asserted
+  both, and that switch is gone. "Off" for one app is its config no longer
+  naming the relay, read from disk and from `list_tools`. (For the record, the
+  port measurement that used to live here: after an engine stop Linux's helper
+  daemon keeps the listener and answers 502 in pass-through, while macOS and
+  Windows refuse the connection.)
 
 ## Shape of a spec
 
