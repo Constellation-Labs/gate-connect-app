@@ -1844,6 +1844,28 @@ export function OpenCodeEnvDialog({
         tells Node to trust Gate&apos;s certificate, so every Node program you
         start afterwards accepts the traffic Gate inspects.
       </p>
+      {/* AG-895. The ticket reads "toggling OpenCode asks me to close Codex",
+          and the literal claim does not survive the code - every caller of
+          `offerAfterChange` is scoped to the slugs that wrote. The suspicion
+          under it is right, though, and this is where it belongs: turning
+          OpenCode on DOES reach other tools, through the machine-wide
+          variables, and it reaches only the ones started afterwards. A
+          process's environment is fixed when it is spawned.
+
+          Nothing else says it. The reopen machinery is what normally would,
+          and it is structurally silent here: `env-proxy` is not a process, so
+          `ReopenEvidence::process_names_known` is false for it and
+          `reopen_pending` declines to claim anything. So the terminal that is
+          already open keeps going direct, indefinitely, with every surface in
+          the app reporting the channel as on.
+
+          Weighted, like the certificate sentence in the untrust dialog and the
+          trust prompt's hint: it is the line that decides whether the person
+          gets what they just asked for. */}
+      <p className="mt-3 text-sm font-medium leading-5 text-base-foreground">
+        Terminals and tools that are already open keep the environment they
+        started with. Reopen them if you want their traffic covered.
+      </p>
     </Modal>
   );
 }
