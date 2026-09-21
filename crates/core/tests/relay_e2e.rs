@@ -502,7 +502,7 @@ async fn relay_forwards_direct_when_not_intercepting() {
         "org-uuid-1",
     );
 
-    engine.set_relay_intercept(false);
+    engine.set_intercept(false);
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client
@@ -552,7 +552,7 @@ async fn relay_forwards_direct_when_not_intercepting() {
 
     // Flip interception back on: the same request rewrites to the gateway
     // again, Gate credential injected.
-    engine.set_relay_intercept(true);
+    engine.set_intercept(true);
     let resp = client
         .post(format!(
             "http://127.0.0.1:{}/v1/messages",

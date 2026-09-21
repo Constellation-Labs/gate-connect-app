@@ -1026,12 +1026,12 @@ export function NewUiApp() {
   useEffect(() => {
     const sweep = () => {
       pendingQuitTools()
-        .then((tools) => {
+        .then((pending) => {
           // Only ever opens the chooser: a sweep landing mid-flow must not
           // throw the user back to step one of a quit they are already past.
-          if (tools && tools.length > 0)
+          if (pending && pending.tools.length > 0)
             setQuit((q) =>
-              q ?? { kind: "choose", tools, choice: "disconnect" },
+              q ?? { kind: "choose", tools: pending.tools, choice: "disconnect" },
             );
         })
         .catch(() => {});

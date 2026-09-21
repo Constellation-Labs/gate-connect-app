@@ -53,7 +53,7 @@ pub(crate) fn persisted_port() -> Option<u16> {
 /// port" from "something else got there first". A local process running as the
 /// owner can read it, which is the same-user boundary this subsystem already
 /// accepts; a *different* local user cannot, which is the case that matters.
-fn load_or_create_token() -> Result<String> {
+pub(super) fn load_or_create_token() -> Result<String> {
     let path = token_path()?;
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let existing = existing.trim().to_string();
@@ -94,60 +94,7 @@ fn load_or_create_token() -> Result<String> {
 /// request on loopback, and a client here would have to be told `.no_proxy()`
 /// anyway, because the app may have just pointed `HTTPS_PROXY` at this port.
 fn health_ok(port: u16, token: &str) -> bool {
-    use rand::Rng;
-    use std::io::{Read, Write};
-
-    let challenge: String = {
-        let mut rng = rand::thread_rng();
-        (0..16)
-            .map(|_| format!("{:02x}", rng.gen::<u8>()))
-            .collect()
-    };
-    let expected = gate_connect_paths::forwarder_proof(token, &challenge);
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250))
-    else {
-        return false;
-    };
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = sock.set_write_timeout(Some(Duration::from_millis(500)));
-    let req = format!(
-        "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nConnection: close\r\n\r\n",
-        gate_connect_paths::FORWARDER_HEALTH_PATH,
-        gate_connect_paths::FORWARDER_CHALLENGE_HEADER,
-        challenge
-    );
-    if sock.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    // Bounded: a listener that answers slowly forever must not hold up an
-    // enable, and the proof is 64 hex characters in a short head.
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 512];
-    while buf.len() < 4096 {
-        match sock.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
-        }
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-    }
-    let Ok(text) = std::str::from_utf8(&buf) else {
-        return false;
-    };
-    text.lines()
-        .filter_map(|line| line.split_once(':'))
-        .any(|(name, value)| {
-            name.trim()
-                .eq_ignore_ascii_case(gate_connect_paths::FORWARDER_PROOF_HEADER)
-                && gate_connect_paths::constant_time_eq(
-                    value.trim().as_bytes(),
-                    expected.as_bytes(),
-                )
-        })
+    gate_connect_paths::proves_ours(port, gate_connect_paths::FORWARDER_HEALTH_PATH, token)
 }
 
 /// Where the sidecar lives: beside the executable asking for it.
@@ -374,6 +321,24 @@ pub(crate) fn ensure_running() -> Result<u16> {
         if health_ok(port, &token) {
             return Ok(port);
         }
+    }
+
+    // Never start one from a test run. `GATE_CONNECT_TEST_HOME` is the seam
+    // that makes every per-user path hermetic, and `audit::` already reads it
+    // as "this is a test, do not reach outside the sandbox"; a forwarder is
+    // the strongest reason yet to do the same, because it is a detached
+    // process that deliberately outlives the run that started it. On Windows
+    // it stays inside the CI runner's job object, so the step waits for a
+    // process built never to exit: a `cargo test` that normally takes three
+    // minutes ran for an hour before this guard existed. Reusing a forwarder
+    // that is genuinely up is checked above and still allowed - this refuses
+    // only to create one - and the callers' fallback is the engine's own port,
+    // which is what they did before there was a forwarder at all.
+    if crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some_and(|v| !v.is_empty()) {
+        anyhow::bail!(
+            "refusing to spawn the environment forwarder under GATE_CONNECT_TEST_HOME; \
+             callers fall back to the engine's own port"
+        );
     }
 
     // macOS: let launchd own the socket if it will. Verified rather than

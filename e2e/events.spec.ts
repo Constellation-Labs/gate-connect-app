@@ -11,10 +11,18 @@ test.describe("backend events", () => {
   }) => {
     // Buffered by the tray before the listener existed: App sweeps once at
     // mount, so a Quit clicked before the webview was ready isn't lost.
-    const app = await boot({ pendingQuitTools: ["Claude Code", "Codex"] });
+    const app = await boot({
+      pendingQuitTools: { tools: ["Claude Code", "Codex"], reverting: ["Codex"] },
+    });
 
     await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
     await expect(app.page.getByText(/Claude Code and Codex still route/)).toBeVisible();
+    // The plain quit does two different things to these two, and the dialog
+    // has to say which by name: the backend decided Codex's address dies with
+    // the app, Claude Code's does not.
+    await expect(
+      app.page.getByText(/Codex goes back to its own settings .* Claude Code keeps working/),
+    ).toBeVisible();
 
     await app.page.getByRole("button", { name: "Disconnect tools and quit" }).click();
 
@@ -30,7 +38,7 @@ test.describe("backend events", () => {
     const app = await boot();
     await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
 
-    await app.patch({ pendingQuitTools: ["Claude Code"] });
+    await app.patch({ pendingQuitTools: { tools: ["Claude Code"], reverting: [] } });
     await app.emit("quit-requested");
 
     await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
@@ -43,7 +51,7 @@ test.describe("backend events", () => {
 
   test("a failed disconnect keeps the takeover up instead of quitting", async ({ boot }) => {
     const app = await boot({
-      pendingQuitTools: ["Claude Code"],
+      pendingQuitTools: { tools: ["Claude Code"], reverting: [] },
       failures: { disconnect_tools_for_quit: "failed to restore ~/.codex/config.toml" },
     });
 

@@ -13,6 +13,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod common;
+
+use common::RelayStub;
 use gate_connect_core::proxy::config;
 use gate_connect_core::registry::{find, Status, ToolId};
 use gate_connect_core::{account, env, provider};
@@ -76,14 +79,16 @@ fn sign_in() {
 /// and bind the forward-proxy port for real. Claude Code uses that port so its
 /// Anthropic base URL stays canonical; the relay port remains seeded because
 /// provider reconciliation uses it as its general liveness prerequisite.///
-/// The listener is returned rather than dropped because the seeded files are
+/// The stub is returned rather than dropped because the seeded files are
 /// only half of what a live proxy looks like: `engine_proxy_url()` probes the
 /// port before handing it out, so a caller that lets this fall out of scope is
-/// describing a crashed engine, not a running one. Bound on an ephemeral port
-/// so concurrent test binaries cannot collide.
-fn bind_proxy_ports() -> std::net::TcpListener {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+/// describing a crashed engine, not a running one. A stub rather than a bare
+/// bind because `relay_listening()` asks the listener to prove it can read the
+/// 0600 token. Bound on an ephemeral port so concurrent test binaries cannot
+/// collide.
+fn bind_proxy_ports() -> RelayStub {
+    let listener = RelayStub::bind(0);
+    let port = listener.port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
@@ -136,10 +141,7 @@ fn tool_installed_after_enable_is_configured() {
     )
     .unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
-    let expected_proxy = format!(
-        "http://gate-claude-code:route@127.0.0.1:{}",
-        proxy.local_addr().unwrap().port()
-    );
+    let expected_proxy = format!("http://gate-claude-code:route@127.0.0.1:{}", proxy.port());
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
         Some(expected_proxy.as_str())
@@ -366,10 +368,7 @@ fn stale_managed_config_is_reapplied() {
     let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
     let settings: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
-    let expected_proxy = format!(
-        "http://gate-claude-code:route@127.0.0.1:{}",
-        proxy.local_addr().unwrap().port()
-    );
+    let expected_proxy = format!("http://gate-claude-code:route@127.0.0.1:{}", proxy.port());
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
         Some(expected_proxy.as_str())
@@ -444,7 +443,7 @@ fn codex_stale_managed_config_is_reapplied() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_codex_with_stale_managed_config(port);
     assert!(matches!(codex_status(), Status::Drifted(_)));
     assert!(find(ToolId::Codex).unwrap().config_is_managed().unwrap());
@@ -473,7 +472,7 @@ fn codex_hand_edited_off_gate_is_not_silently_reverted() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_codex_with_stale_managed_config(port);
     let hand_edited =
         codex_config().replace(r#"model_provider = "gate""#, r#"model_provider = "openai""#);
@@ -497,7 +496,7 @@ fn codex_repointed_base_url_is_not_silently_reverted() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_codex_with_stale_managed_config(port);
     let repointed = codex_config().replace(
         &format!("http://127.0.0.1:{port}/openai/v1"),
@@ -524,7 +523,7 @@ fn codex_disconnected_is_not_reconnected_by_the_drift_half() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_codex_with_stale_managed_config(port);
     find(ToolId::Codex).unwrap().disconnect().unwrap();
     let after_disconnect = codex_config();
@@ -606,7 +605,7 @@ fn opencode_stale_managed_config_is_reapplied() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_opencode_with_stale_managed_config(port);
     assert!(matches!(
         find(ToolId::OpenCode).unwrap().status().unwrap(),
@@ -632,7 +631,7 @@ fn opencode_leaves_a_users_own_local_endpoint_alone() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     let dir = env::opencode_config_dir().unwrap();
     fs::create_dir_all(&dir).unwrap();
     let own = r#"{
@@ -679,7 +678,7 @@ fn codex_repointed_at_a_local_server_is_not_silently_reverted() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_codex_with_stale_managed_config(port);
     let repointed = codex_config().replace(
         &format!("http://127.0.0.1:{port}/openai/v1"),
@@ -706,7 +705,7 @@ fn opencode_repointed_at_a_local_server_is_not_silently_reverted() {
     let _env = TestEnv::set();
     sign_in();
     let proxy = bind_proxy_ports();
-    let port = proxy.local_addr().unwrap().port();
+    let port = proxy.port();
     install_opencode_with_stale_managed_config(port);
     let raw = opencode_config();
     let repointed = raw.replace(

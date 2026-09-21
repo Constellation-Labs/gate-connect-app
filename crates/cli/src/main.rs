@@ -505,7 +505,10 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
         upstream_url,
         billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
-        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
+        // `tool_proxy_url`, not the engine's own address: a config written here
+        // has to name what the GUI writes, or the two disagree about the same
+        // install and a plain quit reverts whatever this wrote.
+        engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());

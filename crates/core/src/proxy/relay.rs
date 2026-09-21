@@ -207,7 +207,7 @@ struct RelayState {
     domains: Vec<ProxyDomain>,
     /// Whether inference rewrites to the gateway at all. When false (the Linux
     /// daemon with no GUI connected - see
-    /// [`RunningEngine::set_relay_intercept`](super::engine::RunningEngine::set_relay_intercept)),
+    /// [`RunningEngine::set_intercept`](super::engine::RunningEngine::set_intercept)),
     /// every request forwards to the real upstream under the tool's own
     /// credential: the relay's analogue of the MITM port's blind tunnel.
     intercept: watch::Receiver<bool>,
@@ -472,6 +472,52 @@ async fn proxy(
     req: Request<Incoming>,
     state: &RelayState,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, (StatusCode, String)> {
+    // Prove we are Gate's relay, before anything else looks at this request.
+    //
+    // A bare TCP connect cannot tell this listener from any other process that
+    // happens to accept on the port, and a status check that cannot tell them
+    // apart reports a stranger as a healthy relay. Only a process that can read
+    // the 0600 token can answer, so this identifies without authorising: it
+    // reaches no credential, resolves no route and returns no traffic. Placed
+    // above the loopback guards deliberately - it is cheaper than they are and
+    // a prober that cannot get an answer has no way to tell a squatted port
+    // from a refused one.
+    if req.method() == hyper::Method::GET
+        && req.uri().path() == gate_connect_paths::RELAY_HEALTH_PATH
+    {
+        let challenge = req
+            .headers()
+            .get(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        // Minted here when this install has none: the prober creates it too, so
+        // whichever runs first wins and the other reads what it wrote. A
+        // failure to read it is answered as "not ours", which is the safe
+        // direction - a relay that cannot prove itself must not be trusted.
+        let proof = super::forwarder::load_or_create_token()
+            .ok()
+            .map(|token| gate_connect_paths::forwarder_proof(&token, &challenge));
+        let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
+        if let Some(proof) = proof {
+            builder = builder.header(gate_connect_paths::FORWARDER_PROOF_HEADER, proof);
+        }
+        // What this relay is actually doing, which is the thing a status check
+        // wants and could not otherwise learn: parked and routing look
+        // identical from outside, so the tools were reading the user's stored
+        // intent instead - a preference standing in for a measurement.
+        builder = builder.header(
+            gate_connect_paths::RELAY_INTERCEPTING_HEADER,
+            if *state.intercept.borrow() { "1" } else { "0" },
+        );
+        return Ok(builder
+            .body(
+                Full::new(Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .expect("building relay health response"));
+    }
     // Browser boundary, before anything is resolved or injected: the relay is
     // a plain-HTTP loopback responder, so a web page can drive it with no
     // local foothold - a "simple" cross-origin fetch to

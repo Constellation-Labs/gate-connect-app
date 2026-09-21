@@ -137,6 +137,84 @@ so `exported_proxy_identity_url` - not `persisted_engine_proxy_url` - is what a
 drift check must compare against. Comparing against the engine's would report
 every correctly-exported machine as drifted, permanently.
 
+### Disable parks the engine, it does not stop it
+
+The forwarder above answers the same premise for the *exported variables*: a
+process already running keeps whatever address it inherited, so that address
+has to keep answering. A **tool config** outlives its writer the same way, so
+the three proxy integrations name the forwarder too - Claude Code's
+`settings.json`, OpenClaw's `proxy.proxyUrl` and Hermes's `.env` all take
+`proxy::tool_proxy_url`, which is the forwarder's address with the engine's as
+the fallback when one will not start. Two addresses are therefore ours at once,
+and `proxy::tool_proxy_identity_urls` is what a status check compares against:
+an install written before that change holds the engine's, and it routes, so
+calling it drift would draw a repair over a working file.
+
+What no forwarder fronts is the **relay** port, which every `base_url` names -
+Codex and OpenCode. That one is the park's alone.
+
+### The routing toggle keeps tool configs; disconnect reverts them
+
+Master-off used to revert every tool's configuration on its way out, on the
+reasoning in `routing::disable`'s own doc: a config naming "the relay we are
+about to kill" would strand the tool while the UI reported "not routing". The
+park is what retired that reason, and `provider::ToolConfigs` is the split it
+left behind.
+
+`snapshot_and_park_everything` is the routing switch: snapshot the enabled
+providers, turn the domains off, leave every tool config alone. The addresses
+those configs hold still answer, and they forward direct, so the tool reaches
+its own provider exactly as it would with Gate not installed. Reverting them
+moves no traffic and costs a restart of every running tool, because a tool
+reads its configuration once and the file's mtime is what says it missed a
+change.
+
+`snapshot_and_disable_everything` is the full sweep, and the quit-and-disconnect
+choice still runs it. Signing out and Reset are on the same side of that line,
+which is where `forwarder::stop` already sat.
+
+Keeping the configs makes the switch **live**: a `codex` running before the
+toggle passes through while parked and routes again when the engine unparks,
+without being restarted at either edge. Reverting was what broke that, by
+handing the next-started process a different answer from the one the running
+process holds.
+
+Three consequences are handled rather than discovered:
+
+- **Drift is the steady state while parked** for the three proxy tools, since
+ their `status` asks whether the engine is *routing*. So the reconcile passes
+ ask `Integration::requires_engine` before re-asserting a drifted config;
+ otherwise they would call a `connect` that refuses by design, on every
+ startup and every window focus.
+- **"Dead address" became false.** All three said the configured address was
+ dead for every not-routing state, which was true when the ports went away.
+ `proxy::loopback_proxy_answers` is the measurement that separates a parked
+ listener from a released one, and the message now says which it is.
+- **A bare TCP probe reads a parked relay as routing.** `relay_listening` is
+ that probe, so Codex would have reported Connected with routing off - a green
+ pill over traffic going direct, which is the one thing its status exists to
+ prevent. It asks the routing intent as well now. The known inaccuracy is the
+ headless `proxy relay` host, which always intercepts and writes no intent
+ file.
+
+So the routing toggle **parks** the engine: the ports stay bound and
+`set_intercept(false)` drops both listeners to plain forwarding, which is the
+path those tools would have taken with Gate not installed. Linux has always
+done this (`helper::set_passthrough`); the desktop managers now do too.
+
+`set_intercept` is what parks, **not** clearing the domain set. `route_rules`
+force-enables Claude Code's entry precisely when the live set does not claim
+the host, so an empty set makes the selector path fire rather than stop: an
+engine parked by clearing domains alone would go on decrypting and billing a
+`claude` session started before the toggle.
+
+Four paths still release the ports, because a parked listener would be wrong
+there rather than idle: app exit, a gateway switch, a re-enable (which rebinds
+the same port), and untrusting the CA. App exit is the residual - the listeners
+live in the GUI process on macOS and Windows, so quitting still strands
+already-running tools. Closing that needs a listener that outlives the GUI,
+which is what the Linux daemon already is.
+
 ## 3. Per-tool status
 
 | Tool                                | Mechanism                         | What Gate writes                                                                             | In UI  |
@@ -296,14 +374,69 @@ proxy harnesses compute this explicitly. The UI needs a state for "configured
 but not routing" that reads as a problem, and the copy should offer the way
 out (turn routing on, or disconnect).
 
-**Relaunch is required and currently unsaid.** Environment variables only reach
-processes started *after* the change - on every platform, and nothing can fix
-that. A user who turns routing on with OpenCode already open will see no effect
-and no explanation. This is the single most likely support question, and it is
-worth a line in the UI at the moment routing is enabled.
+**Relaunch is required and currently unsaid - but the unit is per tool, and
+for Codex it is not the process.** This paragraph used to say relaunch was
+required, flatly, on every platform. That is right for the environment channel
+and wrong for at least one config tool, and the difference decides what the UI
+is allowed to say.
 
-**The restart hint is invisible.** OpenClaw and Hermes emit it via `eprintln!`,
-which goes nowhere in a GUI build.
+Environment variables only reach processes started *after* the change, on every
+platform, and nothing can fix that: a user who turns routing on with OpenCode
+already open sees no effect and no explanation.
+
+Codex is the measured exception, and it is a conversation rather than a
+process. Measured 2026-09-18 on codex-cli 0.146.0-alpha.3.1, driving
+`codex app-server` against two loopback listeners and watching which one a turn
+reached:
+
+| | picks up an edited `config.toml`? |
+| --- | --- |
+| a new thread in a running process | yes, immediately, no restart |
+| a thread already open | no, it keeps the address it started with |
+| that thread resumed after a restart | yes, it re-resolves |
+
+So a routing change reaches every conversation started after it with no restart
+at all, and no conversation already open, however often the process is
+restarted, unless the user resumes it. Telling a Codex user to reopen the tool
+is advice that does nothing for either half. `integrations::codex` carries the
+measurement and emits the copy: **"New conversations will go through Gate."**
+
+The other config tools were put through the same probe on 2026-09-18, and the
+answer is per tool:
+
+| tool | version | granularity | how |
+| --- | --- | --- | --- |
+| Codex | 0.146.0-alpha.3.1 | **per conversation** | measured |
+| Claude Code | 2.1.276 | per process | measured |
+| OpenCode | 1.18.27 | per process | measured |
+| OpenClaw | 2026.6.11 | per gateway process | vendor-stated, not measured |
+| Hermes | - | per process | measured |
+
+Claude Code and OpenCode behave the way this document always assumed, and
+Claude Code's reason is structural: its `env` block becomes process environment
+variables, which cannot change under a running process. OpenCode was measured
+through a headless `opencode serve` with its provider `baseURL` repointed
+underneath it; a second message on the same session still went to the original
+address.
+
+OpenClaw is the one to be careful with. `openclaw config set proxy.proxyUrl ...`
+answers "Restart the gateway to apply", and a running gateway logged nothing
+about a change made underneath it, but the probe could not be completed: a
+gateway on a fresh profile makes no outbound request at all, and every way to
+force one needs a provider credential. Uncontradicted is not the same as
+measured, and the module doc says so too.
+
+Hermes was measured once a working install was available: a `hermes chat`
+session against a fake proxy named by `HTTPS_PROXY`, repointed mid-session.
+Nine fresh requests followed the repoint and every one still went to the old
+proxy, so it is per process like the others, which its `connect` note already
+said.
+
+So Codex remains the only tool where "restart it" is the wrong thing to say,
+and it is the one whose module doc asserted the opposite hardest.
+
+**The restart hint is invisible.** OpenClaw, Hermes and now Codex emit it via
+`eprintln!`, which goes nowhere in a GUI build.
 
 **Degraded routing is silent.** The env export is deliberately best-effort: if
 `launchctl` or the registry write fails, routing still succeeds for GUI apps
@@ -404,6 +537,79 @@ refuse rather than point a tool's whole egress at a dead port. `classifyError`
 has a branch for it so the message names the remedy instead of suggesting a
 retry, but there is no pre-emptive guard: the row is clickable and the error is
 how the user learns. Worth revisiting if it reads badly in practice.
+
+### Who does what, per event
+
+The two tables below are the answer to "does the user have to restart anything",
+per tool and per event, on the tree that parks the engine and keeps tool configs
+across a routing toggle. They are what the UI is allowed to claim. Written
+2026-09-18, off the measurements in section 7 and the code paths named in the
+first table.
+
+**What Gate does:**
+
+| event | Gate |
+| --- | --- |
+| **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder (including when the machine-wide export is declined, since tool configs may name it). Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it. |
+| **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
+| **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
+| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
+| **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
+
+**What the user does:**
+
+| tool | start | routing off | routing on | any exit | disconnect and quit |
+| --- | --- | --- | --- | --- | --- |
+| **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
+| **Codex** | nothing; a conversation opened while Gate was closed keeps its direct route until resumed | nothing | nothing, open conversations route again | nothing; new conversations go direct, open ones need resuming | resume open conversations |
+| **OpenCode** | restart an OpenCode opened while Gate was closed | nothing | nothing | nothing for a new OpenCode; a running one needs a restart | restart |
+| **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
+| **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
+| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
+
+Starting Gate *after* a disconnect-and-quit is the start that costs the most:
+`restore_all` rewrites every config, so the last column applies again in
+reverse. A start after a plain quit rewrites only the two relay configs, which
+is why the Codex and OpenCode start cells are not "nothing".
+
+Three things to read off this:
+
+- **The routing columns are empty but for one cell.** A shell opened while
+ routing was off never received the variables, and turning routing back on
+ cannot reach it. That is inherent to environment variables and holds on every
+ platform; a shell that was already open keeps the forwarder address the whole
+ way through and needs nothing.
+- **Every exit reverts by one rule: does the address die with the process.**
+ Every exit, not only the one that goes through the panel: `quit_app` is
+ reached by the tray's Quit and the crash screen's and by nothing else, while
+ Cmd+Q comes from Tauri's default menu and a logout comes from the OS. Both
+ land in `RunEvent::Exit` having touched none of our own code, so the revert
+ runs there too. It deliberately does not *veto* the exit - `ExitRequested`
+ can be prevented, but the same event carries a logout, and an app that puts a
+ dialog in front of a logout is an app that hangs it. Cmd+Q therefore means
+ "quit without disconnecting", the safe half of the panel.
+ Decided per *configured address*, not per tool, because which address a
+ config holds is per install: Codex and OpenCode name the relay origin, and a
+ Claude Code, OpenClaw or Hermes install written before the forwarder repoint
+ (or whose forwarder would not start) still names the engine's own port. All
+ of those live in the GUI process on macOS and Windows, go back to their own
+ settings on the way out, and come back at the next start. A config naming
+ the forwarder keeps working, because that process is left running on
+ purpose; one the user repointed by hand names nothing of ours and is not
+ touched. Before this rule the stranded ones were simply broken until Gate
+ ran again, with an error naming a loopback port, which reads as the tool
+ being broken rather than Gate being off. The quit dialog names which tools
+ will be put back and which keep working, from the same predicate, and a
+ notification repeats what was rewritten.
+- **Disconnect and quit is deliberately the harsh column.** Stopping the
+ forwarder is what makes it "Gate is out of the path", and it means a process
+ that inherited the forwarder address fails closed rather than falling back.
+ That is the existing design, now visible as the only column with real work.
+
+Confidence: the two routing columns rest on the park keeping its ports and on
+the master-cycle mtime test, verified separately, not on a live toggle with a
+tool open. The OpenClaw row is vendor-stated rather than measured. Everything
+else is measured or read directly off the code path named.
 
 ## 7. Open items
 

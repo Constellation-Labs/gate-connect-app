@@ -727,7 +727,16 @@ export const revealMainWindow = () => invoke<void>("reveal_popover");
  * to show in the quit takeover, or null when no quit is pending. Swept once
  * at mount and again on each `quit-requested` nudge, so a Quit clicked
  * before the listener registered isn't lost. */
-export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tools");
+/** What a pending quit would do. `tools` still route through Gate; `reverting`
+ * is the subset whose config names an address that dies with the app and will
+ * be put back on its own settings on the way out - the rest keep working
+ * without Gate through an address that outlives it. Same predicate as the
+ * quit itself, so the dialog names exactly what gets rewritten. */
+export interface PendingQuit {
+  tools: string[];
+  reverting: string[];
+}
+export const pendingQuitTools = () => invoke<PendingQuit | null>("pending_quit_tools");
 
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent

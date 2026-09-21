@@ -102,11 +102,22 @@ pub fn service() -> String {
 /// Cognito token is the credential, so a missing key is expected and loads as
 /// an empty string . Missing what's required returns None.
 pub fn load() -> Result<Option<Account>> {
-    let Some(file) = read_account_file()? else {
+    let Some((file, raw)) = read_account_file_raw()? else {
         return Ok(None);
     };
     let user = env::current_user()?;
-    let stored_key = keychain::get(&service(), &user)?;
+    // Witnessed by `account.json` rather than read outright: on Linux the
+    // proxy manager calls this every 30 seconds to re-push the intercept
+    // config, and a plain read there costs the secret-store daemon ~8 KB a
+    // time, permanently. `save` writes the file and the key in one breath, so
+    // in practice an unchanged file means an unchanged key - including a key
+    // written by the CLI while the app is running, which is the case a bare
+    // cache would miss. Not a proof: the file records only the key's first 12
+    // characters, so a rotation that collides on those and changes nothing
+    // else would go unseen until the next in-process write. Pick a stronger
+    // witness if you reuse this pattern on a value whose file records less.
+    // See `keychain::get_cached`.
+    let stored_key = keychain::get_cached(&service(), &user, &raw)?;
     let api_key = match (file.auth_mode, stored_key) {
         (_, Some(key)) => key,
         (AuthMode::OAuth, None) => String::new(),
@@ -157,7 +168,25 @@ pub fn gateway_is_staging() -> bool {
 /// Read and parse `account.json`, or `None` when no account is on disk. The
 /// on-disk half of the account (gateway URL + key prefix) that both the UI
 /// state helpers and [`save`] read without touching the keychain.
+/// The bytes of `account.json`, or `""` when there is no account file, for use
+/// as a [`keychain::get_cached`] witness. Login rewrites this file (URL, then
+/// auth mode, then org) and sign-out removes it, so it moves on exactly the
+/// transitions a cached credential must not outlive - including ones made by
+/// the CLI in another process. A token refresh does not touch it, which is the
+/// case [`crate::oauth::current`] documents as safe to miss.
+pub(crate) fn file_witness() -> Result<String> {
+    Ok(read_account_file_raw()?
+        .map(|(_, raw)| raw)
+        .unwrap_or_default())
+}
+
 fn read_account_file() -> Result<Option<AccountFile>> {
+    Ok(read_account_file_raw()?.map(|(parsed, _)| parsed))
+}
+
+/// [`read_account_file`], also handing back the bytes it parsed, for use as a
+/// keychain-read witness (see [`file_witness`] and [`keychain::get_cached`]).
+fn read_account_file_raw() -> Result<Option<(AccountFile, String)>> {
     let path = config_path()?;
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -166,7 +195,7 @@ fn read_account_file() -> Result<Option<AccountFile>> {
     };
     let parsed: AccountFile = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    Ok(Some(parsed))
+    Ok(Some((parsed, raw)))
 }
 
 /// Is this a gateway URL we accept?

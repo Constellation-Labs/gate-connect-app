@@ -290,3 +290,157 @@ fn a_restore_that_could_not_run_yet_keeps_its_snapshot() {
          turns on the members the user had switched off"
     );
 }
+
+/// The whole point of the routing toggle keeping tool configs: a full off/on
+/// cycle must not touch the file, so nothing tells a running `claude` that it
+/// missed a change and has to be reopened.
+///
+/// Asserted on the mtime, not on the bytes, because the mtime is what carries
+/// the claim. A tool reads its configuration once at startup, so a later reader
+/// compares that timestamp against the process's start time to decide whether
+/// the process is still on the route it loaded. Identical bytes with a newer
+/// timestamp is indistinguishable from a real change, and that is what a
+/// reopen prompt for nothing is made of.
+///
+/// Two halves have to hold for this to pass. `snapshot_and_park_everything`
+/// must not revert the config, and `restore_all`'s re-connect must not rewrite
+/// bytes that are already right (`primitives::write_file` declines to).
+#[test]
+fn a_master_cycle_does_not_touch_a_tools_config_file() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+
+    provider::enable("anthropic").unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+
+    let settings = env::claude_code_settings_path().unwrap();
+    let before = fs::read_to_string(&settings).expect("settings.json after connect");
+    assert!(
+        before.contains("HTTPS_PROXY"),
+        "premise: connect must have written the proxy, got {before}"
+    );
+    // Backdate so a same-second rewrite cannot pass by accident, then read the
+    // stored value back - the setter's precision is not the filesystem's.
+    let stamp = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    set_mtime(&settings, stamp);
+    let mtime_before = fs::metadata(&settings).unwrap().modified().unwrap();
+
+    provider::snapshot_and_park_everything().unwrap();
+    provider::restore_all().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        before,
+        "a master cycle must leave the config byte-identical"
+    );
+    assert_eq!(
+        fs::metadata(&settings).unwrap().modified().unwrap(),
+        mtime_before,
+        "a master cycle must not move the config's mtime, or every running tool \
+         is told to reopen for nothing"
+    );
+}
+
+/// Set a file's mtime without taking a dependency for it.
+#[cfg(unix)]
+fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
+    let secs = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let tv = libc::timeval {
+        tv_sec: secs,
+        tv_usec: 0,
+    };
+    let times = [tv, tv];
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: both pointers are valid for the duration of the call.
+    assert_eq!(
+        unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) },
+        0,
+        "utimes failed"
+    );
+}
+
+#[cfg(not(unix))]
+fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+}
+
+/// The other half of plain quit, for a forward-proxy tool: the rule follows the
+/// **configured address**, not the tool. Claude Code's `settings.json` is the
+/// case; the relay half is `plain_quit_reverts_a_relay_tool_and_records_it` in
+/// `master_off_sweeps_harnesses.rs`, which has the OpenCode fixture.
+///
+/// What `connect` writes here depends on where this runs, so the test asks the
+/// same predicate the quit does and checks the file did exactly what that
+/// answer says, rather than asserting one platform's outcome. On Linux the
+/// exported identity is the engine's own, so the address reads as surviving
+/// (the truth of a daemon that outlives the GUI) and nothing is touched. On a
+/// macOS runner no forwarder runs under test, so `connect` falls back to the
+/// engine's port, which dies with the GUI - and the config is put back and
+/// recorded. That second branch is the one a per-tool constant got wrong, and
+/// it is why the first version of this test failed on macOS while passing here.
+#[test]
+fn plain_quit_follows_the_address_rule_for_claude_code() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let _proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+    provider::enable("anthropic").unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+    let settings = env::claude_code_settings_path().unwrap();
+    let before = fs::read_to_string(&settings).unwrap();
+    let https_proxy = serde_json::from_str::<serde_json::Value>(&before).unwrap()["env"]
+        ["HTTPS_PROXY"]
+        .as_str()
+        .expect("connect wrote a proxy address")
+        .to_owned();
+    let dies = gate_connect_core::proxy::address_dies_with_gui(&https_proxy);
+
+    let reverted = provider::revert_stranded_configs_for_quit().unwrap();
+
+    if dies {
+        assert_eq!(
+            reverted,
+            vec!["Claude Code".to_string()],
+            "an install naming the engine's own port dies with the GUI and is put back"
+        );
+        // Reverted means "not what connect wrote": `disconnect` removes a
+        // settings.json that Gate itself created, so absence counts, and the
+        // first version of this branch panicked on exactly that NotFound.
+        assert_ne!(
+            fs::read_to_string(&settings).ok(),
+            Some(before),
+            "the config must have been reverted"
+        );
+        let recorded = read_snapshot("restore-tools-snapshot.json").unwrap_or_default();
+        assert!(
+            recorded.iter().any(|s| s == "claude-code"),
+            "and recorded for the startup restore, got {recorded:?}"
+        );
+    } else {
+        assert!(
+            reverted.is_empty(),
+            "an install naming an address that outlives the GUI is left alone, got {reverted:?}"
+        );
+        assert_eq!(fs::read_to_string(&settings).unwrap(), before);
+        assert_eq!(claude_status(), Status::Connected);
+        // No file at all, not merely no entry: a no-op revert must not leave
+        // an empty snapshot behind for the next start to read as "nothing
+        // pending".
+        assert!(
+            read_snapshot("restore-tools-snapshot.json").is_none(),
+            "nothing was reverted, so no snapshot may be written"
+        );
+    }
+}

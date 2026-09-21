@@ -64,6 +64,8 @@ pub mod autostart_optout;
 // `system_proxy` modules wrap it with their platform rationale.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod port_persist;
+#[cfg(test)]
+pub(crate) mod test_relay;
 
 // Shared names/values for the proxy environment variables, which every
 // platform's `system_proxy` exports so CLI tools (Node/Bun/Python) route too.
@@ -1021,7 +1023,20 @@ pub fn engine_likely_running() -> bool {
 /// a second process adopts it rather than guessing (see `manager_linux`).
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn engine_hosted_elsewhere() -> Option<u16> {
-    if !engine_likely_running() {
+    // A relay that proves itself *and* reports interception is a Gate Connect
+    // that is routing. That is the question this answers, and it is narrower
+    // than "is another instance here": a parked one holds the same ports and
+    // routes nothing, so counting it would make `status` report running with
+    // routing off. `enable` asks the wider question separately, after it has
+    // released its own park, because until then the answer would be itself.
+    //
+    // This used to read the system-proxy snapshot plus a bare connect to the
+    // engine port. Both halves were weaker than they looked: the snapshot is a
+    // file whose presence outlives a crash, and a bare connect cannot tell our
+    // engine from anything else that happens to accept, so a stranger on the
+    // remembered port under a stale snapshot was reported as another Gate
+    // hosting the proxy. The relay is the part that can prove who it is.
+    if !relay_report().is_some_and(|r| r.intercepting) {
         return None;
     }
     let port = system_proxy::load_port().ok().flatten()?;
@@ -1086,6 +1101,106 @@ pub fn probe_relay_route() -> crate::routing_health::RouteHealth {
     }
 }
 
+/// How an address of ours is doing, as a status check needs to know it.
+///
+/// Three states rather than a `running: bool`, because since tool configs moved
+/// off the engine's own port ([`tool_proxy_url`]) "the engine is routing" and
+/// "the address this config names is answering" are questions about two
+/// different processes. Asking only the first is how a dead forwarder read as
+/// Connected over a tool that could not connect at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AddressHealth {
+    /// Answering, and Gate is routing through it. The only Connected state.
+    Routing,
+    /// Answering, but Gate is not routing: the engine is parked, so the
+    /// listener forwards straight through and the tool reaches its own
+    /// provider. Working, not routed.
+    Parked,
+    /// Nothing is listening. The tool cannot reach anything at all, which is
+    /// the state that must never read as Connected.
+    Dead,
+}
+
+/// [`AddressHealth`] for the address a tool's configuration actually names.
+///
+/// Probe first, then ask whether Gate is routing: a live address with the
+/// engine parked is Parked, and a dead one is Dead whatever the engine is
+/// doing. Callers pass the value in rather than letting the status rules probe,
+/// so those stay pure functions whose unit tests open no sockets.
+pub fn address_health(configured: &str) -> AddressHealth {
+    if !loopback_proxy_answers(configured) {
+        return AddressHealth::Dead;
+    }
+    if engine_proxy_url().is_some() {
+        AddressHealth::Routing
+    } else {
+        AddressHealth::Parked
+    }
+}
+
+/// Has a forwarder port ever been persisted on this install?
+///
+/// Which is to say: does anything on disk depend on the forwarder answering?
+/// True once either the machine-wide export or a tool config has been written
+/// with its address, and it stays true across a logout that takes the process
+/// itself down, because [`forwarder::stop`] retires the marker and not the
+/// port file.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn forwarder_port_persisted() -> bool {
+    forwarder::persisted_port().is_some()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn forwarder_port_persisted() -> bool {
+    false
+}
+
+/// The port of a `127.0.0.1` proxy address of ours, if that is what `url` is.
+///
+/// Userinfo is stripped before the host is read, which is not a nicety: Claude
+/// Code's address carries the route selector there
+/// (`http://gate-claude-code:route@127.0.0.1:<port>`), and a parser that only
+/// accepted a bare `http://127.0.0.1:` read every Claude Code install as
+/// unreachable. Only the loopback literal is recognised, because the caller is
+/// always comparing against an address this module wrote.
+fn loopback_port_of(url: &str) -> Option<u16> {
+    let authority = url.strip_prefix("http://")?.split('/').next()?;
+    // `rsplit` so a password containing '@' cannot hide the real host.
+    let host_port = authority.rsplit('@').next()?;
+    host_port.strip_prefix("127.0.0.1:")?.parse::<u16>().ok()
+}
+
+/// Is a loopback proxy address of ours still accepting connections?
+///
+/// The measurement that separates a **parked** listener from a **released**
+/// one, and it exists because the difference is what a status message says to
+/// the user. Routing off no longer takes the ports down: the engine parks with
+/// them bound and forwards straight through, so a tool whose config names one
+/// reaches its own provider exactly as it would with Gate not installed. The
+/// proxy integrations that use it (OpenClaw and Hermes; Codex keeps its own
+/// dead-address branch behind `relay_listening`) used to say "`<addr>` is a
+/// dead address" for every not-routing state, which was true when the only way
+/// to stop routing was to release the port and is now false for the ordinary
+/// case.
+///
+/// Only the port is read out of `url`, and only a `127.0.0.1` form is
+/// recognised, because the caller is always comparing against an address this
+/// module wrote. Anything else answers `false`, which routes the caller to the
+/// conservative message rather than to a claim.
+///
+/// A refused loopback connect returns immediately; the timeout only bounds
+/// pathological states, matching [`relay_listening`].
+pub fn loopback_proxy_answers(url: &str) -> bool {
+    let Some(port) = loopback_port_of(url) else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
 /// Whether something is accepting connections on the persisted relay port
 /// right now - the engine-hosted relay or a standalone `proxy relay` host,
 /// either counts (which is why this probes the port instead of reading
@@ -1097,13 +1212,42 @@ pub fn probe_relay_route() -> crate::routing_health::RouteHealth {
 /// port. A refused loopback connect returns immediately; the timeout only
 /// bounds pathological states.
 pub fn relay_listening() -> bool {
-    relay::load_persisted_port().is_some_and(|port| {
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            std::time::Duration::from_millis(300),
-        )
-        .is_ok()
-    })
+    relay_report().is_some()
+}
+
+/// What Gate's relay says about itself, or `None` when no relay of ours
+/// answers on the persisted port.
+///
+/// The proof is what makes this ours rather than whatever happens to accept;
+/// the rest is what it reports. `intercepting` is the measurement that replaced
+/// reading the routing intent: a stored preference is what the user asked for,
+/// and a status has to say what is happening. It also gets the headless
+/// `proxy relay` host right, which always intercepts and writes no intent file
+/// at all, so intent read it as not routing on a machine whose last explicit
+/// answer was "off".
+///
+/// An older relay that answers the proof without the header is read as
+/// intercepting: it predates parking, and every relay that could not park was
+/// routing whenever it was up.
+pub fn relay_report() -> Option<RelayReport> {
+    let port = relay::load_persisted_port()?;
+    let token = forwarder::load_or_create_token().ok()?;
+    let headers =
+        gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
+    let intercepting = headers
+        .iter()
+        .find(|(name, _)| name == gate_connect_paths::RELAY_INTERCEPTING_HEADER)
+        .map(|(_, value)| value != "0")
+        .unwrap_or(true);
+    Some(RelayReport { intercepting })
+}
+
+/// What [`relay_report`] learned from a relay that proved itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelayReport {
+    /// Rewriting to the gateway, rather than parked and forwarding straight
+    /// through to the tool's own provider.
+    pub intercepting: bool,
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
@@ -1432,6 +1576,147 @@ pub fn exported_proxy_identity_url() -> Option<String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn exported_proxy_identity_url() -> Option<String> {
     persisted_engine_proxy_url()
+}
+
+/// The proxy address a **tool's own configuration** should name, or `None`
+/// while the engine is not routing.
+///
+/// Two questions in one answer, and they used to be conflated because one
+/// function happened to serve both. *May we write at all* is still
+/// [`engine_proxy_url`]: OpenClaw and Hermes point their whole egress at this
+/// value, so writing it while nothing is up takes the tool's network down
+/// rather than merely un-routing it, and the `None` here is what makes their
+/// `connect` refuse. *What address do we write* is the part that changed.
+///
+/// It is the forwarder's, for the reason the machine-wide export already names
+/// it (see [`exported_proxy_identity_url`]): a config outlives the process that
+/// wrote it, and an address that stops answering fails **closed** for a tool
+/// that holds it. Claude Code's `settings.json`, OpenClaw's `proxy.proxyUrl`
+/// and Hermes's `.env` sat next to that export, under the same variable name,
+/// naming the engine's own port instead - so one of the pair was hardened and
+/// the other was not.
+///
+/// Falls back to the engine's port when the forwarder will not start, which is
+/// exactly what the export does and what shipped before there was a forwarder.
+/// Linux keeps the engine's address outright: its engine is a daemon that
+/// already outlives the GUI, which is why Linux never had this failure.
+///
+/// **Spawns**, via [`forwarder::ensure_running`]. That is why this is separate
+/// from [`tool_proxy_identity_urls`] rather than one function used by both:
+/// every caller here is about to write a config file, and no status read may
+/// start a process.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn tool_proxy_url() -> Option<String> {
+    let engine = engine_proxy_url()?;
+    match forwarder::ensure_running() {
+        Ok(port) => Some(format!("http://127.0.0.1:{port}")),
+        Err(e) => {
+            eprintln!(
+                "gate proxy: the environment forwarder would not start ({e:#}); pointing tool \
+                 configs at the engine instead, which stops answering when Gate does"
+            );
+            Some(engine)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn tool_proxy_url() -> Option<String> {
+    engine_proxy_url()
+}
+
+/// Every proxy address that is *ours*, preferred first, whether or not anything
+/// is up. What a status check compares a tool's configured value against.
+///
+/// A list rather than one value because two addresses are legitimately ours at
+/// the same time, and calling either one drift would be wrong in a different
+/// direction. The forwarder's is what [`tool_proxy_url`] writes now. The
+/// engine's is what every install written before that change holds, and what a
+/// machine whose forwarder will not start still gets - so treating it as drift
+/// would put a repair banner over a config that is correct, and a reconcile
+/// pass behind it rewriting a file that is already right.
+///
+/// The consequence, stated rather than hidden: an existing install is not
+/// migrated by being told it is broken. It moves to the forwarder's address the
+/// next time something writes its config - connecting the tool, reconnecting
+/// it, or a master-on restore - and until then it keeps the behaviour it
+/// already had.
+///
+/// Never spawns, unlike [`tool_proxy_url`]. Reads persisted ports only.
+pub fn tool_proxy_identity_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(url) = exported_proxy_identity_url() {
+        urls.push(url);
+    }
+    if let Some(url) = persisted_engine_proxy_url() {
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
+/// Does `configured` name a loopback listener hosted **inside the engine's
+/// process**, so that it stops answering when that process exits?
+///
+/// The question a plain quit asks of each address a tool's configuration
+/// names. Three addresses are ours, and they die differently:
+///
+/// - the **relay** origin (a base URL under it): hosted in the engine, and
+///   nothing fronts it - dies with the engine's process;
+/// - the **engine's own** proxy address, plain or with Claude Code's route
+///   selector in the userinfo: same process - dies. Configs still name it on
+///   an install written before tool configs moved to the forwarder, and on a
+///   machine where the forwarder would not start and `tool_proxy_url` fell
+///   back. Neither is drift ([`tool_proxy_identity_urls`] says why), but both
+///   die exactly as the relay does, which is the case a per-tool constant
+///   could not see;
+/// - the **forwarder's** address, plain or with the selector: a separate
+///   process, left running on purpose - survives.
+///
+/// Anything else is not ours: a base URL the user repointed by hand names a
+/// port nothing of ours is bound to, so nothing dies and nothing is rewritten.
+///
+/// This answers about the addresses. Whether the GUI *is* the engine's process
+/// is the caller's platform question - it is on macOS and Windows, and on Linux
+/// the engine is a daemon that outlives the GUI, so a quit strands nothing -
+/// and `quit_app` gates on exactly that. Keeping the platform out of here is
+/// what lets the rule be tested on any CI runner.
+pub fn address_dies_with_gui(configured: &str) -> bool {
+    address_dies_given(
+        configured,
+        relay_base_url().as_deref(),
+        persisted_engine_proxy_url().as_deref(),
+        exported_proxy_identity_url().as_deref(),
+    )
+}
+
+/// [`address_dies_with_gui`] with its three identities passed in, so the rule
+/// itself can be pinned by a unit test.
+pub fn address_dies_given(
+    configured: &str,
+    relay_origin: Option<&str>,
+    engine_url: Option<&str>,
+    forwarder_url: Option<&str>,
+) -> bool {
+    let is_or_selects = |ours: &str| {
+        configured == ours || claude_code_proxy_url(ours).is_ok_and(|c| c == configured)
+    };
+    // The survivor is checked first and wins. Where no forwarder has ever run
+    // it is simply absent; on Linux the exported identity is the engine's, so
+    // the engine's address reads as surviving there, which is the truth.
+    if forwarder_url.is_some_and(is_or_selects) {
+        return false;
+    }
+    // A base URL under the relay origin. `starts_with` alone would let port
+    // 4710 claim 47101, hence the slash.
+    if let Some(r) = relay_origin {
+        if configured == r || configured.starts_with(&format!("{r}/")) {
+            return true;
+        }
+    }
+    engine_url.is_some_and(is_or_selects)
 }
 
 /// The port the machine-wide variables should name, starting a forwarder if
@@ -4538,11 +4823,16 @@ mod tests {
         );
     }
 
-    /// The distinction `engine_hosted_elsewhere` exists to draw, and the one
-    /// that decides whether `enable` refuses: a snapshot on disk means Gate
-    /// turned routing on, not that anyone is still serving it. A crashed
-    /// session leaves the file behind, and refusing an enable on that basis
+    /// The distinction `engine_hosted_elsewhere` exists to draw: a file on disk
+    /// means Gate turned routing on, not that anyone is still serving it. A
+    /// crashed session leaves it behind, and refusing an enable on that basis
     /// would lock the user out of the command that fixes their machine.
+    ///
+    /// The signal is the relay now, not the snapshot, so the fixture is a relay
+    /// that proves itself rather than any listener that accepts - and the
+    /// question narrowed to "is it routing", because a parked instance holds
+    /// the same ports and routes nothing. `enable` asks the wider question
+    /// separately.
     ///
     /// macOS/Windows only, like the function - Linux adopts its daemon instead
     /// of probing. Verified on Linux while writing by widening both cfgs, so
@@ -4575,27 +4865,45 @@ mod tests {
         // Nothing on disk at all: nobody has ever routed.
         assert_eq!(engine_hosted_elsewhere(), None, "no snapshot, no engine");
 
-        // A live listener, and a snapshot recording that routing is on. This is
-        // the menubar-app-is-running case, and the only one that must refuse.
+        // A live engine port, and a relay that proves itself and reports it is
+        // routing. This is the menubar-app-is-running case, and the only one
+        // that must refuse.
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binding a probe listener");
         let port = listener.local_addr().expect("listener address").port();
         system_proxy::save_port(port).expect("persisting the port");
         system_proxy::save_snapshot(&system_proxy::snapshot().expect("reading the system proxy"))
             .expect("saving a snapshot");
+        let relay = test_relay::TestRelay::start(0);
+        relay.persist_port();
         assert_eq!(
             engine_hosted_elsewhere(),
             Some(port),
-            "a snapshot plus a live listener is another process hosting the engine"
+            "a routing relay plus a live engine port is another process hosting the engine"
         );
 
-        // Same snapshot, listener gone: the crashed-session case. Enable has to
-        // go through, so this must read as "nobody is hosting".
+        // The same instance, parked. It still holds the ports, so `enable`
+        // still has to refuse against it, but it is routing nothing and must
+        // not be reported as hosting the proxy.
+        relay.set_intercepting(false);
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            None,
+            "a parked instance routes nothing, so nothing is hosting the proxy"
+        );
+        relay.set_intercepting(true);
+
+        // Engine port gone, relay still routing: the crashed-session case.
+        // Enable has to go through, so this must read as "nobody is hosting".
         drop(listener);
         assert_eq!(
             engine_hosted_elsewhere(),
             None,
             "a snapshot left by a crash must not look like a live engine"
         );
+
+        // And a relay that cannot prove itself is not ours, however alive the
+        // engine port looks.
+        drop(relay);
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
@@ -5109,5 +5417,101 @@ mod tests {
         // attributable. Failing to record that would leave an unexplained hole
         // in the activity view.
         assert_eq!(h.get(GATE_CLIENT_HEADER).unwrap(), "claude-code");
+    }
+}
+
+#[cfg(test)]
+mod address_dies_tests {
+    use super::address_dies_given;
+
+    const RELAY: &str = "http://127.0.0.1:47101";
+    const ENGINE: &str = "http://127.0.0.1:47100";
+    const FWD: &str = "http://127.0.0.1:47150";
+
+    fn dies(configured: &str) -> bool {
+        address_dies_given(configured, Some(RELAY), Some(ENGINE), Some(FWD))
+    }
+
+    /// The two addresses hosted in the engine's process die; the forwarder's
+    /// does not; a stranger's does not.
+    #[test]
+    fn relay_and_engine_die_forwarder_and_strangers_do_not() {
+        assert!(dies("http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"));
+        assert!(dies(RELAY));
+        assert!(dies(ENGINE));
+        assert!(dies("http://gate-claude-code:route@127.0.0.1:47100"));
+        assert!(!dies(FWD));
+        assert!(!dies("http://gate-claude-code:route@127.0.0.1:47150"));
+        assert!(!dies("https://api.openai.com/v1"));
+        assert!(!dies("http://proxy.corp.example:3128"));
+    }
+
+    /// A port that is a prefix of ours is not ours.
+    #[test]
+    fn a_longer_port_is_not_under_the_relay_origin() {
+        assert!(!dies("http://127.0.0.1:471010/x"));
+    }
+
+    /// An install written before tool configs moved to the forwarder, or one
+    /// whose forwarder never started: the engine address is all there is, and
+    /// it dies. This is the case a per-tool constant got wrong.
+    #[test]
+    fn with_no_forwarder_the_engine_address_still_dies() {
+        assert!(address_dies_given(ENGINE, Some(RELAY), Some(ENGINE), None));
+        assert!(address_dies_given(
+            "http://gate-claude-code:route@127.0.0.1:47100",
+            Some(RELAY),
+            Some(ENGINE),
+            None
+        ));
+    }
+
+    /// Linux: the exported identity is the engine's own, so the engine address
+    /// reads as surviving, which matches a daemon that outlives the GUI.
+    #[test]
+    fn when_the_forwarder_identity_is_the_engine_the_engine_survives() {
+        assert!(!address_dies_given(
+            ENGINE,
+            Some(RELAY),
+            Some(ENGINE),
+            Some(ENGINE)
+        ));
+        assert!(address_dies_given(
+            RELAY,
+            Some(RELAY),
+            Some(ENGINE),
+            Some(ENGINE)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod loopback_port_tests {
+    use super::loopback_port_of;
+
+    /// The selector form is the one that matters: Claude Code's proxy address
+    /// carries `gate-claude-code:route@` as userinfo, and a parser that missed
+    /// it reported every Claude Code install as having nothing listening.
+    #[test]
+    fn reads_the_port_through_userinfo_and_paths() {
+        assert_eq!(loopback_port_of("http://127.0.0.1:47150"), Some(47150));
+        assert_eq!(
+            loopback_port_of("http://gate-claude-code:route@127.0.0.1:47150"),
+            Some(47150)
+        );
+        assert_eq!(
+            loopback_port_of("http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"),
+            Some(47101)
+        );
+    }
+
+    /// Anything that is not one of ours has no port to probe.
+    #[test]
+    fn rejects_addresses_that_are_not_ours() {
+        assert_eq!(loopback_port_of("https://api.openai.com/v1"), None);
+        assert_eq!(loopback_port_of("http://proxy.corp.example:3128"), None);
+        assert_eq!(loopback_port_of("http://localhost:47150"), None);
+        assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
+        assert_eq!(loopback_port_of(""), None);
     }
 }

@@ -130,10 +130,10 @@ pub struct RunningEngine {
     /// Captured chatgpt.com `cf_clearance` cookie for app turns; empty when
     /// none is held. See [`update_cf_clearance`](Self::update_cf_clearance).
     cf_clearance_tx: watch::Sender<Arc<str>>,
-    /// Whether the relay rewrites inference to the gateway (true) or forwards
-    /// everything straight to the real upstream (false). See
-    /// [`set_relay_intercept`](Self::set_relay_intercept).
-    relay_intercept_tx: watch::Sender<bool>,
+    /// Whether the engine routes through Gate (true) or forwards everything
+    /// untouched (false) with its ports still bound. See
+    /// [`set_intercept`](Self::set_intercept).
+    intercept_tx: watch::Sender<bool>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -212,16 +212,40 @@ impl RunningEngine {
         let _ = self.cf_clearance_tx.send(Arc::from(cf_clearance));
     }
 
-    /// Flip the relay between gateway interception (rewrite inference and
-    /// inject the Gate credential - the default) and direct forwarding (every
-    /// request goes to the tool's real upstream under its own credential, the
-    /// relay's analogue of the MITM port's blind tunnel). The Linux helper
-    /// daemon flips this alongside the domain set: with no GUI connected
-    /// there's nothing keeping the injected token fresh, so routing to Gate
-    /// would quietly decay into 401s - going direct keeps the tools working,
-    /// just not through Gate. Cheap - no restart.
-    pub fn set_relay_intercept(&self, intercept: bool) {
-        let _ = self.relay_intercept_tx.send(intercept);
+    /// Flip the whole engine between routing through Gate (the default) and
+    /// plain forwarding: the MITM port blind-tunnels every CONNECT instead of
+    /// decrypting, and the relay sends every request to the tool's real
+    /// upstream under its own credential. The ports stay bound either way.
+    ///
+    /// Two callers, for the same reason. The Linux helper daemon flips this
+    /// alongside the domain set: with no GUI connected there's nothing keeping
+    /// the injected token fresh, so routing to Gate would quietly decay into
+    /// 401s - going direct keeps the tools working, just not through Gate. The
+    /// desktop managers flip it when the user switches routing off, so tools
+    /// that still hold the exported `HTTPS_PROXY` keep reaching their provider.
+    ///
+    /// **Not the same as clearing the domain set**, which is why this exists:
+    /// [`route_rules`] force-enables Claude Code's entry exactly when the live
+    /// set does *not* claim the host, so an empty set makes the selector path
+    /// fire rather than stop. Clearing domains alone would leave a running
+    /// `claude` session decrypted and billed after the user switched off.
+    /// Cheap - no restart.
+    pub fn set_intercept(&self, intercept: bool) {
+        let _ = self.intercept_tx.send(intercept);
+    }
+
+    /// Drop the API key, OAuth token and org from the engine's watch channels.
+    ///
+    /// For a park. A parked engine injects nothing - the relay is forced to
+    /// passthrough and the MITM port claims no host - so the credential it
+    /// holds is not spendable, but it was still *resident* for as long as the
+    /// park lasted, which is now the rest of the session rather than until
+    /// disable. Clearing it costs nothing: a re-enable starts a fresh engine
+    /// from the current account rather than reviving this one.
+    pub fn clear_credentials(&self) {
+        let _ = self.key_tx.send(Arc::from(""));
+        let _ = self.token_tx.send(Arc::from(""));
+        let _ = self.org_tx.send(Arc::from(""));
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -231,7 +255,17 @@ impl RunningEngine {
             let _ = tx.send(());
         }
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // `on_unexpected_exit` runs on the engine's own thread, and the
+            // crash handler it reaches calls this. Joining that thread from
+            // inside itself is `EDEADLK`: `join` returns `Err` on some
+            // platforms and blocks forever on others, and either way the
+            // revert the handler exists to run never happens. Signalling is
+            // enough there - the thread is already on its way out, which is
+            // why the callback fired. Every other caller is on another thread
+            // and still waits, so the address is free before it rebinds.
+            if t.thread().id() != std::thread::current().id() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -489,6 +523,17 @@ struct GateHandler {
     /// Set from the explicit proxy selector on Claude Code's CONNECT request.
     /// The handler is cloned with this value for the decrypted inner requests.
     claude_code_route: bool,
+    /// Whether this engine routes through Gate at all. False once the engine is
+    /// parked: the ports stay bound so already-running tools still reach their
+    /// provider, but nothing is decrypted and no Gate credential is spent.
+    ///
+    /// Read here as well as by the relay, because an empty rule set is *not*
+    /// enough to stop intercepting. [`route_rules`] force-enables Claude Code's
+    /// own entry exactly when the live set does not claim the host, so clearing
+    /// the domains makes the selector path fire rather than stop - the parked
+    /// engine would go on decrypting and billing a `claude` session that was
+    /// started before the user switched routing off.
+    intercept: watch::Receiver<bool>,
     /// One-shot latch for the "Anthropic without the selector" line in
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
@@ -499,6 +544,23 @@ struct GateHandler {
 }
 
 impl GateHandler {
+    /// Whether this engine is routing through Gate. A parked engine answers
+    /// `false` and behaves like a plain proxy: blind-tunnel, no rewrite, no
+    /// credential.
+    fn intercepting(&self) -> bool {
+        *self.intercept.borrow()
+    }
+
+    /// The rule set this connection is actually decided against: none at all
+    /// while parked, otherwise [`route_rules`].
+    fn effective_rules<'a>(
+        &self,
+        live: &'a [ProxyDomain],
+        host: Option<&str>,
+    ) -> Cow<'a, [ProxyDomain]> {
+        effective_rules(live, self.intercepting(), self.claude_code_route, host)
+    }
+
     /// Whether the peer behind `ctx` may be intercepted. `true` when no owner
     /// restriction is set; otherwise the peer's UID (resolved from its loopback
     /// socket) must match the owner. Fails **closed**: if the UID can't be
@@ -537,6 +599,9 @@ impl GateHandler {
     /// and noise is what stops a real regression being read.
     fn warn_if_anthropic_is_unselected(&self, intercept: bool, host: Option<&str>) {
         if intercept
+            // Parked, so *everything* is tunnelled by design. The line below
+            // names a regression that only means something while routing is on.
+            || !self.intercepting()
             || self.claude_code_route
             || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
             || self
@@ -628,6 +693,26 @@ fn app_shell_is_unrecognised(
 /// widening anything: a selected connection to any other host sees the live
 /// catalog untouched. It also means only Claude Code's host pays for the clone;
 /// everything else borrows.
+/// [`route_rules`], plus the park.
+///
+/// Split out from the handler so the one thing that must hold while parked -
+/// that *nothing* is claimed, selector or not - is a pure function with a test
+/// beside it. Returning an empty set rather than a "don't intercept" boolean is
+/// deliberate: both call sites go on to ask `should_intercept_host` and
+/// `decide`, and an empty set is the answer that makes both say tunnel without
+/// either needing to know about parking.
+fn effective_rules<'a>(
+    live: &'a [ProxyDomain],
+    intercepting: bool,
+    claude_code_route: bool,
+    host: Option<&str>,
+) -> Cow<'a, [ProxyDomain]> {
+    if !intercepting {
+        return Cow::Owned(Vec::new());
+    }
+    route_rules(live, claude_code_route, host)
+}
+
 fn route_rules<'a>(
     live: &'a [ProxyDomain],
     claude_code_route: bool,
@@ -709,7 +794,7 @@ impl HttpHandler for GateHandler {
             .authority()
             .map(|a| a.host())
             .or_else(|| req.uri().host());
-        let rules = route_rules(&live_rules, self.claude_code_route, host);
+        let rules = self.effective_rules(&live_rules, host);
         let intercept = host
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
@@ -797,10 +882,11 @@ impl HttpHandler for GateHandler {
         let ua = header("user-agent").unwrap_or_default();
         let host = req.uri().host().map(str::to_owned);
         let live_rules = self.rules.borrow().clone();
-        let rules = rules_for_client(
-            &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
-            client,
-        );
+        // `effective_rules` again rather than the CONNECT's verdict: this arm
+        // is reached without passing `should_intercept` at all - a client given
+        // `HTTP_PROXY` sends plain-HTTP requests straight here in absolute
+        // form - so a parked engine has to be enforced here too.
+        let rules = rules_for_client(&self.effective_rules(&live_rules, host.as_deref()), client);
         // Gated like the rewrite below: a plain-HTTP request from a non-owner
         // local peer reaches here without passing `should_intercept`, and its
         // user-agent does not belong in the owner's log.
@@ -892,45 +978,66 @@ impl HttpHandler for GateHandler {
             // webview then renders under chatgpt.com's origin. Nothing real is
             // given up: the app's own turns ask for `text/event-stream` or
             // JSON, never HTML, so no routed traffic is a navigation.
+            //
+            // A file upload is withheld for a different reason, and one about
+            // the gateway rather than about the protocol: it captures no
+            // multipart body, so routing an upload sends the upstream an empty
+            // form and the user is told their file cannot be uploaded. See
+            // [`carries_multipart_body`].
             if let (Decision::Rewrite { upstream_url, slug }, true, false) = (
                 decide(&rules, host, &path),
                 self.peer_allowed(ctx),
                 navigation,
             ) {
-                let api_key = self.api_key.borrow().clone();
-                let token = self.token.borrow().clone();
-                let oauth_token = (!token.is_empty()).then(|| token.as_ref());
-                let org = self.org.borrow().clone();
-                let org_id = (!org.is_empty()).then(|| org.as_ref());
-                let mode = effective_billing_mode(*self.mode.borrow(), &slug);
-                match apply_rewrite(
-                    &mut req,
-                    &self.gateway,
-                    MatchedRoute {
-                        upstream_url: &upstream_url,
-                        slug: Some(slug.as_str()),
-                    },
-                    &api_key,
-                    oauth_token,
-                    org_id,
-                    mode,
-                ) {
-                    Ok(injected_oauth) => {
-                        action = "rewrite->gateway";
-                        // Remember that the gateway is answering *our*
-                        // credential, so a 401 on the way back can be read as
-                        // evidence about the session (see `handle_response`).
-                        // Taken from the injection itself: holding a token is
-                        // not the same as sending it, and a client that
-                        // brought its own `x-gate-api-key` gets nothing of
-                        // ours - not even when it also sent an
-                        // `x-gate-authorization` of its own.
-                        self.injected_oauth = injected_oauth;
+                // Asked INSIDE the pattern rather than as a fourth arm of it, so
+                // reaching this line means every other reason to withhold the
+                // rewrite has already been ruled out and the log below can only
+                // name the operative one. Beside it, a non-owner peer's upload -
+                // or a chatgpt.com navigation that happened to carry a form -
+                // printed "multipart" for a request multipart had nothing to do
+                // with.
+                if carries_multipart_body(&req) {
+                    if debug_log() {
+                        eprintln!(
+                            "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
+                        );
                     }
-                    Err(e) => {
-                        action = "rewrite-FAILED";
-                        if debug_log() {
-                            eprintln!("[gate-proxy] rewrite failed: {e}");
+                } else {
+                    let api_key = self.api_key.borrow().clone();
+                    let token = self.token.borrow().clone();
+                    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+                    let org = self.org.borrow().clone();
+                    let org_id = (!org.is_empty()).then(|| org.as_ref());
+                    let mode = effective_billing_mode(*self.mode.borrow(), &slug);
+                    match apply_rewrite(
+                        &mut req,
+                        &self.gateway,
+                        MatchedRoute {
+                            upstream_url: &upstream_url,
+                            slug: Some(slug.as_str()),
+                        },
+                        &api_key,
+                        oauth_token,
+                        org_id,
+                        mode,
+                    ) {
+                        Ok(injected_oauth) => {
+                            action = "rewrite->gateway";
+                            // Remember that the gateway is answering *our*
+                            // credential, so a 401 on the way back can be read as
+                            // evidence about the session (see `handle_response`).
+                            // Taken from the injection itself: holding a token is
+                            // not the same as sending it, and a client that
+                            // brought its own `x-gate-api-key` gets nothing of
+                            // ours - not even when it also sent an
+                            // `x-gate-authorization` of its own.
+                            self.injected_oauth = injected_oauth;
+                        }
+                        Err(e) => {
+                            action = "rewrite-FAILED";
+                            if debug_log() {
+                                eprintln!("[gate-proxy] rewrite failed: {e}");
+                            }
                         }
                     }
                 }
@@ -1409,6 +1516,78 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
         .is_some_and(|v| {
             v.split(',')
                 .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+        })
+}
+
+/// True when the request carries a `multipart/*` body - in practice a file
+/// upload, which is the one body shape this guard WITHHOLDS from the gateway.
+///
+/// Not the one body shape Gate cannot forward: the two parsers below drop every
+/// non-JSON body alike, and this doc said otherwise for a while. The narrower
+/// claim is the true one and the only one *Keyed on multipart alone* below
+/// argues for - everything else Gate cannot carry stays broken on purpose.
+///
+/// The gateway installs `express.json()` and `express.urlencoded()` and nothing
+/// else (gate: apps/gateway-proxy/src/main.ts), so a multipart body is captured
+/// by neither: `req.rawBody` stays undefined, `createContext` substitutes
+/// `Buffer.alloc(0)`, and the request leaves for the real upstream carrying its
+/// `multipart/form-data` content type with no bytes behind it. `content-length`
+/// is stripped on the way out (`buildForwardHeaders`), so nothing between here
+/// and there notices the body went missing - the upstream just gets an empty
+/// form and rejects it.
+///
+/// Claude Desktop's chat surface is where that bites. Attaching a file posts
+/// multipart to `/api/organizations/{org}/upload`, which is inside the
+/// `/organizations/` tree the `claude-web` entry rewrites wholesale, and the app
+/// reports "can't be uploaded" with the row on and nothing wrong with the file.
+///
+/// **Measured, not reasoned.** 2026-09-21, a multipart POST to that path through
+/// the engine with `claude-web` on: the response came back carrying the
+/// gateway's own headers (`x-gate-request-id`
+/// `01215b32-44fa-4959-a120-c57f1fb0fa03`), so the request was rewritten, and
+/// `x-gate-cache-reason: miss-empty-body` beside them - a value
+/// `CacheLookupStage` sets on exactly one condition, `ctx.rawBody.length === 0`
+/// (gate: proxy/stages/cache-lookup.ts). The client had sent
+/// `content-length: 202`. Both ends of the claim in one exchange: routed, and
+/// arrived empty.
+///
+/// The same request with this guard in place comes back without a single
+/// `x-gate-*` header, which is how to check it from outside: the upload never
+/// went near the gateway. Cloudflare then challenges the bare `curl` (403,
+/// `cf-mitigated: challenge`) where the routed attempt had reached claude.ai's
+/// own 404 - an artefact of egressing from the user's address without a cookie
+/// jar, not of this guard. The client this is for carries one.
+///
+/// **Keyed on multipart alone**, deliberately, rather than on "a content type
+/// the gateway will not parse". Every other non-JSON body is dropped by those
+/// same parsers, but a rule that wide turns an unrecognised content type into a
+/// SILENT BYPASS - inference leaving for the vendor with the switch on, which is
+/// the one failure this engine exists to prevent. A body Gate cannot carry that
+/// is not multipart stays broken and visible instead.
+///
+/// This is a statement about today's gateway, not a decision like the upgrade
+/// passthrough above: it ends the day the gateway captures a multipart body and
+/// forwards it verbatim.
+pub(crate) fn carries_multipart_body<T>(req: &Request<T>) -> bool {
+    req.headers()
+        .get(hudsucker::hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| {
+            // Media type without its parameters, like `wants_html`: the boundary
+            // rides in the same header and every real upload carries one.
+            value.split(';').next().is_some_and(|media_type| {
+                // The whole `multipart/` tree, not `form-data` alone. The
+                // gateway's parsers key on the TYPE, so every subtype arrives
+                // empty by the same mechanism, and matching the exact one left
+                // `multipart/mixed` and `multipart/related` routed - this bug
+                // wearing a different subtype. Widening buys a client no bypass
+                // the narrow match did not already sell it: anything wanting out
+                // could always have said `form-data`.
+                media_type
+                    .trim()
+                    .get(.."multipart/".len())
+                    .is_some_and(|tree| tree.eq_ignore_ascii_case("multipart/"))
+            })
         })
 }
 
@@ -2178,7 +2357,7 @@ where
     ));
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
-    let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
+    let (intercept_tx, intercept_rx) = watch::channel(true);
     // The relay shares the same credential channels , so a
     // token refresh, key rotation, or org switch reaches CLI tools and GUI apps
     // alike. Clone before the handler moves the originals.
@@ -2202,6 +2381,7 @@ where
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
+        intercept: intercept_rx.clone(),
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
         app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
@@ -2364,7 +2544,7 @@ where
                     relay_token_rx,
                     relay_org_rx,
                     relay_mode_rx,
-                    relay_intercept_rx,
+                    intercept_rx,
                     relay_owner_uid,
                 ) {
                     Ok(handle) => detached.push(handle),
@@ -2411,7 +2591,7 @@ where
             org_tx,
             mode_tx,
             cf_clearance_tx,
-            relay_intercept_tx,
+            intercept_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -2546,6 +2726,111 @@ mod tests {
             Decision::Rewrite {
                 upstream_url: "https://chatgpt.com/backend-api".into(),
                 slug: "chatgpt".into()
+            },
+        );
+    }
+
+    /// Claude Desktop attaching a file to a chat, as the app sends it: a
+    /// multipart POST inside the `/organizations/` tree `claude-web` rewrites.
+    fn claude_upload() -> Request<()> {
+        Request::builder()
+            .method("POST")
+            .uri("https://claude.ai/api/organizations/b44129f9-a8ea-4f96-a137-b14a560e58d3/upload")
+            .header(
+                "content-type",
+                "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW",
+            )
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn an_upload_is_recognised_past_its_boundary_and_its_casing() {
+        assert!(carries_multipart_body(&claude_upload()));
+        let shouty = Request::builder()
+            .method("POST")
+            .uri("https://claude.ai/api/organizations/b44129f9/upload")
+            .header("content-type", "MULTIPART/FORM-DATA; BOUNDARY=x")
+            .body(())
+            .unwrap();
+        assert!(carries_multipart_body(&shouty));
+    }
+
+    #[test]
+    fn every_multipart_subtype_is_withheld_not_just_form_data() {
+        // The gateway's parsers key on the type, so `mixed` and `related` arrive
+        // as empty as `form-data` does. Matching the exact subtype left them
+        // routed, which is this bug under a different name; `multipart-ish` is
+        // the near miss that keeps the prefix from swallowing its neighbours.
+        for (content_type, withheld) in [
+            ("multipart/form-data; boundary=x", true),
+            ("multipart/mixed; boundary=x", true),
+            ("multipart/related; boundary=x", true),
+            ("Multipart/Byteranges", true),
+            ("multipart-ish/form-data", false),
+            ("application/multipart/form-data", false),
+        ] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("https://claude.ai/api/organizations/b44129f9/upload")
+                .header("content-type", content_type)
+                .body(())
+                .unwrap();
+            assert_eq!(
+                carries_multipart_body(&req),
+                withheld,
+                "{content_type} should{} be withheld",
+                if withheld { "" } else { " not" }
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_is_not_an_upload() {
+        // The three shapes routed traffic actually has. Any of them reading as
+        // an upload would unroute the surface this entry exists to capture.
+        for content_type in [
+            Some("application/json"),
+            Some("application/x-www-form-urlencoded"),
+            None,
+        ] {
+            let builder = Request::builder()
+                .method("POST")
+                .uri("https://claude.ai/api/organizations/b44129f9/chat_conversations/2f261f16/completion");
+            let req = match content_type {
+                Some(value) => builder.header("content-type", value),
+                None => builder,
+            }
+            .body(())
+            .unwrap();
+            assert!(
+                !carries_multipart_body(&req),
+                "{content_type:?} is not a multipart body"
+            );
+        }
+    }
+
+    #[test]
+    fn the_path_that_carries_the_upload_is_one_we_would_otherwise_rewrite() {
+        // Same test as the upgrade one above, for the same reason: if the router
+        // would not have claimed this path the guard is dead code. The app's
+        // client class is the one that matters - a BROWSER is already narrowed to
+        // `/completion` by `rules_for_client` and never routed an upload.
+        let mut chat: Vec<ProxyDomain> = crate::proxy::default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "claude-web")
+            .collect();
+        chat[0].enabled = true;
+        let req = claude_upload();
+        assert_eq!(
+            decide(
+                &rules_for_client(&chat, ClientClass::App),
+                req.uri().host().unwrap(),
+                req.uri().path()
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             },
         );
     }
@@ -2887,6 +3172,67 @@ mod tests {
             &route_rules(&live, true, Some("api.anthropic.com")),
             "api.anthropic.com"
         ));
+    }
+
+    /// Parking must beat the selector, which clearing the domain set does not.
+    ///
+    /// `route_rules` force-enables Claude Code's entry *precisely* when the
+    /// live set does not claim the host, so "turn everything off" is the input
+    /// that makes the selector fire. A desktop manager that parked an engine by
+    /// clearing domains alone would leave a `claude` session started before the
+    /// user switched routing off still decrypted, still rewritten to the
+    /// gateway, and still billed - which is what `set_intercept(false)` exists
+    /// to prevent. The pair below is the whole contract.
+    #[test]
+    fn a_parked_engine_routes_nothing_even_with_the_selector() {
+        let live = all_off();
+        let host = Some("api.anthropic.com");
+
+        // Routing, selector present: forced on. This is the behaviour the
+        // `claude_code_selector_routes_when_desktop_domain_is_off` e2e pins.
+        let routing = effective_rules(&live, true, true, host);
+        assert!(should_intercept_host(&routing, "api.anthropic.com"));
+
+        // Parked, same input: nothing is claimed, so the CONNECT tunnels and
+        // `decide` has no entry to rewrite against.
+        let parked = effective_rules(&live, false, true, host);
+        assert!(parked.is_empty(), "a parked engine claims no host at all");
+        assert!(
+            !should_intercept_host(&parked, "api.anthropic.com"),
+            "the selector must not survive the park"
+        );
+        assert!(matches!(
+            decide(&parked, "api.anthropic.com", "/v1/messages"),
+            Decision::Tunnel
+        ));
+    }
+
+    /// Parking is not selective: a domain the user really did have switched on
+    /// stops routing too, because the park is the user saying "off".
+    #[test]
+    fn a_parked_engine_routes_nothing_for_an_enabled_domain() {
+        let live = crate::proxy::default_domains();
+        assert!(
+            live.iter().any(|d| d.enabled),
+            "the catalog ships something enabled, or this proves nothing"
+        );
+        let enabled_host = live
+            .iter()
+            .find(|d| d.enabled)
+            .and_then(|d| d.hosts.first().cloned())
+            .expect("an enabled entry with a host");
+
+        assert!(should_intercept_host(
+            &effective_rules(&live, true, false, Some(&enabled_host)),
+            &enabled_host
+        ));
+        assert!(
+            !should_intercept_host(
+                &effective_rules(&live, false, false, Some(&enabled_host)),
+                &enabled_host
+            ),
+            "parked means parked, enabled entry or not"
+        );
     }
 
     /// The forced entry is pushed with `enabled: true`, so the one thing that

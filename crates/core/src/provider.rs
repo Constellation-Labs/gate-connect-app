@@ -412,7 +412,7 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
                 upstream_url: integ.default_upstream_url().to_string(),
                 billing_mode: account.billing_mode,
                 relay_base_url: crate::proxy::relay_base_url(),
-                engine_proxy_url: crate::proxy::engine_proxy_url(),
+                engine_proxy_url: crate::proxy::tool_proxy_url(),
             };
             integ
                 .connect(&input)
@@ -456,31 +456,64 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     Ok((Applied::Enabled, state))
 }
 
+/// Whether a teardown puts each tool back on its own configuration.
+///
+/// The distinction the proxy layer draws between a park and a release
+/// (`proxy::manager_core::Teardown`), one level up. The two are the same
+/// question asked of two different things Gate leaves behind: a bound port, and
+/// a line in somebody's `settings.json`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolConfigs {
+    /// Leave them naming Gate.
+    ///
+    /// For the routing toggle. The engine parks rather than stopping, so the
+    /// addresses those configs hold keep answering and forward straight
+    /// through - which is what the tool would have done with Gate not
+    /// installed. Rewriting them would move no traffic and would cost every
+    /// running tool a restart, because a tool reads its configuration once and
+    /// the file's mtime is what says it missed a change.
+    ///
+    /// It also makes the switch *live*: a `codex` that was running before the
+    /// toggle passes through while parked and routes again when the engine
+    /// unparks, with no restart at either edge. Reverting the config is what
+    /// used to break that, by handing the next-started process a different
+    /// answer from the one the running process holds.
+    Kept,
+    /// Put each tool back on its own settings.
+    ///
+    /// For the explicit "Gate should let go of this machine" actions - the
+    /// quit-and-disconnect choice, signing out, Reset. The same line
+    /// `proxy::forwarder::stop` is on, and drawn in the same place.
+    Reverted,
+}
+
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
 /// running, disables the provider's proxy domains. Promptless and idempotent.
 pub fn disable(slug: &str) -> Result<ProviderState> {
-    disable_inner(slug, true)
+    disable_inner(slug, true, ToolConfigs::Reverted)
 }
 
 /// [`disable`] with the audit emit optional: the master-off sweep passes
 /// `false`, because that sweep is one operator action (the master switch) that
 /// already emits a single `proxy_disabled` - see the one-event-per-action rule
 /// in [`crate::audit`].
-fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
+fn disable_inner(slug: &str, audit: bool, configs: ToolConfigs) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
 
-    for &id in p.tool_ids {
-        let Some(integ) = registry::find(id) else {
-            continue;
-        };
-        let connected = matches!(
-            integ.status(),
-            Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
-        );
-        if connected || integ.detect().unwrap_or(false) {
-            integ
-                .disconnect()
-                .with_context(|| format!("disconnecting {}", integ.display_name()))?;
+    if configs == ToolConfigs::Reverted {
+        for &id in p.tool_ids {
+            let Some(integ) = registry::find(id) else {
+                continue;
+            };
+            let connected = matches!(
+                integ.status(),
+                Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+            );
+            if connected || integ.detect().unwrap_or(false) {
+                integ
+                    .disconnect()
+                    .with_context(|| format!("disconnecting {}", integ.display_name()))?;
+            }
         }
     }
 
@@ -532,6 +565,27 @@ fn domains_enabled_persisted(p: &Provider) -> bool {
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn domains_enabled_persisted(_p: &Provider) -> bool {
     false
+}
+
+/// Can this integration's `connect` succeed right now, as far as the engine is
+/// concerned?
+///
+/// Only a question for the tools that route through the forward proxy, and
+/// [`Integration::requires_engine`] is what says which those are. It matters to
+/// the reconcile passes because they act on `Drifted`, and drift is the steady
+/// state for those three while routing is off: their `status` asks whether the
+/// engine is *routing*, it is not, and the config Gate wrote is still on disk
+/// now that master-off keeps it there. Without this the pass would call
+/// `connect` on every startup and every window focus, get the refusal those
+/// integrations raise by design, and log a failure about a machine with nothing
+/// wrong with it.
+///
+/// A relay tool is unaffected and deliberately so: its `connect` needs only a
+/// persisted relay port, which it has whether or not anything is up, and
+/// re-asserting a base URL that is already correct writes nothing (see
+/// `primitives::write_file`).
+fn engine_up_if_needed(integ: &dyn registry::Integration) -> bool {
+    !integ.requires_engine() || crate::proxy::engine_proxy_url().is_some()
 }
 
 /// Configure any installed-but-unconfigured tool of a provider the user has
@@ -597,7 +651,9 @@ pub fn reconcile_enabled() -> Result<()> {
                 // a relay to point at (connect() bails without one, and this
                 // drift may *be* "relay not enabled yet").
                 Ok(Status::Drifted(_)) => {
-                    relay_base_url.is_some() && integ.config_is_managed().unwrap_or(false)
+                    relay_base_url.is_some()
+                        && integ.config_is_managed().unwrap_or(false)
+                        && engine_up_if_needed(integ.as_ref())
                 }
                 // NotInstalled / Connected / Overridden / status error - leave
                 // as-is. Overridden belongs on this side of the line and not
@@ -613,7 +669,7 @@ pub fn reconcile_enabled() -> Result<()> {
                 upstream_url: integ.default_upstream_url().to_string(),
                 billing_mode: account.billing_mode,
                 relay_base_url: relay_base_url.clone(),
-                engine_proxy_url: crate::proxy::engine_proxy_url(),
+                engine_proxy_url: crate::proxy::tool_proxy_url(),
             };
             if let Err(e) = integ.connect(&input) {
                 crate::logging::failure(&format!(
@@ -659,12 +715,15 @@ fn reconcile_unmapped_tools(
         if !integ.config_is_managed().unwrap_or(false) {
             continue; // drift in a config we didn't write - leave it alone
         }
+        if !engine_up_if_needed(integ.as_ref()) {
+            continue;
+        }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
             billing_mode: account.billing_mode,
             relay_base_url: Some(relay_base_url.to_string()),
-            engine_proxy_url: crate::proxy::engine_proxy_url(),
+            engine_proxy_url: crate::proxy::tool_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
             crate::logging::failure(&format!(
@@ -716,7 +775,11 @@ fn save_snapshot(file: &str, slugs: &[String]) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let raw = serde_json::to_string(slugs).context("serializing provider snapshot")?;
-    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+    // Atomic, like every other file under app support: a torn snapshot reads
+    // back as empty and leaves swept tools reverted with nothing to restore
+    // them. 0o600 to match its neighbours; the contents are slugs, not secrets.
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn load_snapshot(file: &str) -> Result<Vec<String>> {
@@ -747,6 +810,25 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
     MASTER_FLOW_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// [`master_flow_guard`] that gives up after `wait`, for the one caller that
+/// must not block indefinitely: the quit path. A restore or a toggle mid-flight
+/// when the user quits is unlikely and short, but "the app will not close" is
+/// the worst outcome on that path, and quitting *without* the revert is only
+/// the behaviour every release before this one had.
+fn try_master_flow_guard(wait: std::time::Duration) -> Option<MutexGuard<'static, ()>> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match MASTER_FLOW_LOCK.try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        }
+    }
 }
 
 /// Members of `p` that are not carrying traffic right now.
@@ -786,7 +868,7 @@ fn off_members(p: &Provider) -> Vec<String> {
 /// claims, and every caller wants [`snapshot_and_disable_everything`]. Master
 /// off used to call the provider pass alone, which is how OpenCode and friends
 /// ended up stranded on a dead relay.
-fn snapshot_and_disable_all_locked() -> Result<()> {
+fn snapshot_and_disable_all_locked(configs: ToolConfigs) -> Result<()> {
     let enabled: Vec<String> = list()
         .into_iter()
         .filter(|p| p.enabled)
@@ -828,9 +910,9 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
     }
 
     for slug in &enabled {
-        // `disable_inner(_, false)`: the sweep is the master switch's doing,
-        // and that one operator action already emits `proxy_disabled`.
-        if let Err(e) = disable_inner(slug, false) {
+        // `audit: false`: the sweep is the master switch's doing, and that one
+        // operator action already emits `proxy_disabled`.
+        if let Err(e) = disable_inner(slug, false, configs) {
             // `{e:#}` rather than `{e}`: the chain is the reason, and the outer
             // context on its own routinely says only which step it was.
             crate::logging::failure(&format!(
@@ -865,7 +947,7 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
 /// say it.
 pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let _guard = master_flow_guard();
-    snapshot_and_disable_all_locked()?;
+    snapshot_and_disable_all_locked(ToolConfigs::Reverted)?;
     let mut disconnected = Vec::new();
     let mut failed = Vec::new();
     for integ in registry::registry() {
@@ -889,15 +971,26 @@ pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
             }
         }
     }
-    // Union for the same reason as the provider snapshot.
+    record_swept(disconnected)?;
+    Ok(failed)
+}
+
+/// Add `slugs` to the swept-tools snapshot so the startup restore reconnects
+/// them. A union, for the same reason the provider snapshot unions: an existing
+/// file is a pending restore, and overwriting it would drop tools from it. No
+/// write at all when there is nothing to add, so a no-op sweep leaves no empty
+/// snapshot behind.
+fn record_swept(slugs: Vec<String>) -> Result<()> {
+    if slugs.is_empty() {
+        return Ok(());
+    }
     let mut snapshot = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
-    for slug in disconnected {
+    for slug in slugs {
         if !snapshot.contains(&slug) {
             snapshot.push(slug);
         }
     }
-    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)?;
-    Ok(failed)
+    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
 }
 
 /// One thing a restore has recorded and not finished.
@@ -959,6 +1052,124 @@ pub fn pending_restore() -> Result<PendingRestore> {
         })
         .collect();
     Ok(PendingRestore { providers, tools })
+}
+
+/// Master OFF via the routing switch: record what was on and turn the domains
+/// off, and **leave every tool's configuration alone**.
+///
+/// The counterpart of [`snapshot_and_disable_everything`], which is what the
+/// quit-and-disconnect choice still runs. The two used to be one function,
+/// because they used to be the same event: the engine stopped either way, so a
+/// config naming the loopback relay was about to point at nothing, and putting
+/// it back was the only way to leave the tool working.
+///
+/// The engine parks now (`proxy::manager_core`, `Teardown::Dormant`). The ports
+/// stay bound and forward straight through, so a config naming them still
+/// works and still reaches the tool's own provider. Rewriting it moves no
+/// traffic, and it costs something real: a tool reads its configuration once,
+/// so the write tells every running process that it missed a change and has to
+/// be reopened. Routing off is not a reason to restart somebody's editor.
+///
+/// Nothing is recorded in [`SWEPT_TOOLS_SNAPSHOT`], because nothing was swept.
+/// [`restore_all`] still runs on master-on and still re-enables the providers;
+/// the tool half of it finds an empty snapshot and does nothing, and the
+/// provider half re-writes configs that already hold the right bytes, which
+/// `primitives::write_file` declines to turn into a write.
+pub fn snapshot_and_park_everything() -> Result<()> {
+    let _guard = master_flow_guard();
+    snapshot_and_disable_all_locked(ToolConfigs::Kept)
+}
+
+/// Is this tool pointed at an address that stops answering when the GUI quits?
+///
+/// Managed at all (its status is one the sweeps act on), and at least one
+/// address its configuration names is hosted in the engine's process -
+/// [`crate::proxy::address_dies_with_gui`], per address. Not the declared
+/// [`registry::Mechanism`]: a forward-proxy tool whose install still names the
+/// engine's own port dies exactly like a relay tool, and a relay tool the user
+/// has repointed by hand dies not at all.
+fn stranded_by_quit(integ: &dyn registry::Integration) -> bool {
+    if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+        return false;
+    }
+    integ
+        .configured_addresses()
+        .unwrap_or_default()
+        .iter()
+        .any(|a| crate::proxy::address_dies_with_gui(a))
+}
+
+/// Display names of the tools a plain quit would put back on their own
+/// settings. Read-only, for the quit dialog: the same predicate the revert
+/// applies, so what the dialog names is exactly what gets rewritten.
+pub fn tools_stranded_by_quit() -> Vec<String> {
+    registry::registry()
+        .into_iter()
+        .filter(|i| stranded_by_quit(i.as_ref()))
+        .map(|i| i.display_name().to_string())
+        .collect()
+}
+
+/// Plain quit's teardown, on the platforms where the engine lives in the GUI.
+///
+/// [`ToolConfigs::Kept`] is the routing toggle's rule: leave a config alone,
+/// because the address it names keeps answering. A plain quit breaks that
+/// premise for some addresses and not others, and the line between them is
+/// not a tool boundary. Everything naming the forwarder keeps working, because
+/// the forwarder is a separate process and is deliberately left running
+/// (`proxy::forwarder::stop` is not called here). A config naming the relay, or
+/// the engine's own port, names a listener inside this process, and nothing
+/// fronts it: the tool cannot connect until Gate runs again, with an error
+/// about a loopback port the user has never heard of.
+///
+/// So this reverts a config **if and only if an address it names dies with
+/// this process** - [`stranded_by_quit`], which is also what the quit dialog
+/// used to name these tools a moment ago. Reverted tools are recorded in
+/// [`SWEPT_TOOLS_SNAPSHOT`] so the startup restore brings them back exactly as
+/// it brings back the quit-and-disconnect sweep. No provider is snapshotted,
+/// because no provider was turned off.
+///
+/// Not called on Linux, where the engine is a daemon and the GUI hosts none of
+/// these addresses; the caller gates on platform. Not called from
+/// `RunEvent::Exit` either, which also runs on an updater relaunch and a crash
+/// restart, neither of which is the user choosing to leave Gate off.
+///
+/// Returns the display names of what it reverted, for the notification the
+/// caller fires: the popover is gone by then, and a rewrite of somebody's
+/// config file is worth a sentence. A failure to *record* what was reverted is
+/// logged and does not hide the names - that is the one case the sentence
+/// matters most, since nothing will restore those tools on the next start.
+pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
+    let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
+        anyhow::bail!(
+            "another routing operation is still running; quitting without putting relay \
+             tools back on their own settings"
+        );
+    };
+    let mut reverted: Vec<(String, String)> = Vec::new();
+    for integ in registry::registry() {
+        if !stranded_by_quit(integ.as_ref()) {
+            continue;
+        }
+        match integ.disconnect() {
+            Ok(()) => reverted.push((
+                integ.display_name().to_string(),
+                integ.id().slug().to_string(),
+            )),
+            Err(e) => eprintln!(
+                "[gate] reverting {} for quit failed: {e}",
+                integ.display_name()
+            ),
+        }
+    }
+    let (names, slugs): (Vec<String>, Vec<String>) = reverted.into_iter().unzip();
+    if let Err(e) = record_swept(slugs) {
+        eprintln!(
+            "[gate] recording reverted tools for the next start failed: {e:#}; they will need \
+             reconnecting by hand"
+        );
+    }
+    Ok(names)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last
@@ -1147,7 +1358,7 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
             upstream_url: integ.default_upstream_url().to_string(),
             billing_mode: account.billing_mode,
             relay_base_url: relay_base_url.clone(),
-            engine_proxy_url: engine_proxy_url.clone(),
+            engine_proxy_url: crate::proxy::tool_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
             crate::logging::failure(&format!(
@@ -1329,7 +1540,7 @@ fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
         upstream_url: integ.default_upstream_url().to_string(),
         billing_mode: account.billing_mode,
         relay_base_url: crate::proxy::relay_base_url(),
-        engine_proxy_url,
+        engine_proxy_url: crate::proxy::tool_proxy_url(),
     };
     if let Err(e) = integ.connect(&input) {
         journal.record_failed(slug, recovery::Outcome::WriteFailed, &format!("{e:#}"));
@@ -1657,24 +1868,6 @@ mod tests {
              row comes back and the button can never clear it; got {:?}",
             after.providers
         );
-    }
-
-    /// Only the two engine-routed integrations declare the requirement, and the
-    /// three config-file tools must not: they write a relay URL, which Gate owns
-    /// whether or not the engine is intercepting anything. A `true` here would
-    /// defer a tool that could have been restored in the first pass.
-    #[test]
-    fn only_the_engine_routed_integrations_require_the_engine() {
-        for integ in registry::registry() {
-            let expected = matches!(integ.id(), ToolId::OpenClaw | ToolId::EnvProxy);
-            assert_eq!(
-                integ.requires_engine(),
-                expected,
-                "{} disagrees about needing the engine, which decides whether a \
-                 restore defers it or attempts it",
-                integ.display_name()
-            );
-        }
     }
 
     #[test]

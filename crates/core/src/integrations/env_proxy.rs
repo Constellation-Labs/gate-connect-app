@@ -55,7 +55,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 /// "Terminal tools", not "Environment proxy". The row is under Experimental
 /// beside OpenCode, and it is read by someone deciding whether to let Gate touch
@@ -114,6 +114,17 @@ impl Integration for EnvProxy {
         Ok(supported())
     }
 
+    /// Nothing per tool; this row *is* the machine-wide export.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Environment
+    }
+
+    /// Nothing per tool: the export is machine-wide and is read back from the
+    /// OS, not from a file of this row's own.
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     fn status(&self) -> Result<Status> {
         if !supported() {
             return Ok(Status::NotInstalled);
@@ -125,12 +136,6 @@ impl Integration for EnvProxy {
             crate::proxy::engine_proxy_url().is_some(),
             crate::proxy::env_export_is_separable(),
         ))
-    }
-
-    /// The variables this exports *are* the engine's address, so there is
-    /// nothing to export until the engine has one.
-    fn requires_engine(&self) -> bool {
-        true
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {

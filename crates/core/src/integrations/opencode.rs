@@ -61,6 +61,13 @@
 //! `<app_support_dir>/opencode-state.json` so disconnect restores the
 //! file byte-equivalent.
 
+//! **Config granularity: per process.** Measured 2026-09-18 on OpenCode
+//! 1.18.27, driving a headless `opencode serve` against two loopback listeners
+//! with a custom provider whose `baseURL` was repointed underneath it. A second
+//! message on the same session still went to the original address. So a running
+//! OpenCode has to be restarted; `opencode run` is a fresh process and needs
+//! nothing.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -71,7 +78,7 @@ use std::path::PathBuf;
 use crate::env;
 use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -294,6 +301,31 @@ impl Integration for OpenCode {
         }))
     }
 
+    /// `provider.<id>.options.baseURL` names the loopback relay, which dies with the engine.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Relay
+    }
+
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        // Every provider's `baseURL`, not only the ones the sidecar says we
+        // wrote: a base URL the user has since repointed is one nothing of
+        // ours is bound to, and the address rule will say so.
+        Ok(load_settings()?
+            .and_then(|s| s.get("provider")?.as_object().cloned())
+            .map(|providers| {
+                providers
+                    .values()
+                    .filter_map(|p| {
+                        p.get("options")?
+                            .get("baseURL")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -364,6 +396,33 @@ impl Integration for OpenCode {
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(", ")
+            )));
+        }
+        // Liveness and routing, the same pair Codex checks and for the same
+        // reason: the identity check above compares against the *persisted*
+        // relay port, which survives restarts precisely so configs stay valid,
+        // so on its own it reads Connected while OpenCode dials a dead port -
+        // and, with the engine parked, while it reaches its providers directly.
+        // This was invisible until routing-off stopped sweeping OpenCode to
+        // Detected; keeping the config is what made it the steady state. Left
+        // out, the two relay tools disagreed with each other about one parked
+        // engine.
+        // Liveness and interception, from the relay itself - see Codex's
+        // equivalent for why identity alone is not enough and why this is a
+        // measurement rather than the user's stored intent. Left out entirely
+        // until recently, which is how the two relay tools came to disagree
+        // about one parked engine.
+        let Some(report) = crate::proxy::relay_report() else {
+            return Ok(Status::Drifted(format!(
+                "the Gate proxy is not running, so OpenCode cannot reach its providers \
+                 ({expected_base:?} is a dead address) - turn the proxy on, or disconnect \
+                 OpenCode to restore it"
+            )));
+        };
+        if !report.intercepting {
+            return Ok(Status::Drifted(format!(
+                "routing is off, so OpenCode reaches its providers directly through \
+                 {expected_base:?} rather than through Gate - turn routing on to route it"
             )));
         }
         if !drifted.is_empty() {

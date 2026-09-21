@@ -222,7 +222,11 @@ export interface BackendState {
       spec that cares about the close-apps sequence sets it. */
   runningAgentNames: string[];
   staleAgents: number;
-  pendingQuitTools: string[] | null;
+  /** What `pending_quit_tools` hands the quit dialog: every tool still routed
+   *  through Gate, and the subset a plain quit will put back on its own
+   *  settings because the address its config names dies with the app. Mirrors
+   *  `PendingQuit` in `src/lib/api.ts`. */
+  pendingQuitTools: { tools: string[]; reverting: string[] } | null;
   /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
       Empty = a clean teardown. A spec that cares about the partial-teardown
       result sets it; the teardown itself still succeeds, which is the point. */

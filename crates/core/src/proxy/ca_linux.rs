@@ -128,11 +128,21 @@ pub fn load_or_create() -> Result<Ca> {
     let service = key_service();
     let path = cert_path()?;
 
-    let existing_key = keychain::get(&service, &user)?;
+    // Certificate first, because it witnesses the key: the pair is always
+    // written together below, so a byte-identical cert on disk means the key in
+    // the store is the one that goes with it. That keeps this off the secret
+    // store on the repeat calls - the proxy manager makes one every 30 seconds
+    // to re-push the intercept config - where each read would cost the daemon
+    // ~8 KB it never returns. See `keychain::get_cached`.
     let existing_cert = match fs::read_to_string(&path) {
         Ok(c) => Some(c),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let existing_key = match existing_cert.as_deref() {
+        Some(cert_pem) => keychain::get_cached(&service, &user, cert_pem)?,
+        // No cert to vouch for it: both halves are about to be regenerated.
+        None => None,
     };
 
     if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {

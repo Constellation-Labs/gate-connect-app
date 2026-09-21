@@ -18,6 +18,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod common;
+
+use common::RelayStub;
 use gate_connect_core::account::{self, BillingMode};
 use gate_connect_core::registry::{find, ConnectInput, Status, ToolId};
 use gate_connect_core::{env, keychain};
@@ -80,18 +83,20 @@ fn write_auth_json(mode: &str) {
 /// it for real: `status()` probes the port (`relay_listening()`), so a seeded
 /// file over a dead port describes a crashed proxy and reads as Drifted before
 /// status ever looks at the block. Without the file, status stops at "the
-/// proxy has not been enabled yet". The listener is returned so it stays alive
-/// for the test's lifetime, alongside the port the config must point at.
-fn seed_relay_port() -> (std::net::TcpListener, u16) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+/// proxy has not been enabled yet". A bare listener is not enough any more -
+/// the probe asks it to prove it can read the 0600 token - so this answers like
+/// the real relay does. The stub is returned so it stays alive for the test's
+/// lifetime, alongside the port the config must point at.
+fn seed_relay_port() -> (RelayStub, u16) {
+    let stub = RelayStub::bind(0);
+    let port = stub.port();
     let path = env::app_support_dir()
         .unwrap()
         .join("proxy")
         .join("relay-port");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, port.to_string()).unwrap();
-    (listener, port)
+    (stub, port)
 }
 
 const RELAY_PORT: u16 = 45981;

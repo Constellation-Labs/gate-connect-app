@@ -13,8 +13,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderConfirm(tools: string[], onCancel = vi.fn()) {
-  render(<QuitConfirm tools={tools} onCancel={onCancel} />);
+function renderConfirm(tools: string[], onCancel = vi.fn(), reverting: string[] = []) {
+  render(<QuitConfirm pending={{ tools, reverting }} onCancel={onCancel} />);
   return onCancel;
 }
 
@@ -22,7 +22,9 @@ describe("QuitConfirm copy", () => {
   it("names a single connected tool in the singular", () => {
     renderConfirm(["Claude Code"]);
     expect(screen.getByText(/Claude Code still routes through Gate/)).toBeTruthy();
-    expect(screen.getByText(/it can’t connect until Gate Connect runs again/)).toBeTruthy();
+    expect(
+      screen.getByText(/it keeps working without Gate until Gate Connect runs again/),
+    ).toBeTruthy();
   });
 
   it("lists two tools joined with and, in the plural", () => {
@@ -69,7 +71,7 @@ describe("QuitConfirm actions", () => {
   it("quits anyway without disconnecting anything", async () => {
     (quitApp as Mock).mockResolvedValue(undefined);
     renderConfirm(["Claude Code"]);
-    fireEvent.click(screen.getByRole("button", { name: "Quit without disconnecting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Quit" }));
     await vi.waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1));
     expect(disconnectToolsForQuit).not.toHaveBeenCalled();
     expect(track).toHaveBeenCalledWith("quit_confirmed", { integrations_disabled: false });
@@ -93,7 +95,7 @@ describe("QuitConfirm actions", () => {
     expect(screen.getByRole("button", { name: "Try disconnecting again" })).toBeTruthy();
     // Quitting stays available: refusing to let someone quit their own app is
     // worse than letting them quit informed.
-    expect(screen.getByRole("button", { name: "Quit without disconnecting" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Quit" })).toBeTruthy();
   });
 
   it("surfaces a failed disconnect and does not quit", async () => {
@@ -107,5 +109,31 @@ describe("QuitConfirm actions", () => {
     expect(
       screen.getByRole("button", { name: "Disconnect tools and quit" }),
     ).toBeTruthy();
+  });
+});
+
+describe("QuitConfirm names what a plain quit does to each tool", () => {
+  // The backend decides per tool, off the configured address, which ones a
+  // plain quit puts back on their own settings. The dialog has to say so by
+  // name, because the same button does two different things to two tools.
+  it("says which tools go back to their own settings and which keep working", () => {
+    renderConfirm(["Claude Code", "Codex"], vi.fn(), ["Codex"]);
+    expect(
+      screen.getByText(
+        /Codex goes back to its own settings until Gate Connect runs again; Claude Code keeps working without Gate/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("pluralises the reverting list and omits the keeping clause when nothing is kept", () => {
+    renderConfirm(["Codex", "OpenCode"], vi.fn(), ["Codex", "OpenCode"]);
+    const p = screen.getByText(/Codex and OpenCode go back to their own settings/);
+    expect(p.textContent).not.toMatch(/keep working/);
+  });
+
+  it("the plain button no longer claims it disconnects nothing", () => {
+    renderConfirm(["Codex"], vi.fn(), ["Codex"]);
+    expect(screen.queryByRole("button", { name: /without disconnecting/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Quit" })).toBeTruthy();
   });
 });

@@ -67,16 +67,25 @@ pub fn enable() -> Result<(ProxyState, Vec<Warning>)> {
 /// Master OFF. Returns the engine state from a successful disable, plus any
 /// best-effort warnings; a failed disable is the only hard error.
 ///
-/// The provider sweep runs BEFORE the proxy stops, so config-based tools
-/// (Codex) also stop and their domains are still flippable. The full sweep,
-/// not the provider-only pass: the catalog maps no provider to OpenCode and
-/// friends, and leaving them pointed at the relay we are about to kill would
-/// strand them while the UI reports "not routing". The intent clears last -
-/// explicit "off" is sticky across restarts, so the startup auto-enable
-/// leaves the machine in passthrough.
+/// The provider pass runs BEFORE the proxy goes down, so the domains are still
+/// flippable. It **keeps every tool's configuration** (`ToolConfigs::Kept`):
+/// the engine parks rather than stopping, so a config naming the relay or the
+/// forwarder still reaches an address that answers and forwards direct. This
+/// used to be the full sweep, on the reasoning that leaving a tool pointed at
+/// "the relay we are about to kill" would strand it while the UI reported "not
+/// routing" - true when the ports went away, and the reason to revert them went
+/// away with that. What reverting costs is a restart of every running tool, for
+/// no change in where its traffic goes.
+///
+/// The quit-and-disconnect choice still runs the full sweep
+/// ([`provider::snapshot_and_disable_everything`]), because that one really is
+/// the user asking Gate out of the path.
+///
+/// The intent clears last - explicit "off" is sticky across restarts, so the
+/// startup auto-enable leaves the machine in passthrough.
 pub fn disable() -> Result<(ProxyState, Vec<Warning>)> {
     let mut warnings = Vec::new();
-    if let Err(e) = provider::snapshot_and_disable_everything() {
+    if let Err(e) = provider::snapshot_and_park_everything() {
         warnings.push(Warning::new("provider_disable", e));
     }
     let state = proxy::manager().disable()?;

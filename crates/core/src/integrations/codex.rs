@@ -27,8 +27,26 @@
 //! through and forwards to OpenAI per the upstream hint the relay injects.
 //! Therefore [`requires_upstream_credential`] is `false`.
 //!
-//! Codex reads `config.toml` at startup, so the user must restart any
-//! running `codex` sessions after connecting/disconnecting.
+//! **Codex re-reads `config.toml` per THREAD, not per process**, so "restart
+//! Codex" is the wrong thing to tell anyone. Measured 2026-09-18 on codex-cli
+//! 0.146.0-alpha.3.1 by driving `codex app-server` against two loopback
+//! listeners and watching which one a turn reached:
+//!
+//! | | picks up an edited `config.toml`? |
+//! | --- | --- |
+//! | a new thread in a running process | yes, immediately |
+//! | a thread that was already open | no, it keeps the address it started with |
+//! | that thread resumed after a restart | yes, it re-resolves |
+//!
+//! So the unit is the conversation. A routing change reaches every conversation
+//! started after it, with no restart at all, and reaches none that are already
+//! open, however many times the process is restarted, unless the user resumes
+//! them. This entry used to say the config was read at startup and that running
+//! sessions had to be restarted, which is wrong in both directions.
+//!
+//! It is also the mechanism behind the two facts below: the thread pins the
+//! provider *name* and re-resolves it against whatever is on disk, which is why
+//! the name has to keep resolving and why the stub exists.
 //!
 //! `disconnect` is the one place we stop short of zero residue: it leaves a
 //! `[model_providers.gate]` passthrough stub pointed at OpenAI (see
@@ -50,7 +68,7 @@ use crate::env;
 use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
 use crate::primitives;
-use crate::registry::{ConnectInput, Integration, Status, ToolId};
+use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 /// File name of the auth-helper script older Gate Connect versions wrote
 /// and pointed Codex's `[auth] command` at. We no longer write it - Codex
@@ -303,6 +321,30 @@ impl Integration for Codex {
         Ok(is_connected_marker(&doc) && still_aims_at_us(&doc))
     }
 
+    /// `base_url` names the loopback relay, which dies with the engine.
+    fn mechanism(&self) -> Mechanism {
+        Mechanism::Relay
+    }
+
+    fn configured_addresses(&self) -> Result<Vec<String>> {
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        // The gate block's own `base_url`, whatever it says now: the relay
+        // while connected, OpenAI direct once the passthrough stub is in.
+        Ok(read_doc(&path)?
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .and_then(|t| t.get(PROVIDER_ID))
+            .and_then(|i| i.as_table_like())
+            .and_then(|b| b.get("base_url"))
+            .and_then(|i| i.as_str())
+            .map(str::to_owned)
+            .into_iter()
+            .collect())
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -418,11 +460,32 @@ impl Integration for Codex {
         // Codex dials a dead loopback port (engine crash-reverted, or routing
         // never restored). Drift rather than Connected also keeps the
         // master-off sweep repairing it.
-        if !crate::proxy::relay_listening() {
+        // Liveness and interception, from the relay itself. Identity alone is
+        // not enough: the persisted relay port survives restarts precisely so
+        // configs stay valid, so the check above reads Connected while Codex
+        // dials a port nothing is bound to. And a relay that answers is not a
+        // relay that routes - parked, it forwards every request to the tool's
+        // own provider - so reporting Connected off liveness alone is a green
+        // pill over traffic going direct, which is the one thing this status
+        // exists to prevent.
+        //
+        // The relay reports interception on its health path now. This used to
+        // read `intent::load_intent()`, which is the user's stored preference
+        // rather than a measurement, and got the headless `proxy relay` host
+        // backwards: it always intercepts and writes no intent file, so on a
+        // machine whose last explicit answer was "off" it was reported as not
+        // routing while it routed.
+        let Some(report) = crate::proxy::relay_report() else {
             return Ok(Status::Drifted(format!(
                 "the Gate proxy is not running, so Codex cannot reach its provider \
                  ({expected_base:?} is a dead address) - turn the proxy on, or disconnect Codex \
                  to restore it"
+            )));
+        };
+        if !report.intercepting {
+            return Ok(Status::Drifted(format!(
+                "routing is off, so Codex reaches its provider directly through \
+                 {expected_base:?} rather than through Gate - turn routing on to route it"
             )));
         }
 
@@ -573,7 +636,19 @@ impl Integration for Codex {
         // No Gate-managed provider list is recorded; the marker above is
         // sufficient.
 
-        write_doc(&path, &doc)
+        write_doc(&path, &doc)?;
+
+        // What the user has to know, and the only tool in the registry where
+        // it is about conversations rather than processes. See the module docs
+        // for the measurement: a new thread reads this file, one that is
+        // already open never will. Telling them to restart Codex would be
+        // advice that does nothing for either half.
+        eprintln!(
+            "note: New conversations will go through Gate. Codex pins a conversation to its \
+             provider when it starts, so any you already have open keep the route they started \
+             with."
+        );
+        Ok(())
     }
 
     fn disconnect(&self) -> Result<()> {
