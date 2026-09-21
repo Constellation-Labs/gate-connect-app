@@ -779,9 +779,13 @@ impl<O: DesktopOps> DesktopManager<O> {
         self.status()
     }
 
-    /// Untrust the CA. Refuses while the engine is running, since the engine
-    /// mints leaf certs the OS would then reject. This is the explicit way to
-    /// remove the standing trusted root (disable alone leaves it trusted).
+    /// Untrust the CA, stopping routing first if it is running.
+    ///
+    /// The engine mints leaf certs the OS would reject the moment this root
+    /// stops being trusted, so the two cannot overlap - but that is this
+    /// function's problem to sequence, not the user's to pre-arrange. This is
+    /// the explicit way to remove the standing trusted root (disable alone
+    /// leaves it trusted), and it is what Reset runs.
     pub fn untrust_ca(&self) -> Result<ProxyState> {
         self.prepare_untrust()?;
         self.ops.ca_untrust()?;
@@ -789,8 +793,8 @@ impl<O: DesktopOps> DesktopManager<O> {
     }
 
     /// Remove a machine-wide trust install with no prompt. The counterpart of
-    /// [`trust_ca_system`](Self::trust_ca_system), and refuses while running
-    /// for the same reason [`untrust_ca`](Self::untrust_ca) does.
+    /// [`trust_ca_system`](Self::trust_ca_system), and stops a running engine
+    /// first for the same reason [`untrust_ca`](Self::untrust_ca) does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
         self.prepare_untrust()?;
         self.ops.ca_untrust_system()?;
@@ -798,13 +802,30 @@ impl<O: DesktopOps> DesktopManager<O> {
     }
 
     fn prepare_untrust(&self) -> Result<()> {
+        // Stops a running engine rather than refusing to proceed.
+        //
+        // It used to bail with "turn the proxy off before untrusting the CA".
+        // The reason was right - the engine mints leaf certs that the OS would
+        // reject the moment the root stopped being trusted, so untrusting
+        // underneath a live engine breaks every connection it is carrying - and
+        // the remedy was a control the user had to find and flip first. That
+        // remedy is on its way out with the master routing switch, which would
+        // leave an error naming nothing, on the one path a user reaches when
+        // their certificate is already broken.
+        //
+        // Sequencing it here is not new behaviour so much as honest ownership:
+        // this function already stops a parked engine and retires the
+        // forwarder, because untrusting is the explicit "Gate should let go of
+        // this machine" action. A live engine is the same statement, one step
+        // louder. Callers surface what happened; the consequence is worth a
+        // sentence on screen, not a refusal.
         if self
             .engine
             .lock()
             .expect("proxy engine mutex poisoned")
             .is_some()
         {
-            anyhow::bail!("turn the proxy off before untrusting the CA");
+            self.disable_inner(Teardown::Stop)?;
         }
         // Untrusting the CA is the explicit "Gate should let go of this
         // machine" action (it is what Reset runs), so both things Gate leaves
@@ -1443,20 +1464,41 @@ mod tests {
         mgr.disable_quiet().expect("release for the next test");
     }
 
+    /// Untrusting stops a running engine itself instead of refusing.
+    ///
+    /// This asserted the refusal, and the refusal was the defect: its remedy
+    /// was "turn the proxy off", a control on its way out with the master
+    /// routing switch, named by an error a user only meets when their
+    /// certificate is already broken. The ordering constraint is real - a live
+    /// engine mints leaves the OS would reject the instant the root is
+    /// untrusted - so it is enforced by doing it, not by asking.
     #[test]
-    fn untrust_is_refused_while_running_and_allowed_after_disable() {
+    fn untrust_stops_a_running_engine_rather_than_refusing() {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
         mgr.enable().expect("enable");
-        let err = mgr
-            .untrust_ca()
-            .expect_err("untrust must refuse while running");
-        assert!(err.to_string().contains("turn the proxy off"));
-        assert_eq!(mgr.ops.count("untrust"), 0);
+        mgr.untrust_ca()
+            .expect("untrust must not refuse while running");
 
-        mgr.disable().expect("disable");
-        mgr.untrust_ca().expect("untrust after disable");
+        assert_eq!(
+            mgr.ops.count("untrust"),
+            1,
+            "the untrust must have happened"
+        );
+        assert!(
+            !mgr.status().expect("status").running,
+            "the engine must be stopped, not left minting leaves against an untrusted root"
+        );
+    }
+
+    /// And it is still the ordinary path with nothing running.
+    #[test]
+    fn untrust_works_with_no_engine_running() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.untrust_ca().expect("untrust with no engine");
         assert_eq!(mgr.ops.count("untrust"), 1);
     }
 
