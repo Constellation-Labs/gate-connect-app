@@ -101,20 +101,27 @@ function DialogSketch({ platform }: { platform: Platform }) {
           // Intrinsic size of the capture, so the box is reserved before the
           // PNG decodes; `w-full` still drives the rendered width.
           //
-          // 280px, and deliberately a px literal rather than a rem one - the
+          // 240px, and deliberately a px literal rather than a rem one - the
           // only element here off the rem ramp. Two reasons. It is a bitmap
           // captured at 1x, so growing it past native only enlarges its
           // blur, and it is `aria-hidden` decoration: the reader who turned
           // the text up is served by the copy below, which does scale. And
-          // the panel is the tallest in the app at 567px of the 620px window,
-          // so every px this adds comes off the margin that keeps the buttons
-          // on screen when `growWindow` is capped by a short display.
+          // the panel is the tallest in the app, so every px this adds comes
+          // off the margin that keeps the buttons on screen when `growWindow`
+          // is capped by a short display.
           //
-          // 280 is also near the ceiling: 324px (the full content width) puts
-          // the panel at ~607px, which leaves 6px of clearance.
+          // It was 280 until the browser sentence joined the body paragraph,
+          // and the 37px it gave up is what that sentence costs. Measured in
+          // Chromium through the e2e pipeline at 380x620, content height of
+          // this panel: 547px at 100% text (549 before the sentence, at 280)
+          // and 650px at 125% (643 before). `growWindow` caps the window at
+          // 85% of the display, so 125% on a 768px display has a 652px
+          // ceiling: 2px to spare here. The drawn platforms have no bitmap
+          // to trade and stand at 557px and 767px; they already overflowed
+          // that ceiling at 125% before this change.
           width={dialog.width}
           height={dialog.height}
-          className="mx-auto block h-auto w-full max-w-[280px] rounded-[10px] shadow-border"
+          className="mx-auto block h-auto w-full max-w-[240px] rounded-[10px] shadow-border"
         />
       </Depiction>
     );
@@ -317,33 +324,31 @@ export function CertificateNotice({
         >
           One prompt to expect
         </h1>
-        {/* Two short sentences: what is about to happen, then why it is safe.
-            The old copy opened on "Apps with no gateway setting of their own",
-            which asks the reader to hold a category they have no use for at the
-            moment a system dialog is about to steal focus. The mechanism lives
-            on Home's certificate card, where there is room to read it. */}
+        {/* Three short sentences: what is about to happen, why it is safe, and
+            the one thing to do afterwards. The old copy opened on "Apps with no
+            gateway setting of their own", which asks the reader to hold a
+            category they have no use for at the moment a system dialog is about
+            to steal focus. The mechanism lives on Home's certificate card, where
+            there is room to read it.
+
+            The browser sentence records an observation, not a model of every
+            browser: on a fresh Mac, Chrome rejected the first intercepted page
+            with NET::ERR_CERT_AUTHORITY_INVALID after the install and was fine
+            once relaunched, with the trust setting correct throughout. It is
+            here, before the dialog, because `ensureCaTrusted` (App.tsx) routes
+            every auto-trust path through this panel; the explicit Trust
+            buttons go through `trustCa` instead, whose success lands as the
+            "trusted" change notice on Home. The post-toggle remedies (Home's
+            change banner, `RestartHint`) are close-and-reopen for a tool and
+            reload for a page, and a reload does not reach whatever a browser
+            cached when it started - hence "quit and reopen", hedged. */}
         <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           Gate Connect routes some apps through a proxy on this machine, so your
           {" "}
           {trustStoreName(platform)} needs to trust its certificate. It is made
-          here, never leaves your computer, and you can remove it in Settings.
-        </p>
-        {/* The one instruction this panel gives about *after*. A browser that
-            is already running read the trust store when it started and may
-            keep that reading for as long as it runs: on a fresh Mac, Chrome
-            answered the first intercepted page with
-            NET::ERR_CERT_AUTHORITY_INVALID until it was quit and reopened,
-            with the trust setting itself correct the whole time. Nothing else
-            says this. The post-toggle banners say "reload any pages you have
-            open", which is the right remedy for a stale connection and the
-            wrong one here, since the cache is per process; and the explicit
-            Trust buttons show nothing at all on success. Said before the
-            dialog rather than after because this is the surface every
-            auto-trust path shares, and hedged ("may") because whether a given
-            browser notices a live trust change is its business, not ours. */}
-        <p className="text-gc-caption leading-snug text-gc-ink-3">
-          A browser that is already open may not notice the new certificate
-          until you quit and reopen it.
+          here, never leaves your computer, and you can remove it in Settings. A
+          browser that is already open may not notice it until you quit and
+          reopen it.
         </p>
         {/* The handoff sentence, in the same words Home's card and the family
             panel's banner use, so the three surfaces do not describe one

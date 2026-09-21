@@ -65,25 +65,13 @@ describe("CertificateNotice depicts the prompt the platform actually raises", ()
     expect(screen.getByText(/Your system will ask you to confirm/i)).toBeTruthy();
   });
 
-  it.each(["windows", "macos", "linux", "unknown"] as const)(
-    "tells %s to quit and reopen an open browser, before and during the dialog",
-    (platform) => {
-      // Trust is read by a browser when it starts, so a browser that was open
-      // through the install may go on rejecting the proxy's certificates until
-      // it is reopened - and every other surface's remedy is a page reload,
-      // which does not reach a per-process cache. This is the one place that
-      // says so, and it must not vanish once the dialog is up.
-      const { unmount } = render(
-        <CertificateNotice platform={platform} pending={false} onInstall={vi.fn()} onDecline={vi.fn()} />,
-      );
-      expect(screen.getByText(/quit and reopen it/i)).toBeTruthy();
-      unmount();
-      render(
-        <CertificateNotice platform={platform} pending={true} onInstall={vi.fn()} onDecline={vi.fn()} />,
-      );
-      expect(screen.getByText(/quit and reopen it/i)).toBeTruthy();
-    },
-  );
+  it.each([false, true])("keeps the hedged browser advice up when pending is %s", (pending) => {
+    // Guards two things: that the sentence is still there once the OS dialog
+    // is up (the only moment the user may act on it), and that it stays a
+    // "may" - it describes one browser's behaviour, not a promise.
+    renderNotice({ platform: "macos", pending });
+    expect(screen.getByText(/may not notice it until you quit and reopen it/)).toBeTruthy();
+  });
 
   it("hides every depiction from the accessibility tree, caption included", () => {
     renderNotice({ platform: "linux" });
