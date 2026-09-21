@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import type { ReactNode } from "react";
 import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { Button } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -7,102 +8,140 @@ import windowsTrustDialog from "../assets/windows-certificate-warning.png";
 
 /** How each platform's trust prompt is depicted, and what it is.
  *
- * Two shapes, because the platforms split in two. Windows raises a "Security
- * Warning" asking the user to weigh something, and we have a capture of the
- * real one - which is worth more than a drawing, because it quotes
- * `CA_COMMON_NAME` ("Gate Connect Local CA") back at the user four times, and
- * that is the detail that lets them match the window in front of them to this
- * app. The rest raise a password entry: macOS through `osascript … with
- * administrator privileges` (primitives.rs:169), Linux through `pkexec`
- * (ca_linux.rs:225). Neither asks the user to weigh anything, so they are
- * drawn as a field rather than as a warning, in that platform's own words.
+ * Three shapes, because the platforms split three ways. Cited by function
+ * rather than by line, because line numbers rot.
  *
- * Keyed on the whole of `Platform` so a new OS has to answer this question, and
- * so the day one of the drawn platforms gets a capture it is a one-row change
- * with nothing to touch in the renderer. */
+ * `capture` - Windows. `certutil -user -addstore Root` raises a "Security
+ * Warning" that asks the user to weigh something, and we ship a capture of the
+ * real one. What the capture carries is the shape and the two buttons: at the
+ * width this popover can give it (280 of the dialog's native 516) the body text
+ * is not readable, so the certificate's name is carried as real text by
+ * `trustPromptWaiting`, not by the picture.
+ *
+ * `password` - macOS and Linux, which ask for a password rather than for a
+ * judgement. macOS runs `security add-trusted-cert` directly (`ca::ensure_trusted`)
+ * and the trust-settings change raises the Security Agent; note that this path
+ * deliberately does *not* go through osascript, for the reason set out in the
+ * header of `crates/core/src/proxy/ca.rs`. Linux escalates
+ * `ca_linux::ensure_trusted` through `primitives::run_as_admin`, which picks
+ * `pkexec` in a GUI session and `sudo` on a tty - the drawn strings are
+ * polkit's, so they describe the GUI case, which is the one a popover user is
+ * in.
+ *
+ * `confirm` - `unknown`, where we do not know what will appear.
+ * `trustPromptHint` deliberately promises only that "your system will ask you
+ * to confirm", so the drawing must not show a password field the copy declines
+ * to promise. */
 type TrustDialog =
   | { kind: "capture"; src: string; width: number; height: number }
-  | { kind: "drawn"; title: string; confirm: string; dismiss: string };
+  | { kind: "password" | "confirm"; title: string; confirm: string; dismiss: string };
 
 const TRUST_DIALOG: Record<Platform, TrustDialog> = {
   windows: { kind: "capture", src: windowsTrustDialog, width: 516, height: 475 },
-  macos: { kind: "drawn", title: "Gate Connect", confirm: "OK", dismiss: "Cancel" },
+  // UNVERIFIED: raised by `/usr/bin/security`, not by this app, and not
+  // reachable from a Linux dev box. Check against a real Mac before trusting
+  // these three strings; the shape (a password is wanted) is the part that is
+  // certain.
+  macos: {
+    kind: "password",
+    title: "Certificate Trust Settings",
+    confirm: "Update Settings",
+    dismiss: "Cancel",
+  },
   linux: {
-    kind: "drawn",
+    kind: "password",
     title: "Authentication required",
     confirm: "Authenticate",
     dismiss: "Cancel",
   },
-  unknown: { kind: "drawn", title: "Confirm", confirm: "OK", dismiss: "Cancel" },
+  unknown: { kind: "confirm", title: "Confirm", confirm: "OK", dismiss: "Cancel" },
 };
+
+/** The frame every depiction shares.
+ *
+ * `aria-hidden` sits on the `<figure>` rather than on the drawing inside it, so
+ * it covers the caption too: a screen reader that is handed no picture should
+ * not be told what the picture roughly shows. Everything it needs is in the
+ * panel's real copy. */
+function Depiction({ children }: { children: ReactNode }) {
+  return (
+    <figure aria-hidden>
+      {children}
+      <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
+        Roughly what your system will show
+      </figcaption>
+    </figure>
+  );
+}
 
 /** The system prompt, drawn or captured per `TRUST_DIALOG`.
  *
  * The point of the drawn ones is not pixel fidelity - it is that a window of
- * roughly this shape is about to appear, that it wants a password rather than a
- * decision, and which button ends it. The captured one carries the certificate
- * name on top of that; its one per-machine line is the thumbprint, which
- * nothing asks the user to check, and the caption is hedged for it. Either way
- * the depiction is `aria-hidden`, with the instruction carried in the panel's
- * real copy. */
+ * roughly this shape is about to appear, what it wants from the user, and which
+ * button ends it. The captured one adds the real furniture of the Windows
+ * warning, at a size where the shape and the buttons read and the body text
+ * does not. */
 function DialogSketch({ platform }: { platform: Platform }) {
   const dialog = TRUST_DIALOG[platform];
   if (dialog.kind === "capture") {
     return (
-      <figure>
+      <Depiction>
         <img
-          aria-hidden
           alt=""
           src={dialog.src}
-          // Intrinsic size of the capture, so the box is reserved before the PNG
-          // decodes; `w-full` still drives the rendered width. 280px rather than
-          // the drawing's 248 - wider reads better and the panel does not
-          // scroll, so the ceiling is what is left of the 620px window: 258px of
-          // dialog plus the title, the two paragraphs and the two buttons is
-          // ~560. The full 324px of content width would be ~600 and too close.
+          // Intrinsic size of the capture, so the box is reserved before the
+          // PNG decodes; `w-full` still drives the rendered width.
+          //
+          // 280px, and deliberately a px literal rather than a rem one - the
+          // only element here off the rem ramp. Two reasons. It is a bitmap
+          // captured at 1x, so growing it past native only enlarges its
+          // blur, and it is `aria-hidden` decoration: the reader who turned
+          // the text up is served by the copy below, which does scale. And
+          // the panel is the tallest in the app at 567px of the 620px window,
+          // so every px this adds comes off the margin that keeps the buttons
+          // on screen when `growWindow` is capped by a short display.
+          //
+          // 280 is also near the ceiling: 324px (the full content width) puts
+          // the panel at ~607px, which leaves 6px of clearance.
           width={dialog.width}
           height={dialog.height}
           className="mx-auto block h-auto w-full max-w-[280px] rounded-[10px] shadow-border"
         />
-        <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
-          Roughly what your system will show
-        </figcaption>
-      </figure>
+      </Depiction>
     );
   }
   return (
-    <figure>
-      <div
-        aria-hidden
-        className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border"
-      >
+    <Depiction>
+      <div className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border">
         <div className="flex items-center gap-2">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gc-accent-wash text-gc-accent">
-            <Icon name="key" size={12} />
+            <Icon name={dialog.kind === "password" ? "key" : "info"} size={12} />
           </span>
           <span className="text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>
         </div>
         {/* Skeleton lines, not lorem text: inventing sentences the OS does not
             say would teach the user to look for words that never appear. */}
-        <div className="mt-2 flex-col gap-1">
+        <div className="mt-2 flex flex-col gap-1">
           <span className="block h-[5px] w-full rounded-full bg-gc-line" />
           <span className="block h-[5px] w-4/5 rounded-full bg-gc-line" />
         </div>
-        {/* The password entry, which is the whole point of this drawing: both
-            platforms ask for a password rather than for a judgement, and a bare
-            sunken bar read as one more skeleton line. "Password" is real text
-            because both of them really do write that word; the value is drawn
-            as dots, since the OS never shows characters either. The caret sits
-            after them so the field reads as focused and waiting. */}
-        <div className="mt-2.5">
-          <span className="block text-gc-label text-gc-ink-3">Password</span>
-          <div className="mt-1 flex h-[22px] items-center gap-[3px] rounded bg-gc-sunken px-1.5 shadow-border">
-            {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-              <span key={i} className="h-[4px] w-[4px] rounded-full bg-gc-ink-3" />
-            ))}
-            <span className="ml-[1px] h-[11px] w-px bg-gc-ink" />
+        {/* The password entry, on the two platforms that ask for one. A bare
+            sunken bar read as one more skeleton line, so the field is labelled:
+            "Password" is real text because macOS and Linux both really do write
+            that word, while the value stays drawn as dots, since neither shows
+            characters either. `unknown` is excluded on purpose - we do not know
+            that its prompt wants a password, and `trustPromptHint` promises
+            only that something will ask the user to confirm. */}
+        {dialog.kind === "password" && (
+          <div className="mt-2.5">
+            <span className="block text-gc-label text-gc-ink-3">Password</span>
+            <div className="mt-1 flex h-[22px] items-center gap-[3px] rounded bg-gc-sunken px-1.5 shadow-border">
+              {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                <span key={i} className="h-[4px] w-[4px] rounded-full bg-gc-ink-3" />
+              ))}
+            </div>
           </div>
-        </div>
+        )}
         <div className="mt-2.5 flex items-center justify-end gap-1.5">
           <span className="rounded bg-gc-sunken px-2 py-0.5 text-gc-label text-gc-ink-3">
             {dialog.dismiss}
@@ -112,10 +151,7 @@ function DialogSketch({ platform }: { platform: Platform }) {
           </span>
         </div>
       </div>
-      <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
-        Roughly what your system will show
-      </figcaption>
-    </figure>
+    </Depiction>
   );
 }
 
@@ -161,13 +197,14 @@ export function CertificateNotice({
       onEscape={pending ? undefined : onDecline}
       resetKey={pending}
     >
-      {/* The sketch is this panel's tile. The other takeovers open on a 56px
-          glyph; here the thing being warned about has a shape, and drawing it is
-          worth more than a shield. The drawn platforms carry `key` in accent
-          wash rather than a status colour: what they raise is a password entry,
-          and warning wash would promise an alarm that only Windows actually
-          rings. A shieldCheck would be wrong on all of them - it would promise
-          the protection this step has not granted yet. */}
+      {/* The depiction is this panel's tile. The other takeovers open on a 56px
+          glyph; here the thing being warned about has a shape, and showing it is
+          worth more than a shield. The drawn platforms carry their glyph in
+          accent wash rather than a status colour - `key` where a password is
+          wanted, `info` where we only know something will ask - because warning
+          wash would promise an alarm that only Windows actually rings. A
+          shieldCheck would be wrong on all of them: it would promise the
+          protection this step has not granted yet. */}
       <DialogSketch platform={platform} />
 
       <div className="flex flex-col gap-1.5">
