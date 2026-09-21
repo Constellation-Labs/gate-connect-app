@@ -37,7 +37,10 @@ winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1
 # which is why `"$CLI" proxy trust-ca` below ran fine on Windows. `env` does
 # not, so the extensionless harness path reached it as a command that is not
 # there: a bare 127, no message, and Playwright reporting only "Process from
-# config.webServer was not able to start".
+# config.webServer was not able to start". Naming the suffix was right and was
+# not the whole story: the 127 survived it. A bare 127 is also what Git Bash
+# reports for a native exe that died in the Windows loader, and that case is
+# what the preflight below exists to read.
 EXE=""
 if [ "$OS" = "Windows" ]; then EXE=".exe"; fi
 
@@ -167,6 +170,46 @@ if [ "${GATE_UI_HARNESS_ROUTING:-0}" = "1" ]; then
 fi
 
 BIN="$ROOT/target/debug/examples/ui-harness$EXE"
+
+# --- Preflight, Windows only. ----------------------------------------------
+# A native exe that dies in the Windows loader - a DLL it cannot find, an entry
+# point a system DLL lacks, a side-by-side manifest that does not resolve - is
+# reported by Git Bash as exit 127 with nothing on stderr, the same as "command
+# not found" (Cygwin maps STATUS_DLL_NOT_FOUND and STATUS_ENTRYPOINT_NOT_FOUND
+# to 127 on purpose). Playwright then has one sentence to offer, and it is not
+# a diagnosis. So the harness runs once here with the token withheld, which it
+# refuses with exit 2 and a sentence (`required_env`, reached only after the
+# mock runtime has built): that exit proves the exe loads and gets as far as
+# reading its environment. Anything else is read out the way Windows reports
+# it - the raw exit status from cmd.exe, the exe's import table from dumpbin
+# where Visual Studio is installed, and the loader's own event-log entries -
+# before failing with a message of our own.
+if [ "$OS" = "Windows" ]; then
+  BINW="$(winpath "$BIN")"
+  set +e
+  env -u GATE_UI_HARNESS_TOKEN \
+    GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")" \
+    GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")" \
+    "$BIN"
+  PRE=$?
+  set -e
+  if [ "$PRE" -ne 2 ]; then
+    echo "ui-harness preflight: expected exit 2 with the token withheld, got $PRE" >&2
+    ls -la "$BIN" >&2 || true
+    cmd.exe /v:on /c "\"$BINW\" & echo raw exit code: !ERRORLEVEL!" >&2 || true
+    VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+    if [ -x "$VSWHERE" ]; then
+      DUMPBIN="$("$VSWHERE" -latest -find '**\dumpbin.exe' 2>/dev/null | head -1 | tr -d '\r')"
+      if [ -n "$DUMPBIN" ]; then
+        "$(cygpath -u "$DUMPBIN")" /dependents "$BINW" >&2 || true
+      fi
+    fi
+    powershell.exe -NoProfile -Command \
+      "Get-WinEvent -LogName Application -MaxEvents 40 | Where-Object { \$_.ProviderName -match 'SideBySide|Application Error|Windows Error Reporting' } | Format-List TimeCreated, ProviderName, Message" \
+      >&2 || true
+    exit 1
+  fi
+fi
 
 # The secrets seam keeps this off the real keychain, which on macOS would
 # otherwise prompt per rebuild (see CLAUDE.md, "Running the app locally"); the
