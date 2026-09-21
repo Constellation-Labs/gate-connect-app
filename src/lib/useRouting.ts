@@ -4,7 +4,6 @@ import {
   connectTool,
   disconnectTool,
   listTools,
-  proxyDisable,
   proxyEnable,
   proxySetDomain,
   proxySetEnvExport,
@@ -41,11 +40,16 @@ import type { Group } from "./groups";
  * wrong here: connecting can flip a provider headline and auto-start the
  * engine, so backend truth is the only safe thing to render.
  *
- * Beyond the per-app and per-family switches this also owns the three actions
- * that are about the engine rather than about one app: the master toggle, the
- * shell-environment channel, and removing the certificate. They live here
- * because they share the certificate gate and the re-sync, and because the
- * window had no way to reach any of them.
+ * Beyond the per-app and per-family switches this also owns the two actions
+ * that are about the engine rather than about one app: the shell-environment
+ * channel, and removing the certificate. They live here because they share the
+ * certificate gate and the re-sync, and because the window had no way to reach
+ * either of them.
+ *
+ * It used to own a third, `setMasterRouted`. There is no master switch now -
+ * routing runs for as long as the app is open, started at launch and torn down
+ * at quit - so the only remaining way to stop it from the UI is to close the
+ * window's app.
  */
 
 /** A decision the UI has to collect before the action can continue. */
@@ -258,8 +262,9 @@ export function useRouting({
    * A domain routes through the engine, and `proxy_set_domain` only records the
    * flag - unlike `connect_tool`, which starts the engine on its own. Without
    * this, a chat-domain switch in a window whose engine is off writes intent,
-   * routes nothing, and leaves the user no way back: the popover's master switch
-   * was the only thing that could start it, and this shell had no equivalent.
+   * routes nothing, and leaves the user no way back. Rarely reached now that
+   * the launch enables the engine, but a launch whose enable failed is exactly
+   * the case it was written for.
    *
    * Called after `ensureCaTrusted`, so `proxy_enable`'s own trust step is a
    * no-op and the OS prompt has already been asked for.
@@ -441,47 +446,10 @@ export function useRouting({
   );
 
   /**
-   * Turn all routing on or off: the engine itself, not one app.
-   *
-   * The popover's master switch (`App.tsx`'s `toggleProxy`) minus the takeover.
-   * The certificate is trusted on the way on, because enabling is the step that
-   * prompts, and never on the way off, which is promptless. The backend owns the
-   * routed set across the toggle - off snapshots what was on, on restores that
-   * snapshot - so this reflects the result through `resync` rather than
-   * reconstructing it here.
-   *
-   * Reports whether the engine actually moved, so the caller can follow up with
-   * the running-apps offer: every routed tool is on its old route until it
-   * restarts, exactly as after a config write.
-   */
-  const setMasterRouted = useCallback(
-    async (routed: boolean): Promise<boolean> => {
-      if (busy) return false;
-      setBusy(true);
-      let changed = false;
-      try {
-        if (routed) await ensureCaTrusted();
-        await (routed ? proxyEnable() : proxyDisable());
-        track(routed ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
-        changed = true;
-      } catch (e) {
-        if (!(e instanceof Declined)) {
-          trackError(e, "proxy_toggle");
-          onError?.(e, "proxy_toggle");
-        }
-      } finally {
-        await settle();
-      }
-      return changed;
-    },
-    [busy, ensureCaTrusted, resync, onError],
-  );
-
-  /**
    * Turn the shell-environment channel on or off.
    *
-   * Its own action rather than a branch of `setMasterRouted`, for the reason
-   * `App.tsx` gives: this never starts or stops the engine, it decides whether
+   * Its own action rather than a branch of the engine's own lifecycle, for the
+   * reason `App.tsx` gives: this never starts or stops the engine, it decides whether
    * the proxy is also written into the user's environment - a machine-wide
    * change that reaches `git` and `curl`, not just the AI tools.
    */
@@ -507,9 +475,9 @@ export function useRouting({
    *
    * Confirmed first: every routed domain stops being inspected the moment this
    * lands, and the engine keeps running, so the state it leaves behind is one
-   * the user cannot read off a switch. Turning routing off deliberately does
-   * *not* do this - re-enabling stays promptless - which is why it is a separate
-   * action rather than part of the master toggle.
+   * the user cannot read off a switch. The quit teardown deliberately does
+   * *not* do this - the next launch's enable stays promptless - which is why it
+   * is an explicit action of its own.
    */
   const untrustCa = useCallback(async () => {
     if (busy) return;
@@ -536,7 +504,6 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
-    setMasterRouted,
     setEnvExport,
     untrustCa,
     writeFailures,

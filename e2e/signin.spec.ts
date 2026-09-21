@@ -36,8 +36,7 @@ test.describe("sign in", () => {
     // moment it exists for.
     await expect(app.page.getByText("One prompt to expect")).toBeVisible();
     await app.page.getByRole("button", { name: "Install certificate" }).click();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
-    expect((await app.state()).proxy.running).toBe(true);
+    await expect.poll(async () => (await app.state()).proxy.running).toBe(true);
   });
 
   test("the API key path saves the key and skips the org picker", async ({ boot }) => {

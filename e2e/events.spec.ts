@@ -66,14 +66,14 @@ test.describe("backend events", () => {
 
   test("proxy-state-changed repaints Home from the engine, not from a click", async ({ boot }) => {
     const app = await boot();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+    await expect(app.page.getByText("Didn’t start")).toBeVisible();
 
     // The CLI (or the helper daemon) turned routing on behind the popover's
     // back; the engine announces it.
     await app.patch({ proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true } });
     await app.emit("proxy-state-changed");
 
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(app.page.getByText(/^On( ·|$)/)).toBeVisible();
   });
 
   test("backend-error-pending drains the buffered failures", async ({ boot }) => {

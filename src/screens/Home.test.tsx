@@ -114,7 +114,6 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onEnableRouting={vi.fn()}
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
-      onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
       trustPending={false}
       onOpenFamily={vi.fn()}
@@ -231,12 +230,10 @@ describe("Home CA-trust card", () => {
   });
 });
 
-describe("Home master toggle", () => {
-  it("calls onToggleProxy", () => {
-    const onToggleProxy = vi.fn();
-    renderHome({ onToggleProxy });
-    fireEvent.click(screen.getByRole("switch", { name: "Route through Gate" }));
-    expect(onToggleProxy).toHaveBeenCalledTimes(1);
+describe("Home routing card", () => {
+  it("draws no switch: routing follows the app, so there is nothing to set", () => {
+    renderHome();
+    expect(screen.queryByRole("switch", { name: "Route through Gate" })).toBeNull();
   });
 
   it("keeps the count and lets the card carry the certificate message", () => {
@@ -293,11 +290,11 @@ describe("Home ledger rows", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // The card is one control and its address; a list of the things it governs
+    // The card is one report and its address; a list of the things it covers
     // is a different grain, so it gets its own surface.
     const row = screen.getByRole("button", { name: "Claude details" });
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
-    expect(master.closest(".shadow-border")!.contains(row)).toBe(false);
+    const card = screen.getByRole("heading", { name: "Routing" });
+    expect(card.closest(".shadow-border")!.contains(row)).toBe(false);
   });
 
   it("puts the dashboard link after anything the app has to say", () => {
@@ -326,20 +323,19 @@ describe("Home ledger rows", () => {
     expect(screen.queryByText("Claude, OpenAI")).toBeNull();
   });
 
-  it("still names the families when routing is off", () => {
-    // Every member reports master-off with routing down, so ranking that state
-    // as an exception made the door print "waiting on routing" and drop the
-    // inventory - under a card already reading "Off · 1 waiting". Routing-off is
-    // the one state whose only question is what comes back when you flip it.
+  it("still names the families when routing did not start", () => {
+    // Every member reports not-routing with routing down, so ranking that state
+    // as an exception made the door print "not routing" and drop the
+    // inventory - under a card already reporting it once, countably.
     renderHome({
       proxyOn: false,
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [],
     });
     expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.queryByText("waiting on routing")).toBeNull();
-    // The master card keeps sole ownership of its own state.
-    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+    expect(screen.queryByText("not routing")).toBeNull();
+    // The routing card keeps sole ownership of its own state.
+    expect(screen.getByText("Didn’t start · 1 unprotected")).toBeTruthy();
   });
 
   it("names the failure and keeps the family it belongs to, in its own ink", () => {
@@ -613,9 +609,10 @@ describe("Home says what is waiting", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [],
     });
-    // "Off · not routing" while two families read "waiting on routing" is the
-    // fact that makes flipping the switch feel safe rather than speculative.
-    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+    // A launch whose enable did not complete leaves apps switched on and
+    // unprotected. Counting them is what turns "something is wrong" into a
+    // number the user can check against what they have connected.
+    expect(screen.getByText("Didn’t start · 1 unprotected")).toBeTruthy();
   });
 
   it("does not offer to close apps when nothing is installed", () => {
@@ -682,8 +679,8 @@ describe("Home family pill vocabulary", () => {
     expect(screen.queryByText("Not routed")).toBeNull();
   });
 
-  it("leaves master-off to the card, which says it once as a count", () => {
-    // `master-off` is `enabled && !proxyOn`, and proxyOn is global, so it can
+  it("leaves not-routing to the card, which says it once as a count", () => {
+    // `not-routing` is `enabled && !proxyOn`, and proxyOn is global, so it can
     // never distinguish one family from another: on the pill it is four
     // identical capsules restating the card directly above them. DESIGN.md:
     // "Card-owned states never print on a row."
@@ -691,10 +688,10 @@ describe("Home family pill vocabulary", () => {
       proxyOn: false,
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
     });
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Not routing")).toBeNull();
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
     // The card carries it, once, and countably.
-    expect(screen.getByText(/Off .+ waiting$/)).toBeTruthy();
+    expect(screen.getByText(/Didn’t start .+ unprotected$/)).toBeTruthy();
   });
 
   it("still says Not routed when the user is the reason", () => {
@@ -703,7 +700,7 @@ describe("Home family pill vocabulary", () => {
       domains: [makeDomain({ enabled: false })],
     });
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Not routing")).toBeNull();
     expect(screen.queryByText("Needs trust")).toBeNull();
   });
 });
@@ -766,15 +763,12 @@ describe("Home command-line tools switch", () => {
 
   it("toggles the shell-environment channel without touching routing", () => {
     const onToggleEnvExport = vi.fn();
-    const onToggleProxy = vi.fn();
-    renderHome({ ...withFamily, onToggleEnvExport, onToggleProxy });
+    renderHome({ ...withFamily, onToggleEnvExport });
     fireEvent.click(screen.getByRole("switch", { name: NAME }));
     expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
-    // It spans every family, so it must never move the master as a side effect.
-    expect(onToggleProxy).not.toHaveBeenCalled();
   });
 
-  it("reflects the backend's choice rather than the master's state", () => {
+  it("reflects the backend's choice rather than the engine's state", () => {
     renderHome({ ...withFamily, proxyOn: true, envExportOn: false });
     expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
   });
@@ -786,27 +780,28 @@ describe("Home command-line tools switch", () => {
     expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
   });
 
-  it("sits below the ledger, not beside the master switch", () => {
-    // The arrangement this replaced put the two switches 66px apart wearing the
+  it("sits below the ledger, not beside the routing card", () => {
+    // The arrangement this replaced put two switches 66px apart wearing the
     // same track in the same indigo, which said a machine-wide change to git and
-    // curl was routing's equal. The ledger between them is the fix.
+    // curl was routing's equal. The master switch is gone and this one is not,
+    // so the ordering still has to hold: the card, the ledger, then this.
     renderHome(withFamily);
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
+    const card = screen.getByRole("heading", { name: "Routing" });
     const shell = screen.getByRole("switch", { name: NAME });
     const heading = screen.getByRole("heading", { name: "What routes through Gate" });
-    expect(master.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(heading.compareDocumentPosition(shell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("stays a line rather than a card, so the master keeps the weight", () => {
+  it("stays a line rather than a card, so the routing card keeps the weight", () => {
     renderHome(withFamily);
     const row = screen.getByText("Command-line tools").closest("div")!.parentElement!;
     expect(row.className).not.toContain("shadow-border");
   });
 
-  it("is absent when there is no ledger to separate it from the master", () => {
-    // With nothing installed the two switches would be adjacent again, which is
-    // exactly the geometry that failed. Costs nothing: the panel this used to
+  it("is absent when there is no ledger to separate it from the card", () => {
+    // With nothing installed it would sit straight under the routing card,
+    // which is the geometry that failed. Costs nothing: the panel this used to
     // live on was reachable only through a family row.
     renderHome({ tools: [], domains: [] });
     expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
@@ -815,13 +810,13 @@ describe("Home command-line tools switch", () => {
   it("answers for reading on over a channel that cannot be live", () => {
     renderHome({ ...withFamily, proxyOn: false, envExportOn: true });
     const toggle = screen.getByRole("switch", { name: NAME });
-    // The switch reports the stored choice, which survives routing being turned
-    // off. It points at the card's status line rather than repeating it: the
-    // master card owns `master-off` and says it once, countably.
+    // The switch reports the stored choice, which survives the engine being
+    // down. It points at the card's status line rather than repeating it: the
+    // routing card owns `not-routing` and says it once, countably.
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     const described = document.getElementById(toggle.getAttribute("aria-describedby")!);
-    expect(described?.textContent).toMatch(/^Off/);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(described?.textContent).toMatch(/^Didn’t start/);
+    expect(screen.queryByText("Not routing")).toBeNull();
   });
 
   it("carries its instruction in ink that clears AA", () => {

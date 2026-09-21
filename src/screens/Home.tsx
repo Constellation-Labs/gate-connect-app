@@ -40,7 +40,6 @@ export function Home({
   onEnableRouting,
   staleAgentsHint,
   onDismissStaleAgents,
-  onToggleProxy,
   onTrustCa,
   trustPending,
   onOpenFamily,
@@ -84,7 +83,6 @@ export function Home({
   onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
-  onToggleProxy: () => void;
   onTrustCa: () => void;
   /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
    * certificate card's sentence for the one that names that dialog. */
@@ -133,7 +131,7 @@ export function Home({
   // Switched on but not flowing because the master is off. Saying so is what
   // makes flipping the switch feel safe rather than speculative.
   const waitingCount = groups.reduce(
-    (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
+    (n, g) => n + g.members.filter((m) => m.attention === "not-routing").length,
     0,
   );
   // What the user has asked to route, as opposed to what is actually flowing.
@@ -155,10 +153,10 @@ export function Home({
   // top, everything else holds catalog order. `sort` is stable, so the healthy
   // tail never reshuffles between renders.
   //
-  // `master-off` is deliberately absent, as it was when this ranking fed the
+  // `not-routing` is deliberately absent, as it was when this ranking fed the
   // door. It is not per-family news, it is the master switch's own state, and
   // the card above already says "Off · N waiting". Ranked here it would print
-  // "waiting on routing" on every row at once - the same sentence the card just
+  // "not routing" on every row at once - the same sentence the banner just
   // said, repeated four times, while naming nothing.
   const EXCEPTION_RANK: Record<string, number> = {
     error: 0,
@@ -288,12 +286,12 @@ export function Home({
               ? partial
                 ? "Routing on, certificate not trusted"
                 : `Routing on, ${routedCount} of ${routableCount} routing`
-              : "Routing off"
+              : "Routing did not start"
             : ""}
       </span>
       <div className="flex flex-col gap-2.5 p-3.5">
-        {/* One box, two parts: the master control and the door to what it
-            controls. They were two cards with two 36px tiles stacked 10px apart,
+        {/* One box, two parts: the routing report and the door to what it
+            covers. They were two cards with two 36px tiles stacked 10px apart,
             which read as two unrelated errands when they are the same subject
             seen at two grains.
 
@@ -326,15 +324,19 @@ export function Home({
                   {showProxy && (
                     <>
                       {/* A heading, not a styled div: this is the screen's
-                          primary control and it was absent from the document
+                          primary report and it was absent from the document
                           outline, so the outline read h1 -> h2 "What routes
-                          through Gate" with the master switch unheaded. */}
+                          through Gate" with this block unheaded. It carried a
+                          switch until routing started following the app. */}
                       <h2 className="text-gc-body font-semibold text-gc-ink">Routing</h2>
                       {/* Identified, because it is the screen's one report of
                           whether anything is flowing: the shell-channel switch
                           below points at it for the reality half of its own
                           state, the way a family switch used to point at its
-                          row's sentence. */}
+                          row's sentence. "Didn't start" rather than "Off":
+                          routing is not something the user can have switched
+                          off any more, so the only way to be here is a launch
+                          enable that did not complete. */}
                       <div id="routing-status" className="mt-0.5 text-gc-caption text-gc-ink-3">
                         {/* The count survives the certificate state. Dropping it
                             was backwards: that is exactly when the user wants to
@@ -350,8 +352,8 @@ export function Home({
                             finding out which tool it was. */}
                         {!proxyOn
                           ? waitingCount > 0
-                            ? `Off · ${waitingCount} waiting`
-                            : "Off · not routing"
+                            ? `Didn’t start · ${waitingCount} unprotected`
+                            : "Didn’t start"
                           : routableCount === 0
                             ? "On"
                             : desiredCount === 0
@@ -361,18 +363,6 @@ export function Home({
                     </>
                   )}
                 </div>
-                {showProxy && (
-                  <Switch
-                    className="ml-auto"
-                    on={proxyOn}
-                    label="Route through Gate"
-                    busy={busy}
-                    onClick={() => {
-                      setInteracted(true);
-                      onToggleProxy();
-                    }}
-                  />
-                )}
               </div>
             )}
 
@@ -663,7 +653,7 @@ export function Home({
                   // up to four rows directly under the card that just said it,
                   // and in the certificate's case alongside the only button that
                   // fixes it. The pill still reports what it costs the family.
-                  exception={kind === "master-off" || kind === "needs-trust" ? null : exception}
+                  exception={kind === "not-routing" || kind === "needs-trust" ? null : exception}
                   kind={kind}
                   last={i === ranked.length - 1}
                   onOpen={() => onOpenFamily(group.id)}
@@ -713,12 +703,12 @@ export function Home({
                 Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
                 shell, so OpenCode and other terminal tools route too.
               </div>
-              {/* No "Waiting on routing" line here, unlike the panel this came
+              {/* No "Not routing" line here, unlike the panel this came
                   from. That panel had no master card, so the sentence had
                   nowhere else to live; Home's card sits 190px up reporting
                   "Off · N waiting", and DESIGN.md's own rule is that
                   card-owned states never reprint further down - it is why the
-                  ledger rows below suppress `master-off` too. Printing it here
+                  ledger rows below suppress `not-routing` too. Printing it here
                   would be the third copy of one fact on one screen.
 
                   The switch still has to answer for reading "on" over a channel
@@ -918,8 +908,8 @@ function FamilyRow({
       <span id={`home-family-${group.id}`} className="sr-only">
         {label}. {count}
         {/* Not when the pill already said it. A dark family now names its own
-            cause, so `master-off` read "Waiting on routing. 0 of 2 routing.
-            waiting on routing". The visible row already suppresses this pair;
+            cause, so `not-routing` read "Not routing. 0 of 2 routing. not
+            routing". The visible row already suppresses this pair;
             the description was the copy that still had both. */}
         {exception && exception.toLowerCase() !== label.toLowerCase() ? `. ${exception}` : ""}
       </span>

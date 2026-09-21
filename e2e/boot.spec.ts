@@ -12,7 +12,9 @@ test.describe("boot", () => {
     // The org is the header's sub-label: the one thing that says who you are
     // on this gateway.
     await expect(app.page.getByText("Constellation Labs")).toBeVisible();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+    // The card reports rather than sets; with the engine down it says the
+    // launch enable did not finish.
+    await expect(app.page.getByText("Didn’t start")).toBeVisible();
   });
 
   test("no account at all lands on first run", async ({ boot }) => {
@@ -56,7 +58,6 @@ test.describe("boot", () => {
       ],
     });
 
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
     await expect(app.page.getByText(/^On · 1 of \d+ routing$/)).toBeVisible();
   });
 });
