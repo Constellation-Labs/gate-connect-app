@@ -52,9 +52,24 @@ export interface ActivityEntry {
   categoryTitle?: string | null;
   /** The model that served the request, or copy saying none was attributed. */
   model: string;
-  /** Which upstream served it (`anthropic`, `openai`), for the vendor mark beside
-   *  the model. Null when the request never reached one. */
+  /** Which upstream served it (`anthropic`, `openai`). Null when the request
+   *  never reached one - which the gateway reports honestly and often.
+   *
+   *  A reading. It is what the row is allowed to *say*: the tooltip and the
+   *  screen-reader text come from here and nowhere else. */
   provider: string | null;
+  /** The namespace whose brand mark the model cell draws.
+   *
+   *  Separate from `provider` because it is not the same claim. Where the
+   *  gateway named an upstream this is that upstream; where it did not, it is
+   *  the model id's own namespace, which identifies *the model beside it* and
+   *  not who served the request. Rows with no provider are disproportionately
+   *  the ones that never reached one - blocked, or failed before routing - so
+   *  announcing a derived value as the upstream would put "Anthropic" in a
+   *  screen reader beside a `blocked` pill for a request Anthropic never saw.
+   *  The mark is decorative and sits next to the id it came from; the words
+   *  are not, so they stay with `provider`. */
+  vendor: string | null;
   /**
    * What the conversation was about, or null when there is nothing to show.
    *

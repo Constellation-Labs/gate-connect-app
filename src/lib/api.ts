@@ -163,6 +163,11 @@ export const clearAccount = () => invoke<void>("clear_account");
  * or the flow times out. Resolves with the resulting status. */
 export const oauthBeginLogin = () => invoke<OAuthStatus>("oauth_begin_login");
 
+/** Abandon a sign-in that is still waiting for the browser, so the in-flight
+ *  `oauthBeginLogin` rejects instead of waiting out its five-minute deadline.
+ *  Idempotent, and a no-op when no login is running. */
+export const oauthCancelLogin = () => invoke<void>("oauth_cancel_login");
+
 /** Current sign-in status (signed in, email, expiry). Cheap keychain read. */
 export const oauthStatus = () => invoke<OAuthStatus>("oauth_status");
 

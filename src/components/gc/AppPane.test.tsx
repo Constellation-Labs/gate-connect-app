@@ -19,6 +19,7 @@ const entry: ActivityEntry = {
   security: "flagged",
   model: "claude-opus-4",
   provider: "anthropic",
+  vendor: "anthropic",
   title: "Update our data-model.md",
   reference: "824bd2c0-4123",
   category: "pii",
@@ -568,5 +569,87 @@ describe("AppPane model selection", () => {
 
     within(card_).getByRole("radio", { name: /Gate model/ }).click();
     expect(onChooseModel).toHaveBeenCalledWith("gate");
+  });
+});
+
+/**
+ * The two fixes that are only visible at their call sites.
+ *
+ * Both shipped tested in isolation - `categoryTone` and `appProviderMarkFor`
+ * each have their own suites - and untested where they are used, so deleting
+ * the `className` from the Type glyph or the `appVendorMark` prop from the
+ * model row left the whole suite green. A helper nobody calls is not a fix.
+ */
+describe("AppPane draws what the helpers resolve", () => {
+  it("inks the Type glyph with its category's colour", () => {
+    // `661:16450` colours each category; the column drew one ink for all of
+    // them. Asserted on the rendered glyph, not on `categoryTone`'s return.
+    render(pane({ activity: [{ ...entry, category: "pii", categoryIcon: "userRound" }] }));
+
+    const svg = card("Recent activity").querySelector("svg.text-green-600");
+    expect(svg).not.toBeNull();
+  });
+
+  it("gives a guardrail that did not fire no colour at all", () => {
+    // "Regular" is Connect's own word for an examined request that matched
+    // nothing. A colour is what firing looks like.
+    render(pane({ activity: [{ ...entry, category: "Regular", categoryIcon: "shieldCheck" }] }));
+
+    const feed = card("Recent activity");
+    expect(feed.querySelector("svg.text-green-600")).toBeNull();
+    expect(feed.querySelector("svg.text-red-600")).toBeNull();
+  });
+
+  it("draws the app vendor's mark in the App-default row when given one", () => {
+    // The row took the rail's monochrome mark, built for the header's black
+    // tile. This asserts the prop reaches the row at all - the colour itself is
+    // `ProviderMark`'s own test.
+    render(
+      pane({
+        modelChoice: "app",
+        appVendorMark: <svg data-testid="vendor-mark" />,
+      }),
+    );
+
+    expect(screen.getByTestId("vendor-mark")).toBeTruthy();
+  });
+
+  it("falls back to the rail's mark where the app has no single vendor", () => {
+    // OpenCode and friends call whatever they are configured with, so
+    // `appProviderMarkFor` returns undefined and the row keeps `logo`.
+    render(
+      pane({
+        modelChoice: "app",
+        appVendorMark: undefined,
+        logo: <svg data-testid="brand-mark" />,
+      }),
+    );
+
+    // Twice, and the count is the assertion: the pane header draws `logo` in
+    // its black tile whatever happens, so one match would mean the row fell
+    // through to the cube instead of to `logo`.
+    expect(screen.getAllByTestId("brand-mark")).toHaveLength(2);
+  });
+});
+
+describe("the App-default row's mark size", () => {
+  it("draws the fallback at the same size as the vendor mark", () => {
+    // The row's tile is 36px around a 20px glyph (`683:20439`). The first
+    // version of this passed 20 only to the colour mark, so Claude and ChatGPT
+    // drew 20 while every other app drew `BrandMark`'s default 16 in the same
+    // slot - a size step between rows that did not exist before the change.
+    render(
+      pane({
+        modelChoice: "app",
+        appVendorMark: undefined,
+        appFallbackMark: <svg data-testid="sized-fallback" width={20} height={20} />,
+        logo: <svg data-testid="header-only" />,
+      }),
+    );
+
+    expect(screen.getByTestId("sized-fallback").getAttribute("width")).toBe("20");
+    // `logo` stays the header's, and does not reach the row once a sized
+    // fallback exists.
+    expect(screen.getAllByTestId("header-only")).toHaveLength(1);
   });
 });

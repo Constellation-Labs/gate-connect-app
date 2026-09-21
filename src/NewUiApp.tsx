@@ -28,6 +28,7 @@ import {
   launchAtLoginStatus,
   listProviders,
   listTools,
+  oauthCancelLogin,
   oauthStatus,
   openOnboardingWindow,
   proxyBrowserStore,
@@ -90,6 +91,7 @@ import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
+import { appProviderMarkFor } from "./components/gc/ProviderMark";
 import { orgLabel } from "./lib/orgLabel";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
@@ -367,6 +369,10 @@ export function NewUiApp() {
   const [offerOpen, setOfferOpen] = useState(false);
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState<ClassifiedError | null>(null);
+  /** The decline cancelled an in-flight login, so its rejection is expected and
+   *  must not be drawn as a failure. A ref, not state: `acceptOffer`'s catch
+   *  reads it in the same tick the click set it. */
+  const declinedRef = useRef(false);
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -2092,16 +2098,28 @@ export function NewUiApp() {
 
   const acceptOffer = useCallback(async () => {
     setOfferError(null);
+    declinedRef.current = false;
     setOfferBusy(true);
     try {
       await settings.upgradeToOAuth();
+      // Not an accept if they declined while it was landing.
+      //
+      // `oauth.rs` refuses after the callback, which closes the wide half of
+      // this window, but the token exchange and the keychain write still run
+      // after that check - so a decline pressed in those few hundred
+      // milliseconds can be followed by a login that succeeds anyway. The
+      // upgrade is then a fact and the shell will show it, which is right; what
+      // would be wrong is counting it as an answer to a question the user
+      // answered the other way, and burning the one-time offer on it.
+      if (declinedRef.current) return;
       track("oauth_offer_accepted");
       // Seen whichever way the user leaves, so a completed upgrade cannot be
       // offered again on the next launch either.
       markOAuthOfferSeen();
       setOfferOpen(false);
     } catch (e) {
-      setOfferError(classifyError(e, "sign_in"));
+      // Silent when the user cancelled it themselves - see `declineOffer`.
+      if (!declinedRef.current) setOfferError(classifyError(e, "sign_in"));
     } finally {
       setOfferBusy(false);
     }
@@ -2127,10 +2145,48 @@ export function NewUiApp() {
     }
   }, [settings]);
 
-  const declineOffer = useCallback(() => {
-    markOAuthOfferSeen();
-    setOfferOpen(false);
-  }, []);
+  /**
+   * Decline the offer, including while a browser sign-in is still waiting.
+   *
+   * The cancel is what makes the decline mean anything mid-flow: `login` waits
+   * five minutes for the callback, so without it the dialog could only stop
+   * *showing* the wait while the flow ran on - and a sign-in that then
+   * completed would upgrade the account the user had just declined to upgrade.
+   *
+   * `declined` suppresses the rejection that cancel causes. It is not a failure
+   * to report: the user asked for it, the dialog is already gone, and a banner
+   * afterwards would be the app arguing with the button they pressed.
+   */
+  const declineOffer = useCallback(
+    (reason: "declined" | "dismissed" = "declined") => {
+      if (offerBusy) {
+        declinedRef.current = true;
+        void oauthCancelLogin().catch(() => {});
+      }
+      // Pressing the decline is an answer and is remembered. Escape is not.
+      //
+      // Escape became live mid-flow in the same change that made the decline
+      // work, and that combination is sharper than it looks: while the browser
+      // tab is open and the person is typing their password, a stray keypress
+      // in this window would cancel the sign-in *and* burn a one-time offer they
+      // never answered - `hasSeenOAuthOffer` gates it forever - with no message,
+      // because the cancel's own rejection is deliberately suppressed. Losing
+      // the sign-in to a keypress is recoverable; losing the offer with it is
+      // not.
+      //
+      // Escape only: `Modal` hands `onDismiss` to `useFocusTrap` and to the
+      // optional close button, and its scrim carries no click handler - in this
+      // dialog or any other. An earlier version of this comment said "and the
+      // scrim", which was wrong about every dialog in the app.
+      //
+      // Principle 5's shape: the dialog stays dismissable, and the irreversible
+      // half needs the button.
+      if (reason === "declined") markOAuthOfferSeen();
+      setOfferError(null);
+      setOfferOpen(false);
+    },
+    [offerBusy],
+  );
 
   /**
    * Build the diagnostics report against live probes.
@@ -3465,7 +3521,8 @@ export function NewUiApp() {
               )
             }
             onSignIn={() => void acceptOffer()}
-            onKeepKey={declineOffer}
+            onKeepKey={() => declineOffer("declined")}
+            onDismissOffer={() => declineOffer("dismissed")}
           />
         ) : undefined
       }
@@ -3480,6 +3537,20 @@ export function NewUiApp() {
           // surfaces, and this is the only place that says which.
           description={describeSection(view.slug)}
           logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
+          // The header tile above is black, so `logo` stays monochrome; the
+          // App-default row's tile is light and draws the vendor's own colour.
+          //
+          // Both at 20, and the fallback too (`appFallbackMark`): the row's tile
+          // is 36px around a 20px glyph (`683:20439`), and the first version of
+          // this passed 20 only to the colour mark. That left Claude and ChatGPT
+          // at 20 while OpenCode, OpenClaw and Hermes drew 16 in the same slot -
+          // a size step between rows that did not exist before the change.
+          appVendorMark={appProviderMarkFor(view.slug, 20)}
+          appFallbackMark={brandMarkForSection(
+            view.slug,
+            sectionMemberKeys(view.slug),
+            20,
+          )}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off

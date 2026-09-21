@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { adaptEvents } from "./toolEvents";
+import { adaptEvents, categoryTone } from "./toolEvents";
 
 /**
  * What a row in the tool feed is allowed to say.
@@ -211,5 +211,128 @@ describe("adaptEvents", () => {
     const view = adaptEvents({ ...envelope([]), events: undefined });
 
     expect(view.entries).toEqual([]);
+  });
+});
+
+/**
+ * The Type column's ink and its glyph, both keyed on the gateway's own
+ * spellings.
+ *
+ * Found on the functional-review build: the column drew one ink for every
+ * category where `661:16450` colours each, and two of the five spellings the
+ * gateway can send matched nothing in the glyph table, so Credential and PHI
+ * rows fell through to the generic shield.
+ */
+describe("the Type column's categories", () => {
+  it("colours each category the way the frame draws it", () => {
+    // Measured off `661:16450` and matched to the variables it resolves:
+    // red/600, green/600, purple/600.
+    expect(categoryTone("injection")).toContain("red-600");
+    expect(categoryTone("pii")).toContain("green-600");
+    expect(categoryTone("credential")).toContain("purple-600");
+  });
+
+  it("leaves the ink alone where no guardrail fired", () => {
+    // A colour is what a guardrail firing looks like. "Regular" is the case
+    // where one ran and matched nothing, and `other` is a category the frame
+    // never drew.
+    expect(categoryTone("Regular")).toBe("text-base-foreground");
+    expect(categoryTone("other")).toBe("text-base-foreground");
+    expect(categoryTone(null)).toBe("text-base-foreground");
+  });
+
+  it("knows every spelling the gateway can actually send", () => {
+    // `toCategory` in `activity.controller.ts` narrows to exactly these five.
+    // `credential` and `phi` used to match nothing here - the table was keyed
+    // `credentials` and `pii-phi`, which are the *policy row* ids - so two of
+    // the five drew the fallback shield instead of their own glyph.
+    const iconFor = (c: string) =>
+      adaptEvents(envelope([raw({ securityCategory: c })])).entries[0].categoryIcon;
+
+    expect(iconFor("injection")).toBe("shieldAlert");
+    expect(iconFor("pii")).toBe("userRound");
+    expect(iconFor("phi")).toBe("userRound");
+    expect(iconFor("credential")).toBe("key");
+    // `other` has no glyph of its own and keeps the fallback, which is what
+    // the frame's "a glyph in every Type cell" asks for.
+    expect(iconFor("other")).toBe("shieldCheck");
+  });
+
+  it("still answers for the policy-row spellings, which are a second vocabulary", () => {
+    expect(categoryTone("pii-phi")).toContain("green-600");
+    expect(categoryTone("prompt-injection")).toContain("red-600");
+    expect(categoryTone("credentials")).toContain("purple-600");
+  });
+});
+
+/**
+ * The vendor mark's provider, when the gateway names none.
+ *
+ * Reported as "the Model column doesn't include the provider icon". The
+ * component was right all along - `VendorMark` resolves `providerMarkFor` - and
+ * the data was the problem: `provider` holds the pipeline's `unknown` sentinel
+ * on a large share of rows, the endpoint maps that to null rather than have a
+ * client draw a mark for a provider nobody has, and the cell then rendered an
+ * empty spacer.
+ */
+describe("the model row's provider", () => {
+  const rowFor = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries[0];
+
+  it("prefers what the gateway said", () => {
+    const row = rowFor({ provider: "openai", model: "anthropic/claude-opus-5" });
+
+    expect(row.vendor).toBe("openai");
+    expect(row.provider).toBe("openai");
+  });
+
+  it("falls back to the model id's own namespace for the mark", () => {
+    // The id is canonical `provider/model`, so the vendor is already on the
+    // row - the same split `NewUiApp` makes in two other places.
+    expect(rowFor({ provider: null, model: "anthropic/claude-opus-5" }).vendor).toBe(
+      "anthropic",
+    );
+  });
+
+  it("does not turn a derived vendor into a claim about who served it", () => {
+    // The half the first version of this got wrong. `VendorMark` puts
+    // `provider` in a `title` and an `sr-only` string, so deriving into that
+    // field made the row *say* "anthropic" for a request that never reached
+    // anyone - and rows with no provider are disproportionately exactly those,
+    // since the gateway writes its sentinel on the paths that failed before
+    // routing. The mark is decorative and sits beside the id it came from; the
+    // words are a reading and stay null.
+    const row = rowFor({ provider: null, model: "anthropic/claude-opus-5" });
+
+    expect(row.provider).toBeNull();
+    expect(row.vendor).toBe("anthropic");
+  });
+
+  it("names no vendor for a model id that carries none", () => {
+    // A bare id names no vendor, and inferring one from the model family would
+    // be a guess about whose mark to draw.
+    expect(rowFor({ provider: null, model: "gpt-5" }).vendor).toBeNull();
+    expect(rowFor({ provider: null, model: null }).vendor).toBeNull();
+    expect(rowFor({ provider: null, model: "/leading-slash" }).vendor).toBeNull();
+  });
+});
+
+describe("the category tables' shared lookup", () => {
+  it("does not hand a prototype member to the class attribute", () => {
+    // `constructor` and `__proto__` both survive `toLowerCase()` and come back
+    // truthy off `Object.prototype`, so a bare index made `??` unreachable and
+    // `className` received a function. Guarded in `ProviderMark` and, until
+    // now, not here - in the same change.
+    for (const key of ["constructor", "__proto__", "valueOf"]) {
+      expect(categoryTone(key)).toBe("text-base-foreground");
+    }
+  });
+
+  it("matches a spelling whatever its case, in both tables at once", () => {
+    // The glyph and its ink have to agree. One lookup lowercased and the other
+    // did not, so `PII` took the fallback shield in PII green.
+    const row = adaptEvents(envelope([raw({ securityCategory: "PII" })])).entries[0];
+
+    expect(row.categoryIcon).toBe("userRound");
+    expect(categoryTone(row.category!)).toContain("green-600");
   });
 });
