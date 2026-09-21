@@ -110,15 +110,15 @@ function DialogSketch({ platform }: { platform: Platform }) {
           // off the margin that keeps the buttons on screen when `growWindow`
           // is capped by a short display.
           //
-          // It was 280 until the browser sentence joined the body paragraph,
-          // and the 37px it gave up is what that sentence costs. Measured in
-          // Chromium through the e2e pipeline at 380x620, content height of
-          // this panel: 547px at 100% text (549 before the sentence, at 280)
-          // and 650px at 125% (643 before). `growWindow` caps the window at
-          // 85% of the display, so 125% on a 768px display has a 652px
-          // ceiling: 2px to spare here. The drawn platforms have no bitmap
-          // to trade and stand at 557px and 767px; they already overflowed
-          // that ceiling at 125% before this change.
+          // It was 280 until the browser sentence joined the body paragraph.
+          // Measured in Chromium through the e2e pipeline at 380x620, content
+          // height of this panel: 530px at 100% text (549 before the
+          // sentence, at 280) and 650px at 125% (643 before; 687 if the
+          // capture stays at 280). `growWindow` caps the window at 85% of the
+          // display, so 125% on a 768px display has a 652px ceiling, which is
+          // what rules 280 out. The drawn platforms have no bitmap to trade
+          // and stand at 557px and 745px; they already overflowed that
+          // ceiling at 125% before this change.
           width={dialog.width}
           height={dialog.height}
           className="mx-auto block h-auto w-full max-w-[240px] rounded-[10px] shadow-border"
@@ -341,14 +341,14 @@ export function CertificateNotice({
             "trusted" change notice on Home. The post-toggle remedies (Home's
             change banner, `RestartHint`) are close-and-reopen for a tool and
             reload for a page, and a reload does not reach whatever a browser
-            cached when it started - hence "quit and reopen", hedged. */}
+            cached when it started - hence a restart. "Any open browser" is
+            the hedge: it asks nothing of a user with no browser running. */}
         <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           Gate Connect routes some apps through a proxy on this machine, so your
           {" "}
           {trustStoreName(platform)} needs to trust its certificate. It is made
-          here, never leaves your computer, and you can remove it in Settings. A
-          browser that is already open may not notice it until you quit and
-          reopen it.
+          here, never leaves your computer, and you can remove it in Settings.
+          Restart any open browser so it trusts the certificate.
         </p>
         {/* The handoff sentence, in the same words Home's card and the family
             panel's banner use, so the three surfaces do not describe one

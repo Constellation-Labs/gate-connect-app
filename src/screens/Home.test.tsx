@@ -525,7 +525,7 @@ describe("Home routing-change notice", () => {
     // cached at start.
     const onCloseAgents = vi.fn();
     renderHome({ changeNotice: "trusted", onCloseAgents, domains: [makeDomain()] });
-    expect(screen.getByText(/Certificate trusted\. A browser that is already open/)).toBeTruthy();
+    expect(screen.getByText(/Certificate trusted\. Restart any open browser/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
     expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();

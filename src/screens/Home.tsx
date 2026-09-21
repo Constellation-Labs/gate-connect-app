@@ -574,7 +574,7 @@ export function Home({
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
                 : changeNotice === "trusted"
-                  ? "Certificate trusted. A browser that is already open may not notice it until you quit and reopen it."
+                  ? "Certificate trusted. Restart any open browser so it trusts it too."
                   : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
