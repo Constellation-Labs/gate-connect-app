@@ -70,7 +70,6 @@ import {
   BAND_LABELS,
   browserTrustRestartAdvice,
   buildGroups,
-  describeSection,
   hintForMember,
   isSettingsManaged,
   proxyReopenAdvice,
@@ -3533,10 +3532,13 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
-          // The section's own sentence. The h1 is an app name now ("Claude"),
-          // which is legible on its own - but the switch under it covers three
-          // surfaces, and this is the only place that says which.
-          description={describeSection(view.slug)}
+          // No coverage sentence under the name. The frame's header
+          // (`app-info`, 408:25099 and 116:30211) is two lines, title and
+          // status, and design asked for the third to go on 2026-09-21. The
+          // sentence still exists in `lib/groups.ts` for the popover; the
+          // window now has no per-app statement of what a switch covers, which
+          // AG-892, AG-889/897 and the session-routing default all wanted
+          // somewhere. Where that goes is design's to draw.
           logo={brandMarkForSection(view.slug, sectionMemberKeys(view.slug))}
           // The header tile above is black, so `logo` stays monochrome; the
           // App-default row's tile is light and draws the vendor's own colour.
