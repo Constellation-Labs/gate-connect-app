@@ -354,6 +354,25 @@ enum Applied {
     /// provider by name gets an error, because for them nothing happening is a
     /// result that needs explaining.
     NotYet,
+    /// No route to configure, and no later call will change that.
+    ///
+    /// The distinction from [`NotYet`](Applied::NotYet) is *ever* versus *yet*,
+    /// and it exists because a provider can have nothing to enable while the
+    /// engine is running perfectly. `openai` is the worked example: its only
+    /// tool is Codex, and both of its domains are `Credential::Additive`, so
+    /// `cascade_domains` returns an empty list and the domain loop below has
+    /// nothing to walk. With Codex uninstalled, `enable_inner` configures no
+    /// tool, enables no domain, and returns a state whose `enabled` is false.
+    ///
+    /// Without this variant that outcome was indistinguishable from "the route
+    /// did not take", which the restore leaves `Pending` on purpose. The
+    /// entry then went back into the snapshot, rendered as "Not started", and
+    /// every Retry re-ran the identical path to the identical result. AG-885
+    /// reported it as a banner that would not clear and a Retry button that
+    /// did nothing, which is exactly what it was: the same defect the
+    /// unresolvable-slug guard in `restore_all` already fixed once, reached by
+    /// a different route.
+    NothingRoutable,
 }
 
 /// [`enable`] with members to leave alone: the restore path's flavour, so a
@@ -394,6 +413,25 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
              \u{201c}Route through Gate\u{201d} to route it through the proxy",
             p.display_name
         );
+    }
+
+    // Everything this restore is allowed to turn on, after the two exclusions
+    // that can empty it: a credential that does not cascade, and a member the
+    // user switched off before routing stopped.
+    let routable: Vec<&'static str> = cascade_domains(&p)
+        .into_iter()
+        .filter(|domain| !skipped(domain))
+        .collect();
+
+    // Nothing to configure and nothing to enable, with the engine up. Disjoint
+    // from `plan.nothing` above, which is the engine-down case and says "not
+    // yet"; here a later pass would do exactly as much, so saying "yet" would
+    // promise a second attempt that cannot differ. See `Applied::NothingRoutable`.
+    //
+    // The state is still returned rather than an error, so `enable` by name
+    // behaves exactly as before - only the restore paths read the variant.
+    if !any_detected && routable.is_empty() {
+        return Ok((Applied::NothingRoutable, state(&p)));
     }
 
     if plan.configure_tool {
@@ -1265,10 +1303,30 @@ pub fn restore_all() -> Result<()> {
                 journal.record(&slug, recovery::Outcome::DeferredEngineDown);
                 pending.push(slug);
             }
+            // Reached, and there was nothing here to restore: no installed
+            // tool and no domain this pass may cascade to. Settled, so it is
+            // journalled and dropped rather than re-queued - the same remedy
+            // the unknown-slug guard above applies, for the same reason. It
+            // used to fall into the arm below and sit at "Not started" for
+            // ever. AG-885.
+            //
+            // `NotInstalled` rather than a new outcome: it is already
+            // `is_complete` and already excluded from `is_outstanding`, and
+            // the sentence the UI draws for a provider - "Nothing this
+            // provider routes is on this machine any more" - is the true one.
+            Ok((Applied::NothingRoutable, _)) => {
+                journal.record(&slug, recovery::Outcome::NotInstalled);
+                continue;
+            }
             // A route that did not take: an attempt happened and produced
             // nothing. Not a failure worth reporting and not a completion, so
             // the seeded `Pending` stands rather than the journal being told a
             // story about it.
+            //
+            // Still reachable, and still deliberately silent: a provider whose
+            // members exist but were all skipped lands here. That case is the
+            // user's own earlier choice rather than a dead end, and labelling
+            // it would need an outcome none of the current ones fit.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 // `{e:#}`, matching the string journalled two lines down: the
@@ -1462,6 +1520,16 @@ fn restore_one_provider(slug: &str, queued: Vec<String>) -> Result<()> {
         // the batch's own reason too: a retry that reports "Not started" claims
         // it never ran.
         Ok((Applied::NotYet, _)) => Ok(None),
+        // Nothing here to restore, ever. The batch drops this and so does the
+        // retry - and this arm is the one the Retry BUTTON needed: without it
+        // a row with no routable member reported `Some(false)`, journalled
+        // nothing, stayed in the snapshot and came back reading "Not started".
+        // Pressing Retry again did the same. AG-885.
+        Ok((Applied::NothingRoutable, _)) => {
+            journal.record(slug, recovery::Outcome::NotInstalled);
+            journal.finish();
+            return drop_from_snapshot();
+        }
         // Enabled, but no route came out of it. The batch leaves this `Pending`
         // and so does the retry.
         Ok(_) => Ok(Some(false)),
@@ -1592,6 +1660,59 @@ mod tests {
             }],
         }
         .is_empty());
+    }
+
+    /// The shape of AG-885, pinned without needing a running engine.
+    ///
+    /// The reported symptom - `openai` stuck at "Not started", Retry and
+    /// Resume both inert - is composed of two facts that are pure and can be
+    /// asserted directly. Together they say the row cannot succeed: with Codex
+    /// absent there is no tool to configure, and with an empty cascade there is
+    /// no domain to enable, yet `enable_plan` still reports work to do because
+    /// the engine is up.
+    ///
+    /// Asserted here rather than through `restore_all` because reproducing it
+    /// end to end needs `proxy_running()` true, and a unit test cannot bind an
+    /// engine. If either half ever changes, the guard in `enable_inner` is
+    /// answering a question nobody is asking any more and this fails loudly.
+    #[test]
+    fn openai_has_no_route_of_its_own_when_codex_is_absent() {
+        let openai = find("openai").expect("the openai provider is in the catalog");
+
+        // Both its domains are `Credential::Additive`, so neither cascades.
+        // This is the fact the provider's own comment states and the one that
+        // makes the domain loop a no-op.
+        assert!(
+            cascade_domains(&openai).is_empty(),
+            "openai's cascade should be empty, got {:?}",
+            cascade_domains(&openai)
+        );
+
+        // And the engine being up is enough to make the plan claim work, which
+        // is what skips the `NotYet` return. `nothing` is the only escape
+        // `enable_inner` had before `NothingRoutable`.
+        assert!(
+            !enable_plan(false, true).nothing,
+            "an undetected tool with the engine up must not read as nothing to do"
+        );
+        // The engine-down case keeps its old answer, so the new guard has not
+        // swallowed the one that was already right.
+        assert!(enable_plan(false, false).nothing);
+    }
+
+    /// The outcome the two restore paths now record for it.
+    ///
+    /// Pinned because the choice is load-bearing and invisible from the Rust
+    /// side: `NotInstalled` has to be settled, or the entry goes straight back
+    /// into the snapshot and AG-885 returns wearing a different label.
+    #[test]
+    fn the_outcome_for_nothing_routable_is_settled_not_outstanding() {
+        assert!(!recovery::Outcome::NotInstalled.is_outstanding());
+        assert!(recovery::Outcome::NotInstalled.is_complete());
+        // The one it must not be confused with: `Pending` is what the bug left
+        // behind, and it is outstanding, which is why the banner never cleared.
+        assert!(recovery::Outcome::Pending.is_outstanding());
+        assert!(!recovery::Outcome::Pending.is_complete());
     }
 
     /// `Applied::NotYet` is private, so the only place that can name it is a
