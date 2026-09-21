@@ -116,6 +116,23 @@ AUDIT_LOG="$WORK/audit-emits.jsonl"
 : > "$AUDIT_LOG"
 
 # --- 2. The mocks. ---------------------------------------------------------
+# On Windows, everything this script starts has to be told when to die, and
+# `exec`ing the harness below is half of the same fix. Playwright's webServer
+# teardown is `taskkill /T /F` on the shell it spawned, then a wait for the
+# child's stdout/stderr pipes to close. `/T` walks parent PIDs, and a Cygwin
+# process that `exec`s a native one exits its own stub: `node … &` is a fork
+# whose child execs node, and `env … "$BIN"` was env execing the harness, so
+# both landed with a dead parent and outside the tree taskkill sees. The
+# harness survived with the pipe, and Playwright waited on it until the job
+# hit its 30-minute limit - 19 minutes after the last test had passed. This
+# process's own Windows PID is the one thing taskkill reliably kills, so the
+# mocks and the harness each watch it and follow it down. Unix needs neither:
+# Playwright kills the whole process group there.
+if [ "$OS" = "Windows" ]; then
+  MOCK_EXIT_WITH_PID="$(cat "/proc/$$/winpid")"
+  export MOCK_EXIT_WITH_PID
+fi
+
 CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$MOCK_PORT" \
   MOCK_CERT="$(winpath "$WORK/ca/leaf.pem")" MOCK_KEY="$(winpath "$WORK/ca/leaf.key")" \
   node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
@@ -125,8 +142,10 @@ MOCK_AUTH_PORT="$AUTH_PORT" MOCK_AUDIT_LOG="$(winpath "$AUDIT_LOG")" \
   node "$(winpath "$ROOT/ci/e2e/mock-auth.mjs")" >"$WORK/mock-auth.out" 2>&1 &
 AUTH_PID=$!
 
-# Not `exec`ed below, so these can be reaped: Playwright kills this script, and
-# an exec would have orphaned both node processes on every run.
+# For a manual run ended by Ctrl+C before the harness is up, or a failure on
+# the way there. Once the harness is `exec`ed this trap is gone with the shell;
+# by then Playwright's group kill (Unix) or the PID watch above (Windows) is
+# what ends the mocks.
 cleanup() { kill "$MOCK_PID" "$AUTH_PID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
@@ -238,14 +257,23 @@ fi
 # otherwise prompt per rebuild (see CLAUDE.md, "Running the app locally"); the
 # home seam keeps every tool config, CA and helper socket the run creates
 # inside $WORK.
-env \
-  GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")" \
-  GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")" \
-  GATE_CONNECT_TEST_CA="$(winpath "$WORK/ca/ca.pem")" \
-  GATE_UI_HARNESS_CAPTURE="$(winpath "$CAPTURE")" \
-  GATE_CONNECT_TEST_AUDIT_ENDPOINT="http://127.0.0.1:$AUTH_PORT/audit/emit" \
-  GATE_CONNECT_TEST_TOKEN_ENDPOINT="http://127.0.0.1:$AUTH_PORT/oauth2/token" \
-  GATE_CONNECT_TEST_ORGS_ENDPOINT="http://127.0.0.1:$AUTH_PORT/v1/me/orgs" \
-  GATE_UI_HARNESS_PORT="${GATE_UI_HARNESS_PORT:-5610}" \
-  GATE_UI_HARNESS_TOKEN="$GATE_UI_HARNESS_TOKEN" \
-  "$BIN"
+export GATE_CONNECT_TEST_HOME="$(winpath "$WORK/home")"
+export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
+export GATE_CONNECT_TEST_CA="$(winpath "$WORK/ca/ca.pem")"
+export GATE_UI_HARNESS_CAPTURE="$(winpath "$CAPTURE")"
+export GATE_CONNECT_TEST_AUDIT_ENDPOINT="http://127.0.0.1:$AUTH_PORT/audit/emit"
+export GATE_CONNECT_TEST_TOKEN_ENDPOINT="http://127.0.0.1:$AUTH_PORT/oauth2/token"
+export GATE_CONNECT_TEST_ORGS_ENDPOINT="http://127.0.0.1:$AUTH_PORT/v1/me/orgs"
+export GATE_UI_HARNESS_PORT="${GATE_UI_HARNESS_PORT:-5610}"
+export GATE_UI_HARNESS_TOKEN
+if [ "$OS" = "Windows" ]; then
+  export GATE_UI_HARNESS_EXIT_WITH_PID="$MOCK_EXIT_WITH_PID"
+fi
+
+# `exec`, not `env`: see the note above the mocks. This shell's parent is the
+# native cmd.exe Playwright spawned, so on exec the shell stays as the stub
+# Windows knows and the harness is created as ITS child - inside the tree
+# `taskkill /T` walks. Through `env`, a Cygwin process whose parent is also
+# Cygwin, the stub exits and the harness is orphaned. On Unix it changes
+# nothing that matters: the process group is what gets killed.
+exec "$BIN"

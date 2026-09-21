@@ -147,6 +147,44 @@ fn required_env(name: &str) -> String {
     }
 }
 
+/// Follow the process that started this one down, when asked to.
+///
+/// `GATE_UI_HARNESS_EXIT_WITH_PID` is set by `ci/e2e/ui-harness.sh` on Windows
+/// only, to the script's own Windows PID. Playwright ends a webServer with
+/// `taskkill /T /F` on the shell it spawned and then waits for the child's
+/// stdout/stderr pipes to close, and `/T` walks parent PIDs. The script now
+/// `exec`s this binary so it is created as the shell's child and inside that
+/// tree; this is the second line, for the case where it still is not - a
+/// Cygwin exec that leaves the harness with a dead parent - because the
+/// alternative was measured: the harness outlived the kill holding the pipe,
+/// and Playwright waited on it for 19 minutes until the job's own limit ended
+/// the run. Unset, nothing is watched.
+///
+/// The PID is polled rather than the parent read, because on Windows the
+/// parent recorded for this process may already be a dead stub at start.
+fn exit_with_pid() {
+    let Some(pid) = std::env::var("GATE_UI_HARNESS_EXIT_WITH_PID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|p| *p > 0)
+    else {
+        return;
+    };
+    std::thread::spawn(move || {
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+        let pid = Pid::from_u32(pid);
+        let mut sys = System::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+            if sys.process(pid).is_none() {
+                eprintln!("ui-harness: process {pid} is gone; exiting with it");
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn main() {
     // On Linux the engine does not live in this process: `manager_linux` spawns
     // `<current-exe> --proxy-helper` as a detached daemon that owns the loopback
@@ -211,6 +249,7 @@ fn main() {
     for seam in ["GATE_CONNECT_TEST_HOME", "GATE_CONNECT_TEST_SECRETS"] {
         let _ = required_env(seam);
     }
+    exit_with_pid();
 
     let port: u16 = std::env::var("GATE_UI_HARNESS_PORT")
         .ok()

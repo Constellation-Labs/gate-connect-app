@@ -340,6 +340,21 @@ jobs:
         env:
           GATE_UI_HARNESS_ROUTING: "1"
 
+      # Playwright's webServer teardown on Windows is `taskkill /T` plus a wait
+      # for the child's pipes to close, and a process the tree walk misses
+      # holds the run open until this job's timeout. `ci/e2e/ui-harness.sh`
+      # arranges for nothing to be missed; this is how a repeat gets diagnosed
+      # rather than guessed at - whatever is still alive is named here, with
+      # the parent PID that taskkill would have needed.
+      - name: List processes the harness run left behind (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.Name -match '^(ui-harness|node|bash|env|cmd|gate-connect)' } |
+            Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+            Format-Table -AutoSize -Wrap
+
       # A run that fails midway can leave the root installed. The runner is
       # throwaway, but a machine-wide root is not the kind of thing to leave
       # lying around on the strength of that - the same reasoning, and the same
