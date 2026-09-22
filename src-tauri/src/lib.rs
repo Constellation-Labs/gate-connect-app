@@ -2631,6 +2631,46 @@ fn config_changed_at_unix(slug: &str) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// When Gate's CA certificate was last written, as Unix seconds.
+///
+/// The second file a routed tool reads once at startup, and not per tool -
+/// every tool Gate points at it reads the same one. `None` when there is none
+/// on disk, which is the ordinary state before routing has ever been on.
+///
+/// **`ca_cert_path`, not `ca_bundle::path`.** This read the bundle until
+/// review on #329, and that was wrong twice over: the tools with process
+/// names are pointed at the certificate through `NODE_EXTRA_CA_CERTS`, so the
+/// bundle is not a file they read; and the bundle regenerates on every Hermes
+/// connect, so it would have raised the reopen alert on healthy tools while
+/// missing the re-mint it exists to catch - a re-mint rewrites the
+/// certificate and leaves the bundle alone until Hermes next connects.
+/// `ca-cert.pem` is written only by the generate path, so its mtime is the
+/// re-mint moment and nothing else. `reopen_source_is_the_file_tools_read`
+/// pins the choice.
+/// The file whose mtime bounds the reopen decision.
+///
+/// Named and separate from the stat below so the CHOICE can be tested. The
+/// `max` tests in `reopen.rs` pass whichever file is stat'd - they exercise
+/// the comparison - and this PR's original mistake was the choice, not the
+/// comparison. `reopen_source_is_the_file_tools_read` asserts this equals
+/// what the tools are pointed at.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn reopen_cert_source() -> Option<std::path::PathBuf> {
+    gate_connect_core::proxy::ca_cert_path().ok()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn ca_cert_changed_at_unix() -> Option<u64> {
+    let path = reopen_cert_source()?;
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
 /// Is a process for this one tool running that predates the last change to that
 /// tool's configuration, and is therefore still using whatever it loaded then?
 ///
@@ -2658,6 +2698,7 @@ fn reopen_pending_for(slug: &str) -> bool {
         process_names_known: true,
         process_starts: &starts,
         config_changed_at: config_changed_at_unix(slug),
+        ca_cert_changed_at: ca_cert_changed_at_unix(),
     })
 }
 
@@ -6180,6 +6221,42 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reopen bound must stat the file the covered tools actually read.
+    ///
+    /// Raised in review on #329, where it statted `ca-bundle.pem` instead. The
+    /// `max` tests below pass whichever file is chosen - they only exercise
+    /// the comparison - so the choice of source needs its own pin or the next
+    /// swap goes unnoticed the same way.
+    ///
+    /// Asserted against `ca_cert_path` rather than a literal filename,
+    /// because that function is what `claude_code.rs` writes into
+    /// `NODE_EXTRA_CA_CERTS` and what `proxy_env` exports. If the tools are
+    /// ever pointed somewhere else, this should move with them rather than
+    /// keep naming a path nobody reads.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn reopen_source_is_the_file_tools_read() {
+        let source = reopen_cert_source().expect("a source path");
+        let tools_read = gate_connect_core::proxy::ca_cert_path().expect("a cert path");
+        let bundle = gate_connect_core::proxy::ca_bundle::path().expect("a bundle path");
+
+        assert_ne!(
+            tools_read, bundle,
+            "the two must stay distinct, or this test proves nothing"
+        );
+        // The assertion that actually bites: swap `reopen_cert_source` back to
+        // the bundle and this fails. Asserting properties of `ca_cert_path`
+        // instead would pass either way, which is how the first attempt at
+        // this test was useless.
+        assert_eq!(
+            source, tools_read,
+            "the reopen bound must stat what the covered tools are pointed at \
+             (NODE_EXTRA_CA_CERTS), not the bundle, whose only consumer is \
+             Hermes and which regenerates on every connect"
+        );
+        assert_ne!(source, bundle);
+    }
 
     /// Serialises the tests that mutate [`PENDING_BACKEND_ERRORS`].
     ///
