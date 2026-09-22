@@ -1343,8 +1343,8 @@ test.describe("new UI sidebar rail", () => {
     // branch too, and "any app on this machine can be pointed here" is false
     // of Claude Desktop: it is one app, and nothing is pointed at it.
     //
-    // `tools: []`, which is the state two tests above already boot, because
-    // the default fixture ships every CLI as detected and would never see it.
+    // `tools: []`, which the tests above already boot, because the default
+    // fixture ships every CLI as detected and would never see this.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [],
@@ -1378,10 +1378,9 @@ test.describe("new UI sidebar rail", () => {
       .getByRole("button")
       .click();
 
-    // Anchored on the note's own tail. The earlier version matched
-    // /counted in the Overview/, which resolves to one element only because
-    // the two card strings capitalise "Counted" and the regex had no `i` -
-    // three matches the moment either changes, and strict mode would fail.
+    // Anchored on the note's own tail. An earlier version matched
+    // /counted in the Overview/, which resolved to one element only by luck of
+    // capitalisation - three matches the moment either string changed.
     await expect(
       app.page.getByText(/cannot attribute these requests to one app/),
     ).toBeVisible();
@@ -1390,7 +1389,7 @@ test.describe("new UI sidebar rail", () => {
     ).toBeVisible();
     // The cards are their own string and there are two of them.
     await expect(
-      app.page.getByText("Counted in the Overview, not per app"),
+      app.page.getByText("Shows in the Overview, not per app"),
     ).toHaveCount(2);
     await expect(app.page.getByText(/These counts cover/)).toHaveCount(0);
   });

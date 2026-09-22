@@ -5,6 +5,7 @@ import { sectionStatus } from "./verdict";
 import {
   PROXY_REOPEN_ADVICE,
   BAND_LABELS,
+  isProviderEndpoint,
   SECTIONS,
   browserTrustRestartAdvice,
   buildGroups,
@@ -989,6 +990,27 @@ describe("settings-managed members", () => {
  * longer share a group, because OpenAI has a vendor group to belong to and
  * OpenRouter does not. That is a real loss of a distinction, made knowingly.
  */
+describe("isProviderEndpoint", () => {
+  // Nothing covered this, so the unknown-id branch its doc argues for was
+  // unpinned. Raised in review on #323.
+  it("is true only for a destination other programs are pointed at", () => {
+    expect(isProviderEndpoint("openrouter")).toBe(true);
+    expect(isProviderEndpoint("openai-api")).toBe(true);
+  });
+
+  it("is false for an app the user launches", () => {
+    expect(isProviderEndpoint("claude")).toBe(false);
+    expect(isProviderEndpoint("chatgpt")).toBe(false);
+  });
+
+  it("is false for an id no section names", () => {
+    // A catalog entry with no home yet. Claiming it is an endpoint would put
+    // "any app on this machine can be pointed here" on it, which is the
+    // sentence this flag exists to withhold.
+    expect(isProviderEndpoint("nope")).toBe(false);
+  });
+});
+
 describe("which group a section draws under", () => {
   // `any-app`, which is what both provider-endpoint rows are: neither is one
   // program's surface.

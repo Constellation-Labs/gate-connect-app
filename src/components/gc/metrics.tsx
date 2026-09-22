@@ -331,7 +331,7 @@ export function MessagesChart({
         // absence, which reads as breakage rather than as the permanent shape
         // of the data. The traffic is counted; it is counted somewhere else.
         <EmptyNote icon="chartColumn">
-          Counted in the Overview, not per app
+          Shows in the Overview, not per app
         </EmptyNote>
       ) : unavailable ? (
         // Not a sentence about their traffic. The pane's gap notice carries the

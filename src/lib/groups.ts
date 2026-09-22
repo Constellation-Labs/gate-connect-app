@@ -694,9 +694,13 @@ export const SECTIONS: readonly {
   members: readonly string[];
   blurb?: string;
   /** A destination the user points other programs at, rather than a program
-   *  they launch. Explicit rather than derived: it used to be readable off
-   *  `band === "tools"`, and grouping the rail by vendor took that away. Two
-   *  rows today, and the pane's copy turns on it - see `isProviderEndpoint`. */
+   *  they launch.
+   *
+   *  Explicit because no existing field means this. `band` is the closest
+   *  thing and is not it - it is a layout choice, it has held these rows
+   *  alongside OpenClaw, Hermes, OpenCode and the environment channel, and
+   *  #324 regrouped it by vendor underneath. Two rows today, and the pane's
+   *  copy turns on it - see `isProviderEndpoint`. */
   providerEndpoint?: true;
 }[] = [
   {

@@ -136,7 +136,7 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     expect(
-      within(feed).getByText("Counted in the Overview, not per app"),
+      within(feed).getByText("Shows in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(feed).queryByText("Recent activity couldn't be read")).toBeNull();
     expect(within(feed).queryByText("No recent messages")).toBeNull();
@@ -337,7 +337,7 @@ describe("AppPane counters and chart", () => {
     const feed = card("Recent activity");
 
     expect(
-      within(feed).getByText("Counted in the Overview, not per app"),
+      within(feed).getByText("Shows in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(feed).queryByRole("table")).toBeNull();
   });
@@ -347,7 +347,7 @@ describe("AppPane counters and chart", () => {
     const chart = card("Messages");
 
     expect(
-      within(chart).getByText("Counted in the Overview, not per app"),
+      within(chart).getByText("Shows in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(chart).queryByText("Messages couldn't be read")).toBeNull();
     // Not the empty state either: "no messages in the last 24hrs" would be a

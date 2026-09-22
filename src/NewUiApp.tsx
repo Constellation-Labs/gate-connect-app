@@ -3833,22 +3833,15 @@ export function NewUiApp() {
                 // and saying so beats a zero.
                 //
                 // **Two sentences, split on `isProviderEndpoint` and not on
-                // `openDomain`.** They look like the same question and are not:
-                // `openDomain` is `openTool === null`, "this section has no
-                // INSTALLED config tool", and a section stays alive on its
-                // `domain:` members - so a Claude pane on a machine without
-                // Claude Code is `openDomain` too. "Any app on this machine can
-                // be pointed here" is true of OpenRouter and false of Claude
-                // Desktop, which is one app that nothing is pointed at. The old
-                // wording was vague enough to survive both; the endpoint one is
-                // specific enough to be wrong, so it is gated.
+                // `openDomain`.** They look like the same question and are
+                // not; the argument is written out on `isProviderEndpoint`
+                // itself, which is the thing being explained.
                 //
                 // Neither claims traffic IS being counted. That would be false
-                // while the row's switch is off, when the traffic bypasses Gate
-                // and is counted nowhere - the same trap the comment below the
-                // dialog copy warns about. "Appear in the Overview rather than
-                // on this page" is about where a reading shows up, not about
-                // whether one exists.
+                // while the row's switch is off, when the traffic bypasses
+                // Gate and is counted nowhere. "Appear in the Overview rather
+                // than on this page" is about where a reading shows up, not
+                // about whether one exists.
                 openProviderEndpoint ? (
                   <p className="text-base-xs text-base-muted-foreground">
                     <span className="font-medium">This entry:</span> any app on
