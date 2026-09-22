@@ -83,7 +83,7 @@ fn wanted() -> bool {
 static ENSURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// What one supervisory pass found. See [`ensure_running_supervised`].
-pub(crate) enum Supervision {
+pub enum Supervision {
     /// Another caller is already inside an ensure, so this pass did nothing
     /// and does not need to: that caller's work covers this moment.
     Busy,
