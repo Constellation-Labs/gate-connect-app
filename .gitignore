@@ -31,3 +31,9 @@
 
 # Planning notes for future sessions. Working documents, not part of the app.
 feature-plans/
+
+# Scratch output from local verification runs. These were committed once by
+# accident (a `git add -A` during a conflict resolution) and are 443KB of
+# build logs; ignore them so it cannot happen again.
+review/
+untitled.md
