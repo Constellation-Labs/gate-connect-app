@@ -73,7 +73,29 @@ export type AppStatus =
    * for a reading and principle 6 prefers one.
    */
   | { kind: "partly-protected"; detail?: string }
-  | { kind: "not-routed"; detail?: string };
+  | { kind: "not-routed"; detail?: string }
+  /**
+   * Routed, and Gate cannot see any of it.
+   *
+   * The tool's config names Gate and its traffic really does go through the
+   * engine - so every other reading here says Protected - but the provider it
+   * talks to is not one Gate intercepts, either because no catalog entry
+   * claims that host or because the entry's switch is off. The requests
+   * tunnel straight through, unread.
+   *
+   * **A seventh phrase, and the Figma draws none of it**, on the same
+   * reasoning the two above were added: the existing vocabulary answers
+   * wrongly. "Protected" is false, "Not protected" reads as the off state on
+   * a switch that is on, and "Not routed" is false twice over - it IS routed.
+   * Principle 6 again: the row is making a claim about the user's traffic, so
+   * it had better be one that is true.
+   *
+   * `detail` names the host, because "not inspected" without saying what is
+   * not inspected leaves nowhere to go. There is deliberately no action on
+   * this row: for an unknown provider none exists, and inventing one would be
+   * the lie this phrase exists to stop telling. AG-932.
+   */
+  | { kind: "not-inspected"; detail?: string };
 
 /**
  * What the last detection scan established, which is not the same as how many
@@ -226,6 +248,9 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
   reopen: { label: "Reopen to finish", className: "text-amber-600" },
   "partly-protected": { label: "Partly protected", className: "text-amber-600" },
   "not-routed": { label: "Not routed", className: "text-amber-600" },
+  // Amber, not green. It is the honest colour: something the user would want
+  // to know about, and not a failure they caused.
+  "not-inspected": { label: "Routed, not inspected", className: "text-amber-600" },
 };
 
 /**
@@ -248,6 +273,9 @@ function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
   if (status.kind === "reopen" || status.kind === "partly-protected") return status.detail;
   if (status.kind === "not-routed") return status.detail;
+  // The host, which is the whole of what makes this row actionable - or at
+  // least understandable, since for an unknown provider there is no action.
+  if (status.kind === "not-inspected") return status.detail;
   return undefined;
 }
 

@@ -686,6 +686,9 @@ export function TrayApp() {
           name: t.name,
           status: verdictStatus(verdicts.get(t.slug), {
             writeFailed: routing.writeFailures.has(t.slug),
+            // Same reading the window's rail takes, so the two surfaces
+            // cannot disagree about whether a row is inspected. AG-932.
+            coverage: t.coverage,
           }),
           on:
             t.status.kind === "connected" ||

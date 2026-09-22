@@ -185,6 +185,33 @@ impl Integration for OpenClaw {
         crate::taxonomy::Client::OpenClaw
     }
 
+    /// AG-932, the OpenClaw half.
+    ///
+    /// Only one case, and it is a `switched_off` one: a subscription profile
+    /// sends its model calls to `chatgpt.com`, and Gate sees them only while
+    /// that domain is on. An API-key profile calls a host the OpenAI switch
+    /// already covers, so there is nothing to report.
+    ///
+    /// No `unknown` arm, unlike Hermes. OpenClaw's OpenAI provider is one of
+    /// two known hosts rather than anything the user can type, so Gate always
+    /// has an entry for it - the gap here is a switch being off, never a
+    /// provider Gate cannot route.
+    ///
+    /// Derived from the auth profile where Hermes derives from `base_url`s.
+    /// The two readings are shaped differently and the row that reports them
+    /// is the same, which is the whole reason `UpstreamCoverage` is shared
+    /// rather than each integration inventing its own.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        let settings = load_settings().ok().flatten()?;
+        if openai_auth_mode(&settings) != OpenAiAuthMode::Bearer || chatgpt_domain_enabled() {
+            return None;
+        }
+        Some(crate::coverage::UpstreamCoverage {
+            switched_off: vec![("chatgpt.com".to_string(), CHATGPT_DOMAIN_SLUG.to_string())],
+            unknown: Vec::new(),
+        })
+    }
+
     /// The row label. Rows sit under a family heading that already names the
     /// vendor, so the label separates the surfaces inside that family: "App" for
     /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
@@ -920,6 +947,53 @@ mod tests {
             }
             other => panic!("expected drift, got {other:?}"),
         }
+    }
+
+    /// AG-932: the same gap the connect note has always printed, now readable
+    /// by the rail on every poll.
+    ///
+    /// Shares the note's own env dance and for the same reason: both read the
+    /// domain catalog through `app_support_dir()`, so without a redirect they
+    /// read the *developer's* real one and anyone who has run Gate Connect
+    /// with the chatgpt domain on would see this suppressed.
+    #[test]
+    fn a_subscription_profile_with_the_domain_off_reports_an_uninspected_host() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!("gate-openclaw-cov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+
+        let out = (|| {
+            // A Bearer (subscription) profile, which is the case that sends
+            // model calls to chatgpt.com.
+            let settings: Map<String, Value> = serde_json::from_str(
+                r#"{"auth":{"profiles":{"openai:default":{"provider":"openai","mode":"oauth"}}}}"#,
+            )
+            .expect("fixture parses");
+            write_settings(&settings)?;
+            anyhow::Ok(OpenClaw.upstream_coverage())
+        })();
+
+        match prev {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        let coverage = out
+            .expect("writing the fixture is not what is under test")
+            .expect("an empty home has no domains file, so the domain is off");
+        assert_eq!(
+            coverage.switched_off,
+            vec![("chatgpt.com".to_string(), "chatgpt".to_string())],
+            "names the host and the switch that covers it"
+        );
+        assert!(
+            coverage.unknown.is_empty(),
+            "OpenClaw's provider is always a host Gate has an entry for; the gap \
+             is a switch being off, never a provider Gate cannot route"
+        );
     }
 
     #[test]

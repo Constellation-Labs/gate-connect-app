@@ -75,6 +75,20 @@ struct ToolDto {
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
     status: StatusDto,
+    /// What Gate can and cannot see of this tool's upstream, or `None` when
+    /// there is nothing to report - which is every tool but Hermes and
+    /// OpenClaw, and those two whenever their provider is covered.
+    ///
+    /// Beside `status` rather than inside it, deliberately. Routed and
+    /// inspected are two different questions, and folding this into the tool's
+    /// `Status` would make it a fault the repair path tries to clear:
+    /// `provider::reconcile_unmapped_tools` retries a drifted tool on every
+    /// pass, and no re-connect can turn on a domain or invent a catalog entry.
+    /// `openclaw.rs` records that trap from the last time it was walked into.
+    ///
+    /// Recomputed per poll, because both halves move: the user repoints the
+    /// tool, or a domain is flipped elsewhere. AG-932.
+    coverage: Option<gate_connect_core::coverage::UpstreamCoverage>,
     /// The program this row is aimed at: the ledger's grouping key, shared
     /// with `ProxyDomain::client` so a tool row and a domain row aimed at the
     /// same program land under one heading.
@@ -158,6 +172,7 @@ fn list_tools() -> Vec<ToolDto> {
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
+            coverage: integ.upstream_coverage(),
             client: integ.client(),
             scope: integ.scope(),
             credential: integ.credential(),
@@ -1540,7 +1555,7 @@ fn set_launch_at_login<R: tauri::Runtime>(
 /// hours after Hermes had been connected.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn hermes_upstream_coverage() -> gate_connect_core::integrations::hermes::Coverage {
+fn hermes_upstream_coverage() -> gate_connect_core::coverage::UpstreamCoverage {
     gate_connect_core::integrations::hermes::upstream_coverage_report()
 }
 

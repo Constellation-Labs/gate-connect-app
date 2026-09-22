@@ -66,6 +66,14 @@ export interface Tool {
    *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
    *  Distinct across the registry, which {@link Tool.name} is not. */
   product_name: string;
+  /** What Gate can and cannot see of this tool's upstream, or absent when
+   *  there is nothing to report.
+   *
+   *  Only Hermes and OpenClaw ever answer: they are the two whose provider is
+   *  chosen by the user and lives in another section of the rail, so being
+   *  routed and being inspected come apart. Recomputed on every poll, because
+   *  the user repoints the tool and domains get flipped elsewhere. AG-932. */
+  coverage?: UpstreamCoverage | null;
   upstream_provider_name: string;
   default_upstream_url: string;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
@@ -491,10 +499,14 @@ export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
  *
  * Read fresh at the moment it is needed rather than polled. Both inputs move
  * after a toggle - the person repoints Hermes, or a domain flips elsewhere. */
-export type HermesCoverage = {
+export type UpstreamCoverage = {
   switched_off: [string, string][];
   unknown: string[];
 };
+
+/** The name this had when only the Hermes dialog read it. Kept so the AG-930
+ *  call site reads the same; the shape is shared with every tool's row now. */
+export type HermesCoverage = UpstreamCoverage;
 export const hermesUpstreamCoverage = () =>
   invoke<HermesCoverage>("hermes_upstream_coverage");
 

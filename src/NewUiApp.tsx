@@ -1564,6 +1564,9 @@ export function NewUiApp() {
           name: t.name,
           status: verdictStatus(verdicts.get(t.slug), {
             writeFailed: routing.writeFailures.has(t.slug),
+            // Routed and inspected are different questions; the sweep answers
+            // only the first. See `verdictStatus`. AG-932.
+            coverage: t.coverage,
           }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.

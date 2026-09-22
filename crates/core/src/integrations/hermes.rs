@@ -161,6 +161,15 @@ impl Integration for Hermes {
         crate::taxonomy::Client::Hermes
     }
 
+    /// AG-932: the rail asks this on every poll, so a row can say it is routed
+    /// and not inspected rather than claiming Protected over traffic Gate
+    /// never sees. Same reading `connect` has printed to stderr since this
+    /// integration was written; the window simply never had it.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        let coverage = upstream_coverage();
+        (!coverage.is_covered()).then_some(coverage)
+    }
+
     fn row_label(&self) -> &'static str {
         ROW_LABEL
     }
@@ -393,7 +402,7 @@ impl Integration for Hermes {
         // default upstream ships off. Which hosts Gate inspects is the user's
         // axis, not this integration's (see [`Coverage`]), so say it rather
         // than silently flip it.
-        for line in upstream_coverage().notes() {
+        for line in notes(&upstream_coverage()) {
             eprintln!("{line}");
         }
         Ok(())
@@ -568,41 +577,37 @@ fn url_host(url: &str) -> String {
 /// exactly that and could not have it while this type was private to a
 /// `connect` that prints to stderr - the window has never been able to see any
 /// of this.
-#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Coverage {
-    /// Hosts a catalog entry covers, but whose switch is off: `(host, slug)`.
-    pub switched_off: Vec<(String, String)>,
-    /// Hosts no catalog entry claims, which Gate cannot route at all.
-    pub unknown: Vec<String>,
-}
+pub use crate::coverage::UpstreamCoverage as Coverage;
 
-impl Coverage {
-    /// The lines `connect` prints, or nothing at all when every upstream is
-    /// already covered - a note that says "all good" on every connect is noise,
-    /// and the `proxy domains` listing is the place to confirm it.
-    fn notes(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if !self.switched_off.is_empty() {
-            let list = self
-                .switched_off
-                .iter()
-                .map(|(host, slug)| format!("{host} (`gate-connect proxy domain {slug} on`)"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push(format!(
-                "note: Hermes is routed through Gate, but Gate is not inspecting its provider \
-                 yet -- {list}."
-            ));
-        }
-        if !self.unknown.is_empty() {
-            out.push(format!(
-                "note: Gate has no proxy domain for {} -- Hermes' calls there keep working, \
-                 tunnelled through unseen.",
-                self.unknown.join(", ")
-            ));
-        }
-        out
+/// The lines `connect` prints, or nothing at all when every upstream is
+/// already covered - a note that says "all good" on every connect is noise,
+/// and the `proxy domains` listing is the place to confirm it.
+///
+/// A free function rather than an inherent method: the type is
+/// `coverage::UpstreamCoverage` now, shared with OpenClaw, and these sentences
+/// name Hermes.
+fn notes(c: &Coverage) -> Vec<String> {
+    let mut out = Vec::new();
+    if !c.switched_off.is_empty() {
+        let list = c
+            .switched_off
+            .iter()
+            .map(|(host, slug)| format!("{host} (`gate-connect proxy domain {slug} on`)"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(format!(
+            "note: Hermes is routed through Gate, but Gate is not inspecting its provider \
+             yet -- {list}."
+        ));
     }
+    if !c.unknown.is_empty() {
+        out.push(format!(
+            "note: Gate has no proxy domain for {} -- Hermes' calls there keep working, \
+             tunnelled through unseen.",
+            c.unknown.join(", ")
+        ));
+    }
+    out
 }
 
 /// What Gate will and will not see of this Hermes install, for a caller that
@@ -885,7 +890,7 @@ mod tests {
         );
         assert_eq!(coverage, Coverage::default());
         assert!(
-            coverage.notes().is_empty(),
+            notes(&coverage).is_empty(),
             "an all-good note on every connect is noise"
         );
     }
@@ -901,7 +906,7 @@ mod tests {
             vec![("openrouter.ai".to_string(), "openrouter".to_string())]
         );
 
-        let notes = coverage.notes();
+        let notes = notes(&coverage);
         assert_eq!(notes.len(), 1, "one line, not one per axis: {notes:?}");
         assert!(
             notes[0].contains("gate-connect proxy domain openrouter on"),
@@ -927,7 +932,7 @@ mod tests {
         );
         assert_eq!(coverage.unknown, vec!["api.together.xyz".to_string()]);
 
-        let notes = coverage.notes();
+        let notes = notes(&coverage);
         assert!(
             notes[0].contains("keep working"),
             "the tool still works; only Gate's view is missing: {}",

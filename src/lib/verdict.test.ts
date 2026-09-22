@@ -127,6 +127,83 @@ describe("verdictStatus", () => {
   });
 });
 
+describe("verdictStatus and upstream coverage (AG-932)", () => {
+  const covered = { switched_off: [], unknown: [] };
+  const on = () => verdict({ state: "on" });
+
+  it("says routed-not-inspected when Gate has no entry for the provider", () => {
+    // The whole ticket. The sweep says "on" because the tool really is
+    // pointed at Gate; what it cannot know is that the provider it points at
+    // is one Gate never intercepts, so every request tunnels past unread.
+    expect(
+      verdictStatus(on(), {
+        coverage: { switched_off: [], unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] },
+      }),
+    ).toEqual({
+      kind: "not-inspected",
+      detail: "bedrock-runtime.us-east-1.amazonaws.com",
+    });
+  });
+
+  it("says it for a known provider whose switch is off, too", () => {
+    // AG-930's dialog offers to fix this at connect time, and the row still
+    // has to say it: the dialog fires once, and the switch can be turned off
+    // afterwards from somewhere else. Removing and re-trusting a certificate
+    // reset one to off hours later, which is how this was found.
+    expect(
+      verdictStatus(on(), {
+        coverage: { switched_off: [["openrouter.ai", "openrouter"]], unknown: [] },
+      }),
+    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai" });
+  });
+
+  it("names one host and counts the rest, because the rail is 250px", () => {
+    expect(
+      verdictStatus(on(), {
+        coverage: {
+          switched_off: [["openrouter.ai", "openrouter"]],
+          unknown: ["api.groq.com", "api.together.xyz"],
+        },
+      }),
+    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai +2" });
+  });
+
+  it("stays Protected when coverage is complete, absent, or null", () => {
+    // Three shapes reach this: a tool that reports full coverage, and the
+    // every-other-tool case where the backend sends nothing at all.
+    expect(verdictStatus(on(), { coverage: covered })).toEqual({ kind: "protected" });
+    expect(verdictStatus(on(), {})).toEqual({ kind: "protected" });
+    expect(verdictStatus(on(), { coverage: null })).toEqual({ kind: "protected" });
+  });
+
+  it("does not outrank a state that is already amber", () => {
+    // A drifted or unrouted tool has a larger problem than an uninspected
+    // provider, and stacking the two would bury it. Only the "on" arm is
+    // reinterpreted.
+    const uninspected = { switched_off: [], unknown: ["api.groq.com"] };
+    expect(
+      verdictStatus(verdict({ state: "off" }), { coverage: uninspected }),
+    ).toEqual({ kind: "not-routed", detail: "Off" });
+    expect(
+      verdictStatus(
+        verdict({ state: "needs_attention", reason: "configuration_changed" }),
+        { coverage: uninspected },
+      ),
+    ).toEqual({ kind: "drifted" });
+  });
+
+  it("does not outrank a failed write either", () => {
+    // The write-failed guard runs before the sweep is even read, and should:
+    // what the user needs to know is that their click did not land.
+    expect(
+      verdictStatus(on(), {
+        writeFailed: true,
+        coverage: { switched_off: [], unknown: ["api.groq.com"] },
+      }).kind,
+    ).toBe("not-protected");
+  });
+});
+
 describe("verdictsBySlug", () => {
   it("indexes a sweep so a row can look itself up", () => {
     const map = verdictsBySlug([
