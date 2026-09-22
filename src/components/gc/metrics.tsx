@@ -326,8 +326,12 @@ export function MessagesChart({
       ) : unattributed ? (
         // Ahead of `unavailable`: a surface whose traffic is never attributed
         // has no read to have failed, and the pane's note already says why.
+        // Says where the number IS, not only where it is not. AG-889: the
+        // page's whole content was three tiles and two cards each reporting an
+        // absence, which reads as breakage rather than as the permanent shape
+        // of the data. The traffic is counted; it is counted somewhere else.
         <EmptyNote icon="chartColumn">
-          Messages aren&apos;t attributed to this app
+          Shows in the Overview, not per app
         </EmptyNote>
       ) : unavailable ? (
         // Not a sentence about their traffic. The pane's gap notice carries the

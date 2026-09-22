@@ -75,6 +75,7 @@ import {
   isSettingsManaged,
   proxyReopenAdvice,
   sectionHint,
+  isProviderEndpoint,
   sectionMemberKeys,
   sessionMembers,
 } from "./lib/groups";
@@ -536,6 +537,10 @@ export function NewUiApp() {
    *  and the pane would report a quiet day over traffic it cannot see. A slug
    *  carried by an installed tool stays a tool. */
   const openDomain = openTool === null && view.kind === "app";
+  /** ...and whether that pane is a provider endpoint, which `openDomain` does
+   *  not answer. See `isProviderEndpoint`. */
+  const openProviderEndpoint =
+    openDomain && view.kind === "app" && isProviderEndpoint(view.slug);
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -3849,12 +3854,32 @@ export function NewUiApp() {
                 // on purpose - a guessed slug would file one app's traffic under
                 // another's name. So there is no per-app reading to show here,
                 // and saying so beats a zero.
-                <p className="text-base-xs text-base-muted-foreground">
-                  <span className="font-medium">This app:</span> its requests
-                  aren&apos;t attributed to a single app yet, so its own
-                  activity can&apos;t be shown. The Overview still covers your
-                  whole organisation.
-                </p>
+                //
+                // **Two sentences, split on `isProviderEndpoint` and not on
+                // `openDomain`.** They look like the same question and are
+                // not; the argument is written out on `isProviderEndpoint`
+                // itself, which is the thing being explained.
+                //
+                // Neither claims traffic IS being counted. That would be false
+                // while the row's switch is off, when the traffic bypasses
+                // Gate and is counted nowhere. "Appear in the Overview rather
+                // than on this page" is about where a reading shows up, not
+                // about whether one exists.
+                openProviderEndpoint ? (
+                  <p className="text-base-xs text-base-muted-foreground">
+                    <span className="font-medium">This entry:</span> any app on
+                    this machine can be pointed here, so Gate cannot attribute
+                    these requests to one app. They appear in the Overview
+                    rather than on this page.
+                  </p>
+                ) : (
+                  <p className="text-base-xs text-base-muted-foreground">
+                    <span className="font-medium">This app:</span> its requests
+                    aren&apos;t attributed to a single app yet, so its own
+                    activity can&apos;t be shown. The Overview still covers your
+                    whole organization.
+                  </p>
+                )
               ) : unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
                 // the gateway answered and does not recognise this machine, so
@@ -3865,7 +3890,7 @@ export function NewUiApp() {
                   <span className="font-medium">This machine:</span> the gateway
                   has no traffic attributed to it yet, so this app&apos;s own
                   activity cannot be shown. The Overview still covers your whole
-                  organisation.
+                  organization.
                 </p>
               ) : (
                 <>
