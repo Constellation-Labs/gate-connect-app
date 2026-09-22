@@ -167,6 +167,7 @@ import {
   ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
+import { countsAsRouted } from "./components/gc/Sidebar";
 import type {
   InventoryState,
   SidebarApp,
@@ -1586,6 +1587,9 @@ export function NewUiApp() {
           name: t.name,
           status: verdictStatus(verdicts.get(t.slug), {
             writeFailed: routing.writeFailures.has(t.slug),
+            // Routed and inspected are different questions; the sweep answers
+            // only the first. See `verdictStatus`. AG-932.
+            coverage: t.coverage,
           }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
@@ -2575,9 +2579,10 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
-  const protectedCount = desiredApps.filter(
-    (a) => a.status.kind === "protected",
-  ).length;
+  // `countsAsRouted`, not `kind === "protected"`: a row that is routed but
+  // uninspected is still routed, and counting it out gave a banner saying
+  // Gate was not routing over a row saying it was. See the predicate. AG-932.
+  const protectedCount = desiredApps.filter((a) => countsAsRouted(a.status)).length;
 
   /**
    * The open app's own notice, for its own pane.

@@ -162,6 +162,24 @@ pub trait Integration: Send + Sync {
         self.display_name()
     }
 
+    /// What Gate can and cannot see of this tool's upstream, or `None` for a
+    /// tool where the question does not arise.
+    ///
+    /// Two integrations answer it, and they are the two whose upstream is
+    /// chosen by the user and lives in a *different* section of the rail:
+    /// Hermes reads the `base_url`s out of its config, OpenClaw reads which
+    /// auth profile it is on. Every other tool talks to the provider its own
+    /// section already covers, so one switch routes it and intercepts it and
+    /// the gap cannot open.
+    ///
+    /// **Read on every poll**, because both halves move underneath: the user
+    /// repoints the tool, or a domain is flipped from somewhere else. A value
+    /// computed once when the tool was connected goes stale silently, which is
+    /// the defect this exists to report.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        None
+    }
+
     /// Which client this integration's row is aimed at - the ledger's grouping
     /// key, shared with the proxy catalog so a tool row and a domain row aimed
     /// at the same program land under one heading.

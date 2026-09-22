@@ -161,6 +161,15 @@ impl Integration for Hermes {
         crate::taxonomy::Client::Hermes
     }
 
+    /// AG-932: the rail asks this on every poll, so a row can say it is routed
+    /// and not inspected rather than claiming Protected over traffic Gate
+    /// never sees. Same reading `connect` has printed to stderr since this
+    /// integration was written; the window simply never had it.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        let coverage = upstream_coverage();
+        (!coverage.is_covered()).then_some(coverage)
+    }
+
     fn row_label(&self) -> &'static str {
         ROW_LABEL
     }
@@ -574,38 +583,7 @@ fn url_host(url: &str) -> String {
 /// exactly that and could not have it while this type was private to a
 /// `connect` that prints to stderr - the window has never been able to see any
 /// of this.
-#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Coverage {
-    /// Whether the endpoints are Hermes' documented default rather than read
-    /// from `config.yaml` - because the file is missing, does not parse, or
-    /// names no endpoint. A caller's copy has to say which: "your config uses
-    /// OpenRouter" is false about a file that was never read, and an install
-    /// with no config really will call OpenRouter.
-    pub defaulted: bool,
-    /// Provider rows the catalog covers whose switch is off, one per slug.
-    pub switched_off: Vec<SwitchedOff>,
-    /// Hosts no catalog entry claims, which Gate cannot route at all.
-    pub unknown: Vec<String>,
-}
-
-/// One provider row Hermes points at that Gate is not inspecting.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct SwitchedOff {
-    /// The catalog slug, which is what `proxy domain` and `proxy_set_domain`
-    /// take.
-    pub slug: String,
-    /// Every host in `config.yaml` this row claims. One row can claim several,
-    /// and it is one switch either way, so a caller that names rows must not
-    /// name the same row twice or flip the same switch twice.
-    pub hosts: Vec<String>,
-    /// Display names of the tools whose provider this domain switches on.
-    /// `provider::reconcile_enabled` reads an enabled cascade domain as licence
-    /// to connect that provider's detected tools at the next launch, so turning
-    /// `anthropic` on for Hermes' sake also reaches Claude Code. Empty for a
-    /// proxy-only provider such as OpenRouter. A caller that asks has to say
-    /// this, because the switch itself does not.
-    pub tools: Vec<String>,
-}
+pub use crate::coverage::{SwitchedOff, UpstreamCoverage as Coverage};
 
 impl Coverage {
     /// The lines `connect` prints, or nothing at all when every upstream is

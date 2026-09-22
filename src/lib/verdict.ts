@@ -1,4 +1,4 @@
-import type { Verdict, VerdictNextAction, VerdictReason } from "./api";
+import type { UpstreamCoverage, Verdict, VerdictNextAction, VerdictReason } from "./api";
 import { governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
@@ -78,7 +78,7 @@ export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
  */
 export function verdictStatus(
   verdict: Verdict | undefined,
-  opts: { writeFailed?: boolean } = {},
+  opts: { writeFailed?: boolean; coverage?: UpstreamCoverage | null } = {},
 ): AppStatus {
   // Outranks the sweep. The sweep describes the state on disk, which after a
   // failed write is the state from *before* the user acted - true, and not the
@@ -87,8 +87,20 @@ export function verdictStatus(
   if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
   if (!verdict) return { kind: "not-protected", detail: "Checking" };
   switch (verdict.state) {
-    case "on":
+    case "on": {
+      // Routed, and Gate can see it - unless the provider it routes TO is one
+      // Gate does not intercept, which is a question the sweep never asks.
+      // The verdict answers "is this tool pointed at Gate"; coverage answers
+      // "and does Gate look at where it is pointed". Both must be yes before
+      // a row may say Protected. AG-932.
+      //
+      // Only this arm. Every other state is already amber and already more
+      // urgent than this: a drifted or unrouted tool has a bigger problem
+      // than an uninspected provider, and stacking the two would bury it.
+      const uninspected = uninspectedHosts(opts.coverage);
+      if (uninspected) return { kind: "not-inspected", detail: uninspected };
       return { kind: "protected" };
+    }
     case "off":
       // The design draws this one with its suffix already: "Not routed - Off".
       return { kind: "not-routed", detail: "Off" };
@@ -107,6 +119,38 @@ export function verdictStatus(
       // today - but a verdict for one must map to something rather than throw.
       return { kind: "not-protected" };
   }
+}
+
+/**
+ * The hosts Gate is not looking at, as the short phrase a rail row has room
+ * for, or `undefined` when it is looking at all of them.
+ *
+ * Both halves of the coverage count. `unknown` is the irremediable one - no
+ * catalog entry claims that host - and `switched_off` is a domain whose switch
+ * is off, which AG-930's dialog offers to fix at the moment a tool is
+ * connected. The row still has to say it, because the dialog fires once and
+ * the switch can be flipped afterwards from somewhere else: removing and
+ * re-trusting a certificate reset one to off hours after the fact, which is
+ * how this was found.
+ *
+ * One host plus a count. The rail is 250px and a list truncates mid-word; the
+ * app pane has the room to name them all if it ever needs to.
+ */
+function uninspectedHosts(
+  coverage: UpstreamCoverage | null | undefined,
+): string | undefined {
+  if (!coverage) return undefined;
+  // `flatMap`, because a switched-off entry is a catalog ROW and one row can
+  // claim several hosts - #327 keyed these by slug for exactly that reason, so
+  // a caller cannot name the same row twice or flip the same switch twice.
+  // Naming hosts is still right here: the row already says the app, and the
+  // host is the part the person recognises from their own config.
+  const hosts = [
+    ...coverage.switched_off.flatMap((entry) => entry.hosts),
+    ...coverage.unknown,
+  ];
+  if (hosts.length === 0) return undefined;
+  return hosts.length === 1 ? hosts[0] : `${hosts[0]} +${hosts.length - 1}`;
 }
 
 /** Index a sweep by slug, so a row can look itself up. */

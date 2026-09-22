@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Verdict, VerdictReason } from "./api";
+import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
+import { countsAsRouted } from "../components/gc/Sidebar";
 import { NEXT_ACTION_LABEL, verdictStatus, verdictsBySlug } from "./verdict";
 
 // `sectionStatus` is tested in `groups.test.ts`, against a real `buildGroups`
@@ -124,6 +125,111 @@ describe("verdictStatus", () => {
     expect(verdictStatus(verdict({ state: "on" }), { writeFailed: false })).toEqual({
       kind: "protected",
     });
+  });
+});
+
+describe("verdictStatus and upstream coverage (AG-932)", () => {
+  /** A switched-off row: one catalog slug, the hosts it claims, and the tools
+   *  turning it on would also connect. Keyed by slug since #327, because one
+   *  row can claim several hosts. */
+  const off = (slug: string, ...hosts: string[]) => ({ slug, hosts, tools: [] });
+  const coverage = (over: Partial<UpstreamCoverage> = {}): UpstreamCoverage => ({
+    defaulted: false,
+    switched_off: [],
+    unknown: [],
+    ...over,
+  });
+  const covered = coverage();
+  const on = () => verdict({ state: "on" });
+
+  it("says routed-not-inspected when Gate has no entry for the provider", () => {
+    // The whole ticket. The sweep says "on" because the tool really is
+    // pointed at Gate; what it cannot know is that the provider it points at
+    // is one Gate never intercepts, so every request tunnels past unread.
+    expect(
+      verdictStatus(on(), {
+        coverage: coverage({ unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] }),
+      }),
+    ).toEqual({
+      kind: "not-inspected",
+      detail: "bedrock-runtime.us-east-1.amazonaws.com",
+    });
+  });
+
+  it("says it for a known provider whose switch is off, too", () => {
+    // AG-930's dialog offers to fix this at connect time, and the row still
+    // has to say it: the dialog fires once, and the switch can be turned off
+    // afterwards from somewhere else. Removing and re-trusting a certificate
+    // reset one to off hours later, which is how this was found.
+    expect(
+      verdictStatus(on(), {
+        coverage: coverage({ switched_off: [off("openrouter", "openrouter.ai")] }),
+      }),
+    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai" });
+  });
+
+  it("names one host and counts the rest, because the rail is 250px", () => {
+    expect(
+      verdictStatus(on(), {
+        coverage: coverage({
+          switched_off: [off("openrouter", "openrouter.ai")],
+          unknown: ["api.groq.com", "api.together.xyz"],
+        }),
+      }),
+    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai +2" });
+  });
+
+  it("stays Protected when coverage is complete, absent, or null", () => {
+    // Three shapes reach this: a tool that reports full coverage, and the
+    // every-other-tool case where the backend sends nothing at all.
+    expect(verdictStatus(on(), { coverage: covered })).toEqual({ kind: "protected" });
+    expect(verdictStatus(on(), {})).toEqual({ kind: "protected" });
+    expect(verdictStatus(on(), { coverage: null })).toEqual({ kind: "protected" });
+  });
+
+  it("does not outrank a state that is already amber", () => {
+    // A drifted or unrouted tool has a larger problem than an uninspected
+    // provider, and stacking the two would bury it. Only the "on" arm is
+    // reinterpreted.
+    const uninspected = coverage({ unknown: ["api.groq.com"] });
+    expect(
+      verdictStatus(verdict({ state: "off" }), { coverage: uninspected }),
+    ).toEqual({ kind: "not-routed", detail: "Off" });
+    expect(
+      verdictStatus(
+        verdict({ state: "needs_attention", reason: "configuration_changed" }),
+        { coverage: uninspected },
+      ),
+    ).toEqual({ kind: "drifted" });
+  });
+
+  it("counts as routed, so the banner and the row cannot contradict", () => {
+    // Raised in review on #328. With Hermes the only app on and pointed at
+    // Bedrock, counting only `protected` gave `routingState(0, 1)` and a
+    // topbar reading "Gate is not routing your apps" over a row reading
+    // "Routed, not inspected". This PR's argument is that it IS routed, so
+    // the banner keeps its meaning and the row carries the nuance.
+    const status = verdictStatus(on(), {
+      coverage: coverage({ unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] }),
+    });
+    expect(status.kind).toBe("not-inspected");
+    expect(countsAsRouted(status)).toBe(true);
+    // And the pairing, because four counters read this one predicate.
+    expect(countsAsRouted({ kind: "protected" })).toBe(true);
+    expect(countsAsRouted({ kind: "not-routed", detail: "Off" })).toBe(false);
+    expect(countsAsRouted({ kind: "drifted" })).toBe(false);
+    expect(countsAsRouted({ kind: "reopen" })).toBe(false);
+  });
+
+  it("does not outrank a failed write either", () => {
+    // The write-failed guard runs before the sweep is even read, and should:
+    // what the user needs to know is that their click did not land.
+    expect(
+      verdictStatus(on(), {
+        writeFailed: true,
+        coverage: coverage({ unknown: ["api.groq.com"] }),
+      }).kind,
+    ).toBe("not-protected");
   });
 });
 

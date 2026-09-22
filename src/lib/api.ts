@@ -66,6 +66,14 @@ export interface Tool {
    *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
    *  Distinct across the registry, which {@link Tool.name} is not. */
   product_name: string;
+  /** What Gate can and cannot see of this tool's upstream, or absent when
+   *  there is nothing to report.
+   *
+   *  Only Hermes and OpenClaw ever answer: they are the two whose provider is
+   *  chosen by the user and lives in another section of the rail, so being
+   *  routed and being inspected come apart. Recomputed on every poll, because
+   *  the user repoints the tool and domains get flipped elsewhere. AG-932. */
+  coverage?: UpstreamCoverage | null;
   upstream_provider_name: string;
   default_upstream_url: string;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
@@ -508,13 +516,20 @@ export type HermesCoverageEntry = {
  * at all (Bedrock, a self-hosted endpoint), where no switch helps and the
  * honest answer is to say so.
  *
- * Read fresh at the moment it is needed rather than polled. Both inputs move
- * after a toggle - the person repoints Hermes, or a domain flips elsewhere. */
-export type HermesCoverage = {
+ * Read on every poll, through `list_tools`, and also on demand for the dialog
+ * that asks about it. Both inputs move after a toggle - the person repoints
+ * Hermes, or a domain flips elsewhere - so a value computed once at connect
+ * time goes stale silently, which is the defect rather than the fix. This said
+ * "read fresh rather than polled" until AG-932 made it both. */
+export type UpstreamCoverage = {
   defaulted: boolean;
   switched_off: HermesCoverageEntry[];
   unknown: string[];
 };
+
+/** The name this had when only the Hermes dialog read it. Kept so the AG-930
+ *  call site reads the same; every tool's row reads the same shape now. */
+export type HermesCoverage = UpstreamCoverage;
 export const hermesUpstreamCoverage = () =>
   invoke<HermesCoverage>("hermes_upstream_coverage");
 
