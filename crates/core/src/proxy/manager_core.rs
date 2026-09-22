@@ -1828,8 +1828,16 @@ mod tests {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
-        let state = mgr.enable().expect("enable");
-        let pac_port = state.pac_port.expect("PAC port");
+        mgr.enable().expect("enable");
+        // From the engine, not from `status`: the fake platform reports no
+        // PAC port through the seam, and it is the listener that matters here.
+        let pac_port = mgr
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("engine hosted")
+            .pac_port();
         assert!(
             fetch_pac(pac_port).contains("PROXY 127.0.0.1:47321; DIRECT"),
             "the first body served names the forwarder"
