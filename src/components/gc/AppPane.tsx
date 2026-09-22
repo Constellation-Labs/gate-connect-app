@@ -270,23 +270,24 @@ export function AppPane({
         unattributed={unattributed}
         // The Overview's jump (AG-572), with this pane's own destination: the
         // Recent activity card, which is where this tool's savings show up
-        // request by request.
+        // request by request. `scrollIntoView` rather than a hash link, as on
+        // the Overview: a fragment in the URL of a window with no address bar.
         //
-        // **Always offered, and that is a deliberate divergence from the
-        // Overview's gate (AG-883)**, asked for on 2026-09-22: the tile jumps
-        // whether the feed has rows or not, and while the reading is pending,
-        // unread or unattributed. The Overview withholds its jump when the
-        // savings card is empty because that card sits above an empty feed and
-        // the pinned scroll showed a screen of nothing; here the card is the
-        // last one and it is drawn in every state, heading and sentence
-        // included, so the landing is the card itself rather than the space
-        // below it. `scrollIntoView` rather than a hash link, as on the
-        // Overview: a fragment in the URL of a window with no address bar.
-        onSelectTokensSaved={() =>
-          document.getElementById(RECENT_ACTIVITY_SECTION_ID)?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          })
+        // Offered on the Overview's terms (AG-883): only when the card has rows
+        // to land on. The card is the pane's last, so `block: "start"` pins the
+        // pane at its maximum scroll rather than putting the heading at the
+        // top, and with the feed empty, unread, still loading or never
+        // attributed to this tool, that is a jump to a heading over a sentence.
+        // `Stat` draws a plain tile when no handler is passed, so nothing
+        // offers a jump that would go nowhere.
+        onSelectTokensSaved={
+          eventsPending || unavailable?.events || unattributed || activity.length === 0
+            ? undefined
+            : () =>
+                document.getElementById(RECENT_ACTIVITY_SECTION_ID)?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                })
         }
       />
       <MessagesChart

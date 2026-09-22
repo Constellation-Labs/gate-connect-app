@@ -654,27 +654,31 @@ describe("the App-default row's mark size", () => {
 describe("the Tokens saved tile", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  // The Overview's jump, with this pane's destination. Unlike the Overview's
-  // tile, which stops being a button when its card is empty, in flight or
-  // unread (AG-883), this one is a button in every state: the Recent activity
-  // card is drawn in all of them, so there is always somewhere to land. Each
-  // row here is one of those states, and the pending one is the arm the
-  // Overview's test declines.
-  const states: [string, Partial<Parameters<typeof AppPane>[0]>][] = [
-    ["with rows", { activity: [entry] }],
-    ["with an empty feed", {}],
-    ["while the feed is in flight", { eventsPending: true, pending: true }],
-    ["when the feed could not be read", { unavailable: { events: true } }],
-    ["for an unattributed tool", { unattributed: true, unavailable: { events: true } }],
-  ];
-  it.each(states)("scrolls to this pane's Recent activity card %s", (_, props) => {
+  it("is a button that scrolls to this pane's Recent activity card when it has rows", () => {
+    // The Overview's jump (AG-572), with this pane's destination.
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
-    render(pane(props));
+    render(pane({ activity: [entry] }));
 
     screen.getByRole("button", { name: /Tokens saved/i }).click();
 
     expect(scroll).toHaveBeenCalledTimes(1);
     // `mock.contexts` is the call's `this`; `instances` is documented for `new`.
     expect(scroll.mock.contexts[0]).toBe(card("Recent activity"));
+  });
+
+  // AG-883, as the Overview applies it to its own savings card: the card is the
+  // pane's last, so the jump pins the pane at its maximum scroll, and with
+  // nothing in the card that reads as a page jumping to a heading over a
+  // sentence. So in every state but "has rows" the tile is an ordinary tile.
+  const withoutRows: [string, Partial<Parameters<typeof AppPane>[0]>][] = [
+    ["the feed is empty", {}],
+    ["the feed is in flight", { eventsPending: true, pending: true }],
+    ["the feed could not be read", { activity: [entry], unavailable: { events: true } }],
+    ["the tool is unattributed", { unattributed: true, unavailable: { events: true } }],
+  ];
+  it.each(withoutRows)("is an ordinary tile when %s", (_, props) => {
+    render(pane(props));
+
+    expect(screen.queryByRole("button", { name: /Tokens saved/i })).toBeNull();
   });
 });
