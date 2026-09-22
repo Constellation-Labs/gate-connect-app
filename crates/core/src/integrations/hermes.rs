@@ -549,19 +549,31 @@ fn url_host(url: &str) -> String {
 /// What Gate will and won't see of this Hermes install, for the notes `connect`
 /// prints.
 ///
-/// Read-only on purpose. Which hosts the engine intercepts is the user's axis -
-/// the provider rows and `proxy domain` - and this integration's axis is only
-/// whether Hermes points at the proxy. Enabling a domain from here would widen
-/// what Gate MITMs for every other client on the machine as a side effect of
-/// connecting one tool, and for a domain a provider claims it would flip that
-/// provider's state too, which `provider::reconcile_enabled` reads as licence to
-/// configure that provider's tools. So this reports, and nothing more.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Coverage {
+/// Read-only on purpose, and the distinction is worth stating precisely because
+/// it decides where the fix for this belongs.
+///
+/// Which hosts the engine intercepts is the user's axis - the provider rows and
+/// `proxy domain` - and this integration's axis is only whether Hermes points at
+/// the proxy. Enabling a domain from *here* would widen what Gate MITMs for
+/// every other client on the machine as a side effect of connecting one tool,
+/// and for a domain a provider claims it would flip that provider's state too,
+/// which `provider::reconcile_enabled` reads as licence to configure that
+/// provider's tools. So this reports, and nothing more.
+///
+/// **That is an argument against doing it silently, not against asking.** A
+/// surface that puts the question to the person and acts on their answer has
+/// made it their axis, which is the whole objection satisfied.
+/// `OpenCodeEnvDialog` is the same shape already shipped, and a broader one:
+/// one switch, a second and wider effect, disclosed, confirmed. Hermes needs
+/// exactly that and could not have it while this type was private to a
+/// `connect` that prints to stderr - the window has never been able to see any
+/// of this.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Coverage {
     /// Hosts a catalog entry covers, but whose switch is off: `(host, slug)`.
-    switched_off: Vec<(String, String)>,
+    pub switched_off: Vec<(String, String)>,
     /// Hosts no catalog entry claims, which Gate cannot route at all.
-    unknown: Vec<String>,
+    pub unknown: Vec<String>,
 }
 
 impl Coverage {
@@ -591,6 +603,19 @@ impl Coverage {
         }
         out
     }
+}
+
+/// What Gate will and will not see of this Hermes install, for a caller that
+/// intends to ask the person about it.
+///
+/// Public so the window can raise the question at the moment it matters, which
+/// is the click that turns Hermes on. Reads the catalog and `config.yaml` fresh
+/// on every call and holds no state, because both move underneath: the person
+/// repoints Hermes at a different provider, or a domain is flipped elsewhere -
+/// removing and re-trusting a certificate reset `openrouter` to off on the
+/// machine that prompted this, hours after Hermes was connected.
+pub fn upstream_coverage_report() -> Coverage {
+    upstream_coverage()
 }
 
 fn upstream_coverage() -> Coverage {

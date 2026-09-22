@@ -5,6 +5,7 @@ import {
   disconnectTool,
   listTools,
   proxyEnable,
+  hermesUpstreamCoverage,
   proxySetDomain,
   proxySetEnvExport,
   proxyStatus,
@@ -80,6 +81,34 @@ export type RoutingPrompt =
    * OpenCode toggle for the majority of users, for whom the channel is on by
    * default. */
   | { kind: "opencode-env" }
+  /** Turning Hermes on, when the provider Hermes talks to is a domain Gate
+   * knows and has switched off.
+   *
+   * Hermes is one of two rows (with OpenClaw) whose upstream is chosen by the
+   * user and lives in a *different* section: `groups.ts` bundles Claude's tool
+   * with `anthropic` and `claude-web`, and ChatGPT's with its own provider
+   * rows, so for those one switch routes the tool AND intercepts what it talks
+   * to. `hermes` is `["hermes"]`. Turning it on routes Hermes and inspects
+   * nothing, and the app says Protected while every request tunnels past
+   * unseen - which is exactly what happened on the machine that prompted this,
+   * for an afternoon.
+   *
+   * Carries the domains rather than a boolean, because the dialog names the
+   * provider and the confirm enables those specific slugs. Only raised for
+   * `switched_off`: an upstream no domain claims (Bedrock, a self-hosted
+   * endpoint) has no remedy, and a dialog offering one would be lying.
+   *
+   * **A gate, not an option.** This was briefly written so a decline still
+   * connected Hermes, reasoning that "Hermes routed, provider uninspected" is
+   * a coherent state. It is coherent to Gate and not to anybody using it: it
+   * is precisely the state that read Protected all afternoon while every
+   * request tunnelled past unseen, and offering it as a button would ship the
+   * bug as a preference. Cancel means cancel - nothing is written and the
+   * switch stays off. */
+  | {
+      kind: "hermes-provider";
+      domains: { name: string; host: string; slug: string }[];
+    }
   | { kind: "trust" }
   /** Removing the certificate, which is not a gate on the way to something
    * else: it is the action, and it stops every routed domain. Confirmed for
@@ -95,6 +124,11 @@ export interface RoutingSnapshot {
  *  once rather than spelled inline, because the dialog copy and the action have
  *  to be talking about the same row. */
 const OPENCODE_SLUG = "opencode";
+
+/** The tool whose provider lives in another section, so its switch alone
+ *  routes it without inspecting anything. OpenClaw has the same shape and the
+ *  same CLI-only coverage note; it is not wired here yet. */
+const HERMES_SLUG = "hermes";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
@@ -302,6 +336,45 @@ export function useRouting({
         const couplesEnvExport =
           routed && slug === OPENCODE_SLUG && proxy !== null && !proxy.env_export_opted_in;
         if (couplesEnvExport) await ask({ kind: "opencode-env" });
+
+        // Hermes's provider, asked in the same place and for the same reason:
+        // a question about what else this click needs to reach, answered
+        // before anything is written.
+        //
+        // A gate like the drift and certificate ones, so Cancel abandons the
+        // whole thing: `ask` throws `Declined`, the catch below treats that as
+        // an answer rather than a failure, and because this runs before
+        // `connectTool` nothing has been written - the switch stays off.
+        //
+        // The alternative was tried and is worse. Letting a decline connect
+        // Hermes anyway leaves it routed with its provider uninspected, which
+        // is the exact state this exists to prevent: Protected on every
+        // surface while the traffic tunnels past unseen.
+        let providerDomains: string[] = [];
+        if (routed && slug === HERMES_SLUG) {
+          const coverage = await hermesUpstreamCoverage().catch(() => null);
+          const off = coverage?.switched_off ?? [];
+          if (off.length > 0) {
+            // The row's own display name, not the slug and not the host. It
+            // is what the person will look for in the sidebar if they want to
+            // change their mind, and "OpenRouter" is how they think of the
+            // thing anyway - `openrouter` is Gate's internal key and
+            // `openrouter.ai` is an implementation detail of it. Falls back to
+            // the host only if the catalog has no row to name, which cannot
+            // happen for a `switched_off` entry (that state means a domain
+            // claimed the host) but keeps the type honest.
+            const domains = off.map(([host, domainSlug]) => ({
+              name:
+                proxy?.domains.find((d) => d.slug === domainSlug)
+                  ?.display_name ?? host,
+              host,
+              slug: domainSlug,
+            }));
+            await ask({ kind: "hermes-provider", domains });
+            providerDomains = domains.map((d) => d.slug);
+          }
+        }
+
         if (routed) {
           if (!force && tool?.status.kind === "drifted") {
             await ask({
@@ -322,6 +395,14 @@ export function useRouting({
           // connect refuses without a live engine, and a refusal here would
           // fail an OpenCode connect that had already succeeded.
           if (couplesEnvExport) await proxySetEnvExport(true);
+          // After the connect, like the channel above and for the same reason:
+          // the engine has to be up. Each slug separately because
+          // `proxy_set_domain` takes one, and a failure on the second must not
+          // undo the first - a partially inspected provider set is still
+          // better than none, and `settle` re-reads the truth either way.
+          for (const domainSlug of providerDomains) {
+            await proxySetDomain(domainSlug, true);
+          }
         } else {
           await disconnectTool(slug);
         }
