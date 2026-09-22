@@ -576,7 +576,9 @@ export function Home({
             <div className="min-w-0 flex-1 text-gc-caption font-medium leading-snug text-gc-ink">
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
-                : changeNotice === "started"
+                : changeNotice === "trusted"
+                  ? "Certificate trusted. Restart any open browser so it trusts it too."
+                  : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
                     ? "Routing is on. Anything already open isn’t routing through Gate yet."
@@ -586,7 +588,7 @@ export function Home({
                   reloading is the whole fix - the banner would otherwise state
                   a problem and offer nothing, which is the state this notice
                   exists to prevent. */}
-              {!canCloseAgents && changeNotice !== "pending" && (
+              {!canCloseAgents && changeNotice !== "pending" && changeNotice !== "trusted" && (
                 <> Reload any pages you have open.</>
               )}
             </div>
@@ -605,7 +607,7 @@ export function Home({
               >
                 Turn on routing
               </button>
-            ) : !canCloseAgents ? null : (
+            ) : changeNotice === "trusted" || !canCloseAgents ? null : (
               <button
                 type="button"
                 onClick={onCloseAgents}
@@ -618,7 +620,9 @@ export function Home({
               icon="x"
               size={13}
               onClick={onDismissChangeNotice}
-              aria-label="Dismiss routing notice"
+              aria-label={
+                changeNotice === "trusted" ? "Dismiss certificate notice" : "Dismiss routing notice"
+              }
             />
           </div>
         )}
