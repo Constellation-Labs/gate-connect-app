@@ -220,7 +220,14 @@ struct EnablePlan {
     /// Neither mechanism can act *yet* - the engine is down and a later pass,
     /// once it is up, can do more than this one.
     nothing: bool,
-    /// Neither mechanism can *ever* act for this provider, engine and all.
+    /// Neither mechanism can act for this provider, and a later pass would do
+    /// exactly as much.
+    ///
+    /// Still conjuncted on `proxy_running`, so with the engine DOWN this is
+    /// false and the case is [`nothing`](EnablePlan::nothing) instead - "not
+    /// yet", because the engine coming up is a change that could matter. The
+    /// "ever" is about retries once the engine is already up, not about engine
+    /// state being irrelevant.
     ///
     /// The distinction from [`nothing`](EnablePlan::nothing) is *ever* versus
     /// *yet*, and it is the whole of AG-885: `openai`'s only tool is Codex and
@@ -241,22 +248,45 @@ struct EnablePlan {
     nothing_ever: bool,
 }
 
-/// The decision, as a function of four facts and nothing else.
+/// The facts [`enable_plan`] decides from, named rather than positional.
+///
+/// Four bare `bool`s is what this was, and two of them - `detected` and
+/// `any_installed` - are one word apart in meaning and were adjacent at the
+/// only call site. Transposing them compiles silently and is not a small bug:
+/// `nothing_ever` would then read the skip-filtered value and journal
+/// `NotInstalled` for an installed-but-skipped provider, which is exactly the
+/// defect review caught in round 1.
+///
+/// Named fields do not make that a compile error - `detected: any_installed`
+/// still builds - but they put the name beside the value at the one call
+/// site, where a mismatch is readable. The table test builds this struct per
+/// row for the same reason, rather than through a positional helper that
+/// would carry the same transposition and silently agree with the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlanFacts {
+    /// A tool this pass may configure: installed, and not on the skip list.
+    detected: bool,
+    /// The engine is up, so a domain can be enabled now rather than later.
+    proxy_running: bool,
+    /// Any tool of this provider is installed. **Ignores the skip list** - a
+    /// member the user switched off is still on the machine.
+    any_installed: bool,
+    /// Any domain cascades from this provider. **Ignores the skip list**, for
+    /// the same reason.
+    any_cascade_domain: bool,
+}
+
+/// The decision, as a function of those facts and nothing else.
 ///
 /// Pure so the AG-885 row can be tested at all: reaching it for real needs
 /// `proxy_running()` true, and that reads a `OnceLock` manager backed by a live
 /// relay or daemon socket, which a unit test cannot stand up.
-fn enable_plan(
-    tool_detected: bool,
-    proxy_running: bool,
-    any_installed: bool,
-    has_cascade_domain: bool,
-) -> EnablePlan {
+fn enable_plan(facts: PlanFacts) -> EnablePlan {
     EnablePlan {
-        configure_tool: tool_detected,
-        enable_domain: proxy_running,
-        nothing: !tool_detected && !proxy_running,
-        nothing_ever: proxy_running && !any_installed && !has_cascade_domain,
+        configure_tool: facts.detected,
+        enable_domain: facts.proxy_running,
+        nothing: !facts.detected && !facts.proxy_running,
+        nothing_ever: facts.proxy_running && !facts.any_installed && !facts.any_cascade_domain,
     }
 }
 
@@ -429,12 +459,12 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     // decides "nothing ever" - see `EnablePlan::nothing_ever`.
     let any_installed = p.tool_ids.iter().any(|&id| tool_detected(id));
     let cascade = cascade_domains(&p);
-    let plan = enable_plan(
-        any_detected,
-        proxy_running(),
+    let plan = enable_plan(PlanFacts {
+        detected: any_detected,
+        proxy_running: proxy_running(),
         any_installed,
-        !cascade.is_empty(),
-    );
+        any_cascade_domain: !cascade.is_empty(),
+    });
 
     if plan.nothing {
         // A restore pass has nothing to do here and nothing to complain about:
@@ -456,8 +486,15 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     }
 
     // Everything this pass may actually turn on: the cascade minus the members
-    // the user switched off before routing stopped. Computed once and reused
-    // by the domain loop below, so the guard and the loop cannot drift.
+    // the user switched off before routing stopped. This is the DOMAIN LOOP's
+    // list, and only its list.
+    //
+    // The guard above deliberately does not read it. `nothing_ever` is fed
+    // `!cascade.is_empty()`, skip list and all, which is the round-1 fix:
+    // reading `routable` there would make an installed-but-skipped provider
+    // look unroutable and journal it `NotInstalled`, claiming nothing it
+    // routes is on the machine about a tool sitting on the user's disk. The
+    // two lists differ on purpose; do not collapse them.
     let routable: Vec<&'static str> = cascade
         .iter()
         .copied()
@@ -1380,10 +1417,16 @@ pub fn restore_all() -> Result<()> {
             // the user's disk.
             //
             // So it lands here and stays `Pending`, which is the AG-885 shape
-            // again in miniature. Reachable when the skip list goes stale
-            // across two master cycles, which the pre-fix deadlock itself
-            // accumulates. Not fixed here: every existing outcome says
-            // something false about it, and inventing one is its own change.
+            // again and just as permanent. Nothing is restored, so
+            // `restore_one_provider` returns at its `if !restored` before
+            // `drop_from_snapshot`: the entry stays in the snapshot, the skip
+            // set never clears, and the user's Retry button cannot clear it
+            // either. It ends only when something else clears the skip set.
+            //
+            // Pre-existing, and narrowing the guard was still right - the
+            // alternative was labelling it `NotInstalled`, which is false.
+            // Not fixed here because every existing outcome says something
+            // untrue about it, and inventing one is its own change.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 // `{e:#}`, matching the string journalled two lines down: the
@@ -2083,12 +2126,19 @@ mod tests {
     /// list on purpose - see `EnablePlan::nothing_ever`.
     #[test]
     fn enable_plan_config_first_proxy_if_running() {
-        let plan = |detected, running, installed, cascade| {
-            enable_plan(detected, running, installed, cascade)
-        };
+        // Each row builds `PlanFacts` itself rather than going through a
+        // positional helper. A helper would reintroduce the hazard the struct
+        // exists to remove: `detected` and `any_installed` are one word apart,
+        // and a table that passes them by position would carry the same
+        // transposition as the call site and agree with it.
         // Codex installed + proxy on: do both.
         assert_eq!(
-            plan(true, true, true, true),
+            enable_plan(PlanFacts {
+                detected: true,
+                proxy_running: true,
+                any_installed: true,
+                any_cascade_domain: true,
+            }),
             EnablePlan {
                 configure_tool: true,
                 enable_domain: true,
@@ -2098,7 +2148,12 @@ mod tests {
         );
         // Codex installed, proxy off: config only, no proxy prompt.
         assert_eq!(
-            plan(true, false, true, true),
+            enable_plan(PlanFacts {
+                detected: true,
+                proxy_running: false,
+                any_installed: true,
+                any_cascade_domain: true,
+            }),
             EnablePlan {
                 configure_tool: true,
                 enable_domain: false,
@@ -2109,7 +2164,12 @@ mod tests {
         // No Codex but proxy on, and there IS a domain to cascade: just the
         // domain route. This is the row that must NOT read "nothing ever".
         assert_eq!(
-            plan(false, true, false, true),
+            enable_plan(PlanFacts {
+                detected: false,
+                proxy_running: true,
+                any_installed: false,
+                any_cascade_domain: true,
+            }),
             EnablePlan {
                 configure_tool: false,
                 enable_domain: true,
@@ -2120,7 +2180,12 @@ mod tests {
         // Nothing installed and proxy off: nothing to do YET. The engine
         // coming up is what changes the answer, so this is not "ever".
         assert_eq!(
-            plan(false, false, false, false),
+            enable_plan(PlanFacts {
+                detected: false,
+                proxy_running: false,
+                any_installed: false,
+                any_cascade_domain: false,
+            }),
             EnablePlan {
                 configure_tool: false,
                 enable_domain: false,
@@ -2144,7 +2209,12 @@ mod tests {
     /// already pinned elsewhere, so the fix could regress with the suite green.
     #[test]
     fn nothing_installed_and_nothing_to_cascade_with_the_engine_up_is_never_not_yet() {
-        let p = enable_plan(false, true, false, false);
+        let p = enable_plan(PlanFacts {
+            detected: false,
+            proxy_running: true,
+            any_installed: false,
+            any_cascade_domain: false,
+        });
         assert!(p.nothing_ever, "{p:?}");
         assert!(!p.nothing, "engine is up, so this is not the not-yet case");
     }
@@ -2161,9 +2231,17 @@ mod tests {
     fn an_all_skipped_provider_is_not_nothing_ever() {
         // detected=false (everything skipped), engine up, but the tool IS
         // installed and the cascade DOES have a domain.
-        assert!(!enable_plan(false, true, true, false).nothing_ever);
-        assert!(!enable_plan(false, true, false, true).nothing_ever);
-        assert!(!enable_plan(false, true, true, true).nothing_ever);
+        let skipped = |any_installed, any_cascade_domain| {
+            enable_plan(PlanFacts {
+                detected: false,
+                proxy_running: true,
+                any_installed,
+                any_cascade_domain,
+            })
+        };
+        assert!(!skipped(true, false).nothing_ever);
+        assert!(!skipped(false, true).nothing_ever);
+        assert!(!skipped(true, true).nothing_ever);
     }
 
     #[test]
