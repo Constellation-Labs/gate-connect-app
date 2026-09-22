@@ -54,6 +54,7 @@ const proxy: ProxyState = {
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
   env_export_separable: false,
+  forwarder_answering: null,
   domains: [
     {
       slug: "anthropic",
@@ -362,6 +363,23 @@ describe("buildDiagnosticsReport", () => {
       backend: { ...backend, ca_nss_trusted: null, ca_nss_write: null },
     });
     expect(text).not.toContain("browser write");
+  });
+
+  it("names the forwarder, the sidecar every other address depends on", () => {
+    const text = report({ proxy: { ...proxy, forwarder_answering: true } });
+    expect(text).toContain("forwarder       answering");
+  });
+
+  it("flags a forwarder that is not answering, which every other line reads as fine", () => {
+    // The proxy line still says running and the domains still say on. This is
+    // the only line that explains why nothing is reaching the gateway.
+    const text = report({ proxy: { ...proxy, forwarder_answering: false } });
+    expect(text).toContain("forwarder       NOT ANSWERING");
+  });
+
+  it("says nothing about the forwarder where the question does not apply", () => {
+    const text = report({ proxy: { ...proxy, forwarder_answering: null } });
+    expect(text).not.toMatch(/^forwarder/m);
   });
 
   it("survives a first-run popover with no account and no proxy", () => {

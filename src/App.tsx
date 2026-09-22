@@ -1484,6 +1484,7 @@ export function App() {
         envExportSeparable={proxy?.env_export_separable ?? false}
         envExportOn={proxy?.env_export_opted_in ?? false}
         onToggleEnvExport={() => void toggleEnvExport()}
+        forwarderAnswering={proxy?.forwarder_answering ?? null}
       />
     );
   }

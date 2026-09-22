@@ -48,6 +48,7 @@ export function Home({
   envExportOn,
   onToggleEnvExport,
   verdicts,
+  forwarderAnswering,
 }: {
   workspace: string;
   /** The gateway host on its own, separate from `workspace`: the header now
@@ -108,6 +109,11 @@ export function Home({
    * verdict does not count as routing, which is the point - AG-570 forbids a
    * completed file write from producing On on its own. */
   verdicts?: Map<string, Verdict>;
+  /** Whether the forwarder sidecar the PAC and HTTPS_PROXY name is answering;
+   * null when unknown or not this process's to know. False while routing is
+   * on means browsers and tools are quietly going direct - the one state the
+   * count below would otherwise report as fully routed. */
+  forwarderAnswering: boolean | null;
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
@@ -123,6 +129,13 @@ export function Home({
   // Denominator included so "3 of 8" answers "and what about the rest?"
   // without a scroll; the families below are the itemization.
   const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
+  // The addresses everything holds fall back to direct when the forwarder is
+  // gone, so the engine can be up with every row switched on and nothing
+  // arriving at it. Outranks the count: "8 of 8 routing" is the wrong answer.
+  // Gated on there being something to route at all, the way `partial` is: with
+  // every row off, a dead forwarder is a fault about nothing, and the card
+  // would be raising it over a screen the user has deliberately emptied.
+  const unrouted = proxyOn && forwarderAnswering === false && (anyDomainOn || routableCount > 0);
   const routedCount = groups.reduce((n, g) => n + g.routed, 0);
   // Members no switch on this screen can fix: a family switch deliberately
   // skips a hand-written setup, and an errored tool can't be connected at all.
@@ -283,9 +296,11 @@ export function Home({
           ? trustPromptWaiting(platform)
           : interacted
             ? proxyOn
-              ? partial
-                ? "Routing on, certificate not trusted"
-                : `Routing on, ${routedCount} of ${routableCount} routing`
+              ? unrouted
+                ? "Routing on, forwarder not answering, traffic going direct"
+                : partial
+                  ? "Routing on, certificate not trusted"
+                  : `Routing on, ${routedCount} of ${routableCount} routing`
               : "Routing did not start"
             : ""}
       </span>
@@ -354,11 +369,13 @@ export function Home({
                           ? waitingCount > 0
                             ? `Didn’t start · ${waitingCount} unprotected`
                             : "Didn’t start"
-                          : routableCount === 0
-                            ? "On"
-                            : desiredCount === 0
-                              ? "On · nothing enabled yet"
-                              : `On · ${routedCount} of ${routableCount} routing`}
+                          : unrouted
+                            ? "On · forwarder not answering, going direct"
+                            : routableCount === 0
+                              ? "On"
+                              : desiredCount === 0
+                                ? "On · nothing enabled yet"
+                                : `On · ${routedCount} of ${routableCount} routing`}
                       </div>
                     </>
                   )}
@@ -726,7 +743,14 @@ export function Home({
               className="ml-auto"
               on={envExportOn}
               label="Route command-line tools through Gate"
-              describedBy={envExportOn && !proxyOn && showProxy ? "routing-status" : undefined}
+              // Both conditions are the same rule: the switch reads "on" over
+              // a channel that is not carrying anything. Routing off is the
+              // "waiting" half of it; `unrouted` is the half where routing is
+              // on and the forwarder this channel's variables name is not
+              // answering, which is the one the user most needs pointed out.
+              describedBy={
+                showProxy && envExportOn && (unrouted || !proxyOn) ? "routing-status" : undefined
+              }
               busy={busy}
               onClick={onToggleEnvExport}
             />
