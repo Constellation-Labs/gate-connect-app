@@ -652,17 +652,29 @@ describe("the App-default row's mark size", () => {
 });
 
 describe("the Tokens saved tile", () => {
-  it("scrolls to this pane's Recent activity card", () => {
-    // The Overview's jump, with this pane's destination. The tile is a button
-    // in every state - the card is drawn whether or not the feed has rows, so
-    // there is always somewhere to land.
+  afterEach(() => vi.restoreAllMocks());
+
+  // The Overview's jump, with this pane's destination. Unlike the Overview's
+  // tile, which stops being a button when its card is empty, in flight or
+  // unread (AG-883), this one is a button in every state: the Recent activity
+  // card is drawn in all of them, so there is always somewhere to land. Each
+  // row here is one of those states, and the pending one is the arm the
+  // Overview's test declines.
+  const states: [string, Partial<Parameters<typeof AppPane>[0]>][] = [
+    ["with rows", { activity: [entry] }],
+    ["with an empty feed", {}],
+    ["while the feed is in flight", { eventsPending: true, pending: true }],
+    ["when the feed could not be read", { unavailable: { events: true } }],
+    ["for an unattributed tool", { unattributed: true, unavailable: { events: true } }],
+  ];
+  it.each(states)("scrolls to this pane's Recent activity card %s", (_, props) => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
-    render(pane());
+    render(pane(props));
 
     screen.getByRole("button", { name: /Tokens saved/i }).click();
 
     expect(scroll).toHaveBeenCalledTimes(1);
-    expect(scroll.mock.instances[0]).toBe(card("Recent activity"));
-    scroll.mockRestore();
+    // `mock.contexts` is the call's `this`; `instances` is documented for `new`.
+    expect(scroll.mock.contexts[0]).toBe(card("Recent activity"));
   });
 });

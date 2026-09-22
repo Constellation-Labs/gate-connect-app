@@ -270,11 +270,18 @@ export function AppPane({
         unattributed={unattributed}
         // The Overview's jump (AG-572), with this pane's own destination: the
         // Recent activity card, which is where this tool's savings show up
-        // request by request. Always offered, whether the feed has rows or not
-        // - the card is drawn in every state, so there is always somewhere to
-        // land, which is the condition the Overview's gate (AG-883) exists to
-        // check. `scrollIntoView` rather than a hash link, as on the Overview:
-        // a fragment in the URL of a window with no address bar.
+        // request by request.
+        //
+        // **Always offered, and that is a deliberate divergence from the
+        // Overview's gate (AG-883)**, asked for on 2026-09-22: the tile jumps
+        // whether the feed has rows or not, and while the reading is pending,
+        // unread or unattributed. The Overview withholds its jump when the
+        // savings card is empty because that card sits above an empty feed and
+        // the pinned scroll showed a screen of nothing; here the card is the
+        // last one and it is drawn in every state, heading and sentence
+        // included, so the landing is the card itself rather than the space
+        // below it. `scrollIntoView` rather than a hash link, as on the
+        // Overview: a fragment in the URL of a window with no address bar.
         onSelectTokensSaved={() =>
           document.getElementById(RECENT_ACTIVITY_SECTION_ID)?.scrollIntoView({
             behavior: "smooth",
