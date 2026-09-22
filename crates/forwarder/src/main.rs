@@ -17,7 +17,10 @@
 //! software Gate does not claim to touch.
 //!
 //! Pointing the variables here instead gives the env channel the PAC's
-//! fail-open behaviour.
+//! fail-open behaviour. The PAC names this port too: a browser caches the
+//! script it fetched, so "the fetch fails and the client goes DIRECT" only ever
+//! covered a browser that refetched, and one holding the cached body dialed
+//! the engine's dead port for every Gate host and failed closed.
 //!
 //! # Why a separate binary
 //!

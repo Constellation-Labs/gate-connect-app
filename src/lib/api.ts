@@ -435,6 +435,12 @@ export interface ProxyState {
    * each tool's own config file. The drift review shows it, because approving an
    * overwrite means seeing what it writes. */
   relay_base_url: string | null;
+  /** Whether the environment forwarder (the sidecar the PAC and HTTPS_PROXY
+   * name) answered when the app last checked. null when this process is not
+   * hosting the engine or has not asked yet. false is the state nothing else
+   * on screen can show: routing is on, and browsers and tools are going direct
+   * because their addresses fall back rather than fail. */
+  forwarder_answering: boolean | null;
   domains: ProxyDomain[];
 }
 

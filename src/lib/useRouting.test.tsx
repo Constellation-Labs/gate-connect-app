@@ -57,6 +57,7 @@ const proxyState = (over: Partial<ProxyState> = {}): ProxyState => ({
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: false,
   env_export_separable: true,
+  forwarder_answering: null,
   domains: [],
   ...over,
 });

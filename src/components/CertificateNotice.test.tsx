@@ -65,6 +65,14 @@ describe("CertificateNotice depicts the prompt the platform actually raises", ()
     expect(screen.getByText(/Your system will ask you to confirm/i)).toBeTruthy();
   });
 
+  it.each([false, true])("keeps the browser advice up when pending is %s", (pending) => {
+    // Guards two things: that the sentence is still there once the OS dialog
+    // is up (the only moment the user may act on it), and that it stays scoped
+    // to "any open browser" rather than ordering a restart of nothing.
+    renderNotice({ platform: "macos", pending });
+    expect(screen.getByText(/Restart any open browser so it trusts the certificate\./)).toBeTruthy();
+  });
+
   it("hides every depiction from the accessibility tree, caption included", () => {
     renderNotice({ platform: "linux" });
     // The caption used to sit outside the hidden node, so a screen reader was

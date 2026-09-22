@@ -120,6 +120,10 @@ pub struct RunningEngine {
     /// `networksetup -setautoproxyurl`); Linux uses env-var proxies with no PAC.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pac_port: u16,
+    /// The port the PAC names for Gate hosts. See
+    /// [`set_pac_target`](Self::set_pac_target).
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pac_target_tx: watch::Sender<u16>,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
@@ -155,6 +159,28 @@ impl RunningEngine {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub fn pac_port(&self) -> u16 {
         self.pac_port
+    }
+
+    /// Repoint the PAC at `port` for every Gate host. Cheap - no restart and
+    /// no registry write, because the body is rebuilt per fetch.
+    ///
+    /// Seeded with the engine's own port; the manager moves it to the
+    /// forwarder as soon as one answers. A browser caches the PAC it fetched,
+    /// so the address in it has to be one that keeps answering after the
+    /// engine is gone. The forwarder does, and goes direct when it finds no
+    /// engine; the engine's own port refuses, and a browser holding the cached
+    /// script then fails closed for exactly the hosts the user cares about.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub fn set_pac_target(&self, port: u16) {
+        let _ = self.pac_target_tx.send(port);
+    }
+
+    /// The port the PAC currently names for Gate hosts. Test-only: production
+    /// reads it back by fetching the PAC, which is what the tests below also
+    /// do once, and the rest assert on this.
+    #[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
+    pub fn pac_target(&self) -> u16 {
+        *self.pac_target_tx.borrow()
     }
 
     /// True once the engine thread has exited (crash or stop) - the
@@ -2126,17 +2152,62 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.
-/// Enabled Gate hosts route to the loopback proxy; everything else falls to
-/// `upstream` when the user already had a proxy (preserving a corporate proxy),
-/// or DIRECT otherwise. Host matching mirrors [`ProxyDomain::matches_host`]:
-/// exact, case-insensitive hostnames.
+/// Enabled Gate hosts route to the loopback proxy at `proxy_port`; everything
+/// else falls to `upstream` when the user already had a proxy (preserving a
+/// corporate proxy), or DIRECT otherwise. Host matching mirrors
+/// [`ProxyDomain::matches_host`]: exact, case-insensitive hostnames.
+///
+/// `proxy_port` is the forwarder's once the manager has one, and every Gate
+/// host carries `; DIRECT` after it. Both exist for the same reason: a browser
+/// caches the script it fetched, so "the PAC fails open" only ever held for a
+/// browser that refetched it and found the port dead. One holding the cached
+/// body kept dialing the engine's port for exactly the hosts the user cares
+/// about, and with nothing after `PROXY` it failed closed. Naming the
+/// forwarder gives it an address that keeps answering and goes direct when the
+/// engine is gone; the fallback covers the forwarder itself being gone, at the
+/// cost that a browser which has once seen the proxy refuse keeps it on its
+/// bad-proxy list for a while after it is back. The fallback is `DIRECT`, or
+/// the user's prior `upstream` proxy when there is one: on a network that only
+/// lets traffic out through that proxy, `DIRECT` would fail exactly where the
+/// fallback is meant to keep working.
+/// Whether `authority` is safe to interpolate into the PAC as a proxy address.
+///
+/// The PAC is JavaScript we build by hand, and this string is the one part of
+/// it that comes from outside: the user's prior system proxy, which on Windows
+/// is an `HKCU` value any process running as them can write and on macOS comes
+/// back from `networksetup`. A value carrying a quote, a backslash or a newline
+/// would close the string literal it lands in, and a semicolon would append a
+/// proxy entry of its own.
+///
+/// An allowlist rather than a denylist, because the grammar is small: a proxy
+/// authority is a host and an optional port, so letters, digits, `.`, `-`, `_`,
+/// `:` and the brackets of an IPv6 literal are all it can legitimately contain.
+/// Anything else is not an address, so treating it as "no upstream proxy" loses
+/// nothing that was going to work.
+///
+/// Whoever can set the system proxy already decides where the browser's traffic
+/// goes, so this is not the only thing standing between them and the user. It
+/// is here because a string from outside should not reach a script we generate.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn pac_safe_authority(authority: &str) -> bool {
+    !authority.is_empty()
+        && authority
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'))
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) -> String {
+    let upstream = upstream.filter(|u| pac_safe_authority(u));
     let mut s = String::from("function FindProxyForURL(url, host) {\n");
     s.push_str("  var h = host.toLowerCase();\n");
+    let fallback = match upstream {
+        Some(proxy) => format!("PROXY {proxy}"),
+        None => "DIRECT".to_string(),
+    };
     for host in domains.iter().flat_map(|d| d.hosts.iter()) {
         s.push_str(&format!(
-            "  if (h === \"{}\") return \"PROXY 127.0.0.1:{proxy_port}\";\n",
+            "  if (h === \"{}\") return \"PROXY 127.0.0.1:{proxy_port}; {fallback}\";\n",
             host.to_ascii_lowercase()
         ));
     }
@@ -2178,9 +2249,10 @@ fn request_host(buf: &[u8]) -> Option<String> {
 /// Serve the PAC script, and the CA's CRL, on a dedicated loopback listener.
 ///
 /// WinINET fetches the `AutoConfigURL` *directly* (not through the proxy), so
-/// this must be a plain HTTP responder, separate from the hudsucker proxy on
-/// `proxy_port`. The PAC body is rebuilt per request from the live rule set.
-/// Runs until the engine's runtime is torn down.
+/// this must be a plain HTTP responder, separate from the hudsucker proxy. The
+/// PAC body is rebuilt per request from the live rule set and the live
+/// `pac_target` (see [`RunningEngine::set_pac_target`]). Runs until the
+/// engine's runtime is torn down.
 ///
 /// The CRL rides on this listener rather than on the proxy port for a reason
 /// worth keeping: CryptoAPI fetches it *during* a TLS handshake the proxy is in
@@ -2197,7 +2269,7 @@ fn request_host(buf: &[u8]) -> Option<String> {
 async fn serve_pac(
     listener: tokio::net::TcpListener,
     rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
-    proxy_port: u16,
+    pac_target: watch::Receiver<u16>,
     upstream: Option<String>,
     crl_issuer: Option<Arc<Issuer<'static, KeyPair>>>,
 ) {
@@ -2211,6 +2283,7 @@ async fn serve_pac(
             continue;
         };
         let rules = rules.clone();
+        let pac_target = pac_target.clone();
         let upstream = upstream.clone();
         let crl_issuer = crl_issuer.clone();
         tokio::spawn(async move {
@@ -2269,7 +2342,8 @@ async fn serve_pac(
                     }
                 }
                 _ => {
-                    let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
+                    let body =
+                        pac_script(&rules.borrow(), *pac_target.borrow(), upstream.as_deref());
                     format!(
                         "HTTP/1.1 200 OK\r\n\
                          Content-Type: application/x-ns-proxy-autoconfig\r\n\
@@ -2339,6 +2413,11 @@ where
     // domain toggle needs no registry write.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let pac_rules_rx = rules_rx.clone();
+    // The address the PAC hands out for Gate hosts. Seeded with the engine's
+    // own port so the PAC is never empty-handed, and repointed at the
+    // forwarder once the manager has one - see `RunningEngine::set_pac_target`.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let (pac_target_tx, pac_target_rx) = watch::channel(port);
     // Fallback proxy baked into the PAC so non-Gate traffic keeps using the
     // user's prior proxy instead of going DIRECT.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -2526,7 +2605,7 @@ where
                             detached.push(tokio::spawn(serve_pac(
                                 pac,
                                 pac_rules_rx,
-                                port,
+                                pac_target_rx,
                                 upstream_proxy,
                                 crl_issuer,
                             )));
@@ -2583,6 +2662,8 @@ where
             relay_port,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             pac_port,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            pac_target_tx,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
             rules_tx,
@@ -3553,15 +3634,25 @@ mod tests {
 
         // No prior proxy: listed hosts hit the engine, everything else DIRECT.
         let pac = pac_script(&domains, 8123, None);
-        assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
-        assert!(pac.contains("if (h === \"api.other.com\") return \"PROXY 127.0.0.1:8123\";"));
+        // `; DIRECT` on every Gate host: a browser holding a cached PAC must
+        // go direct when the port refuses, not fail the request.
+        assert!(pac
+            .contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123; DIRECT\";"));
+        assert!(
+            pac.contains("if (h === \"api.other.com\") return \"PROXY 127.0.0.1:8123; DIRECT\";")
+        );
         assert!(pac.trim_end().ends_with("return \"DIRECT\";\n}"));
         assert!(!pac.contains("teams"));
 
-        // With a prior proxy: Gate hosts still hit the engine, plain hostnames
-        // stay direct, and everything else falls back to the upstream proxy.
+        // With a prior proxy: Gate hosts still hit the engine and fall back to
+        // the upstream proxy rather than DIRECT (a network that mandates the
+        // proxy would fail DIRECT), plain hostnames stay direct, and everything
+        // else falls back to the upstream proxy.
         let pac = pac_script(&domains, 8123, Some("proxy.corp.com:8080"));
-        assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
+        assert!(pac.contains(
+            "if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123; PROXY \
+             proxy.corp.com:8080\";"
+        ));
         assert!(pac.contains("if (isPlainHostName(h)) return \"DIRECT\";"));
         // Loopback must be DIRECT even behind an upstream proxy: it is where
         // CryptoAPI goes to fetch the CRL our leaves advertise, and
@@ -3573,6 +3664,48 @@ mod tests {
             .trim_end()
             .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
     }
+    /// The upstream proxy is the one part of the PAC that comes from outside
+    /// this process. A value that could close the JavaScript string it lands
+    /// in, or append a proxy entry of its own, is not an address at all, so it
+    /// is dropped rather than escaped.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn a_prior_proxy_that_is_not_an_address_is_dropped_rather_than_interpolated() {
+        let domains = vec![ProxyDomain {
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            hosts: vec!["api.anthropic.com".into()],
+            upstream_url: "https://api.anthropic.com".into(),
+            rewrite_prefixes: vec!["/v1/".into()],
+            passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
+            enabled: true,
+            supported: true,
+        }];
+
+        for hostile in [
+            r#"evil.com"; alert(1); var x = ""#,
+            "evil.com\nvar x = 1",
+            "proxy.corp.com:8080; DIRECT",
+            "proxy.corp.com:8080 SOCKS evil.com:1080",
+            r"evil\u0022.com",
+        ] {
+            let pac = pac_script(&domains, 8123, Some(hostile));
+            assert!(
+                !pac.contains("evil") && !pac.contains("alert"),
+                "{hostile:?} reached the script"
+            );
+            // Dropped means "no prior proxy", which is the PAC this machine
+            // would have had if the value had never been set.
+            assert!(pac.contains("return \"PROXY 127.0.0.1:8123; DIRECT\";"));
+            assert!(pac.trim_end().ends_with("return \"DIRECT\";\n}"));
+        }
+
+        // An IPv6 literal is an address, and must survive.
+        let pac = pac_script(&domains, 8123, Some("[fe80::1]:8080"));
+        assert!(pac.contains("return \"PROXY [fe80::1]:8080\";"));
+    }
+
     /// HTTP/2 lets a client split its cookies across several `cookie` fields
     /// and nothing in the stack joins them for us, so reading only the first
     /// one dropped the rest of the jar on every injected turn - including,
