@@ -57,6 +57,23 @@ pub struct ReopenEvidence<'a> {
     /// from the file's own mtime. `None` when the tool has no configuration
     /// file, or it does not exist, or its time could not be read.
     pub config_changed_at: Option<u64>,
+    /// Unix seconds at which Gate's certificate bundle was last written.
+    ///
+    /// **The second thing a tool reads once at startup**, and the one this
+    /// module was blind to. The bound above is the tool's own config file, so
+    /// a change to `ca-bundle.pem` - a re-mint, a repair, a reset - moved
+    /// nothing `reopen_pending` looked at, and a process holding the old
+    /// bundle went on failing every intercepted host while its row read
+    /// Protected. AG-933, observed three times in one afternoon.
+    ///
+    /// Same argument as the config mtime and the same properties: durable
+    /// across restarts of Gate, and the literal moment the thing the process
+    /// reads last changed, by Gate's hand or anyone's. Not per tool, because
+    /// the bundle is not - every tool Gate points at it reads the same file.
+    ///
+    /// `None` when there is no bundle on disk, which reads as "no claim" the
+    /// same way a missing config does.
+    pub ca_bundle_changed_at: Option<u64>,
 }
 
 /// Is a process for this tool running that predates the last change to the
@@ -70,7 +87,16 @@ pub fn reopen_pending(ev: &ReopenEvidence) -> bool {
     if !ev.process_names_known {
         return false;
     }
-    let Some(changed_at) = ev.config_changed_at else {
+    // The later of the two, because either one going stale is enough: a
+    // process that predates the newest thing it reads at startup is holding
+    // something out of date, and which of the two it is makes no difference to
+    // the remedy. Taking the max rather than testing them separately also
+    // keeps one bound and one comparison.
+    let changed_at = [ev.config_changed_at, ev.ca_bundle_changed_at]
+        .into_iter()
+        .flatten()
+        .max();
+    let Some(changed_at) = changed_at else {
         // Nothing on disk records a change, so nothing supports the claim that
         // a running process missed one. See the module docs: the old fallback
         // here was Gate's own process start, which is the defect this replaces.
@@ -137,11 +163,27 @@ mod tests {
     const BEFORE_CONFIG: u64 = 1_756_702_980; // Sep 1
     const AFTER_CONFIG: u64 = 1_757_433_720; // Sep 9
 
+    /// The config-only case, which is what every test before AG-933 was about.
     fn evidence(starts: &[u64], config_changed_at: Option<u64>) -> ReopenEvidence<'_> {
         ReopenEvidence {
             process_names_known: true,
             process_starts: starts,
             config_changed_at,
+            ca_bundle_changed_at: None,
+        }
+    }
+
+    /// ...and the same with a certificate bundle in the picture.
+    fn evidence_with_bundle(
+        starts: &[u64],
+        config_changed_at: Option<u64>,
+        ca_bundle_changed_at: Option<u64>,
+    ) -> ReopenEvidence<'_> {
+        ReopenEvidence {
+            process_names_known: true,
+            process_starts: starts,
+            config_changed_at,
+            ca_bundle_changed_at,
         }
     }
 
@@ -182,6 +224,57 @@ mod tests {
         assert!(!reopen_pending(&evidence(&[], Some(CONFIG_WRITE))));
     }
 
+    /// AG-933. A certificate bundle written after the process started makes
+    /// that process stale, exactly as a config write does.
+    ///
+    /// The bundle is the second thing a tool reads once at startup, and this
+    /// module was blind to it: the bound was the tool's own config file, so a
+    /// re-mint moved nothing `reopen_pending` looked at. A process holding the
+    /// old bundle failed every intercepted host while its row read Protected -
+    /// observed three times in one afternoon, by three different routes.
+    #[test]
+    fn a_process_older_than_the_certificate_bundle_is_pending() {
+        // Config untouched since before the process started; only the bundle
+        // moved. Before AG-933 this was `false`.
+        assert!(reopen_pending(&evidence_with_bundle(
+            &[BEFORE_CONFIG],
+            None,
+            Some(CONFIG_WRITE)
+        )));
+    }
+
+    /// Either bound is enough, so the later one decides.
+    #[test]
+    fn the_later_of_the_two_bounds_is_what_counts() {
+        // Process started after the config was written but before the bundle:
+        // still stale, because the bundle is the newer thing it reads.
+        assert!(reopen_pending(&evidence_with_bundle(
+            &[CONFIG_WRITE + 1],
+            Some(CONFIG_WRITE),
+            Some(CONFIG_WRITE + 2)
+        )));
+        // And the mirror: newer than both, so nothing is stale. This is the
+        // case a naive "either is set" test would get wrong.
+        assert!(!reopen_pending(&evidence_with_bundle(
+            &[CONFIG_WRITE + 3],
+            Some(CONFIG_WRITE),
+            Some(CONFIG_WRITE + 2)
+        )));
+    }
+
+    /// A bundle with no time still makes no claim, like a config with none.
+    #[test]
+    fn a_missing_bundle_is_not_an_argument_that_anything_is_stale() {
+        // Neither bound readable: no claim, which is the rule the module docs
+        // set and the reason the old "fall back to Gate's own start" was
+        // removed.
+        assert!(!reopen_pending(&evidence_with_bundle(
+            &[BEFORE_CONFIG],
+            None,
+            None
+        )));
+    }
+
     #[test]
     fn a_tool_with_no_known_process_name_is_never_pending() {
         // OpenClaw and Hermes: staleness is unobservable, and the notice is
@@ -190,6 +283,7 @@ mod tests {
             process_names_known: false,
             process_starts: &[BEFORE_CONFIG],
             config_changed_at: Some(CONFIG_WRITE),
+            ca_bundle_changed_at: Some(CONFIG_WRITE),
         };
         assert!(!reopen_pending(&ev));
     }

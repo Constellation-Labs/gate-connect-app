@@ -2607,6 +2607,24 @@ fn config_changed_at_unix(slug: &str) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// When Gate's certificate bundle was last written, as Unix seconds.
+///
+/// The second file a routed tool reads once at startup, and not per tool -
+/// every tool Gate points at the bundle reads the same one. `None` when there
+/// is none on disk, which is the ordinary state before routing has ever been
+/// turned on.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn ca_bundle_changed_at_unix() -> Option<u64> {
+    let path = gate_connect_core::proxy::ca_bundle::path().ok()?;
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
 /// Is a process for this one tool running that predates the last change to that
 /// tool's configuration, and is therefore still using whatever it loaded then?
 ///
@@ -2634,6 +2652,7 @@ fn reopen_pending_for(slug: &str) -> bool {
         process_names_known: true,
         process_starts: &starts,
         config_changed_at: config_changed_at_unix(slug),
+        ca_bundle_changed_at: ca_bundle_changed_at_unix(),
     })
 }
 
