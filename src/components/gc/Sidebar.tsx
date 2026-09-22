@@ -73,7 +73,29 @@ export type AppStatus =
    * for a reading and principle 6 prefers one.
    */
   | { kind: "partly-protected"; detail?: string }
-  | { kind: "not-routed"; detail?: string };
+  | { kind: "not-routed"; detail?: string }
+  /**
+   * Routed, and Gate cannot see any of it.
+   *
+   * The tool's config names Gate and its traffic really does go through the
+   * engine - so every other reading here says Protected - but the provider it
+   * talks to is not one Gate intercepts, either because no catalog entry
+   * claims that host or because the entry's switch is off. The requests
+   * tunnel straight through, unread.
+   *
+   * **A seventh phrase, and the Figma draws none of it**, on the same
+   * reasoning the two above were added: the existing vocabulary answers
+   * wrongly. "Protected" is false, "Not protected" reads as the off state on
+   * a switch that is on, and "Not routed" is false twice over - it IS routed.
+   * Principle 6 again: the row is making a claim about the user's traffic, so
+   * it had better be one that is true.
+   *
+   * `detail` names the host, because "not inspected" without saying what is
+   * not inspected leaves nowhere to go. There is deliberately no action on
+   * this row: for an unknown provider none exists, and inventing one would be
+   * the lie this phrase exists to stop telling. AG-932.
+   */
+  | { kind: "not-inspected"; detail?: string };
 
 /**
  * What the last detection scan established, which is not the same as how many
@@ -226,7 +248,35 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
   reopen: { label: "Reopen to finish", className: "text-amber-600" },
   "partly-protected": { label: "Partly protected", className: "text-amber-600" },
   "not-routed": { label: "Not routed", className: "text-amber-600" },
+  // Amber, not green. It is the honest colour: something the user would want
+  // to know about, and not a failure they caused.
+  "not-inspected": { label: "Routed, not inspected", className: "text-amber-600" },
 };
+
+/**
+ * Does this row count as routed, for the counters and the topbar banner?
+ *
+ * `protected` and `not-inspected` both do, and that pairing is the decision
+ * this function exists to hold in one place. Raised in review on #328: with
+ * Hermes the only app on and pointed at Bedrock, counting only `protected`
+ * gave `routingState(0, 1)` and a banner reading "Gate is not routing your
+ * apps" over a row reading "Routed, not inspected". One of the two had to be
+ * wrong, and this PR's whole argument is that it IS routed - the shortfall is
+ * inspection, which is the row's nuance to carry and not the banner's.
+ *
+ * So the banner stays a statement about routing and the row says what routing
+ * did not get you. The alternative - leave it uncounted and reword
+ * `routingState` - would make the banner's copy depend on which KIND of
+ * shortfall it was, which is a second vocabulary for one number.
+ *
+ * Four counters read this: the topbar's `protectedCount`, `MasterCard`, the
+ * tray's per-group fraction and the rail's. They were four separate
+ * `kind === "protected"` filters and are one predicate now, because four
+ * copies of a pairing is four chances to disagree.
+ */
+export function countsAsRouted(status: AppStatus): boolean {
+  return status.kind === "protected" || status.kind === "not-inspected";
+}
 
 /**
  * The grey suffix a rail row draws: "2m ago", "Off", "Blocked", "Claude Code",
@@ -248,6 +298,9 @@ function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
   if (status.kind === "reopen" || status.kind === "partly-protected") return status.detail;
   if (status.kind === "not-routed") return status.detail;
+  // The host, which is the whole of what makes this row actionable - or at
+  // least understandable, since for an unknown provider there is no action.
+  if (status.kind === "not-inspected") return status.detail;
   return undefined;
 }
 
@@ -360,7 +413,7 @@ export function Sidebar({
                  * uppercase: the drawn counter is Geist Mono Regular and
                  * reads "1 of 2". */}
                 <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-                  {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+                  {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
                   {group.apps.length}
                 </span>
               </div>

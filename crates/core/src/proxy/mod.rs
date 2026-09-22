@@ -1143,23 +1143,6 @@ pub fn address_health(configured: &str) -> AddressHealth {
     }
 }
 
-/// Has a forwarder port ever been persisted on this install?
-///
-/// Which is to say: does anything on disk depend on the forwarder answering?
-/// True once either the machine-wide export or a tool config has been written
-/// with its address, and it stays true across a logout that takes the process
-/// itself down, because [`forwarder::stop`] retires the marker and not the
-/// port file.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub fn forwarder_port_persisted() -> bool {
-    forwarder::persisted_port().is_some()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn forwarder_port_persisted() -> bool {
-    false
-}
-
 /// The port of a `127.0.0.1` proxy address of ours, if that is what `url` is.
 ///
 /// Userinfo is stripped before the host is read, which is not a nicety: Claude
@@ -2691,6 +2674,15 @@ pub struct ProxyState {
     /// asks them to approve a value they cannot see.
     #[serde(default)]
     pub relay_base_url: Option<String>,
+    /// Whether the environment forwarder answered when the process hosting the
+    /// engine last asked. `None` when this process hosts no engine (Linux, a
+    /// CLI beside the app, routing off) or nothing has asked yet.
+    /// `Some(false)` is the state nothing else on screen can show: routing is
+    /// on, and browsers and tools that name the forwarder are going direct
+    /// because their PAC and their variables fall back rather than fail. See
+    /// `DesktopManager::forwarder_tick`.
+    #[serde(default)]
+    pub forwarder_answering: Option<bool>,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
 }

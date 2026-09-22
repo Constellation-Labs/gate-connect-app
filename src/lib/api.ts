@@ -66,6 +66,14 @@ export interface Tool {
    *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
    *  Distinct across the registry, which {@link Tool.name} is not. */
   product_name: string;
+  /** What Gate can and cannot see of this tool's upstream, or absent when
+   *  there is nothing to report.
+   *
+   *  Only Hermes and OpenClaw ever answer: they are the two whose provider is
+   *  chosen by the user and lives in another section of the rail, so being
+   *  routed and being inspected come apart. Recomputed on every poll, because
+   *  the user repoints the tool and domains get flipped elsewhere. AG-932. */
+  coverage?: UpstreamCoverage | null;
   upstream_provider_name: string;
   default_upstream_url: string;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
@@ -435,6 +443,12 @@ export interface ProxyState {
    * each tool's own config file. The drift review shows it, because approving an
    * overwrite means seeing what it writes. */
   relay_base_url: string | null;
+  /** Whether the environment forwarder (the sidecar the PAC and HTTPS_PROXY
+   * name) answered when the app last checked. null when this process is not
+   * hosting the engine or has not asked yet. false is the state nothing else
+   * on screen can show: routing is on, and browsers and tools are going direct
+   * because their addresses fall back rather than fail. */
+  forwarder_answering: boolean | null;
   domains: ProxyDomain[];
 }
 
@@ -482,19 +496,40 @@ export const proxySetDomain = (slug: string, enabled: boolean) =>
 
 export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
 
+/** One provider row Hermes points at that Gate is not inspecting: the domain
+ * `slug` claims every host in `hosts` and its switch is off, so turning it on is
+ * the whole remedy. `tools` names what else that switch reaches - the provider's
+ * own tools, which `reconcile_enabled` connects at the next launch once a
+ * cascade domain is on - and is empty for a proxy-only row like OpenRouter. */
+export type HermesCoverageEntry = {
+  slug: string;
+  hosts: string[];
+  tools: string[];
+};
+
 /** What Gate would and would not see of the current Hermes install.
  *
- * `switched_off` is `[host, slug]` pairs: a provider domain claims that host
- * and its switch is off, so turning it on is the whole remedy. `unknown` is
- * hosts no domain claims at all (Bedrock, a self-hosted endpoint), where no
- * switch helps and the honest answer is to say so.
+ * `defaulted` says the endpoints are Hermes' documented default rather than
+ * anything read from `config.yaml` - the file is missing, does not parse, or
+ * names no endpoint. Copy has to say which: "your config uses OpenRouter" is
+ * false about a file that was never read. `unknown` is hosts no domain claims
+ * at all (Bedrock, a self-hosted endpoint), where no switch helps and the
+ * honest answer is to say so.
  *
- * Read fresh at the moment it is needed rather than polled. Both inputs move
- * after a toggle - the person repoints Hermes, or a domain flips elsewhere. */
-export type HermesCoverage = {
-  switched_off: [string, string][];
+ * Read on every poll, through `list_tools`, and also on demand for the dialog
+ * that asks about it. Both inputs move after a toggle - the person repoints
+ * Hermes, or a domain flips elsewhere - so a value computed once at connect
+ * time goes stale silently, which is the defect rather than the fix. This said
+ * "read fresh rather than polled" until AG-932 made it both. */
+export type UpstreamCoverage = {
+  defaulted: boolean;
+  switched_off: HermesCoverageEntry[];
   unknown: string[];
 };
+
+/** The name this had when only the Hermes dialog read it. Kept so the AG-930
+ *  call site reads the same; every tool's row reads the same shape now. */
+export type HermesCoverage = UpstreamCoverage;
 export const hermesUpstreamCoverage = () =>
   invoke<HermesCoverage>("hermes_upstream_coverage");
 

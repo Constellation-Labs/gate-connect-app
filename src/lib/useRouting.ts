@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { ProxyState, Tool } from "./api";
+import type { HermesCoverageEntry, ProxyState, Tool } from "./api";
 import {
   connectTool,
   disconnectTool,
@@ -104,10 +104,16 @@ export type RoutingPrompt =
    * is precisely the state that read Protected all afternoon while every
    * request tunnelled past unseen, and offering it as a button would ship the
    * bug as a preference. Cancel means cancel - nothing is written and the
-   * switch stays off. */
+   * switch stays off.
+   *
+   * `defaulted` is whether the provider came from Hermes' documented default
+   * rather than from `config.yaml`, which the dialog has to say: an install
+   * with no config really will call OpenRouter, but "your config uses" would
+   * be a claim about a file nobody read. */
   | {
       kind: "hermes-provider";
-      domains: { name: string; host: string; slug: string }[];
+      domains: HermesProviderChoice[];
+      defaulted: boolean;
     }
   | { kind: "trust" }
   /** Removing the certificate, which is not a gate on the way to something
@@ -120,6 +126,12 @@ export interface RoutingSnapshot {
   proxy: ProxyState | null;
 }
 
+/** One provider row the Hermes dialog asks about. `name` is the row's own
+ *  display name, which is what the person will look for in the sidebar; `slug`
+ *  is what the confirm enables; `tools` is what else that switch reaches, in the
+ *  words the dialog says it (see {@link HermesCoverageEntry}). */
+export type HermesProviderChoice = { name: string; slug: string; tools: string[] };
+
 /** The one tool whose switch also flips the shell-environment channel. Named
  *  once rather than spelled inline, because the dialog copy and the action have
  *  to be talking about the same row. */
@@ -127,8 +139,12 @@ const OPENCODE_SLUG = "opencode";
 
 /** The tool whose provider lives in another section, so its switch alone
  *  routes it without inspecting anything. OpenClaw has the same shape and the
- *  same CLI-only coverage note; it is not wired here yet. */
-const HERMES_SLUG = "hermes";
+ *  same CLI-only coverage note; it is not wired here yet.
+ *
+ *  Exported because the popover connects tools through `App.tsx` rather than
+ *  through this hook and has to gate the same row. One name, so the two shells
+ *  cannot come to disagree about which row this is. */
+export const HERMES_SLUG = "hermes";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
@@ -310,6 +326,80 @@ export function useRouting({
   }, [proxy]);
 
   /**
+   * Ask about the provider Hermes talks to, when Gate knows it and has it off.
+   *
+   * Resolves to the slugs to enable once Hermes is connected: empty when there
+   * is nothing to ask, and rejecting with `Declined` on Cancel like every other
+   * gate. Shared by the app switch and the family switch, because both connect
+   * Hermes and a gate only one of them runs is the bug by another door.
+   *
+   * The command itself cannot fail: a missing or unparseable `config.yaml` is
+   * reported as Hermes' default and marked `defaulted`, not returned as an
+   * error. So a rejection here is the IPC failing, and the toggle goes ahead
+   * without the question rather than costing the person the connect they asked
+   * for - said in the log, because the state it leaves is the one this gate
+   * exists to prevent, and a silent fall-through is how it went unnoticed for
+   * an afternoon the first time.
+   */
+  const askHermesProvider = useCallback(async (): Promise<string[]> => {
+    const coverage = await hermesUpstreamCoverage().catch((e: unknown) => {
+      logWarn(`routing: hermes coverage read failed, connecting without asking: ${describe(e)}`);
+      return null;
+    });
+    if (coverage === null) return [];
+    if (coverage.unknown.length > 0) {
+      // No switch fixes these, so no dialog. Logged because it is the one place
+      // the window records that Hermes has traffic Gate will never see, and the
+      // CLI has printed the same note since the integration was written.
+      logInfo(`routing: hermes upstreams Gate has no domain for: ${coverage.unknown.join(", ")}`);
+    }
+    if (coverage.switched_off.length === 0) return [];
+    // The row's own display name, not the slug and not the host. It is what
+    // the person will look for in the sidebar if they want to change their
+    // mind, and "OpenRouter" is how they think of the thing anyway -
+    // `openrouter` is Gate's internal key and `openrouter.ai` is an
+    // implementation detail of it. Falls back to the first host only if the
+    // catalog has no row to name, which cannot happen for a `switched_off`
+    // entry (that state means a domain claimed the host) but keeps the type
+    // honest.
+    const domains = coverage.switched_off.map(
+      ({ slug, hosts, tools }: HermesCoverageEntry): HermesProviderChoice => ({
+        name: proxy?.domains.find((d) => d.slug === slug)?.display_name ?? hosts[0] ?? slug,
+        slug,
+        tools,
+      }),
+    );
+    await ask({ kind: "hermes-provider", domains, defaulted: coverage.defaulted });
+    return domains.map((d) => d.slug);
+  }, [proxy, ask]);
+
+  /**
+   * Turn the provider domains on, after the connect and each on its own.
+   *
+   * After, because the engine has to be up and the connect is what starts it.
+   * Each on its own because `proxy_set_domain` takes one, and a failure is
+   * reported against the domain rather than thrown at the tool: by now Hermes'
+   * config is written and on disk, so marking its row as a failed write would
+   * say the opposite of what happened. The remaining slugs are still attempted -
+   * a partially inspected provider set beats none - and `settle` re-reads the
+   * truth either way.
+   */
+  const enableProviderDomains = useCallback(
+    async (slugs: string[]) => {
+      for (const domainSlug of slugs) {
+        try {
+          await proxySetDomain(domainSlug, true);
+        } catch (e) {
+          logWarn(`routing: turning on ${domainSlug} for hermes failed: ${describe(e)}`);
+          trackError(e, "provider_toggle", { domain: domainSlug, routed: true });
+          onError?.(e, "domain");
+        }
+      }
+    },
+    [onError],
+  );
+
+  /**
    * Route or unroute one config-file tool. `force` skips the drift gate, which
    * is how the review dialog's "Replace config and protect" comes back in.
    *
@@ -350,30 +440,8 @@ export function useRouting({
         // Hermes anyway leaves it routed with its provider uninspected, which
         // is the exact state this exists to prevent: Protected on every
         // surface while the traffic tunnels past unseen.
-        let providerDomains: string[] = [];
-        if (routed && slug === HERMES_SLUG) {
-          const coverage = await hermesUpstreamCoverage().catch(() => null);
-          const off = coverage?.switched_off ?? [];
-          if (off.length > 0) {
-            // The row's own display name, not the slug and not the host. It
-            // is what the person will look for in the sidebar if they want to
-            // change their mind, and "OpenRouter" is how they think of the
-            // thing anyway - `openrouter` is Gate's internal key and
-            // `openrouter.ai` is an implementation detail of it. Falls back to
-            // the host only if the catalog has no row to name, which cannot
-            // happen for a `switched_off` entry (that state means a domain
-            // claimed the host) but keeps the type honest.
-            const domains = off.map(([host, domainSlug]) => ({
-              name:
-                proxy?.domains.find((d) => d.slug === domainSlug)
-                  ?.display_name ?? host,
-              host,
-              slug: domainSlug,
-            }));
-            await ask({ kind: "hermes-provider", domains });
-            providerDomains = domains.map((d) => d.slug);
-          }
-        }
+        const providerDomains =
+          routed && slug === HERMES_SLUG ? await askHermesProvider() : [];
 
         if (routed) {
           if (!force && tool?.status.kind === "drifted") {
@@ -395,14 +463,10 @@ export function useRouting({
           // connect refuses without a live engine, and a refusal here would
           // fail an OpenCode connect that had already succeeded.
           if (couplesEnvExport) await proxySetEnvExport(true);
-          // After the connect, like the channel above and for the same reason:
-          // the engine has to be up. Each slug separately because
-          // `proxy_set_domain` takes one, and a failure on the second must not
-          // undo the first - a partially inspected provider set is still
-          // better than none, and `settle` re-reads the truth either way.
-          for (const domainSlug of providerDomains) {
-            await proxySetDomain(domainSlug, true);
-          }
+          // After the connect, like the channel above and for the same reason.
+          // Its failures are its own and never reach the catch below: Hermes
+          // is connected by this line, whatever happens to its provider.
+          await enableProviderDomains(providerDomains);
         } else {
           await disconnectTool(slug);
         }
@@ -429,7 +493,17 @@ export function useRouting({
       }
       return changed;
     },
-    [busy, tools, proxy, ask, ensureCaTrusted, settle, onError],
+    [
+      busy,
+      tools,
+      proxy,
+      ask,
+      askHermesProvider,
+      enableProviderDomains,
+      ensureCaTrusted,
+      settle,
+      onError,
+    ],
   );
 
   /**
@@ -446,6 +520,13 @@ export function useRouting({
    * did to that member's connect anyway.
    *
    * Every member is attempted even after one fails, and the failures are named.
+   *
+   * Hermes is a one-member family, so its section switch is the same click as
+   * its app switch by another control, and it runs the same provider gate:
+   * asked first, ahead of the certificate, because it is a question about what
+   * else the click reaches and the OS prompt comes after the in-app ones. A
+   * decline abandons the family, as a declined certificate does. Without this
+   * the family switch was a door around the gate.
    */
   const setFamilyRouted = useCallback(
     async (group: Group, routed: boolean): Promise<boolean> => {
@@ -456,7 +537,14 @@ export function useRouting({
       let changed = false;
       const failed: string[] = [];
       let last: unknown = null;
+      // Whether the Hermes member's own connect landed. Its provider is only
+      // turned on behind a Hermes that is actually routed.
+      let hermesConnected = false;
       try {
+        const providerDomains =
+          routed && targets.some((m) => m.kind === "config" && m.key === HERMES_SLUG)
+            ? await askHermesProvider()
+            : [];
         if (routed) await ensureCaTrusted();
         for (const member of targets) {
           try {
@@ -464,6 +552,7 @@ export function useRouting({
               await (routed
                 ? connectTool(member.key, member.tool.default_upstream_url)
                 : disconnectTool(member.key));
+              if (member.key === HERMES_SLUG) hermesConnected = routed;
             } else if (member.domain) {
               await proxySetDomain(member.key, routed);
             }
@@ -474,6 +563,7 @@ export function useRouting({
             trackError(e, "connect", { provider: group.id, tool: member.key, routed });
           }
         }
+        if (hermesConnected) await enableProviderDomains(providerDomains);
         track("group_toggled", { provider: group.id, enabled: routed });
         if (last !== null) {
           onError?.(new FamilyCascadeError(failed, targets.length, routed, last), "connect");
@@ -489,7 +579,7 @@ export function useRouting({
       }
       return changed;
     },
-    [busy, ensureCaTrusted, resync, onError],
+    [busy, askHermesProvider, enableProviderDomains, ensureCaTrusted, resync, onError],
   );
 
   /**
