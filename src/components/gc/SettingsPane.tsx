@@ -695,7 +695,12 @@ export function buildSettingsSections({
 
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
-    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-base-background p-6">
+    // `relative` for the same reason as `Overview`'s root: this is the scroll
+    // container, so anything `sr-only` inside it must take it as containing
+    // block rather than hanging below the window as the shell root's hidden
+    // overflow. Nothing in Settings is `sr-only` today; the first one would
+    // otherwise recreate the Overview's white-space bug here.
+    <div className="relative flex flex-1 flex-col gap-6 overflow-auto bg-base-background p-6">
       {/* `heading/20` is 20/24 in the file. The token export's 28 is what
         * `tailwind.config.ts` records, and `text-xl` carries it by default, so
         * the leading is pinned here rather than left to the default. */}
