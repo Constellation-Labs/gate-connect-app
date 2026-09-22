@@ -1517,6 +1517,33 @@ fn set_launch_at_login<R: tauri::Runtime>(
     }
 }
 
+/// What Gate would and would not see of this Hermes install right now.
+///
+/// Hermes is one of only two rows whose upstream is chosen by the user and
+/// lives in a *different* section. `groups.ts` shows why: `claude` bundles
+/// `["claude-code", "anthropic", "claude-web"]` and `chatgpt` bundles its
+/// own provider rows, so one switch turns on the tool and intercepts what the
+/// tool talks to. `hermes` is `["hermes"]`, and `openclaw` is `["openclaw"]`.
+/// Turning Hermes on therefore routes Hermes and inspects nothing, and the app
+/// reports Protected while every request tunnels past unseen.
+///
+/// `gate-connect connect hermes` has printed exactly this to stderr since the
+/// integration was written. The window has never had it. This command is that
+/// reading, and nothing else: it enables no domain and writes no file, so the
+/// objection recorded on `integrations::hermes::Coverage` - that a tool must
+/// not widen the machine's interception as a side effect - still holds. What
+/// the caller does with the answer is ask.
+///
+/// Uncached deliberately. Both inputs move after the toggle: the person
+/// repoints Hermes, or a domain flips elsewhere. Removing and re-trusting a
+/// certificate reset `openrouter` to off on the machine that prompted this,
+/// hours after Hermes had been connected.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn hermes_upstream_coverage() -> gate_connect_core::integrations::hermes::Coverage {
+    gate_connect_core::integrations::hermes::upstream_coverage_report()
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_set_domain(
@@ -4672,6 +4699,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             proxy_enable,
             proxy_disable,
             proxy_set_domain,
+            hermes_upstream_coverage,
             proxy_set_env_export,
             proxy_trust_ca,
             proxy_untrust_ca,

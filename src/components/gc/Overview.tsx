@@ -120,7 +120,18 @@ export function Overview({
   period?: string;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
+    // `relative`, because this is the scroll container. An `sr-only` node is
+    // `position: absolute`, and with no positioned ancestor nearer than the
+    // shell root it sits at its static position *in the root's coordinate
+    // space* - so the security table's hidden "Action" header, drawn near the
+    // bottom of this pane's unscrolled content, hung 241px below the window as
+    // the root's own scrollable overflow. The root is `overflow-hidden`, which
+    // the user cannot scroll back but `scrollIntoView` will scroll forward: the
+    // Tokens saved jump pinned this pane at its maximum and then shifted the
+    // whole shell up by the remainder, leaving white below the sidebar with no
+    // way back (AG-883's "adds space"). Positioning the scroller makes it the
+    // containing block, so hidden text scrolls with the content it describes.
+    <div className="relative flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       {/* `mb-2` on top of the pane's `gap-4` for a 24px drop to whatever comes
         * first below, alert or stat tiles. The frame draws the header at y0
         * 24px tall and opens its content at y48 (`864:3475` -> `864:3478`),
