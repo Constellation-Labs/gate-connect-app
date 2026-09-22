@@ -6,7 +6,7 @@ import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
-import { STATUS_TEXT, statusDetail } from "./Sidebar";
+import { countsAsRouted, STATUS_TEXT, statusDetail } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
 import { useRovingMenu } from "../../lib/useRovingMenu";
 import { routingState, showsFraction } from "../../lib/routingState";
@@ -337,7 +337,7 @@ export function Tray({
  */
 function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
   const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
-  const routed = apps.filter((a) => a.status.kind === "protected").length;
+  const routed = apps.filter((a) => countsAsRouted(a.status)).length;
   // The same reading the topbar banner takes, from the same module (AG-913).
   // This card used to word it differently - "Partially routed" against the
   // banner's "partly routing your apps" - and to fold "nothing was asked for"
@@ -389,7 +389,7 @@ function TrayGroup({
             {group.label}
           </h2>
           <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-            {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+            {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
             {group.apps.length}
           </span>
         </div>

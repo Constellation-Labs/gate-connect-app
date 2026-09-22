@@ -1553,10 +1553,19 @@ fn set_launch_at_login<R: tauri::Runtime>(
 /// repoints Hermes, or a domain flips elsewhere. Removing and re-trusting a
 /// certificate reset `openrouter` to off on the machine that prompted this,
 /// hours after Hermes had been connected.
+///
+/// The reading itself cannot fail - a missing or unparseable `config.yaml` is
+/// reported as Hermes' default and marked `defaulted`, not returned as an
+/// error - so the only `Err` here is the worker failing to join.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn hermes_upstream_coverage() -> gate_connect_core::coverage::UpstreamCoverage {
-    gate_connect_core::integrations::hermes::upstream_coverage_report()
+async fn hermes_upstream_coverage(
+) -> Result<gate_connect_core::integrations::hermes::Coverage, String> {
+    // Off the main thread, like `connect_tool`: this reads `config.yaml` and the
+    // domain catalog, and a sync command runs on the thread the webview waits on.
+    tauri::async_runtime::spawn_blocking(gate_connect_core::integrations::hermes::upstream_coverage)
+        .await
+        .map_err(|e| format!("coverage join error: {e}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

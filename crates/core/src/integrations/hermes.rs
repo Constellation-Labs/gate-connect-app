@@ -402,7 +402,7 @@ impl Integration for Hermes {
         // default upstream ships off. Which hosts Gate inspects is the user's
         // axis, not this integration's (see [`Coverage`]), so say it rather
         // than silently flip it.
-        for line in notes(&upstream_coverage()) {
+        for line in upstream_coverage().notes() {
             eprintln!("{line}");
         }
         Ok(())
@@ -548,6 +548,12 @@ fn url_host(url: &str) -> String {
         .split_once("://")
         .map_or(lowered.as_str(), |(_, r)| r);
     let authority = rest.split('/').next().unwrap_or("");
+    // Userinfo goes first. A hand-written `https://user:token@host/` is a shape
+    // this reads, and the host is the only part that may travel any further:
+    // this value crosses IPC into the window and lands in the log.
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     authority
         .strip_prefix('[')
         .and_then(|a| a.split(']').next())
@@ -577,41 +583,49 @@ fn url_host(url: &str) -> String {
 /// exactly that and could not have it while this type was private to a
 /// `connect` that prints to stderr - the window has never been able to see any
 /// of this.
-pub use crate::coverage::UpstreamCoverage as Coverage;
+pub use crate::coverage::{SwitchedOff, UpstreamCoverage as Coverage};
 
-/// The lines `connect` prints, or nothing at all when every upstream is
-/// already covered - a note that says "all good" on every connect is noise,
-/// and the `proxy domains` listing is the place to confirm it.
-///
-/// A free function rather than an inherent method: the type is
-/// `coverage::UpstreamCoverage` now, shared with OpenClaw, and these sentences
-/// name Hermes.
-fn notes(c: &Coverage) -> Vec<String> {
-    let mut out = Vec::new();
-    if !c.switched_off.is_empty() {
-        let list = c
-            .switched_off
-            .iter()
-            .map(|(host, slug)| format!("{host} (`gate-connect proxy domain {slug} on`)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        out.push(format!(
-            "note: Hermes is routed through Gate, but Gate is not inspecting its provider \
-             yet -- {list}."
-        ));
+impl Coverage {
+    /// The lines `connect` prints, or nothing at all when every upstream is
+    /// already covered - a note that says "all good" on every connect is noise,
+    /// and the `proxy domains` listing is the place to confirm it.
+    fn notes(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.switched_off.is_empty() {
+            let list = self
+                .switched_off
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{} (`gate-connect proxy domain {} on`)",
+                        s.hosts.join(", "),
+                        s.slug
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Two openings, because they are two facts: a provider the person
+            // wrote into `config.yaml`, or the one Hermes falls back to when
+            // they wrote none.
+            let subject = if self.defaulted {
+                "Hermes names no provider in config.yaml, so it will call its default"
+            } else {
+                "Hermes is routed through Gate, but Gate is not inspecting its provider yet"
+            };
+            out.push(format!("note: {subject} -- {list}."));
+        }
+        if !self.unknown.is_empty() {
+            out.push(format!(
+                "note: Gate has no proxy domain for {} -- Hermes' calls there keep working, \
+                 tunnelled through unseen.",
+                self.unknown.join(", ")
+            ));
+        }
+        out
     }
-    if !c.unknown.is_empty() {
-        out.push(format!(
-            "note: Gate has no proxy domain for {} -- Hermes' calls there keep working, \
-             tunnelled through unseen.",
-            c.unknown.join(", ")
-        ));
-    }
-    out
 }
 
-/// What Gate will and will not see of this Hermes install, for a caller that
-/// intends to ask the person about it.
+/// What Gate will and will not see of this Hermes install.
 ///
 /// Public so the window can raise the question at the moment it matters, which
 /// is the click that turns Hermes on. Reads the catalog and `config.yaml` fresh
@@ -619,24 +633,41 @@ fn notes(c: &Coverage) -> Vec<String> {
 /// repoints Hermes at a different provider, or a domain is flipped elsewhere -
 /// removing and re-trusting a certificate reset `openrouter` to off on the
 /// machine that prompted this, hours after Hermes was connected.
-pub fn upstream_coverage_report() -> Coverage {
-    upstream_coverage()
-}
-
-fn upstream_coverage() -> Coverage {
+pub fn upstream_coverage() -> Coverage {
     // Fall back to the built-in catalog rather than an empty one: on an
     // unreadable domains file the slugs are still right and only the enabled
     // flags are guesses, which beats reporting every host as unroutable.
     let catalog =
         crate::proxy::config::load_domains().unwrap_or_else(|_| crate::proxy::default_domains());
-    coverage_of(&catalog, &config_base_urls())
+    coverage_from(&catalog, config_base_urls())
 }
 
-/// The lookup behind [`upstream_coverage`], over an explicit catalog and URL
-/// list so it is testable without a `$HOME`.
+/// [`upstream_coverage`] over explicit inputs, so the default and the flag that
+/// records it are testable without a `$HOME`.
+///
+/// `None` is a config that named nothing, and it is reported as Hermes'
+/// documented default *and marked as such* - the default is the best guess at
+/// what an unconfigured install will call, and the mark is what lets a caller
+/// say "Hermes' default" rather than "your config" about it.
+fn coverage_from(
+    catalog: &[crate::proxy::ProxyDomain],
+    configured: Option<Vec<String>>,
+) -> Coverage {
+    let (urls, defaulted) = configured
+        .map(|urls| (urls, false))
+        .unwrap_or_else(|| (vec![DEFAULT_UPSTREAM_URL.to_string()], true));
+    Coverage {
+        defaulted,
+        ..coverage_of(catalog, &urls)
+    }
+}
+
+/// The lookup behind [`coverage_from`], over an explicit catalog and URL list.
 ///
 /// Loopback hosts are absent from both lists: `NO_PROXY` exempts them, so a
 /// self-hosted provider is reached directly and never passes the engine at all.
+/// Keyed by slug, not host: two hosts one row claims are one switch, and a
+/// caller that named the row per host would ask about it twice.
 fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
     let mut coverage = Coverage::default();
     for url in urls {
@@ -647,9 +678,16 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
         match crate::proxy::domain_claiming_host(catalog, &host) {
             Some(d) if d.enabled => {}
             Some(d) => {
-                let claim = (host, d.slug.clone());
-                if !coverage.switched_off.contains(&claim) {
-                    coverage.switched_off.push(claim);
+                if let Some(entry) = coverage.switched_off.iter_mut().find(|s| s.slug == d.slug) {
+                    if !entry.hosts.contains(&host) {
+                        entry.hosts.push(host);
+                    }
+                } else {
+                    coverage.switched_off.push(SwitchedOff {
+                        slug: d.slug.clone(),
+                        hosts: vec![host],
+                        tools: tools_switched_on_by(&d.slug),
+                    });
                 }
             }
             None => {
@@ -660,6 +698,30 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
         }
     }
     coverage
+}
+
+/// The tools an enabled `slug` licenses [`crate::provider::reconcile_enabled`]
+/// to connect: every provider whose cascade includes the domain, and every tool
+/// that provider maps. Names rather than ids, because the only reader is a
+/// sentence put to the person.
+///
+/// Deduplicated, though today it cannot repeat: no two providers share a
+/// cascade domain or a tool. That disjointness is a property of the catalog,
+/// not of this function, and a sentence naming a tool twice is the failure a
+/// reader would otherwise have to re-derive the catalog to rule out.
+fn tools_switched_on_by(slug: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for name in crate::provider::providers()
+        .iter()
+        .filter(|p| crate::provider::cascade_domains(p).contains(&slug))
+        .flat_map(|p| p.tool_ids.iter().copied())
+        .filter_map(|id| crate::registry::find(id).map(|integ| integ.display_name().to_string()))
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Keys a Hermes endpoint can be written under. `base_url`, `api` and `url` are
@@ -769,17 +831,15 @@ fn parsed_config() -> Option<serde_yaml::Value> {
 /// at request time - the same reason the `model.base_url` rewrite this
 /// integration used to do was retired.
 ///
-/// Falls back to [`DEFAULT_UPSTREAM_URL`] when the file names nothing, is
-/// missing, or does not parse. That is Hermes' own documented default, so it is
-/// the best available guess at what an unconfigured install will call.
-fn config_base_urls() -> Vec<String> {
-    let mut urls = parsed_config()
+/// `None` when the file names nothing, is missing, or does not parse. The
+/// caller substitutes [`DEFAULT_UPSTREAM_URL`] - Hermes' own documented default,
+/// and the best available guess at what an unconfigured install will call - and
+/// records that it did, because the two are different claims about the person's
+/// machine.
+fn config_base_urls() -> Option<Vec<String>> {
+    parsed_config()
         .map(|root| base_urls_in(&root))
-        .unwrap_or_default();
-    if urls.is_empty() {
-        urls.push(DEFAULT_UPSTREAM_URL.to_string());
-    }
-    urls
+        .filter(|urls| !urls.is_empty())
 }
 
 /// The endpoint-collecting half of [`config_base_urls`], over an already-parsed
@@ -890,7 +950,7 @@ mod tests {
         );
         assert_eq!(coverage, Coverage::default());
         assert!(
-            notes(&coverage).is_empty(),
+            coverage.notes().is_empty(),
             "an all-good note on every connect is noise"
         );
     }
@@ -903,10 +963,15 @@ mod tests {
         );
         assert_eq!(
             coverage.switched_off,
-            vec![("openrouter.ai".to_string(), "openrouter".to_string())]
+            vec![SwitchedOff {
+                slug: "openrouter".to_string(),
+                hosts: vec!["openrouter.ai".to_string()],
+                // Proxy-only: `tool_ids` is empty, so a yes reaches no tool.
+                tools: vec![],
+            }]
         );
 
-        let notes = notes(&coverage);
+        let notes = coverage.notes();
         assert_eq!(notes.len(), 1, "one line, not one per axis: {notes:?}");
         assert!(
             notes[0].contains("gate-connect proxy domain openrouter on"),
@@ -932,7 +997,7 @@ mod tests {
         );
         assert_eq!(coverage.unknown, vec!["api.together.xyz".to_string()]);
 
-        let notes = notes(&coverage);
+        let notes = coverage.notes();
         assert!(
             notes[0].contains("keep working"),
             "the tool still works; only Gate's view is missing: {}",
@@ -957,6 +1022,77 @@ mod tests {
         );
         assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
         assert_eq!(coverage.unknown.len(), 1, "{coverage:?}");
+    }
+
+    #[test]
+    fn two_hosts_of_one_provider_are_one_switch() {
+        // A row that claims two hosts is still one switch. Reported per host,
+        // the window would read "Turn on OpenRouter and OpenRouter too?" and
+        // flip the same domain twice.
+        let mut catalog = catalog_with("anthropic");
+        let row = catalog
+            .iter_mut()
+            .find(|d| d.slug == "openrouter")
+            .expect("openrouter is in the built-in catalog");
+        row.hosts.push("api.openrouter.example".to_string());
+        let coverage = coverage_of(
+            &catalog,
+            &urls(&[
+                "https://openrouter.ai/api/v1",
+                "https://api.openrouter.example/v1",
+            ]),
+        );
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(
+            coverage.switched_off[0].hosts,
+            vec![
+                "openrouter.ai".to_string(),
+                "api.openrouter.example".to_string()
+            ],
+            "both hosts, under the one slug"
+        );
+    }
+
+    #[test]
+    fn a_provider_with_tools_names_what_else_its_switch_reaches() {
+        // `anthropic` is a cascade domain of the Anthropic provider, whose
+        // `tool_ids` is Claude Code. Enabling it for Hermes' sake hands
+        // `reconcile_enabled` licence to connect Claude Code at the next
+        // launch, and the dialog has to say so - the switch does not.
+        let coverage = coverage_of(
+            &catalog_with("openrouter"),
+            &urls(&["https://api.anthropic.com/v1"]),
+        );
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.switched_off[0].slug, "anthropic");
+        assert_eq!(
+            coverage.switched_off[0].tools,
+            vec!["Claude Code".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_config_that_names_nothing_is_reported_as_the_default_and_marked() {
+        // Missing, unparseable and empty all arrive here as `None`. Hermes will
+        // call OpenRouter in every one of those cases, so the row is right;
+        // what would be wrong is a sentence saying "your config uses" about a
+        // file nobody read, and `defaulted` is what lets the caller avoid it.
+        let coverage = coverage_from(&catalog_with("anthropic"), None);
+        assert!(coverage.defaulted);
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.switched_off[0].slug, "openrouter");
+        assert!(
+            coverage.notes()[0].contains("names no provider"),
+            "the CLI note says which claim it is making: {}",
+            coverage.notes()[0]
+        );
+
+        let configured = coverage_from(
+            &catalog_with("anthropic"),
+            Some(urls(&["https://openrouter.ai/api/v1"])),
+        );
+        assert!(!configured.defaulted);
+        assert!(configured.notes()[0].contains("routed through Gate"));
     }
 
     #[test]
@@ -1002,6 +1138,10 @@ mod tests {
             ("http://192.168.1.9:8080/v1", "192.168.1.9"),
             ("http://[::1]:8080/v1", "::1"),
             ("  https://api.openai.com  ", "api.openai.com"),
+            // Userinfo is a shape a hand-written URL can take, and the host is
+            // the only part allowed to travel on: this value crosses IPC.
+            ("https://user:s3cret@openrouter.ai/api/v1", "openrouter.ai"),
+            ("https://token@[::1]:8080/v1", "::1"),
         ] {
             assert_eq!(url_host(url), host, "for {url}");
         }

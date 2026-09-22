@@ -61,6 +61,7 @@ const proxy: ProxyState = {
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
   env_export_separable: false,
+  forwarder_answering: null,
   domains: [],
 };
 

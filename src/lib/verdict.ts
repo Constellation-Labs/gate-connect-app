@@ -140,8 +140,13 @@ function uninspectedHosts(
   coverage: UpstreamCoverage | null | undefined,
 ): string | undefined {
   if (!coverage) return undefined;
+  // `flatMap`, because a switched-off entry is a catalog ROW and one row can
+  // claim several hosts - #327 keyed these by slug for exactly that reason, so
+  // a caller cannot name the same row twice or flip the same switch twice.
+  // Naming hosts is still right here: the row already says the app, and the
+  // host is the part the person recognises from their own config.
   const hosts = [
-    ...coverage.switched_off.map(([host]) => host),
+    ...coverage.switched_off.flatMap((entry) => entry.hosts),
     ...coverage.unknown,
   ];
   if (hosts.length === 0) return undefined;

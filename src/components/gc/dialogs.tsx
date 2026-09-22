@@ -21,6 +21,7 @@ import type {
   TeardownTool,
 } from "../../lib/api";
 import type { GroupMember } from "../../lib/groups";
+import type { HermesProviderChoice } from "../../lib/useRouting";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenAppRow, ReopenTool } from "../../lib/reopen";
 import {
@@ -1910,28 +1911,54 @@ export function OpenCodeEnvDialog({
  * claims - Bedrock, a self-hosted endpoint - has no remedy, and offering one
  * would be a lie; `Coverage` keeps those in `unknown` and this never sees them.
  *
- * Shared by both shells from the outset. The tray raises the same prompt through
- * the same `setAppRouted`, and a prompt only one shell renders is a switch that
- * spins forever - which is exactly how `OpenCodeEnvDialog` came to be shared.
+ * **Two more facts a yes may carry, and the body says each only when true.**
+ * `defaulted`: the provider is Hermes' documented default because
+ * `config.yaml` is missing, unparseable or names none - an unconfigured Hermes
+ * really will call OpenRouter, but "your config uses" would be a claim about a
+ * file nobody read. `tools`: a provider with tools of its own (Anthropic, Claude
+ * Code) treats an enabled cascade domain as licence to connect them at the next
+ * launch (`provider::reconcile_enabled`), which is a config write to another
+ * tool and wider than "interception", so it is disclosed where it applies.
+ * OpenRouter is proxy-only and carries neither line.
+ *
+ * Shared by the window and the tray from the outset. The tray raises the same
+ * prompt through the same `setAppRouted`, and a prompt only one shell renders is
+ * a switch that spins forever - which is exactly how `OpenCodeEnvDialog` came to
+ * be shared.
+ *
+ * The popover is the third surface and does NOT share it: it asks through
+ * `HermesProviderNotice`, in its own furniture, because it connects Hermes
+ * outside `useRouting`. That file says why. The sentences are the same, so a
+ * change to this dialog's copy belongs in both until the popover goes.
  */
 export function HermesProviderDialog({
   domains,
+  defaulted,
   onCancel,
   onConfirm,
 }: {
-  domains: { name: string; host: string; slug: string }[];
+  domains: HermesProviderChoice[];
+  /** Whether the provider is Hermes' documented default rather than one the
+   *  person wrote into `config.yaml`. Decides the opening sentence. */
+  defaulted: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  // "A, B and C" - for the provider rows and again for a row's tools.
+  const joined = (xs: string[]) =>
+    xs.length === 1 ? xs[0] : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
   // The rows' own names, not the hosts. "OpenRouter" is how the person thinks
   // of it and what they will look for in the sidebar to change their mind;
   // `openrouter.ai` is an implementation detail of that row.
   const names = domains.map((d) => d.name);
-  const list =
-    names.length === 1
-      ? names[0]
-      : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const list = joined(names);
   const plural = names.length !== 1;
+  // "Both" is a claim about the count, so it is only made for two; the list
+  // itself already reads correctly at any length.
+  const primaryLabel =
+    names.length === 1 ? "Turn on" : names.length === 2 ? "Turn both on" : "Turn all on";
+  // The rows whose switch reaches a tool of their own. Empty for OpenRouter.
+  const reaching = domains.filter((d) => d.tools.length > 0);
 
   return (
     <Modal
@@ -1950,7 +1977,7 @@ export function HermesProviderDialog({
       // nothing. That is the defect this dialog exists to prevent, so it is
       // not on offer as a button. Saying no leaves the switch off.
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: plural ? "Turn on both" : "Turn on", onClick: onConfirm }}
+      primary={{ label: primaryLabel, onClick: onConfirm }}
       onDismiss={onCancel}
     >
       {/* Says what is on their machine and what follows from it, in that
@@ -1958,12 +1985,33 @@ export function HermesProviderDialog({
           inspect that to see them"), which is true and is not what the person
           needs first: what they need is that their Hermes config names this
           provider, so the switch they just flipped does not cover it on its
-          own. */}
+          own. Or, when it names none, that Hermes will call its default - a
+          different sentence, because it is a different fact. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Your Hermes config uses {list} as its model provider. Gate only
-        inspects providers you have turned on, so Hermes traffic would pass
-        through unseen until {plural ? "these are" : "this is"} on too.
+        {defaulted
+          ? `Hermes has no provider in its config, so it uses ${list}, its default.`
+          : `Your Hermes config uses ${list} as its model provider.`}{" "}
+        Gate only inspects providers you have turned on, so Hermes traffic
+        would pass through unseen until {plural ? "these are" : "this is"} on
+        too.
       </p>
+      {/* What else the switch reaches, where it reaches anything. A provider
+          with tools of its own treats the enabled domain as the person wanting
+          that provider on, and connects its tools at the next launch - a
+          config write to another tool, which "interception" does not cover.
+          One sentence per such row, and none for a proxy-only one. */}
+      {reaching.length > 0 ? (
+        <p className="mt-3 text-sm leading-5 text-neutral-600">
+          {reaching.map((d) => (
+            <span key={d.slug}>
+              Turning on {d.name} also covers {joined(d.tools)}. If{" "}
+              {d.tools.length === 1 ? "it is" : "they are"} installed, Gate
+              connects {d.tools.length === 1 ? "it" : "them"} the next time Gate
+              Connect starts.{" "}
+            </span>
+          ))}
+        </p>
+      ) : null}
       {/* The breadth, which is the part that makes this a question rather than
           something Gate should just do. The provider row's own description
           says the same thing - "Any app you have pointed at OpenRouter" - and

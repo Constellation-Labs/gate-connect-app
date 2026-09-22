@@ -120,6 +120,10 @@ impl DesktopOps for OsOps {
         crate::proxy::env_export_port()
     }
 
+    fn supervise_env_forwarder(&self) -> crate::proxy::forwarder::Supervision {
+        crate::proxy::forwarder::ensure_running_supervised()
+    }
+
     fn stop_env_forwarder(&self) {
         crate::proxy::forwarder::stop()
     }

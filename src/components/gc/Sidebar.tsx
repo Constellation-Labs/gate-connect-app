@@ -254,6 +254,31 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
 };
 
 /**
+ * Does this row count as routed, for the counters and the topbar banner?
+ *
+ * `protected` and `not-inspected` both do, and that pairing is the decision
+ * this function exists to hold in one place. Raised in review on #328: with
+ * Hermes the only app on and pointed at Bedrock, counting only `protected`
+ * gave `routingState(0, 1)` and a banner reading "Gate is not routing your
+ * apps" over a row reading "Routed, not inspected". One of the two had to be
+ * wrong, and this PR's whole argument is that it IS routed - the shortfall is
+ * inspection, which is the row's nuance to carry and not the banner's.
+ *
+ * So the banner stays a statement about routing and the row says what routing
+ * did not get you. The alternative - leave it uncounted and reword
+ * `routingState` - would make the banner's copy depend on which KIND of
+ * shortfall it was, which is a second vocabulary for one number.
+ *
+ * Four counters read this: the topbar's `protectedCount`, `MasterCard`, the
+ * tray's per-group fraction and the rail's. They were four separate
+ * `kind === "protected"` filters and are one predicate now, because four
+ * copies of a pairing is four chances to disagree.
+ */
+export function countsAsRouted(status: AppStatus): boolean {
+  return status.kind === "protected" || status.kind === "not-inspected";
+}
+
+/**
  * The grey suffix a rail row draws: "2m ago", "Off", "Blocked", "Claude Code",
  * "2 of 3" - the short ones the design draws inside 250px.
  *
@@ -388,7 +413,7 @@ export function Sidebar({
                  * uppercase: the drawn counter is Geist Mono Regular and
                  * reads "1 of 2". */}
                 <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-                  {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+                  {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
                   {group.apps.length}
                 </span>
               </div>

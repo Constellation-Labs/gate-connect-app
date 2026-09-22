@@ -206,8 +206,39 @@ impl Integration for OpenClaw {
         if openai_auth_mode(&settings) != OpenAiAuthMode::Bearer || chatgpt_domain_enabled() {
             return None;
         }
+        // **Silent when the profiles disagree**, which the connect note does
+        // not have to be and this does.
+        //
+        // `openai_auth_mode` answers Bearer if ANY OpenAI profile is
+        // oauth/token, not the one actually in use - the config names no
+        // active profile, so there is nothing better to read. For a note
+        // printed once at connect that is harmless. On a row polled forever it
+        // is not: a user who signed in with a subscription, switched to an API
+        // key and left the old profile behind would sit under a permanent
+        // "Routed, not inspected - chatgpt.com" that no switch clears, because
+        // the traffic it describes is not happening.
+        //
+        // So when both kinds of OpenAI profile exist, Gate cannot tell which
+        // is live and says nothing. A missed warning costs visibility the
+        // person can still get from the OpenAI row; a standing false one costs
+        // them trust in every row. Raised in review on #328.
+        if has_openai_api_key_profile(&settings) {
+            return None;
+        }
         Some(crate::coverage::UpstreamCoverage {
-            switched_off: vec![("chatgpt.com".to_string(), CHATGPT_DOMAIN_SLUG.to_string())],
+            // Never defaulted: this is read from the auth profile that is
+            // actually on disk, not from a fallback for a file nobody wrote.
+            // The flag exists for Hermes, whose endpoints have a documented
+            // default the copy must not describe as the user's choice.
+            defaulted: false,
+            switched_off: vec![crate::coverage::SwitchedOff {
+                slug: CHATGPT_DOMAIN_SLUG.to_string(),
+                hosts: vec!["chatgpt.com".to_string()],
+                // Empty, and correct: `cascade_domains` for the provider that
+                // owns this row reaches no tool, so saying yes here connects
+                // nothing beyond the domain itself.
+                tools: Vec::new(),
+            }],
             unknown: Vec::new(),
         })
     }
@@ -696,6 +727,32 @@ fn openai_auth_mode(settings: &Map<String, Value>) -> OpenAiAuthMode {
     }
 }
 
+/// Is there an OpenAI profile that is NOT a subscription bearer?
+///
+/// The counterpart of [`openai_auth_mode`]'s test, asked separately rather
+/// than folded into it: that function answers "could this be a subscription",
+/// which is the right question for the connect note, and this one exists to
+/// notice that both answers are available at once. See `upstream_coverage`.
+fn has_openai_api_key_profile(settings: &Map<String, Value>) -> bool {
+    settings
+        .get("auth")
+        .and_then(|v| v.as_object())
+        .and_then(|a| a.get("profiles"))
+        .and_then(|v| v.as_object())
+        .is_some_and(|profiles| {
+            profiles.values().any(|profile| {
+                let field = |key: &str| {
+                    profile
+                        .as_object()
+                        .and_then(|p| p.get(key))
+                        .and_then(|v| v.as_str())
+                };
+                field("provider") == Some("openai")
+                    && field("mode").is_some_and(|m| !BEARER_MODES.contains(&m))
+            })
+        })
+}
+
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
 /// corporate egress proxy the user configured themselves.
 fn is_loopback_url(url: &str) -> bool {
@@ -949,6 +1006,78 @@ mod tests {
         }
     }
 
+    /// The two ways back to `None`, which are the ones that would regress
+    /// quietly into a false amber row. Raised in review on #328.
+    ///
+    /// Shares the env dance below and for the same reason: `chatgpt_domain_enabled`
+    /// reads the catalog through `app_support_dir()`.
+    #[test]
+    fn an_api_key_a_covered_domain_and_an_ambiguous_pair_all_report_nothing() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!("gate-openclaw-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+
+        let out = (|| {
+            // An API-key profile calls a host the OpenAI switch already
+            // covers, so there is nothing for this row to say.
+            let api_key: Map<String, Value> = serde_json::from_str(
+                r#"{"auth":{"profiles":{"openai:default":{"provider":"openai","mode":"apikey"}}}}"#,
+            )
+            .expect("fixture parses");
+            write_settings(&api_key)?;
+            let with_api_key = OpenClaw.upstream_coverage();
+
+            // A subscription profile whose domain is already on: the gap is
+            // closed, so again nothing to say.
+            let bearer: Map<String, Value> = serde_json::from_str(
+                r#"{"auth":{"profiles":{"openai:default":{"provider":"openai","mode":"oauth"}}}}"#,
+            )
+            .expect("fixture parses");
+            write_settings(&bearer)?;
+            crate::proxy::config::set_enabled(CHATGPT_DOMAIN_SLUG, true)?;
+            let with_domain_on = OpenClaw.upstream_coverage();
+
+            // Both kinds of OpenAI profile present, domain off: Gate cannot
+            // tell which is live, and a standing amber on a guess is worse
+            // than silence.
+            crate::proxy::config::set_enabled(CHATGPT_DOMAIN_SLUG, false)?;
+            let both: Map<String, Value> = serde_json::from_str(
+                r#"{"auth":{"profiles":{
+                     "openai:sub":{"provider":"openai","mode":"oauth"},
+                     "openai:key":{"provider":"openai","mode":"apikey"}}}}"#,
+            )
+            .expect("fixture parses");
+            write_settings(&both)?;
+            let ambiguous = OpenClaw.upstream_coverage();
+
+            anyhow::Ok((with_api_key, with_domain_on, ambiguous))
+        })();
+
+        match prev {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        let (with_api_key, with_domain_on, ambiguous) =
+            out.expect("writing the fixtures is not what is under test");
+        assert!(
+            with_api_key.is_none(),
+            "an API-key profile calls a host the OpenAI switch covers: {with_api_key:?}"
+        );
+        assert!(
+            with_domain_on.is_none(),
+            "the domain is on, so there is no gap to report: {with_domain_on:?}"
+        );
+        assert!(
+            ambiguous.is_none(),
+            "a leftover subscription profile beside an API key must not pin a \
+             permanent amber row no switch can clear: {ambiguous:?}"
+        );
+    }
+
     /// AG-932: the same gap the connect note has always printed, now readable
     /// by the rail on every poll.
     ///
@@ -984,11 +1113,13 @@ mod tests {
         let coverage = out
             .expect("writing the fixture is not what is under test")
             .expect("an empty home has no domains file, so the domain is off");
+        assert_eq!(coverage.switched_off.len(), 1);
+        assert_eq!(coverage.switched_off[0].slug, "chatgpt");
         assert_eq!(
-            coverage.switched_off,
-            vec![("chatgpt.com".to_string(), "chatgpt".to_string())],
-            "names the host and the switch that covers it"
+            coverage.switched_off[0].hosts,
+            vec!["chatgpt.com".to_string()]
         );
+        assert!(!coverage.defaulted, "read from disk, not a fallback");
         assert!(
             coverage.unknown.is_empty(),
             "OpenClaw's provider is always a host Gate has an entry for; the gap \

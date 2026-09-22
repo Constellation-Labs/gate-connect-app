@@ -167,6 +167,7 @@ import {
   ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
+import { countsAsRouted } from "./components/gc/Sidebar";
 import type {
   InventoryState,
   SidebarApp,
@@ -1340,6 +1341,28 @@ export function NewUiApp() {
     },
   });
   const routingBusy = routing.busy;
+
+  /**
+   * A quit decision takes the dialog slot from an open routing question, so
+   * answer the question first.
+   *
+   * The precedence itself is right and stays: the user asked to leave, and a
+   * routing prompt must not sit on top of that. What it cannot do is unmount a
+   * prompt that a suspended write is awaiting. `ask`'s promise is settled only
+   * by the dialog's own buttons, so a prompt that disappears unanswered leaves
+   * `busy` stuck on for the life of the window - and `BaseSwitch` drops clicks
+   * while busy, so every switch in the app stops responding with no error
+   * anywhere. Exactly the failure `settle`'s ordering was written for, reached
+   * by a different road.
+   *
+   * Declined rather than confirmed, because it is the answer that writes
+   * nothing: the person is leaving, and a question they never saw must not be
+   * taken for a yes.
+   */
+  const { prompt: routingPrompt, resolvePrompt } = routing;
+  useEffect(() => {
+    if (quit !== null && routingPrompt !== null) resolvePrompt(false);
+  }, [quit, routingPrompt, resolvePrompt]);
 
   /** Where the tools stand after a teardown, raised only when something is
    * actually outstanding: a clean routing-off has nothing to report, and a
@@ -2556,9 +2579,10 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
-  const protectedCount = desiredApps.filter(
-    (a) => a.status.kind === "protected",
-  ).length;
+  // `countsAsRouted`, not `kind === "protected"`: a row that is routed but
+  // uninspected is still routed, and counting it out gave a banner saying
+  // Gate was not routing over a row saying it was. See the predicate. AG-932.
+  const protectedCount = desiredApps.filter((a) => countsAsRouted(a.status)).length;
 
   /**
    * The open app's own notice, for its own pane.
@@ -3262,6 +3286,7 @@ export function NewUiApp() {
           // doc records the tray having had.
           <HermesProviderDialog
             domains={routing.prompt.domains}
+            defaulted={routing.prompt.defaulted}
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />
