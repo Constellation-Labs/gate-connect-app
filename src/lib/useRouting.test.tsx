@@ -414,7 +414,7 @@ describe("useRouting: the certificate gate a cascade asks once", () => {
 const group = (members: GroupMember[]): Group => ({
   id: "claude-code",
   name: "Claude Code",
-  band: "apps",
+  band: "anthropic",
   switchLabel: "Route Claude Code through Gate",
   members,
   routed: members.filter((m) => m.routed).length,

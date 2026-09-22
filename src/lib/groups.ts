@@ -677,7 +677,14 @@ function memberFromDomain(
 export const SHELL_CHANNEL_COVERAGE =
   "Routes every program you start from now on, not only AI tools, and tells Node to trust Gate's certificate.";
 
-const SECTIONS: readonly {
+/**
+ * **Order matters, and not for looks.** `NewUiApp` and `TrayApp` both emit a
+ * group header on every *change* of band while walking these in order, so a
+ * band that appears, stops and appears again draws two headers with the same
+ * name and two counters that each count half its rows. Keep every band's
+ * sections contiguous; `groups.test.ts` fails if they are not.
+ */
+export const SECTIONS: readonly {
   id: string;
   name: string;
   /** Which band the rail draws it under. */
@@ -690,18 +697,31 @@ const SECTIONS: readonly {
   {
     id: "claude",
     name: "Claude",
-    band: "apps",
+    band: "anthropic",
     members: ["claude-code", "anthropic", "claude-web"],
   },
   {
     id: "chatgpt",
     name: "ChatGPT / Codex",
-    band: "apps",
+    band: "openai",
     // Both names, because the switch covers both and neither alone is the
     // whole of it: Codex is a terminal tool with its own config file, and the
     // other two surfaces are the ChatGPT app's chat turn and the endpoint Work
     // mode calls.
     members: ["codex", "chatgpt-apps", "chatgpt"],
+  },
+  {
+    id: "openai-api",
+    name: "OpenAI API",
+    band: "openai",
+    // Its own switch rather than part of ChatGPT / Codex, because nothing
+    // OpenAI ships rides it: Codex routes through the relay whatever this
+    // says, and the desktop app is on chatgpt.com. What depends on it is
+    // whatever else on the machine calls api.openai.com - in practice the two
+    // harnesses above, which blind-tunnel anything outside the enabled
+    // catalog. Folding it into the app switch would mean routing every script
+    // on the machine as a side effect of routing ChatGPT.
+    members: ["openai"],
   },
   {
     id: "openrouter",
@@ -712,25 +732,25 @@ const SECTIONS: readonly {
     // the rows above. Listing it under Apps beside Claude and ChatGPT / Codex
     // invited the reader to look for OpenRouter in their dock.
     name: "OpenRouter",
-    band: "tools",
+    band: "other",
     members: ["openrouter"],
   },
   {
     id: "openclaw",
     name: "OpenClaw",
-    band: "tools",
+    band: "other",
     members: ["openclaw"],
   },
   {
     id: "hermes",
     name: "Hermes",
-    band: "tools",
+    band: "other",
     members: ["hermes"],
   },
   {
     id: "opencode",
     name: "OpenCode",
-    band: "tools",
+    band: "other",
     members: ["opencode"],
   },
   {
@@ -741,7 +761,7 @@ const SECTIONS: readonly {
     // none of the copy below.
     id: "terminal",
     name: "Terminal",
-    band: "tools",
+    band: "other",
     members: ["env-proxy"],
     // The same sentence the window's Settings row draws, then the one fact the
     // popover has room for that the row does not. One coverage statement for
@@ -762,24 +782,34 @@ const SECTIONS: readonly {
     // becomes true and can come back.
     blurb: `${SHELL_CHANNEL_COVERAGE} Gate inspects traffic to the AI providers it knows and passes everything else through untouched.`,
   },
-  {
-    id: "openai-api",
-    name: "OpenAI API",
-    band: "tools",
-    // Its own switch rather than part of ChatGPT / Codex, because nothing
-    // OpenAI ships rides it: Codex routes through the relay whatever this
-    // says, and the desktop app is on chatgpt.com. What depends on it is
-    // whatever else on the machine calls api.openai.com - in practice the two
-    // harnesses above, which blind-tunnel anything outside the enabled
-    // catalog. Folding it into the app switch would mean routing every script
-    // on the machine as a side effect of routing ChatGPT.
-    members: ["openai"],
-  },
 ];
 
-/** Which band a section draws under. Two, and the split is what the user is
- *  being asked: an app they use, or a mechanism they are opting into. */
-export type Band = "apps" | "tools";
+/**
+ * Which group a section draws under in the rail.
+ *
+ * **By vendor, not by kind.** This was `"apps" | "tools"` - a split on what the
+ * user was being asked, an app they use versus a mechanism they opt into - and
+ * the Figma sidebar (`440:1593`) draws vendor groups instead: `Anthropic`,
+ * `open ai`, and a catch-all. Design confirmed the grouping on 2026-09-22, so
+ * the file wins, per CLAUDE.md.
+ *
+ * Three, not the frame's four. The frame draws a fourth group labelled
+ * `OPENCode` containing **OpenRouter**, while OpenCode itself sits under the
+ * catch-all - a self-contradiction no rule settles, and guessing wrong files a
+ * row under a competitor's name. Design's answer on 2026-09-22 was "no
+ * OpenRouter group", so OpenRouter joins the catch-all and the frame's third
+ * group is dropped rather than interpreted.
+ *
+ * The catch-all is "Other apps", design's wording rather than the frame's
+ * "Other tools" - same answer, same day.
+ *
+ * **The frame also splits the bundles and this does not, yet.** It draws
+ * `Claude Desktop` + `Claude Code` under Anthropic (hence its `1 of 2`) and
+ * `Codex` + `OpenAI apps` + `ChatGPT` under OpenAI, where the sections here are
+ * still one row each for `claude` and `chatgpt`. Design chose to regroup first
+ * and split later, 2026-09-22.
+ */
+export type Band = "anthropic" | "openai" | "other";
 
 /**
  * Member keys the window's APP LIST does not draw, because they are not apps.
@@ -822,8 +852,9 @@ export function isSettingsManaged(key: string): boolean {
  *  section, because a section is a row now and labelling each with its own
  *  name would print every name twice. */
 export const BAND_LABELS: Readonly<Record<Band, string>> = {
-  apps: "Apps",
-  tools: "Tools",
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  other: "Other apps",
 };
 
 /**
@@ -885,7 +916,7 @@ export function buildGroups(
   // catalog entry that needs a home, and it is visible until it gets one.
   for (const [key, member] of byKey) {
     if (claimed.has(key)) continue;
-    groups.push(group(member.key, member.name, "tools", [member]));
+    groups.push(group(member.key, member.name, "other", [member]));
   }
 
   return groups.filter((g) => g.members.length > 0);
