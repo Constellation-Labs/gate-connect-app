@@ -1722,7 +1722,10 @@ export function NewUiApp() {
     onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
-  const toggleRailApp = section.toggle;
+  // Named for what it does rather than where it was: the rail's switch went
+  // on 2026-09-22 and this is the app pane's now. Same section toggle, same
+  // consent and drift gates behind it.
+  const toggleAppRouting = section.toggle;
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -3228,7 +3231,6 @@ export function NewUiApp() {
       refreshingApps={refreshing}
       inventory={inventory}
       notice={noticeStack}
-      onToggleApp={toggleRailApp}
       dialog={
         // A pending quit decision outranks every other overlay: the user asked
         // to leave, and an update prompt or routing notice must not sit on top
@@ -3645,7 +3647,7 @@ export function NewUiApp() {
           status={appFor(railApps, view.slug)?.status}
           busy={routingBusy}
           onToggleProtected={() =>
-            toggleRailApp(
+            toggleAppRouting(
               view.slug,
               !(appFor(railApps, view.slug)?.on ?? false),
             )

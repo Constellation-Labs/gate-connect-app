@@ -44,7 +44,7 @@ test.describe("new UI routing", () => {
     const app = await boot(driftedCodex);
 
     await expect(app.page.getByText("Config drifted")).toBeVisible();
-    const sidebarSwitch = app.appSwitch("ChatGPT / Codex");
+    const sidebarSwitch = await app.appSwitch("ChatGPT / Codex");
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
 
     await sidebarSwitch.click();
@@ -165,7 +165,7 @@ test.describe("new UI routing", () => {
     // The switch directly, not `routeApp`: this one is turning the app OFF, and
     // the helper only answers the consent dialog an ON raises. That nothing is
     // asked here is the assertion below.
-    await app.appSwitch("Claude").click();
+    await (await app.appSwitch("Claude")).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
@@ -212,7 +212,7 @@ test.describe("new UI routing", () => {
     // open. `openrouter` is brokered, and nothing arrives on it from a tab.
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    await app.appSwitch("OpenRouter").click();
+    await (await app.appSwitch("OpenRouter")).click();
 
     // The write first. This section raises no consent, so `routeApp` would
     // return the moment the click dispatched, and a bare `toHaveCount(0)` is
@@ -251,7 +251,7 @@ test.describe("new UI routing", () => {
 
     // The switch directly: turning off raises no consent, and `routeApp` only
     // answers a dialog an ON would put up.
-    await app.appSwitch("Claude").click();
+    await (await app.appSwitch("Claude")).click();
 
     await expect(note).toHaveCount(0);
   });
@@ -486,7 +486,7 @@ test.describe("new UI drift repair", () => {
     await app.page.evaluate(() => {
       window.__GATE_E2E__.state.failures = {};
     });
-    await app.appSwitch("ChatGPT / Codex").click();
+    await (await app.appSwitch("ChatGPT / Codex")).click();
 
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
@@ -558,7 +558,11 @@ test.describe("new UI: refreshing the inventory", () => {
     // ChatGPT / Codex from its two chatgpt.com rows, OpenCode from its own Zen
     // and Go host - so none of them could test "appears when a tool does".
     // OpenClaw and Hermes are the two whose only member is the tool.
-    const row = app.appSwitch("OpenClaw");
+    // The ROW, not its switch, and not through `appSwitch`: that helper opens
+    // the app's pane before returning the control, so it cannot answer "is
+    // this row absent" - there would be nothing to open. The rail's row is a
+    // button whose accessible name leads with the app name.
+    const row = app.page.getByRole("button", { name: "OpenClaw" });
     await expect(row).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
@@ -1211,7 +1215,7 @@ test.describe("new UI sidebar rail", () => {
     // Codex holds a config tool and two chatgpt.com surfaces, and the two
     // surfaces carry the user's own session - so the switch asks before it
     // routes them, which is the confirmation below.
-    await app.page.getByRole("switch", { name: "ChatGPT / Codex" }).click();
+    await (await app.appSwitch("ChatGPT / Codex")).click();
     await app.page.getByRole("button", { name: "Route ChatGPT / Codex" }).click();
 
     // The domains route through the engine's flags, never a config write.
@@ -1238,7 +1242,7 @@ test.describe("new UI sidebar rail", () => {
     // row. `provider::cascade_domains` still refuses those rows in Rust, so
     // consent is what stands in for the refusal here - and declining must leave
     // everything where it was.
-    await app.page.getByRole("switch", { name: "Claude" }).click();
+    await (await app.appSwitch("Claude")).click();
     await expect(
       app.page.getByRole("heading", { name: "Route Claude through Gate?" }),
     ).toBeVisible();
@@ -1248,7 +1252,7 @@ test.describe("new UI sidebar rail", () => {
     // after a click pass while the click is still in flight, so they would go
     // green on a decline that actually routed - the one thing this test is for.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
+    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
     expect(await callsFor(app.page, "proxy_set_domain")).toEqual([]);
     expect(await callsFor(app.page, "connect_tool")).toEqual([]);
   });
@@ -1268,9 +1272,9 @@ test.describe("new UI sidebar rail", () => {
     });
 
     // Off and on again: no dialog the second time, and the cascade runs.
-    await app.appSwitch("Claude").click();
-    await expect(app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
-    await app.appSwitch("Claude").click();
+    await (await app.appSwitch("Claude")).click();
+    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
+    await (await app.appSwitch("Claude")).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Route Claude through Gate?" }),
@@ -1323,11 +1327,11 @@ test.describe("new UI sidebar rail", () => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
     await app.routeApp("ChatGPT / Codex");
-    await expect(app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "true");
+    await expect(await app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "true");
 
-    await app.appSwitch("ChatGPT / Codex").click();
+    await (await app.appSwitch("ChatGPT / Codex")).click();
 
-    await expect(app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "false");
+    await expect(await app.appSwitch("ChatGPT / Codex")).toHaveAttribute("aria-checked", "false");
     await expect
       .poll(async () => (await app.state()).proxy.domains.filter((d) => d.enabled).length)
       .toBe(0);
@@ -1350,11 +1354,7 @@ test.describe("new UI sidebar rail", () => {
       tools: [],
     });
 
-    await app.page
-      .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Claude" }) })
-      .getByRole("button")
-      .click();
+    await app.openApp("Claude");
 
     await expect(app.page.getByText(/its own activity can/)).toBeVisible();
     await expect(
@@ -1372,11 +1372,7 @@ test.describe("new UI sidebar rail", () => {
     // deliberately so: that one caveats a reading, this one names where the
     // requests ARE counted instead (AG-889). The page used to say only that
     // its numbers could not be shown, which read as breakage.
-    await app.page
-      .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "OpenAI API" }) })
-      .getByRole("button")
-      .click();
+    await app.openApp("OpenAI API");
 
     // Anchored on the note's own tail. An earlier version matched
     // /counted in the Overview/, which resolved to one element only by luck of
@@ -1453,9 +1449,12 @@ test.describe("new UI sidebar rail", () => {
       ],
     });
 
-    // A row per tool, under one band.
+    // A row per tool, under one band. Asserted on the row's own control
+    // rather than on a switch: the rail stopped drawing those on 2026-09-22,
+    // and a test that checks for one is checking the old design rather than
+    // that the row is present.
     for (const name of ["OpenClaw", "OpenCode"]) {
-      await expect(app.page.getByRole("switch", { name, exact: true })).toBeVisible();
+      await expect(app.page.getByRole("button", { name })).toBeVisible();
     }
     // Not the environment channel. It used to be a row here, on the argument
     // that what it routes is a different client from the editor - true, but it
@@ -1463,7 +1462,7 @@ test.describe("new UI sidebar rail", () => {
     // Settings (AG-893), so the fixture keeps it in `list_tools` to prove the
     // filter is what removes it rather than its absence from the fixture.
     await expect(
-      app.page.getByRole("switch", { name: "Terminal", exact: true }),
+      app.page.getByRole("button", { name: "Terminal", exact: true }),
     ).toHaveCount(0);
     // The headings are the three vendor groups, and nothing else. The rail has
     // been regrouped more than once - vendors, then clients, then a catch-all,

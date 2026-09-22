@@ -56,9 +56,61 @@ export class App {
     return this.page.getByRole("button", { name: `${name} details` });
   }
 
-  /** The rail switch for one app section. */
-  appSwitch(name: string) {
+  /** Open one app's pane from the rail.
+   *
+   *  One button per row since the switch went: the row's own select control.
+   *  Its accessible name leads with the app name and carries the status after
+   *  it, so this matches on the name rather than requiring the whole string. */
+  openApp(name: string) {
+    return this.page
+      .getByRole("listitem")
+      .filter({ has: this.page.getByRole("button", { name }) })
+      .getByRole("button", { name })
+      .first()
+      .click();
+  }
+
+  /** The TRAY's switch for one app row, which the tray still has.
+   *
+   *  The window's rail lost its switches on 2026-09-22 and the tray did not -
+   *  it is a different surface and design scoped the change to the rail. A
+   *  tray spec must therefore address its own control rather than go through
+   *  {@link appSwitch}, which now opens a window pane the tray has not got. */
+  trayAppSwitch(name: string) {
     return this.page.getByRole("switch", { name, exact: true });
+  }
+
+  /** {@link routeApp} for the tray, clicking the row's own switch. */
+  async routeTrayApp(name: string) {
+    const section = SESSION_SECTIONS[name];
+    const asked =
+      section !== undefined &&
+      !(await this.state()).preferences.session_routing_accepted.includes(section);
+    await this.trayAppSwitch(name).click();
+    if (!asked) return;
+    await this.page.getByRole("button", { name: `Route ${name}` }).click();
+  }
+
+  /**
+   * The switch for one app section - on that app's own PANE.
+   *
+   * The rail had one until 2026-09-22 and this returned it, named for the app
+   * alone. Design removed it: a rail row drew the app's state and a control
+   * for its intent on one line, and those are different questions. Routing
+   * happens on the pane now, where there is room to say what the switch will
+   * do before it is flipped.
+   *
+   * So this opens the pane first. Every caller that only ever clicked reads
+   * the same; the ones that ASSERT on it without clicking used to be able to
+   * do so from any pane and now cannot, which is honest - there is one switch
+   * on screen and it belongs to the app you are looking at.
+   *
+   * The pane's label is `Route <name>`, not `<name>`, which is also what
+   * disambiguates it from the tray's rows in a shared DOM.
+   */
+  async appSwitch(name: string) {
+    await this.openApp(name);
+    return this.page.getByRole("switch", { name: `Route ${name}`, exact: true });
   }
 
   /**
@@ -81,7 +133,7 @@ export class App {
     const asked =
       section !== undefined &&
       !(await this.state()).preferences.session_routing_accepted.includes(section);
-    await this.appSwitch(name).click();
+    await (await this.appSwitch(name)).click();
     if (!asked) return;
     // Asserted rather than probed. `isVisible()` does not auto-wait, so a probe
     // would race the dialog's first paint and silently skip it; clicking waits.
