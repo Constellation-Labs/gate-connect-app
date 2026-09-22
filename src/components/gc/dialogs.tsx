@@ -1921,9 +1921,15 @@ export function OpenCodeEnvDialog({
  * tool and wider than "interception", so it is disclosed where it applies.
  * OpenRouter is proxy-only and carries neither line.
  *
- * Shared by both shells from the outset. The tray raises the same prompt through
- * the same `setAppRouted`, and a prompt only one shell renders is a switch that
- * spins forever - which is exactly how `OpenCodeEnvDialog` came to be shared.
+ * Shared by the window and the tray from the outset. The tray raises the same
+ * prompt through the same `setAppRouted`, and a prompt only one shell renders is
+ * a switch that spins forever - which is exactly how `OpenCodeEnvDialog` came to
+ * be shared.
+ *
+ * The popover is the third surface and does NOT share it: it asks through
+ * `HermesProviderNotice`, in its own furniture, because it connects Hermes
+ * outside `useRouting`. That file says why. The sentences are the same, so a
+ * change to this dialog's copy belongs in both until the popover goes.
  */
 export function HermesProviderDialog({
   domains,

@@ -726,13 +726,24 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
 /// to connect: every provider whose cascade includes the domain, and every tool
 /// that provider maps. Names rather than ids, because the only reader is a
 /// sentence put to the person.
+///
+/// Deduplicated, though today it cannot repeat: no two providers share a
+/// cascade domain or a tool. That disjointness is a property of the catalog,
+/// not of this function, and a sentence naming a tool twice is the failure a
+/// reader would otherwise have to re-derive the catalog to rule out.
 fn tools_switched_on_by(slug: &str) -> Vec<String> {
-    crate::provider::providers()
+    let mut names = Vec::new();
+    for name in crate::provider::providers()
         .iter()
         .filter(|p| crate::provider::cascade_domains(p).contains(&slug))
         .flat_map(|p| p.tool_ids.iter().copied())
         .filter_map(|id| crate::registry::find(id).map(|integ| integ.display_name().to_string()))
-        .collect()
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Keys a Hermes endpoint can be written under. `base_url`, `api` and `url` are
