@@ -170,7 +170,10 @@ function markRoutingTakeoverSeen(): void {
 /** What the last routing change resulted in. "started" means the change
  * turned the master on as a side effect; "pending" means it did not and
  * nothing is routing. */
-export type ChangeNotice = "on" | "off" | "started" | "pending" | null;
+/** `trusted` is the one member that is not about routing: the explicit Trust
+ *  buttons (Home's certificate card, the family panel's banner) never pass the
+ *  certificate pre-flight, so its browser advice lands here on their success. */
+export type ChangeNotice = "on" | "off" | "started" | "pending" | "trusted" | null;
 
 /** Which change notice a member/group toggle earned, from the engine state
  * that actually resulted rather than from the direction of the click.
@@ -527,7 +530,7 @@ export function App() {
     if (oauthOffer) track("oauth_offer_shown");
   }, [oauthOffer]);
   useEffect(() => {
-    if (changeNotice) {
+    if (changeNotice && changeNotice !== "trusted") {
       track("routing_notice_shown", { enabled: changeNotice === "on", inline: true });
     }
   }, [changeNotice]);
@@ -1076,6 +1079,9 @@ export function App() {
     setProxyBusy(true);
     try {
       await runTrustCa();
+      // The auto-trust paths warned about a running browser on the pre-flight
+      // panel; this path skipped the panel, so say it on the way out instead.
+      setChangeNotice("trusted");
     } catch (err) {
       // Surface it, don't just log it. This used to call trackError alone, so
       // a cancelled admin prompt - the likeliest failure in the app - produced

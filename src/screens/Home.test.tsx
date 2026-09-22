@@ -517,6 +517,20 @@ describe("Home routing-change notice", () => {
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
   });
 
+  it("says a running browser needs reopening after an explicit Trust, with nothing to close", () => {
+    // The Trust buttons skip the certificate pre-flight, so this banner is the
+    // only place their user hears that a browser already open may keep failing
+    // until it is relaunched. Neither routing remedy applies: closing tools is
+    // about a proxy address, and a page reload does not reach what a browser
+    // cached at start.
+    const onCloseAgents = vi.fn();
+    renderHome({ changeNotice: "trusted", onCloseAgents, domains: [makeDomain()] });
+    expect(screen.getByText(/Certificate trusted\. Restart any open browser/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
+  });
+
   it("shows one notice at a time, so a fast flip can't stack them", () => {
     // The regression this replaced: three independent hint booleans, so the
     // "on" notice stayed up over the "off" one after an on/off flip.
