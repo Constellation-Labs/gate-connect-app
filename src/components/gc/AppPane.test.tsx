@@ -650,3 +650,19 @@ describe("the App-default row's mark size", () => {
     expect(screen.getAllByTestId("header-only")).toHaveLength(1);
   });
 });
+
+describe("the Tokens saved tile", () => {
+  it("scrolls to this pane's Recent activity card", () => {
+    // The Overview's jump, with this pane's destination. The tile is a button
+    // in every state - the card is drawn whether or not the feed has rows, so
+    // there is always somewhere to land.
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    render(pane());
+
+    screen.getByRole("button", { name: /Tokens saved/i }).click();
+
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll.mock.instances[0]).toBe(card("Recent activity"));
+    scroll.mockRestore();
+  });
+});

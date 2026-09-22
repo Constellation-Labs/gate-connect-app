@@ -54,6 +54,9 @@ export interface GateModel {
 }
 
 
+/** Anchor for the Tokens saved counter's jump target on this pane. */
+const RECENT_ACTIVITY_SECTION_ID = "recent-activity";
+
 export function AppPane({
   name,
   isProtected,
@@ -214,7 +217,10 @@ export function AppPane({
   alert?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
+    // `relative` for the same reason as `Overview`'s root: this is the scroll
+    // container, and the pane's `sr-only` text must take it as containing block
+    // rather than becoming hidden overflow on the shell root.
+    <div className="relative flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
         <span
           aria-hidden
@@ -258,7 +264,24 @@ export function AppPane({
 
       {alert}
 
-      <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
+      <StatTiles
+        stats={stats}
+        pending={pending}
+        unattributed={unattributed}
+        // The Overview's jump (AG-572), with this pane's own destination: the
+        // Recent activity card, which is where this tool's savings show up
+        // request by request. Always offered, whether the feed has rows or not
+        // - the card is drawn in every state, so there is always somewhere to
+        // land, which is the condition the Overview's gate (AG-883) exists to
+        // check. `scrollIntoView` rather than a hash link, as on the Overview:
+        // a fragment in the URL of a window with no address bar.
+        onSelectTokensSaved={() =>
+          document.getElementById(RECENT_ACTIVITY_SECTION_ID)?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        }
+      />
       <MessagesChart
         buckets={buckets}
         pending={pending}
@@ -797,7 +820,9 @@ function RecentActivity({
   /** See `AppPane`. */
 }) {
   return (
-    <Card className="p-4" busy={pending}>
+    // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
+    // own gutter above the heading, as the Overview's savings card does.
+    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
       <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Recent activity
       </h2>
