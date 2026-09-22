@@ -3681,6 +3681,9 @@ mod tests {
             rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
+            client: crate::taxonomy::Client::ClaudeDesktop,
+            credential: crate::taxonomy::Credential::Brokered,
+            scope: crate::taxonomy::Scope::Host,
         }];
 
         for hostile in [
