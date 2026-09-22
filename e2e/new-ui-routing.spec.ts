@@ -1333,6 +1333,35 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
+  test("an app pane with no installed CLI is not called a destination", async ({
+    boot,
+  }) => {
+    // The H in review on #323. `openDomain` is `openTool === null` - "this
+    // section has no INSTALLED config tool" - not "this section is a provider
+    // endpoint", and a section stays alive on its `domain:` members. So a
+    // Claude pane on a machine with no Claude Code takes the unattributed
+    // branch too, and "any app on this machine can be pointed here" is false
+    // of Claude Desktop: it is one app, and nothing is pointed at it.
+    //
+    // `tools: []`, which is the state two tests above already boot, because
+    // the default fixture ships every CLI as detected and would never see it.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+    });
+
+    await app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Claude" }) })
+      .getByRole("button")
+      .click();
+
+    await expect(app.page.getByText(/its own activity can/)).toBeVisible();
+    await expect(
+      app.page.getByText(/can be pointed here/),
+    ).toHaveCount(0);
+  });
+
   test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
@@ -1349,10 +1378,20 @@ test.describe("new UI sidebar rail", () => {
       .getByRole("button")
       .click();
 
+    // Anchored on the note's own tail. The earlier version matched
+    // /counted in the Overview/, which resolves to one element only because
+    // the two card strings capitalise "Counted" and the regex had no `i` -
+    // three matches the moment either changes, and strict mode would fail.
     await expect(
-      app.page.getByText(/cannot attribute these requests to one of them/),
+      app.page.getByText(/cannot attribute these requests to one app/),
     ).toBeVisible();
-    await expect(app.page.getByText(/counted in the Overview/)).toBeVisible();
+    await expect(
+      app.page.getByText(/appear in the Overview rather than on this page/),
+    ).toBeVisible();
+    // The cards are their own string and there are two of them.
+    await expect(
+      app.page.getByText("Counted in the Overview, not per app"),
+    ).toHaveCount(2);
     await expect(app.page.getByText(/These counts cover/)).toHaveCount(0);
   });
 

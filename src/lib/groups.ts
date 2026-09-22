@@ -686,6 +686,11 @@ const SECTIONS: readonly {
    *  member, and a section with no members is dropped. */
   members: readonly string[];
   blurb?: string;
+  /** A destination the user points other programs at, rather than a program
+   *  they launch. Explicit rather than derived: it used to be readable off
+   *  `band === "tools"`, and grouping the rail by vendor took that away. Two
+   *  rows today, and the pane's copy turns on it - see `isProviderEndpoint`. */
+  providerEndpoint?: true;
 }[] = [
   {
     id: "claude",
@@ -705,12 +710,16 @@ const SECTIONS: readonly {
   },
   {
     id: "openrouter",
-    // A provider endpoint, not an app (AG-897). The band is "tools"
-    // for the same reason `openai-api` below is: nothing here is a program the
-    // user launches. Its own description says as much - "Any app you have
-    // pointed at OpenRouter" describes a destination, and the apps it names are
-    // the rows above. Listing it under Apps beside Claude and ChatGPT / Codex
-    // invited the reader to look for OpenRouter in their dock.
+    providerEndpoint: true,
+    // A provider endpoint, not an app (AG-897): nothing here is a program the
+    // user launches, which is what `providerEndpoint` above records. Listing
+    // it beside Claude and ChatGPT / Codex invited the reader to look for
+    // OpenRouter in their dock.
+    //
+    // This used to cite the row's own `description` - "Any app you have
+    // pointed at OpenRouter" - as saying the same thing. That field was
+    // removed in 78374027 and the sentence now survives only in comments, so
+    // the attribution is dropped rather than left pointing at nothing.
     name: "OpenRouter",
     band: "tools",
     members: ["openrouter"],
@@ -764,6 +773,7 @@ const SECTIONS: readonly {
   },
   {
     id: "openai-api",
+    providerEndpoint: true,
     name: "OpenAI API",
     band: "tools",
     // Its own switch rather than part of ChatGPT / Codex, because nothing
@@ -972,6 +982,26 @@ export function appForMember(key: string): { id: string; name: string } | null {
  */
 export function sectionMemberKeys(id: string): readonly string[] {
   return SECTIONS.find((s) => s.id === id)?.members ?? [id];
+}
+
+/**
+ * Is this section a provider endpoint - a destination other programs are
+ * pointed at - rather than an app?
+ *
+ * The pane's unattributed note turns on this and must not turn on
+ * `openDomain`, which is the question it looks like and is not: that one is
+ * `openTool === null`, "this section has no INSTALLED config tool". A section
+ * stays alive on its `domain:` members, so a Claude pane on a machine without
+ * Claude Code is `openDomain` too - and "any app on this machine can be
+ * pointed here" is false of Claude Desktop, which is one app that nothing is
+ * pointed at.
+ *
+ * Unknown ids answer false. A section this table does not name is a catalog
+ * entry that has not been placed yet, and claiming it is an endpoint would put
+ * the wrong sentence on it.
+ */
+export function isProviderEndpoint(id: string): boolean {
+  return SECTIONS.find((s) => s.id === id)?.providerEndpoint === true;
 }
 
 /**
