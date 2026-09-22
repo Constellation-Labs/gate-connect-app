@@ -217,15 +217,46 @@ struct EnablePlan {
     configure_tool: bool,
     /// Flip the provider's proxy domains on .
     enable_domain: bool,
-    /// Neither mechanism can act - surface a helpful error instead.
+    /// Neither mechanism can act *yet* - the engine is down and a later pass,
+    /// once it is up, can do more than this one.
     nothing: bool,
+    /// Neither mechanism can *ever* act for this provider, engine and all.
+    ///
+    /// The distinction from [`nothing`](EnablePlan::nothing) is *ever* versus
+    /// *yet*, and it is the whole of AG-885: `openai`'s only tool is Codex and
+    /// both its domains are `Credential::Additive`, so `cascade_domains` is
+    /// empty. With Codex uninstalled and the engine UP, the old plan reported
+    /// work to do, `enable_inner` ran to the end, and the state it returned
+    /// read off - indistinguishable from "the route did not take", which the
+    /// restore leaves `Pending` and silent. The entry went back in the queue
+    /// and every retry repeated it.
+    ///
+    /// Read off what EXISTS, not off what this pass may touch: `any_installed`
+    /// ignores the skip list and `has_cascade_domain` ignores it too. A
+    /// provider whose members are installed but user-skipped is not "nothing
+    /// ever" - it is a deliberate off - and journalling it `NotInstalled`
+    /// would tell the user "nothing this provider routes is on this machine
+    /// any more" about a tool sitting on their disk. That case still falls to
+    /// the silent arm in `restore_all`; see the comment there.
+    nothing_ever: bool,
 }
 
-fn enable_plan(tool_detected: bool, proxy_running: bool) -> EnablePlan {
+/// The decision, as a function of four facts and nothing else.
+///
+/// Pure so the AG-885 row can be tested at all: reaching it for real needs
+/// `proxy_running()` true, and that reads a `OnceLock` manager backed by a live
+/// relay or daemon socket, which a unit test cannot stand up.
+fn enable_plan(
+    tool_detected: bool,
+    proxy_running: bool,
+    any_installed: bool,
+    has_cascade_domain: bool,
+) -> EnablePlan {
     EnablePlan {
         configure_tool: tool_detected,
         enable_domain: proxy_running,
         nothing: !tool_detected && !proxy_running,
+        nothing_ever: proxy_running && !any_installed && !has_cascade_domain,
     }
 }
 
@@ -394,7 +425,16 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     let any_detected = p.tool_ids.iter().any(|&id| {
         tool_detected(id) && !registry::find(id).is_some_and(|i| skipped(i.id().slug()))
     });
-    let plan = enable_plan(any_detected, proxy_running());
+    // What EXISTS for this provider, ignoring the skip list, which is what
+    // decides "nothing ever" - see `EnablePlan::nothing_ever`.
+    let any_installed = p.tool_ids.iter().any(|&id| tool_detected(id));
+    let cascade = cascade_domains(&p);
+    let plan = enable_plan(
+        any_detected,
+        proxy_running(),
+        any_installed,
+        !cascade.is_empty(),
+    );
 
     if plan.nothing {
         // A restore pass has nothing to do here and nothing to complain about:
@@ -415,23 +455,33 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
         );
     }
 
-    // Everything this restore is allowed to turn on, after the two exclusions
-    // that can empty it: a credential that does not cascade, and a member the
-    // user switched off before routing stopped.
-    let routable: Vec<&'static str> = cascade_domains(&p)
-        .into_iter()
+    // Everything this pass may actually turn on: the cascade minus the members
+    // the user switched off before routing stopped. Computed once and reused
+    // by the domain loop below, so the guard and the loop cannot drift.
+    let routable: Vec<&'static str> = cascade
+        .iter()
+        .copied()
         .filter(|domain| !skipped(domain))
         .collect();
 
-    // Nothing to configure and nothing to enable, with the engine up. Disjoint
-    // from `plan.nothing` above, which is the engine-down case and says "not
-    // yet"; here a later pass would do exactly as much, so saying "yet" would
-    // promise a second attempt that cannot differ. See `Applied::NothingRoutable`.
+    // Nothing to configure and nothing to enable, ever. Disjoint from
+    // `plan.nothing` above, which is the engine-down case and says "not yet";
+    // here a later pass would do exactly as much, so saying "yet" would
+    // promise a second attempt that cannot differ.
     //
-    // The state is still returned rather than an error, so `enable` by name
-    // behaves exactly as before - only the restore paths read the variant.
-    if !any_detected && routable.is_empty() {
-        return Ok((Applied::NothingRoutable, state(&p)));
+    // A by-name caller gets the explanation, the same way `plan.nothing` gives
+    // one: they asked for this provider and nothing happening is a result that
+    // needs saying. That also keeps `audit::provider_enabled` - emitted below,
+    // for `ByName` only - from firing over a call that enabled nothing.
+    if plan.nothing_ever {
+        if request == Request::Restore {
+            return Ok((Applied::NothingRoutable, state(&p)));
+        }
+        anyhow::bail!(
+            "nothing to configure for {}: none of its tools are installed, and it \
+             has no proxy domain this switch can turn on",
+            p.display_name
+        );
     }
 
     if plan.configure_tool {
@@ -464,10 +514,7 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     // persist the flag directly. Mirrors [`disable`], which always persists the
     // off-intent regardless of proxy state.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    for domain in cascade_domains(&p) {
-        if skipped(domain) {
-            continue; // switched off before routing stopped; leave it off
-        }
+    for domain in routable {
         if plan.enable_domain {
             crate::proxy::manager()
                 .set_domain(domain, true)
@@ -1323,10 +1370,20 @@ pub fn restore_all() -> Result<()> {
             // the seeded `Pending` stands rather than the journal being told a
             // story about it.
             //
-            // Still reachable, and still deliberately silent: a provider whose
-            // members exist but were all skipped lands here. That case is the
-            // user's own earlier choice rather than a dead end, and labelling
-            // it would need an outcome none of the current ones fit.
+            // Still reachable, and the case that reaches it is worth naming
+            // because the guard above is deliberately narrower than it could
+            // be: a provider whose members EXIST but were all switched off
+            // before routing stopped. `nothing_ever` reads what exists rather
+            // than what this pass may touch, precisely so that case does not
+            // come out as `NotInstalled` - "nothing this provider routes is on
+            // this machine any more" would be a lie about a tool sitting on
+            // the user's disk.
+            //
+            // So it lands here and stays `Pending`, which is the AG-885 shape
+            // again in miniature. Reachable when the skip list goes stale
+            // across two master cycles, which the pre-fix deadlock itself
+            // accumulates. Not fixed here: every existing outcome says
+            // something false about it, and inventing one is its own change.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 // `{e:#}`, matching the string journalled two lines down: the
@@ -1660,59 +1717,6 @@ mod tests {
             }],
         }
         .is_empty());
-    }
-
-    /// The shape of AG-885, pinned without needing a running engine.
-    ///
-    /// The reported symptom - `openai` stuck at "Not started", Retry and
-    /// Resume both inert - is composed of two facts that are pure and can be
-    /// asserted directly. Together they say the row cannot succeed: with Codex
-    /// absent there is no tool to configure, and with an empty cascade there is
-    /// no domain to enable, yet `enable_plan` still reports work to do because
-    /// the engine is up.
-    ///
-    /// Asserted here rather than through `restore_all` because reproducing it
-    /// end to end needs `proxy_running()` true, and a unit test cannot bind an
-    /// engine. If either half ever changes, the guard in `enable_inner` is
-    /// answering a question nobody is asking any more and this fails loudly.
-    #[test]
-    fn openai_has_no_route_of_its_own_when_codex_is_absent() {
-        let openai = find("openai").expect("the openai provider is in the catalog");
-
-        // Both its domains are `Credential::Additive`, so neither cascades.
-        // This is the fact the provider's own comment states and the one that
-        // makes the domain loop a no-op.
-        assert!(
-            cascade_domains(&openai).is_empty(),
-            "openai's cascade should be empty, got {:?}",
-            cascade_domains(&openai)
-        );
-
-        // And the engine being up is enough to make the plan claim work, which
-        // is what skips the `NotYet` return. `nothing` is the only escape
-        // `enable_inner` had before `NothingRoutable`.
-        assert!(
-            !enable_plan(false, true).nothing,
-            "an undetected tool with the engine up must not read as nothing to do"
-        );
-        // The engine-down case keeps its old answer, so the new guard has not
-        // swallowed the one that was already right.
-        assert!(enable_plan(false, false).nothing);
-    }
-
-    /// The outcome the two restore paths now record for it.
-    ///
-    /// Pinned because the choice is load-bearing and invisible from the Rust
-    /// side: `NotInstalled` has to be settled, or the entry goes straight back
-    /// into the snapshot and AG-885 returns wearing a different label.
-    #[test]
-    fn the_outcome_for_nothing_routable_is_settled_not_outstanding() {
-        assert!(!recovery::Outcome::NotInstalled.is_outstanding());
-        assert!(recovery::Outcome::NotInstalled.is_complete());
-        // The one it must not be confused with: `Pending` is what the bug left
-        // behind, and it is outstanding, which is why the banner never cleared.
-        assert!(recovery::Outcome::Pending.is_outstanding());
-        assert!(!recovery::Outcome::Pending.is_complete());
     }
 
     /// `Applied::NotYet` is private, so the only place that can name it is a
@@ -2073,45 +2077,95 @@ mod tests {
         assert!(find("does-not-exist").is_none());
     }
 
+    /// The whole decision, as a table. Four inputs: is an unskipped tool
+    /// detected, is the engine up, does the provider have ANY installed tool,
+    /// and does it have ANY cascadable domain. The last two ignore the skip
+    /// list on purpose - see `EnablePlan::nothing_ever`.
     #[test]
     fn enable_plan_config_first_proxy_if_running() {
+        let plan = |detected, running, installed, cascade| {
+            enable_plan(detected, running, installed, cascade)
+        };
         // Codex installed + proxy on: do both.
         assert_eq!(
-            enable_plan(true, true),
+            plan(true, true, true, true),
             EnablePlan {
                 configure_tool: true,
                 enable_domain: true,
-                nothing: false
+                nothing: false,
+                nothing_ever: false
             }
         );
         // Codex installed, proxy off: config only, no proxy prompt.
         assert_eq!(
-            enable_plan(true, false),
+            plan(true, false, true, true),
             EnablePlan {
                 configure_tool: true,
                 enable_domain: false,
-                nothing: false
+                nothing: false,
+                nothing_ever: false
             }
         );
-        // No Codex but proxy on: just the domain route.
+        // No Codex but proxy on, and there IS a domain to cascade: just the
+        // domain route. This is the row that must NOT read "nothing ever".
         assert_eq!(
-            enable_plan(false, true),
+            plan(false, true, false, true),
             EnablePlan {
                 configure_tool: false,
                 enable_domain: true,
-                nothing: false
+                nothing: false,
+                nothing_ever: false
             }
         );
-        // Nothing installed and proxy off: nothing to do.
+        // Nothing installed and proxy off: nothing to do YET. The engine
+        // coming up is what changes the answer, so this is not "ever".
         assert_eq!(
-            enable_plan(false, false),
+            plan(false, false, false, false),
             EnablePlan {
                 configure_tool: false,
                 enable_domain: false,
-                nothing: true
+                nothing: true,
+                nothing_ever: false
             }
         );
     }
+
+    /// AG-885, as the row that could not be reached any other way.
+    ///
+    /// Nothing installed, engine UP, and no cascadable domain - which is
+    /// `openai` with Codex absent, since both of its domains are
+    /// `Credential::Additive`. The old plan answered "go" here: `nothing` was
+    /// false because the engine was up, `enable_inner` ran to the end, and the
+    /// state it returned read off, which the restore leaves `Pending` and
+    /// silent. Every retry repeated it.
+    ///
+    /// Reverting the guard turns this red, which the tests it replaced did
+    /// not: they restated `openai`'s empty cascade and the plan table, both
+    /// already pinned elsewhere, so the fix could regress with the suite green.
+    #[test]
+    fn nothing_installed_and_nothing_to_cascade_with_the_engine_up_is_never_not_yet() {
+        let p = enable_plan(false, true, false, false);
+        assert!(p.nothing_ever, "{p:?}");
+        assert!(!p.nothing, "engine is up, so this is not the not-yet case");
+    }
+
+    /// ...and a provider whose members are installed but all user-skipped is
+    /// NOT that, however much it looks like it from inside one pass.
+    ///
+    /// `any_detected` is false there too, because it excludes skipped members.
+    /// Reading `nothing_ever` off that instead of off what exists would
+    /// journal the entry `NotInstalled`, whose sentence is "nothing this
+    /// provider routes is on this machine any more" - false about a tool on
+    /// the user's disk. Raised in review on #321.
+    #[test]
+    fn an_all_skipped_provider_is_not_nothing_ever() {
+        // detected=false (everything skipped), engine up, but the tool IS
+        // installed and the cascade DOES have a domain.
+        assert!(!enable_plan(false, true, true, false).nothing_ever);
+        assert!(!enable_plan(false, true, false, true).nothing_ever);
+        assert!(!enable_plan(false, true, true, true).nothing_ever);
+    }
+
     #[test]
     fn claude_web_is_not_reachable_by_enabling_the_anthropic_provider() {
         // `enable` flips every domain [`cascade_domains`] returns. If that ever
