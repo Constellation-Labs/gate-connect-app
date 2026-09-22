@@ -482,17 +482,31 @@ export const proxySetDomain = (slug: string, enabled: boolean) =>
 
 export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
 
+/** One provider row Hermes points at that Gate is not inspecting: the domain
+ * `slug` claims every host in `hosts` and its switch is off, so turning it on is
+ * the whole remedy. `tools` names what else that switch reaches - the provider's
+ * own tools, which `reconcile_enabled` connects at the next launch once a
+ * cascade domain is on - and is empty for a proxy-only row like OpenRouter. */
+export type HermesCoverageEntry = {
+  slug: string;
+  hosts: string[];
+  tools: string[];
+};
+
 /** What Gate would and would not see of the current Hermes install.
  *
- * `switched_off` is `[host, slug]` pairs: a provider domain claims that host
- * and its switch is off, so turning it on is the whole remedy. `unknown` is
- * hosts no domain claims at all (Bedrock, a self-hosted endpoint), where no
- * switch helps and the honest answer is to say so.
+ * `defaulted` says the endpoints are Hermes' documented default rather than
+ * anything read from `config.yaml` - the file is missing, does not parse, or
+ * names no endpoint. Copy has to say which: "your config uses OpenRouter" is
+ * false about a file that was never read. `unknown` is hosts no domain claims
+ * at all (Bedrock, a self-hosted endpoint), where no switch helps and the
+ * honest answer is to say so.
  *
  * Read fresh at the moment it is needed rather than polled. Both inputs move
  * after a toggle - the person repoints Hermes, or a domain flips elsewhere. */
 export type HermesCoverage = {
-  switched_off: [string, string][];
+  defaulted: boolean;
+  switched_off: HermesCoverageEntry[];
   unknown: string[];
 };
 export const hermesUpstreamCoverage = () =>
