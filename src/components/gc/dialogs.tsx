@@ -1917,41 +1917,54 @@ export function HermesProviderDialog({
   onSkip,
   onConfirm,
 }: {
-  domains: { host: string; slug: string }[];
+  domains: { name: string; host: string; slug: string }[];
   onSkip: () => void;
   onConfirm: () => void;
 }) {
-  // The hosts, not the slugs: `openrouter.ai` is what the person typed into
-  // `config.yaml`, and the slug is Gate's internal name for the row.
-  const hosts = domains.map((d) => d.host);
+  // The rows' own names, not the hosts. "OpenRouter" is how the person thinks
+  // of it and what they will look for in the sidebar to change their mind;
+  // `openrouter.ai` is an implementation detail of that row.
+  const names = domains.map((d) => d.name);
   const list =
-    hosts.length === 1
-      ? hosts[0]
-      : `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`;
-  const plural = hosts.length !== 1;
+    names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const plural = names.length !== 1;
 
   return (
     <Modal
-      tone="neutral"
-      icon="squareCode"
-      title={`Also inspect ${list}?`}
+      // Amber warning triangle, from the frame the design pointed at
+      // (`154:71541`). `squareCode` was a guess standing in for "this is about
+      // config", and it read as a developer tool rather than as something the
+      // person has to decide. This is the same tile the certificate prompts
+      // use, which is the right family: a thing Gate needs turned on before it
+      // can do what the switch just promised.
+      tone="warning"
+      icon="triangleAlert"
+      title={`Turn on ${list} too?`}
       secondary={{ label: "Route Hermes only", onClick: onSkip }}
-      primary={{ label: plural ? "Inspect both" : "Inspect it", onClick: onConfirm }}
+      primary={{ label: plural ? "Turn on both" : "Turn on", onClick: onConfirm }}
       onDismiss={onSkip}
     >
+      {/* Says what is on their machine and what follows from it, in that
+          order. The first draft led with Gate's own mechanism ("Gate has to
+          inspect that to see them"), which is true and is not what the person
+          needs first: what they need is that their Hermes config names this
+          provider, so the switch they just flipped does not cover it on its
+          own. */}
       <p className="text-sm leading-5 text-neutral-600">
-        Hermes sends its requests to {list}, so Gate has to inspect{" "}
-        {plural ? "those" : "that"} to see them. Without{" "}
-        {plural ? "them" : "it"}, Hermes still goes through Gate and its traffic
-        passes straight out, uninspected.
+        Your Hermes config uses {list} as its model provider. Gate only
+        inspects providers you have turned on, so Hermes traffic would pass
+        through unseen until {plural ? "these are" : "this is"} on too.
       </p>
-      {/* The breadth, in the provider section's own words - its description
-          reads "Any app you have pointed at OpenRouter". That sentence is the
-          disclosure the `Coverage` objection asks for, and it was already
-          written. */}
+      {/* The breadth, which is the part that makes this a question rather than
+          something Gate should just do. The provider row's own description
+          says the same thing - "Any app you have pointed at OpenRouter" - and
+          it is the disclosure the objection on `integrations::hermes::Coverage`
+          asks for. */}
       <p className="mt-3 text-sm font-medium leading-5 text-base-foreground">
-        This covers any app on this machine you have pointed{" "}
-        {plural ? "at those providers" : "there"}, not just Hermes. You can turn{" "}
+        {plural ? "They apply" : "It applies"} to every app on this machine
+        that uses {plural ? "them" : list}, not just Hermes. You can turn{" "}
         {plural ? "them" : "it"} off again from{" "}
         {plural ? "their own rows" : "its own row"}.
       </p>

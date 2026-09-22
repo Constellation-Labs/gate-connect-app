@@ -675,7 +675,13 @@ describe("useRouting: Hermes and the provider it talks to", () => {
 
     expect(api.current!.prompt).toEqual({
       kind: "hermes-provider",
-      domains: [{ host: "openrouter.ai", slug: "openrouter" }],
+      // Carries the row's display name, which is what the dialog shows. With
+      // no catalog row to name it falls back to the host - see the lookup in
+      // `setAppRouted`; this harness's `proxyState()` has no domains, so this
+      // is that fallback.
+      domains: [
+        { name: "openrouter.ai", host: "openrouter.ai", slug: "openrouter" },
+      ],
     });
     expect(connectTool).not.toHaveBeenCalled();
     expect(proxySetDomain).not.toHaveBeenCalled();

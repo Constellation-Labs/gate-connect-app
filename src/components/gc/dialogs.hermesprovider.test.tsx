@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { HermesProviderDialog } from "./dialogs";
 
 const noop = () => {};
-const one = [{ host: "openrouter.ai", slug: "openrouter" }];
+const one = [{ name: "OpenRouter", host: "openrouter.ai", slug: "openrouter" }];
 
 afterEach(cleanup);
 
@@ -17,21 +17,26 @@ afterEach(cleanup);
  * reaches beyond Hermes, and that saying no still routes Hermes.
  */
 describe("HermesProviderDialog", () => {
-  it("names the provider host, not Gate's slug for it", () => {
-    // `openrouter.ai` is what the person put in `config.yaml`. `openrouter` is
-    // the catalog's internal name for the row and means nothing to them.
+  it("names the provider row, not its host and not Gate's slug", () => {
+    // "OpenRouter" is how the person thinks of it and what they would look
+    // for in the sidebar to change their mind. `openrouter.ai` is an
+    // implementation detail of that row and `openrouter` is Gate's key.
     render(<HermesProviderDialog domains={one} onSkip={noop} onConfirm={noop} />);
-    expect(
-      screen.getByRole("heading", { name: /openrouter\.ai/ }),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /OpenRouter/ })).toBeTruthy();
+    expect(screen.queryByText(/openrouter\.ai/)).toBeNull();
   });
 
-  it("says what happens without it, which is the whole bug", () => {
-    // Routed and uninspected is the state that read as Protected for an
-    // afternoon while every request tunnelled past. The dialog has to name it,
-    // or "Route Hermes only" sounds like the cautious choice.
+  it("leads with what is on their machine, then what follows from it", () => {
+    // The person's own config first, Gate's mechanism second. An earlier
+    // draft opened with "Gate has to inspect that to see them", which is true
+    // and is not the thing they need first.
     render(<HermesProviderDialog domains={one} onSkip={noop} onConfirm={noop} />);
-    expect(screen.getByText(/passes straight out, uninspected/i)).toBeTruthy();
+    expect(
+      screen.getByText(/Your Hermes config uses OpenRouter as its model provider/i),
+    ).toBeTruthy();
+    // And the consequence, or "Route Hermes only" reads as the cautious choice
+    // when it is the one that leaves the traffic unseen.
+    expect(screen.getByText(/pass through unseen/i)).toBeTruthy();
   });
 
   it("discloses the breadth, because yes widens what Gate intercepts", () => {
@@ -39,7 +44,7 @@ describe("HermesProviderDialog", () => {
     // enabling a domain from a tool reaches every other client on the machine.
     // Asking answers it only if the question says so.
     render(<HermesProviderDialog domains={one} onSkip={noop} onConfirm={noop} />);
-    expect(screen.getByText(/any app on this machine/i)).toBeTruthy();
+    expect(screen.getByText(/every app on this machine/i)).toBeTruthy();
     expect(screen.getByText(/turn it off again/i)).toBeTruthy();
   });
 
@@ -63,23 +68,23 @@ describe("HermesProviderDialog", () => {
     render(
       <HermesProviderDialog
         domains={[
-          { host: "openrouter.ai", slug: "openrouter" },
-          { host: "api.openai.com", slug: "openai" },
+          { name: "OpenRouter", host: "openrouter.ai", slug: "openrouter" },
+          { name: "OpenAI API", host: "api.openai.com", slug: "openai" },
         ]}
         onSkip={noop}
         onConfirm={noop}
       />,
     );
     expect(
-      screen.getByRole("heading", { name: /openrouter\.ai and api\.openai\.com/ }),
+      screen.getByRole("heading", { name: /OpenRouter and OpenAI API/ }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Inspect both" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Turn on both" })).toBeTruthy();
   });
 
   it("confirms with the provider enabled", () => {
     const onConfirm = vi.fn();
     render(<HermesProviderDialog domains={one} onSkip={noop} onConfirm={onConfirm} />);
-    screen.getByRole("button", { name: "Inspect it" }).click();
+    screen.getByRole("button", { name: "Turn on" }).click();
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 });

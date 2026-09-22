@@ -97,7 +97,10 @@ export type RoutingPrompt =
    * provider and the confirm enables those specific slugs. Only raised for
    * `switched_off`: an upstream no domain claims (Bedrock, a self-hosted
    * endpoint) has no remedy, and a dialog offering one would be lying. */
-  | { kind: "hermes-provider"; domains: { host: string; slug: string }[] }
+  | {
+      kind: "hermes-provider";
+      domains: { name: string; host: string; slug: string }[];
+    }
   | { kind: "trust" }
   /** Removing the certificate, which is not a gate on the way to something
    * else: it is the action, and it stops every routed domain. Confirmed for
@@ -365,7 +368,18 @@ export function useRouting({
           const coverage = await hermesUpstreamCoverage().catch(() => null);
           const off = coverage?.switched_off ?? [];
           if (off.length > 0) {
+            // The row's own display name, not the slug and not the host. It
+            // is what the person will look for in the sidebar if they want to
+            // change their mind, and "OpenRouter" is how they think of the
+            // thing anyway - `openrouter` is Gate's internal key and
+            // `openrouter.ai` is an implementation detail of it. Falls back to
+            // the host only if the catalog has no row to name, which cannot
+            // happen for a `switched_off` entry (that state means a domain
+            // claimed the host) but keeps the type honest.
             const domains = off.map(([host, domainSlug]) => ({
+              name:
+                proxy?.domains.find((d) => d.slug === domainSlug)
+                  ?.display_name ?? host,
               host,
               slug: domainSlug,
             }));
