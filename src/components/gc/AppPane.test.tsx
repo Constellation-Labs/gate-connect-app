@@ -128,7 +128,7 @@ describe("AppPane recent activity", () => {
     expect(within(feed).queryByText("No recent messages")).toBeNull();
   });
 
-  it("says a chat domain is unattributed rather than unreadable", () => {
+  it("sends a chat domain reader to the Overview rather than reporting an absence", () => {
     // Both flags true is the real shape: no read fires for a domain, so the
     // `unavailable` derivation is incidentally true too. `unattributed` has to
     // win, or the pane reports a fault over the permanent shape of the data.
@@ -136,7 +136,7 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     expect(
-      within(feed).getByText("Recent activity isn't attributed to this app"),
+      within(feed).getByText("Counted in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(feed).queryByText("Recent activity couldn't be read")).toBeNull();
     expect(within(feed).queryByText("No recent messages")).toBeNull();
@@ -332,22 +332,22 @@ describe("AppPane counters and chart", () => {
    * `unattributed` arm back below `activity.length === 0` in `AppPane` and this
    * fails on the row that reappears.
    */
-  it("says the feed is unattributed even when entries are present", () => {
+  it("sends the reader to the Overview even when entries are present", () => {
     render(pane({ unattributed: true, activity: [entry] }));
     const feed = card("Recent activity");
 
     expect(
-      within(feed).getByText("Recent activity isn't attributed to this app"),
+      within(feed).getByText("Counted in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(feed).queryByRole("table")).toBeNull();
   });
 
-  it("says a chat domain's chart is unattributed rather than unreadable", () => {
+  it("sends the chart reader to the Overview rather than reporting an absence", () => {
     render(pane({ unattributed: true, unavailable: { chart: true } }));
     const chart = card("Messages");
 
     expect(
-      within(chart).getByText("Messages aren't attributed to this app"),
+      within(chart).getByText("Counted in the Overview, not per app"),
     ).toBeTruthy();
     expect(within(chart).queryByText("Messages couldn't be read")).toBeNull();
     // Not the empty state either: "no messages in the last 24hrs" would be a

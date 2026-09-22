@@ -3815,11 +3815,27 @@ export function NewUiApp() {
                 // on purpose - a guessed slug would file one app's traffic under
                 // another's name. So there is no per-app reading to show here,
                 // and saying so beats a zero.
+                //
+                // "This entry", not "This app", and AG-889 is why: these rows
+                // are provider endpoints rather than programs. Both are
+                // `band: "tools"` now, and OpenRouter's own description -
+                // "Any app you have pointed at OpenRouter" - is what the
+                // sentence below paraphrases. Calling it an app invited the
+                // reader to look for one in their dock.
+                //
+                // It also names where the traffic IS counted. The page used to
+                // be three tiles and two cards each reporting an absence, with
+                // nothing saying the requests were being inspected at all, so
+                // it read as breakage rather than as the permanent shape of the
+                // data. Deliberately NOT a claim that the entry is routed or
+                // protected, which the ticket's Expected asks for in words: the
+                // switch and the status line above own that, they change, and a
+                // hardcoded sentence would be false the moment the row is off.
                 <p className="text-base-xs text-base-muted-foreground">
-                  <span className="font-medium">This app:</span> its requests
-                  aren&apos;t attributed to a single app yet, so its own
-                  activity can&apos;t be shown. The Overview still covers your
-                  whole organisation.
+                  <span className="font-medium">This entry:</span> any app on
+                  this machine can be pointed here, so Gate cannot attribute
+                  these requests to one of them. Their traffic is counted in
+                  the Overview, with the rest of your organization&apos;s.
                 </p>
               ) : unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
@@ -3831,7 +3847,7 @@ export function NewUiApp() {
                   <span className="font-medium">This machine:</span> the gateway
                   has no traffic attributed to it yet, so this app&apos;s own
                   activity cannot be shown. The Overview still covers your whole
-                  organisation.
+                  organization.
                 </p>
               ) : (
                 <>

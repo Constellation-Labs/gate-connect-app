@@ -37,7 +37,7 @@ export const STAGE_LABEL: Record<RestoreOutcome, string> = {
   restored: "Configuration written",
   write_failed: "Write failed",
   not_installed: "No longer installed",
-  unknown: "Not recognised",
+  unknown: "Not recognized",
   deferred_signed_out: "Waiting for sign-in",
   deferred_engine_down: "Waiting for routing",
 };
@@ -91,7 +91,7 @@ export const ERROR_CATEGORY_LABEL: Record<RecoveryTool["error_category"], string
   none: "",
   write: "Configuration write",
   not_installed: "Tool missing",
-  unknown: "Unrecognised entry",
+  unknown: "Unrecognized entry",
   account: "Account",
 };
 
@@ -321,7 +321,7 @@ const PLAIN_OUTCOME: Record<RestoreOutcome, string> = {
   restored: "This one is set up and routing again.",
   write_failed: "Gate could not save its settings, so it is still on the route it had.",
   not_installed: "This is not on your machine any more, so there was nothing to do.",
-  unknown: "Gate no longer recognises this entry, so it was dropped.",
+  unknown: "Gate no longer recognizes this entry, so it was dropped.",
   deferred_signed_out: "Gate has no account to point this at yet.",
   deferred_engine_down: "Gate's proxy was not running yet, so this one is still waiting.",
 };
