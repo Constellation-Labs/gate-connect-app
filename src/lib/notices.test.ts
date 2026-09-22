@@ -44,7 +44,7 @@ function group(id: string, members: GroupMember[]): Group {
     id,
     name: id,
     switchLabel: id,
-    band: "apps",
+    band: "anthropic",
     members,
     routed: 0,
     desired: members.length,
