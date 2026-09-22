@@ -1,6 +1,0 @@
-tsc exit 0
-
-> @gate/connect@0.0.0 typecheck:e2e /Users/strider/orca/workspaces/gate-connect-app/feat-new-app-ui-3
-> tsc -p e2e --noEmit
-
-e2e-tsc exit 0
