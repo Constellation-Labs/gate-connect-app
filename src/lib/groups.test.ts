@@ -331,18 +331,34 @@ describe("sectionStatus", () => {
   /**
    * The common shape of a group switch: it writes one config and enables the
    * hosts beside it, the hosts route immediately, and the tool waits on a
-   * restart. The honest line names the restart rather than counting, and it
-   * names WHICH program - the heading is the app ("Claude"), and the thing to
-   * reopen is Claude Code.
+   * restart. The honest line names the restart.
+   *
+   * **And nothing else.** This asserted `detail: "CLI"` until 2026-09-22, on
+   * the reasoning that the heading is the app and the suffix should say which
+   * program inside it to reopen. `Tool.name` is a surface label, so the rail
+   * drew the row's state and the row's TYPE in one line - "Reopen to finish -
+   * CLI" - which design rejected: "we're mixing CLI and On/Off ... the type
+   * cannot live in the same label."
+   *
+   * The product name is not the fix either. On a one-member section it
+   * repeats the row's own heading, which is why the old code special-cased
+   * those, and on a multi-member one the remedy is the same whichever member
+   * it is: reopen the app this row names. The pane says which program, where
+   * there is room for it.
    */
-  it("names the program to reopen, because the heading is the app", () => {
+  it("names the restart and nothing else", () => {
     const [claude] = buildGroups(
       [tool("claude-code", "CLI", { kind: "connected" })],
       [domain()],
       ON,
     );
     const apps = new Map([["claude-code", { status: { kind: "reopen" } } as never]]);
-    expect(sectionStatus(claude, apps)).toEqual({ kind: "reopen", detail: "CLI" });
+    const status = sectionStatus(claude, apps);
+
+    expect(status).toEqual({ kind: "reopen" });
+    // Named explicitly: a suffix of any kind is what design ruled out, so an
+    // assertion that only checks the kind would let the type back in.
+    expect(status).not.toHaveProperty("detail");
   });
 
   it("does not read off as off because a session surface is off", () => {

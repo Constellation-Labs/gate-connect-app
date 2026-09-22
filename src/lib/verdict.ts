@@ -231,13 +231,22 @@ export function sectionStatus(
       l.status.kind === "reopen",
   );
   if (exception) {
-    // A section's heading is the app and a reopen is one program inside it, so
-    // the suffix says which one to reopen - "Reopen to finish - Claude Code".
-    // Dropped on a single-member section, where it would print the row's own
-    // label a second time.
-    if (exception.status.kind === "reopen" && group.members.length > 1) {
-      return { kind: "reopen", detail: exception.member.name };
-    }
+    // No suffix on a reopen, on any section.
+    //
+    // This used to name the member - "Reopen to finish - CLI" - on the
+    // reasoning that a section's heading is the app and a reopen is one
+    // program inside it. `Tool.name` is a surface label, so what the rail
+    // actually drew was the row's state and the row's TYPE in one line, which
+    // design rejected on 2026-09-21: "we're mixing CLI and On/Off ... the type
+    // cannot live in the same label."
+    //
+    // Dropping the suffix rather than swapping it for the product name, which
+    // was the first attempt here and the wrong one. The instruction was to
+    // drop the type, and the product name is no better in the slot: on the
+    // one-member sections it repeats the row's own heading, which is exactly
+    // why the old code special-cased them, and on the multi-member ones the
+    // remedy is the same whichever member it is - reopen the app this row
+    // names. The pane still says which program, where there is room.
     return exception.status;
   }
 
