@@ -1333,21 +1333,26 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("a row with nothing attributable says so instead of reporting a quiet day", async ({
+  test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
     // OpenAI API is a host with no config tool behind it, so no reading exists
     // and none ever will. A different sentence from the one above, and
-    // deliberately so: that one caveats a reading, this one reports its absence.
+    // deliberately so: that one caveats a reading, this one names where the
+    // requests ARE counted instead (AG-889). The page used to say only that
+    // its numbers could not be shown, which read as breakage.
     await app.page
       .getByRole("listitem")
       .filter({ has: app.page.getByRole("switch", { name: "OpenAI API" }) })
       .getByRole("button")
       .click();
 
-    await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
+    await expect(
+      app.page.getByText(/cannot attribute these requests to one of them/),
+    ).toBeVisible();
+    await expect(app.page.getByText(/counted in the Overview/)).toBeVisible();
     await expect(app.page.getByText(/These counts cover/)).toHaveCount(0);
   });
 
