@@ -702,12 +702,13 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
   });
 
-  it("still routes Hermes when the provider is declined", async () => {
-    // The difference from every other gate in this hook. Drift and the
-    // certificate abandon the action on a no; here "Hermes routed, provider
-    // uninspected" is a coherent state a person may want, so the connect goes
-    // ahead and only the domain is skipped. `askOptional` is what keeps the
-    // two apart.
+  it("writes nothing at all when the provider is declined", async () => {
+    // Cancel means cancel, like the drift and certificate gates. An earlier
+    // version connected Hermes anyway and skipped only the domain, leaving it
+    // routed with its provider uninspected - which is the state this whole
+    // dialog exists to prevent, reporting Protected while every request
+    // tunnels past unseen. The gate runs before `connectTool`, so declining
+    // leaves the switch off and the config untouched.
     (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
@@ -718,8 +719,11 @@ describe("useRouting: Hermes and the provider it talks to", () => {
       api.current!.resolvePrompt(false);
     });
 
-    expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
+    expect(connectTool).not.toHaveBeenCalled();
     expect(proxySetDomain).not.toHaveBeenCalled();
+    // And it is not reported as a failure: declining is an answer, so the row
+    // must not come back marked as a failed write.
+    expect(api.current!.writeFailures.has("hermes")).toBe(false);
   });
 
   it("stays quiet when the provider is already inspected", async () => {

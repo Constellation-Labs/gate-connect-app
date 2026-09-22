@@ -3254,7 +3254,7 @@ export function NewUiApp() {
           // doc records the tray having had.
           <HermesProviderDialog
             domains={routing.prompt.domains}
-            onSkip={() => routing.resolvePrompt(false)}
+            onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />
         ) : section.consent ? (

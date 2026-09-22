@@ -96,7 +96,15 @@ export type RoutingPrompt =
    * Carries the domains rather than a boolean, because the dialog names the
    * provider and the confirm enables those specific slugs. Only raised for
    * `switched_off`: an upstream no domain claims (Bedrock, a self-hosted
-   * endpoint) has no remedy, and a dialog offering one would be lying. */
+   * endpoint) has no remedy, and a dialog offering one would be lying.
+   *
+   * **A gate, not an option.** This was briefly written so a decline still
+   * connected Hermes, reasoning that "Hermes routed, provider uninspected" is
+   * a coherent state. It is coherent to Gate and not to anybody using it: it
+   * is precisely the state that read Protected all afternoon while every
+   * request tunnelled past unseen, and offering it as a button would ship the
+   * bug as a preference. Cancel means cancel - nothing is written and the
+   * switch stays off. */
   | {
       kind: "hermes-provider";
       domains: { name: string; host: string; slug: string }[];
@@ -188,31 +196,6 @@ export function useRouting({
       });
     });
   }, []);
-
-  /**
-   * The same gate, for a question whose "no" is a real answer rather than an
-   * abandonment.
-   *
-   * `ask` rejects with `Declined` because its callers - the drift review, the
-   * certificate - are gates *on the way to* something: saying no means the
-   * action does not happen. The Hermes provider question is not that. Routing
-   * Hermes without inspecting OpenRouter is a coherent state a person may
-   * want, so declining has to let the connect proceed. Returning a boolean
-   * rather than throwing is what keeps that difference visible at the call
-   * site instead of hiding it in a `catch`.
-   */
-  const askOptional = useCallback(
-    (next: RoutingPrompt) =>
-      new Promise<boolean>((resolve) => {
-        setPrompt(next);
-        setDecide(() => (allow: boolean) => {
-          setPrompt(null);
-          setDecide(null);
-          resolve(allow);
-        });
-      }),
-    [],
-  );
 
   /** Answer the open prompt. `false` abandons the action. */
   const resolvePrompt = useCallback(
@@ -358,11 +341,15 @@ export function useRouting({
         // a question about what else this click needs to reach, answered
         // before anything is written.
         //
-        // Declining is an answer here, not an abort. The person may want
-        // Hermes routed and their provider left alone, and that is a coherent
-        // state - Hermes still goes through Gate, Gate still does not inspect
-        // OpenRouter. So this is not wrapped in the `Declined` throw the drift
-        // and trust gates use; it just skips the enable.
+        // A gate like the drift and certificate ones, so Cancel abandons the
+        // whole thing: `ask` throws `Declined`, the catch below treats that as
+        // an answer rather than a failure, and because this runs before
+        // `connectTool` nothing has been written - the switch stays off.
+        //
+        // The alternative was tried and is worse. Letting a decline connect
+        // Hermes anyway leaves it routed with its provider uninspected, which
+        // is the exact state this exists to prevent: Protected on every
+        // surface while the traffic tunnels past unseen.
         let providerDomains: string[] = [];
         if (routed && slug === HERMES_SLUG) {
           const coverage = await hermesUpstreamCoverage().catch(() => null);
@@ -383,8 +370,8 @@ export function useRouting({
               host,
               slug: domainSlug,
             }));
-            const yes = await askOptional({ kind: "hermes-provider", domains });
-            if (yes) providerDomains = domains.map((d) => d.slug);
+            await ask({ kind: "hermes-provider", domains });
+            providerDomains = domains.map((d) => d.slug);
           }
         }
 

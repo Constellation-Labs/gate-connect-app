@@ -1134,7 +1134,7 @@ export function TrayApp() {
             // somebody hits the spinning switch above for a second time.
             <HermesProviderDialog
               domains={routing.prompt.domains}
-              onSkip={() => routing.resolvePrompt(false)}
+              onCancel={() => routing.resolvePrompt(false)}
               onConfirm={() => routing.resolvePrompt(true)}
             />
           ) : section.consent ? (

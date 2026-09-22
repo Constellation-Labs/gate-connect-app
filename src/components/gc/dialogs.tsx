@@ -1899,10 +1899,12 @@ export function OpenCodeEnvDialog({
  * machine-wide environment channel reaching git, curl and npm, where this turns
  * on interception for one provider host.
  *
- * **Declining is a real answer**, unlike the drift and certificate gates. Hermes
- * routed with its provider uninspected is a coherent state, so the secondary
- * lets the connect proceed rather than abandoning it, and says which of the two
- * it is doing. `useRouting`'s `askOptional` exists for that difference.
+ * **Declining cancels**, like the drift and certificate gates. An earlier
+ * version let it connect Hermes anyway, on the reasoning that "Hermes routed,
+ * provider uninspected" is a coherent state. It is coherent to Gate and
+ * useless to a person: it is exactly the state that reported Protected while
+ * every request tunnelled past unseen, which is what this dialog exists to
+ * prevent. A button for it would ship the bug as a preference.
  *
  * Only ever raised for a provider Gate has a domain for. An upstream no domain
  * claims - Bedrock, a self-hosted endpoint - has no remedy, and offering one
@@ -1914,11 +1916,11 @@ export function OpenCodeEnvDialog({
  */
 export function HermesProviderDialog({
   domains,
-  onSkip,
+  onCancel,
   onConfirm,
 }: {
   domains: { name: string; host: string; slug: string }[];
-  onSkip: () => void;
+  onCancel: () => void;
   onConfirm: () => void;
 }) {
   // The rows' own names, not the hosts. "OpenRouter" is how the person thinks
@@ -1942,9 +1944,14 @@ export function HermesProviderDialog({
       tone="warning"
       icon="triangleAlert"
       title={`Turn on ${list} too?`}
-      secondary={{ label: "Route Hermes only", onClick: onSkip }}
+      // Cancel, not "Route Hermes only". Declining used to connect Hermes and
+      // leave the provider alone, which is a state Gate can describe and a
+      // person cannot use: routed, reporting Protected, and inspected by
+      // nothing. That is the defect this dialog exists to prevent, so it is
+      // not on offer as a button. Saying no leaves the switch off.
+      secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{ label: plural ? "Turn on both" : "Turn on", onClick: onConfirm }}
-      onDismiss={onSkip}
+      onDismiss={onCancel}
     >
       {/* Says what is on their machine and what follows from it, in that
           order. The first draft led with Gate's own mechanism ("Gate has to
