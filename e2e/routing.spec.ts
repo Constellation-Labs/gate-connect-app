@@ -193,6 +193,7 @@ test.describe("routing", () => {
         ca_trusted: false,
         env_export_opted_in: false,
         env_export_separable: true,
+        forwarder_answering: null,
         domains: [
           {
             slug: "anthropic",

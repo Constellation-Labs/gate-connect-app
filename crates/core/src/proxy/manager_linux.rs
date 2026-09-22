@@ -127,6 +127,9 @@ impl ProxyManager {
             ca_trusted: ca::is_trusted()?,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            // No forwarder on Linux: the daemon outlives the GUI, which is the
+            // failure the forwarder exists to cover elsewhere.
+            forwarder_answering: None,
             domains: config::load_domains()?,
         })
     }

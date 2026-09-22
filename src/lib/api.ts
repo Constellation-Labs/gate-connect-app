@@ -153,6 +153,12 @@ export interface ProxyState {
    * environment variables *are* the system proxy and cannot be declined
    * without turning routing off - so the switch must not render there. */
   env_export_separable: boolean;
+  /** Whether the environment forwarder (the sidecar the PAC and HTTPS_PROXY
+   * name) answered when the app last checked. null when this process is not
+   * hosting the engine or has not asked yet. false is the state nothing else
+   * on screen can show: routing is on, and browsers and tools are going direct
+   * because their addresses fall back rather than fail. */
+  forwarder_answering: boolean | null;
   domains: ProxyDomain[];
 }
 
