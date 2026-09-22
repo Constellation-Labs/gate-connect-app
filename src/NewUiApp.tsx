@@ -1341,6 +1341,28 @@ export function NewUiApp() {
   });
   const routingBusy = routing.busy;
 
+  /**
+   * A quit decision takes the dialog slot from an open routing question, so
+   * answer the question first.
+   *
+   * The precedence itself is right and stays: the user asked to leave, and a
+   * routing prompt must not sit on top of that. What it cannot do is unmount a
+   * prompt that a suspended write is awaiting. `ask`'s promise is settled only
+   * by the dialog's own buttons, so a prompt that disappears unanswered leaves
+   * `busy` stuck on for the life of the window - and `BaseSwitch` drops clicks
+   * while busy, so every switch in the app stops responding with no error
+   * anywhere. Exactly the failure `settle`'s ordering was written for, reached
+   * by a different road.
+   *
+   * Declined rather than confirmed, because it is the answer that writes
+   * nothing: the person is leaving, and a question they never saw must not be
+   * taken for a yes.
+   */
+  const { prompt: routingPrompt, resolvePrompt } = routing;
+  useEffect(() => {
+    if (quit !== null && routingPrompt !== null) resolvePrompt(false);
+  }, [quit, routingPrompt, resolvePrompt]);
+
   /** Where the tools stand after a teardown, raised only when something is
    * actually outstanding: a clean routing-off has nothing to report, and a
    * dialog saying so would be a dialog about nothing. */
@@ -3259,6 +3281,7 @@ export function NewUiApp() {
           // doc records the tray having had.
           <HermesProviderDialog
             domains={routing.prompt.domains}
+            defaulted={routing.prompt.defaulted}
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />

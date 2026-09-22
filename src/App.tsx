@@ -27,6 +27,7 @@ import {
   proxySetEnvExport,
   proxyUntrustCa,
   proxySetDomain,
+  hermesUpstreamCoverage,
   listProviders,
   listTools,
   connectTool,
@@ -55,16 +56,21 @@ import { QuitConfirm } from "./components/QuitConfirm";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
+import { HermesProviderNotice } from "./components/HermesProviderNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
 import {
   classifyError,
+  ProviderDeclined,
   TrustDeclined,
   type ClassifiedError,
 } from "./lib/errors";
 import { buildGroups, cascadeTargets } from "./lib/groups";
+import { HERMES_SLUG, type HermesProviderChoice } from "./lib/useRouting";
+import { logInfo, logWarn } from "./lib/log";
+import { describe as describeError } from "./lib/log";
 import { verdictsBySlug } from "./lib/verdict";
 import { dashboardLinks } from "./lib/dashboard";
 import { isSignedIn, needsOrg } from "./lib/session";
@@ -223,6 +229,15 @@ export function App() {
   // panel's two buttons settle.
   const [trustAsk, setTrustAsk] = useState(false);
   const trustDecision = useRef<((install: boolean) => void) | null>(null);
+  // The Hermes provider gate, in the same shape and for the same reason: the
+  // connect the user just asked for is suspended on this panel's answer, so it
+  // arrives through a resolver rather than a state read. Null when nothing is
+  // being asked.
+  const [hermesAsk, setHermesAsk] = useState<{
+    domains: HermesProviderChoice[];
+    defaulted: boolean;
+  } | null>(null);
+  const hermesDecision = useRef<((allow: boolean) => void) | null>(null);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // The provider catalog is the grouping contract for Home's ledger
@@ -765,6 +780,82 @@ export function App() {
     }
   }, [proxy, runTrustCa]);
 
+  /**
+   * Ask about the provider Hermes talks to, when Gate knows it and has it off.
+   *
+   * The popover's copy of the window's gate (`useRouting`'s
+   * `askHermesProvider`), because the popover connects tools through this file
+   * and not through that hook. Same decision, same rule: `hermes` is a
+   * one-member section, so its switch routes the tool and inspects nothing, and
+   * without this the popover reported Protected while every request tunnelled
+   * past unseen.
+   *
+   * Resolves to the slugs to enable once Hermes is connected. Declining throws
+   * `ProviderDeclined`, which aborts the connect exactly as a declined
+   * certificate does and is reported as nothing at all: the user chose it, one
+   * second ago, on our own screen.
+   *
+   * A coverage read that cannot be reached connects without the question rather
+   * than costing the person the toggle, and says so in the log - the state that
+   * leaves is the one this gate exists to prevent, and a silent fall-through is
+   * how it went unnoticed for an afternoon the first time.
+   */
+  const ensureHermesProvider = useCallback(async (): Promise<string[]> => {
+    const coverage = await hermesUpstreamCoverage().catch((e: unknown) => {
+      logWarn(`popover: hermes coverage read failed, connecting without asking: ${describeError(e)}`);
+      return null;
+    });
+    if (coverage === null) return [];
+    if (coverage.unknown.length > 0) {
+      // No switch fixes these, so no panel. Logged because it is the only
+      // record that Hermes has traffic Gate will never see.
+      logInfo(`popover: hermes upstreams Gate has no domain for: ${coverage.unknown.join(", ")}`);
+    }
+    if (coverage.switched_off.length === 0) return [];
+    const domains: HermesProviderChoice[] = coverage.switched_off.map(
+      ({ slug, hosts, tools }) => ({
+        // The row's own display name, which is what the person will look for
+        // in the sidebar. The host is the fallback for a row the catalog
+        // cannot name, which a `switched_off` entry never is.
+        name: (proxy?.domains ?? []).find((d) => d.slug === slug)?.display_name ?? hosts[0] ?? slug,
+        slug,
+        tools,
+      }),
+    );
+    setHermesAsk({ domains, defaulted: coverage.defaulted });
+    // Pinned for the panel's whole life, like the certificate pre-flight: it
+    // asks the user to read and decide, and an unpinned popover hides itself
+    // the moment they glance at another window.
+    await pinPopover().catch(() => {});
+    try {
+      const allow = await new Promise<boolean>((resolve) => {
+        hermesDecision.current = resolve;
+      });
+      if (!allow) throw new ProviderDeclined();
+      return domains.map((d) => d.slug);
+    } finally {
+      hermesDecision.current = null;
+      setHermesAsk(null);
+      await unpinPopover().catch(() => {});
+    }
+  }, [proxy]);
+
+  /** Turn the provider domains on, after the connect that starts the engine.
+   *
+   *  Each on its own, and a failure is reported against the domain rather than
+   *  thrown at the tool: by this point Hermes' config is written, so failing
+   *  the connect over it would say the opposite of what happened. */
+  const enableHermesProviders = useCallback(async (slugs: string[]) => {
+    for (const slug of slugs) {
+      try {
+        await proxySetDomain(slug, true);
+      } catch (e) {
+        logWarn(`popover: turning on ${slug} for hermes failed: ${describeError(e)}`);
+        trackError(e, "provider_toggle", { domain: slug, routed: true });
+      }
+    }
+  }, []);
+
   // Re-read what a routing mutation may have changed: the tool ledger and the
   // proxy state. A transient listTools failure keeps the previous list rather
   // than blanking the ledger. Returns whether the engine is running (false
@@ -888,19 +979,25 @@ export function App() {
       try {
         const tool = tools.find((t) => t.slug === slug);
         if (routed) {
+          // Before the certificate, because it is a question about what else
+          // this click needs to reach and the OS prompt comes after the in-app
+          // ones. Empty for every tool but Hermes.
+          const providerDomains =
+            slug === HERMES_SLUG ? await ensureHermesProvider() : [];
           // Connect auto-enables the engine, which trusts the CA; disconnect
           // never prompts.
           await ensureCaTrusted();
           await connectTool(slug, tool?.default_upstream_url ?? "");
+          await enableHermesProviders(providerDomains);
         } else {
           await disconnectTool(slug);
         }
         track("tool_toggled", { tool: slug, routed });
       } catch (e) {
         // Not a failure and not the caller's problem: the user answered Not now
-        // on our own screen, so this resolves quietly rather than rethrowing
-        // into the row's error note.
-        if (e instanceof TrustDeclined) {
+        // or Cancel on our own screen, so this resolves quietly rather than
+        // rethrowing into the row's error note.
+        if (e instanceof TrustDeclined || e instanceof ProviderDeclined) {
           declined = true;
           return;
         }
@@ -913,7 +1010,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [tools, proxy, ensureCaTrusted, resyncLedger],
+    [tools, proxy, ensureCaTrusted, ensureHermesProvider, enableHermesProviders, resyncLedger],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -943,15 +1040,22 @@ export function App() {
       // first command rather than sprung from member three. A refusal aborts the
       // whole family, which is what the implicit trust already did to that
       // member's connect.
+      // Hermes' section is one member, so its family switch is the app switch
+      // by another control and runs the same provider gate - asked ahead of the
+      // certificate, for the reason the row does.
+      let providerDomains: string[] = [];
       if (on) {
         try {
+          if (cascadeTargets(group, on).some((m) => m.kind === "config" && m.key === HERMES_SLUG)) {
+            providerDomains = await ensureHermesProvider();
+          }
           await ensureCaTrusted();
         } catch (e) {
           proxyBusyRef.current = false;
           setProxyBusy(false);
           // A declined pre-flight aborts the family the same way, minus the
           // note: the user just chose this on our own screen.
-          if (e instanceof TrustDeclined) return;
+          if (e instanceof TrustDeclined || e instanceof ProviderDeclined) return;
           trackError(e, "connect", { provider: id, enabled: on });
           setProviderError(classifyError(e, "connect", account?.auth_mode));
           return;
@@ -963,6 +1067,10 @@ export function App() {
       // and the failures are named.
       const failed: string[] = [];
       let lastError: unknown = null;
+      // Whether Hermes' own connect landed. Its provider is turned on only
+      // behind a Hermes that is actually routed - inspecting a provider for a
+      // tool that failed to connect watches traffic nothing is sending.
+      let hermesConnected = false;
       // Which members a family switch may touch is `cascadeTargets` in
       // lib/groups.ts, shared with the window UI: chat members never ride a
       // family switch, a drifted config is never adopted by one, and members
@@ -974,6 +1082,7 @@ export function App() {
             await (on
               ? connectTool(member.key, member.tool.default_upstream_url)
               : disconnectTool(member.key));
+            if (member.key === HERMES_SLUG) hermesConnected = on;
           } else if (member.domain) {
             await proxySetDomain(member.key, on);
           }
@@ -983,6 +1092,7 @@ export function App() {
           trackError(e, "connect", { provider: id, enabled: on, tool: member.key });
         }
       }
+      if (hermesConnected) await enableHermesProviders(providerDomains);
       track("group_toggled", { provider: id, enabled: on });
       if (lastError !== null) {
         const classified = classifyError(lastError, "connect", account?.auth_mode);
@@ -999,7 +1109,16 @@ export function App() {
       proxyBusyRef.current = false;
       setProxyBusy(false);
     },
-    [providers, tools, proxy, account, ensureCaTrusted, resyncLedger],
+    [
+      providers,
+      tools,
+      proxy,
+      account,
+      ensureCaTrusted,
+      ensureHermesProvider,
+      enableHermesProviders,
+      resyncLedger,
+    ],
   );
 
   /** Toggle the shell-environment channel, the master's sub-setting. Its own
@@ -1387,7 +1506,8 @@ export function App() {
     routingNotice !== null ||
     updateTakeoverVisible ||
     oauthOffer ||
-    trustAsk;
+    trustAsk ||
+    hermesAsk !== null;
 
   // Whether the body has content below the fold, so the scroll region can fade
   // its bottom edge instead of letting the footer's hairline cut a row in half.
@@ -1437,7 +1557,11 @@ export function App() {
           reason: an operation is suspended waiting on that panel's answer. */}
       <UpdatePanel
         suppressTakeover={
-          quitTools !== null || routingNotice !== null || oauthOffer || trustAsk
+          quitTools !== null ||
+          routingNotice !== null ||
+          oauthOffer ||
+          trustAsk ||
+          hermesAsk !== null
         }
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
@@ -1463,6 +1587,17 @@ export function App() {
           onDecline={() => trustDecision.current?.(false)}
         />
       )}
+      {/* The other pre-flight an operation is suspended on, and it shares the
+          certificate's level for that reason. The two cannot be up together:
+          this one is asked and answered before `ensureCaTrusted` is called. */}
+      {hermesAsk !== null && (
+        <HermesProviderNotice
+          domains={hermesAsk.domains}
+          defaulted={hermesAsk.defaulted}
+          onConfirm={() => hermesDecision.current?.(true)}
+          onCancel={() => hermesDecision.current?.(false)}
+        />
+      )}
       {/* Lowest-priority takeover: anything the user just did, or a pending
           update, outranks an offer they did not ask for. Dismissing marks it
           seen whichever way they leave, so it never returns. */}
@@ -1471,6 +1606,7 @@ export function App() {
         quitTools === null &&
         routingNotice === null &&
         !trustAsk &&
+        hermesAsk === null &&
         !updateTakeoverVisible && (
           <OAuthOffer
             onUpgrade={upgradeToOAuth}
