@@ -54,6 +54,9 @@ export interface GateModel {
 }
 
 
+/** Anchor for the Tokens saved counter's jump target on this pane. */
+const RECENT_ACTIVITY_SECTION_ID = "recent-activity";
+
 export function AppPane({
   name,
   isProtected,
@@ -214,7 +217,10 @@ export function AppPane({
   alert?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
+    // `relative` for the same reason as `Overview`'s root: this is the scroll
+    // container, and the pane's `sr-only` text must take it as containing block
+    // rather than becoming hidden overflow on the shell root.
+    <div className="relative flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
         <span
           aria-hidden
@@ -258,7 +264,32 @@ export function AppPane({
 
       {alert}
 
-      <StatTiles stats={stats} pending={pending} unattributed={unattributed} />
+      <StatTiles
+        stats={stats}
+        pending={pending}
+        unattributed={unattributed}
+        // The Overview's jump (AG-572), with this pane's own destination: the
+        // Recent activity card, which is where this tool's savings show up
+        // request by request. `scrollIntoView` rather than a hash link, as on
+        // the Overview: a fragment in the URL of a window with no address bar.
+        //
+        // Offered on the Overview's terms (AG-883): only when the card has rows
+        // to land on. The card is the pane's last, so `block: "start"` pins the
+        // pane at its maximum scroll rather than putting the heading at the
+        // top, and with the feed empty, unread, still loading or never
+        // attributed to this tool, that is a jump to a heading over a sentence.
+        // `Stat` draws a plain tile when no handler is passed, so nothing
+        // offers a jump that would go nowhere.
+        onSelectTokensSaved={
+          eventsPending || unavailable?.events || unattributed || activity.length === 0
+            ? undefined
+            : () =>
+                document.getElementById(RECENT_ACTIVITY_SECTION_ID)?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                })
+        }
+      />
       <MessagesChart
         buckets={buckets}
         pending={pending}
@@ -797,7 +828,9 @@ function RecentActivity({
   /** See `AppPane`. */
 }) {
   return (
-    <Card className="p-4" busy={pending}>
+    // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
+    // own gutter above the heading, as the Overview's savings card does.
+    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
       <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Recent activity
       </h2>

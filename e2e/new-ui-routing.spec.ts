@@ -1395,27 +1395,27 @@ test.describe("new UI sidebar rail", () => {
     await expect(app.page.getByText(/These counts cover/)).toHaveCount(0);
   });
 
-  test("a band's eyebrow counts protected rows over rows", async ({ boot }) => {
+  test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // The eyebrow is the band now rather than a vendor, because a row is an app
-    // and labelling each row's own group would print every name twice. Read off
-    // the band's own counter rather than by text: both bands draw one.
-    const apps = app.page
-      .getByRole("heading", { name: "Apps", exact: true })
+    // The eyebrow is the group rather than the row, because a row is an app and
+    // labelling each row's own group would print every name twice. Groups are
+    // vendors since 2026-09-22 (Figma `440:1593`), so this reads OpenAI's.
+    const openai = app.page
+      .getByRole("heading", { name: "OpenAI", exact: true })
       .locator("xpath=following-sibling::span");
     // An exact count, and then the same count after a row moves. `/of \d+$/`
     // passes for "0 of 0", so it went green on a rail that drew no rows at all -
     // and a counter that never changes is not a counter.
-    // Two: Claude and ChatGPT / Codex, which the default catalog draws whether
-    // or not a tool is installed. OpenRouter used to make it three and now
-    // draws under Tools (AG-897) - it is a provider endpoint you point an app
-    // at, not an app the user launches.
-    await expect(apps).toHaveText("0 of 2");
+    // Two: ChatGPT / Codex and OpenAI API, which the default catalog draws
+    // whether or not a tool is installed. Under the old apps/tools split these
+    // were in different bands - the endpoint was a Tool - and grouping by
+    // vendor is what brings them together.
+    await expect(openai).toHaveText("0 of 2");
 
     await app.routeApp("ChatGPT / Codex");
 
-    await expect(apps).toHaveText("1 of 2");
+    await expect(openai).toHaveText("1 of 2");
   });
 
   test("the multi-provider tools each get a switch, under one band", async ({ boot }) => {
@@ -1466,12 +1466,26 @@ test.describe("new UI sidebar rail", () => {
     await expect(
       app.page.getByRole("switch", { name: "Terminal", exact: true }),
     ).toHaveCount(0);
-    // The headings are the two bands, and nothing else. Every earlier grouping
-    // this rail had - vendors, then clients, then a catch-all for whatever
-    // those could not place - is gone.
-    await expect(app.page.getByRole("heading", { name: "Tools", exact: true })).toBeVisible();
-    for (const gone of ["Other tools", "Experimental", "Any app on this machine"]) {
-      await expect(app.page.getByRole("heading", { name: gone })).toHaveCount(0);
+    // The headings are the three vendor groups, and nothing else. The rail has
+    // been regrouped more than once - vendors, then clients, then a catch-all,
+    // then the apps/tools bands - and the retired names must not linger.
+    // "Other apps" is design's wording for the catch-all, not the frame's
+    // "Other tools", which is why that one is still in the gone list.
+    await expect(
+      app.page.getByRole("heading", { name: "Other apps", exact: true }),
+    ).toBeVisible();
+    for (const gone of [
+      "Apps",
+      "Tools",
+      "Other tools",
+      "Experimental",
+      "Any app on this machine",
+    ]) {
+      // `exact`, because the default is substring: without it "Apps" matches
+      // the "Other apps" heading that is supposed to be there.
+      await expect(
+        app.page.getByRole("heading", { name: gone, exact: true }),
+      ).toHaveCount(0);
     }
   });
 });

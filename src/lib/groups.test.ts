@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./api";
-import type { Group, GroupMember } from "./groups";
+import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
   PROXY_REOPEN_ADVICE,
+  BAND_LABELS,
+  SECTIONS,
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
@@ -119,7 +121,7 @@ describe("buildGroups", () => {
       "anthropic",
       "claude-web",
     ]);
-    expect(groups[0].band).toBe("apps");
+    expect(groups[0].band).toBe("anthropic");
   });
 
   it("puts Codex and the ChatGPT app's surfaces on one switch", () => {
@@ -148,8 +150,16 @@ describe("buildGroups", () => {
       [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["Terminal", "OpenAI API"]);
-    expect(groups.every((g) => g.band === "tools")).toBe(true);
+    // Order follows `SECTIONS`, where `openai-api` now sits beside `chatgpt`
+    // so the OpenAI group's rows are contiguous. It used to be last in the
+    // array, which is what drew the group's header twice.
+    expect(groups.map((g) => g.name)).toEqual(["OpenAI API", "Terminal"]);
+    // Two rows, and since 2026-09-22 two different groups: grouping is by
+    // vendor, so the OpenAI host joins OpenAI while the environment channel
+    // has no vendor and falls to the catch-all. They used to share a band,
+    // which is what made "separate switches" the only thing this could assert;
+    // the separateness is the point either way.
+    expect(groups.map((g) => g.band)).toEqual(["openai", "other"]);
   });
 
   it("keeps a tool and a domain of the same slug in one section, both drawn", () => {
@@ -597,7 +607,7 @@ describe("cascadeTargets", () => {
   const group = (members: GroupMember[]): Group => ({
     id: "codex",
     name: "Codex",
-    band: "apps",
+    band: "anthropic",
     switchLabel: "Route Codex through Gate",
     members,
     routed: members.filter((m) => m.routed).length,
@@ -966,14 +976,22 @@ describe("settings-managed members", () => {
 });
 
 /**
- * AG-897. The rail's two bands ask different questions: an app the user
- * launches, or a mechanism they are opting into. OpenRouter is a destination
- * you point something else at, which is the second - its own description says
- * so, "Any app you have pointed at OpenRouter".
+ * Which group a section draws under.
+ *
+ * **This describe used to pin the opposite** and the history is worth keeping.
+ * AG-897 split the rail into two bands asking different questions - an app the
+ * user launches, or a mechanism they opt into - and filed both provider
+ * endpoints together under Tools on that reasoning.
+ *
+ * The Figma sidebar (`440:1593`) groups by vendor instead, and design confirmed
+ * it on 2026-09-22, so the file wins per CLAUDE.md. The casualty is AG-897's
+ * precedent: `openai` and `openrouter` are both provider endpoints and no
+ * longer share a group, because OpenAI has a vendor group to belong to and
+ * OpenRouter does not. That is a real loss of a distinction, made knowingly.
  */
-describe("which band a section draws under (AG-897)", () => {
+describe("which group a section draws under", () => {
   // `any-app`, which is what both provider-endpoint rows are: neither is one
-  // program's surface, which is the whole reason they are not apps.
+  // program's surface.
   const bandFor = (slug: string) =>
     buildGroups(
       [],
@@ -981,21 +999,59 @@ describe("which band a section draws under (AG-897)", () => {
       ON,
     ).find((g) => g.members.some((m) => m.key === slug))?.band;
 
-  it("files OpenRouter with the endpoints rather than the apps", () => {
-    expect(bandFor("openrouter")).toBe("tools");
+  it("files a row with no vendor group under the catch-all", () => {
+    // Design's answer on 2026-09-22 was "no OpenRouter group", so the frame's
+    // third group is dropped rather than interpreted - it is labelled
+    // `OPENCode` and contains OpenRouter, which is a slip no rule settles.
+    expect(bandFor("openrouter")).toBe("other");
   });
 
-  /** The precedent: a provider endpoint already sat under Tools. */
-  it("puts it in the same band as the other provider endpoint", () => {
-    expect(bandFor("openrouter")).toBe(bandFor("openai"));
+  it("files the OpenAI endpoint with the rest of OpenAI, not with the endpoints", () => {
+    // The AG-897 precedent inverted. Grouping by vendor puts `openai` beside
+    // Codex and ChatGPT; grouping by kind put it beside OpenRouter.
+    expect(bandFor("openai")).toBe("openai");
+    expect(bandFor("openai")).not.toBe(bandFor("openrouter"));
   });
 
-  it("leaves the apps the user launches where they were", () => {
+  it("files Anthropic's apps under Anthropic", () => {
     const groups = buildGroups(
       [tool("claude-code", "CLI", { kind: "connected" })],
       [domain(), sessionDomain()],
       ON,
     );
-    expect(groups[0].band).toBe("apps");
+    expect(groups[0].band).toBe("anthropic");
+  });
+
+  it("keeps each group's sections contiguous, or the rail draws it twice", () => {
+    // Not a style rule. `NewUiApp` and `TrayApp` both emit a group header on
+    // every CHANGE of band while walking sections in order, so a band that
+    // appears, stops, and appears again gets two headers with the same name
+    // and two counters that each count half the rows.
+    //
+    // Found by doing it: `openai-api` sat last in the array while `chatgpt`
+    // sat second, so regrouping by vendor drew "OpenAI" twice and a strict
+    // locator matched both. Ordering the array is the whole fix, which is
+    // exactly why it needs a test - nothing else makes the constraint visible
+    // at the point someone adds a section.
+    const bands = SECTIONS.map((section) => section.band);
+    const firstSeen = new Map<Band, number>();
+    bands.forEach((band, i) => {
+      if (!firstSeen.has(band)) firstSeen.set(band, i);
+    });
+    for (const [band, first] of firstSeen) {
+      const last = bands.lastIndexOf(band);
+      const run = bands.slice(first, last + 1);
+      expect(
+        run.every((b) => b === band),
+        `sections for "${band}" are interrupted by another group; order SECTIONS so each band is contiguous`,
+      ).toBe(true);
+    }
+  });
+
+  it("labels the three groups the way design named them", () => {
+    // "Other apps", which is design's wording, not the frame's "Other tools".
+    expect(BAND_LABELS.anthropic).toBe("Anthropic");
+    expect(BAND_LABELS.openai).toBe("OpenAI");
+    expect(BAND_LABELS.other).toBe("Other apps");
   });
 });
