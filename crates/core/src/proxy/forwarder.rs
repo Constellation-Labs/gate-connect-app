@@ -46,17 +46,55 @@ fn token_path() -> Result<PathBuf> {
 /// it to go: the marker is present. [`stop`] is the only thing that removes
 /// it, so a `false` here after an enable means "the user asked Gate to let go
 /// of this machine", which is exactly what a supervisor must not undo.
-pub(crate) fn wanted() -> bool {
+///
+/// Only ever read under [`ENSURE_LOCK`], by [`ensure_running_supervised`].
+/// Read outside it the answer is worth nothing: a `stop` landing between the
+/// question and the marker write that follows would be overwritten by the
+/// answer.
+fn wanted() -> bool {
     marker_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-/// Serialises [`ensure_running`] within this process. Two callers racing on a
-/// dead forwarder would both fail the health check and both spawn; the second
-/// binds a fresh port and overwrites the port file under the first, leaving
-/// two forwarders resident and the PAC and the exported variables naming
-/// different ports. The manager's watcher runs it on a timer and `enable`
-/// runs it under a different lock, so the two can meet here.
+/// Serialises every write to the marker, the forwarder process and (on macOS)
+/// the launch agent. Two callers racing on a dead forwarder would both fail
+/// the health check and both spawn; the second binds a fresh port and
+/// overwrites the port file under the first, leaving two forwarders resident
+/// and the PAC and the exported variables naming different ports. The
+/// manager's watcher runs an ensure on a timer, `enable` runs one under a
+/// different lock, and [`stop`] tears the same state down, so all three can
+/// meet here.
+///
+/// Held across a spawn and its answer-poll, so an ensure can own it for
+/// [`SPAWN_TIMEOUT`] (twice that on macOS, where the launch agent is tried
+/// first). Two consequences worth knowing rather than fixing: a `stop` on the
+/// quit path waits that long in the worst case, which is the price of it being
+/// airtight, and a user-facing `enable` can wait behind a supervisory pass
+/// that is mid-spawn. The reverse cannot happen, because a supervisor takes
+/// this lock with `try_lock` and skips its pass instead of queueing.
+///
+/// **Within this process only.** The CLI reaches `ensure_running` through
+/// `tool_proxy_url` from a process of its own, so the two-forwarders race
+/// above is still open across processes; `bind_preferred` keeps them on
+/// distinct ports, so the cost is one orphaned forwarder on a port nothing
+/// names until the marker goes. Closing it needs a cross-platform file lock
+/// (`proxy::flock` is Linux-only, and this subsystem is not), which is not
+/// worth it for a window that needs the app and the CLI to start an ensure in
+/// the same few seconds.
 static ENSURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What one supervisory pass found. See [`ensure_running_supervised`].
+pub(crate) enum Supervision {
+    /// Another caller is already inside an ensure, so this pass did nothing
+    /// and does not need to: that caller's work covers this moment.
+    Busy,
+    /// Nobody wants a forwarder, because [`stop`] retired the marker. Leaving
+    /// it retired is the whole reason a supervisor asks.
+    NotWanted,
+    /// A forwarder is answering on this port, found or freshly started.
+    Running(u16),
+    /// One is wanted and could not be started.
+    Failed(anyhow::Error),
+}
 
 /// The port the forwarder last bound, if it has ever run.
 pub(crate) fn persisted_port() -> Option<u16> {
@@ -332,6 +370,37 @@ pub(crate) fn ensure_running() -> Result<u16> {
     let _serial = ENSURE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_running_locked()
+}
+
+/// [`ensure_running`] for a supervisor rather than for a caller who is about
+/// to write the port somewhere.
+///
+/// Two differences, both about not getting in the way of the user. It gives up
+/// rather than queueing when another caller is already inside an ensure, so a
+/// periodic pass can never be the reason an enable waits. And it reads the
+/// marker *under* [`ENSURE_LOCK`], together with the write that follows, so a
+/// [`stop`] cannot land between the two: without that, a pass that had already
+/// asked "is one wanted?" went on to recreate the marker, the process and (on
+/// macOS) the launch agent after the user had asked Gate to let go of this
+/// machine.
+pub(crate) fn ensure_running_supervised() -> Supervision {
+    let _serial = match ENSURE_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return Supervision::Busy,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+    };
+    if !wanted() {
+        return Supervision::NotWanted;
+    }
+    match ensure_running_locked() {
+        Ok(port) => Supervision::Running(port),
+        Err(e) => Supervision::Failed(e),
+    }
+}
+
+/// The body of an ensure. Callers hold [`ENSURE_LOCK`].
+fn ensure_running_locked() -> Result<u16> {
     let marker = marker_path()?;
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -425,8 +494,16 @@ fn await_health(port: u16, token: &str) -> bool {
 /// Best-effort and promptless. Deliberately *not* called from `disable`: a
 /// forwarder that went away when routing was switched off would strand exactly
 /// the processes it exists to protect. The callers are the explicit "Gate
-/// should let go of this machine" paths - signing out and untrusting the CA.
+/// should let go of this machine" paths - signing out, untrusting the CA, and
+/// the quit that disconnects the tools.
+///
+/// Takes [`ENSURE_LOCK`] so it cannot interleave with an ensure, which would
+/// otherwise write the marker back moments after this removed it. That means
+/// waiting out an ensure that is mid-spawn; see the lock's own documentation.
 pub fn stop() {
+    let _serial = ENSURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Ok(path) = marker_path() {
         let _ = std::fs::remove_file(path);
     }

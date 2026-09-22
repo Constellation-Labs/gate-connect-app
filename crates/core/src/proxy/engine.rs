@@ -2041,8 +2041,35 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
 /// the user's prior `upstream` proxy when there is one: on a network that only
 /// lets traffic out through that proxy, `DIRECT` would fail exactly where the
 /// fallback is meant to keep working.
+/// Whether `authority` is safe to interpolate into the PAC as a proxy address.
+///
+/// The PAC is JavaScript we build by hand, and this string is the one part of
+/// it that comes from outside: the user's prior system proxy, which on Windows
+/// is an `HKCU` value any process running as them can write and on macOS comes
+/// back from `networksetup`. A value carrying a quote, a backslash or a newline
+/// would close the string literal it lands in, and a semicolon would append a
+/// proxy entry of its own.
+///
+/// An allowlist rather than a denylist, because the grammar is small: a proxy
+/// authority is a host and an optional port, so letters, digits, `.`, `-`, `_`,
+/// `:` and the brackets of an IPv6 literal are all it can legitimately contain.
+/// Anything else is not an address, so treating it as "no upstream proxy" loses
+/// nothing that was going to work.
+///
+/// Whoever can set the system proxy already decides where the browser's traffic
+/// goes, so this is not the only thing standing between them and the user. It
+/// is here because a string from outside should not reach a script we generate.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn pac_safe_authority(authority: &str) -> bool {
+    !authority.is_empty()
+        && authority
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'))
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) -> String {
+    let upstream = upstream.filter(|u| pac_safe_authority(u));
     let mut s = String::from("function FindProxyForURL(url, host) {\n");
     s.push_str("  var h = host.toLowerCase();\n");
     let fallback = match upstream {
@@ -3392,6 +3419,48 @@ mod tests {
             .trim_end()
             .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
     }
+    /// The upstream proxy is the one part of the PAC that comes from outside
+    /// this process. A value that could close the JavaScript string it lands
+    /// in, or append a proxy entry of its own, is not an address at all, so it
+    /// is dropped rather than escaped.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn a_prior_proxy_that_is_not_an_address_is_dropped_rather_than_interpolated() {
+        let domains = vec![ProxyDomain {
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            hosts: vec!["api.anthropic.com".into()],
+            upstream_url: "https://api.anthropic.com".into(),
+            rewrite_prefixes: vec!["/v1/".into()],
+            passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
+            enabled: true,
+            supported: true,
+        }];
+
+        for hostile in [
+            r#"evil.com"; alert(1); var x = ""#,
+            "evil.com\nvar x = 1",
+            "proxy.corp.com:8080; DIRECT",
+            "proxy.corp.com:8080 SOCKS evil.com:1080",
+            r"evil\u0022.com",
+        ] {
+            let pac = pac_script(&domains, 8123, Some(hostile));
+            assert!(
+                !pac.contains("evil") && !pac.contains("alert"),
+                "{hostile:?} reached the script"
+            );
+            // Dropped means "no prior proxy", which is the PAC this machine
+            // would have had if the value had never been set.
+            assert!(pac.contains("return \"PROXY 127.0.0.1:8123; DIRECT\";"));
+            assert!(pac.trim_end().ends_with("return \"DIRECT\";\n}"));
+        }
+
+        // An IPv6 literal is an address, and must survive.
+        let pac = pac_script(&domains, 8123, Some("[fe80::1]:8080"));
+        assert!(pac.contains("return \"PROXY [fe80::1]:8080\";"));
+    }
+
     /// HTTP/2 lets a client split its cookies across several `cookie` fields
     /// and nothing in the stack joins them for us, so reading only the first
     /// one dropped the rest of the jar on every injected turn - including,

@@ -119,8 +119,8 @@ goes direct when it is not. Two consequences are new and recorded here:
   for minutes after it is back. The manager therefore re-checks it every 30s
   while it hosts an engine (`DesktopManager::forwarder_tick`), restarts one
   that has died, re-exports the variables if it came back on another port, and
-  reports the outcome as `ProxyState.forwarder_answering` so the tray can say
-  that routing is on and nothing is being routed. Accepted on the same ground
+  reports the outcome as `ProxyState.forwarder_answering`, which is what lets
+  Home's routing line say that routing is on and nothing is being routed. Accepted on the same ground
   as the rest of this section: the exposure is unrouted traffic, not spend.
 
 **It fronts tool configurations as well as the variables now.** This section

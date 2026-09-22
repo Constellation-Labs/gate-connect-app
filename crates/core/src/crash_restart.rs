@@ -8,7 +8,11 @@
 //! browser that refetches the PAC and finds its port dead goes DIRECT itself
 //! (`proxy::forwarder`, `engine::pac_script`). Before the forwarder fronted
 //! them, the exported variables and the config-routed tools named the engine's
-//! own port and failed closed instead.
+//! own port and failed closed instead - which is still what happens on a
+//! machine where the forwarder would not start, because both channels then
+//! fall back to that same port. So a triage that finds command-line tools
+//! failing closed after a crash should check whether there is a forwarder at
+//! all before looking anywhere else.
 //!
 //! All of that heals at the next launch
 //! ([`crate::proxy::ProxyManager::reconcile_on_startup`]), so the whole problem

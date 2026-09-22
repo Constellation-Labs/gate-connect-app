@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use super::forwarder::Supervision;
 use super::{config, engine, ProxyDomain, ProxyState};
 use crate::account;
 use crate::audit;
@@ -84,10 +85,11 @@ pub trait DesktopOps: Send + Sync + 'static {
     /// machine-wide variables should name. Behind the seam because it spawns a
     /// process, which no unit test should do.
     fn ensure_env_forwarder(&self) -> Result<u16>;
-    /// Whether a forwarder is still wanted: something asked for one and
-    /// nothing has since asked for it to go. The watcher reads this before
-    /// each ensure, so a deliberate stop is not undone by the next tick.
-    fn env_forwarder_wanted(&self) -> bool;
+    /// One supervisory pass at the forwarder: ensure one is running, unless
+    /// another caller is already inside an ensure, or nobody wants one any
+    /// more. Behind the seam for the same reason as `ensure_env_forwarder`,
+    /// and separate from it because this is the only one allowed to decline.
+    fn supervise_env_forwarder(&self) -> Supervision;
     /// Ask a running forwarder to exit. Only for the explicit "Gate should let
     /// go of this machine" paths - never for a plain disable, which is exactly
     /// when the processes it protects still need it.
@@ -180,11 +182,19 @@ pub struct DesktopManager<O: DesktopOps> {
     ///
     /// [`forwarder_tick`]: Self::forwarder_tick
     forwarder_answering: AtomicU8,
-    /// The port the machine-wide variables were last told to name, or 0 when
-    /// they have not been exported this session. The watcher compares the
-    /// forwarder's port against it so a forwarder that came back on a fresh
-    /// port (its old one squatted, or the persisted file lost) reaches the
-    /// variables and not only the PAC.
+    /// The port *this manager* last told the machine-wide variables to name,
+    /// or 0 when it has not exported them this session. The watcher compares
+    /// the forwarder's port against it so a forwarder that came back on a
+    /// fresh port (its old one squatted, or the persisted file lost) reaches
+    /// the variables and not only the PAC.
+    ///
+    /// Deliberately not "what the variables say": the Settings switch exports
+    /// through `proxy::set_env_export`, which has no manager handle, so after
+    /// an opt-in there this reads 0 and the next pass re-exports once
+    /// redundantly. That costs one `launchctl setenv` (or one registry write
+    /// and a settings broadcast) and cannot lose the user's prior values,
+    /// because `proxy_env::snapshot_prior` refuses to re-record over a
+    /// snapshot that already exists.
     exported_port: AtomicU16,
 }
 
@@ -1089,19 +1099,22 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// should stop, which it does under the same lock acquisition that saw the
     /// engine gone (the reasoning is in `spawn_domain_watcher`).
     ///
-    /// Skipped, but not retired, while the forwarder is not wanted: the marker
-    /// goes only when a "let Gate go of this machine" path called
-    /// `forwarder::stop`, and the quit-with-disconnect path does that while
-    /// the engine is still hosted, so an ensure here would recreate the marker
-    /// and respawn the process the user just asked to be rid of.
+    /// The pass itself is `forwarder::ensure_running_supervised`, which
+    /// differs from the ensure `enable` runs in the two ways a supervisor
+    /// needs. It declines when another caller is already inside an ensure, so
+    /// a timer can never be why a user-facing toggle waits. And it decides
+    /// "is one still wanted?" under the same lock as the write that follows,
+    /// so a pass cannot resurrect a forwarder that `forwarder::stop` retired
+    /// while an engine was still hosted, which the quit-with-disconnect path
+    /// does.
     ///
-    /// `ensure_env_forwarder` is idempotent: a live one answers its health
-    /// check and is reused, a dead one is replaced. The replacement normally
-    /// rebinds the persisted port, so the addresses everything holds keep
-    /// working unchanged. When it cannot (the port squatted, the file lost)
-    /// the PAC is repointed here and the variables are re-exported; the three
-    /// tool configs that name the forwarder read as drifted against the new
-    /// port file and are repaired by the shell's next reconcile pass
+    /// The ensure is idempotent: a live forwarder answers its health check and
+    /// is reused, a dead one is replaced. The replacement normally rebinds the
+    /// persisted port, so the addresses everything holds keep working
+    /// unchanged. When it cannot (the port squatted, the file lost) the PAC is
+    /// repointed here and the variables are re-exported; the three tool
+    /// configs that name the forwarder read as drifted against the new port
+    /// file and are repaired by the shell's next reconcile pass
     /// (`provider::reconcile_enabled`, on focus and at startup).
     ///
     /// Logs on transitions only, and records the outcome for `status`, which
@@ -1114,15 +1127,24 @@ impl<O: DesktopOps> DesktopManager<O> {
                 return false;
             }
         }
-        if !self.ops.env_forwarder_wanted() {
-            return true;
-        }
         let was_answering = self.forwarder_answering.load(Ordering::SeqCst) == FORWARDER_ANSWERING;
-        // Not under the lock: on a dead forwarder this spawns a process and
-        // waits for it to answer, and a user-facing toggle must not queue
+        // Not under the engine lock: on a dead forwarder this spawns a process
+        // and waits for it to answer, and a user-facing toggle must not queue
         // behind that.
-        match self.ops.ensure_env_forwarder() {
-            Ok(port) => {
+        match self.ops.supervise_env_forwarder() {
+            // Someone else is doing this work right now. Saying anything about
+            // the forwarder's health from here would be a guess about a state
+            // that is mid-change.
+            Supervision::Busy => {}
+            // Retired on purpose. Back to unknown rather than silent: "Gate was
+            // asked to let go of this machine" is not the same claim as "the
+            // forwarder died", and the UI's fallback count is the honest
+            // answer once it is true.
+            Supervision::NotWanted => {
+                self.forwarder_answering
+                    .store(FORWARDER_UNKNOWN, Ordering::SeqCst);
+            }
+            Supervision::Running(port) => {
                 if !was_answering {
                     eprintln!(
                         "gate proxy: the environment forwarder is answering again on \
@@ -1131,16 +1153,21 @@ impl<O: DesktopOps> DesktopManager<O> {
                 }
                 self.forwarder_answering
                     .store(FORWARDER_ANSWERING, Ordering::SeqCst);
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
-                if let Some(running) = self
-                    .engine
-                    .lock()
-                    .expect("proxy engine mutex poisoned")
-                    .as_ref()
-                {
-                    running.set_pac_target(port);
-                }
-                if crate::proxy::env_export_opted_in()
+                // Both repoints behind one re-check of the engine, because a
+                // `disable` can land inside the ensure above: it withdraws the
+                // variables on its way out, and putting them back afterwards
+                // would leave `HTTPS_PROXY` set with routing off. The lock is
+                // dropped before the export, which shells out.
+                let still_hosted = {
+                    let guard = self.engine.lock().expect("proxy engine mutex poisoned");
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if let Some(running) = guard.as_ref() {
+                        running.set_pac_target(port);
+                    }
+                    guard.is_some()
+                };
+                if still_hosted
+                    && crate::proxy::env_export_opted_in()
                     && self.exported_port.load(Ordering::SeqCst) != port
                 {
                     match self.ops.enable_env(port) {
@@ -1152,7 +1179,7 @@ impl<O: DesktopOps> DesktopManager<O> {
                     }
                 }
             }
-            Err(e) => {
+            Supervision::Failed(e) => {
                 if was_answering {
                     eprintln!(
                         "gate proxy: the environment forwarder stopped answering and could \
@@ -1208,6 +1235,8 @@ mod tests {
         forwarder_binds: u16,
         /// Model `forwarder::stop` having run: the marker is gone.
         forwarder_stopped: bool,
+        /// Model another caller already being inside an ensure.
+        forwarder_busy: bool,
         /// The port `enable_env` was actually told to export.
         exported_port: Option<u16>,
     }
@@ -1368,8 +1397,20 @@ mod tests {
             Ok(port)
         }
 
-        fn env_forwarder_wanted(&self) -> bool {
-            !self.0.lock().unwrap().forwarder_stopped
+        fn supervise_env_forwarder(&self) -> Supervision {
+            {
+                let s = self.0.lock().unwrap();
+                if s.forwarder_busy {
+                    return Supervision::Busy;
+                }
+                if s.forwarder_stopped {
+                    return Supervision::NotWanted;
+                }
+            }
+            match self.ensure_env_forwarder() {
+                Ok(port) => Supervision::Running(port),
+                Err(e) => Supervision::Failed(e),
+            }
         }
 
         fn stop_env_forwarder(&self) {
@@ -1870,6 +1911,37 @@ mod tests {
         mgr.disable().expect("disable");
         assert!(!mgr.forwarder_tick(), "retires once the engine is parked");
         assert!(!mgr.forwarder_watcher_alive.load(Ordering::SeqCst));
+        // The thread `enable` spawned is still in its first sleep, so the flag
+        // this just cleared no longer means "exactly one watcher is alive" for
+        // this manager. Harmless while the test ends here; a re-enable added
+        // below this line would start a second watcher.
+        mgr.stop_dormant();
+    }
+
+    /// A pass that finds another caller already inside an ensure does nothing
+    /// and says nothing. Reporting health from here would be a guess about a
+    /// state that is mid-change, and re-running the ensure is what the lock
+    /// exists to prevent.
+    #[test]
+    fn the_forwarder_tick_stands_aside_for_an_ensure_already_running() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        mgr.ops.0.lock().unwrap().forwarder_busy = true;
+        assert!(mgr.forwarder_tick(), "still watching");
+        assert_eq!(
+            mgr.ops.count("ensure_env_forwarder"),
+            1,
+            "only the enable's; the pass declined rather than queueing"
+        );
+        assert_eq!(
+            mgr.status().unwrap().forwarder_answering,
+            Some(true),
+            "and left the last known state alone"
+        );
+
+        mgr.disable().expect("disable");
         mgr.stop_dormant();
     }
 
@@ -1965,6 +2037,11 @@ mod tests {
             1,
             "only the enable's; the tick did not resurrect it"
         );
+        // And stops claiming one is answering. The quit that retires the
+        // forwarder can leave the user back on Home if the quit itself fails,
+        // and "8 of 8 routing" over a forwarder nobody intends to restart is
+        // the report this field exists to prevent.
+        assert_eq!(mgr.status().unwrap().forwarder_answering, None);
 
         mgr.disable().expect("disable");
         mgr.stop_dormant();
@@ -1989,6 +2066,12 @@ mod tests {
             state.port,
             "and falls back to the engine's own port, which is what shipped \
              before there was a forwarder"
+        );
+        assert_eq!(
+            state.forwarder_answering,
+            Some(false),
+            "and says so, because every address it just wrote falls back to \
+             direct the moment the engine goes"
         );
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {

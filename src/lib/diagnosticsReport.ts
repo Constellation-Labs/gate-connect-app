@@ -245,7 +245,10 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     // The sidecar the PAC and HTTPS_PROXY name. Silent when this process is not
     // the one watching it; loud when routing is on and it is not answering,
     // because that is "everything says Connected and nothing is routed".
-    if (proxy.forwarder_answering !== null) {
+    // `!= null` rather than `!== null`: an older backend serializes no field
+    // at all, and printing "NOT ANSWERING" at a machine nobody measured is the
+    // worst thing this file can do to a support thread.
+    if (proxy.forwarder_answering != null) {
       lines.push(row("forwarder", proxy.forwarder_answering ? "answering" : "NOT ANSWERING"));
     }
   }

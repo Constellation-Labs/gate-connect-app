@@ -268,6 +268,16 @@ describe("Home master toggle", () => {
   it("keeps the count when the forwarder state is unknown or fine", () => {
     renderHome({ forwarderAnswering: true, domains: [makeDomain()] });
     expect(screen.getByText("On · 1 of 1 routing")).toBeTruthy();
+    cleanup();
+    // null is the answer on Linux and from any process that is not hosting the
+    // engine: nothing was measured, so the count stands rather than a fault.
+    renderHome({ forwarderAnswering: null, domains: [makeDomain()] });
+    expect(screen.getByText("On · 1 of 1 routing")).toBeTruthy();
+  });
+
+  it("does not raise a forwarder fault when there is nothing to route", () => {
+    renderHome({ forwarderAnswering: false, domains: [], tools: [] });
+    expect(screen.queryByText("On · forwarder not answering, going direct")).toBeNull();
   });
 });
 
