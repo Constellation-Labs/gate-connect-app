@@ -120,6 +120,10 @@ impl DesktopOps for OsOps {
         crate::proxy::env_export_port()
     }
 
+    fn env_forwarder_wanted(&self) -> bool {
+        crate::proxy::forwarder::wanted()
+    }
+
     fn stop_env_forwarder(&self) {
         crate::proxy::forwarder::stop()
     }

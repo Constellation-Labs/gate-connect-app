@@ -3,13 +3,14 @@
 //! The exit-time revert (`RunEvent::Exit` -> `ProxyManager::disable_quiet`) is
 //! the only thing that puts the system proxy back on macOS and Windows, and an
 //! abort skips it: the process is gone before any handler runs. What is left
-//! behind fails in two directions at once. Graphical apps fail open, because the
-//! stale PAC points at a dead port, the fetch is refused and the OS falls back
-//! to DIRECT - working, silently unrouted. Command-line tools fail closed,
-//! because the exported `HTTPS_PROXY` and the config-routed tools name a port
-//! nothing is listening on.
+//! behind fails open, silently unrouted: the PAC and the exported `HTTPS_PROXY`
+//! both name the forwarder, which goes direct once the engine is gone, and a
+//! browser that refetches the PAC and finds its port dead goes DIRECT itself
+//! (`proxy::forwarder`, `engine::pac_script`). Before the forwarder fronted
+//! them, the exported variables and the config-routed tools named the engine's
+//! own port and failed closed instead.
 //!
-//! Every one of those heals at the next launch
+//! All of that heals at the next launch
 //! ([`crate::proxy::ProxyManager::reconcile_on_startup`]), so the whole problem
 //! is the length of the gap. [`crate::proxy::autostart_optout`] already shortens
 //! it to the next boot by keeping a login item registered across the crash
@@ -31,8 +32,11 @@
 //! the give-up policy live here.
 //!
 //! **Windows** has no file to edit: the shell asks Windows Error Reporting
-//! directly via `RegisterApplicationRestart`. Only [`record_start`] and
-//! [`record_clean_exit`] are shared with that path.
+//! directly via `RegisterApplicationRestart`. WER honours it for an unhandled
+//! exception or a hang and for nothing else; Task Manager and `taskkill` go
+//! through `TerminateProcess`, which WER never sees, so a deliberate kill stays
+//! dead here too. Only [`record_start`] and [`record_clean_exit`] are shared
+//! with that path.
 //!
 //! **Linux** uses none of this. The engine there is a detached helper daemon
 //! that outlives the GUI and drops to pass-through, so a GUI crash strands

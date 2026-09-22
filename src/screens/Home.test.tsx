@@ -111,6 +111,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       envExportSeparable={true}
       envExportOn={true}
       onToggleEnvExport={vi.fn()}
+      forwarderAnswering={null}
       {...props}
     />,
   );
@@ -250,6 +251,23 @@ describe("Home master toggle", () => {
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
+  });
+
+  it("says nothing is routed when the forwarder is not answering", () => {
+    renderHome({
+      forwarderAnswering: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    // Every address falls back to direct when the forwarder is gone, so the
+    // "2 of 2 routing" the count would print here is the wrong answer.
+    expect(screen.getByText("On · forwarder not answering, going direct")).toBeTruthy();
+    expect(screen.queryByText("On · 2 of 2 routing")).toBeNull();
+  });
+
+  it("keeps the count when the forwarder state is unknown or fine", () => {
+    renderHome({ forwarderAnswering: true, domains: [makeDomain()] });
+    expect(screen.getByText("On · 1 of 1 routing")).toBeTruthy();
   });
 });
 

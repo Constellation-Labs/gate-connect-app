@@ -19,7 +19,7 @@
 //! The CA is left trusted across disable so re-enabling is promptless;
 //! removing it is a separate explicit action ([`DesktopManager::untrust_ca`]).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -84,6 +84,10 @@ pub trait DesktopOps: Send + Sync + 'static {
     /// machine-wide variables should name. Behind the seam because it spawns a
     /// process, which no unit test should do.
     fn ensure_env_forwarder(&self) -> Result<u16>;
+    /// Whether a forwarder is still wanted: something asked for one and
+    /// nothing has since asked for it to go. The watcher reads this before
+    /// each ensure, so a deliberate stop is not undone by the next tick.
+    fn env_forwarder_wanted(&self) -> bool;
     /// Ask a running forwarder to exit. Only for the explicit "Gate should let
     /// go of this machine" paths - never for a plain disable, which is exactly
     /// when the processes it protects still need it.
@@ -106,6 +110,22 @@ pub trait DesktopOps: Send + Sync + 'static {
 /// is a human action, so a second's latency is imperceptible; the cost is one
 /// `stat` per tick against a file in the app-support dir.
 const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// How often the forwarder watcher asks whether the forwarder still answers.
+/// Its port is what the PAC, the exported variables and three tool configs
+/// name, so a forwarder that has died leaves every one of them falling back to
+/// direct until something starts it again. A tick on a healthy forwarder costs
+/// one marker-file write, one read of the forwarder's token *file* and one
+/// loopback probe (`forwarder::ensure_running`); no secret is read, so it is
+/// safe on a timer (see `keychain::get_cached` for why that matters).
+const FORWARDER_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// [`DesktopManager::forwarder_answering`] values: nothing has asked yet.
+const FORWARDER_UNKNOWN: u8 = 0;
+/// The last ensure found or started a forwarder that answered.
+const FORWARDER_ANSWERING: u8 = 1;
+/// The last ensure could neither find nor start one.
+const FORWARDER_SILENT: u8 = 2;
 
 /// What a teardown does with the engine this process is hosting.
 ///
@@ -149,6 +169,23 @@ pub struct DesktopManager<O: DesktopOps> {
     /// stack them. Per-instance (not a process static) so tests can build
     /// managers side by side.
     watcher_alive: AtomicBool,
+    /// Same, for the forwarder watcher ([`spawn_forwarder_watcher`]).
+    ///
+    /// [`spawn_forwarder_watcher`]: Self::spawn_forwarder_watcher
+    forwarder_watcher_alive: AtomicBool,
+    /// What the last `ensure_env_forwarder` found, one of the `FORWARDER_*`
+    /// constants. Written by `enable` and [`forwarder_tick`], read by `status`
+    /// so the UI can show routing degraded - the crash fail-safe makes an
+    /// engine death visible, and this is the forwarder's only equivalent.
+    ///
+    /// [`forwarder_tick`]: Self::forwarder_tick
+    forwarder_answering: AtomicU8,
+    /// The port the machine-wide variables were last told to name, or 0 when
+    /// they have not been exported this session. The watcher compares the
+    /// forwarder's port against it so a forwarder that came back on a fresh
+    /// port (its old one squatted, or the persisted file lost) reaches the
+    /// variables and not only the PAC.
+    exported_port: AtomicU16,
 }
 
 impl<O: DesktopOps> DesktopManager<O> {
@@ -158,6 +195,9 @@ impl<O: DesktopOps> DesktopManager<O> {
             engine: Mutex::new(None),
             dormant: Mutex::new(None),
             watcher_alive: AtomicBool::new(false),
+            forwarder_watcher_alive: AtomicBool::new(false),
+            forwarder_answering: AtomicU8::new(FORWARDER_UNKNOWN),
+            exported_port: AtomicU16::new(0),
         }
     }
 
@@ -253,6 +293,16 @@ impl<O: DesktopOps> DesktopManager<O> {
         // The ports come from the same files the hosting process wrote, so a
         // cross-process status names the engine that is actually serving
         // rather than the one this process would have started.
+        // Only the hosting process watches the forwarder, so only it can say.
+        let forwarder_answering = if port.is_some() {
+            match self.forwarder_answering.load(Ordering::SeqCst) {
+                FORWARDER_ANSWERING => Some(true),
+                FORWARDER_SILENT => Some(false),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let (port, pac_port) = match port {
             Some(_) => (port, pac_port),
             None => match self.ops.engine_hosted_elsewhere() {
@@ -267,6 +317,7 @@ impl<O: DesktopOps> DesktopManager<O> {
             ca_trusted: self.ops.ca_is_trusted()?,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            forwarder_answering,
             domains: config::load_domains()?,
         })
     }
@@ -430,7 +481,53 @@ impl<O: DesktopOps> DesktopManager<O> {
         // configs stay valid (best-effort).
         let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
 
-        // Point the system proxy at the engine's loopback PAC. Promptless.
+        // Start the forwarder before anything can fetch the PAC, and hand its
+        // port to both channels that outlive this process: the PAC and,
+        // unless the user declined, the machine-wide variables. Browsers cache
+        // the PAC they fetched, and they fetch it exactly when the system
+        // proxy setting changes below - so the first body served has to be the
+        // one they should keep. Every shell already running keeps the exported
+        // variable for its whole life too; `launchctl unsetenv` and the
+        // registry write beside it only reach processes started afterwards.
+        // So the address either one carries has to keep answering after the
+        // engine goes away, or routing off (or a crash) becomes "no provider
+        // is reachable" for every already-running tool and every open browser.
+        // The forwarder does: it hands connections to the engine while there
+        // is one and goes direct when there is not. See `proxy::forwarder`.
+        //
+        // It needs nothing from the system proxy and finds the engine through
+        // the port file `persist_ports` wrote above, so this can run first.
+        // Falling back to the engine's own port if it will not start: that is
+        // exactly what shipped before there was a forwarder, so a forwarder
+        // problem costs the fail-open property and nothing else.
+        let forwarder_port = match self.ops.ensure_env_forwarder() {
+            Ok(port) => Some(port),
+            Err(e) => {
+                eprintln!(
+                    "gate proxy: could not start the environment forwarder ({e}); the PAC and \
+                     the exported variables name the engine port instead, so browsers and \
+                     tools will lose connectivity when routing is switched off until they \
+                     are restarted"
+                );
+                None
+            }
+        };
+        self.forwarder_answering.store(
+            if forwarder_port.is_some() {
+                FORWARDER_ANSWERING
+            } else {
+                FORWARDER_SILENT
+            },
+            Ordering::SeqCst,
+        );
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(port) = forwarder_port {
+            running.set_pac_target(port);
+        }
+
+        // Point the system proxy at the engine's loopback PAC. Promptless. A
+        // failure here leaves the forwarder running, which is fine: it is
+        // built to outlive every process that started it.
         if let Err(e) = self.ops.point_system_proxy_at(&running) {
             running.stop();
             let _ = self.ops.clear_snapshot();
@@ -446,50 +543,15 @@ impl<O: DesktopOps> DesktopManager<O> {
         // here. Deliberately best-effort: an export failure must not take
         // routing down for everything that *does* follow the PAC, so it degrades
         // to "GUI apps routed, CLI tools not" rather than to "enable failed".
+        self.exported_port.store(0, Ordering::SeqCst);
         if crate::proxy::env_export_opted_in() {
-            // Export the *forwarder's* port, not the engine's. The variables
-            // outlive every process that reads them - `launchctl unsetenv`
-            // cannot reach a running one - so the address they name has to be
-            // one that keeps answering after the engine goes away, or routing
-            // off becomes "no provider is reachable" for every already-running
-            // tool. See `proxy::forwarder`.
-            //
-            // Falling back to the engine's own port if the forwarder will not
-            // start: that is exactly today's behaviour, so a forwarder problem
-            // costs the fail-open property and nothing else.
-            let env_port = match self.ops.ensure_env_forwarder() {
-                Ok(port) => port,
-                Err(e) => {
-                    eprintln!(
-                        "gate proxy: could not start the environment forwarder ({e}); exporting \
-                         the engine port instead, so tools will lose connectivity when routing \
-                         is switched off until they are restarted"
-                    );
-                    running.port()
-                }
-            };
-            if let Err(e) = self.ops.enable_env(env_port) {
-                eprintln!(
+            let env_port = forwarder_port.unwrap_or_else(|| running.port());
+            match self.ops.enable_env(env_port) {
+                Ok(()) => self.exported_port.store(env_port, Ordering::SeqCst),
+                Err(e) => eprintln!(
                     "gate proxy: could not export proxy environment variables ({e}); GUI apps \
                      still route through Gate, but CLI tools that read HTTPS_PROXY will not"
-                );
-            }
-        } else if crate::proxy::forwarder_port_persisted() {
-            // The machine-wide export is declined, but the forwarder may still
-            // be named by something: `tool_proxy_url` writes its address into
-            // Claude Code's, OpenClaw's and Hermes's own configs, and those
-            // files outlive the process. The forwarder does not - it goes at
-            // logout - and nothing else here would start it again, so those
-            // tools would come back pointed at a port with nothing behind it
-            // while the engine is up. Ensuring it is idempotent (a live one
-            // answers its health check and is reused), and a failure is not
-            // fatal: `address_health` reads the dead address and the tools say
-            // so instead of reporting Connected over it.
-            if let Err(e) = self.ops.ensure_env_forwarder() {
-                eprintln!(
-                    "gate proxy: could not start the environment forwarder ({e}); tool configs \
-                     that name it cannot reach their providers until it starts"
-                );
+                ),
             }
         }
 
@@ -497,6 +559,9 @@ impl<O: DesktopOps> DesktopManager<O> {
         // The engine now has whatever the config said at startup. Keep it in
         // step with writes made by *other* processes for as long as it runs.
         self.spawn_domain_watcher();
+        // And keep the forwarder answering for as long as it runs: every
+        // address written above depends on that.
+        self.spawn_forwarder_watcher();
 
         // The crash fail-safe defers while we hold the lock; if the engine
         // died somewhere in this sequence, revert here instead of leaving
@@ -990,6 +1055,117 @@ impl<O: DesktopOps> DesktopManager<O> {
             }
         });
     }
+
+    /// Keep the forwarder answering for as long as this process hosts a
+    /// routing engine.
+    ///
+    /// Nothing else supervises it. It is spawned detached so that it outlives
+    /// the app, which also means no OS facility restarts it, and until this
+    /// existed the only things that started one were an enable and a tool
+    /// config write. A forwarder killed in Task Manager, or taken down with
+    /// the app by an "End task" on the process tree, stayed dead until the
+    /// next relaunch while the tray said Connected - and every address that
+    /// named it fell back to direct with nothing on screen saying so.
+    ///
+    /// Same shape as [`spawn_domain_watcher`](Self::spawn_domain_watcher): one
+    /// per manager, spawned under the engine lock, retiring under the lock
+    /// acquisition that sees the engine gone. While routing is off the
+    /// forwarder is not watched; the next enable or launch starts it again.
+    /// The work is in [`forwarder_tick`](Self::forwarder_tick) so a test can
+    /// drive it without the interval.
+    fn spawn_forwarder_watcher(&'static self) {
+        if self.forwarder_watcher_alive.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(FORWARDER_CHECK_INTERVAL);
+            if !self.forwarder_tick() {
+                return;
+            }
+        });
+    }
+
+    /// One pass of the forwarder watcher. Returns `false` once the watcher
+    /// should stop, which it does under the same lock acquisition that saw the
+    /// engine gone (the reasoning is in `spawn_domain_watcher`).
+    ///
+    /// Skipped, but not retired, while the forwarder is not wanted: the marker
+    /// goes only when a "let Gate go of this machine" path called
+    /// `forwarder::stop`, and the quit-with-disconnect path does that while
+    /// the engine is still hosted, so an ensure here would recreate the marker
+    /// and respawn the process the user just asked to be rid of.
+    ///
+    /// `ensure_env_forwarder` is idempotent: a live one answers its health
+    /// check and is reused, a dead one is replaced. The replacement normally
+    /// rebinds the persisted port, so the addresses everything holds keep
+    /// working unchanged. When it cannot (the port squatted, the file lost)
+    /// the PAC is repointed here and the variables are re-exported; the three
+    /// tool configs that name the forwarder read as drifted against the new
+    /// port file and are repaired by the shell's next reconcile pass
+    /// (`provider::reconcile_enabled`, on focus and at startup).
+    ///
+    /// Logs on transitions only, and records the outcome for `status`, which
+    /// is how the UI learns that routing is on but nothing is being routed.
+    fn forwarder_tick(&self) -> bool {
+        {
+            let guard = self.engine.lock().expect("proxy engine mutex poisoned");
+            if guard.is_none() {
+                self.forwarder_watcher_alive.store(false, Ordering::SeqCst);
+                return false;
+            }
+        }
+        if !self.ops.env_forwarder_wanted() {
+            return true;
+        }
+        let was_answering = self.forwarder_answering.load(Ordering::SeqCst) == FORWARDER_ANSWERING;
+        // Not under the lock: on a dead forwarder this spawns a process and
+        // waits for it to answer, and a user-facing toggle must not queue
+        // behind that.
+        match self.ops.ensure_env_forwarder() {
+            Ok(port) => {
+                if !was_answering {
+                    eprintln!(
+                        "gate proxy: the environment forwarder is answering again on \
+                         127.0.0.1:{port}"
+                    );
+                }
+                self.forwarder_answering
+                    .store(FORWARDER_ANSWERING, Ordering::SeqCst);
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                if let Some(running) = self
+                    .engine
+                    .lock()
+                    .expect("proxy engine mutex poisoned")
+                    .as_ref()
+                {
+                    running.set_pac_target(port);
+                }
+                if crate::proxy::env_export_opted_in()
+                    && self.exported_port.load(Ordering::SeqCst) != port
+                {
+                    match self.ops.enable_env(port) {
+                        Ok(()) => self.exported_port.store(port, Ordering::SeqCst),
+                        Err(e) => eprintln!(
+                            "gate proxy: could not re-export proxy environment variables \
+                             ({e}); they still name the forwarder's previous port"
+                        ),
+                    }
+                }
+            }
+            Err(e) => {
+                if was_answering {
+                    eprintln!(
+                        "gate proxy: the environment forwarder stopped answering and could \
+                         not be restarted ({e}); browsers and tools that name it are going \
+                         direct until it is back"
+                    );
+                }
+                self.forwarder_answering
+                    .store(FORWARDER_SILENT, Ordering::SeqCst);
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1027,6 +1203,11 @@ mod tests {
         forwarder_fails: bool,
         /// The port `ensure_env_forwarder` handed out, if it was asked.
         forwarder_port: Option<u16>,
+        /// The port the next `ensure_env_forwarder` hands out; 0 means the
+        /// usual 47_321. Set to model a forwarder that came back elsewhere.
+        forwarder_binds: u16,
+        /// Model `forwarder::stop` having run: the marker is gone.
+        forwarder_stopped: bool,
         /// The port `enable_env` was actually told to export.
         exported_port: Option<u16>,
     }
@@ -1178,8 +1359,17 @@ mod tests {
             if s.forwarder_fails {
                 anyhow::bail!("forwarder refused to start");
             }
-            s.forwarder_port = Some(47_321);
-            Ok(47_321)
+            let port = if s.forwarder_binds == 0 {
+                47_321
+            } else {
+                s.forwarder_binds
+            };
+            s.forwarder_port = Some(port);
+            Ok(port)
+        }
+
+        fn env_forwarder_wanted(&self) -> bool {
+            !self.0.lock().unwrap().forwarder_stopped
         }
 
         fn stop_env_forwarder(&self) {
@@ -1590,9 +1780,186 @@ mod tests {
             "exporting the engine's own port is the bug"
         );
         assert!(mgr.ops.index_of("ensure_env_forwarder") < mgr.ops.index_of("enable_env"));
+        // And before the system proxy is pointed at the PAC: browsers fetch it
+        // on that change and cache what they get, so the first body served has
+        // to already name the forwarder.
+        assert!(mgr.ops.index_of("ensure_env_forwarder") < mgr.ops.index_of("point_system_proxy"));
 
         mgr.disable().expect("disable");
         mgr.stop_dormant(); // release the park for the next test
+    }
+
+    /// The forwarder is not the export's: the PAC names it too, so it has to
+    /// exist whenever routing is on, whether or not the user wants the
+    /// machine-wide variables.
+    #[test]
+    fn the_forwarder_is_ensured_even_when_the_export_is_declined() {
+        let _home = TestHome::set();
+        crate::proxy::set_env_export_opted_in(false).expect("decline the export");
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        assert_eq!(mgr.ops.count("ensure_env_forwarder"), 1);
+        assert_eq!(mgr.ops.count("enable_env"), 0, "declined means declined");
+
+        mgr.disable().expect("disable");
+        mgr.stop_dormant();
+    }
+
+    /// Fetch the PAC the way WinINET does: a plain GET on the PAC listener.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn fetch_pac(pac_port: u16) -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", pac_port)).expect("PAC listener");
+        s.write_all(
+            format!("GET /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1:{pac_port}\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        let mut body = String::new();
+        s.read_to_string(&mut body).unwrap();
+        body
+    }
+
+    /// The body a browser actually fetches follows `set_pac_target`: the
+    /// watch receiver is read per request, not captured at start.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn the_served_pac_follows_the_target() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let state = mgr.enable().expect("enable");
+        let pac_port = state.pac_port.expect("PAC port");
+        assert!(
+            fetch_pac(pac_port).contains("PROXY 127.0.0.1:47321; DIRECT"),
+            "the first body served names the forwarder"
+        );
+        mgr.engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("engine hosted")
+            .set_pac_target(47_999);
+        assert!(fetch_pac(pac_port).contains("PROXY 127.0.0.1:47999; DIRECT"));
+
+        mgr.disable().expect("disable");
+        mgr.stop_dormant();
+    }
+
+    /// The tick retires under the lock acquisition that sees the engine gone,
+    /// exactly like the domain watcher, so a disable/enable flip cannot leave
+    /// a routing engine with two watchers or none.
+    #[test]
+    fn the_forwarder_tick_retires_when_the_engine_is_gone() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        assert!(
+            mgr.forwarder_tick(),
+            "keeps running while the engine is hosted"
+        );
+        mgr.disable().expect("disable");
+        assert!(!mgr.forwarder_tick(), "retires once the engine is parked");
+        assert!(!mgr.forwarder_watcher_alive.load(Ordering::SeqCst));
+        mgr.stop_dormant();
+    }
+
+    /// A forwarder that came back on a different port reaches everything
+    /// that named the old one: the PAC and the exported variables here, the
+    /// tool configs through the shell's reconcile pass.
+    #[test]
+    fn the_forwarder_tick_repoints_the_pac_and_the_variables() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let state = mgr.enable().expect("enable");
+        assert_eq!(state.forwarder_answering, Some(true));
+        assert_eq!(mgr.ops.count("enable_env"), 1);
+
+        // Same port: nothing to redo.
+        assert!(mgr.forwarder_tick());
+        assert_eq!(
+            mgr.ops.count("enable_env"),
+            1,
+            "an unchanged port is not re-exported"
+        );
+
+        // Came back elsewhere.
+        mgr.ops.0.lock().unwrap().forwarder_binds = 47_322;
+        assert!(mgr.forwarder_tick());
+        assert_eq!(
+            mgr.ops.count("enable_env"),
+            2,
+            "a moved port is re-exported"
+        );
+        assert_eq!(mgr.ops.0.lock().unwrap().exported_port, Some(47_322));
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let target = mgr
+                .engine
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("engine hosted")
+                .pac_target();
+            assert_eq!(target, 47_322, "and the PAC follows it");
+        }
+
+        mgr.disable().expect("disable");
+        mgr.stop_dormant();
+    }
+
+    /// The one thing the tray could not see: routing on, forwarder gone. The
+    /// tick records it for `status`, and clears it when the forwarder is back.
+    #[test]
+    fn the_forwarder_tick_reports_a_forwarder_that_will_not_come_back() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        mgr.ops.0.lock().unwrap().forwarder_fails = true;
+        assert!(
+            mgr.forwarder_tick(),
+            "a dead forwarder does not retire the watcher"
+        );
+        assert_eq!(mgr.status().unwrap().forwarder_answering, Some(false));
+
+        mgr.ops.0.lock().unwrap().forwarder_fails = false;
+        assert!(mgr.forwarder_tick());
+        assert_eq!(mgr.status().unwrap().forwarder_answering, Some(true));
+
+        mgr.disable().expect("disable");
+        assert_eq!(
+            mgr.status().unwrap().forwarder_answering,
+            None,
+            "nothing to say about a forwarder when this process is not routing"
+        );
+        mgr.stop_dormant();
+    }
+
+    /// `forwarder::stop` is an instruction, and the quit-with-disconnect path
+    /// gives it while the engine is still hosted. A tick landing in that gap
+    /// must not write the marker back and respawn what was just retired.
+    #[test]
+    fn the_forwarder_tick_leaves_a_stopped_forwarder_alone() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+        mgr.ops.0.lock().unwrap().forwarder_stopped = true;
+        assert!(
+            mgr.forwarder_tick(),
+            "still watching, in case routing continues"
+        );
+        assert_eq!(
+            mgr.ops.count("ensure_env_forwarder"),
+            1,
+            "only the enable's; the tick did not resurrect it"
+        );
+
+        mgr.disable().expect("disable");
+        mgr.stop_dormant();
     }
 
     /// A forwarder that will not start costs the fail-open property and
@@ -1614,6 +1981,50 @@ mod tests {
             state.port,
             "and falls back to the engine's own port, which is what shipped \
              before there was a forwarder"
+        );
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let target = mgr
+                .engine
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("engine hosted")
+                .pac_target();
+            assert_eq!(
+                Some(target),
+                state.port,
+                "the PAC falls back to the engine's own port for the same reason"
+            );
+        }
+
+        mgr.disable().expect("disable");
+        mgr.stop_dormant(); // release the park for the next test
+    }
+
+    /// The PAC must name the forwarder too. A browser caches the script it
+    /// fetched, so with the engine's own port in it every Gate host fails
+    /// closed the moment the engine is gone - the failure the PAC channel was
+    /// supposed to be immune to.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn the_pac_names_the_forwarder() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        let state = mgr.enable().expect("enable");
+        let engine_port = state.port.expect("port");
+        let target = mgr
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("engine hosted")
+            .pac_target();
+        assert_eq!(target, 47_321, "the forwarder's port, not any other");
+        assert_ne!(
+            target, engine_port,
+            "naming the engine's own port is the bug"
         );
 
         mgr.disable().expect("disable");

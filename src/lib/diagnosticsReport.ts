@@ -242,6 +242,12 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
           : `${onOff(proxy.env_export_opted_in)} (not separable here)`,
       ),
     );
+    // The sidecar the PAC and HTTPS_PROXY name. Silent when this process is not
+    // the one watching it; loud when routing is on and it is not answering,
+    // because that is "everything says Connected and nothing is routed".
+    if (proxy.forwarder_answering !== null) {
+      lines.push(row("forwarder", proxy.forwarder_answering ? "answering" : "NOT ANSWERING"));
+    }
   }
   if (backend) {
     // The persisted port is the identity of our proxy address; a tool pointed

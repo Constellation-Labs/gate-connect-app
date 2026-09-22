@@ -42,6 +42,22 @@ fn token_path() -> Result<PathBuf> {
     proxy_file("forwarder.token")
 }
 
+/// Whether anything has asked for a forwarder and nothing has since asked for
+/// it to go: the marker is present. [`stop`] is the only thing that removes
+/// it, so a `false` here after an enable means "the user asked Gate to let go
+/// of this machine", which is exactly what a supervisor must not undo.
+pub(crate) fn wanted() -> bool {
+    marker_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+/// Serialises [`ensure_running`] within this process. Two callers racing on a
+/// dead forwarder would both fail the health check and both spawn; the second
+/// binds a fresh port and overwrites the port file under the first, leaving
+/// two forwarders resident and the PAC and the exported variables naming
+/// different ports. The manager's watcher runs it on a timer and `enable`
+/// runs it under a different lock, so the two can meet here.
+static ENSURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The port the forwarder last bound, if it has ever run.
 pub(crate) fn persisted_port() -> Option<u16> {
     super::port_persist::load("forwarder-port").ok().flatten()
@@ -160,8 +176,10 @@ fn spawn_detached() -> Result<()> {
 /// - the address answers from login onward even with no Gate process in
 ///   existence, so there is no window in which a tool holding our exported
 ///   variables is stranded - not even between boot and the app launching;
-/// - nothing sits resident between uses: the forwarder exits when idle and
-///   launchd starts it again on demand;
+/// - the forwarder need not be resident until something connects: launchd
+///   starts it on the first connection, and starts another if it ever exits
+///   with the agent still installed (it runs until the marker goes, so in
+///   practice it stays up from the first connection to [`stop`]);
 /// - the port cannot be squatted, because launchd took it before any other
 ///   process could. That removes the case the health token exists to catch,
 ///   rather than merely detecting it.
@@ -309,6 +327,11 @@ mod launch_agent {
 /// one loopback request. The marker is written first so a forwarder that starts
 /// fast cannot read it before it exists and exit immediately.
 pub(crate) fn ensure_running() -> Result<u16> {
+    // A poisoned lock only means an earlier caller panicked mid-ensure; the
+    // state it guards is on disk and self-correcting, so carry on.
+    let _serial = ENSURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let marker = marker_path()?;
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent).ok();

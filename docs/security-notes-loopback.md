@@ -31,7 +31,8 @@ review:
   carrying a non-loopback `Origin` (`relay.rs::proxy`, helpers and rationale
   in `proxy/mod.rs::authority_is_loopback` / `origin_is_loopback`);
 - the PAC responder rejects non-loopback `Host` the same way, so a rebound
-  page cannot read the engine port out of the PAC body.
+  page cannot read the forwarder port (or, when the forwarder would not
+  start, the engine port) out of the PAC body.
 
 ## Defended: other local users (Linux)
 
@@ -96,6 +97,31 @@ does not.
   peer gate of its own.
 - **It is the same signed executable as the app**, shipped as a sidecar, and it
   inherits the environment of whichever process spawned it.
+
+**It fronts the PAC as well, and so it exists whenever routing is on.**
+`engine::pac_script` names the forwarder's port for every Gate host, with a
+fallback after it (`; DIRECT`, or the user's prior proxy), so a browser holding
+a cached PAC keeps working when the engine is gone instead of failing closed on
+exactly the hosts Gate intercepts. Same listener, same capability: browser
+traffic reaches the engine through one more loopback hop while it is up, and
+goes direct when it is not. Two consequences are new and recorded here:
+
+- The forwarder is started by every enable, independently of the machine-wide
+  export choice, and on macOS that installs the socket-activated LaunchAgent,
+  which holds the port from every login onward. Declining the export no longer
+  means "no Gate process besides the app"; it means only that `HTTPS_PROXY` is
+  not set. Signing out and untrusting the CA remain the paths that retire it.
+- The fallback makes a forwarder that stops answering a *silent* fail-open for
+  the browser channel, where before the PAC named the engine and failed
+  closed. Any same-user process can kill it; any local user can saturate it
+  (no peer gate, a 512-connection cap that accepts and drops at capacity), and
+  a browser that has once seen the port refuse keeps it on its bad-proxy list
+  for minutes after it is back. The manager therefore re-checks it every 30s
+  while it hosts an engine (`DesktopManager::forwarder_tick`), restarts one
+  that has died, re-exports the variables if it came back on another port, and
+  reports the outcome as `ProxyState.forwarder_answering` so the tray can say
+  that routing is on and nothing is being routed. Accepted on the same ground
+  as the rest of this section: the exposure is unrouted traffic, not spend.
 
 **It fronts tool configurations as well as the variables now.** This section
 first described the forwarder as the address of the machine-wide export alone.
@@ -189,7 +215,7 @@ since it outlives the user's "off".
   the one capability the park extends in time - from "while routing is on" to
   "for the rest of the app session".
 - **The PAC responder is inert.** `pac_script` is built from the live rules,
-  which are empty while parked, so it names the engine for no host.
+  which are empty while parked, so it names the forwarder for no host.
 
 Decision: accepted. The comparison that matters is parked versus *routing*,
 not parked versus nothing bound - the alternative to parking is not a quiet
