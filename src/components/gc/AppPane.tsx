@@ -849,7 +849,10 @@ function RecentActivity({
         //
         // Ahead of `unavailable` too, for the reason the chart gives: no read
         // was attempted, so none can have failed.
-        <EmptyNote>Recent activity isn&apos;t attributed to this app</EmptyNote>
+        // AG-889, and the same sentence the chart one over now gives: name
+        // where these requests are counted rather than only where they are
+        // not.
+        <EmptyNote>Shows in the Overview, not per app</EmptyNote>
       ) : unavailable ? (
         <EmptyNote>Recent activity couldn&apos;t be read</EmptyNote>
       ) : activity.length === 0 ? (

@@ -1333,21 +1333,64 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("a row with nothing attributable says so instead of reporting a quiet day", async ({
+  test("an app pane with no installed CLI is not called a destination", async ({
+    boot,
+  }) => {
+    // The H in review on #323. `openDomain` is `openTool === null` - "this
+    // section has no INSTALLED config tool" - not "this section is a provider
+    // endpoint", and a section stays alive on its `domain:` members. So a
+    // Claude pane on a machine with no Claude Code takes the unattributed
+    // branch too, and "any app on this machine can be pointed here" is false
+    // of Claude Desktop: it is one app, and nothing is pointed at it.
+    //
+    // `tools: []`, which the tests above already boot, because the default
+    // fixture ships every CLI as detected and would never see this.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+    });
+
+    await app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Claude" }) })
+      .getByRole("button")
+      .click();
+
+    await expect(app.page.getByText(/its own activity can/)).toBeVisible();
+    await expect(
+      app.page.getByText(/can be pointed here/),
+    ).toHaveCount(0);
+  });
+
+  test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
     // OpenAI API is a host with no config tool behind it, so no reading exists
     // and none ever will. A different sentence from the one above, and
-    // deliberately so: that one caveats a reading, this one reports its absence.
+    // deliberately so: that one caveats a reading, this one names where the
+    // requests ARE counted instead (AG-889). The page used to say only that
+    // its numbers could not be shown, which read as breakage.
     await app.page
       .getByRole("listitem")
       .filter({ has: app.page.getByRole("switch", { name: "OpenAI API" }) })
       .getByRole("button")
       .click();
 
-    await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
+    // Anchored on the note's own tail. An earlier version matched
+    // /counted in the Overview/, which resolved to one element only by luck of
+    // capitalisation - three matches the moment either string changed.
+    await expect(
+      app.page.getByText(/cannot attribute these requests to one app/),
+    ).toBeVisible();
+    await expect(
+      app.page.getByText(/appear in the Overview rather than on this page/),
+    ).toBeVisible();
+    // The cards are their own string and there are two of them.
+    await expect(
+      app.page.getByText("Shows in the Overview, not per app"),
+    ).toHaveCount(2);
     await expect(app.page.getByText(/These counts cover/)).toHaveCount(0);
   });
 
