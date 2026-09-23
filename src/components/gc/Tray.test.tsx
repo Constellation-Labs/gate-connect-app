@@ -83,7 +83,7 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("2 of 2 tools routing")).toBeTruthy();
+    expect(screen.getByText("2 of 2 tools on")).toBeTruthy();
   });
 
   it("reads partially routed when only some rows the user asked for are", () => {
@@ -105,7 +105,10 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is partly routing your apps" }),
     ).toBeTruthy();
-    expect(screen.getByText("1 of 2 tools routing")).toBeTruthy();
+    // Both rows are ON, so the fraction is 2 of 2 even though only one is
+    // routed. The fraction counts intent over availability; the HEADING is
+    // what reports that one of them is not routed.
+    expect(screen.getByText("2 of 2 tools on")).toBeTruthy();
   });
 
   /**
@@ -116,15 +119,19 @@ describe("the routing status card", () => {
    * a `chat` member). Counting it meant green required routing a session-cookie
    * surface nobody asked for, so the card was pinned to amber "1 of 2" forever
    * and disagreed with the topbar - which filters by intent - by exactly that
-   * row. Load-bearing: drop the `.filter((a) => a.on)` in `RoutingCard` and this
-   * goes back to "Partially routed".
+   * row. Load-bearing: drop the `.filter((a) => a.on)` in `RoutingCard` and
+   * this goes back to "Partially routed".
+   *
+   * The FRACTION does count it, and that is the 2026-09-23 change: it reads
+   * "1 of 2 tools on", one switched on out of two available. Only the state
+   * is judged on intent.
    */
   it("does not count a row the user never switched on", () => {
     renderTray();
     expect(
       screen.getByRole("heading", { name: "Gate is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("1 of 1 tools routing")).toBeTruthy();
+    expect(screen.getByText("1 of 2 tools on")).toBeTruthy();
   });
 
   it("reads not protected with nothing routing, and says the engine didn’t start", () => {
@@ -147,7 +154,7 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is not routing your apps" }),
     ).toBeTruthy();
-    expect(screen.getByText("Didn’t start · 0 of 1 tools routing")).toBeTruthy();
+    expect(screen.getByText("Didn’t start · 1 of 1 tools on")).toBeTruthy();
   });
 
   /**
@@ -206,7 +213,10 @@ describe("the routing status card", () => {
         },
       ],
     });
-    expect(screen.getByText("Didn’t start")).toBeTruthy();
+    // With a fraction beside it now: the rail has one app and none of it is
+    // on, which "0 of 1" states and the suppressed ratio used to hide. Still
+    // never "Off" - the enable happens at launch with no control behind it.
+    expect(screen.getByText("Didn’t start · 0 of 1 tools on")).toBeTruthy();
     expect(screen.queryByText("Off")).toBeNull();
   });
 
@@ -228,7 +238,7 @@ describe("the routing status card", () => {
         },
       ],
     });
-    expect(screen.getByText("Starting… · 0 of 1 tools routing")).toBeTruthy();
+    expect(screen.getByText("Starting… · 1 of 1 tools on")).toBeTruthy();
     expect(screen.queryByText(/Didn’t start/)).toBeNull();
   });
 

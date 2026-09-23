@@ -3140,7 +3140,13 @@ export function NewUiApp() {
             }
           : undefined
       }
-      routing={{ protectedCount, totalCount: desiredApps.length }}
+      routing={{
+        protectedCount,
+        totalCount: desiredApps.length,
+        // Every rail row, on or off: the fraction divides by availability
+        // while the tone still divides by intent. See `showsFraction`.
+        availableCount: railApps.length,
+      }}
       // An API-key account holds no org locally, so the gateway's answer is the
       // only name it can show. Account first: it is what the user picked.
       orgName={orgLabel(account, activity.view?.orgName)}

@@ -294,7 +294,8 @@ function RoutingCard({
   starting: boolean;
   groups: SidebarGroup[];
 }) {
-  const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
+  const all = groups.flatMap((g) => g.apps);
+  const apps = all.filter((a) => a.on);
   const routed = apps.filter((a) => countsAsRouted(a.status)).length;
   // The same reading the topbar banner takes, from the same module (AG-913).
   // This card used to word it differently - "Partially routed" against the
@@ -302,18 +303,23 @@ function RoutingCard({
   // into "Not protected", which reports a fault the user caused on purpose.
   const state = routingState(routed, apps.length);
   const { tone, icon } = state;
-  // No fraction when the denominator is intent and the intent is nothing:
-  // "0 of 0 tools routing" reports a gap the user opened on purpose, with both
-  // halves of the ratio meaningless. Same call as the topbar banner's.
-  const fraction = showsFraction(state)
-    ? `${routed} of ${apps.length} tools routing`
+  // Switched on, out of every app on the rail - NOT routed out of requested,
+  // which is what the headline above already answers. Same call as the topbar
+  // banner's, from the same module, so the two cannot drift apart again.
+  //
+  // This does NOT line up with the group eyebrows below, which count routed
+  // over group. It lines up on the denominator and not on the numerator, and
+  // "on" is the only thing in the words that says so. `routingState` carries
+  // the argument and the design question.
+  const fraction = showsFraction(all.length)
+    ? `${apps.length} of ${all.length} tools on`
     : "";
   // This line used to lead with "On" / "Off", from the engine's running flag
   // standing in for a master switch. There is no such switch - routing is on
   // for exactly as long as Gate Connect is open - so "On" was unfalsifiable
-  // furniture, and on the `none-requested` state, where the fraction beside it
-  // is suppressed, it was left asserting "On" directly under "No apps are set
-  // to route".
+  // furniture, and with nothing switched on it printed "On" directly under
+  // "No apps are set to route". (That state draws a fraction of its own now,
+  // "0 of 8 tools on", where it used to draw nothing at all.)
   //
   // The engine failing to come up is still worth printing, so it keeps its
   // half in the words already decided for it elsewhere: a launch enable that
