@@ -158,6 +158,17 @@ describe("GroupMembers inline expansion", () => {
     expect(screen.queryByText(/through its own config/)).toBeNull();
   });
 
+  it("says a Cowork task run on cloud never reaches Gate, on or off", () => {
+    // Cloud mode executes on Anthropic's servers, so there is no local traffic
+    // to route and nothing in the traffic says which mode a task picked.
+    for (const enabled of [true, false]) {
+      renderDetail([], [{ ...domain, enabled }]);
+      fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+      expect(screen.getByText(/set to run on cloud .* Gate can’t route them/)).toBeTruthy();
+      cleanup();
+    }
+  });
+
   it("shows a failure's whole message inline", () => {
     renderDetail(
       [

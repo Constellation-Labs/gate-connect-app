@@ -110,13 +110,26 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
         .filter(Boolean)
         .join(" ");
     }
+    // Cowork can run a task on Anthropic's servers instead of this machine, and
+    // then nothing leaves the machine for the proxy to route - with routing on,
+    // the CA trusted and no error anywhere. Said on the row because nothing in
+    // the traffic tells us which mode a task picked.
+    const cloud =
+      member.domain?.slug === "anthropic" &&
+      "Cowork tasks set to run on cloud run on Anthropic’s servers, not this machine, so Gate can’t route them.";
     if (member.routed) {
-      return `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`;
+      return [
+        `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`,
+        cloud,
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
     // Sentences, not clauses, by the same rule as the chat branch above.
     const sibling = configSiblingOnHost(group, member);
     return [
       `${member.name} routes through Gate’s local proxy once you switch it on.`,
+      cloud,
       // This row prints the host right beside its own switch, so an off switch
       // over `api.anthropic.com` reads as "nothing on that host reaches Gate".
       // With a config-routed tool on the same host that is not true - Claude
