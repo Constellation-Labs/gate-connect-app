@@ -77,7 +77,6 @@ import {
   sectionHint,
   isProviderEndpoint,
   sectionMemberKeys,
-  sessionMembers,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
@@ -153,7 +152,6 @@ import {
   ReplaceApiKeyDialog,
   ResetGateConnectDialog,
   ReviewConfigDialog,
-  SessionConsentDialog,
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
@@ -1698,8 +1696,6 @@ export function NewUiApp() {
     groups,
     routing,
     runningApps,
-    prefs,
-    onPrefsChanged: () => void loadPreferences(),
     // The click is the moment the last failure stops being the current answer,
     // whichever kind of row it lands on. `routeApp` clears on its own way in;
     // the cascade never did, so a row that failed and was then retried
@@ -3236,13 +3232,6 @@ export function NewUiApp() {
             defaulted={routing.prompt.defaulted}
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
-          />
-        ) : section.consent ? (
-          <SessionConsentDialog
-            name={section.consent.name}
-            surfaces={sessionMembers(section.consent)}
-            onDismiss={section.dismissConsent}
-            onConfirm={section.confirmConsent}
           />
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and

@@ -84,37 +84,6 @@ pub struct Preferences {
     /// every request - see `proxy`'s attribution injection.
     #[serde(default)]
     pub device_name: Option<String>,
-    /// Ledger sections whose switch the person has accepted routes a surface
-    /// they are signed in to, keyed by section id.
-    ///
-    /// A section switch covers every surface an app uses, and for Claude and
-    /// ChatGPT that includes a `Credential::Additive` row - the user's own
-    /// claude.ai or chatgpt.com session rather than a key Gate brokers. The
-    /// rule everywhere else is that no group switch may reach such a row; an
-    /// app switch breaks it deliberately, and this is what makes the break a
-    /// decision the person took rather than one taken for them.
-    ///
-    /// Per section, not one global flag, and for the reason
-    /// `share_diagnostics_recorded` one field up is separate from
-    /// `share_diagnostics`: consenting to route your Claude sign-in says
-    /// nothing about your ChatGPT one, and a single flag would let the first
-    /// answer stand in for the second.
-    ///
-    /// Absent means never asked, which is not the same as declined - a decline
-    /// simply leaves the switch off, and the question comes back the next time
-    /// the person reaches for it. An install predating the field reads as never
-    /// asked, which is right: consent nobody was asked for is not consent.
-    ///
-    /// The ids are the frontend's section ids (`SECTIONS` in
-    /// `src/lib/groups.ts`) and nothing here can validate one: this file records
-    /// the answer, and the shells are what act on it. Two consequences worth
-    /// knowing before editing that table - renaming a section id silently
-    /// discards every consent recorded under the old one and asks again, which
-    /// is the safe direction; and the answer is per section rather than per
-    /// surface, so adding an additive member to a section somebody already
-    /// accepted does not re-ask.
-    #[serde(default)]
-    pub session_routing_accepted: Vec<String>,
     /// Whether security notifications make a sound.
     #[serde(default = "default_true")]
     pub security_notification_sound: bool,
@@ -216,9 +185,6 @@ impl Default for Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
-            // Empty is "never asked", which is the only honest default: an
-            // install that has not been asked has not consented.
-            session_routing_accepted: Vec::new(),
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
@@ -395,18 +361,6 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     save(&prefs)
 }
 
-/// Record that the person accepted this section's switch routing a surface they
-/// are signed in to. Idempotent, and never un-records: turning the section off
-/// is not a withdrawal of the explanation, and asking again on every re-enable
-/// would train people to dismiss it.
-pub fn accept_session_routing(section: &str) -> Result<()> {
-    let mut prefs = load();
-    if !prefs.session_routing_accepted.iter().any(|s| s == section) {
-        prefs.session_routing_accepted.push(section.to_string());
-    }
-    save(&prefs)
-}
-
 /// Set one tool's model choice, leaving every other tool alone.
 ///
 /// Read-modify-write on the whole file, like the switches above, so a caller
@@ -571,45 +525,6 @@ fn device_name_override(name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Consent to route a signed-in surface starts absent, and an install that
-    /// predates the field reads as never asked rather than as accepted.
-    ///
-    /// The same distinction `the_default_is_not_an_answer` makes one test down,
-    /// and for a stronger reason: this one gates routing someone's session
-    /// cookie, so a default that read as consent would route it on first launch
-    /// without anybody being asked.
-    ///
-    /// Serde-level, like its neighbours. `accept_session_routing` itself does a
-    /// read-modify-write of the real preferences file, and the app-support path
-    /// is process-global, so exercising it here would race every other test in
-    /// this binary.
-    #[test]
-    fn session_routing_consent_starts_absent() {
-        assert!(Preferences::default().session_routing_accepted.is_empty());
-        let old_file: Preferences =
-            serde_json::from_str(r#"{"share_diagnostics":true}"#).expect("parses");
-        assert!(
-            old_file.session_routing_accepted.is_empty(),
-            "a file written before this field existed never accepted anything"
-        );
-    }
-
-    /// Per section, not one flag for all of them: accepting that Gate may route
-    /// your Claude sign-in says nothing about your ChatGPT one, and a single
-    /// boolean would let the first answer stand in for the second.
-    #[test]
-    fn session_routing_consent_is_recorded_per_section() {
-        let prefs = Preferences {
-            session_routing_accepted: vec!["claude".into()],
-            ..Preferences::default()
-        };
-        let back: Preferences =
-            serde_json::from_str(&serde_json::to_string(&prefs).expect("serialize"))
-                .expect("deserialize");
-        assert!(back.session_routing_accepted.iter().any(|s| s == "claude"));
-        assert!(!back.session_routing_accepted.iter().any(|s| s == "chatgpt"));
-    }
-
     #[test]
     fn defaults_are_everything_on() {
         let prefs = Preferences::default();
@@ -681,8 +596,8 @@ mod tests {
     /// the upgrade. On this product, coming back louder is the safe direction
     /// and coming back quieter is not. Aliasing all three is not available
     /// either: serde rejects duplicate fields, and `load` turns any parse error
-    /// into `Preferences::default()`, which would discard `device_name`,
-    /// `tool_models` and `session_routing_accepted` with it.
+    /// into `Preferences::default()`, which would discard `device_name` and
+    /// `tool_models` with it.
     #[test]
     fn a_file_from_the_three_switch_build_loads_with_notifications_on() {
         let legacy = r#"{
@@ -690,8 +605,7 @@ mod tests {
             "blocked_event_notifications": false,
             "flagged_event_notifications": false,
             "security_notification_sound": false,
-            "device_name": "Work laptop",
-            "session_routing_accepted": ["claude"]
+            "device_name": "Work laptop"
         }"#;
         let prefs: Preferences = serde_json::from_str(legacy).expect("a legacy file still parses");
 
@@ -703,7 +617,6 @@ mod tests {
         // kept. Losing these to the upgrade would be the unrecoverable half.
         assert!(!prefs.security_notification_sound);
         assert_eq!(prefs.device_name.as_deref(), Some("Work laptop"));
-        assert_eq!(prefs.session_routing_accepted, vec!["claude".to_string()]);
     }
 
     #[test]

@@ -240,9 +240,15 @@ export function AppPane({
               (408:25099) is exactly those two 24px lines. A coverage sentence
               sat here from #221 until 2026-09-21, when design asked for the
               header to match. Nothing else drew it, so it is gone rather than
-              parked; the window says nowhere now what a switch covers, and
-              `SessionConsentDialog` is the one place that still discloses a
-              routed sign-in. See the note above `SECTIONS` in `lib/groups.ts`. */}
+              parked.
+
+              `SessionConsentDialog` was then the last place that disclosed a
+              routed sign-in or the host-wide scope of one, and it went too
+              (AG-934, 2026-09-23) with the decision recorded that neither fact
+              is stated anywhere. So: the app does not tell anyone that turning
+              a section on also routes that host for every client on the
+              machine. Deliberate, not missing. See the note above `SECTIONS`
+              in `lib/groups.ts`. */}
           <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">

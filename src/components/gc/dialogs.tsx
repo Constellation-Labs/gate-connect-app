@@ -20,7 +20,6 @@ import type {
   TeardownReport,
   TeardownTool,
 } from "../../lib/api";
-import type { GroupMember } from "../../lib/groups";
 import type { HermesProviderChoice } from "../../lib/useRouting";
 import type { RecoveryRow } from "../../lib/recovery";
 import type { ReopenAction, ReopenAppRow, ReopenTool } from "../../lib/reopen";
@@ -2022,126 +2021,6 @@ export function HermesProviderDialog({
         that uses {plural ? "them" : list}, not just Hermes. You can turn{" "}
         {plural ? "them" : "it"} off again from{" "}
         {plural ? "their own rows" : "its own row"}.
-      </p>
-    </Modal>
-  );
-}
-
-/**
- * The one place an app switch is allowed to route a surface the person is
- * signed in to.
- *
- * `provider::cascade_domains` refuses these rows to a family switch in Rust, so
- * no cascade there and none from `provider enable` can reach them; here that
- * refusal is replaced by an answer, which is what makes "one switch routes my
- * whole app" honest rather than a credential routed behind someone's back. What
- * it is not is a check on routing them at all - `proxy_set_domain` enables any
- * row it is handed - so this dialog is the guard on this path rather than a
- * second opinion about one.
- *
- * One component for both shells rather than the same Modal written twice. The
- * tray raises this from the same switch the rail does, and the question a person
- * is asked before their sign-in is routed is the last thing that should be able
- * to say two different things on two surfaces.
- *
- * Initial focus on the secondary, per principle 5: the primary here starts
- * routing a signed-in session, so the safe button is the one that receives the
- * keyboard.
- */
-export function SessionConsentDialog({
-  name,
-  surfaces,
-  onDismiss,
-  onConfirm,
-}: {
-  /** The section's name, which is the app the switch is named for. */
-  name: string;
-  /** The signed-in surfaces this switch would also route: `sessionMembers`'
-   *  members, not their names. The members, because the two facts this dialog
-   *  owes the reader are on them - the HOSTS, which is the only part of a
-   *  surface they can recognise on their own machine, and the SCOPE, which says
-   *  the switch reaches past the app it is named for. */
-  surfaces: GroupMember[];
-  onDismiss: () => void;
-  onConfirm: () => void;
-}) {
-  // The hosts, deduplicated and in draw order. Named rather than the surface
-  // labels: those are the rail's one-word names, so the ChatGPT dialog read
-  // "This also routes chat and subscription", which names nothing a person has
-  // ever seen. "chatgpt.com" they have.
-  const hosts = [...new Set(surfaces.flatMap((m) => m.domain?.hosts ?? []))];
-  // "a", "a and b", "a, b and c". Both shipping sections have at most two, so
-  // the third arm is for whoever adds the next one rather than for today.
-  const hostList =
-    hosts.length > 2
-      ? `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`
-      : hosts.join(" and ");
-  // The taxonomy's whole point, and now the only place either shell says it:
-  // a `host`-scoped row is matched at CONNECT, before any header exists, so it
-  // covers every client on the machine that talks to those hosts. The window's
-  // pane used to say this beside the switch; #273 removed the scope card and
-  // #315 the header sentence, so this dialog - asked once per section, never
-  // again once `session_routing_accepted` holds the id - and the rail row's
-  // hover are what is left. Product intends to drop the dialog too (routing
-  // sessions by default, 2026-09-21), at which point the disclosure has no home
-  // until design draws one.
-  const wide = surfaces.some((m) => m.scope === "host") && hosts.length > 0;
-  return (
-    <Modal
-      tone="warning"
-      icon="shieldCheck"
-      title={`Route ${name} through Gate?`}
-      // What the switch does, before any exception to it. The subtitle led with
-      // "This also routes ...", which is the footnote to a rule the reader had
-      // not been given yet, and ended on "which Gate sees on the account you
-      // are already signed in with" - a clause naming the credential taxonomy
-      // rather than anything the reader can picture (AG-901).
-      subtitle={
-        hostList
-          ? `${name}'s traffic goes through Gate, and so does ${hostList}, where you are already signed in.`
-          : `${name}'s traffic goes through Gate, including a surface where you are already signed in.`
-      }
-      secondary={{ label: "Not now", onClick: onDismiss }}
-      primary={{ label: `Route ${name}`, onClick: onConfirm }}
-      onDismiss={onDismiss}
-    >
-      {/* What Gate does, then what it does not, which is the order someone
-        * deciding needs and the order the ticket asks for.
-        *
-        * Every clause is `Credential::Additive`'s own sentence in plain words:
-        * "the caller's own session cookie or subscription bearer stays on the
-        * request and Gate adds its headers alongside ... Gate records and
-        * inspects the traffic rather than supplying a key for it"
-        * (`crates/core/src/taxonomy.rs`). "It does not supply a key for it" said
-        * the same thing and named a mechanism nobody outside this repo knows
-        * about, so it read as a disclaimer rather than as reassurance. */}
-      <p className="text-sm leading-5 text-neutral-600">
-        Gate records and inspects what passes through it. It sees nothing you
-        were not already sending, and it does not sign in for you: your existing
-        login is passed through, not replaced.
-      </p>
-      {wide && (
-        <p className="text-sm leading-5 text-neutral-600">
-          Gate routes by address, so everything on this machine that sends to{" "}
-          {hostList} goes the same way, not only {name}.
-        </p>
-      )}
-      {/* The decision is reversible and the dialog never said so. "Asked once
-        * per app. Turning <app> off later does not bring this question back."
-        * is two facts about the DIALOG, and read together they sound like the
-        * consent cannot be withdrawn. It can: the switch is the withdrawal, and
-        * `accept_session_routing` is deliberately never un-recorded so that
-        * flipping a section back on does not re-interrogate someone who has
-        * already answered. Reset does not clear it either - `account::clear`
-        * removes credentials and leaves `preferences.json` alone - so "change it
-        * in Settings" would be a promise the app does not keep.
-        *
-        * One sentence. The first version said "You are asked this once" and
-        * then "Gate will not ask this question again", which is the same fact
-        * twice in three lines. */}
-      <p className="text-sm leading-5 text-neutral-600">
-        You are asked this once: turn {name} off whenever you like and the
-        routing stops, and turning it back on will not ask again.
       </p>
     </Modal>
   );

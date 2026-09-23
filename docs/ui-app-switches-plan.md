@@ -3,6 +3,15 @@
 Status: built. Follows `docs/routing-taxonomy-proposal.md`,
 which this deliberately hides rather than removes.
 
+> **Superseded in part (AG-934, 2026-09-23).** The consent mitigation below is
+> gone: product removed the confirmation dialog, so an app switch now routes the
+> signed-in surfaces it covers without asking, and the app no longer states that
+> a `host`-scoped row applies to every client on the machine. The
+> `preferences.rs` consent field went with it. The rest of this plan (sections,
+> the Rust invariants, `sectionStatus`, the tray) still describes what ships;
+> read "What this trades away, and the mitigation" and "The confirmation" under
+> Work as history.
+
 ## Decision
 
 The ledger stops being one row per routable surface and becomes one row per

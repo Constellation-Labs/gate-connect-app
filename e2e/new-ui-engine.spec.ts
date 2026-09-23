@@ -127,10 +127,10 @@ test.describe("new UI app pane", () => {
 
     // The rail row is the app; the pane it opens is the app's.
     await app.page.getByRole("button", { name: "Claude" }).first().click();
+    // The pane's switch is the section's switch. It used to ask the same
+    // question the rail's did before routing a surface the person is signed
+    // in to; that dialog is gone (AG-934), so the click is the whole action.
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
-    // The pane's switch is the section's switch, so it asks the same question
-    // the rail's does before it routes a surface the person is signed in to.
-    await app.page.getByRole("button", { name: "Route Claude", exact: true }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",

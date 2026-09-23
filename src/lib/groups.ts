@@ -342,9 +342,8 @@ export function hasBrowserSurface(member: GroupMember): boolean {
 export function hostReloadAdvice(
   moved: GroupMember[],
 ): { title: string; body: string } | undefined {
-  // Deduplicated and in draw order, the same treatment `SessionConsentDialog`
-  // gives them: two members can name one host, and a banner that says
-  // "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
+  // Deduplicated and in draw order: two members can name one host, and a
+  // banner that says "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
   const hosts = [...new Set(moved.filter(hasBrowserSurface).flatMap((m) => m.domain?.hosts ?? []))];
   if (hosts.length === 0) return undefined;
   return {
@@ -450,8 +449,8 @@ export interface GroupMember {
    *
    * One caller breaks it on purpose and is the reason to read this as "may a
    * FAMILY switch flip this" rather than as an invariant: an app switch routes
-   * every surface its app uses, additive rows included, after
-   * {@link needsSessionConsent} has been answered. See {@link cascadeTargets}. */
+   * every surface its app uses, additive rows included, and since AG-934 it
+   * does so without asking. See {@link cascadeTargets}. */
   cascade: boolean;
 }
 
@@ -1064,38 +1063,6 @@ export function isProviderEndpoint(id: string): boolean {
   return SECTIONS.find((s) => s.id === id)?.providerEndpoint === true;
 }
 
-/**
- * Whether flipping this section on would route a surface the user is signed in
- * to, and therefore needs their answer first.
- *
- * True for a section holding any `additive` member - Claude and ChatGPT /
- * Codex today. The caller asks once and records it
- * (`preferences.session_routing_accepted`); a section already accepted does not
- * ask again, and turning the section off is not a withdrawal.
- *
- * Only ever consulted when turning a section ON. Switching off needs no
- * permission, and asking for it would be the app requiring consent to stop
- * doing something.
- */
-export function needsSessionConsent(group: Group): boolean {
-  return sessionMembers(group).length > 0;
-}
-
-/**
- * The surfaces that answer for it, for the sentence that asks.
- *
- * `credential === "additive"`, not `!cascade`. The two coincide today and mean
- * different things: `cascade` is "may a family switch flip this", which is false
- * for `observed` too - a row Gate watches without changing what authenticates
- * it. Naming such a row in this dialog would tell the person Gate is about to
- * route a credential they are signed in with, which is the one claim it does not
- * make. Nothing ships `observed` yet; the variant exists precisely so the two
- * sentences are not forced to be one.
- */
-export function sessionMembers(group: Group): GroupMember[] {
-  return group.members.filter((m) => m.credential === "additive");
-}
-
 /** Which kind of exception `groupSummary` found, so a row can give the sentence
  * its own ink instead of printing every severity in the same grey. Reality is
  * what this ledger is for, and it was losing the row to the switch beside it:
@@ -1227,12 +1194,13 @@ export function cascadeTargets(
     // cascade in Rust and none from the CLI's `provider enable` can reach them.
     // It is not a check on routing them: `proxy_set_domain` will enable any row
     // it is handed, which is what the CLI's `proxy domain claude-web on` and the
-    // popover's own per-surface switch both do, deliberately. So the thing
-    // standing in front of THIS path is consent and nothing else:
-    // `needsSessionConsent` reports whether a section has such a member, and
-    // only a caller holding an accepted answer passes `sessions`.
-    // The guarantee moves from "cannot happen" to "cannot happen without being
-    // told" - see docs/ui-app-switches-plan.md.
+    // popover's own per-surface switch both do, deliberately.
+    //
+    // Nothing stands in front of THIS path. `SessionConsentDialog` did, and
+    // the guarantee was "cannot happen without being told"; the dialog was
+    // removed on 2026-09-23 (AG-934) and both shells now pass `sessions`
+    // unconditionally, so it is "can happen, silently". That is the decision,
+    // not a gap - see docs/ui-app-switches-plan.md, which predates it.
     // An overridden member is left out for the same reason a drifted one is:
     // the family switch writes Gate's config, and here that config is already
     // written and already losing. Turning it on again is a no-op the user would
