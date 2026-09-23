@@ -440,7 +440,8 @@ full-width rule; `ManageLink` moved from a borderless text link.
 
 **`overview-loading` (228:85602) was finally read**, and the built silhouette
 was wrong in three ways: the drawn placeholder is 24 *uniform full-height*
-columns, the numbered ticks render as numbers (1..24) rather than skeleton
+columns, the ticks render as labels (drawn 1..24; built as the real `HH:mm` hours
+ending now, so nothing moves when the reading lands) rather than skeleton
 bars, and the legend stays on screen while loading. `PendingChart` follows.
 The legend is also **left-aligned** in every frame; the built one was centred.
 One discrepancy left alone: the loading frame draws a rule above the legend
@@ -1429,7 +1430,7 @@ for want of an address, as everywhere else.
 **The Messages chart was redrawn** (`706:*`, ~1,950 nodes) and three things
 changed:
 
-- **Ticks read `HH:00`**, not a bare hour. `hourTick` now formats them, and the
+- **Ticks read `HH:00`**, not a bare hour. `hourLabel` formats them, and the
   tooltip heading and the accessible table go through it too, so one bucket
   cannot be phrased three ways. The `chart/tooltip` card itself is an older
   node (`191:*`) still headed with a bare hour; the redrawn axis around it
