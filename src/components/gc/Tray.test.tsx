@@ -34,9 +34,6 @@ function trayProps(
   return {
     master: { on: true },
     groups: GROUPS,
-    notInstalled: [],
-    notInstalledOpen: false,
-    onToggleNotInstalled: noop,
     orgName: "Acme Engineering",
     onToggleApp: noop,
     onExpand: noop,
@@ -251,33 +248,6 @@ describe("the group rows", () => {
     // after the band.
     screen.getByRole("switch", { name: "Codex" }).click();
     expect(onToggleApp).toHaveBeenCalledWith("codex", false);
-  });
-});
-
-describe("the not-installed section", () => {
-  const NOT_INSTALLED = [
-    { slug: "opencode", name: "OpenCode" },
-    { slug: "openclaw", name: "OpenClaw" },
-  ];
-
-  it("collapses to a count", () => {
-    renderTray({ notInstalled: NOT_INSTALLED });
-    const toggle = screen.getByRole("button", { name: /not installed/i });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.textContent).toContain("2");
-    expect(screen.queryByText("OpenCode")).toBeNull();
-  });
-
-  it("expands to rows without switches: there is nothing to route", () => {
-    renderTray({ notInstalled: NOT_INSTALLED, notInstalledOpen: true });
-    expect(screen.getByText("OpenCode")).toBeTruthy();
-    // One switch per installed row only - the two absent tools add none.
-    expect(screen.getAllByRole("switch")).toHaveLength(GROUPS[0].apps.length);
-  });
-
-  it("is absent entirely when detection found everything installed", () => {
-    renderTray();
-    expect(screen.queryByRole("button", { name: /not installed/i })).toBeNull();
   });
 });
 

@@ -15,8 +15,7 @@ import { routingState, showsFraction } from "../../lib/routingState";
  * 400x700 quick-status surface the tray icon toggles, beside the full 1024x720
  * window. Header lockup with an "Expand app" hand-off, one master status card,
  * the same grouped rows the window's rail draws - at tray width, with a
- * status line per row - a collapsed "Not installed" section, the command-line
- * tools switch, and a footer naming the organization in front of an overflow
+ * status line per row - the command-line tools switch, and a footer naming the organization in front of an overflow
  * menu.
  *
  * Presentational, like `Sidebar`: every piece of state arrives as a prop so
@@ -26,6 +25,10 @@ import { routingState, showsFraction } from "../../lib/routingState";
  *
  * Deviations from the drawn frames, each deliberate:
  *
+ * - **No "Not installed" section.** `Connect/full frame` (738:37377) draws one,
+ *   collapsed to a count. Removed at the user's request on 2026-09-23: a quick
+ *   status view is about what is routing, and a tool that is not on the machine
+ *   has nothing to report.
  * - **The master card renders no switch.** Every tray frame draws that switch
  *   at opacity 0, so what the frame *renders* is a status card; the switches
  *   that act live on the rows, and the engine's own control stays in the full
@@ -58,21 +61,9 @@ import { routingState, showsFraction } from "../../lib/routingState";
 
 export type TrayMenuAction = "dashboard" | "support" | "docs" | "quit";
 
-/** A tool the detection scan saw but found not installed - the collapsed
- * "Not installed" section's rows. No switch: there is nothing to route, and a
- * connect would materialise a config for a tool the user does not have. */
-export interface TrayNotInstalledApp {
-  slug: string;
-  name: string;
-  logo?: ReactNode;
-}
-
 export function Tray({
   master,
   groups,
-  notInstalled,
-  notInstalledOpen,
-  onToggleNotInstalled,
   cli,
   orgName,
   onSwitchOrg,
@@ -92,9 +83,6 @@ export function Tray({
    * behind it would be a claim. */
   master?: { on: boolean };
   groups: SidebarGroup[];
-  notInstalled: TrayNotInstalledApp[];
-  notInstalledOpen: boolean;
-  onToggleNotInstalled: () => void;
   /** The shell-environment channel, drawn as its own card ("Command-line
    * tools"). Absent on Linux, where those variables are the system proxy and
    * cannot be declined separately. */
@@ -209,13 +197,6 @@ export function Tray({
               <TrayGroup key={group.id} group={group} onToggleApp={onToggleApp} />
             ))}
 
-            {notInstalled.length > 0 && (
-              <NotInstalledSection
-                apps={notInstalled}
-                open={notInstalledOpen}
-                onToggle={onToggleNotInstalled}
-              />
-            )}
 
             {cli && <CliCard cli={cli} />}
           </div>
@@ -482,63 +463,6 @@ function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
     >
       {logo ?? name.charAt(0)}
     </span>
-  );
-}
-
-/**
- * The tools detection saw and found absent, collapsed to a count
- * (`Connect/full frame` 738:37377: "Not installed · 8 ˅"). Only the collapsed
- * state is drawn; expanding lists the same row anatomy without a switch,
- * because there is nothing to route and a connect would write a config for a
- * tool the user does not have.
- */
-function NotInstalledSection({
-  apps,
-  open,
-  onToggle,
-}: {
-  apps: TrayNotInstalledApp[];
-  open: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <section className="flex shrink-0 flex-col gap-2">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="flex w-full items-baseline justify-between gap-2 rounded-sm text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14">
-          Not installed
-        </span>
-        <span className="flex items-center gap-3">
-          <span className="font-mono text-sm font-normal leading-5">{apps.length}</span>
-          <Icon
-            name="chevronDown"
-            size={20}
-            className={`transition-transform ${open ? "rotate-180" : ""}`}
-          />
-        </span>
-      </button>
-      {open && (
-        <ul className="divide-y divide-base-border overflow-hidden rounded-md border border-base-border bg-base-card shadow-base-xs">
-          {apps.map((app) => (
-            <li key={app.slug} className="flex items-center gap-3 p-2">
-              <AppTile name={app.name} logo={app.logo} />
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
-                  {app.name}
-                </span>
-                <span className="truncate text-base-2xs font-medium leading-4 text-base-muted-foreground">
-                  Not installed
-                </span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }
 

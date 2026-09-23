@@ -53,7 +53,7 @@ import { useToolMessages } from "./lib/toolMessages";
 import { orgLabel } from "./lib/orgLabel";
 import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
-import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
+import type { TrayMenuAction } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
 import { ErrorBanner, NoteBanner } from "./components/gc/banners";
@@ -125,7 +125,6 @@ export function TrayApp() {
    *  documents - and that sentence is false. Principle 6, one level up from
    *  a figure. */
   const [accountUnread, setAccountUnread] = useState(false);
-  const [notInstalledOpen, setNotInstalledOpen] = useState(false);
   /** The account's key prefix, which is what makes a replaced api key a different
    *  credential. Read back after every account read for the reason
    *  `activity_cache.rs` records: in api-key mode the org is whatever the gateway
@@ -777,14 +776,6 @@ export function TrayApp() {
     return grouped.filter((g) => g.apps.length > 0);
   }, [groups, apps, routingBusy]);
 
-  const notInstalled = useMemo<TrayNotInstalledApp[]>(
-    () =>
-      tools
-        .filter((t) => t.status.kind === "not_installed")
-        .map((t) => ({ slug: t.slug, name: t.name, logo: brandMarkFor(t.slug) })),
-    [tools],
-  );
-
   /**
    * The app switch, the same one the rail draws.
    *
@@ -955,9 +946,6 @@ export function TrayApp() {
     <Tray
       master={proxy ? { on: proxy.running } : undefined}
       groups={trayGroups}
-      notInstalled={notInstalled}
-      notInstalledOpen={notInstalledOpen}
-      onToggleNotInstalled={() => setNotInstalledOpen((v) => !v)}
       // Reported, not offered. The window's Settings pane owns this control -
       // the tray reports what the window decides and introduces no concept of
       // its own, the same rule the master card follows.

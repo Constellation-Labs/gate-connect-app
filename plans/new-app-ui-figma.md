@@ -1297,7 +1297,8 @@ the green set with `ShieldCheck` for "Gate is protecting you" - over a muted
 "On · 6 of 8 tools routing" line; the rail's groups as bordered cards
 (`shadow/xs`, rows divided by rules) under `mono/eyebrow` at **14px** (the
 rail's is 12) with the same protected-over-total counter; a collapsed **"Not
-installed" section** ("NOT INSTALLED · 8 ˅"); a **Command-line tools** card
+installed" section** ("NOT INSTALLED · 8 ˅"; drawn, and not built since
+2026-09-23 at the user's request); a **Command-line tools** card
 carrying the env-export switch with its own copy ("Sets HTTPS_PROXY for your
 whole shell, so OpenCode and other terminal tools route too."); and a 56px
 footer naming the org beside a 32px ellipsis button whose menu adds **Quit
