@@ -13,7 +13,7 @@ import { routingState, showsFraction } from "../../lib/routingState";
 /**
  * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
  * 400x700 quick-status surface the tray icon toggles, beside the full 1024x720
- * window. Header lockup with an "Expand app" hand-off, one master status card,
+ * window. Header lockup with an "Expand app" hand-off, one routing status card,
  * the same grouped rows the window's rail draws - at tray width, with a
  * status line per row - the command-line tools switch, and a footer naming the organization in front of an overflow
  * menu.
@@ -29,7 +29,7 @@ import { routingState, showsFraction } from "../../lib/routingState";
  *   collapsed to a count. Removed at the user's request on 2026-09-23: a quick
  *   status view is about what is routing, and a tool that is not on the machine
  *   has nothing to report.
- * - **The master card renders no switch.** Every tray frame draws that switch
+ * - **The routing card renders no switch.** Every tray frame draws that switch
  *   at opacity 0, so what the frame *renders* is a status card; the switches
  *   that act live on the rows, and the engine's own control stays in the full
  *   app. If the invisible switch was reserved space rather than a decision,
@@ -46,11 +46,12 @@ import { routingState, showsFraction } from "../../lib/routingState";
  *   having no width to print it. Rows the gateway cannot attribute - the chat
  *   domains, permanently - keep the two-line shape the design also draws (the
  *   compact `Other tools` rows in `Connect/routing`).
- * - **The master card's unhappy states are inferred** - only the equivalent of
+ * - **The routing card's unhappy states are inferred** - only the equivalent of
  *   "partly routed" and "Gate is protecting you" are drawn. Since AG-913 the
  *   words come from `lib/routingState`, shared with the topbar banner so the
- *   two surfaces cannot describe one reading differently, and the drawn
- *   "On/Off · N of M tools routing" sub-line carries the intent.
+ *   two surfaces cannot describe one reading differently. The drawn sub-line
+ *   is "On/Off · N of M tools routing"; the On/Off half is gone, because the
+ *   master switch it reported is gone - see `RoutingCard`.
  * - **Contact support is in the menu**, as `744:38201` draws it. It was omitted
  *   for as long as the address behind it 404'd; support resolved to the
  *   dashboard's own Overview page on 2026-09-07 (that is where the support
@@ -62,7 +63,7 @@ import { routingState, showsFraction } from "../../lib/routingState";
 export type TrayMenuAction = "dashboard" | "support" | "docs" | "quit";
 
 export function Tray({
-  master,
+  engine,
   groups,
   cli,
   orgName,
@@ -80,8 +81,12 @@ export function Tray({
 }: {
   /** The engine's observed state. Omit while the first proxy read is in
    * flight, and the card is omitted with it - a status card with no reading
-   * behind it would be a claim. */
-  master?: { on: boolean };
+   * behind it would be a claim.
+   *
+   * Named for the engine rather than a master, because there is no master:
+   * `running` is whether the launch enable succeeded, not a setting anybody
+   * chose. */
+  engine?: { running: boolean };
   groups: SidebarGroup[];
   /** The shell-environment channel, drawn as its own card ("Command-line
    * tools"). Absent on Linux, where those variables are the system proxy and
@@ -186,8 +191,8 @@ export function Tray({
         <SignedOutNote onExpand={onExpand} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
-          {master && <MasterCard on={master.on} groups={groups} />}
-          {/* Above the master card's siblings and below the card itself: it is
+          {engine && <RoutingCard running={engine.running} groups={groups} />}
+          {/* Above the routing card's siblings and below the card itself: it is
             * the most urgent thing on the popover, and it is also a statement
             * about the routing the card above describes. */}
           {recovery && <RecoveryCard recovery={recovery} />}
@@ -273,7 +278,13 @@ export function Tray({
  * `proxyMemberStatus` reports `protected` once it routes - so this hides
  * nothing the user chose.
  */
-function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
+function RoutingCard({
+  running,
+  groups,
+}: {
+  running: boolean;
+  groups: SidebarGroup[];
+}) {
   const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
   const routed = apps.filter((a) => countsAsRouted(a.status)).length;
   // The same reading the topbar banner takes, from the same module (AG-913).
@@ -282,6 +293,26 @@ function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
   // into "Not protected", which reports a fault the user caused on purpose.
   const state = routingState(routed, apps.length);
   const { tone, icon } = state;
+  // No fraction when the denominator is intent and the intent is nothing:
+  // "0 of 0 tools routing" reports a gap the user opened on purpose, with both
+  // halves of the ratio meaningless. Same call as the topbar banner's.
+  const fraction = showsFraction(state)
+    ? `${routed} of ${apps.length} tools routing`
+    : "";
+  // This line used to lead with "On" / "Off", from the engine's running flag
+  // standing in for a master switch. There is no such switch - routing is on
+  // for exactly as long as Gate Connect is open - so "On" was unfalsifiable
+  // furniture, and on the `none-requested` state, where the fraction beside it
+  // is suppressed, it was left asserting "On" directly under "No apps are set
+  // to route".
+  //
+  // The engine failing to come up is still worth printing, so it keeps its
+  // half in the words already decided for it elsewhere: a launch enable that
+  // did not complete reads "Didn’t start", never "Off", because "Off" sends
+  // the reader looking for a control that is not there.
+  const detail = [running ? "" : "Didn’t start", fraction]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div
       className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${
@@ -293,15 +324,11 @@ function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
         <h1 className="text-sm font-medium leading-5 text-base-foreground">
           {state.headline}
         </h1>
-        <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
-          {/* No fraction when the denominator is intent and the intent is
-            * nothing: "0 of 0 tools routing" reports a gap the user opened on
-            * purpose, with both halves of the ratio meaningless. Same call as
-            * the topbar banner's, and the same open question about the tone
-            * (question 23 in `docs/figma-questions-for-design.md`). */}
-          {on ? "On" : "Off"}
-          {showsFraction(state) ? ` · ${routed} of ${apps.length} tools routing` : ""}
-        </p>
+        {detail && (
+          <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
+            {detail}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -470,13 +497,13 @@ function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
  * frame's own copy - shorter than the rail card's, and naming the mechanism
  * (`HTTPS_PROXY`) outright.
  *
- * **A status card, not a switch**, which is the same call the master card makes
+ * **A status card, not a switch**, which is the same call the routing card makes
  * one section up and for the same reason: the tray reports what the window
  * decides, and it introduces no concept of its own. Two switches for one
  * machine-wide setting is what AG-893 reported, and the window's Settings pane
  * is where a setting belongs.
  *
- * The frame draws a switch here. So does every tray frame for the master card,
+ * The frame draws a switch here. So does every tray frame for the routing card,
  * at opacity 0 - see this file's header. The drawn control is kept as the
  * drawn LAYOUT and rendered as state, rather than as a second control that can
  * disagree with the first. */

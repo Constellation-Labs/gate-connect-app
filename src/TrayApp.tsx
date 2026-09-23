@@ -944,7 +944,7 @@ export function TrayApp() {
 
   return (
     <Tray
-      master={proxy ? { on: proxy.running } : undefined}
+      engine={proxy ? { running: proxy.running } : undefined}
       groups={trayGroups}
       // Reported, not offered. The window's Settings pane owns this control -
       // the tray reports what the window decides and introduces no concept of
