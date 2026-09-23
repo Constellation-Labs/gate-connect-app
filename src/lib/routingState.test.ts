@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { routingState, showsFraction, type RoutingStateKind } from "./routingState";
 
 /**
- * AG-913. The topbar banner and the tray's master card answer the same question
+ * AG-913. The topbar banner and the tray's routing card answer the same question
  * and used to answer it in different words, each losing a distinction the other
  * kept.
  */

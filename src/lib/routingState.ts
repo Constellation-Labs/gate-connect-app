@@ -2,7 +2,7 @@
  * How much of what the user asked for is actually routed, in one vocabulary
  * (AG-913).
  *
- * The topbar banner and the tray's master card answer the same question, and
+ * The topbar banner and the tray's routing card answer the same question, and
  * they used to answer it in different words and with different state models.
  * The banner said "Gate Connect is partly routing your apps" where the card
  * said "Partially routed"; worse, each drew a distinction the other lost. The
@@ -43,7 +43,7 @@ export interface RoutingState {
   /**
    * The sentence, for a surface with room for one.
    *
-   * Says "Gate", not "Gate Connect". The tray's master card is 360px wide and
+   * Says "Gate", not "Gate Connect". The tray's routing card is 360px wide and
    * the longest of these has to fit beside a 36px tile; the card's own frame
    * already writes "Gate is protecting you". Taking the narrow surface's
    * product name is what lets both draw one sentence, which is the whole point

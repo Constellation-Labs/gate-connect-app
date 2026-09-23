@@ -268,7 +268,7 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
  * `routingState` - would make the banner's copy depend on which KIND of
  * shortfall it was, which is a second vocabulary for one number.
  *
- * Four counters read this: the topbar's `protectedCount`, `MasterCard`, the
+ * Four counters read this: the topbar's `protectedCount`, `RoutingCard`, the
  * tray's per-group fraction and the rail's. They were four separate
  * `kind === "protected"` filters and are one predicate now, because four
  * copies of a pairing is four chances to disagree.

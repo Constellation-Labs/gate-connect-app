@@ -119,7 +119,7 @@ describe("the routing status card", () => {
    * a `chat` member). Counting it meant green required routing a session-cookie
    * surface nobody asked for, so the card was pinned to amber "1 of 2" forever
    * and disagreed with the topbar - which filters by intent - by exactly that
-   * row. Load-bearing: drop the `.filter((a) => a.on)` in `MasterCard` and this
+   * row. Load-bearing: drop the `.filter((a) => a.on)` in `RoutingCard` and this
    * goes back to "Partially routed".
    */
   it("does not count a row the user never switched on", () => {
@@ -130,8 +130,8 @@ describe("the routing status card", () => {
     expect(screen.getByText("1 of 1 tools routing")).toBeTruthy();
   });
 
-  it("reads not protected with nothing routing, carrying the Off intent", () => {
-    // The off state is not drawn; this pins the inferred vocabulary so a
+  it("reads not protected with nothing routing, and says the engine didn’t start", () => {
+    // The engine-down state is not drawn; this pins the inferred vocabulary so a
     // redesign replaces it deliberately rather than by accident.
     renderTray({
       engine: { running: false },

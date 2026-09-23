@@ -195,7 +195,7 @@ export function TrayApp() {
 
   /** Whether the last sweep landed. A failed one used to be indistinguishable
    *  from a quiet machine: the map stayed empty, every row rendered
-   *  `Not protected - Checking`, the master card read `0 of N`, and the polled
+   *  `Not protected - Checking`, the routing card read `0 of N`, and the polled
    *  path only re-swept when the tools/proxy signature CHANGED - so on an idle
    *  machine one failure at first load persisted until something moved. This
    *  surface has no refresh affordance, so nothing the user could do fixed it. */
@@ -969,7 +969,7 @@ export function TrayApp() {
       onToggleNotInstalled={() => setNotInstalledOpen((v) => !v)}
       // Reported, not offered. The window's Settings pane owns this control -
       // the tray reports what the window decides and introduces no concept of
-      // its own, the same rule the master card follows.
+      // its own, the same rule the routing card follows.
       cli={
         proxy?.env_export_separable ? { on: proxy.env_export_opted_in } : undefined
       }
