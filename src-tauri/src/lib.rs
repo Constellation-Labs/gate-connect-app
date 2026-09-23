@@ -2595,6 +2595,27 @@ fn security_feed_retry() {
     security_feed().retry_now();
 }
 
+/// Record the provider domains Gate switched on for one tool.
+///
+/// Recording only, like the preference it writes: the routing already happened
+/// through `proxy_set_domain`. This is what lets the matching disconnect switch
+/// off what Gate turned on and nothing else - see
+/// `preferences::auto_enabled_domains`.
+#[tauri::command]
+fn record_auto_enabled_domains(tool: String, domains: Vec<String>) -> Result<(), String> {
+    gate_connect_core::preferences::record_auto_enabled_domains(&tool, domains)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Read what Gate switched on for one tool, without clearing it.
+///
+/// The caller writes the record back once it knows what it actually managed to
+/// undo - see `preferences::read_auto_enabled_domains`.
+#[tauri::command]
+fn read_auto_enabled_domains(tool: String) -> Vec<String> {
+    gate_connect_core::preferences::read_auto_enabled_domains(&tool)
+}
+
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
@@ -4776,6 +4797,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            record_auto_enabled_domains,
+            read_auto_enabled_domains,
             install_id,
             device_name,
             set_device_name,
@@ -4851,6 +4874,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            record_auto_enabled_domains,
+            read_auto_enabled_domains,
             install_id,
             device_name,
             set_device_name,
