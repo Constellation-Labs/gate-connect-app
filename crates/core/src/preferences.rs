@@ -385,12 +385,14 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     save(&prefs)
 }
 
-/// Record the domains Gate switched on for `tool`, replacing any previous list.
+/// Record the domains Gate has switched on for `tool`, replacing any previous
+/// list.
 ///
-/// Replacing rather than merging: the caller computes the whole set from the
-/// tool's current coverage on every connect, so a merge would accumulate
-/// domains a config no longer points at and switch them off on a later
-/// disconnect that has nothing to do with them.
+/// A plain set rather than an add or a remove, because both directions need to
+/// write the whole truth: the connect writes what it already held plus what it
+/// just enabled, and the disconnect writes back whatever it failed to disable.
+/// The caller owns that arithmetic because only the caller knows which half it
+/// is doing - see `read_auto_enabled_domains` for why it is not a take.
 ///
 /// An empty list removes the entry rather than storing `[]`, so the file does
 /// not grow a row per tool that never needed one.
@@ -404,20 +406,25 @@ pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<(
     save(&prefs)
 }
 
-/// Read and clear what Gate switched on for `tool`.
+/// Read what Gate switched on for `tool`, without clearing it.
 ///
-/// Take rather than read: the caller is about to switch these off, and leaving
-/// the record behind would have a second disconnect switch off domains the
-/// person may have turned back on in between. Clearing first is also the safe
-/// direction if the disable then fails - Gate under-claims authorship rather
-/// than switching off something twice.
-pub fn take_auto_enabled_domains(tool: &str) -> Result<Vec<String>> {
-    let mut prefs = load();
-    let Some(domains) = prefs.auto_enabled_domains.remove(tool) else {
-        return Ok(Vec::new());
-    };
-    save(&prefs)?;
-    Ok(domains)
+/// **Read, not take.** An earlier version cleared here, on the argument that
+/// the caller was about to switch these off anyway and clearing first was the
+/// safe direction. That was true while the domain still had a row to be
+/// switched off from. It does not survive `TOOL_MANAGED_DOMAINS`: if the
+/// disconnect or the disable then fails, the record is gone, the domain is
+/// still on, and nothing on screen can turn it off - the next disconnect reads
+/// an empty list. Under-claiming strands; over-claiming costs one extra
+/// `proxy_set_domain` that is already idempotent.
+///
+/// So the caller reads, does the work, and writes back what it did not manage
+/// to undo.
+pub fn read_auto_enabled_domains(tool: &str) -> Vec<String> {
+    load()
+        .auto_enabled_domains
+        .get(tool)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Set one tool's model choice, leaving every other tool alone.

@@ -998,10 +998,11 @@ export const setNotifications = (enabled: boolean) =>
 export const recordAutoEnabledDomains = (tool: string, domains: string[]) =>
   invoke<void>("record_auto_enabled_domains", { tool, domains });
 
-/** Read and clear what Gate switched on for one tool, so the caller can undo
- *  exactly that. Empty when Gate turned nothing on for it. */
-export const takeAutoEnabledDomains = (tool: string) =>
-  invoke<string[]>("take_auto_enabled_domains", { tool });
+/** Read what Gate switched on for one tool, without clearing it. The caller
+ *  writes the record back once it knows what it actually undid. Empty when
+ *  Gate turned nothing on for it. */
+export const readAutoEnabledDomains = (tool: string) =>
+  invoke<string[]>("read_auto_enabled_domains", { tool });
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });

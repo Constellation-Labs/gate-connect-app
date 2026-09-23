@@ -18,7 +18,7 @@ vi.mock("./api", () => ({
   proxyUntrustCa: vi.fn(),
   hermesUpstreamCoverage: vi.fn(),
   recordAutoEnabledDomains: vi.fn(),
-  takeAutoEnabledDomains: vi.fn(),
+  readAutoEnabledDomains: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // The log lines are the only trace some of these paths leave, so a test has
@@ -33,7 +33,7 @@ import {
   connectTool,
   disconnectTool,
   recordAutoEnabledDomains,
-  takeAutoEnabledDomains,
+  readAutoEnabledDomains,
   listTools,
   proxyDisable,
   proxyEnable,
@@ -105,7 +105,7 @@ beforeEach(() => {
   (proxySetEnvExport as Mock).mockResolvedValue(proxyState());
   (proxyUntrustCa as Mock).mockResolvedValue(proxyState({ ca_trusted: false }));
   (recordAutoEnabledDomains as Mock).mockResolvedValue(undefined);
-  (takeAutoEnabledDomains as Mock).mockResolvedValue([]);
+  (readAutoEnabledDomains as Mock).mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -725,13 +725,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // Recording a domain whose enable failed would have the next disconnect
     // switch off a row Gate never switched on, which is the one thing the
     // record exists to stop.
-    (hermesUpstreamCoverage as Mock).mockResolvedValue({
-      ...off,
-      switched_off: [
-        { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
-        { slug: "openai", hosts: ["api.openai.com"], tools: [] },
-      ],
-    });
+    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     (proxySetDomain as Mock).mockRejectedValueOnce("engine refused");
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
@@ -739,11 +733,85 @@ describe("useRouting: Hermes and the provider it talks to", () => {
       await api.current!.setAppRouted("hermes", true);
     });
 
-    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openai"]);
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", []);
+  });
+
+  it("leaves alone the domains Hermes points at but does not own", async () => {
+    // `switched_off` is not only OpenRouter. A Hermes configured against
+    // api.anthropic.com comes back with `anthropic`, whose row is still drawn
+    // and still the person's to manage - and recording it would have Hermes'
+    // OFF switch end Claude's interception from a control that never mentions
+    // Claude. The decision that removed the dialog was about OpenRouter.
+    (hermesUpstreamCoverage as Mock).mockResolvedValue({
+      ...off,
+      switched_off: [
+        { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
+        { slug: "anthropic", hosts: ["api.anthropic.com"], tools: ["claude-code"] },
+      ],
+    });
+    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", true);
+    });
+
+    expect(proxySetDomain).toHaveBeenCalledOnce();
+    expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
+    // Said out loud, like `unknown`: it is the one trace the window leaves of
+    // traffic Gate is not reading.
+    expect(logInfo).toHaveBeenCalledWith(expect.stringMatching(/does not own/));
+  });
+
+  it("keeps the record when a reconnect enables nothing", async () => {
+    // The coverage read answers "what is switched OFF", so a second connect
+    // over an already-routed Hermes enables nothing. Replacing the record with
+    // that empty list wiped it, and the domain has no row - a drifted config
+    // taken through "Replace config and protect" is the path that gets here.
+    (hermesUpstreamCoverage as Mock).mockResolvedValue(covered);
+    (readAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", true);
+    });
+
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
+  });
+
+  it("keeps claiming a domain whose disable failed", async () => {
+    // The record is read before the disconnect and written back after, so a
+    // disable that does not land stays claimed. Taking it up front left the
+    // domain on, unrecorded, and unreachable - the next disconnect would read
+    // an empty list.
+    (readAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    (proxySetDomain as Mock).mockRejectedValueOnce("engine refused");
+    const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", false);
+    });
+
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
+  });
+
+  it("keeps the record when the disconnect itself fails", async () => {
+    (readAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    (disconnectTool as Mock).mockRejectedValue("config write failed");
+    const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", false);
+    });
+
+    // Nothing switched off and nothing rewritten: the record still says
+    // `openrouter`, so the next attempt can still give it back.
+    expect(proxySetDomain).not.toHaveBeenCalled();
+    expect(recordAutoEnabledDomains).not.toHaveBeenCalled();
   });
 
   it("gives back exactly what it turned on when Hermes goes off", async () => {
-    (takeAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    (readAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
     const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
 
     await act(async () => {
@@ -761,7 +829,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // Somebody who enabled `openrouter` from the CLI, or answered the
     // popover's own notice, is not in the record - so Hermes' switch must not
     // reach it. This is the case the whole record exists for.
-    (takeAutoEnabledDomains as Mock).mockResolvedValue([]);
+    (readAutoEnabledDomains as Mock).mockResolvedValue([]);
     const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
 
     await act(async () => {
@@ -776,13 +844,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // By the time the domain is flipped Hermes' config is on disk. Marking the
     // Hermes row as a failed write would say the opposite of what happened,
     // and the second provider still gets its turn.
-    (hermesUpstreamCoverage as Mock).mockResolvedValue({
-      ...off,
-      switched_off: [
-        { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
-        { slug: "openai", hosts: ["api.openai.com"], tools: [] },
-      ],
-    });
+    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     (proxySetDomain as Mock).mockRejectedValueOnce("engine refused");
     const { api, onError } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
@@ -791,8 +853,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     });
 
     expect(connectTool).toHaveBeenCalledOnce();
-    expect(proxySetDomain).toHaveBeenCalledTimes(2);
-    expect(proxySetDomain).toHaveBeenLastCalledWith("openai", true);
+    expect(proxySetDomain).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith("engine refused", "domain");
     expect(onError).not.toHaveBeenCalledWith(expect.anything(), "connect");
     expect(api.current!.writeFailures.has("hermes")).toBe(false);
@@ -872,7 +933,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     // A fresh fixture whose member is actually routed: `cascadeTargets` skips
     // members already in the target state, so turning off a group built from
     // a `detected` tool moves nothing and the domain would never be reached.
-    (takeAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    (readAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
     const routedGroup = group([
       configMember({
         key: "hermes",

@@ -2607,10 +2607,13 @@ fn record_auto_enabled_domains(tool: String, domains: Vec<String>) -> Result<(),
         .map_err(|e| format!("{e:#}"))
 }
 
-/// Read and clear what Gate switched on for one tool, for the caller to undo.
+/// Read what Gate switched on for one tool, without clearing it.
+///
+/// The caller writes the record back once it knows what it actually managed to
+/// undo - see `preferences::read_auto_enabled_domains`.
 #[tauri::command]
-fn take_auto_enabled_domains(tool: String) -> Result<Vec<String>, String> {
-    gate_connect_core::preferences::take_auto_enabled_domains(&tool).map_err(|e| format!("{e:#}"))
+fn read_auto_enabled_domains(tool: String) -> Vec<String> {
+    gate_connect_core::preferences::read_auto_enabled_domains(&tool)
 }
 
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
@@ -4795,7 +4798,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             set_notifications,
             set_share_diagnostics,
             record_auto_enabled_domains,
-            take_auto_enabled_domains,
+            read_auto_enabled_domains,
             install_id,
             device_name,
             set_device_name,
@@ -4872,7 +4875,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             set_notifications,
             set_share_diagnostics,
             record_auto_enabled_domains,
-            take_auto_enabled_domains,
+            read_auto_enabled_domains,
             install_id,
             device_name,
             set_device_name,
