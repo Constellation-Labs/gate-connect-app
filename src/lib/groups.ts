@@ -342,9 +342,8 @@ export function hasBrowserSurface(member: GroupMember): boolean {
 export function hostReloadAdvice(
   moved: GroupMember[],
 ): { title: string; body: string } | undefined {
-  // Deduplicated and in draw order, the same treatment `SessionConsentDialog`
-  // gives them: two members can name one host, and a banner that says
-  // "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
+  // Deduplicated and in draw order: two members can name one host, and a
+  // banner that says "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
   const hosts = [...new Set(moved.filter(hasBrowserSurface).flatMap((m) => m.domain?.hosts ?? []))];
   if (hosts.length === 0) return undefined;
   return {
@@ -1063,7 +1062,6 @@ export function sectionMemberKeys(id: string): readonly string[] {
 export function isProviderEndpoint(id: string): boolean {
   return SECTIONS.find((s) => s.id === id)?.providerEndpoint === true;
 }
-
 
 /** Which kind of exception `groupSummary` found, so a row can give the sentence
  * its own ink instead of printing every severity in the same grey. Reality is

@@ -185,8 +185,6 @@ impl Default for Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
-            // Empty is "never asked", which is the only honest default: an
-            // install that has not been asked has not consented.
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,

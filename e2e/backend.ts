@@ -210,10 +210,6 @@ export interface BackendState {
         screen said before this existed; a spec that wants the deliberate
         sign-out copy sets it true. */
     signed_out_deliberately: boolean;
-    /** Section ids whose switch the person has agreed may route a surface they
-        are signed in to. Empty is "never asked", which is what a fresh install
-        is - so an app switch over a session surface raises its dialog, and a
-        spec that does not want to answer it pre-fills this instead. */
   };
   routedClientsStale: boolean;
   runningAgents: number;
