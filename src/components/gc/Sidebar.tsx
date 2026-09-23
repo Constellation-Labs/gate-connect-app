@@ -246,7 +246,9 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
   drifted: { label: "Config drifted", className: "text-amber-600" },
   reopen: { label: "Reopen to finish", className: "text-amber-600" },
   "partly-protected": { label: "Partly protected", className: "text-amber-600" },
-  "not-routed": { label: "Not routed", className: "text-amber-600" },
+  // Grey, not amber: `status-label` status=not-routed (434:134) resolves
+  // `base/muted-foreground`, where not-protected beside it is amber-600.
+  "not-routed": { label: "Not routed", className: "text-base-muted-foreground" },
   // Amber, not green. It is the honest colour: something the user would want
   // to know about, and not a failure they caused.
   "not-inspected": { label: "Routed, not inspected", className: "text-amber-600" },
