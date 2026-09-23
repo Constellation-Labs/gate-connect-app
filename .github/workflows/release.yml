@@ -37,7 +37,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config libnss3-tools
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -173,6 +173,46 @@ jobs:
           (cd "$BUNDLE" && "./$NAME" --appimage-extract >/dev/null)
           rm -f "$BUNDLE"/squashfs-root/usr/lib/libwayland-*.so*
           rm -f "$BUNDLE"/squashfs-root/usr/lib/libdbus-1.so*
+
+          # Bundle certutil, which the .deb gets from its libnss3-tools
+          # dependency and the AppImage has no way to ask for. Without it
+          # `ca_linux::ensure_trusted_nss` cannot write ~/.pki/nssdb, so Chrome
+          # and every Electron app reject each intercepted host with a
+          # certificate error while curl and the system store are happy.
+          #
+          # The binary and its NSS/NSPR libraries go in a private directory
+          # behind a wrapper, NOT in usr/lib: everything there is on the
+          # LD_LIBRARY_PATH of the app and whatever it spawns, and a browser
+          # launched from the app would load this 22.04 NSS in place of its
+          # own. The wrapper REPLACES LD_LIBRARY_PATH rather than prepending,
+          # so certutil sees only these libraries plus the host's glibc and
+          # sqlite. libsoftokn3/libfreebl3 are dlopen'd from beside libnss3,
+          # which is why every .so from both packages comes along, not just
+          # what ldd lists. `usr/bin` leads the AppImage's PATH, so the
+          # `Command::new("certutil")` lookup finds the wrapper unchanged.
+          NSS_DIR="$BUNDLE/squashfs-root/usr/lib/nss-tools"
+          mkdir -p "$NSS_DIR"
+          cp /usr/bin/certutil "$NSS_DIR/certutil"
+          dpkg -L libnss3 libnspr4 | grep -E '\.so(\.[0-9]+)*$' | xargs -I{} cp -P {} "$NSS_DIR/"
+          cat > "$BUNDLE/squashfs-root/usr/bin/certutil" <<'WRAPPER'
+          #!/bin/sh
+          here="$(dirname "$(readlink -f "$0")")/../lib/nss-tools"
+          LD_LIBRARY_PATH="$here" exec "$here/certutil" "$@"
+          WRAPPER
+          chmod +x "$BUNDLE/squashfs-root/usr/bin/certutil"
+
+          # Prove the bundled copy works on its own before shipping it: a
+          # database created, a root added with the trust flags the app uses,
+          # and read back. Any missing library fails here rather than on a
+          # user's machine, where the only symptom is a browser cert error.
+          NSS_TEST=$(mktemp -d)
+          "$BUNDLE/squashfs-root/usr/bin/certutil" -N -d "sql:$NSS_TEST" --empty-password
+          "$BUNDLE/squashfs-root/usr/bin/certutil" -A -d "sql:$NSS_TEST" -t "C,," -n probe \
+            -i /etc/ssl/certs/ISRG_Root_X1.pem
+          "$BUNDLE/squashfs-root/usr/bin/certutil" -L -d "sql:$NSS_TEST" -n probe -a >/dev/null
+          rm -rf "$NSS_TEST"
+          echo "Bundled certutil verified"
+
           rm -f "$APPIMAGE"
           ARCH=x86_64 /tmp/squashfs-root/AppRun "$BUNDLE/squashfs-root" "$APPIMAGE"
 

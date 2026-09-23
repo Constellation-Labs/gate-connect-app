@@ -1449,6 +1449,11 @@ export function App() {
         // a security fact to the reassuring answer is the wrong direction
         // even where nothing visible currently depends on it.
         caTrusted={proxy?.ca_trusted ?? false}
+        // Null stays null: no reading is not a negative one. Only a recorded
+        // `trusted` counts as held, so a missing certutil raises the card.
+        caNssTrusted={
+          proxy?.ca_nss_trust == null ? null : proxy.ca_nss_trust === "trusted"
+        }
         showProxy={showProxy}
         tools={tools}
         domains={visibleDomains}
