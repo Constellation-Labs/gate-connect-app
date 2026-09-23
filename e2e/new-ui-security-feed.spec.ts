@@ -186,18 +186,22 @@ test.describe("new UI security feed", () => {
     await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
   });
 
-  test("opening an event offers the dashboard and keeps the summary up", async ({ boot }) => {
+  test("a row goes straight to the dashboard", async ({ boot }) => {
+    // This used to open `SecurityEventDialog` - AC7's "the summary stays
+    // visible until the matching dashboard detail opens" - and click through
+    // it. Product removed that step on 2026-09-23, so one click is the whole
+    // journey and there is no summary to keep up.
     const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
+
     await feed(app.page).getByRole("button", { name: /View/ }).click();
 
-    // AC7: the summary is what stays visible until the dashboard has the event.
-    await expect(app.page.getByRole("heading", { name: "Blocked request" })).toBeVisible();
-    await expect(app.page.getByText("req-8f3c")).toBeVisible();
-
-    await app.page.getByRole("button", { name: "Open in dashboard" }).click();
     await expect
       .poll(() => app.lastCall("plugin:opener|open_url"))
       .toMatchObject({ url: expect.stringContaining("messages/req-8f3c") });
+    // And nothing in between: a dialog here would mean the removal only got as
+    // far as the wiring.
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Blocked request" })).toHaveCount(0);
   });
 
   test("a long-running window keeps a bounded feed", async ({ boot }) => {

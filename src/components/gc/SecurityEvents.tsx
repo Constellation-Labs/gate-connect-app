@@ -2,7 +2,6 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
 import { BADGE_STYLES, Card, EmptyNote, Pill, Skeleton } from "./base";
-import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 
 /**
@@ -136,7 +135,10 @@ export interface SecurityEventsProps {
    *  combination that rendered as "No security events". */
   historyUnavailable?: boolean;
   onRetry: () => void;
-  onOpenEvent: (event: SecurityEvent) => void;
+  /** Open this event in the Gate dashboard. The row's own control, and the
+   *  whole of what a row leads to since 2026-09-23 - see the note on the
+   *  button. */
+  onOpenInDashboard: (event: SecurityEvent) => void;
 }
 
 export function SecurityEvents({
@@ -145,7 +147,7 @@ export function SecurityEvents({
   unavailable,
   historyUnavailable,
   onRetry,
-  onOpenEvent,
+  onOpenInDashboard,
 }: SecurityEventsProps) {
   // Newest first on screen: a feed is read from the top, and the event a user
   // scrolled down here for is the one that just happened.
@@ -297,9 +299,16 @@ export function SecurityEvents({
                       {e.model ?? UNATTRIBUTED}
                     </td>
                     <td className="py-3 text-right">
+                      {/* Straight to the dashboard. This opened
+                          `SecurityEventDialog` - a summary of the same six
+                          fields the row already draws, with an "Open in
+                          dashboard" button under it - until product removed
+                          that step on 2026-09-23. The external-link icon was
+                          always here and was misleading while it opened a
+                          dialog; it is accurate now. */}
                       <button
                         type="button"
-                        onClick={() => onOpenEvent(e)}
+                        onClick={() => onOpenInDashboard(e)}
                         className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs text-base-foreground shadow-base-btn-sm"
                       >
                         View
@@ -331,64 +340,5 @@ export function SecurityEvents({
         )}
       </Card>
     </div>
-  );
-}
-
-/**
- * One event's summary, and the way through to the dashboard (AC2, AC7).
- *
- * The dialog does **not** close when Open in dashboard is clicked. AC7 asks for
- * the summary to stay visible "until the matching dashboard detail opens", and
- * opening a browser is a thing that can fail: the opener returns a classified
- * error rather than throwing, so on a failure the user is left looking at the
- * event they asked about instead of at the pane behind a banner. The caller
- * closes it once the open succeeded.
- *
- * Nothing here is content. The fields are the same six the row draws, which is
- * all the payload carries - there is no "show more" behind this, deliberately,
- * because the evidence it would show is what AC3 forbids.
- */
-export function SecurityEventDialog({
-  event,
-  onClose,
-  onOpenDashboard,
-}: {
-  event: SecurityEvent;
-  onClose: () => void;
-  onOpenDashboard: () => void;
-}) {
-  const action = ACTION_LABEL[event.action];
-  return (
-    <Modal
-      icon={event.action === "block" ? "shieldBan" : "triangleAlert"}
-      tone={event.action === "block" ? "danger" : "warning"}
-      title={`${action.label} request`}
-      subtitle={eventTime(event.at)}
-      width={512}
-      closeButton
-      onDismiss={onClose}
-      secondary={{ label: "Close", onClick: onClose }}
-      primary={{ label: "Open in dashboard", onClick: onOpenDashboard }}
-    >
-      <dl className="flex flex-col gap-2 text-base-xs">
-        {[
-          ["Category", event.category],
-          ["Tool", event.tool],
-          ["Model", event.model],
-          ["Provider", event.provider],
-        ].map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-4">
-            <dt className="text-base-muted-foreground">{label}</dt>
-            <dd className="text-base-foreground">{value ?? UNATTRIBUTED}</dd>
-          </div>
-        ))}
-        <div className="flex items-baseline justify-between gap-4">
-          <dt className="text-base-muted-foreground">Request</dt>
-          {/* Mono: an identifier, and the one thing on this dialog the user
-              might read back to support. */}
-          <dd className="font-mono text-base-foreground">{event.requestId}</dd>
-        </div>
-      </dl>
-    </Modal>
   );
 }

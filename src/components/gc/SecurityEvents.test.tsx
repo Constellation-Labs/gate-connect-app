@@ -23,7 +23,7 @@ function section(props: Partial<Parameters<typeof SecurityEvents>[0]> = {}) {
       loading={false}
       unavailable={false}
       onRetry={() => {}}
-      onOpenEvent={() => {}}
+      onOpenInDashboard={() => {}}
       {...props}
     />
   );
@@ -169,12 +169,14 @@ describe("what a row shows, and what it must not", () => {
 
 describe("opening an event", () => {
   it("hands the whole event to the caller rather than a bare id", () => {
-    // AC7 needs the summary to stay on screen until the dashboard opens, so the
-    // shell needs the event itself, not just something to build a URL from.
-    const onOpenEvent = vi.fn();
-    render(section({ events: [blocked], onOpenEvent }));
+    // The row leads straight to the dashboard since 2026-09-23; the summary
+    // dialog that used to sit between them is gone. Still the whole event
+    // rather than a request id, so the shell is not the only thing that could
+    // ever build a URL from it.
+    const onOpenInDashboard = vi.fn();
+    render(section({ events: [blocked], onOpenInDashboard }));
     fireEvent.click(screen.getByRole("button", { name: /View/ }));
-    expect(onOpenEvent).toHaveBeenCalledWith(blocked);
+    expect(onOpenInDashboard).toHaveBeenCalledWith(blocked);
   });
 
   it("retries on demand when the feed is unavailable", () => {
