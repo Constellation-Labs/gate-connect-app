@@ -31,10 +31,9 @@ import { Icon } from "./Icon";
  */
 
 /** Anchor for anything that navigates *to* the feed rather than to the pane
- *  it now lives on - today the tray's security card, through
- *  `security-events-requested`. The
- *  Token savings section above it carries the same kind of target for the same
- *  kind of caller; see `Overview`'s `SAVINGS_SECTION_ID`. */
+ *  it now lives on. Nothing does today; the tray's security card did, and was
+ *  removed. The Token savings section above it carries the same kind of target;
+ *  see `Overview`'s `SAVINGS_SECTION_ID`. */
 export const SECURITY_SECTION_ID = "security-events";
 
 /** What the feed's own connection is doing, in the design's words.
@@ -165,7 +164,7 @@ export function SecurityEvents({
     // The pane's own `gap-4` separated the notice from the card while this was a
     // screen; as a section it has to carry that itself, so the two arrive as one
     // child of the pane. The id and `scroll-mt-6` are on the wrapper rather than
-    // the card so a jump from the tray lands above the notice, not past it -
+    // the card so a jump to the section lands above the notice, not past it -
     // that notice is the one thing on screen saying the list is incomplete.
     <div id={SECURITY_SECTION_ID} className="flex scroll-mt-6 flex-col gap-4">
       {/* Rows on screen and a failed catch-up is not the empty case, so it does
@@ -210,9 +209,7 @@ export function SecurityEvents({
               security feed is down - on the pane the window opens on, every
               cold launch. A pill is a reading and there is no reading yet,
               which is the same rule the empty cell below follows when it
-              refuses to say "No security events" before the answer is in. The
-              tray's card already declines the claim by hiding itself while
-              loading; this is that, at window size.
+              refuses to say "No security events" before the answer is in.
 
               The region stays mounted through both states and only its contents
               swap. A live region that appears with its text already in it is the

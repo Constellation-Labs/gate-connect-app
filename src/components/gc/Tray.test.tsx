@@ -34,9 +34,6 @@ function trayProps(
   return {
     engine: { running: true, starting: false },
     groups: GROUPS,
-    notInstalled: [],
-    notInstalledOpen: false,
-    onToggleNotInstalled: noop,
     orgName: "Acme Engineering",
     onToggleApp: noop,
     onExpand: noop,
@@ -65,7 +62,7 @@ const withFigures = (figures: Pick<Row, "messages" | "alerts">) => [
 const withAlerts = (alerts: Row["alerts"]) => withFigures({ alerts });
 
 /** The named app's own row, so a figure cannot be matched off a neighbouring row
- *  or off the security card. */
+ *  or off a card above the rows. */
 const rowOf = (name: string) => screen.getByText(name).closest("li");
 const row = (name: string) => rowOf(name)?.textContent ?? "";
 
@@ -251,85 +248,6 @@ describe("the routing status card", () => {
   });
 });
 
-/**
- * The count needs a scope on screen, and "recent" is the only one that is true.
- *
- * Stated as a bare absolute, "No security events" sat beside an Overview
- * reporting blocked traffic in the last 24 hours and read as a broken feed - and
- * the LIVE pill next to it made that reading worse, not better. The scope lived
- * in the component's docstring and nowhere the user could see it.
- *
- * The first attempt at a scope was "since Gate Connect started", and that is
- * the claim these tests now pin *against*: the figure is
- * `securityFeed.events.length`, an array capped at `FEED_CAPACITY` with the
- * oldest evicted and emptied outright whenever the credential changes. So a
- * busy machine would read "200 events since Gate Connect started" with the true
- * number in the thousands, and two seconds after an org switch it would read
- * none. "Recent" survives the cap, the clear and a genuinely quiet run, which
- * is why the word went into the count itself rather than onto a second line.
- *
- * An earlier version of this docstring asserted the launch scope and said the
- * card "has to say so", which is the exact sentence the component stopped
- * saying - it was left behind when the copy was fixed, contradicted by the
- * inline comment three lines below it.
- */
-describe("the security card", () => {
-  it("draws nothing at all when there is nothing to report", () => {
-    // The card is an undrawn addition (AG-578) and its zero state was the least
-    // defensible part of it: a row reading "No recent security events" is
-    // furniture on a 400px surface, and its absence says the same thing.
-    renderTray({ security: { state: "live", count: 0, onOpen: noop } });
-
-    expect(screen.queryByText(/recent security event/)).toBeNull();
-  });
-
-  it("scopes a non-empty count the same way", () => {
-    renderTray({ security: { state: "live", count: 3, onOpen: noop } });
-
-    expect(screen.getByText("3 recent security events")).toBeTruthy();
-  });
-
-  /**
-   * Principle 6's last step: an offline feed is not reading, so its zero is not
-   * a reading. "No recent security events" beside an OFFLINE pill asserts a
-   * quiet machine when what actually happened is that nobody looked - the same
-   * class of overclaim as the two absolutes this card already dropped, just
-   * quieter for being technically the count of an empty buffer.
-   */
-  it("says the feed is unavailable rather than reporting none while offline", () => {
-    renderTray({ security: { state: "offline", count: 0, onOpen: noop } });
-
-    // Still drawn, unlike the quiet case above: this one is not a quiet machine
-    // but a broken reading, which is the difference principle 6 is about.
-    expect(screen.getByText("Security events unavailable")).toBeTruthy();
-    expect(screen.queryByText(/No recent security events/)).toBeNull();
-  });
-
-  it("still draws for a reconnecting feed with an empty buffer", () => {
-    // `reconnecting` is a reading that did not happen, exactly like `offline`.
-    // Hiding it made a failed re-read after a live one render nothing at all,
-    // indistinguishable from a quiet machine.
-    renderTray({ security: { state: "reconnecting", count: 0, onOpen: noop } });
-
-    expect(screen.getByText("Security events unavailable")).toBeTruthy();
-    expect(screen.queryByText(/No recent security events/)).toBeNull();
-  });
-
-  /** Reconnecting still counts: the buffer it counts is real, and the pill
-   *  beside it already says the stream is catching up. */
-  it("keeps a real count while reconnecting", () => {
-    renderTray({ security: { state: "reconnecting", count: 2, onOpen: noop } });
-
-    expect(screen.getByText("2 recent security events")).toBeTruthy();
-  });
-
-  it("counts one event in the singular", () => {
-    renderTray({ security: { state: "live", count: 1, onOpen: noop } });
-
-    expect(screen.getByText("1 recent security event")).toBeTruthy();
-  });
-});
-
 describe("the group rows", () => {
   it("draws the eyebrow with its protected-over-total counter", () => {
     renderTray();
@@ -391,33 +309,6 @@ describe("the group rows", () => {
   });
 });
 
-describe("the not-installed section", () => {
-  const NOT_INSTALLED = [
-    { slug: "opencode", name: "OpenCode" },
-    { slug: "openclaw", name: "OpenClaw" },
-  ];
-
-  it("collapses to a count", () => {
-    renderTray({ notInstalled: NOT_INSTALLED });
-    const toggle = screen.getByRole("button", { name: /not installed/i });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.textContent).toContain("2");
-    expect(screen.queryByText("OpenCode")).toBeNull();
-  });
-
-  it("expands to rows without switches: there is nothing to route", () => {
-    renderTray({ notInstalled: NOT_INSTALLED, notInstalledOpen: true });
-    expect(screen.getByText("OpenCode")).toBeTruthy();
-    // One switch per installed row only - the two absent tools add none.
-    expect(screen.getAllByRole("switch")).toHaveLength(GROUPS[0].apps.length);
-  });
-
-  it("is absent entirely when detection found everything installed", () => {
-    renderTray();
-    expect(screen.queryByRole("button", { name: /not installed/i })).toBeNull();
-  });
-});
-
 describe("the command-line tools card", () => {
   it("reports the channel's state rather than offering a switch", () => {
     // The tray introduces no concept of its own: the window's Settings pane
@@ -444,83 +335,6 @@ describe("the command-line tools card", () => {
   it("is absent where the channel is not separable", () => {
     renderTray();
     expect(screen.queryByText("Command-line tools")).toBeNull();
-  });
-});
-
-describe("the reopen notice", () => {
-  it("names the route the tool is still on", () => {
-    // AG-584: a pending change shows Needs attention with Reopen required, **the
-    // route in use**, and Reopen tool. The first and last were here; the
-    // sentence used to gesture at the route - "the route it started with" -
-    // without saying which address that is.
-    renderTray({
-      reopen: { names: ["Claude Code"], route: "http://127.0.0.1:8123/anthropic", onReopen: vi.fn() },
-    });
-    expect(screen.getByText(/Claude Code is still on/)).toBeTruthy();
-    expect(screen.getByText("http://127.0.0.1:8123/anthropic")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
-  });
-
-  it("falls back to the phrase when no route was measured", () => {
-    // What one waiting tool now looks like in practice: `route_in_use` is null
-    // on every verdict the backend sends, because nothing can read where a
-    // running process is pointed. The card keeps the `route` prop for a future
-    // reading, and must read correctly without one - naming an endpoint here
-    // from anything less than a measurement is a claim about the user's
-    // traffic.
-    renderTray({ reopen: { names: ["Claude Code"], route: null, onReopen: vi.fn() } });
-    expect(
-      screen.getByText(/Claude Code is on the route it started with/),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Close tool" })).toBeTruthy();
-  });
-
-  it("does not truncate the address it exists to name", () => {
-    // At this width "Claude Code is still on " leaves roughly 26 characters, and
-    // the relay routes we produce are longer - so `truncate` cut the one thing
-    // the AC asks to be named, which is less use than the vague phrase it
-    // replaced. It wraps instead.
-    const route = "http://127.0.0.1:8123/anthropic";
-    renderTray({ reopen: { names: ["Claude Code"], route, onReopen: vi.fn() } });
-
-    const address = screen.getByText(route);
-    expect(address.className).toContain("break-all");
-    expect(address.closest("p")?.className).not.toContain("truncate");
-  });
-
-  it("keeps the plural phrase even if a caller passes a route for several tools", () => {
-    // The singular is the caller's invariant (`reopenPending.length === 1`), and
-    // this card must not depend on it being kept one file away: testing `many`
-    // first means a later change there reads as the plural phrase rather than
-    // "Claude Code, Codex is still on <one address>".
-    renderTray({
-      reopen: {
-        names: ["Claude Code", "Codex"],
-        route: "http://127.0.0.1:8123/anthropic",
-        onReopen: vi.fn(),
-      },
-    });
-    expect(
-      screen.getByText(/Claude Code, Codex are on the route they started with/),
-    ).toBeTruthy();
-    expect(screen.queryByText("http://127.0.0.1:8123/anthropic")).toBeNull();
-  });
-
-  it("keeps the phrase when several tools wait, since their routes can differ", () => {
-    // One address under two names would be wrong about at least one of them.
-    renderTray({
-      reopen: { names: ["Claude Code", "Codex"], route: null, onReopen: vi.fn() },
-    });
-    expect(
-      screen.getByText(/Claude Code, Codex are on the route they started with/),
-    ).toBeTruthy();
-  });
-
-  it("reopens on the card's own action", () => {
-    const onReopen = vi.fn();
-    renderTray({ reopen: { names: ["Codex"], route: null, onReopen } });
-    screen.getByRole("button", { name: "Close tool" }).click();
-    expect(onReopen).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -686,8 +500,9 @@ describe("signed out", () => {
 /**
  * The alert half of the drawn activity line (`Tray`'s docstring records why the
  * message half is not here). What is worth asserting is the distinction the
- * figure exists to hold: a measured zero says so in words, and a row the feed
- * cannot attribute draws nothing at all rather than a `0` nobody measured.
+ * figure exists to hold: a zero draws no alert half, since no frame words one,
+ * and a row the feed cannot attribute draws nothing at all rather than a `0`
+ * nobody measured.
  */
 describe("the row activity line", () => {
   it("draws the count under the status", () => {
@@ -697,9 +512,9 @@ describe("the row activity line", () => {
     expect(row("Claude Code")).toContain("23 alerts");
   });
 
-  it("says a measured zero in words, and counts one in the singular", () => {
+  it("draws no alert half for a zero, and counts one in the singular", () => {
     renderTray({ groups: withAlerts({ kind: "count", count: 0 }) });
-    expect(row("Claude Code")).toContain("No alerts");
+    expect(row("Claude Code")).not.toContain("alert");
 
     cleanup();
     renderTray({ groups: withAlerts({ kind: "count", count: 1 }) });

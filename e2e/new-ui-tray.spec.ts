@@ -109,13 +109,10 @@ test.describe("tray popover", () => {
   });
 
   /**
-   * "Reopen to finish" on the tray, which is the surface AG-566 AC 3 asked for
-   * that survives: the Overview banner it also asked for is gone, and the fact
-   * is the tool's pane, the rail row and this. Same division as the recovery
-   * card - the tray carries the fact and the one action, and the per-tool
-   * routes stay in the window.
+   * No reopen card on the tray. The waiting tool still says so on its own row;
+   * the card and its "Close tool" action live in the window only.
    */
-  test("a tool waiting to be reopened is offered from the tray", async ({ boot }) => {
+  test("a tool waiting to be reopened draws no card on the tray", async ({ boot }) => {
     const app = await boot({
       windowLabel: "tray",
       proxy: { running: true, ca_trusted: true },
@@ -132,26 +129,9 @@ test.describe("tray popover", () => {
       runningAgentNames: ["codex"],
     });
 
-    // The card's heading. The tray's own app row carries the phrase now too, so
-    // this names the element rather than the string.
-    await expect(app.page.getByRole("heading", { name: "Reopen to finish" })).toBeVisible();
-    // AG-584 asked a pending change to name the route in use, and the card can
-    // still print one - but nothing can read where another process is pointed,
-    // so the backend sends no `route_in_use` and the card falls back to the
-    // phrase. Naming an address here meant naming a guess.
-    await expect(app.page.getByText(/Codex is on the route it started with/)).toBeVisible();
-    await expect(app.page.getByText("https://gw.example/codex")).toHaveCount(0);
-
-    await app.page.getByRole("button", { name: "Close tool" }).click();
-
-    // Scoped to the tools actually waiting, and it asks before it signals
-    // anything.
-    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
-      only: ["codex"],
-    });
-    await expect(
-      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
-    ).toBeVisible();
+    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Reopen to finish" })).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
   });
 
   test("the tray sends the per-tool account to the window", async ({ boot }) => {
@@ -246,16 +226,8 @@ test.describe("tray popover", () => {
     await expect(row).toContainText("3 alerts");
   });
 
-  test("the security card sends the window to the events themselves", async ({ boot }) => {
-    // AG-853's last criterion: an entry point into the feed must not be a dead
-    // end. This card used to call the bare `reveal_popover`, which surfaces the
-    // window on whatever pane it was last on - so the press that asked for the
-    // events opened anything but them, and with the window already up behind the
-    // popover the only visible effect was the tray closing. The feed has a fixed
-    // address now (the Overview's last section), which is what made a
-    // destination expressible.
-    // With an event, because the card no longer draws its empty state - a row
-    // saying nothing happened is furniture on a 400px surface.
+  test("the tray draws no security event count", async ({ boot }) => {
+    // The per-row alert figures stay; the popover-wide count does not.
     const app = await boot({
       windowLabel: "tray",
       securityFeed: {
@@ -275,11 +247,13 @@ test.describe("tray popover", () => {
       },
     });
 
-    await app.page.getByText(/recent security event/).click();
-
-    await expect
-      .poll(() => app.lastCall("request_security_events"))
-      .not.toBeNull();
+    // The row's alert half first: it only draws once the feed has answered, so
+    // the absence check below cannot pass on a popover that has not read yet.
+    const row = app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Claude", exact: true }) });
+    await expect(row).toContainText("1 alert");
+    await expect(app.page.getByText(/security event/i)).toHaveCount(0);
   });
 
   test("the popover re-reads on tools-changed rather than on a timer", async ({ boot }) => {

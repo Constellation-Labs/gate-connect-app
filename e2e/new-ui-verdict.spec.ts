@@ -90,7 +90,7 @@ test.describe("new UI routing verdict", () => {
 
     await app.openSection("ChatGPT / Codex");
     // `ReopenAlert`, which is the pane's own card. The bare phrase "Reopen to
-    // finish" is on the rail row and the tray card too - the surfaces that
+    // finish" is on the rail row and the tray row too - the surfaces that
     // carry one fact, which is what the phrase is for - so this takes the
     // one that names the tool inside the sentence. It read "Reopen required"
     // until the rail had a phrase for this state: the row drew a bare

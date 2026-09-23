@@ -1298,7 +1298,8 @@ the green set with `ShieldCheck` for "Gate is protecting you" - over a muted
 "On · 6 of 8 tools routing" line; the rail's groups as bordered cards
 (`shadow/xs`, rows divided by rules) under `mono/eyebrow` at **14px** (the
 rail's is 12) with the same protected-over-total counter; a collapsed **"Not
-installed" section** ("NOT INSTALLED · 8 ˅"); a **Command-line tools** card
+installed" section** ("NOT INSTALLED · 8 ˅"; drawn, and not built since
+2026-09-23 at the user's request); a **Command-line tools** card
 carrying the env-export switch with its own copy ("Sets HTTPS_PROXY for your
 whole shell, so OpenCode and other terminal tools route too."); and a 56px
 footer naming the org beside a 32px ellipsis button whose menu adds **Quit
@@ -2763,12 +2764,14 @@ to a single slug (AC 10). One exception, added later: `awaiting_reopen` offers
 **only** View diagnostics. Its "Retry verification" was a refresh button beside a
 reading that refreshes itself, which teaches the reader that it does not - see
 the standing sweep below. `lib/reopen.ts` holds the vocabulary and the pure
-transitions, for the same reason `lib/recovery.ts` exists: the dialogs, the shell
-banner and the tray card all draw these rows, and a row assembled twice is a row
+transitions, for the same reason `lib/recovery.ts` exists: the dialogs and the
+shell banner both draw these rows, and a row assembled twice is a row
 that reads "Verifying" on one surface and "Reopen required" on another.
 
-**"Reopen to finish" is on two surfaces**: `ReopenAlert` on tool detail and a
-tray card. It was on three - a `ReopenBanner` in the shell's banner slot, which
+**"Reopen to finish" is on one surface as a card**: `ReopenAlert` on tool
+detail. The tray card went on 2026-09-23 at the user's request, since no tray
+frame (`694:34005`) draws one; the tray row still reads "Reopen to finish". It
+was on three before that - a `ReopenBanner` in the shell's banner slot, which
 is how Overview carried it for AC 3 - and that banner is gone. One tool's
 pending reopen drawn in shell chrome appeared over Overview, Settings and every
 other tool's pane; it is the same thing #277 took the drift and check-error
@@ -3047,7 +3050,7 @@ carries "345 messages · 23 alerts" under the status line, and `Tray`'s docstrin
 had recorded the whole line as unbuilt since 2026-08-28 on the grounds that no
 per-tool reading existed. The alerts went first, from `alertCounts` in `TrayApp`:
 the live feed (AG-578) attributes every blocked or flagged request to a tool slug,
-and the tray already listens to it for the security card. The message half landed
+and the tray listens to it for the rows. The message half landed
 a day later, below.
 
 **The message half followed on 2026-09-04**, and the note above is why it took a
@@ -3498,10 +3501,7 @@ What changed, and what deliberately did not:
 **Navigating to it is now an anchor, not a view.** `SECURITY_SECTION_ID`
 (`security-events`) sits on the section wrapper - above the partial-history
 notice, not on the card, so a jump lands before the one sentence saying the list
-is incomplete. The tray's security card used to call `expand`, which reveals the
-window wherever it was last left; `Tray`'s docstring admitted the card "does not
-open the security pane" and promised less because of it. It calls
-`request_security_events` now, the third of the bespoke tray intents beside
-`request_switch_org` and `request_recovery_details`: reveal, emit, and the window
-opens the Overview and scrolls. That was not expressible before this change,
-because the feed had no fixed address to send anyone to.
+is incomplete. Nothing navigates to it any more: the tray's security card was
+its one caller, through `request_security_events`, and both went on 2026-09-23
+at the user's request, since no tray frame (`694:34005`) draws the card. The
+anchor stays for the next caller.

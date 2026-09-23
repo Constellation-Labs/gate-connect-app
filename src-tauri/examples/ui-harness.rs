@@ -103,7 +103,6 @@ const EVENTS: &[&str] = &[
     "switch-org-requested",
     "security-feed-state",
     "security-feed-history",
-    "security-events-requested",
     "security-event",
     "recovery-details-requested",
     "quit-requested",
