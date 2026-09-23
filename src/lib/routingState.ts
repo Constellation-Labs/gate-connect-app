@@ -16,10 +16,18 @@
  * `lib/reopen.ts` make one level up, and AG-890 is the bug that argument is
  * about.
  *
- * **The denominator is intent.** `requested` is what the user switched on, not
- * what exists on the machine - see the note on `desiredApps` in `NewUiApp`. A
- * row nobody turned on is not a gap, and a banner that can never go green is
- * decoration rather than a status.
+ * **The STATE is judged on intent; the FRACTION is not.** `requested` is what
+ * the user switched on, not what exists on the machine - see the note on
+ * `desiredApps` in `NewUiApp`. A row nobody turned on is not a gap, and a
+ * banner that can never go green is decoration rather than a status, so the
+ * tone and the headline keep that denominator.
+ *
+ * The printed fraction does not. It reads "N of M tools on", dividing by every
+ * app on the rail, because the card sat above group counters that already
+ * divided that way and the disagreement is what a reader notices first
+ * (2026-09-23). Counting intent over availability also means the fraction
+ * answers a question the headline does not - how much of this machine is
+ * routed at all - rather than restating it in digits.
  */
 export type RoutingStateKind =
   /** Everything asked for is routed. */
@@ -103,8 +111,23 @@ export function routingState(routed: number, requested: number): RoutingState {
   return { kind, ...STATES[kind] };
 }
 
-/** Whether a fraction belongs beside the state. Never for a denominator of
- *  nothing: "0 of 0" is a ratio with both halves meaningless. */
-export function showsFraction(state: RoutingState): boolean {
-  return state.kind !== "none-requested";
+/**
+ * Whether a fraction belongs beside the state, given how many apps the rail is
+ * showing.
+ *
+ * The fraction counts **apps switched on, out of apps available** - not routed
+ * out of requested, which is what the headline and tone above answer. The two
+ * were the same ratio until 2026-09-23 and disagreed with the group eyebrow
+ * counters beside them, which have always divided by the whole group: a card
+ * reading "2 of 2" sat above groups reading "1 of 3" and "1 of 5", the same
+ * word "of" over two different populations.
+ *
+ * So this now takes the count the denominator is drawn from rather than the
+ * state. A denominator of nothing is still suppressed - "0 of 0" is a ratio
+ * with both halves meaningless - but "0 of 8" is not, and it used to be hidden
+ * along with it, which is why a rail full of apps could report no fraction at
+ * all.
+ */
+export function showsFraction(available: number): boolean {
+  return available > 0;
 }

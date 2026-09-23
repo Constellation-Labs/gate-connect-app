@@ -40,7 +40,11 @@ export function AppShell({
   onMenuSelect: (action: TopnavAction) => void;
   /** Omit when no update is pending; the banner is not rendered at all. */
   update?: { version: string; onUpdate: () => void; onDismiss: () => void };
-  routing: { protectedCount: number; totalCount: number };
+  routing: {
+    protectedCount: number;
+    totalCount: number;
+    availableCount: number;
+  };
   orgName: string;
   /** Omitted when the account cannot switch organizations. Passed straight
    *  through to the sidebar, which then draws the org line as a label. */
@@ -93,6 +97,7 @@ export function AppShell({
       <RoutingBanner
         protectedCount={routing.protectedCount}
         totalCount={routing.totalCount}
+        availableCount={routing.availableCount}
       />
 
       {/* Under the modal scrim, like every other piece of chrome.

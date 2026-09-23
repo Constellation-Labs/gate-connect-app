@@ -349,7 +349,7 @@ export function hostReloadAdvice(
   if (hosts.length === 0) return undefined;
   return {
     title: "Pages already open need reloading",
-    body: `Gate now routes ${hosts.join(", ")}. A page that was already open keeps the connection it opened before, so its requests go around Gate until you reload it.`,
+    body: `Gate now routes ${hosts.join(", ")}. A page that was already open keeps the connection it opened before, please reload it.`,
   };
 }
 

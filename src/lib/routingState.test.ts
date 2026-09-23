@@ -31,14 +31,16 @@ describe("routingState", () => {
     expect(routingState(0, 0).label).not.toBe("Not protected");
   });
 
-  it("prints a fraction for every state but the empty denominator", () => {
-    expect(showsFraction(routingState(0, 0))).toBe(false);
-    for (const [r, t] of [
-      [3, 3],
-      [1, 3],
-      [0, 3],
-    ] as const) {
-      expect(showsFraction(routingState(r, t))).toBe(true);
+  it("prints a fraction whenever the rail has apps to divide by", () => {
+    // An empty rail still has no ratio worth printing. Everything else does,
+    // including the state where nothing is switched on: that used to be
+    // suppressed along with it, because the fraction divided by intent and
+    // "0 of 0" was meaningless. It divides by availability now, so "0 of 8"
+    // is a real reading and the one a person with a full rail and nothing on
+    // most needs to see.
+    expect(showsFraction(0)).toBe(false);
+    for (const available of [1, 3, 8]) {
+      expect(showsFraction(available)).toBe(true);
     }
   });
 

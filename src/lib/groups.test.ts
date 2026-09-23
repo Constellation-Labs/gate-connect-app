@@ -807,12 +807,17 @@ describe("hostReloadAdvice", () => {
     expect(advice?.body).toContain("claude.ai");
   });
 
-  it("says what is wrong with the open page, not just that it is open", () => {
-    // The whole reason the notice exists: the page is not merely stale, it is
-    // bypassing Gate, and a sentence that only said "reload" would read as
-    // housekeeping.
+  it("names the host and asks for the reload", () => {
+    // This used to assert "go around Gate", on the argument that a sentence
+    // saying only "reload" reads as housekeeping rather than as traffic
+    // escaping. The copy was shortened on request (2026-09-23): the title
+    // already says pages need reloading, and the middle clause still says the
+    // page keeps its old connection, so the consequence is carried without
+    // spelling out the bypass. The host stays load-bearing - it is the only
+    // part of this the reader can recognise on their own machine.
     const advice = hostReloadAdvice(cascade(sessionDomain()));
-    expect(advice?.body).toContain("go around Gate");
+    expect(advice?.body).toContain("keeps the connection it opened before");
+    expect(advice?.body).toContain("please reload it");
   });
 
   it("says nothing when what moved has no browser surface", () => {

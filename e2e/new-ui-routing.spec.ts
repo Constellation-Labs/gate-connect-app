@@ -198,11 +198,12 @@ test.describe("new UI routing", () => {
 
     const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
     await expect(note).toBeVisible();
-    // The host, because it is the only part of this the person can recognise on
-    // their own machine, and the consequence, because "reload" on its own reads
-    // as housekeeping rather than as traffic escaping.
+    // The host, because it is the only part of this the person can recognise
+    // on their own machine, and the stale-connection clause, which is what
+    // makes this more than housekeeping. The explicit "go around Gate" was
+    // dropped when the copy was shortened (2026-09-23).
     await expect(note).toContainText("claude.ai");
-    await expect(note).toContainText("go around Gate");
+    await expect(note).toContainText("keeps the connection it opened before");
   });
 
   test("a host row nobody browses gets no such notice", async ({ boot }) => {
