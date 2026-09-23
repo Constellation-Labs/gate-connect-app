@@ -1448,6 +1448,45 @@ const CF_CHALLENGE_WINDOW: &str = "cf-challenge";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
 
+/// Pins a one-line note above whatever the solve window is showing, so the
+/// user knows why the ChatGPT app just handed them a Cloudflare page and what
+/// to do about it.
+///
+/// Main frame only (`initialization_script`, not the all-frames variant): the
+/// Turnstile widget lives in a challenges.cloudflare.com iframe and is left
+/// untouched. Hung off `<html>` rather than `<body>` so a challenge script that
+/// rewrites the body does not take the note with it, and padded rather than
+/// overlaid so it never covers the checkbox. `textContent`, never HTML.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const CF_CHALLENGE_NOTE_SCRIPT: &str = r#"
+(() => {
+  if (window.location.hostname !== 'chatgpt.com') return;
+  const add = () => {
+    const root = document.documentElement;
+    if (!root || document.getElementById('gate-connect-cf-note')) return;
+    const note = document.createElement('div');
+    note.id = 'gate-connect-cf-note';
+    note.setAttribute('role', 'status');
+    note.textContent = 'Accept the verification screen to continue with chat';
+    note.style.cssText = [
+      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:2147483647',
+      'box-sizing:border-box', 'height:40px', 'padding:0 16px',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'font:500 13px/1.3 system-ui,-apple-system,"Segoe UI",sans-serif',
+      'color:#1f1f1f', 'background:#f5f5f2',
+      'box-shadow:inset 0 -1px 0 rgba(0,0,0,0.08)', 'text-align:center',
+    ].join(';');
+    root.style.paddingTop = '40px';
+    root.appendChild(note);
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', add);
+  } else {
+    add();
+  }
+})();
+"#;
+
 /// Open (or refocus) the Cloudflare challenge-solve webview at the real
 /// chatgpt.com and poll its cookie store for the `cf_clearance` a solved
 /// interstitial mints. On capture: feed the cookie into the running engine,
@@ -1581,7 +1620,8 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
     // desirable: `cf_clearance` is bot-management state, issued to any client
     // that passes the check, and has nothing to do with the account - so the
     // window never needs, and now never sees, the user's session.
-    .incognito(true);
+    .incognito(true)
+    .initialization_script(CF_CHALLENGE_NOTE_SCRIPT);
     // Wear the app's own user-agent: a stock webview is waved through without
     // a challenge, and `cf_clearance` only exists as the result of one, so
     // without this there is nothing to capture. See
