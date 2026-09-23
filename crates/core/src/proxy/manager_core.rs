@@ -325,6 +325,8 @@ impl<O: DesktopOps> DesktopManager<O> {
             port,
             pac_port,
             ca_trusted: self.ops.ca_is_trusted()?,
+            // Browsers here read the OS store, so there is no second one.
+            ca_nss_trusted: None,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             forwarder_answering,

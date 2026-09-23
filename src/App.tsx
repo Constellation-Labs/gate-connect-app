@@ -1325,6 +1325,7 @@ export function App() {
         // a security fact to the reassuring answer is the wrong direction
         // even where nothing visible currently depends on it.
         caTrusted={proxy?.ca_trusted ?? false}
+        caNssTrusted={proxy?.ca_nss_trusted ?? null}
         showProxy={showProxy}
         providers={providers}
         tools={tools}

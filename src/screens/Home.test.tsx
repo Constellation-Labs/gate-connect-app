@@ -112,6 +112,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       envExportOn={true}
       onToggleEnvExport={vi.fn()}
       forwarderAnswering={null}
+      caNssTrusted={null}
       {...props}
     />,
   );
@@ -278,6 +279,50 @@ describe("Home master toggle", () => {
   it("does not raise a forwarder fault when there is nothing to route", () => {
     renderHome({ forwarderAnswering: false, domains: [], tools: [] });
     expect(screen.queryByText("On · forwarder not answering, going direct")).toBeNull();
+  });
+});
+
+describe("Home Chromium-trust card", () => {
+  const CARD = "Chrome and apps built on it don’t trust the Gate certificate yet.";
+
+  it("shows when the OS trusts the CA and Chromium's store does not", () => {
+    renderHome({ caNssTrusted: false, domains: [makeDomain()] }, "linux");
+    expect(screen.getByText(CARD)).toBeTruthy();
+  });
+
+  it("stays hidden when Chromium's store is fine or does not apply", () => {
+    renderHome({ caNssTrusted: true, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(CARD)).toBeNull();
+    cleanup();
+    renderHome({ caNssTrusted: null, domains: [makeDomain()] });
+    expect(screen.queryByText(CARD)).toBeNull();
+  });
+
+  it("leaves an untrusted OS store to the Trust card", () => {
+    renderHome({ caTrusted: false, caNssTrusted: false, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(CARD)).toBeNull();
+    expect(screen.getByRole("button", { name: "Trust" })).toBeTruthy();
+  });
+
+  it("stays hidden with routing off or no app row on", () => {
+    renderHome({ proxyOn: false, caNssTrusted: false, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(CARD)).toBeNull();
+    cleanup();
+    renderHome({ caNssTrusted: false, domains: [makeDomain({ enabled: false })] }, "linux");
+    expect(screen.queryByText(CARD)).toBeNull();
+  });
+
+  it("retries through the trust action", () => {
+    const onTrustCa = vi.fn();
+    renderHome({ caNssTrusted: false, domains: [makeDomain()], onTrustCa }, "linux");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onTrustCa).toHaveBeenCalledOnce();
+  });
+
+  it("does not also say the certificate is trusted", () => {
+    renderHome({ caNssTrusted: false, domains: [makeDomain()], changeNotice: "trusted" }, "linux");
+    expect(screen.getByText(CARD)).toBeTruthy();
+    expect(screen.queryByText(/Certificate trusted/)).toBeNull();
   });
 });
 

@@ -1535,6 +1535,14 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
+    /// Linux only: whether every per-user NSS database a Chromium-based browser
+    /// reads holds our current CA (see `ca_linux::nss_ca_trusted`). Chromium
+    /// and Electron never read the system store, so `Some(false)` beside a
+    /// `ca_trusted` of true means those apps reject every intercepted host
+    /// while everything else routes. `None` off Linux, or where no such
+    /// database exists.
+    #[serde(default)]
+    pub ca_nss_trusted: Option<bool>,
     /// Whether Gate is putting its proxy into the user's environment - the
     /// channel that routes command-line tools, as distinct from the OS proxy
     /// setting that routes GUI apps. A user-held choice, because the variables
