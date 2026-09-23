@@ -122,9 +122,26 @@ export class LiveApp {
     return hit ? hit.args : null;
   }
 
-  /** The rail switch for one app section ("Claude", "ChatGPT / Codex"). */
-  appSwitch(name: string) {
-    return this.page.getByRole("switch", { name, exact: true });
+  /** Open one app's pane from the rail ("Claude", "ChatGPT / Codex").
+   *
+   *  The same locator as the mock fixture's `openApp`: the row's select
+   *  button, whose accessible name leads with the app name. */
+  openApp(name: string) {
+    return this.page
+      .getByRole("listitem")
+      .filter({ has: this.page.getByRole("button", { name }) })
+      .getByRole("button", { name })
+      .first()
+      .click();
+  }
+
+  /** The switch for one app section, on that app's own pane.
+   *
+   *  The rail's per-row switch went on 2026-09-22, so this opens the pane
+   *  first. The pane labels its switch `Route <name>`. */
+  async appSwitch(name: string) {
+    await this.openApp(name);
+    return this.page.getByRole("switch", { name: `Route ${name}`, exact: true });
   }
 
   /**
@@ -144,7 +161,7 @@ export class LiveApp {
    * the spec asserts on `ca_trusted` afterwards, which is the fact underneath.
    */
   async routeApp(name: string) {
-    await this.appSwitch(name).click();
+    await (await this.appSwitch(name)).click();
     const consent = this.page.getByRole("button", { name: `Route ${name}`, exact: true });
     await consent.click({ timeout: 2_000 }).catch(() => {});
     const trust = this.page.getByRole("button", { name: "Trust certificate", exact: true });
