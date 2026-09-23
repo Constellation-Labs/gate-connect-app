@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { BaseSwitch } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 
@@ -310,6 +309,23 @@ export function statusDetail(status: AppStatus): string | undefined {
   return status.kind === "not-protected" ? status.detail : statusSuffix(status);
 }
 
+/**
+ * The rail lists apps and says what is happening to each. **It does not route
+ * them.**
+ *
+ * Each row carried a switch until 2026-09-22. Design removed it: the row drew
+ * the app's state and a control for its intent on one line, and the two are
+ * different questions (principle 2). Routing now happens on the app's own
+ * pane, where there is room to say what the switch will do before it is
+ * flipped - the consent question, the provider question, the drift review -
+ * rather than firing them from a 250px row.
+ *
+ * `SidebarApp.on` survives and is still intent, not observation: the topbar's
+ * counters read it to say how many apps the person has asked to route. It is
+ * simply no longer drawn here.
+ *
+ * Not in the Figma yet; design is updating the frames.
+ */
 export function Sidebar({
   orgName,
   onSwitchOrg,
@@ -317,7 +333,6 @@ export function Sidebar({
   onNavigate,
   groups,
   onSelectApp,
-  onToggleApp,
   onRefresh,
   refreshing,
   inventory,
@@ -331,7 +346,6 @@ export function Sidebar({
   groups: SidebarGroup[];
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
-  onToggleApp: (slug: string, next: boolean) => void;
   /** Re-run detection now, for the inventory card's Refresh / Try again. There is
    * no control for this while the list has rows: detection polls itself, so a
    * tool installed while the window is open appears on its own. The card keeps
@@ -425,7 +439,6 @@ export function Sidebar({
                   app={app}
                   selected={view.kind === "app" && view.slug === app.slug}
                   onSelect={onSelectApp}
-                  onToggle={onToggleApp}
                 />
               ))}
             </ul>
@@ -593,13 +606,10 @@ function AppRow({
   app,
   selected,
   onSelect,
-  onToggle,
 }: {
   app: SidebarApp;
-  /** The eyebrow over this row, for the switch's accessible name alone. */
   selected: boolean;
   onSelect: (slug: string) => void;
-  onToggle: (slug: string, next: boolean) => void;
 }) {
   const status = STATUS_TEXT[app.status.kind];
   const suffix = statusSuffix(app.status);
@@ -652,23 +662,6 @@ function AppRow({
           </span>
         </span>
       </button>
-      <BaseSwitch
-        on={app.on}
-        // The row's own name, and nothing in front of it.
-        //
-        // This used to prefix the eyebrow, because rows were named for the
-        // surface they covered and the rail carried three switches reading
-        // "CLI" and two each reading "App" and "Web" - the eyebrow was the only
-        // thing saying which family each belonged to, and a screen reader
-        // cannot see it, being a sibling rather than a parent.
-        //
-        // A row is an app now and its name is unique on the rail, so the
-        // eyebrow is the band ("Apps", "Tools") and prefixing it would announce
-        // "Apps Claude" - noise in place of the disambiguation it used to be.
-        label={app.name}
-        busy={app.busy}
-        onClick={() => onToggle(app.slug, !app.on)}
-      />
     </li>
   );
 }

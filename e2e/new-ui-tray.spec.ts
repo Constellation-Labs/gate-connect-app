@@ -24,7 +24,7 @@ test.describe("tray popover", () => {
 
     // One switch per app. Claude holds a session surface, so `routeApp` answers
     // the confirmation the switch raises before it routes anything.
-    await app.routeApp("Claude");
+    await app.routeTrayApp("Claude");
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -42,7 +42,7 @@ test.describe("tray popover", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    await app.routeApp("Claude");
+    await app.routeTrayApp("Claude");
 
     const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
     await expect(note).toBeVisible();
@@ -60,7 +60,7 @@ test.describe("tray popover", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    await app.routeApp("Claude");
+    await app.routeTrayApp("Claude");
     const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
     await expect(note).toBeVisible();
 
@@ -234,7 +234,11 @@ test.describe("tray popover", () => {
 
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.appSwitch("Claude") });
+      // The TRAY's own switch, which it still has - `appSwitch` now opens the
+      // window's app pane, which is a different surface.
+      .filter({
+        has: app.page.getByRole("switch", { name: "Claude", exact: true }),
+      });
     await expect(row).toContainText("2 alerts");
 
     // And it moves without a reopen, because the popover is listening.
@@ -285,7 +289,7 @@ test.describe("tray popover", () => {
     // OpenClaw: every other section draws from a catalog domain with no tool
     // installed, so it is never absent to begin with - OpenCode included, which
     // has its own Zen / Go host row.
-    const row = app.appSwitch("OpenClaw");
+    const row = app.page.getByRole("switch", { name: "OpenClaw", exact: true });
     await expect(row).toHaveCount(0);
 
     await app.patch({

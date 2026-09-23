@@ -28,7 +28,6 @@ export function AppShell({
   onNavigate,
   appGroups,
   onSelectApp,
-  onToggleApp,
   onRefreshApps,
   refreshingApps,
   inventory,
@@ -51,7 +50,6 @@ export function AppShell({
   /** The rail's app rows, grouped under their family eyebrows. */
   appGroups: SidebarGroup[];
   onSelectApp: (slug: string) => void;
-  onToggleApp: (slug: string, next: boolean) => void;
   /** Re-run tool detection. Passed straight through to the sidebar, which owns
    * the control. */
   onRefreshApps?: () => void;
@@ -123,7 +121,6 @@ export function AppShell({
           onNavigate={onNavigate}
           groups={appGroups}
           onSelectApp={onSelectApp}
-          onToggleApp={onToggleApp}
           onRefresh={onRefreshApps}
           refreshing={refreshingApps}
           inventory={inventory}

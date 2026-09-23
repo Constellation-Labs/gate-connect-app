@@ -104,7 +104,7 @@ test.describe("new UI engine controls", () => {
     // the engine is the only thing that could route it. The OpenAI API row
     // rather than a session app, so no consent dialog stands between the click
     // and the flag - that is tested on its own in the routing spec.
-    await app.page.getByRole("switch", { name: "OpenAI API" }).click();
+    await (await app.appSwitch("OpenAI API")).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "openai",

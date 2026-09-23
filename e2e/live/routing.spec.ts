@@ -145,7 +145,7 @@ test.describe("routing, end to end", () => {
 
     const app = await boot();
 
-    await app.appSwitch(SECTION).click();
+    await (await app.appSwitch(SECTION)).click();
     await expect.poll(() => app.lastCall("disconnect_tool")).not.toBeNull();
 
     // Zero residue: the config no longer points at the relay. Codex keeps a

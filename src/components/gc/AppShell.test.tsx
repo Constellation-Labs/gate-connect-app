@@ -19,7 +19,6 @@ function shell(props: Partial<Parameters<typeof AppShell>[0]> = {}) {
       onNavigate={noop}
       appGroups={[]}
       onSelectApp={noop}
-      onToggleApp={noop}
       {...props}
     >
       <div>pane</div>
