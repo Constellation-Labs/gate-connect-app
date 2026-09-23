@@ -159,6 +159,10 @@ export interface ProxyState {
    * on screen can show: routing is on, and browsers and tools are going direct
    * because their addresses fall back rather than fail. */
   forwarder_answering: boolean | null;
+  /** Linux only: whether the per-user NSS store Chromium and Electron read
+   * holds the CA. null off Linux or where no such store exists. false beside a
+   * true `ca_trusted` is "the OS trusts it, Chrome does not". */
+  ca_nss_trusted: boolean | null;
   domains: ProxyDomain[];
 }
 

@@ -28,6 +28,7 @@ export function Home({
   consoleUrl,
   proxyOn,
   caTrusted,
+  caNssTrusted,
   showProxy,
   providers,
   tools,
@@ -107,6 +108,11 @@ export function Home({
    * on means browsers and tools are quietly going direct - the one state the
    * count below would otherwise report as fully routed. */
   forwarderAnswering: boolean | null;
+  /** Linux only: whether the per-user NSS store Chromium and Electron read
+   * holds the CA. null where that store does not apply. False beside a trusted
+   * CA means those apps reject every intercepted host while the OS store, and
+   * everything that reads it, is satisfied. */
+  caNssTrusted: boolean | null;
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
@@ -115,6 +121,10 @@ export function Home({
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
   const partial = proxyOn && !caTrusted && anyDomainOn;
+  // The OS trusts the certificate but Chromium's own store does not, so
+  // Chrome and Electron apps show a certificate error on every intercepted
+  // host. Nothing else on screen can show this: every row reads Routed.
+  const chromiumUntrusted = proxyOn && caTrusted && caNssTrusted === false && anyDomainOn;
   // Denominator included so "3 of 8" answers "and what about the rest?"
   // without a scroll; the families below are the itemization.
   const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
@@ -194,7 +204,9 @@ export function Home({
       ? null
       : staleAgentsHint
         ? "stale"
-        : changeNotice
+        : // "Certificate trusted" beside a card saying Chrome does not trust
+          // it would be two answers to one question; the card is the true one.
+          changeNotice && !(changeNotice === "trusted" && chromiumUntrusted)
           ? "change"
           : null;
 
@@ -532,6 +544,43 @@ export function Home({
                 </p>
               </>
             )}
+          </div>
+        )}
+
+        {/* The same certificate, trusted by the OS and missing from the store
+            Chromium reads (`ca_linux::ensure_trusted_nss`). That write is
+            best-effort and used to fail silently, so the only symptom was a
+            browser certificate error with nothing pointing back at Gate.
+            Retry is the ordinary trust action: with the system anchor current
+            it raises no prompt and only rewrites the Chromium store. The
+            package hint covers the one cause Retry cannot fix. */}
+        {showProxy && chromiumUntrusted && (
+          <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex items-center gap-2.5">
+              <div className="order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning-deep">
+                <Icon name="info" size={16} />
+              </div>
+              <Button
+                variant="accent"
+                size="sm"
+                className="order-3 shrink-0"
+                disabled={busy}
+                onClick={() => {
+                  setInteracted(true);
+                  onTrustCa();
+                }}
+              >
+                {trustPending ? "Waiting…" : "Retry"}
+              </Button>
+              <div className="order-2 min-w-0 flex-1 text-gc-body-sm font-medium leading-snug text-gc-ink">
+                Chrome and apps built on it don&rsquo;t trust the Gate certificate yet.
+              </div>
+            </div>
+            <p className="mt-2 text-gc-caption leading-snug text-gc-ink-3">
+              If this stays after a retry, install{" "}
+              <span className="font-mono">libnss3-tools</span> (on Fedora,{" "}
+              <span className="font-mono">nss-tools</span>) and retry.
+            </p>
           </div>
         )}
 
