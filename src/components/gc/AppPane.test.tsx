@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { AppPane } from "./AppPane";
 import type { ActivityEntry } from "./AppPane";
 import type { UsageStats } from "./metrics";
@@ -275,6 +275,78 @@ describe("AppPane recent activity", () => {
     expect(
       within(feed).getByTitle("No guardrail category recorded, or not your request"),
     ).toBeTruthy();
+  });
+
+  /**
+   * Ten rows, then ten more per click (2026-09-23).
+   *
+   * The request carries no `limit`, so a page is whatever size the gateway
+   * chose, and `useToolEvents` concatenates pages - this table drew every row
+   * ever fetched.
+   */
+  it("draws ten rows however many it holds", () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entry,
+      id: `req-${i}`,
+      // `time` because it is the one per-row field this table actually draws;
+      // `title` and `reference` are on the type but have no cell here.
+      time: `row-${i}`,
+    }));
+    render(pane({ activity: many }));
+
+    expect(screen.getAllByText(/^row-/)).toHaveLength(10);
+    expect(screen.getByText("row-0")).toBeTruthy();
+    expect(screen.queryByText("row-10")).toBeNull();
+  });
+
+  it("reveals the next ten without asking for another page", () => {
+    // The held rows come first. Fetching on every click would pull pages the
+    // person cannot see yet, which is what made this unbounded.
+    const onLoadMore = vi.fn();
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entry,
+      id: `req-${i}`,
+      // `time` because it is the one per-row field this table actually draws;
+      // `title` and `reference` are on the type but have no cell here.
+      time: `row-${i}`,
+    }));
+    render(pane({ activity: many, onLoadMore }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getAllByText(/^row-/)).toHaveLength(20);
+    expect(onLoadMore).not.toHaveBeenCalled();
+  });
+
+  it("asks for another page once the reveal runs past what it holds", () => {
+    const onLoadMore = vi.fn();
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      ...entry,
+      id: `req-${i}`,
+      // `time` because it is the one per-row field this table actually draws;
+      // `title` and `reference` are on the type but have no cell here.
+      time: `row-${i}`,
+    }));
+    render(pane({ activity: many, onLoadMore }));
+
+    // 12 held, 10 shown: one click reveals the remaining two and runs out, so
+    // this is the click that has to reach the gateway.
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getAllByText(/^row-/)).toHaveLength(12);
+    expect(onLoadMore).toHaveBeenCalledOnce();
+  });
+
+  it("drops the control when everything held is on screen and no page is left", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      ...entry,
+      id: `req-${i}`,
+      // `time` because it is the one per-row field this table actually draws;
+      // `title` and `reference` are on the type but have no cell here.
+      time: `row-${i}`,
+    }));
+    render(pane({ activity: many }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
   it("offers Load more only when there is another page", () => {

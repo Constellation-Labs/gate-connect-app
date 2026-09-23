@@ -16,7 +16,6 @@ const stats: UsageStats = {
  *  says least about the rest of the pane. */
 const quietFeed: SecurityEventsProps = {
   events: [],
-  state: "live",
   loading: false,
   unavailable: false,
   onRetry: () => {},

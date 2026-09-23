@@ -3845,7 +3845,6 @@ export function NewUiApp() {
           // read's states and say nothing about the stream.
           security={{
             events: securityFeed.events,
-            state: securityFeed.state,
             loading: securityFeed.loading,
             unavailable: securityFeed.unavailable,
             historyUnavailable: securityFeed.historyUnavailable,

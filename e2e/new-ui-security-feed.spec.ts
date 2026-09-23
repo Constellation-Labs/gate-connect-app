@@ -94,9 +94,10 @@ test.describe("new UI security feed", () => {
       feed(app.page).getByText("Earlier events couldn’t be loaded"),
     ).toBeVisible();
     await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
-    // The feed itself is fine, and the pill must go on saying so: the stream
-    // and its history fail independently.
-    await expect(feed(app.page).getByText("Live")).toBeVisible();
+    // The pill that said the stream itself was fine was removed on
+    // 2026-09-23. The stream and its history still fail independently; the
+    // section just no longer has anywhere to say which one did.
+    await expect(feed(app.page).getByText("Live")).toHaveCount(0);
     // Deliberately no recovery action. `retry_now` only wakes the backoff
     // between connection attempts and the catch-up runs once per connection,
     // so while the stream is Live a retry issues no request at all. A control
@@ -146,20 +147,24 @@ test.describe("new UI security feed", () => {
     await expect(feed(app.page).getByText("Flagged")).toBeVisible();
   });
 
-  test("the feed reports its own connection, and routing keeps working", async ({ boot }) => {
-    // AC4. The master switch is the check that matters here: a feed that drops
-    // must not touch it, because the two are unrelated and conflating them is
-    // what makes a user turn routing off to fix a network blip.
+  test("a feed that drops leaves routing alone", async ({ boot }) => {
+    // AC4, minus the half that had a surface. This asserted the pill moved
+    // Live -> Reconnecting -> Offline as well; product removed the pill on
+    // 2026-09-23, so the feed's connection is no longer reported anywhere and
+    // there is nothing left to assert about it.
+    //
+    // The invariant underneath is the one that mattered: a feed that drops
+    // must not touch routing, because the two are unrelated and conflating
+    // them is what makes a user turn routing off to fix a network blip.
     const app = await boot({});
-    await expect(feed(app.page).getByRole("status", { name: "Event feed Live" })).toBeVisible();
-
     const routingBefore = await app.state().then((s) => s.proxy.running);
 
     await app.emit("security-feed-state", "reconnecting");
-    await expect(feed(app.page).getByRole("status", { name: "Event feed Reconnecting" })).toBeVisible();
-
     await app.emit("security-feed-state", "offline");
-    await expect(feed(app.page).getByRole("status", { name: "Event feed Offline" })).toBeVisible();
+    // Nothing on screen names any of those states now.
+    for (const label of ["Live", "Reconnecting", "Offline"]) {
+      await expect(feed(app.page).getByText(label, { exact: true })).toHaveCount(0);
+    }
 
     // Routing is untouched by any of that. Asserted as "unchanged" rather than
     // as a fixed value: the invariant is that the feed cannot move it, and a
@@ -211,10 +216,23 @@ test.describe("new UI security feed", () => {
       });
     }
 
+    // The newest is on screen straight away: the table draws the ten most
+    // recent since 2026-09-23.
     await expect.poll(() => feed(app.page).getByText("cat-204").count()).toBe(1);
-    // The oldest five fell off rather than accumulating.
+    await expect(feed(app.page).getByText("cat-5", { exact: true })).toHaveCount(0);
+
+    // Reveal the whole buffer, ten at a time, which is the only way to see how
+    // deep it goes now - and exercises the control 19 times while it is here.
+    for (let i = 0; i < 19; i++) {
+      await feed(app.page).getByRole("button", { name: "Load more" }).click();
+    }
+
+    // The oldest five fell off rather than accumulating, which is what this
+    // test has always been about.
     expect(await feed(app.page).getByText("cat-0", { exact: true }).count()).toBe(0);
     expect(await feed(app.page).getByText("cat-5", { exact: true }).count()).toBe(1);
+    // And the control is gone, because 200 is all there is.
+    await expect(feed(app.page).getByRole("button", { name: "Load more" })).toHaveCount(0);
   });
 
   test("the notification switches reach the backend", async ({ boot }) => {
