@@ -236,8 +236,7 @@ export function ReopenAlert({
             again - `RunningAgent.can_reopen` is false for every one of them.
             Labelling it "Reopen Claude Code" promised the one thing this flow
             never does. The heading above still says "Reopen ... to finish",
-            which is the true sentence: Gate closes it, the user opens it. The
-            tray's own card carries the same label for the same reason. */}
+            which is the true sentence: Gate closes it, the user opens it. */}
         Close tool
       </button>
     </div>

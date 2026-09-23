@@ -12,8 +12,7 @@ import { test, expect } from "./fixtures";
  * **The navigation step is gone as of AG-853.** Every test here used to open the
  * feed by clicking a `Security events` rail entry; the feed is the last section
  * of the Overview now, and the Overview is where the window lands, so there is
- * nothing to click. The one thing that still navigates to it is the tray's card,
- * covered in `new-ui-tray.spec.ts`.
+ * nothing to click.
  *
  * The fake backend stands in for the connection: the real one holds an SSE stream
  * open in Rust and emits `security-event` / `security-feed-state`, and here a test
@@ -30,7 +29,7 @@ const useNewUi = { gc: "gc.newUi" };
  * screen-reader table behind it - so an unscoped `getByText("Blocked")` matches
  * three nodes and fails on strict mode rather than on the feed. Scoping also
  * asserts the thing the move was for: these rows are on the Overview, under the
- * anchor the tray's card navigates to.
+ * section's own anchor.
  */
 const feed = (page: import("@playwright/test").Page) =>
   page.locator("#security-events");
@@ -71,42 +70,6 @@ test.describe("new UI security feed", () => {
     // page, and it does not move when the pane scrolls.
     await expect(app.page.locator("#token-savings ~ #security-events")).toHaveCount(1);
   });
-
-  test("a request from the tray lands on the section, from whatever pane", async ({
-    boot,
-  }) => {
-    // The receiving half of AG-853's entry point. `new-ui-tray.spec.ts` proves
-    // the card invokes `request_security_events`; this proves the invocation
-    // arrives somewhere, which is the half the old bug lived in - the press used
-    // to reveal the window on whatever pane it was last on and open nothing, and
-    // a test of the sending side alone would not have caught that.
-    const app = await boot({ securityFeed: { state: "live", events: [blocked] } });
-
-    // Somewhere that is deliberately not the Overview, so the assertion cannot
-    // pass on the window's default pane.
-    await app.page.getByRole("button", { name: "Settings" }).click();
-    await expect(feed(app.page)).toHaveCount(0);
-
-    await app.emit("security-events-requested", null);
-
-    await expect(feed(app.page).getByText("Blocked")).toBeVisible();
-    // The half `toBeVisible` does not cover, and the half this path exists for.
-    // `toBeVisible` is "in the DOM with a box", so it passes on the pane switch
-    // alone: delete the `scrollIntoView` and the row is still visible, three
-    // screens below the fold, which is the dead end the tray card used to be.
-    // `toBeInViewport` is the assertion that can tell those apart, and it
-    // retries, so the smooth scroll settles under it rather than racing it.
-    await expect(feed(app.page)).toBeInViewport();
-  });
-
-  // The cold-mount half of that jump - the one where the cards above the anchor
-  // are still skeletons when the scroll fires, and reflow pushes the section
-  // past where it stopped - has no e2e here, deliberately. `install.ts` answers
-  // no `activity_overview` at all, so the read fails on the first tick and the
-  // pane never spends a frame pending: a test written against `gc.slowActivity`
-  // passes identically with the re-arm in `NewUiApp` and with it deleted, which
-  // is a test that asserts nothing. Covering it needs the fake backend to serve
-  // an activity body first.
 
   test("an empty feed says so, rather than saying nothing", async ({ boot }) => {
     const app = await boot({});

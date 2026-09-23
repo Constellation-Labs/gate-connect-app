@@ -63,7 +63,7 @@ export interface Tool {
    *  one word ("CLI", "App"), and two tools can share it. */
   name: string;
   /** The product name ("Claude Code"), for a reader that is a flat list rather
-   *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
+   *  than a grouped ledger - the reopen dialogs and their banner.
    *  Distinct across the registry, which {@link Tool.name} is not. */
   product_name: string;
   /** What Gate can and cannot see of this tool's upstream, or absent when
@@ -339,17 +339,6 @@ export const requestSwitchOrg = () => invoke<void>("request_switch_org");
  *  user had asked to see. */
 export const requestRecoveryDetails = () =>
   invoke<void>("request_recovery_details");
-
-/** Ask the main window to open the Overview at its Security events section,
- *  from the tray's security card (AG-853).
- *
- *  Same hand-over as the two above. The card used to call `revealMainWindow`,
- *  which surfaces the window wherever it was last left - so the one surface with
- *  the events on it was a click away from the click that asked for them. The
- *  feed had no fixed address to send anyone to until it became a section of the
- *  Overview; now it has one. */
-export const requestSecurityEvents = () =>
-  invoke<void>("request_security_events");
 
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the

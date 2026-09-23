@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import type { ReactNode, RefObject } from "react";
-import type { FeedState } from "../../lib/api";
 import { BaseSwitch, Skeleton, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
@@ -35,8 +34,8 @@ import { routingState, showsFraction } from "../../lib/routingState";
  * - **Rows draw the whole activity line, but its halves come from different
  *   places.** The frames draw "345 messages · 23 alerts" under each status. The
  *   alerts are live: the feed (AG-578) attributes each blocked or flagged
- *   request to a tool slug, and the tray already listens to it for the security
- *   card. The messages are *held*: `GET /v1/me/activity` answers for one tool at
+ *   request to a tool slug, and the tray listens to it for the per-row alert
+ *   counts. The messages are *held*: `GET /v1/me/activity` answers for one tool at
  *   a time inside a throttle bucket keyed on the source address, so a read per
  *   row per open is the one fan-out that budget cannot take - `lib/toolMessages`
  *   opens on the readings already on disk and refreshes what has gone stale
@@ -84,9 +83,7 @@ export function Tray({
   menuOpen,
   onMenuToggle,
   onMenuSelect,
-  security,
   recovery,
-  reopen,
   dialog,
   rootRef,
 }: {
@@ -123,12 +120,6 @@ export function Tray({
   menuOpen: boolean;
   onMenuToggle: () => void;
   onMenuSelect: (action: TrayMenuAction) => void;
-  /** The live security-event feed, compacted to what fits a 400px popover
-   * (AG-578): how many blocked or flagged events this session has seen, and
-   * whether the feed is actually connected. Omitted while the first read is in
-   * flight, and the card is omitted with it - a count with no reading behind it
-   * would be a claim, which is the same rule `master` follows one prop up. */
-  security?: { state: FeedState; count: number; onOpen: () => void };
   /** An interrupted routing operation that has not finished (AG-570).
    *
    * The tray gets the action, not just the fact: AC 4 requires the recovery to
@@ -145,21 +136,6 @@ export function Tray({
     onResume: () => void;
     onReview: () => void;
   };
-  /** Tools whose configuration is applied and whose running process has not
-   *  picked it up. AG-566 AC 3 asked for this on tool detail, Overview and the
-   *  tray; the Overview banner is gone, so the surfaces are the tool's pane,
-   *  the rail row and this.
-   *
-   *  Same division as `recovery`: the tray carries the fact and the one action,
-   *  and the per-tool routes and stages stay in the window, which has the width
-   *  for them. Omitted when nothing needs reopening. */
-  /** The tools waiting to be reopened, and the route they are still on.
-   *
-   *  `route` is the address for a SINGLE waiting tool and must be null for two
-   *  or more: they can be on different routes, so one address under several
-   *  names would be wrong about at least one of them. The card tests the plural
-   *  first rather than trusting this, but the invariant is the caller's. */
-  reopen?: { names: string[]; route?: string | null; onReopen: () => void };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
@@ -227,25 +203,6 @@ export function Tray({
             * the most urgent thing on the popover, and it is also a statement
             * about the routing the card above describes. */}
           {recovery && <RecoveryCard recovery={recovery} />}
-          {/* Below the recovery card: an operation that did not finish outranks
-            * one that finished and is waiting on the user. */}
-          {reopen && <ReopenCard reopen={reopen} />}
-          {/* Nothing to report draws nothing. The card is an undrawn addition
-            * (AG-578; no frame on the Tray page carries it), and its zero state
-            * was the least defensible part of it - a row that says "No recent
-            * security events" is furniture on a 400px surface, and the reader
-            * learns the same thing from its absence.
-            *
-            * Only a LIVE feed may be hidden by its own zero. `offline` and
-            * `reconnecting` are both readings that did not happen rather than
-            * quiet machines, and hiding either would assert a quiet machine
-            * when what happened is that nobody looked - which is the difference
-            * principle 6 is about. `reconnecting` was briefly in the hidden
-            * half, which made a failed re-read after a live one draw nothing
-            * at all. */}
-          {security && (security.state !== "live" || security.count > 0) && (
-            <SecurityCard security={security} />
-          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
             {groups.map((group) => (
@@ -457,10 +414,12 @@ function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
  *
  * Grey, on the status line's own ramp. A blocked request is Gate doing its job,
  * not this app failing, so a fault colour here would put a second amber phrase
- * under the one line on the row entitled to report a fault. A measured zero says
- * so in words: the frames draw digits but their own empty-state copy is a phrase
- * ("No recent messages"), and a bare `0` under a status line reads as a figure
- * that failed to arrive rather than as an answer.
+ * under the one line on the row entitled to report a fault. A measured zero of
+ * messages says so in words: the frames draw digits but their own empty-state
+ * copy is a phrase ("No recent messages"), and a bare `0` under a status line
+ * reads as a figure that failed to arrive rather than as an answer. A zero of
+ * alerts draws no half at all, because no frame words one: Claude Desktop's
+ * quiet row is "No recent messages" alone.
  *
  * Either half can be absent, and an absent half takes its separator with it - a
  * row never draws a dangling dot for a figure it does not have. The message half
@@ -486,14 +445,15 @@ function ActivityLine({
       <span className="truncate">{label(count.count)}</span>
     );
   const measuredAt = messages?.kind === "count" ? messages.measuredAt : undefined;
+  const shownAlerts = alerts?.kind === "count" && alerts.count === 0 ? undefined : alerts;
   return (
     <span
       title={measuredAt && `Messages measured ${measuredAt}`}
       className="flex min-w-0 items-center gap-1 text-base-2xs leading-4 text-base-muted-foreground"
     >
       {messages && half(messages, messagesLabel)}
-      {messages && alerts && <span aria-hidden>·</span>}
-      {alerts && half(alerts, alertsLabel)}
+      {messages && shownAlerts && <span aria-hidden>·</span>}
+      {shownAlerts && half(shownAlerts, alertsLabel)}
     </span>
   );
 }
@@ -506,7 +466,6 @@ function messagesLabel(count: number): string {
 }
 
 function alertsLabel(count: number): string {
-  if (count === 0) return "No alerts";
   return count === 1 ? "1 alert" : `${count.toLocaleString()} alerts`;
 }
 
@@ -804,165 +763,3 @@ function RecoveryCard({
     </div>
   );
 }
-
-/**
- * The reopen notice at tray width.
- *
- * The window draws two routes per tool and a stage each; this says which tools
- * are waiting and offers the one action a 400px popover can carry. "Reopen
- * tool" here opens the same close-and-verify conversation the window uses -
- * Gate cannot start a terminal tool itself, so what the button does is deal
- * with the process that is in the way.
- */
-function ReopenCard({
-  reopen,
-}: {
-  reopen: { names: string[]; route?: string | null; onReopen: () => void };
-}) {
-  const many = reopen.names.length > 1;
-  return (
-    <div className="flex shrink-0 flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3">
-      <div className="flex items-center gap-3">
-        <StatusTile tone="amber" icon="refresh" size={36} />
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-sm font-medium leading-5 text-base-foreground">
-            Reopen to finish
-          </h2>
-          {/* AG-584 asks the pending change to name **the route in use**, and
-              this sentence used to gesture at it - "the route it started with"
-              describes an address without saying which. `Verdict.route_in_use`
-              is that address, set exactly when the reason is `reopen_required`.
-              Absent for two or more tools, which can be on two different routes:
-              one address under both names would be wrong about at least one of
-              them, and the phrase is true for any number. */}
-          {/* AG-584 asks the pending change to name **the route in use**, and
-              this sentence used to gesture at it - "the route it started with"
-              describes an address without saying which. `Verdict.route_in_use`
-              is that address, set exactly when the reason is `reopen_required`.
-
-              `many` is tested FIRST, so the singular verb and the type agree
-              without depending on a rule kept in another file: the caller only
-              passes a route when one tool is waiting, and if that ever changes
-              this reads "Claude Code, Codex are on the route they started with"
-              rather than "... is still on <one address>".
-
-              Not truncated. The address is the payload of the sentence, and at
-              this width "Claude Code is still on " leaves roughly 26 characters
-              - less than the relay routes we actually produce, so `truncate`
-              cut the one thing the AC asks to be named. It wraps instead, with
-              `break-all` because a URL has no spaces to break at. */}
-          <p className="text-base-xs leading-4 text-amber-900/80">
-            {many || !reopen.route ? (
-              <>
-                {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
-                {many ? "they" : "it"} started with
-              </>
-            ) : (
-              <>
-                {reopen.names[0]} is still on{" "}
-                <span className="break-all font-medium">{reopen.route}</span>
-              </>
-            )}
-          </p>
-        </div>
-      </div>
-      <button
-        type="button"
-        onClick={reopen.onReopen}
-        className="flex h-8 items-center justify-center rounded-md border border-amber-300 bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 shadow-base-btn-sm transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
-      >
-        {/* "Close", not "Reopen": this opens the close confirmation, and Gate
-            cannot start a CLI again. One label across both surfaces that raise
-            this flow - see `banners.tsx`. */}
-        Close tool
-      </button>
-    </div>
-  );
-}
-
-/** The security feed, at popover size.
- *
- * A count and a connection state, and a way into the full window. Deliberately
- * not a list: at 400px a row would have to drop either the category or the
- * tool, and an event that cannot say what fired or where is not worth the
- * space.
- *
- * **`onOpen` lands on the events themselves** (AG-853). It used to be the
- * header's `expand`: `reveal_popover_window` shows the main window wherever it
- * was last left and takes no destination, so the card that asked for the feed
- * revealed whatever pane the user happened to be on. `request_security_events`
- * carries the destination, and the feed now has one to carry - the last section
- * of the Overview, rather than a pane behind a rail entry that could have been
- * anywhere.
- *
- * The count is "this session", not "today". The feed buffers what it has received
- * since the app started, and calling that a daily total would be a claim about
- * traffic the app was not running for.
- */
-function SecurityCard({
-  security,
-}: {
-  security: { state: FeedState; count: number; onOpen: () => void };
-}) {
-  const feed = FEED_LABEL[security.state];
-  return (
-    <button
-      type="button"
-      onClick={security.onOpen}
-      className="flex w-full items-center justify-between gap-3 rounded-md border border-base-border bg-base-card p-3 text-left shadow-base-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-    >
-      <span className="flex min-w-0 items-center gap-2.5">
-        <Icon name="shieldCheck" size={20} />
-        {/* "recent", in the count itself.
-          *
-          * A bare "No security events" beside an Overview reporting blocked
-          * traffic in the last 24 hours reads as a broken feed, and the LIVE
-          * pill makes that worse rather than better. The first fix for that was
-          * a second line reading "Since Gate Connect started", which review
-          * caught as a second inaccurate absolute: the figure is
-          * `securityFeed.events.length`, and that array is capped at
-          * `FEED_CAPACITY` (200, oldest evicted) and emptied whenever the
-          * credential changes - an org switch or a re-auth. So a busy machine
-          * would read "200 events since Gate Connect started" while the true
-          * number was thousands, and two seconds after an org switch it would
-          * claim none on a process up for hours.
-          *
-          * "recent" is true under all three: the cap, the clear, and a genuinely
-          * quiet run. One line rather than two also settles what truncation eats
-          * first - with a scope on its own line it was the SCOPE that got cut at
-          * large text scales, which is the wrong half to lose. */}
-        <span className="min-w-0 text-sm font-medium leading-5 text-base-foreground">
-          {/* Principle 6, the last step of it: a feed that is not reading has no
-            * zero to report. "No recent security events" asserted a quiet machine
-            * when what happened is that nobody looked, so that arm is gone - a
-            * live feed with nothing in it draws no card at all (see :241), and
-            * every zero that reaches here is therefore `offline` or
-            * `reconnecting`, neither of which has looked.
-            *
-            * A count that IS a reading still prints in every state, because the
-            * buffer it counts is real and the pill beside it already says
-            * whether the stream is caught up. */}
-          {security.count > 0
-            ? `${security.count} recent security event${security.count === 1 ? "" : "s"}`
-            : "Security events unavailable"}
-        </span>
-      </span>
-      <span
-        role="status"
-        aria-label={`Event feed ${feed.label}`}
-        className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${feed.className}`}
-      >
-        {feed.label}
-      </span>
-    </button>
-  );
-}
-
-/** Same three states and the same colours the pane draws. Duplicated as a
- *  constant rather than imported from `SecurityEvents`, which would pull the
- *  window's whole feed section into the tray bundle for three strings. */
-const FEED_LABEL: Record<FeedState, { label: string; className: string }> = {
-  live: { label: "Live", className: "bg-green-100 text-green-900" },
-  reconnecting: { label: "Reconnecting", className: "bg-amber-100 text-amber-900" },
-  offline: { label: "Offline", className: "bg-gray-100 text-neutral-700" },
-};

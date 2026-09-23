@@ -20,7 +20,6 @@ import {
   requestQuit,
   resumeRestore,
   requestRecoveryDetails,
-  requestSecurityEvents,
   requestSwitchOrg,
   revealMainWindow,
   unpinPopover,
@@ -244,8 +243,8 @@ export function TrayApp() {
    * The window shell's effect, for the window shell's reason: a tool picks up
    * its new route when the person opens a terminal, and no event says so -
    * `tool_watch.rs` watches config files and binaries, never the process table.
-   * Both shells draw the reopen card, so both have to notice, and on the same
-   * cadence: two numbers here is how the tray comes to clear a card the window
+   * Both shells draw "Reopen to finish" on the row, so both have to notice, and on the same
+   * cadence: two numbers here is how the tray comes to clear a status the window
    * is still showing.
    *
    * Armed on the condition rather than always, because the sweep probes the
@@ -485,7 +484,7 @@ export function TrayApp() {
    * gateway switch, a sign-out, a disconnect.
    *
    * This popover renders one account's everything - the org name in the footer,
-   * the security card's count, the per-row figures - and every one of those is
+   * the per-row figures - and every one of those is
    * keyed on `credential`, which is derived from state read here. Without this
    * the tray kept the previous org's numbers until something unrelated woke it,
    * and after a sign-out it kept figures for an account that could no longer read
@@ -548,7 +547,7 @@ export function TrayApp() {
 
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
-    // Nothing running for a tool the card named means the card's reading is out
+    // Nothing running for a tool the sweep named means the sweep's reading is out
     // of date, not that the click had nothing to do. Same handling as the
     // window shell.
     onNothingRunning: () => void refreshVerdicts(),
@@ -601,7 +600,7 @@ export function TrayApp() {
     : "";
 
   // The live security-event feed (AG-578). Keyed on the credential so a switch
-  // does not leave the previous org's count on screen, matching the window shell.
+  // does not leave the previous org's alert counts on screen, matching the window shell.
   const securityFeed = useSecurityFeed(account !== null, credential);
 
   /**
@@ -652,9 +651,9 @@ export function TrayApp() {
    * `alerts` is optional rather than defaulted: their rows keep the two-line
    * shape instead of claiming a quiet day over traffic Gate cannot see.
    *
-   * Null is "no reading", and a row draws nothing for it. Three ways to get
+   * Null is "no reading", and a row draws nothing for it. Four ways to get
    * there and they are one thing to the reader: the feed could not be read, it
-   * has not answered yet, or there is no account for it to run under - and in
+   * has not answered yet, it is offline or reconnecting, or there is no account for it to run under - and in
    * that last case `loading` never clears, because the hook's seed returns
    * early, which is why the account is checked here too.
    *
@@ -662,7 +661,16 @@ export function TrayApp() {
    * window's Security events section lists.
    */
   const alertCounts = useMemo<Map<string, number> | null>(() => {
-    if (account === null || securityFeed.loading || securityFeed.unavailable) {
+    // Only a live feed is a reading. `offline` and `reconnecting` both leave
+    // `unavailable` false, and counting their buffer would put a zero on every
+    // row that nobody measured - the one card that said the feed was down is
+    // gone from this surface, so the rows must not claim otherwise.
+    if (
+      account === null ||
+      securityFeed.loading ||
+      securityFeed.unavailable ||
+      securityFeed.state !== "live"
+    ) {
       return null;
     }
     const counts = new Map<string, number>();
@@ -670,7 +678,13 @@ export function TrayApp() {
       if (e.tool) counts.set(e.tool, (counts.get(e.tool) ?? 0) + 1);
     }
     return counts;
-  }, [account, securityFeed.events, securityFeed.loading, securityFeed.unavailable]);
+  }, [
+    account,
+    securityFeed.events,
+    securityFeed.loading,
+    securityFeed.unavailable,
+    securityFeed.state,
+  ]);
 
   /** A feed that is actually running has not answered yet, which is the one case
    *  worth holding a place for. */
@@ -900,29 +914,6 @@ export function TrayApp() {
     [dash],
   );
 
-  /** The tools the sweep says are applied and not picked up. Names for the card,
-   *  slugs for the action, the route for the sentence - all from the one reading
-   *  so no two of them can disagree. */
-  const reopenPending = useMemo(
-    () =>
-      [...verdicts.values()]
-        .filter((v) => v.reason === "reopen_required")
-        .map((v) => ({
-          slug: v.slug,
-          name: tools.find((t) => t.slug === v.slug)?.product_name ?? v.slug,
-          route: v.route_in_use,
-        })),
-    [verdicts, tools],
-  );
-  const reopenNames = useMemo(
-    () => reopenPending.map((t) => t.name),
-    [reopenPending],
-  );
-  const reopenSlugs = useMemo(
-    () => reopenPending.map((t) => t.slug),
-    [reopenPending],
-  );
-
   /** What is still outstanding, providers and tools together: the user does not
    * care which snapshot an entry came from. */
   const recoveryNames = useMemo(
@@ -997,25 +988,6 @@ export function TrayApp() {
       accountUnread={accountUnread}
       onToggleApp={toggleApp}
       onExpand={expand}
-      security={
-        securityFeed.loading
-          ? undefined
-          : {
-              state: securityFeed.state,
-              count: securityFeed.events.length,
-              // The popover has room for a count, not a feed, so the card hands
-              // over - and since AG-853 it hands over to somewhere in
-              // particular. `expand` alone was the same bug the recovery card's
-              // Review details had: it revealed the window on whatever pane the
-              // user was last on, so a press asking for the events opened
-              // anything but them. The feed is the Overview's last section now,
-              // which is a destination the reveal can carry.
-              onOpen: () =>
-                void requestSecurityEvents().catch((e) =>
-                  setActionError(classifyError(e, "generic")),
-                ),
-            }
-      }
       recovery={
         recoveryNames.length > 0
           ? {
@@ -1051,25 +1023,6 @@ export function TrayApp() {
                 void requestRecoveryDetails().catch((e) =>
                   setActionError(classifyError(e, "generic")),
                 ),
-            }
-          : undefined
-      }
-      reopen={
-        reopenNames.length > 0
-          ? {
-              names: reopenNames,
-              // AG-584 asks a pending change to name the route in use, and the
-              // verdict has carried it all along - `route_in_use` is set exactly
-              // when the reason is `reopen_required`, which is this card's whole
-              // population. Only when one tool is waiting: two tools can be on
-              // two different routes, and one address under both their names
-              // would be wrong about at least one of them.
-              route: reopenPending.length === 1 ? reopenPending[0].route : null,
-              // One action, on every waiting tool at once: the popover lists
-              // names, not rows, and a per-tool control would need the width
-              // the window has and this does not.
-              onReopen: () =>
-                void runningApps.offerAfterChange(reopenSlugs),
             }
           : undefined
       }
