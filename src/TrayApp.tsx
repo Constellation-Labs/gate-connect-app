@@ -61,7 +61,6 @@ import {
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
-  HermesProviderDialog,
   OpenCodeEnvDialog,
   ReopenProgressDialog,
   ReviewConfigDialog,
@@ -1061,15 +1060,6 @@ export function TrayApp() {
             // until the popover unmounted. Same dialog the window draws, from
             // the same component, so the two cannot drift apart again.
             <OpenCodeEnvDialog
-              onCancel={() => routing.resolvePrompt(false)}
-              onConfirm={() => routing.resolvePrompt(true)}
-            />
-          ) : routing.prompt?.kind === "hermes-provider" ? (
-            // Wired here in the same commit as the window's, rather than after
-            // somebody hits the spinning switch above for a second time.
-            <HermesProviderDialog
-              domains={routing.prompt.domains}
-              defaulted={routing.prompt.defaulted}
               onCancel={() => routing.resolvePrompt(false)}
               onConfirm={() => routing.resolvePrompt(true)}
             />

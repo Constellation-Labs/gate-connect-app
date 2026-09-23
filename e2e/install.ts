@@ -526,6 +526,24 @@ export function installFakeTauri(state: BackendState): void {
       state.preferences.share_diagnostics_recorded = true;
       return null;
     },
+    // Provenance, matching `preferences::record_auto_enabled_domains`:
+    // replaces rather than merges, and an empty list removes the entry.
+    record_auto_enabled_domains: ({ tool, domains }) => {
+      const key = tool as string;
+      const list = domains as string[];
+      if (list.length === 0) delete state.preferences.auto_enabled_domains[key];
+      else state.preferences.auto_enabled_domains[key] = [...list];
+      return null;
+    },
+    // Take, not read: the caller is about to switch these off, and leaving the
+    // record behind would have a second disconnect switch off domains the
+    // person may have turned back on in between.
+    take_auto_enabled_domains: ({ tool }) => {
+      const key = tool as string;
+      const list = state.preferences.auto_enabled_domains[key] ?? [];
+      delete state.preferences.auto_enabled_domains[key];
+      return list;
+    },
     // Derived from the proxy state the spec set rather than stubbed free-hand, so
     // a report cannot describe an install the rest of the fake backend is not
     // running. The window's diagnostics dialog reads this; before it did, four

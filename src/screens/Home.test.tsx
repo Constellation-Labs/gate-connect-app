@@ -254,8 +254,14 @@ describe("Home routing card", () => {
         makeTool("opencode", "OpenCode", { kind: "detected" }),
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
       ],
-      // One enabled app row plus one available-but-off row.
-      domains: [makeDomain(), makeDomain({ slug: "openrouter", display_name: "OpenRouter", enabled: false })],
+      // One enabled app row plus one available-but-off row. `claude-web`
+      // rather than `openrouter`, which is no longer drawn at all - Hermes
+      // owns that domain and `TOOL_MANAGED_DOMAINS` filters it out of every
+      // shell, so a fixture using it counts three rows and not four.
+      domains: [
+        makeDomain(),
+        makeDomain({ slug: "claude-web", display_name: "Claude web", enabled: false }),
+      ],
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
@@ -879,13 +885,18 @@ describe("Home family roster", () => {
     // is the answer.
     renderHome({
       tools: [makeTool("env-proxy", "Terminal tools", { kind: "connected" }, "any-app")],
+      // A slug no section claims, which is what `openrouter` effectively was
+      // here and is no longer: its section went with its row, and
+      // `TOOL_MANAGED_DOMAINS` filters it out before grouping either way. An
+      // unclaimed member still gets a row of its own - that is the guarantee
+      // `buildGroups` documents - so it demonstrates the same thing.
       domains: [
-        makeDomain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" }),
+        makeDomain({ slug: "acme-router", display_name: "Acme Router", client: "any-app" }),
       ],
     });
     expect(screen.getByText("Terminal")).toBeTruthy();
-    expect(screen.getByText("OpenRouter")).toBeTruthy();
-    expect(screen.queryByText("Terminal tools · OpenRouter")).toBeNull();
+    expect(screen.getByText("Acme Router")).toBeTruthy();
+    expect(screen.queryByText("Terminal tools · Acme Router")).toBeNull();
   });
 
   it("has no catch-all heading left to reach", () => {

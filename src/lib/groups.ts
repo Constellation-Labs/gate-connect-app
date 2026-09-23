@@ -734,22 +734,6 @@ export const SECTIONS: readonly {
     members: ["openai"],
   },
   {
-    id: "openrouter",
-    providerEndpoint: true,
-    // A provider endpoint, not an app (AG-897): nothing here is a program the
-    // user launches, which is what `providerEndpoint` above records. Listing
-    // it beside Claude and ChatGPT / Codex invited the reader to look for
-    // OpenRouter in their dock.
-    //
-    // This used to cite the row's own `description` - "Any app you have
-    // pointed at OpenRouter" - as saying the same thing. That field was
-    // removed in 78374027 and the sentence now survives only in comments, so
-    // the attribution is dropped rather than left pointing at nothing.
-    name: "OpenRouter",
-    band: "other",
-    members: ["openrouter"],
-  },
-  {
     id: "openclaw",
     name: "OpenClaw",
     band: "other",
@@ -885,6 +869,28 @@ export function isSettingsManaged(key: string): boolean {
  */
 export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
 
+/**
+ * Domains the app never draws, because a tool's own switch owns them.
+ *
+ * `openrouter` is Hermes' provider. Its row sat under "Other apps" inviting a
+ * reader to manage it, and managing it was never really theirs to do: Hermes
+ * routed to a provider Gate did not inspect was the state the whole coverage
+ * path exists to prevent, so the app asked about it every time
+ * (`HermesProviderDialog`) rather than leaving it to them. Product removed
+ * both the row and the question on 2026-09-23 - Hermes' switch turns the
+ * domain on, and turning Hermes off turns off what it turned on.
+ *
+ * **Unlike {@link CLI_ONLY_DOMAINS} this hides the row while it is ON too**,
+ * which is the whole point and is also what makes it dangerous: there is no
+ * row to switch off from. What keeps that honest is
+ * `preferences::auto_enabled_domains` - the record of what Gate enabled, and
+ * the thing Hermes' off reads. A domain the person turned on themselves is
+ * not in that record, so it is never switched off for them; it is also never
+ * drawn, so the CLI is their only way back. That trade was accepted with the
+ * decision.
+ */
+export const TOOL_MANAGED_DOMAINS: readonly string[] = ["openrouter"];
+
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own
  *  name would print every name twice. */
@@ -927,6 +933,7 @@ export function buildGroups(
     // domain must not overwrite the tool. Both are named by the same section
     // and both need a member, which is why this is keyed per kind rather than
     // per slug.
+    if (TOOL_MANAGED_DOMAINS.includes(domain.slug)) continue;
     if (domain.supported && (domain.enabled || !CLI_ONLY_DOMAINS.includes(domain.slug))) {
       byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));
     }

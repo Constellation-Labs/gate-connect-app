@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
-import type { ProxyDomain, ProxyState, Status, Tool } from "./api";
+import type { ProxyState, Status, Tool } from "./api";
 import { useRouting, FamilyCascadeError } from "./useRouting";
 import type { Group, GroupMember } from "./groups";
 
@@ -17,6 +17,8 @@ vi.mock("./api", () => ({
   proxyTrustCa: vi.fn(),
   proxyUntrustCa: vi.fn(),
   hermesUpstreamCoverage: vi.fn(),
+  recordAutoEnabledDomains: vi.fn(),
+  takeAutoEnabledDomains: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // The log lines are the only trace some of these paths leave, so a test has
@@ -30,6 +32,8 @@ vi.mock("./log", async (importOriginal) => ({
 import {
   connectTool,
   disconnectTool,
+  recordAutoEnabledDomains,
+  takeAutoEnabledDomains,
   listTools,
   proxyDisable,
   proxyEnable,
@@ -40,7 +44,7 @@ import {
   proxyUntrustCa,
   hermesUpstreamCoverage,
 } from "./api";
-import { logWarn } from "./log";
+import { logInfo, logWarn } from "./log";
 
 const tool = (slug: string, status: Status): Tool => ({
   slug,
@@ -100,6 +104,8 @@ beforeEach(() => {
   (proxyDisable as Mock).mockResolvedValue(proxyState({ running: false }));
   (proxySetEnvExport as Mock).mockResolvedValue(proxyState());
   (proxyUntrustCa as Mock).mockResolvedValue(proxyState({ ca_trusted: false }));
+  (recordAutoEnabledDomains as Mock).mockResolvedValue(undefined);
+  (takeAutoEnabledDomains as Mock).mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -660,6 +666,20 @@ describe("useRouting: remembering a failed write", () => {
   });
 });
 
+/**
+ * Hermes' provider domains, which its switch owns outright since 2026-09-23.
+ *
+ * There used to be a dialog here - `HermesProviderDialog` - and nine tests
+ * pinning it: that it asked, what it named the provider, that Cancel wrote
+ * nothing. Product removed both the question and the OpenRouter row it pointed
+ * at, so the switch now turns the domain on by itself and turning Hermes off
+ * turns off what it turned on.
+ *
+ * The record is the part worth testing hardest. With no row to switch off
+ * from, `auto_enabled_domains` is the only thing that keeps the off direction
+ * from either stranding a domain on forever or switching off one the person
+ * enabled themselves.
+ */
 describe("useRouting: Hermes and the provider it talks to", () => {
   const covered = { defaulted: false, switched_off: [], unknown: [] };
   const off = {
@@ -667,97 +687,89 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     switched_off: [{ slug: "openrouter", hosts: ["openrouter.ai"], tools: [] }],
     unknown: [],
   };
-  /** The catalog row the hook names the prompt from. */
-  const openrouterRow: ProxyDomain = {
-    slug: "openrouter",
-    display_name: "OpenRouter",
-    hosts: ["openrouter.ai"],
-    upstream_url: "https://openrouter.ai/api",
-    rewrite_prefixes: [],
-    passthrough_prefixes: [],
-    enabled: false,
-    supported: true,
-    client: "claude-code",
-    credential: "brokered",
-    scope: "host",
-  };
 
   beforeEach(() => {
     (hermesUpstreamCoverage as Mock).mockResolvedValue(covered);
   });
 
-  it("asks before routing Hermes at a provider Gate is not inspecting", async () => {
-    // `hermes` is a one-member section, so its switch routes the tool and
-    // intercepts nothing. Claude and ChatGPT cannot reach this state: their
-    // sections bundle the provider rows with the tool.
+  it("turns the provider on without asking, after the connect", async () => {
     (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
     await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
+      await api.current!.setAppRouted("hermes", true);
     });
 
-    expect(api.current!.prompt).toEqual({
-      kind: "hermes-provider",
-      // With no catalog row to name it falls back to the host - see the lookup
-      // in `askHermesProvider`; this harness's `proxyState()` has no domains,
-      // so this is that fallback. The named case is the next test.
-      domains: [{ name: "openrouter.ai", slug: "openrouter", tools: [] }],
-      defaulted: false,
-    });
-    expect(connectTool).not.toHaveBeenCalled();
-    expect(proxySetDomain).not.toHaveBeenCalled();
-  });
-
-  it("names the provider by its row, not its host", async () => {
-    // The dialog shows this name. "OpenRouter" is what the person will look
-    // for in the sidebar; `openrouter.ai` is an implementation detail.
-    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
-    const { api } = harness(
-      [tool("hermes", { kind: "detected" })],
-      proxyState({ domains: [openrouterRow] }),
-    );
-
-    await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
-    });
-
-    expect(api.current!.prompt).toMatchObject({
-      domains: [{ name: "OpenRouter", slug: "openrouter" }],
-    });
-  });
-
-  it("carries whether the provider is Hermes' default rather than configured", async () => {
-    // The backend reports a missing or unparseable config as the default and
-    // says so; the dialog's opening sentence depends on it.
-    (hermesUpstreamCoverage as Mock).mockResolvedValue({ ...off, defaulted: true });
-    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
-
-    await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
-    });
-
-    expect(api.current!.prompt).toMatchObject({ kind: "hermes-provider", defaulted: true });
-  });
-
-  it("turns the provider on once the person says yes, after the connect", async () => {
-    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
-    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
-
-    await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
-    });
-    await act(async () => {
-      api.current!.resolvePrompt(true);
-    });
-
+    expect(api.current!.prompt).toBeNull();
     expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
     expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
     // The connect is what starts the engine, and a domain flag written ahead
-    // of a bound port routes nothing.
+    // of a bound port routes nothing. Unchanged by the dialog's removal.
     expect((connectTool as Mock).mock.invocationCallOrder[0]).toBeLessThan(
       (proxySetDomain as Mock).mock.invocationCallOrder[0],
     );
+  });
+
+  it("records what it turned on, so the off direction can give it back", async () => {
+    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
+    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", true);
+    });
+
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
+  });
+
+  it("claims only the domains that actually landed", async () => {
+    // Recording a domain whose enable failed would have the next disconnect
+    // switch off a row Gate never switched on, which is the one thing the
+    // record exists to stop.
+    (hermesUpstreamCoverage as Mock).mockResolvedValue({
+      ...off,
+      switched_off: [
+        { slug: "openrouter", hosts: ["openrouter.ai"], tools: [] },
+        { slug: "openai", hosts: ["api.openai.com"], tools: [] },
+      ],
+    });
+    (proxySetDomain as Mock).mockRejectedValueOnce("engine refused");
+    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", true);
+    });
+
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openai"]);
+  });
+
+  it("gives back exactly what it turned on when Hermes goes off", async () => {
+    (takeAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", false);
+    });
+
+    expect(disconnectTool).toHaveBeenCalledWith("hermes");
+    expect(proxySetDomain).toHaveBeenCalledWith("openrouter", false);
+    // The coverage read answers "what is switched OFF", which is the wrong
+    // question on the way out - it would name nothing, since the domain is on.
+    expect(hermesUpstreamCoverage).not.toHaveBeenCalled();
+  });
+
+  it("leaves a domain it never turned on alone", async () => {
+    // Somebody who enabled `openrouter` from the CLI, or answered the
+    // popover's own notice, is not in the record - so Hermes' switch must not
+    // reach it. This is the case the whole record exists for.
+    (takeAutoEnabledDomains as Mock).mockResolvedValue([]);
+    const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("hermes", false);
+    });
+
+    expect(disconnectTool).toHaveBeenCalledWith("hermes");
+    expect(proxySetDomain).not.toHaveBeenCalled();
   });
 
   it("reports a provider that would not turn on against the domain, not Hermes", async () => {
@@ -775,10 +787,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     const { api, onError } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
     await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
-    });
-    await act(async () => {
-      api.current!.resolvePrompt(true);
+      await api.current!.setAppRouted("hermes", true);
     });
 
     expect(connectTool).toHaveBeenCalledOnce();
@@ -789,34 +798,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     expect(api.current!.writeFailures.has("hermes")).toBe(false);
   });
 
-  it("writes nothing at all when the provider is declined", async () => {
-    // Cancel means cancel, like the drift and certificate gates. An earlier
-    // version connected Hermes anyway and skipped only the domain, leaving it
-    // routed with its provider uninspected - which is the state this whole
-    // dialog exists to prevent, reporting Protected while every request
-    // tunnels past unseen. The gate runs before `connectTool`, so declining
-    // leaves the switch off and the config untouched.
-    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
-    const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
-
-    await act(async () => {
-      void api.current!.setAppRouted("hermes", true);
-    });
-    await act(async () => {
-      api.current!.resolvePrompt(false);
-    });
-
-    expect(connectTool).not.toHaveBeenCalled();
-    expect(proxySetDomain).not.toHaveBeenCalled();
-    // And it is not reported as a failure: declining is an answer, so the row
-    // must not come back marked as a failed write.
-    expect(api.current!.writeFailures.has("hermes")).toBe(false);
-  });
-
   it("stays quiet when the provider is already inspected", async () => {
-    // A dialog that fires on every Hermes toggle for someone whose provider is
-    // already on is noise, and it would train people to dismiss the one case
-    // that matters.
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
 
     await act(async () => {
@@ -824,12 +806,13 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     });
 
     expect(api.current!.prompt).toBeNull();
+    expect(proxySetDomain).not.toHaveBeenCalled();
     expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
   });
 
   it("stays quiet for an upstream no domain claims", async () => {
-    // Bedrock, or a self-hosted endpoint. No switch fixes it, so a dialog
-    // offering one would be a lie. `Coverage` keeps these in `unknown`.
+    // Bedrock, or a self-hosted endpoint. No switch fixes it, so there is
+    // nothing to turn on. `Coverage` keeps these in `unknown`.
     (hermesUpstreamCoverage as Mock).mockResolvedValue({
       switched_off: [],
       unknown: ["bedrock-runtime.us-east-1.amazonaws.com"],
@@ -840,15 +823,16 @@ describe("useRouting: Hermes and the provider it talks to", () => {
       await api.current!.setAppRouted("hermes", true);
     });
 
-    expect(api.current!.prompt).toBeNull();
+    expect(proxySetDomain).not.toHaveBeenCalled();
     expect(connectTool).toHaveBeenCalled();
+    expect(logInfo).toHaveBeenCalledWith(expect.stringMatching(/no domain for/));
   });
 
   it("connects anyway when the coverage command cannot be reached, and says so", async () => {
     // The command itself cannot fail - a missing config is reported as the
     // default, not as an error - so this is the IPC failing. A backend that
     // cannot answer must not cost the person the toggle they asked for, but
-    // the state it leaves is the one the gate exists to prevent, so it has to
+    // the state it leaves is the one this path exists to prevent, so it has to
     // leave a line behind.
     (hermesUpstreamCoverage as Mock).mockRejectedValue(new Error("command not found"));
     const { api } = harness([tool("hermes", { kind: "detected" })], proxyState());
@@ -857,15 +841,17 @@ describe("useRouting: Hermes and the provider it talks to", () => {
       await api.current!.setAppRouted("hermes", true);
     });
 
-    expect(api.current!.prompt).toBeNull();
     expect(connectTool).toHaveBeenCalled();
+    expect(proxySetDomain).not.toHaveBeenCalled();
     expect(logWarn).toHaveBeenCalledWith(expect.stringMatching(/coverage read failed/));
   });
 
-  it("runs the same gate from the family switch", async () => {
+  it("does the same from the family switch, both ways", async () => {
     // `hermes` is a one-member section, so its section switch is the app
-    // switch by another control. Without the gate here it was a door around
-    // it.
+    // switch by another control. When the dialog existed this was the door
+    // around it; now it is the door around the domain move, in both
+    // directions - `hermesTouched` rather than a connect-shaped flag is what
+    // makes the off half work.
     (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
     const { api } = harness([], proxyState());
     const g = group([
@@ -877,51 +863,32 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     ]);
 
     await act(async () => {
-      void api.current!.setFamilyRouted(g, true);
-    });
-    expect(api.current!.prompt).toMatchObject({ kind: "hermes-provider" });
-    expect(connectTool).not.toHaveBeenCalled();
-
-    await act(async () => {
-      api.current!.resolvePrompt(true);
+      await api.current!.setFamilyRouted(g, true);
     });
     expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
     expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
-  });
+    expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
 
-  it("a declined family switch writes nothing either", async () => {
-    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
-    const { api, onError } = harness([], proxyState());
-    const g = group([
+    // A fresh fixture whose member is actually routed: `cascadeTargets` skips
+    // members already in the target state, so turning off a group built from
+    // a `detected` tool moves nothing and the domain would never be reached.
+    (takeAutoEnabledDomains as Mock).mockResolvedValue(["openrouter"]);
+    const routedGroup = group([
       configMember({
         key: "hermes",
         name: "Hermes",
-        tool: tool("hermes", { kind: "detected" }),
+        // `desired`, which is what `intended` reads - the member has to be one
+        // the user asked for, or the off cascade has nothing to move.
+        desired: true,
+        routed: true,
+        tool: tool("hermes", { kind: "connected" }),
       }),
     ]);
-
     await act(async () => {
-      void api.current!.setFamilyRouted(g, true);
+      await api.current!.setFamilyRouted(routedGroup, false);
     });
-    await act(async () => {
-      api.current!.resolvePrompt(false);
-    });
-
-    expect(connectTool).not.toHaveBeenCalled();
-    expect(proxySetDomain).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
-  });
-
-  it("asks nothing when Hermes is being turned off", async () => {
-    (hermesUpstreamCoverage as Mock).mockResolvedValue(off);
-    const { api } = harness([tool("hermes", { kind: "connected" })], proxyState());
-
-    await act(async () => {
-      await api.current!.setAppRouted("hermes", false);
-    });
-
-    expect(hermesUpstreamCoverage).not.toHaveBeenCalled();
-    expect(api.current!.prompt).toBeNull();
+    expect(disconnectTool).toHaveBeenCalledWith("hermes");
+    expect(proxySetDomain).toHaveBeenLastCalledWith("openrouter", false);
   });
 });
 

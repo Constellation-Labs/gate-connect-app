@@ -918,6 +918,11 @@ export interface Preferences {
    * why they see the onboarding step once - consent nobody was asked for is not
    * consent. `setShareDiagnostics` sets it from either caller. */
   share_diagnostics_recorded: boolean;
+  /** Provider domains Gate switched on *for* a tool, keyed by tool slug.
+   *  Provenance, not intent: the matching disconnect switches off only what is
+   *  listed here, so a domain the person enabled themselves is left alone.
+   *  See `preferences::auto_enabled_domains`. */
+  auto_enabled_domains: Record<string, string[]>;
   /** The person's own name for this machine, or null when it follows the
    * hostname. Read {@link deviceName} to display it - this is the override, not
    * the resolved value.
@@ -987,6 +992,16 @@ export const DEVICE_NAME_MAX_LENGTH = 128;
 
 export const setNotifications = (enabled: boolean) =>
   invoke<void>("set_notifications", { enabled });
+
+/** Record the provider domains Gate switched on for one tool, replacing any
+ *  previous list. An empty list clears the entry. */
+export const recordAutoEnabledDomains = (tool: string, domains: string[]) =>
+  invoke<void>("record_auto_enabled_domains", { tool, domains });
+
+/** Read and clear what Gate switched on for one tool, so the caller can undo
+ *  exactly that. Empty when Gate turned nothing on for it. */
+export const takeAutoEnabledDomains = (tool: string) =>
+  invoke<string[]>("take_auto_enabled_domains", { tool });
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });

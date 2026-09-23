@@ -98,16 +98,38 @@ test.describe("new UI engine controls", () => {
     // writes intent and routes nothing. Rare now that the launch enables the
     // engine, and this is the window where it is not rare: a launch whose
     // enable did not complete.
-    const app = await boot({ proxy: { running: false, ca_trusted: true } });
+    const app = await boot({
+      proxy: {
+        running: false,
+        ca_trusted: true,
+        domains: [
+          {
+            // A host-only brokered row that no section claims, so it draws a
+            // row of its own. This was OpenRouter until 2026-09-23, when
+            // Hermes took ownership of that domain and
+            // `TOOL_MANAGED_DOMAINS` stopped it being drawn at all.
+            slug: "acme-router",
+            display_name: "Acme Router",
+            client: "any-app",
+            credential: "brokered",
+            scope: "host",
+            hosts: ["api.acme-router.test"],
+            upstream_url: "https://api.acme-router.test",
+            rewrite_prefixes: ["/v1/"],
+            passthrough_prefixes: [],
+            enabled: false,
+            supported: true,
+          },
+        ],
+      },
+    });
 
-    // A row whose surfaces are all host-intercepted: no config file to write, so
-    // the engine is the only thing that could route it. The OpenRouter row
-    // rather than a session app, so no consent dialog stands between the click
-    // and the flag - that is tested on its own in the routing spec.
-    await (await app.appSwitch("OpenRouter")).click();
+    // A row whose surfaces are all host-intercepted: no config file to write,
+    // so the engine is the only thing that could route it.
+    await (await app.appSwitch("Acme Router")).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "openrouter",
+      slug: "acme-router",
       enabled: true,
     });
     const cmds = (await app.calls()).map((c) => c.cmd);

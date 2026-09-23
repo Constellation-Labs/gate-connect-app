@@ -207,13 +207,37 @@ test.describe("new UI routing", () => {
   });
 
   test("a host row nobody browses gets no such notice", async ({ boot }) => {
-    // The other half of the reading, and deliberately a PROXY row rather than a
-    // config one: every proxy row intercepts a host, and if that were the test
-    // an OpenRouter user would be told to reload a page they have never had
-    // open. `openrouter` is brokered, and nothing arrives on it from a tab.
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+    // The other half of the reading, and deliberately a PROXY row rather than
+    // a config one: every proxy row intercepts a host, and if that were the
+    // test an API user would be told to reload a page they have never had
+    // open. This row is brokered, and nothing arrives on it from a tab.
+    const app = await boot({
+      proxy: {
+        running: true,
+        ca_trusted: true,
+        domains: [
+          {
+            // A host-only brokered row that no section claims, so it draws a
+            // row of its own. This was OpenRouter until 2026-09-23, when
+            // Hermes took ownership of that domain and
+            // `TOOL_MANAGED_DOMAINS` stopped it being drawn at all.
+            slug: "acme-router",
+            display_name: "Acme Router",
+            client: "any-app",
+            credential: "brokered",
+            scope: "host",
+            hosts: ["api.acme-router.test"],
+            upstream_url: "https://api.acme-router.test",
+            rewrite_prefixes: ["/v1/"],
+            passthrough_prefixes: [],
+            enabled: false,
+            supported: true,
+          },
+        ],
+      },
+    });
 
-    await (await app.appSwitch("OpenRouter")).click();
+    await (await app.appSwitch("Acme Router")).click();
 
     // The write first. `routeApp` returns the moment the click dispatched, so
     // a bare `toHaveCount(0)` is
@@ -221,7 +245,7 @@ test.describe("new UI routing", () => {
     // which would make this pass whether or not the regression it guards
     // exists.
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "openrouter",
+      slug: "acme-router",
       enabled: true,
     });
     await expect(
@@ -1341,14 +1365,38 @@ test.describe("new UI sidebar rail", () => {
   test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+    // The OpenAI API row, booted ON because `CLI_ONLY_DOMAINS` draws it only
+    // while it is. It is the last `providerEndpoint` section left: OpenRouter
+    // played this part until 2026-09-23, when Hermes took its domain and the
+    // row stopped being drawn in any state.
+    const app = await boot({
+      proxy: {
+        running: true,
+        ca_trusted: true,
+        domains: [
+          {
+            slug: "openai",
+            display_name: "OpenAI API",
+            client: "any-app",
+            credential: "brokered",
+            scope: "host",
+            hosts: ["api.openai.com"],
+            upstream_url: "https://api.openai.com",
+            rewrite_prefixes: ["/v1/"],
+            passthrough_prefixes: [],
+            enabled: true,
+            supported: true,
+          },
+        ],
+      },
+    });
 
-    // OpenRouter is a host with no config tool behind it, so no reading exists
-    // and none ever will. A different sentence from the one above, and
-    // deliberately so: that one caveats a reading, this one names where the
-    // requests ARE counted instead (AG-889). The page used to say only that
-    // its numbers could not be shown, which read as breakage.
-    await app.openApp("OpenRouter");
+    // A host with no config tool behind it, so no reading exists and none ever
+    // will. A different sentence from the one above, and deliberately so: that
+    // one caveats a reading, this one names where the requests ARE counted
+    // instead (AG-889). The page used to say only that its numbers could not
+    // be shown, which read as breakage.
+    await app.openApp("OpenAI API");
 
     // Anchored on the note's own tail. An earlier version matched
     // /counted in the Overview/, which resolved to one element only by luck of

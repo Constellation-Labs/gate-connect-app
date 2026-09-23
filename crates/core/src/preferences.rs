@@ -110,6 +110,29 @@ pub struct Preferences {
     /// a diff of `preferences.json` shows what changed rather than a reshuffle.
     #[serde(default)]
     pub tool_models: BTreeMap<String, ToolModelChoice>,
+    /// Provider domains Gate switched on *for* a tool, keyed by tool slug.
+    ///
+    /// Hermes is the only writer today. Its switch turns on the domains its
+    /// configured providers point at (`openrouter`), because those rows are no
+    /// longer drawn in the rail - the app treats them as part of Hermes rather
+    /// than as something the user manages - and a tool routed to a provider
+    /// Gate does not inspect is the exact state that whole path exists to
+    /// prevent.
+    ///
+    /// **It records provenance, not intent**, and that is the point. Switching
+    /// Hermes off turns off only what is listed here, so a domain the person
+    /// had already enabled themselves - from the CLI, or from an older build
+    /// that drew the row - is left alone. Without the record the off direction
+    /// has to choose between stranding a domain on forever and switching off
+    /// one it never switched on, and both were rejected (2026-09-23).
+    ///
+    /// Emptied for a tool when that tool's switch goes off, so it never claims
+    /// authorship of a state it has already reverted.
+    ///
+    /// A `BTreeMap` for the same reason as `tool_models`: a stable key order
+    /// keeps a diff of `preferences.json` readable.
+    #[serde(default)]
+    pub auto_enabled_domains: BTreeMap<String, Vec<String>>,
     /// When this install first accepted paid Gate model use, unix seconds, or
     /// `None` if it never has.
     ///
@@ -189,6 +212,7 @@ impl Default for Preferences {
             // install that has not been asked has not consented.
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
+            auto_enabled_domains: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
             signed_out_deliberately: false,
         }
@@ -361,6 +385,41 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
     save(&prefs)
+}
+
+/// Record the domains Gate switched on for `tool`, replacing any previous list.
+///
+/// Replacing rather than merging: the caller computes the whole set from the
+/// tool's current coverage on every connect, so a merge would accumulate
+/// domains a config no longer points at and switch them off on a later
+/// disconnect that has nothing to do with them.
+///
+/// An empty list removes the entry rather than storing `[]`, so the file does
+/// not grow a row per tool that never needed one.
+pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<()> {
+    let mut prefs = load();
+    if domains.is_empty() {
+        prefs.auto_enabled_domains.remove(tool);
+    } else {
+        prefs.auto_enabled_domains.insert(tool.to_string(), domains);
+    }
+    save(&prefs)
+}
+
+/// Read and clear what Gate switched on for `tool`.
+///
+/// Take rather than read: the caller is about to switch these off, and leaving
+/// the record behind would have a second disconnect switch off domains the
+/// person may have turned back on in between. Clearing first is also the safe
+/// direction if the disable then fails - Gate under-claims authorship rather
+/// than switching off something twice.
+pub fn take_auto_enabled_domains(tool: &str) -> Result<Vec<String>> {
+    let mut prefs = load();
+    let Some(domains) = prefs.auto_enabled_domains.remove(tool) else {
+        return Ok(Vec::new());
+    };
+    save(&prefs)?;
+    Ok(domains)
 }
 
 /// Set one tool's model choice, leaving every other tool alone.

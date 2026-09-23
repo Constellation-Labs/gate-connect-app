@@ -145,7 +145,6 @@ import {
   TeardownReportDialog,
   DisconnectGateDialog,
   OAuthOfferDialog,
-  HermesProviderDialog,
   OpenCodeEnvDialog,
   RenameDeviceDialog,
   OrganizationSwitchedDialog,
@@ -3219,17 +3218,6 @@ export function NewUiApp() {
           />
         ) : routing.prompt?.kind === "opencode-env" ? (
           <OpenCodeEnvDialog
-            onCancel={() => routing.resolvePrompt(false)}
-            onConfirm={() => routing.resolvePrompt(true)}
-          />
-        ) : routing.prompt?.kind === "hermes-provider" ? (
-          // Both shells, from the first commit. `setAppRouted` awaits a promise
-          // only a rendered dialog resolves, so a shell that omits this hangs
-          // the switch until it unmounts - the bug `OpenCodeEnvDialog`'s own
-          // doc records the tray having had.
-          <HermesProviderDialog
-            domains={routing.prompt.domains}
-            defaulted={routing.prompt.defaulted}
             onCancel={() => routing.resolvePrompt(false)}
             onConfirm={() => routing.resolvePrompt(true)}
           />

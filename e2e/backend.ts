@@ -197,6 +197,9 @@ export interface BackendState {
         on, like every other preference. */
     notifications: boolean;
     security_notification_sound: boolean;
+    /** Provider domains Gate switched on for a tool, keyed by tool slug.
+     *  See `preferences::auto_enabled_domains`. */
+    auto_enabled_domains: Record<string, string[]>;
     share_diagnostics: boolean;
     /** Whether the diagnostic-data question has been ANSWERED, as opposed to
         defaulted. False sends first run through the diagnostics step; the
@@ -637,6 +640,7 @@ export function defaultState(): BackendState {
     preferences: {
       notifications: true,
       security_notification_sound: true,
+      auto_enabled_domains: {},
       share_diagnostics: true,
       share_diagnostics_recorded: true,
       device_name: null,
