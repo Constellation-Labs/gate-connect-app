@@ -110,6 +110,29 @@ pub struct Preferences {
     /// a diff of `preferences.json` shows what changed rather than a reshuffle.
     #[serde(default)]
     pub tool_models: BTreeMap<String, ToolModelChoice>,
+    /// Provider domains Gate switched on *for* a tool, keyed by tool slug.
+    ///
+    /// Hermes is the only writer today. Its switch turns on the domains its
+    /// configured providers point at (`openrouter`), because those rows are no
+    /// longer drawn in the rail - the app treats them as part of Hermes rather
+    /// than as something the user manages - and a tool routed to a provider
+    /// Gate does not inspect is the exact state that whole path exists to
+    /// prevent.
+    ///
+    /// **It records provenance, not intent**, and that is the point. Switching
+    /// Hermes off turns off only what is listed here, so a domain the person
+    /// had already enabled themselves - from the CLI, or from an older build
+    /// that drew the row - is left alone. Without the record the off direction
+    /// has to choose between stranding a domain on forever and switching off
+    /// one it never switched on, and both were rejected (2026-09-23).
+    ///
+    /// Emptied for a tool when that tool's switch goes off, so it never claims
+    /// authorship of a state it has already reverted.
+    ///
+    /// A `BTreeMap` for the same reason as `tool_models`: a stable key order
+    /// keeps a diff of `preferences.json` readable.
+    #[serde(default)]
+    pub auto_enabled_domains: BTreeMap<String, Vec<String>>,
     /// When this install first accepted paid Gate model use, unix seconds, or
     /// `None` if it never has.
     ///
@@ -187,6 +210,7 @@ impl Default for Preferences {
             device_name: None,
             security_notification_sound: true,
             tool_models: BTreeMap::new(),
+            auto_enabled_domains: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
             signed_out_deliberately: false,
         }
@@ -359,6 +383,48 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
     save(&prefs)
+}
+
+/// Record the domains Gate has switched on for `tool`, replacing any previous
+/// list.
+///
+/// A plain set rather than an add or a remove, because both directions need to
+/// write the whole truth: the connect writes what it already held plus what it
+/// just enabled, and the disconnect writes back whatever it failed to disable.
+/// The caller owns that arithmetic because only the caller knows which half it
+/// is doing - see `read_auto_enabled_domains` for why it is not a take.
+///
+/// An empty list removes the entry rather than storing `[]`, so the file does
+/// not grow a row per tool that never needed one.
+pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<()> {
+    let mut prefs = load();
+    if domains.is_empty() {
+        prefs.auto_enabled_domains.remove(tool);
+    } else {
+        prefs.auto_enabled_domains.insert(tool.to_string(), domains);
+    }
+    save(&prefs)
+}
+
+/// Read what Gate switched on for `tool`, without clearing it.
+///
+/// **Read, not take.** An earlier version cleared here, on the argument that
+/// the caller was about to switch these off anyway and clearing first was the
+/// safe direction. That was true while the domain still had a row to be
+/// switched off from. It does not survive `TOOL_MANAGED_DOMAINS`: if the
+/// disconnect or the disable then fails, the record is gone, the domain is
+/// still on, and nothing on screen can turn it off - the next disconnect reads
+/// an empty list. Under-claiming strands; over-claiming costs one extra
+/// `proxy_set_domain` that is already idempotent.
+///
+/// So the caller reads, does the work, and writes back what it did not manage
+/// to undo.
+pub fn read_auto_enabled_domains(tool: &str) -> Vec<String> {
+    load()
+        .auto_enabled_domains
+        .get(tool)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Set one tool's model choice, leaving every other tool alone.

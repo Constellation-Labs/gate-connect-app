@@ -1026,7 +1026,9 @@ describe("isProviderEndpoint", () => {
   // Nothing covered this, so the unknown-id branch its doc argues for was
   // unpinned. Raised in review on #323.
   it("is true only for a destination other programs are pointed at", () => {
-    expect(isProviderEndpoint("openrouter")).toBe(true);
+    // `openrouter` was the other example here until its section was deleted
+    // with the row (2026-09-23): Hermes owns that domain now and nothing
+    // draws it, so there is no section for this to answer about.
     expect(isProviderEndpoint("openai-api")).toBe(true);
   });
 
@@ -1057,14 +1059,17 @@ describe("which group a section draws under", () => {
     // Design's answer on 2026-09-22 was "no OpenRouter group", so the frame's
     // third group is dropped rather than interpreted - it is labelled
     // `OPENCode` and contains OpenRouter, which is a slip no rule settles.
-    expect(bandFor("openrouter")).toBe("other");
+    // OpenRouter itself is no longer a row at all, so OpenClaw stands for the
+    // same case: an app with no vendor group of its own.
+    expect(bandFor("openclaw")).toBe("other");
+    expect(bandFor("hermes")).toBe("other");
   });
 
   it("files the OpenAI endpoint with the rest of OpenAI, not with the endpoints", () => {
     // The AG-897 precedent inverted. Grouping by vendor puts `openai` beside
     // Codex and ChatGPT; grouping by kind put it beside OpenRouter.
     expect(bandFor("openai")).toBe("openai");
-    expect(bandFor("openai")).not.toBe(bandFor("openrouter"));
+    expect(bandFor("openai")).not.toBe(bandFor("openclaw"));
   });
 
   it("files Anthropic's apps under Anthropic", () => {
