@@ -526,17 +526,6 @@ export function installFakeTauri(state: BackendState): void {
       state.preferences.share_diagnostics_recorded = true;
       return null;
     },
-    // Idempotent and never un-recorded, like `preferences::accept_session_routing`:
-    // turning the section off is not a withdrawal of the explanation, so a spec
-    // that clicks a session app's switch twice is asked once.
-    accept_session_routing: ({ section }) => {
-      const id = section as string;
-      if (!state.preferences.session_routing_accepted.includes(id)) {
-        state.preferences.session_routing_accepted.push(id);
-      }
-      return null;
-    },
-
     // Derived from the proxy state the spec set rather than stubbed free-hand, so
     // a report cannot describe an install the rest of the fake backend is not
     // running. The window's diagnostics dialog reads this; before it did, four

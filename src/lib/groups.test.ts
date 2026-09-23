@@ -14,9 +14,7 @@ import {
   hasBrowserSurface,
   hostReloadAdvice,
   isSettingsManaged,
-  needsSessionConsent,
   proxyReopenAdvice,
-  sessionMembers,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -273,36 +271,26 @@ describe("buildGroups", () => {
   });
 });
 
-describe("session consent", () => {
-  it("is needed by the app sections that hold a signed-in surface", () => {
-    const [claude] = buildGroups([], [domain(), sessionDomain()], ON);
-    expect(needsSessionConsent(claude)).toBe(true);
-    expect(sessionMembers(claude).map((m) => m.key)).toEqual(["claude-web"]);
-  });
-
-  it("is not needed by a section whose rows are all brokered", () => {
-    const [openrouter] = buildGroups(
-      [],
-      [domain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" })],
-      ON,
-    );
-    expect(needsSessionConsent(openrouter)).toBe(false);
-    expect(sessionMembers(openrouter)).toEqual([]);
-  });
-
+describe("session surfaces on an app switch", () => {
+  /**
+   * `needsSessionConsent` and `sessionMembers` were deleted with the dialog
+   * they fed (AG-934, 2026-09-23). What they guarded is still here and still
+   * reachable, so this is the test that has to hold: a section switch routes
+   * the signed-in surface, and nothing asks first.
+   */
   it("lets the app switch reach the session row, which is the whole shape", () => {
     // The one place the frontend deliberately breaks the invariant the rest of
     // the tree enforces. `provider::cascade_domains` still refuses these rows
-    // in Rust, so the CLI and the restore path cannot route them; here consent
-    // is what stands in for the refusal.
+    // in Rust, so the CLI and the restore path cannot route them. Nothing
+    // stands in for that refusal on this path any more.
     const [claude] = buildGroups(
       [],
       [domain({ enabled: false }), sessionDomain({ enabled: false })],
       ON,
     );
-    // Only with `sessions`, which is the caller saying it has asked. Without it
-    // the session row is left alone - which is what the popover does, having no
-    // dialog to ask with.
+    // Only with `sessions`, which both shells now pass unconditionally.
+    // Without it the session row is left alone, which is what every other
+    // caller still gets.
     expect(cascadeTargets(claude, true, { sessions: true }).map((m) => m.key)).toEqual([
       "anthropic",
       "claude-web",
@@ -663,10 +651,10 @@ describe("cascadeTargets", () => {
 
   it("rides an additive member only when the caller has asked", () => {
     // Reversed deliberately. A section covers everything an app does, and for
-    // ChatGPT that includes a surface the user is signed in to. What stands in
-    // for the old refusal is `needsSessionConsent`, checked by the caller
-    // before it gets here; the backend's `cascade_domains` still refuses these
-    // rows, so the CLI and the restore path are unaffected.
+    // ChatGPT that includes a surface the user is signed in to. Nothing checks
+    // before it gets here since the consent dialog went (AG-934); the
+    // backend's `cascade_domains` still refuses these rows, so the CLI and the
+    // restore path are unaffected.
     const g = group([
       member(),
       member({

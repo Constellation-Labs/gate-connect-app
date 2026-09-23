@@ -1,7 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import { acceptSessionRouting } from "./api";
-import type { Preferences } from "./api";
-import { cascadeTargets, hostReloadAdvice, needsSessionConsent } from "./groups";
+import { useCallback, useRef } from "react";
+import { cascadeTargets, hostReloadAdvice } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { useRouting } from "./useRouting";
 import type { useRunningApps } from "./useRunningApps";
@@ -19,8 +17,7 @@ import type { useRunningApps } from "./useRunningApps";
  * It lives here rather than in each shell because it was written twice and had
  * already started to drift in a week: the two copies differed on where
  * `setActionError(null)` sat, and carried two copies of the same user-facing
- * failure sentence. `SessionConsentDialog` makes the same argument for the
- * question itself; this is the argument for the answer.
+ * failure sentence.
  *
  * Not in `useRouting`, which has no view of the running-apps sequence and should
  * not grow one: this is the seam where a routing write and a "close the app you
@@ -31,8 +28,6 @@ export function useSectionRouting({
   groups,
   routing,
   runningApps,
-  prefs,
-  onPrefsChanged,
   onBeforeRoute,
   onHostsRouted,
   routeApp,
@@ -40,11 +35,6 @@ export function useSectionRouting({
   groups: Group[];
   routing: ReturnType<typeof useRouting>;
   runningApps: ReturnType<typeof useRunningApps>;
-  /** `null` while unread, which means "nothing recorded" and therefore "ask". */
-  prefs: Preferences | null;
-  /** Re-read the preferences after an answer is recorded, so the switch that
-   *  asked stops asking without waiting for a reopen. */
-  onPrefsChanged: () => void;
   /** Clear whatever the last failure put on screen. The click is the moment the
    *  last failure stops being the current answer. */
   onBeforeRoute: () => void;
@@ -68,9 +58,6 @@ export function useSectionRouting({
    *  coupling, which only `setAppRouted` raises. */
   routeApp: (slug: string, next: boolean) => void;
 }) {
-  /** The section whose switch is waiting on an answer, or null. */
-  const [consent, setConsent] = useState<Group | null>(null);
-
   /**
    * One cascade at a time.
    *
@@ -90,8 +77,13 @@ export function useSectionRouting({
    * `cascadeTargets` decides which members move - it skips the ones already in
    * the target state and never adopts a drifted or overridden config - and is
    * called with `sessions: true`, which is the one place the frontend's "no
-   * group switch reaches a signed-in surface" rule is deliberately broken. The
-   * caller holding an accepted answer is what replaces it.
+   * group switch reaches a signed-in surface" rule is deliberately broken.
+   *
+   * Nothing replaces it any more. `SessionConsentDialog` used to stand here and
+   * the rule was "cannot happen without being told"; product dropped the dialog
+   * (AG-934, 2026-09-23) so a section switch now routes its signed-in surfaces
+   * without asking and without saying so. That is the intended behaviour, not
+   * an oversight: turning the section off stops it, per row or per section.
    */
   const routeSection = useCallback(
     async (section: Group, next: boolean) => {
@@ -201,15 +193,6 @@ export function useSectionRouting({
   const toggle = useCallback(
     (slug: string, next: boolean) => {
       const section = groups.find((g) => g.id === slug);
-      // An unanswered section asks before anything is flipped, and a decline
-      // leaves the switch where it was. Only ever on the way ON: switching off
-      // needs no permission, and asking for it would be the app requiring
-      // consent to stop doing something.
-      const accepted = prefs?.session_routing_accepted ?? [];
-      if (section && next && needsSessionConsent(section) && !accepted.includes(section.id)) {
-        setConsent(section);
-        return;
-      }
       onBeforeRoute();
       if (section) {
         void routeSection(section, next);
@@ -217,27 +200,8 @@ export function useSectionRouting({
       }
       routeApp(slug, next);
     },
-    [groups, prefs, onBeforeRoute, routeSection, routeApp],
+    [groups, onBeforeRoute, routeSection, routeApp],
   );
 
-  const confirmConsent = useCallback(() => {
-    const section = consent;
-    if (!section) return;
-    setConsent(null);
-    // Recorded before the routing runs, not after: the answer is the person's
-    // and stands whether or not a config write then fails. Recording it on
-    // success would re-ask after a failure they have already answered for.
-    // Swallowed deliberately: a failed record costs the person this dialog again
-    // on the next click, which is the safe direction and not worth a banner over
-    // the routing they just asked for.
-    void acceptSessionRouting(section.id)
-      .then(onPrefsChanged)
-      .catch(() => {});
-    onBeforeRoute();
-    void routeSection(section, true);
-  }, [consent, onPrefsChanged, onBeforeRoute, routeSection]);
-
-  const dismissConsent = useCallback(() => setConsent(null), []);
-
-  return { toggle, routeSection, consent, confirmConsent, dismissConsent };
+  return { toggle, routeSection };
 }

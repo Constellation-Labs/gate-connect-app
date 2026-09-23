@@ -162,9 +162,9 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    // The switch directly, not `routeApp`: this one is turning the app OFF, and
-    // the helper only answers the consent dialog an ON raises. That nothing is
-    // asked here is the assertion below.
+    // The switch directly, not `routeApp`, to keep this explicit about the
+    // direction: this one is turning the app OFF. That nothing is asked here
+    // is the assertion below.
     await (await app.appSwitch("Claude")).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -214,8 +214,8 @@ test.describe("new UI routing", () => {
 
     await (await app.appSwitch("OpenRouter")).click();
 
-    // The write first. This section raises no consent, so `routeApp` would
-    // return the moment the click dispatched, and a bare `toHaveCount(0)` is
+    // The write first. `routeApp` returns the moment the click dispatched, so
+    // a bare `toHaveCount(0)` is
     // satisfied on the first poll - before the cascade has written anything,
     // which would make this pass whether or not the regression it guards
     // exists.
@@ -249,8 +249,7 @@ test.describe("new UI routing", () => {
     const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
     await expect(note).toBeVisible();
 
-    // The switch directly: turning off raises no consent, and `routeApp` only
-    // answers a dialog an ON would put up.
+    // The switch directly, to be explicit that this one is the OFF direction.
     await (await app.appSwitch("Claude")).click();
 
     await expect(note).toHaveCount(0);
@@ -1213,10 +1212,9 @@ test.describe("new UI sidebar rail", () => {
 
     // One switch per app, so this is a cascade rather than one write. ChatGPT /
     // Codex holds a config tool and two chatgpt.com surfaces, and the two
-    // surfaces carry the user's own session - so the switch asks before it
-    // routes them, which is the confirmation below.
+    // surfaces carry the user's own session - which the switch used to ask
+    // about and no longer does (AG-934).
     await (await app.appSwitch("ChatGPT / Codex")).click();
-    await app.page.getByRole("button", { name: "Route ChatGPT / Codex" }).click();
 
     // The domains route through the engine's flags, never a config write.
     await expect
@@ -1233,52 +1231,25 @@ test.describe("new UI sidebar rail", () => {
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({ slug: "codex" });
   });
 
-  test("an app switch asks before it routes a surface you are signed in to", async ({
+  test("an app switch routes a surface you are signed in to, without asking", async ({
     boot,
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
     // The one place the ledger deliberately cascades over a session-credential
-    // row. `provider::cascade_domains` still refuses those rows in Rust, so
-    // consent is what stands in for the refusal here - and declining must leave
-    // everything where it was.
-    await (await app.appSwitch("Claude")).click();
-    await expect(
-      app.page.getByRole("heading", { name: "Route Claude through Gate?" }),
-    ).toBeVisible();
-
-    await app.page.getByRole("button", { name: "Not now" }).click();
-    // Settled on a positive fact first. Two empty call logs read immediately
-    // after a click pass while the click is still in flight, so they would go
-    // green on a decline that actually routed - the one thing this test is for.
-    await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
-    expect(await callsFor(app.page, "proxy_set_domain")).toEqual([]);
-    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
-  });
-
-  test("the consent answer is recorded, so the question is asked once", async ({
-    boot,
-  }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
-
-    // The recording is the whole mechanism - `accept_session_routing`, read back
-    // through `get_preferences` - and it had no test at any level, so a
-    // regression that routed but never recorded would have shipped as a dialog
-    // returning on every click.
-    await app.routeApp("Claude");
-    await expect.poll(() => app.lastCall("accept_session_routing")).toMatchObject({
-      section: "claude",
-    });
-
-    // Off and on again: no dialog the second time, and the cascade runs.
-    await (await app.appSwitch("Claude")).click();
-    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "false");
+    // row. `provider::cascade_domains` still refuses those rows in Rust, so the
+    // CLI and the restore path cannot reach them; on THIS path nothing stands
+    // in front of it any more.
+    //
+    // `SessionConsentDialog` used to, and two tests here pinned it: that the
+    // switch asked, and that the answer was recorded so it asked only once.
+    // Product removed the dialog (AG-934, 2026-09-23), so what needs pinning is
+    // the reverse - one click, no question, and `claude-web` routed. Written as
+    // a test rather than a deletion because this is a deliberate behaviour
+    // change, and it should fail loudly if somebody reinstates the gate without
+    // deciding to.
     await (await app.appSwitch("Claude")).click();
 
-    await expect(
-      app.page.getByRole("heading", { name: "Route Claude through Gate?" }),
-    ).toHaveCount(0);
     await expect
       .poll(async () =>
         (await app.state()).proxy.domains
@@ -1287,6 +1258,10 @@ test.describe("new UI sidebar rail", () => {
           .sort(),
       )
       .toEqual(["anthropic", "claude-web"]);
+    // Settled on the positive fact above first: an empty dialog count read
+    // straight after a click passes while the click is still in flight.
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(await app.appSwitch("Claude")).toHaveAttribute("aria-checked", "true");
   });
 
   test("one certificate question for a whole section, not one per surface", async ({
