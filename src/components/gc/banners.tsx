@@ -150,13 +150,14 @@ export function RoutingBanner({
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
-        {/* Switched on, out of every app on the rail. The frame draws
-          * `Routed · 4 of 4 Apps`, where both halves were routed-of-requested;
-          * that ratio restated the pill beside it and disagreed with the rail's
-          * own group counters, which divide by the whole group. Changed on
-          * request 2026-09-23, so it deviates from the frame and is owed to
-          * design. "on" is load-bearing in the words: without it "2 of 8 Apps"
-          * beside a "Routed" pill reads as two routed out of eight. */}
+        {/* Switched on, out of every app on the rail - coverage, not outcome.
+          * The frame draws `Routed · 4 of 4 Apps`, where both halves were
+          * routed-of-requested and the ratio restated the pill beside it.
+          * Changed on request 2026-09-23, so it deviates from the frame and is
+          * owed to design, along with the fact that it does not match the
+          * rail's group counters on the numerator. `routingState` carries both.
+          * "on" is load-bearing in the words: without it "2 of 8 Apps" beside a
+          * "Routed" pill reads as two routed out of eight. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>

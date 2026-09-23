@@ -22,12 +22,26 @@
  * banner that can never go green is decoration rather than a status, so the
  * tone and the headline keep that denominator.
  *
- * The printed fraction does not. It reads "N of M tools on", dividing by every
- * app on the rail, because the card sat above group counters that already
- * divided that way and the disagreement is what a reader notices first
- * (2026-09-23). Counting intent over availability also means the fraction
- * answers a question the headline does not - how much of this machine is
- * routed at all - rather than restating it in digits.
+ * The printed fraction does not. It reads "N of M tools on": apps switched
+ * ON, over every app on the rail (2026-09-23).
+ *
+ * **It is coverage, not outcome, and it does NOT match the group eyebrow
+ * counters.** Those read routed-over-group (`Tray.tsx`, `Sidebar.tsx`), which
+ * is what `Components / Sidenav` draws. So the card and the eyebrows measure
+ * two different things on one screen, and moving the denominator to
+ * availability fixed only half of that: with two apps on and one routed, the
+ * card reads "2 of 8 tools on" over groups reading "1 of 3" and "0 of 5" - the
+ * denominators now add up and the numerators do not.
+ *
+ * That is deliberate rather than settled. The word "on" is the whole of what
+ * marks the difference, which is thin, and whether the eyebrows should count
+ * intent too is a design question rather than something to decide here - it
+ * would deviate from the drawn counter. Raised with the deviation this file
+ * already owes them.
+ *
+ * What the split buys: the fraction answers a question the headline does not -
+ * how much of this machine is routed at all - rather than restating the
+ * headline in digits, which is what routed-over-requested did.
  */
 export type RoutingStateKind =
   /** Everything asked for is routed. */
@@ -83,8 +97,10 @@ const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
   },
   "none-requested": {
     label: "None routed",
-    // No fraction goes beside this one, and no fault is claimed: the user
-    // switched everything off, which is an answer rather than a gap.
+    // No fault is claimed: the user switched everything off, which is an
+    // answer rather than a gap. A fraction DOES go beside it now - "0 of 8
+    // Apps on" - since the denominator became availability and stopped being
+    // the meaningless half of "0 of 0" (2026-09-23).
     headline: "No apps are set to route",
     tone: "amber",
     icon: "shieldBan",

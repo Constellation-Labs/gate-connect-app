@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { ReopenAlert } from "./banners";
+import { ReopenAlert, RoutingBanner } from "./banners";
 
 afterEach(cleanup);
 
@@ -68,5 +68,67 @@ describe("ReopenAlert", () => {
     screen.getByRole("button", { name: "Close tool" }).click();
 
     expect(onReopen).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The topbar's fraction, which is the half of the 2026-09-23 change that no
+ * test covered.
+ *
+ * It is also the half that deviates from a drawn frame: `228:85990` draws
+ * `Routed · 4 of 4 Apps`, routed over requested. These pin the replacement so
+ * a later "match the frame" pass fails a test rather than quietly reverting a
+ * decision someone made on purpose.
+ */
+describe("RoutingBanner's fraction", () => {
+  it("counts apps switched on, out of apps available", () => {
+    // Two on and both routed, on a rail of eight. The old ratio said "2 of 2".
+    render(
+      <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
+    );
+    expect(screen.getByText("Gate is protecting you")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+  });
+
+  it("keeps counting intent while the state reports the failure", () => {
+    // Two on, one routed. The digits do not move - they are coverage, not
+    // outcome - and the pill and headline are what say something is wrong.
+    // This is the case where the fraction disagrees with the rail's group
+    // counters on the numerator; see `routingState`.
+    render(
+      <RoutingBanner protectedCount={1} totalCount={2} availableCount={8} />,
+    );
+    expect(screen.getByText("Gate is partly routing your apps")).toBeTruthy();
+    expect(screen.getByText("Partly routed")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+  });
+
+  it("prints 0 of M with nothing switched on, where it used to print nothing", () => {
+    // The reading a full rail with nothing on most needs, and the one the old
+    // `showsFraction` suppressed along with the meaningless "0 of 0".
+    render(
+      <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
+    );
+    expect(screen.getByText("No apps are set to route")).toBeTruthy();
+    expect(screen.getByText("0 of 8 Apps on")).toBeTruthy();
+  });
+
+  it("says nothing about a ratio when the rail is empty", () => {
+    // "0 of 0" is a ratio with both halves meaningless, and that suppression
+    // is the one this change kept.
+    render(
+      <RoutingBanner protectedCount={0} totalCount={0} availableCount={0} />,
+    );
+    expect(screen.getByText("No apps are set to route")).toBeTruthy();
+    expect(screen.queryByText(/of 0 Apps/)).toBeNull();
+  });
+
+  it("says 'on', so the ratio cannot be read as routed-of-available", () => {
+    // Without the suffix, "2 of 8 Apps" beside a "Routed" pill states that two
+    // of eight are routed, which is a different and false claim.
+    render(
+      <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
+    );
+    expect(screen.queryByText("2 of 8 Apps")).toBeNull();
   });
 });
