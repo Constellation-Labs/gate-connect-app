@@ -569,6 +569,9 @@ export function installFakeTauri(state: BackendState): void {
       return null;
     },
     routed_clients_stale: () => state.routedClientsStale,
+    // The startup enable has always settled in the harness: a mock backend
+    // has no startup thread to be in flight.
+    routing_startup_pending: () => false,
     running_agents_count: () => state.runningAgents,
     // `only` is a list of tool slugs, or null for "every tool". Mirrors the
     // Rust `AGENT_PROCESSES` table: a slug with no process name of its own

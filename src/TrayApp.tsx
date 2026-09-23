@@ -16,6 +16,7 @@ import {
   listTools,
   pendingRestore,
   proxyStatus,
+  routingStartupPending,
   pinPopover,
   requestQuit,
   resumeRestore,
@@ -112,6 +113,14 @@ function messageFigure(
 export function TrayApp() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
+  /** Whether the startup auto-enable is still in flight, which is the only
+   * thing separating "starting" from "didn't start" on the routing card. Read
+   * beside `proxy` on the first load and on every `proxy-state-changed`, which
+   * the backend emits when the enable settles either way. A failed read is
+   * "not starting": that prints "Didn't start" over a slow enable, which is
+   * what the card said before this existed, rather than a "Starting" that
+   * nothing would ever clear. */
+  const [starting, setStarting] = useState(false);
   const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
   /** What an interrupted restore still owes. Empty in the normal case, and the
    * card is omitted with it. */
@@ -285,12 +294,14 @@ export function TrayApp() {
   /** Event-driven re-read: a write landed or the engine changed state, so
    * commit whatever comes back and re-sweep the verdicts. */
   const refresh = useCallback(async () => {
-    const [t, px] = await Promise.all([
+    const [t, px, pending] = await Promise.all([
       listTools().catch(() => null),
       proxyStatus().catch(() => null),
+      routingStartupPending().catch(() => false),
     ]);
     if (t) setTools(t);
     if (px) setProxy(px);
+    setStarting(pending);
     void refreshVerdicts();
     // A master-on runs the restore, which is what shortens the snapshots - so
     // the card is re-read on the same event that repaints the switches, or it
@@ -332,9 +343,10 @@ export function TrayApp() {
       // No `list_providers`: the tray draws sections from the ledger, which
       // `buildGroups` builds from tools and domains alone. The family catalog
       // reached this shell only through a dependency array.
-      const [t, px, acct, prefix] = await Promise.all([
+      const [t, px, pending, acct, prefix] = await Promise.all([
         listTools().catch(() => null),
         proxyStatus().catch(() => null),
+        routingStartupPending().catch(() => false),
         // The wrapper distinguishes "the read failed" from "there is no
         // account": both arrive as null otherwise, and only the first should
         // suppress the signed-out state.
@@ -350,6 +362,7 @@ export function TrayApp() {
       ]);
       setTools(t ?? []);
       setProxy(px);
+      setStarting(pending);
       setAccount(acct.account);
       setAccountUnread(!acct.read);
       setKeyPrefix(prefix);
@@ -962,7 +975,7 @@ export function TrayApp() {
 
   return (
     <Tray
-      engine={proxy ? { running: proxy.running } : undefined}
+      engine={proxy ? { running: proxy.running, starting } : undefined}
       groups={trayGroups}
       notInstalled={notInstalled}
       notInstalledOpen={notInstalledOpen}

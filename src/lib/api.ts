@@ -607,6 +607,11 @@ export const setUpdaterRelaunching = (relaunching: boolean) =>
  * at the dead old port, so the popover shows a restart notice. */
 export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
 
+/** Whether the startup auto-enable is still in flight. Both "still starting"
+ * and "didn't start" read `running: false`; this is what tells them apart. The
+ * backend emits `proxy-state-changed` when it settles, either way. */
+export const routingStartupPending = () => invoke<boolean>("routing_startup_pending");
+
 /** Count running AI tools (same process set as {@link closeRunningAgents})
  * without touching them. Used to skip the routing-change takeover when there
  * is nothing to close. */
