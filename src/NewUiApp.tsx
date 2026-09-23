@@ -15,7 +15,7 @@ import type {
   PendingRestore,
   RecoverySummary,
   TeardownReason,
-  TeardownReport,
+  TeardownTool,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -41,6 +41,7 @@ import {
   runningAgents as fetchRunningAgents,
   pendingQuitTools,
   toolsStrandedByQuit,
+  disconnectTool,
   disconnectToolsForQuit,
   quitApp,
   pendingRestore,
@@ -58,8 +59,7 @@ import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import type { ReopenAction } from "./lib/reopen";
-import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -114,11 +114,9 @@ import {
 import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   reopenSubjects,
-  teardownSubjects,
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
-  ReopenProgressDialog,
   ModelPickerDialog,
   QuitDialog,
   QuitLeftBehindDialog,
@@ -142,7 +140,6 @@ import {
   DiagnosticsDialog,
   SendDiagnosticsDialog,
   RestoreDetailsDialog,
-  TeardownReportDialog,
   DisconnectGateDialog,
   OAuthOfferDialog,
   HermesProviderDialog,
@@ -1208,12 +1205,10 @@ export function NewUiApp() {
     active: string | null;
     done: string[];
   } | null>(null);
-  /** Where the tools stand after a teardown - routing off, sign-out or reset.
-   * Null unless one just ran and left something outstanding. */
-  const [teardown, setTeardown] = useState<{
-    report: TeardownReport;
-    reason: TeardownReason;
-  } | null>(null);
+  /** The tools a Disconnect or Reset left pointing at Gate, or null when it put
+   * every one back. */
+  const [teardown, setTeardown] = useState<TeardownTool[] | null>(null);
+  const [teardownBusy, setTeardownBusy] = useState(false);
 
   /**
    * Backend failures buffer Rust-side because they can predate this webview - the
@@ -1360,19 +1355,29 @@ export function NewUiApp() {
     if (quit !== null && routingPrompt !== null) resolvePrompt(false);
   }, [quit, routingPrompt, resolvePrompt]);
 
-  /** Where the tools stand after a teardown, raised only when something is
-   * actually outstanding: a clean routing-off has nothing to report, and a
-   * dialog saying so would be a dialog about nothing. */
+  /** Name the tools a teardown left on Gate, read back off their configs.
+   *
+   * Sign-out is left out: it leaves the configs alone on purpose, so "couldn't
+   * put them back" would be a claim about an attempt nobody made. */
   const reportTeardown = useCallback(async (reason: TeardownReason) => {
+    if (reason === "sign-out") return;
     const report = await teardownReport().catch(() => null);
-    if (!report) return;
-    const outstanding =
-      report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
-    // The reason travels with the report because the report cannot carry it:
-    // the buckets are read back off disk and say where each tool points, never
-    // whether anything tried to move it. See `TeardownReason`.
-    if (outstanding > 0) setTeardown({ report, reason });
+    if (report && report.still_gate.length > 0) setTeardown(report.still_gate);
   }, []);
+
+  /** Try again: put back only the tools that are still on Gate, then read the
+   * configs again rather than trusting the writes. */
+  const retryTeardown = useCallback(async () => {
+    if (!teardown) return;
+    setTeardownBusy(true);
+    try {
+      for (const tool of teardown) await disconnectTool(tool.slug).catch(() => {});
+      const report = await teardownReport().catch(() => null);
+      setTeardown(report && report.still_gate.length > 0 ? report.still_gate : null);
+    } finally {
+      setTeardownBusy(false);
+    }
+  }, [teardown]);
 
   /** The tool's product name for a slug. The rail's `name` is a surface kind
    *  ("CLI") that reads as a name only under its vendor heading, and every
@@ -1391,6 +1396,26 @@ export function NewUiApp() {
     onNothingRunning: () => void refreshVerdicts(),
     nameFor: toolName,
   });
+
+  /**
+   * The reopen flow draws a dialog for every stage but one: `work` shows only
+   * "Change is ready", once every tool verifies. Until then the stage runs with
+   * nothing on screen, so the rail carries it, and a CLI waiting for its user to
+   * reopen it can stay there indefinitely.
+   */
+  const reopenDialogShown =
+    runningApps.stage !== null &&
+    (runningApps.stage.kind !== "work" || allVerified(runningApps.stage.tools));
+  /** Every tool is done and they did not all verify: nothing will be drawn, so
+   * end the flow. */
+  const reopenOutcomeUndrawn =
+    runningApps.stage?.kind === "work" &&
+    allSettled(runningApps.stage.tools) &&
+    !allVerified(runningApps.stage.tools);
+  const { dismiss: dismissRunningApps } = runningApps;
+  useEffect(() => {
+    if (reopenOutcomeUndrawn) dismissRunningApps();
+  }, [reopenOutcomeUndrawn, dismissRunningApps]);
 
   /**
    * Open a dashboard destination, or say why there is not one.
@@ -1972,7 +1997,9 @@ export function NewUiApp() {
    * stays subscribed and still sees the current shell.
    *
    * `slotBusy` is conservative: any pending quit, routing prompt, running-apps
-   * stage or model overlay counts, including a state that draws no arm. Being
+   * dialog or model overlay counts, including a state that draws no arm. A
+   * reopen still running with nothing on screen does not, because a CLI can
+   * wait there for as long as its user leaves it closed. Being
    * wrong in that direction refuses a request the slot would have taken; being
    * wrong in the other direction is the unprompted pop.
    */
@@ -1980,7 +2007,7 @@ export function NewUiApp() {
   detailsGate.current = {
     ready: setup.stage.kind === "ready",
     slotBusy: Boolean(
-      quit || routing.prompt || runningApps.stage || modelOverlay,
+      quit || routing.prompt || reopenDialogShown || modelOverlay,
     ),
   };
 
@@ -2559,62 +2586,6 @@ export function NewUiApp() {
         : null,
     [groups, dismissedNotices, view],
   );
-  /**
-   * One row of the reopen flow, acted on alone.
-   *
-   * Every branch takes the slug it was given and nothing else: AG-566 AC 10 is
-   * explicit that retrying one tool must not repeat the change for another, and
-   * the only call here that touches more than one row - the re-check - reads
-   * rather than writes.
-   *
-   * `retry_application` turns routing back **on** for the tool. The only way a
-   * row reaches `config_failed` is a sweep that found Gate's values gone from a
-   * config the user asked to route, so re-applying is what the button means; it
-   * goes through the ordinary drift review rather than forcing, because a
-   * config Gate did not write is still not ours to replace. `use_tool_defaults`
-   * is the other half of that choice, and with it the tool's own settings come
-   * back - Gate keeps a snapshot and restores it, which is what this app does
-   * and what its dialogs say.
-   */
-  const onReopenAction = useCallback(
-    (slug: string, action: ReopenAction) => {
-      switch (action) {
-        case "reopen_tool":
-          // The process is the thing in the way, and closing it is a
-          // destructive act that gets its own confirmation - so this restarts
-          // the conversation for this tool rather than signalling anything.
-          void runningApps.offerAfterChange([slug]);
-          return;
-        case "retry_verification":
-          void runningApps.checkNow();
-          return;
-        case "retry_application":
-        case "use_tool_defaults": {
-          const routed = action === "retry_application";
-          runningApps.markStage(slug, "applying");
-          void routing.setAppRouted(slug, routed).then((changed) => {
-            if (!changed) {
-              runningApps.markStage(slug, "config_failed");
-              return;
-            }
-            void runningApps.checkNow();
-          });
-          return;
-        }
-        case "view_diagnostics":
-          void openDiagnostics();
-          return;
-        case "contact_support":
-          // The dashboard's Overview page, on this install's own environment:
-          // support is a floating action button in its corner rather than a
-          // route (AG-598, 2026-09-07). This arrived on `GATE_SUPPORT_URL`,
-          // which pointed at a page that 404'd.
-          openDashboard((d) => d.support);
-          return;
-      }
-    },
-    [runningApps, routing, openDiagnostics, openDashboard],
-  );
 
   /**
    * The one-off note that follows the certificate landing, on Linux.
@@ -3019,10 +2990,11 @@ export function NewUiApp() {
           * Rendered inside the layout rather than beside it because `Modal`
           * positions itself over whatever is behind it. */}
         {teardown && (
-          <TeardownReportDialog
-            report={teardownSubjects(teardown.report)}
-            reason={teardown.reason}
-            onClose={() => setTeardown(null)}
+          <QuitLeftBehindDialog
+            tools={teardown.map((t) => t.name)}
+            busy={teardownBusy}
+            onRetry={() => void retryTeardown()}
+            onCancel={() => setTeardown(null)}
           />
         )}
       </SetupLayout>
@@ -3329,24 +3301,17 @@ export function NewUiApp() {
             onGoBack={runningApps.goBack}
             onCloseApps={() => void runningApps.closeApps()}
           />
-        ) : runningApps.stage?.kind === "work" ? (
-          // The all-clear keeps the frame the design drew for it; anything else
-          // gets the account of what happened, which no frame draws.
+        ) : runningApps.stage?.kind === "work" &&
           allVerified(runningApps.stage.tools) ? (
-            <ChangeReadyDialog
-              app={{
-                name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
-              }}
-              plural={runningApps.stage.tools.length !== 1}
-              onDone={runningApps.dismiss}
-            />
-          ) : (
-            <ReopenProgressDialog
-              tools={reopenSubjects(runningApps.stage.tools)}
-              onAction={onReopenAction}
-              onDone={runningApps.dismiss}
-            />
-          )
+          // The all-clear is the one outcome drawn for this stage. Anything else
+          // is left to the rail, and `useRunningApps` ends the stage for it.
+          <ChangeReadyDialog
+            app={{
+              name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
+            }}
+            plural={runningApps.stage.tools.length !== 1}
+            onDone={runningApps.dismiss}
+          />
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog
             // A real catalogue now, read from the gateway. Still empty on a
@@ -3412,10 +3377,11 @@ export function NewUiApp() {
           // After the review, before the incidental dialogs: a teardown that
           // left tools behind is the newest thing that happened, and the user
           // asked for the operation that produced it.
-          <TeardownReportDialog
-            report={teardownSubjects(teardown.report)}
-            reason={teardown.reason}
-            onClose={() => setTeardown(null)}
+<QuitLeftBehindDialog
+            tools={teardown.map((t) => t.name)}
+            busy={teardownBusy}
+            onRetry={() => void retryTeardown()}
+            onCancel={() => setTeardown(null)}
           />
         ) : collectedDataOpen ? (
           <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />

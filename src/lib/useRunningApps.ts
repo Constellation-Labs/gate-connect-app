@@ -29,7 +29,7 @@ import {
  * something done quietly: closing an editor mid-session is the user's call, not
  * ours, and the user is the only one who can start it again.
  *
- * Four stages: offer, confirm, work, and the account of what happened. The
+ * Three stages: offer, confirm and work. The
  * offer's primary is the *passive* option ("I will reopen later"), the
  * destructive one is deliberately the secondary, and only after a second
  * confirmation does anything actually get killed.

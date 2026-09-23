@@ -145,12 +145,7 @@ export class LiveApp {
   }
 
   /**
-   * Turn an app section on, answering whichever gates it raises.
-   *
-   * The popover fixture's `routeApp` reads the fake backend's recorded answers
-   * to know whether consent will be asked. There is no such oracle here - the
-   * answer is a preference on disk that a previous test may have written - so
-   * this waits briefly for each gate and carries on if it does not come.
+   * Turn an app section on, answering the certificate gate if it is raised.
    *
    * The certificate gate is answered rather than asserted away, because whether
    * it appears is a property of the machine, not of the app: `ui-harness.sh`
@@ -162,8 +157,6 @@ export class LiveApp {
    */
   async routeApp(name: string) {
     await (await this.appSwitch(name)).click();
-    const consent = this.page.getByRole("button", { name: `Route ${name}`, exact: true });
-    await consent.click({ timeout: 2_000 }).catch(() => {});
     const trust = this.page.getByRole("button", { name: "Trust certificate", exact: true });
     await trust.click({ timeout: 2_000 }).catch(() => {});
   }

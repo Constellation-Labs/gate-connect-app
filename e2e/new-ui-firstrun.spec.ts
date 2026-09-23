@@ -207,15 +207,11 @@ test.describe("new UI: the two ways back to first run", () => {
   });
 
   /**
-   * AG-570 AC 8, on the teardown that keeps the configs on purpose.
-   *
-   * Disconnect ends the session and leaves every tool pointed at Gate - which
-   * is the row's documented behaviour, and precisely the state worth reporting:
-   * those configs now authenticate with a session that has just ended. The
-   * report is read back from the configs, so it says so without the sign-out
-   * having to return anything.
+   * Disconnect ends the session and leaves every tool pointed at Gate on
+   * purpose. "Some tools stayed on Gate" reports a revert that failed, and
+   * nothing was reverted here, so nothing is raised.
    */
-  test("disconnect says which tools are still pointed at Gate", async ({ boot }) => {
+  test("disconnect raises no left-behind dialog", async ({ boot }) => {
     const app = await boot({
       tools: [
         {
@@ -232,17 +228,10 @@ test.describe("new UI: the two ways back to first run", () => {
     await app.page.getByRole("button", { name: "Disconnect Gate" }).click();
     await app.page.getByRole("button", { name: "Yes, disconnect Gate" }).click();
 
-    const dialog = app.page.getByRole("dialog");
-    // "Still pointing at Gate", not "Still using Gate's values", and no claim
-    // that a restore failed. Sign-out keeps the configs deliberately, so the
-    // heading, the tone and the detail line all say what happened rather than
-    // grading it - the report used to open "Some tools were left as they were"
-    // over "The teardown could not put these back", which accused the app of
-    // failing at a job it had decided not to do. See `TeardownReason`.
-    await expect(dialog.getByText("You are signed out")).toBeVisible();
-    await expect(dialog.getByText("Still pointing at Gate")).toBeVisible();
-    await expect(dialog.getByText("Claude Code")).toBeVisible();
-    await expect(dialog.getByText("could not put these back")).toHaveCount(0);
+    await expect(
+      app.page.getByRole("heading", { name: "You are signed out" }),
+    ).toBeVisible();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
   test("an API-key account is offered reset but not disconnect", async ({ boot }) => {
