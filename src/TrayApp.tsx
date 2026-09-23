@@ -962,7 +962,7 @@ export function TrayApp() {
 
   return (
     <Tray
-      master={proxy ? { on: proxy.running } : undefined}
+      engine={proxy ? { running: proxy.running } : undefined}
       groups={trayGroups}
       notInstalled={notInstalled}
       notInstalledOpen={notInstalledOpen}
