@@ -97,8 +97,9 @@ export function Tray({
    *
    * Named for the engine rather than a master, because there is no master:
    * `running` is whether the launch enable succeeded, not a setting anybody
-   * chose. */
-  engine?: { running: boolean };
+   * chose. `starting` is whether that enable is still in flight, which is
+   * all that separates "not yet" from "didn't". */
+  engine?: { running: boolean; starting: boolean };
   groups: SidebarGroup[];
   notInstalled: TrayNotInstalledApp[];
   notInstalledOpen: boolean;
@@ -227,7 +228,13 @@ export function Tray({
         <SignedOutNote onExpand={onExpand} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
-          {engine && <RoutingCard running={engine.running} groups={groups} />}
+          {engine && (
+            <RoutingCard
+              running={engine.running}
+              starting={engine.starting}
+              groups={groups}
+            />
+          )}
           {/* Above the routing card's siblings and below the card itself: it is
             * the most urgent thing on the popover, and it is also a statement
             * about the routing the card above describes. */}
@@ -342,9 +349,11 @@ export function Tray({
  */
 function RoutingCard({
   running,
+  starting,
   groups,
 }: {
   running: boolean;
+  starting: boolean;
   groups: SidebarGroup[];
 }) {
   const apps = groups.flatMap((g) => g.apps).filter((a) => a.on);
@@ -372,7 +381,15 @@ function RoutingCard({
   // half in the words already decided for it elsewhere: a launch enable that
   // did not complete reads "Didn’t start", never "Off", because "Off" sends
   // the reader looking for a control that is not there.
-  const detail = [running ? "" : "Didn’t start", fraction]
+  //
+  // Only once the enable has settled, though. The engine is also not running
+  // while the startup thread is still getting to it - an OAuth refresh and a
+  // reconcile run first - and "Didn’t start" over that reports a failure at the
+  // moment the user opens the tray to check. "Starting…" is inferred, not
+  // drawn, under the same licence as the other unhappy states in this file's
+  // header; it is owed to design.
+  const engineNote = running ? "" : starting ? "Starting…" : "Didn’t start";
+  const detail = [engineNote, fraction]
     .filter(Boolean)
     .join(" · ");
   return (

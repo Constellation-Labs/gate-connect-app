@@ -32,7 +32,7 @@ function trayProps(
   overrides: Partial<Parameters<typeof Tray>[0]> = {},
 ): Parameters<typeof Tray>[0] {
   return {
-    engine: { running: true },
+    engine: { running: true, starting: false },
     groups: GROUPS,
     notInstalled: [],
     notInstalledOpen: false,
@@ -119,7 +119,7 @@ describe("the routing status card", () => {
    * a `chat` member). Counting it meant green required routing a session-cookie
    * surface nobody asked for, so the card was pinned to amber "1 of 2" forever
    * and disagreed with the topbar - which filters by intent - by exactly that
-   * row. Load-bearing: drop the `.filter((a) => a.on)` in `MasterCard` and this
+   * row. Load-bearing: drop the `.filter((a) => a.on)` in `RoutingCard` and this
    * goes back to "Partially routed".
    */
   it("does not count a row the user never switched on", () => {
@@ -130,11 +130,11 @@ describe("the routing status card", () => {
     expect(screen.getByText("1 of 1 tools routing")).toBeTruthy();
   });
 
-  it("reads not protected with nothing routing, carrying the Off intent", () => {
-    // The off state is not drawn; this pins the inferred vocabulary so a
+  it("reads not protected with nothing routing, and says the engine didn’t start", () => {
+    // The engine-down state is not drawn; this pins the inferred vocabulary so a
     // redesign replaces it deliberately rather than by accident.
     renderTray({
-      engine: { running: false },
+      engine: { running: false, starting: false },
       groups: [
         {
           id: "anthropic",
@@ -163,7 +163,7 @@ describe("the routing status card", () => {
    */
   it("prints no ratio when the user has asked for nothing", () => {
     renderTray({
-      engine: { running: true },
+      engine: { running: true, starting: false },
       groups: [
         {
           id: "anthropic",
@@ -198,7 +198,7 @@ describe("the routing status card", () => {
    */
   it("says the engine didn't start, with nothing asked for", () => {
     renderTray({
-      engine: { running: false },
+      engine: { running: false, starting: false },
       groups: [
         {
           id: "anthropic",
@@ -211,6 +211,35 @@ describe("the routing status card", () => {
     });
     expect(screen.getByText("Didn’t start")).toBeTruthy();
     expect(screen.queryByText("Off")).toBeNull();
+  });
+
+  /**
+   * Not running is also what an enable still in flight reads as. Saying
+   * "Didn't start" over it reports a failure that has not happened, at launch,
+   * which is when the tray is most likely to be open.
+   */
+  it("says the engine is starting while the launch enable is in flight", () => {
+    renderTray({
+      engine: { running: false, starting: true },
+      groups: [
+        {
+          id: "anthropic",
+          label: "Anthropic",
+          apps: [
+            { slug: "a", name: "A", status: { kind: "not-protected" }, on: true },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText("Starting… · 0 of 1 tools routing")).toBeTruthy();
+    expect(screen.queryByText(/Didn’t start/)).toBeNull();
+  });
+
+  it("lets a running engine win over a stale starting flag", () => {
+    // The enable emits its own state change before the settle does, so the
+    // tray can read `running` and a still-pending flag together.
+    renderTray({ engine: { running: true, starting: true } });
+    expect(screen.queryByText(/Starting/)).toBeNull();
   });
 
   it("renders no switch: the drawn card is a status, not a control", () => {

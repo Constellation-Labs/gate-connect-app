@@ -1931,6 +1931,41 @@ fn routed_clients_stale() -> bool {
     ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
 }
 
+/// Whether the startup thread's auto-enable has yet to settle, one way or the
+/// other. Lets the tray tell "still starting" from "didn't start": both read
+/// `running: false`, and printing "Didn't start" over an enable that is merely
+/// in flight reports a failure at the one moment the user is looking.
+///
+/// Starts `true` rather than being set before the spawn, because Tauri builds
+/// the config windows before `setup` runs - a webview's first read can land
+/// before any line of `setup` does. [`StartupEnableSettled`] is the only thing
+/// that clears it, on every way out of the startup thread.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static STARTUP_ENABLE_PENDING: AtomicBool = AtomicBool::new(true);
+
+/// Whether the startup auto-enable is still in flight (see
+/// [`STARTUP_ENABLE_PENDING`]).
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn routing_startup_pending() -> bool {
+    STARTUP_ENABLE_PENDING.load(Ordering::Acquire)
+}
+
+/// Settles [`STARTUP_ENABLE_PENDING`] when the startup thread ends, whichever
+/// arm it ends in - enabled, failed, no account, or a panic - and nudges both
+/// shells to re-read. A drop guard because the failure arm emits nothing of its
+/// own: without the nudge a tray that read "starting" would keep saying so.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct StartupEnableSettled<R: tauri::Runtime>(tauri::AppHandle<R>);
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl<R: tauri::Runtime> Drop for StartupEnableSettled<R> {
+    fn drop(&mut self) {
+        STARTUP_ENABLE_PENDING.store(false, Ordering::Release);
+        let _ = self.0.emit("proxy-state-changed", ());
+    }
+}
+
 /// A backend failure worth surfacing in analytics. The frontend owns the
 /// PostHog client, so failures are buffered here until it drains them: the
 /// buffer covers the pre-webview window (startup auto-enable runs before the
@@ -4780,6 +4815,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             set_device_name,
             set_updater_relaunching,
             routed_clients_stale,
+            routing_startup_pending,
             routing_verdicts,
             pending_restore,
             resume_restore,
@@ -5232,6 +5268,7 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
+                    let _settled = StartupEnableSettled(handle.clone());
                     // OAuth: refresh a stale token and probe the session at
                     // the gateway before the engine seeds itself below (the
                     // policy lives in `gate_connect_core::startup`). Seed the

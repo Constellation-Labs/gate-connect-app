@@ -94,7 +94,7 @@ export function UpdateBanner({
  * unrepresented.
  *
  * **Which state, and what to call it, is `lib/routingState`'s** since AG-913.
- * The tray's master card answers the same question and used to answer it in
+ * The tray's routing card answers the same question and used to answer it in
  * different words, so the vocabulary is shared rather than written twice. Two
  * distinctions live there that this banner used to lose:
  *
@@ -118,7 +118,7 @@ export function RoutingBanner({
   protectedCount: number;
   totalCount: number;
 }) {
-  // One vocabulary with the tray's master card (AG-913). The fourth state is
+  // One vocabulary with the tray's routing card (AG-913). The fourth state is
   // new here: "you asked for three and none are routed" used to fall into the
   // `partly` branch and read "partly routing your apps" over `0 of 3`.
   const state = routingState(protectedCount, totalCount);
