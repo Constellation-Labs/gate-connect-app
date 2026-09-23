@@ -258,7 +258,7 @@ function toBucket(b: RawBucket): MessagesBucket {
     // The endpoint's own UTC hour, kept as the row's identity. The label below is
     // a local hour and is not unique across a DST fall-back; see `MessagesBucket`.
     id: b.hour,
-    // Hour-of-day tick, matching the design's "14". Local time, because the
+    // Hour of day, formatted "14:00" by `hourHeading`. Local time, because the
     // user reads their own clock, not UTC.
     label: String(new Date(b.hour).getHours()),
     total: Math.max(0, b.requests - (blocked + flagged + redacted)),

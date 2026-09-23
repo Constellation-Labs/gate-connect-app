@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MessagesChart, StatTiles, type MessagesBucket, type UsageStats } from "./metrics";
 
@@ -262,5 +262,74 @@ describe("the enforcement tile's label", () => {
     expect(
       screen.getByText("Blocked/Flagged/Redacted").parentElement?.textContent,
     ).toContain("7");
+  });
+});
+
+describe("the chart's hour axis", () => {
+  const ticks = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("div.mt-1 > span")) as HTMLElement[];
+  const originalTz = process.env.TZ;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    process.env.TZ = originalTz;
+  });
+
+  it("labels the placeholder with the 24 hours ending now", () => {
+    process.env.TZ = "UTC";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-23T14:03:00Z"));
+    const { container } = render(<MessagesChart buckets={[]} pending />);
+
+    const labels = ticks(container).map((el) => el.textContent);
+    expect(labels).toHaveLength(24);
+    expect(labels[0]).toBe("15:00");
+    expect(labels[23]).toBe("14:00");
+  });
+
+  it("counts the placeholder from the UTC hour, as the loaded buckets do", () => {
+    // Kolkata is UTC+5:30. At 06:10 local the current bucket is the one that
+    // opened at 00:00 UTC, which `toBucket` labels "05"; counting from the
+    // local hour would say "06:00" and every label would jump on arrival.
+    process.env.TZ = "Asia/Kolkata";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-23T00:40:00Z"));
+    const { container } = render(<MessagesChart buckets={[]} pending />);
+
+    expect(ticks(container).map((el) => el.textContent)[23]).toBe("05:00");
+  });
+
+  it("labels every other hour, keeping the newest, when the labels do not fit", () => {
+    // jsdom has no layout, so this stands in the measurements a 1024 window
+    // gives: a tick box narrower than the label it holds.
+    let observed: ResizeObserverCallback | undefined;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: ResizeObserverCallback) {
+          observed = cb;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(20);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 27,
+    } as DOMRect);
+    const { container } = render(<MessagesChart buckets={buckets} />);
+
+    expect(observed).toBeDefined();
+    const [first, last] = ticks(container);
+    expect(last.className).not.toContain("invisible");
+    expect(first.className).toContain("invisible");
+  });
+
+  it("labels every hour when they fit", () => {
+    const { container } = render(<MessagesChart buckets={buckets} />);
+
+    expect(ticks(container).some((el) => el.className.includes("invisible"))).toBe(false);
   });
 });

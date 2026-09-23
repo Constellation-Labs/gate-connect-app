@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Card, EmptyNote, Skeleton } from "./base";
 
 /**
@@ -84,9 +84,9 @@ export interface MessagesBucket {
  * One function, so the three cannot phrase one bucket three ways.
  *
  * The axis printed bare hours ("07") from 2026-09-08, after `:00` on every tick
- * ran the labels together in the old 1024x720 window's 768px pane. The 944px
- * chart gives each 32px tick room for it, and a bare number does not read as a
- * time at all.
+ * ran the labels together, but a bare number does not read as a time at all.
+ * The full label fits a 32px tick at 1280 and 1x text; narrower than that,
+ * `AxisTicks` labels every other hour instead of shortening the label.
  */
 export function hourHeading(label: string): string {
   return `${label.padStart(2, "0")}:00`;
@@ -389,21 +389,7 @@ export function MessagesChart({
         )}
       </div>
 
-      <div className="mt-1 flex justify-between gap-2">
-        {buckets.map((bucket) => (
-          <span
-            key={bucket.id}
-            // `leading-4`: the drawn tick is a 16px-tall text node at 10px
-            // (`706:10520`, `864:3517`). `text-base-2xs` carries no
-            // line-height, so without this the tick inherits preflight's 1.5
-            // and boxes at 15px, shifting the whole row up a pixel against the
-            // 20px the frame leaves under the bars.
-            className="w-8 text-center text-base-2xs leading-4 text-base-muted-foreground"
-          >
-            {hourHeading(bucket.label)}
-          </span>
-        ))}
-      </div>
+      <AxisTicks labels={buckets.map((bucket) => hourHeading(bucket.label))} />
 
       {/* Visually hidden, not display:none - a table is the honest structure for
           24 rows of four figures, and it gives AT users row/column navigation
@@ -456,7 +442,7 @@ export function MessagesChart({
 
 /**
  * The chart's placeholder, as `overview-loading` (228:85602) draws it: one
- * uniform full-height column per hour of the period, over the real numbered
+ * uniform full-height column per hour of the period, over the real hour
  * ticks and the real legend - the card keeps its shape and only the readings
  * are missing. An earlier version drew a fixed silhouette at varied heights,
  * which read as data that had already arrived.
@@ -465,8 +451,8 @@ function PendingChart() {
   const hours = pendingHours(new Date());
   return (
     <>
-      {/* The loaded chart's geometry, for the reason the tick comment below
-          gives: this placeholder had 20px columns under 32px labels, so the
+      {/* The loaded chart's geometry: this placeholder had 20px columns
+          under 32px labels, so the
           bars moved sideways the moment a reading landed - the one thing a
           placeholder must not do. */}
       <div aria-hidden className="mt-5 flex h-28 items-end justify-between gap-2">
@@ -474,19 +460,7 @@ function PendingChart() {
           <Skeleton key={i} className="h-full w-8" />
         ))}
       </div>
-      <div aria-hidden className="mt-1 flex justify-between gap-2">
-        {hours.map((hour, i) => (
-          <span
-            key={i}
-            // The tick box is the loaded axis's, not this frame's: a narrower
-            // placeholder would let the axis jump sideways the moment the
-            // reading lands, which is the one thing a placeholder must not do.
-            className="w-8 text-center text-base-2xs text-base-muted-foreground"
-          >
-            {hour}
-          </span>
-        ))}
-      </div>
+      <AxisTicks labels={hours} hidden />
       <ul className="mt-4 flex items-center gap-6 border-t border-base-border pt-4">
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-2">
@@ -499,14 +473,87 @@ function PendingChart() {
   );
 }
 
-/** The placeholder's ticks: the 24 local hours ending at `now`'s, through
+/** The placeholder's ticks: the 24 hourly buckets ending with `now`'s, through
  *  {@link hourHeading}, so the axis already reads what the loaded one will.
- *  Stepped in real hours rather than hour-of-day arithmetic so a DST change
- *  repeats or skips an hour the way the loaded buckets do, which is also why
- *  the keys above are indexes. */
+ *  Counted from the UTC hour, as the gateway buckets and `toBucket` labels, not
+ *  from the local one: in a zone offset by a half or quarter hour (India, Nepal,
+ *  Adelaide) the two differ for part of every hour, and every label would jump
+ *  when the reading landed. Stepped in real hours so a DST change repeats or
+ *  skips an hour the way the loaded buckets do, which is also why the keys are
+ *  indexes. */
 function pendingHours(now: Date): string[] {
+  const hour = 3_600_000;
+  const current = Math.floor(now.getTime() / hour) * hour;
   return Array.from({ length: 24 }, (_, i) =>
-    hourHeading(String(new Date(now.getTime() - (23 - i) * 3_600_000).getHours())),
+    hourHeading(String(new Date(current - (23 - i) * hour).getHours())),
+  );
+}
+
+/**
+ * The hour labels under the bars, shared by the loaded chart and its
+ * placeholder so the two cannot draw different rows.
+ *
+ * Each tick is a bar's own box (`w-8` in a `gap-2` row), and `min-w-0` lets it
+ * shrink with the bar when the window narrows rather than hold the row at the
+ * label's width: an `HH:mm` label is wider than the bar under a 1024 window or
+ * a raised text scale, and a tick that refused to shrink pushed the row past
+ * the card and every label off its bar. The label overflows its box evenly on
+ * both sides instead, and once it no longer fits in its slot every other label
+ * is hidden, counting back from the newest so the current hour always shows.
+ * Measured, not set by breakpoint, because text scale moves the label's width
+ * independently of the window's.
+ *
+ * `invisible` rather than removed, so the boxes stay one per bar. The hidden
+ * labels are still in the accessible table.
+ */
+function AxisTicks({
+  labels,
+  hidden,
+}: {
+  labels: string[];
+  /** Out of the accessibility tree, for the placeholder: its hours label no reading. */
+  hidden?: boolean;
+}) {
+  const row = useRef<HTMLDivElement>(null);
+  const [crowded, setCrowded] = useState(false);
+  useLayoutEffect(() => {
+    const el = row.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const tick = el.firstElementChild as HTMLElement | null;
+      const text = tick?.firstElementChild as HTMLElement | null;
+      if (!tick || !text || tick.clientWidth === 0) return;
+      const slot = tick.clientWidth + (parseFloat(getComputedStyle(el).columnGap) || 0);
+      // A label needs a little air in its slot, or neighbours read as one run.
+      setCrowded(text.getBoundingClientRect().width + 4 > slot);
+    };
+    measure();
+    // The label as well as the row: a font swap or a text-scale change moves
+    // the label's width without resizing the row.
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    const text = el.firstElementChild?.firstElementChild;
+    if (text) observer.observe(text);
+    return () => observer.disconnect();
+  }, [labels.length]);
+  return (
+    <div ref={row} aria-hidden={hidden} className="mt-1 flex justify-between gap-2">
+      {labels.map((label, i) => (
+        <span
+          key={i}
+          // `leading-4`: the drawn tick is a 16px-tall text node at 10px
+          // (`706:10520`, `864:3517`). `text-base-2xs` carries no line-height,
+          // so without this the tick inherits preflight's 1.5 and boxes at
+          // 15px, shifting the whole row up a pixel against the 20px the frame
+          // leaves under the bars.
+          className={`flex w-8 min-w-0 justify-center whitespace-nowrap text-base-2xs leading-4 text-base-muted-foreground ${
+            crowded && (labels.length - 1 - i) % 2 === 1 ? "invisible" : ""
+          }`}
+        >
+          <span>{label}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 
