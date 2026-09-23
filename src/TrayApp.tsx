@@ -4,7 +4,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   Account,
   PendingRestore,
-  Preferences,
   ProxyState,
   Tool,
   Verdict,
@@ -12,7 +11,6 @@ import type {
 import {
   getAccount,
   getAccountKeyPrefix,
-  getPreferences,
   listTools,
   pendingRestore,
   proxyStatus,
@@ -39,7 +37,6 @@ import {
   isSettingsManaged,
   sectionHint,
   sectionMemberKeys,
-  sessionMembers,
 } from "./lib/groups";
 import type { Band, Group } from "./lib/groups";
 import { useSectionRouting } from "./lib/useSectionRouting";
@@ -68,7 +65,6 @@ import {
   OpenCodeEnvDialog,
   ReopenProgressDialog,
   ReviewConfigDialog,
-  SessionConsentDialog,
 } from "./components/gc/dialogs";
 
 /** A whole reading, compared by value: every read builds fresh objects. */
@@ -141,10 +137,6 @@ export function TrayApp() {
    *  gateway leaves every scope string byte-identical and the previous org's
    *  figures stay on screen under the new org's name. */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
-  /** Read for one field: `session_routing_accepted`. The tray draws no
-   *  preference controls, but its app switches ask the same question the rail's
-   *  do, and the recorded answer is what decides whether to ask again. */
-  const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   /**
    * The buffered routing-down failure, held apart from `actionError`.
@@ -207,13 +199,6 @@ export function TrayApp() {
    *  machine one failure at first load persisted until something moved. This
    *  surface has no refresh affordance, so nothing the user could do fixed it. */
   const verdictsRead = useRef(false);
-
-  /** Re-read the recorded consents. Called at load and after one is given, so
-   *  the switch that asked stops asking without waiting for a reopen. */
-  const loadPreferences = useCallback(async () => {
-    const p = await getPreferences().catch(() => null);
-    if (p) setPrefs(p);
-  }, []);
 
   const refreshVerdicts = useCallback(async () => {
     const v = await routingVerdicts().catch(() => null);
@@ -352,11 +337,6 @@ export function TrayApp() {
           .then((a) => ({ read: true, account: a }))
           .catch(() => ({ read: false, account: null as Account | null })),
         getAccountKeyPrefix().catch(() => null),
-        // Not awaited into a variable: a failed read leaves `prefs` null, and
-        // null means "nothing recorded", so the switch asks. That is the safe
-        // direction - an unreadable preferences file must not be able to route
-        // somebody's sign-in on the grounds that it might have said yes.
-        loadPreferences(),
       ]);
       setTools(t ?? []);
       setProxy(px);
@@ -368,7 +348,7 @@ export function TrayApp() {
       void loadRecovery();
       setLoaded(true);
     })();
-  }, [refreshVerdicts, loadRecovery, loadPreferences]);
+  }, [refreshVerdicts, loadRecovery]);
 
   /**
    * Drain the backend's buffered failures, exactly as the window shell does.
@@ -801,8 +781,6 @@ export function TrayApp() {
     groups,
     routing,
     runningApps,
-    prefs,
-    onPrefsChanged: () => void loadPreferences(),
     onBeforeRoute: () => {
       setActionError(null);
       // See the window: a routing click retires the previous click's advice,
@@ -867,8 +845,8 @@ export function TrayApp() {
     // raised before any routing call, so `routing.prompt` is still null while
     // it is on screen. Without it a click anywhere else blur-dismisses the
     // popover mid-question, and the answer the next click gives is to a
-    // question nobody is being shown.
-    section.consent !== null ||
+    // question nobody is being shown. (The session-consent dialog was the
+    // other such question and is gone - AG-934.)
     runningApps.stage !== null ||
     routingBusy;
   useEffect(() => {
@@ -1094,13 +1072,6 @@ export function TrayApp() {
               defaulted={routing.prompt.defaulted}
               onCancel={() => routing.resolvePrompt(false)}
               onConfirm={() => routing.resolvePrompt(true)}
-            />
-          ) : section.consent ? (
-            <SessionConsentDialog
-              name={section.consent.name}
-              surfaces={sessionMembers(section.consent)}
-              onDismiss={section.dismissConsent}
-              onConfirm={section.confirmConsent}
             />
           ) : routing.prompt?.kind === "trust" ? (
             // Same dialog as the window shell, for the same reason: the OS

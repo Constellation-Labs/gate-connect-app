@@ -82,13 +82,7 @@ export class App {
 
   /** {@link routeApp} for the tray, clicking the row's own switch. */
   async routeTrayApp(name: string) {
-    const section = SESSION_SECTIONS[name];
-    const asked =
-      section !== undefined &&
-      !(await this.state()).preferences.session_routing_accepted.includes(section);
     await this.trayAppSwitch(name).click();
-    if (!asked) return;
-    await this.page.getByRole("button", { name: `Route ${name}` }).click();
   }
 
   /**
@@ -114,33 +108,19 @@ export class App {
   }
 
   /**
-   * Turn an app section ON, answering the consent dialog if it asks.
+   * Turn an app section ON.
    *
-   * A section switch routes every surface that app uses, and for Claude and
-   * ChatGPT / Codex that includes a surface the person is signed in to - so the
-   * switch asks once before it flips one. Most specs are about something else
-   * and should not each carry that step; the ones testing consent itself click
-   * the switch directly and assert on the dialog.
+   * Used to answer the session-consent dialog on the way through: a section
+   * switch routes every surface that app uses, and for Claude and ChatGPT /
+   * Codex that includes a surface the person is signed in to, which the switch
+   * asked about once per install. The dialog was removed (AG-934,
+   * 2026-09-23) and nothing asks now, so this is a click.
    *
-   * Only for turning ON. Switching off needs no permission, and a helper that
-   * hid a confirmation on the way out would hide a bug.
+   * Still only for turning ON, so a confirmation that ever appears on the way
+   * OFF fails a spec rather than being absorbed here.
    */
   async routeApp(name: string) {
-    const section = SESSION_SECTIONS[name];
-    // Asked once per install, so a second ON in the same test gets no dialog and
-    // waiting for one would hang. Read from the fake backend's own recording
-    // rather than guessed, which is the same thing the app reads.
-    const asked =
-      section !== undefined &&
-      !(await this.state()).preferences.session_routing_accepted.includes(section);
     await (await this.appSwitch(name)).click();
-    if (!asked) return;
-    // Asserted rather than probed. `isVisible()` does not auto-wait, so a probe
-    // would race the dialog's first paint and silently skip it; clicking waits.
-    // And if consent ever stops being asked for one of these, this is the line
-    // that should fail - that is the regression worth catching, not a helper
-    // quietly carrying on.
-    await this.page.getByRole("button", { name: `Route ${name}`, exact: true }).click();
   }
 
   /**
@@ -175,21 +155,6 @@ type Fixtures = {
   /** Install the fake backend, load the popover, wait for it to resolve a
    *  screen. `patch` is merged one level deep into the default state. */
   boot: (patch?: DeepPartial<BackendState>) => Promise<App>;
-};
-
-/**
- * The sections whose switch asks before it routes, against the default catalog,
- * and the section id each one records its answer under.
- *
- * They are the ones holding a `Credential::Additive` row - a surface the person
- * is signed in to. Listed here rather than derived because a spec that overrides
- * `proxy.domains` can change the answer, and such a spec should drive the switch
- * itself rather than through `routeApp`. The id is what lets the helper tell a
- * first ON from a later one, since the question is asked once per install.
- */
-const SESSION_SECTIONS: Record<string, string> = {
-  Claude: "claude",
-  "ChatGPT / Codex": "chatgpt",
 };
 
 export const test = base.extend<Fixtures>({

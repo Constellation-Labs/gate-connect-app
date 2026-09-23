@@ -2595,20 +2595,6 @@ fn security_feed_retry() {
     security_feed().retry_now();
 }
 
-/// Record that the person accepted one section's switch routing a signed-in
-/// surface. See `preferences::session_routing_accepted`.
-///
-/// Recording only: nothing below this command reads the answer, so it is what
-/// lets the UI stop asking rather than what permits the routing. The shells own
-/// that check, and `proxy_set_domain` still routes any row a caller names -
-/// which is right while the popover's per-surface switches are still shipping,
-/// and is the reason the invariant is worded as "the family cascade cannot" and
-/// not "nothing can".
-#[tauri::command]
-fn accept_session_routing(section: String) -> Result<(), String> {
-    gate_connect_core::preferences::accept_session_routing(&section).map_err(|e| format!("{e:#}"))
-}
-
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
@@ -4790,7 +4776,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
-            accept_session_routing,
             install_id,
             device_name,
             set_device_name,
@@ -4866,7 +4851,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
-            accept_session_routing,
             install_id,
             device_name,
             set_device_name,

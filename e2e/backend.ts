@@ -214,7 +214,6 @@ export interface BackendState {
         are signed in to. Empty is "never asked", which is what a fresh install
         is - so an app switch over a session surface raises its dialog, and a
         spec that does not want to answer it pre-fills this instead. */
-    session_routing_accepted: string[];
   };
   routedClientsStale: boolean;
   runningAgents: number;
@@ -642,7 +641,6 @@ export function defaultState(): BackendState {
       share_diagnostics_recorded: true,
       device_name: null,
       signed_out_deliberately: false,
-      session_routing_accepted: [],
     },
     routedClientsStale: false,
     runningAgents: 0,
