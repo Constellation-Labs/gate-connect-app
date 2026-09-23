@@ -358,7 +358,8 @@ function AppStatusLine({
   const detail = status ? statusDetail(status) : since;
 
   return (
-    <p className="text-base leading-6">
+    // `label/16` (408:25101): `copy/16`'s size, leading and -2% at Medium.
+    <p className="text-base font-medium leading-6">
       <span className={text.className}>{text.label}</span>
       {detail && <span className="text-neutral-500"> - {detail}</span>}
     </p>
