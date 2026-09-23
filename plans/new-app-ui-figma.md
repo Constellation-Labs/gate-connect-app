@@ -1430,7 +1430,7 @@ for want of an address, as everywhere else.
 **The Messages chart was redrawn** (`706:*`, ~1,950 nodes) and three things
 changed:
 
-- **Ticks read `HH:00`**, not a bare hour. `hourHeading` formats them, and the
+- **Ticks read `HH:00`**, not a bare hour. `hourLabel` formats them, and the
   tooltip heading and the accessible table go through it too, so one bucket
   cannot be phrased three ways. The `chart/tooltip` card itself is an older
   node (`191:*`) still headed with a bare hour; the redrawn axis around it

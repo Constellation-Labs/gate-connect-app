@@ -70,7 +70,7 @@ export interface MessagesBucket {
    */
   id: string;
   /** The bucket's local hour, as a number ("14"). Display only; see `id`.
-   *  Rendered through {@link hourHeading} rather than printed raw. */
+   *  Rendered through {@link hourLabel} rather than printed raw. */
   label: string;
   total: number;
   blocked: number;
@@ -88,7 +88,7 @@ export interface MessagesBucket {
  * The full label fits a 32px tick at 1280 and 1x text; narrower than that,
  * `AxisTicks` labels every other hour instead of shortening the label.
  */
-export function hourHeading(label: string): string {
+export function hourLabel(label: string): string {
   return `${label.padStart(2, "0")}:00`;
 }
 
@@ -389,7 +389,7 @@ export function MessagesChart({
         )}
       </div>
 
-      <AxisTicks labels={buckets.map((bucket) => hourHeading(bucket.label))} />
+      <AxisTicks labels={buckets.map((bucket) => hourLabel(bucket.label))} />
 
       {/* Visually hidden, not display:none - a table is the honest structure for
           24 rows of four figures, and it gives AT users row/column navigation
@@ -415,7 +415,7 @@ export function MessagesChart({
         <tbody>
           {buckets.map((b) => (
             <tr key={b.id}>
-              <th scope="row">{hourHeading(b.label)}</th>
+              <th scope="row">{hourLabel(b.label)}</th>
               <td>{b.total}</td>
               <td>{b.blocked}</td>
               <td>{b.flagged}</td>
@@ -474,7 +474,7 @@ function PendingChart() {
 }
 
 /** The placeholder's ticks: the 24 hourly buckets ending with `now`'s, through
- *  {@link hourHeading}, so the axis already reads what the loaded one will.
+ *  {@link hourLabel}, so the axis already reads what the loaded one will.
  *  Counted from the UTC hour, as the gateway buckets and `toBucket` labels, not
  *  from the local one: in a zone offset by a half or quarter hour (India, Nepal,
  *  Adelaide) the two differ for part of every hour, and every label would jump
@@ -485,7 +485,7 @@ function pendingHours(now: Date): string[] {
   const hour = 3_600_000;
   const current = Math.floor(now.getTime() / hour) * hour;
   return Array.from({ length: 24 }, (_, i) =>
-    hourHeading(String(new Date(current - (23 - i) * hour).getHours())),
+    hourLabel(String(new Date(current - (23 - i) * hour).getHours())),
   );
 }
 
@@ -589,7 +589,7 @@ function ChartTooltip({
       }
     >
       <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-foreground">
-        {hourHeading(bucket.label)}
+        {hourLabel(bucket.label)}
       </p>
       <div className="mt-2 flex flex-col gap-1">
         {SERIES.map(({ key, label, className }) => (
