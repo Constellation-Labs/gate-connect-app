@@ -1367,12 +1367,12 @@ test.describe("new UI sidebar rail", () => {
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // OpenAI API is a host with no config tool behind it, so no reading exists
+    // OpenRouter is a host with no config tool behind it, so no reading exists
     // and none ever will. A different sentence from the one above, and
     // deliberately so: that one caveats a reading, this one names where the
     // requests ARE counted instead (AG-889). The page used to say only that
     // its numbers could not be shown, which read as breakage.
-    await app.openApp("OpenAI API");
+    await app.openApp("OpenRouter");
 
     // Anchored on the note's own tail. An earlier version matched
     // /counted in the Overview/, which resolved to one element only by luck of
@@ -1402,15 +1402,14 @@ test.describe("new UI sidebar rail", () => {
     // An exact count, and then the same count after a row moves. `/of \d+$/`
     // passes for "0 of 0", so it went green on a rail that drew no rows at all -
     // and a counter that never changes is not a counter.
-    // Two: ChatGPT / Codex and OpenAI API, which the default catalog draws
-    // whether or not a tool is installed. Under the old apps/tools split these
-    // were in different bands - the endpoint was a Tool - and grouping by
-    // vendor is what brings them together.
-    await expect(openai).toHaveText("0 of 2");
+    // One: ChatGPT / Codex, which the default catalog draws whether or not a
+    // tool is installed. The OpenAI API host is in the catalog too and is
+    // CLI-only, so it must not count here.
+    await expect(openai).toHaveText("0 of 1");
 
     await app.routeApp("ChatGPT / Codex");
 
-    await expect(openai).toHaveText("1 of 2");
+    await expect(openai).toHaveText("1 of 1");
   });
 
   test("the multi-provider tools each get a switch, under one band", async ({ boot }) => {

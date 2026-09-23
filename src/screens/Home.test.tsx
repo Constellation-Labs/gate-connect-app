@@ -255,7 +255,7 @@ describe("Home routing card", () => {
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
       ],
       // One enabled app row plus one available-but-off row.
-      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI API", enabled: false })],
+      domains: [makeDomain(), makeDomain({ slug: "openrouter", display_name: "OpenRouter", enabled: false })],
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
