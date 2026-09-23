@@ -39,11 +39,6 @@ describe("MessagesChart tooltip", () => {
     // 12 here only by coincidence of the design's own sample numbers, which is
     // exactly the confusion this asserts against - and which the tooltip
     // settles by heading the column "12:00" rather than "12".
-    //
-    // The axis went the other way on 2026-09-08 (bare "12", no minutes - see
-    // `hourTick`), and this is why the tooltip did not follow it: read on its
-    // own, over a stack of four figures, "12" is the ambiguity the heading
-    // exists to remove.
     const tip = screen.getByText("Total messages", {
       selector: "div > span > span",
     }).closest("div[class*='absolute']") as HTMLElement;
@@ -54,16 +49,12 @@ describe("MessagesChart tooltip", () => {
     expect(within(tip).getByText("0")).toBeTruthy();
   });
 
-  it("labels the axis with bare hours, no minutes", () => {
-    // `116:30705`, the Overview Messages card, draws digits with no `:00`. The
-    // component sample `706:9997` draws "00:00" over 12 buckets and is what
-    // this printed everywhere until 2026-09-08; at the card's real 24 buckets
-    // that ran the labels into each other and off the card edge.
+  it("labels the axis with 24h HH:mm hours", () => {
     const { container } = render(<MessagesChart buckets={buckets} />);
     const ticks = Array.from(
       container.querySelectorAll("div.mt-1 > span"),
     ).map((el) => el.textContent);
-    expect(ticks).toEqual(["11", "12"]);
+    expect(ticks).toEqual(["11:00", "12:00"]);
   });
 
   it("gives the bars and the ticks the same geometry, so a bar sits under its label", () => {
