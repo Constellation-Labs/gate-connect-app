@@ -14,35 +14,18 @@ import {
 import { trayLocationName, type Platform } from "../../lib/platform";
 import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
-import type {
-  RecoverySummary,
-  TeardownReason,
-  TeardownReport,
-  TeardownTool,
-} from "../../lib/api";
+import type { RecoverySummary } from "../../lib/api";
 import type { HermesProviderChoice } from "../../lib/useRouting";
 import type { RecoveryRow } from "../../lib/recovery";
-import type { ReopenAction, ReopenAppRow, ReopenTool } from "../../lib/reopen";
-import {
-  actionsFor,
-  allVerified,
-  isResting,
-  isTerminal,
-  REOPEN_ACTION_LABEL,
-  REOPEN_STAGE_DETAIL,
-  REOPEN_STAGE_LABEL,
-  reopenAppRows,
-  WHY_REOPEN,
-} from "../../lib/reopen";
+import type { ReopenTool } from "../../lib/reopen";
+import { REOPEN_STAGE_DETAIL, WHY_REOPEN } from "../../lib/reopen";
 import {
   plainNextStep,
   plainOperationLine,
   plainOutcome,
   recoveryRows,
-  TEARDOWN_ACTION_LABEL,
   unresolved,
 } from "../../lib/recovery";
-import type { PillTone } from "./Modal";
 import {
   Modal,
   ModalCheckbox,
@@ -685,186 +668,6 @@ export function ChangeReadyDialog({
         </p>
       </ModalNote>
     </Modal>
-  );
-}
-
-/**
- * Step three: what is happening to each tool, and then what happened.
- *
- * One dialog rather than two because it is one operation: the rows move from
- * Closing to Reopen required to Verifying under the reader, and swapping the
- * dialog out from under them at the moment the last row settles would hide the
- * transition that explains the result.
- *
- * The account is separated the way AG-566 AC 9 asks (applied and verified,
- * waiting for a manual reopen, could not be closed, configuration failed,
- * verification failed) and only once every row has settled. Before that the
- * rows stay in one list: a bucket that a row is about to leave is not a result.
- *
- * `ChangeReadyDialog` still draws the all-clear - it is the case the Figma has a
- * frame for, and it says the one thing that outcome needs.
- */
-export function ReopenProgressDialog({
-  tools,
-  onAction,
-  onDone,
-}: {
-  tools: DialogReopenTool[];
-  /** Act on one tool. Which action a row offers comes from `actionsFor`, and
-   *  the shell decides what each one does - only `retry_verification` belongs
-   *  to this flow, and the other four are other people's screens. */
-  onAction: (slug: string, action: ReopenAction) => void;
-  onDone: () => void;
-}) {
-  // Resting, not finished: a tool waiting to be reopened has nothing in
-  // flight, and holding the account back until the user acts would leave a
-  // spinner over the one outcome this flow reaches most often. The watch keeps
-  // running under it, so a reopen still moves the row.
-  const settled = tools.every((t) => isResting(t.stage));
-  const done = allVerified(tools);
-  const waiting = tools.filter((t) => !isResting(t.stage)).length;
-  // One row per app, not one per running process (AG-898). The rail calls
-  // Codex and the ChatGPT desktop app one app, and this dialog listed them
-  // apart on the screen the user reached from it.
-  const apps = reopenAppRows(tools);
-  return (
-    <Modal
-      tone={settled && !done ? "warning" : settled ? "success" : "neutral"}
-      icon={settled && !done ? "triangleAlert" : settled ? "circleCheck" : "refresh"}
-      title={settled ? "What happened" : "Applying the change"}
-      subtitle={
-        settled
-          ? "Each tool, and what is left to do about it"
-          : `Gate Connect is following ${waiting === 1 ? "one tool" : `${waiting} tools`} through the change`
-      }
-      primary={{ label: settled ? "Done" : "Close", onClick: onDone }}
-      onDismiss={onDone}
-      width={544}
-    >
-      {/* One list in both states (AG-898). The settled view used to sort the
-          tools into up to six headed buckets, each carrying its own paragraph
-          about what Gate did and did not check - so five tools could cost the
-          reader three different explanations before they found their own. Every
-          row already states its own stage and what that stage means, which is
-          the same account without the reader having to assemble it. */}
-      <div className="flex flex-col gap-2">
-        {apps.map((app) => (
-          <ReopenAppRowView key={app.id} app={app} onAction={onAction} />
-        ))}
-      </div>
-      <ModalNote>{WHY_REOPEN}</ModalNote>
-    </Modal>
-  );
-}
-
-/**
- * One app inside the progress dialog.
- *
- * The app reports its worst member, because reporting the better half is how a
- * dialog tells somebody everything is fine while their editor is not routed.
- * Where the members disagree, each is named under the row - that is the whole
- * of what the headed buckets used to carry, at the one place it is relevant.
- *
- * The actions still belong to `lead.slug`; see `reopenAppRows`.
- */
-function ReopenAppRowView({
-  app,
-  onAction,
-}: {
-  app: ReopenAppRow<DialogReopenTool>;
-  onAction: (slug: string, action: ReopenAction) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <ReopenToolRow tool={{ ...app.lead, name: app.name }} onAction={onAction} />
-      {app.mixed && (
-        <ul className="ml-3 flex flex-col gap-0.5">
-          {app.members.map((member) => (
-            <li key={member.slug} className="text-base-xs leading-4 text-neutral-600">
-              {member.name}: {REOPEN_STAGE_LABEL[member.stage]}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/**
- * One tool inside the progress dialog: its stage, what the stage means for it,
- * and the actions that stage offers.
- *
- * Every button carries the slug it belongs to. AG-566 AC 10 is explicit that
- * retrying one tool must not repeat the change for another, and the cheapest
- * way to guarantee that is for no control here to know about a set.
- */
-function ReopenToolRow({
-  tool,
-  onAction,
-}: {
-  tool: DialogReopenTool;
-  onAction: (slug: string, action: ReopenAction) => void;
-}) {
-  const actions = actionsFor(tool.stage);
-  const working = !isTerminal(tool.stage);
-  const good = tool.stage === "routing" || tool.stage === "not_routed";
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-base-border p-3">
-      <div className="flex items-start gap-3">
-        <span
-          aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
-        >
-          {toolIcon(tool)}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2">
-            <p className="text-sm font-medium leading-5 text-base-foreground">
-              {tool.name}
-            </p>
-            <p
-              className={`text-base-xs leading-4 ${good ? "text-green-700" : working ? "text-neutral-600" : "text-amber-700"}`}
-            >
-              {REOPEN_STAGE_LABEL[tool.stage]}
-            </p>
-          </div>
-          <p className="text-base-xs leading-4 text-neutral-600">
-            {REOPEN_STAGE_DETAIL[tool.stage]}
-          </p>
-          {routesShown(tool) && (
-            <div className="text-base-xs leading-4 text-neutral-600">
-              <RoutePair tool={tool} />
-            </div>
-          )}
-          {tool.error && <ErrorDetails raw={tool.error} title="Details" />}
-        </div>
-        <Icon
-          name={working ? "refresh" : good ? "circleCheck" : "triangleAlert"}
-          size={16}
-          className={
-            working
-              ? "mt-0.5 shrink-0 animate-spin text-neutral-500"
-              : good
-                ? "mt-0.5 shrink-0 text-green-700"
-                : "mt-0.5 shrink-0 text-amber-600"
-          }
-        />
-      </div>
-      {actions.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {actions.map((action) => (
-            <button
-              key={action}
-              type="button"
-              onClick={() => onAction(tool.slug, action)}
-              className="rounded-md border border-base-input bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-foreground shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-            >
-              {REOPEN_ACTION_LABEL[action]}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -2646,41 +2449,6 @@ function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
     </div>
   );
 }
-
-/**
- * Where every tool stands after a teardown - routing off, disconnect, sign-out
- * or reset.
- *
- * AG-570 asks for this whenever such an operation "cannot write defaults for
- * every tool": the tools that are back on their own settings, the ones still
- * carrying Gate's, the ones waiting to be reopened, the ones that could not be
- * read, and what to do about each. The four buckets are the answer, and they are
- * *read back* from the configs rather than assembled from what the teardown
- * believed it wrote - a sweep that reports success having written nothing is the
- * failure this dialog exists to catch.
- *
- * Read-only for the same reason the review above is: it reports a teardown that
- * has already happened. The actions it names live on the rows that own them.
- */
-/**
- * A teardown row with the mark the shell holds for it.
- *
- * The same split `DialogApp` and `DialogReopenTool` make: `lib/api` owns the
- * reading, the shell owns the brand marks, and this module draws whatever it is
- * handed. `icon` is optional, so a plain `TeardownReport` still satisfies the
- * prop below and a caller that has no marks to give simply gets the cube.
- */
-export type DialogTeardownTool = TeardownTool & {
-  /** 16px product mark. Falls back to a cube while a mark is missing. */
-  icon?: ReactNode;
-};
-
-/** {@link TeardownReport} with marks on its rows. */
-export type DialogTeardownReport = Record<
-  keyof TeardownReport,
-  DialogTeardownTool[]
->;
-
 /**
  * The reopen flow's rows, with their product marks.
  *
@@ -2692,8 +2460,7 @@ export type DialogTeardownReport = Record<
  * drew their real marks.
  *
  * It lived in `BrandMark` for a while, which made a leaf presentational module
- * import a type from this one, and left its sibling {@link teardownSubjects}
- * behind in the window shell - so the two halves of one job sat in two layers.
+ * import a type from this one.
  * `lib/reopen` is not the home either, tempting as it looks: it owns the model
  * and depends on no component, and moving this there would point it at both
  * this module and `BrandMark`.
@@ -2704,156 +2471,6 @@ export type DialogTeardownReport = Record<
  */
 export function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
   return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
-}
-
-/** The teardown report's four buckets, with the same marks
- *  {@link reopenSubjects} puts on the reopen rows. The dialog listed Claude Code
- *  and Codex beside a generic glyph while every other surface drew their real
- *  marks. */
-export function teardownSubjects(report: TeardownReport): DialogTeardownReport {
-  const marks = (tools: TeardownTool[]): DialogTeardownTool[] =>
-    tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
-  return {
-    defaults: marks(report.defaults),
-    still_gate: marks(report.still_gate),
-    awaiting_reopen: marks(report.awaiting_reopen),
-    failed: marks(report.failed),
-  };
-}
-
-export function TeardownReportDialog({
-  report,
-  reason = "teardown",
-  onClose,
-}: {
-  report: DialogTeardownReport;
-  /** What produced this report - see `TeardownReason`. Defaults to `teardown`,
-   *  which is what every caller but sign-out means. */
-  reason?: TeardownReason;
-  onClose: () => void;
-}) {
-  const outstanding =
-    report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
-  const signOut = reason === "sign-out";
-  const sections: {
-    key: keyof TeardownReport;
-    title: string;
-    /** One sentence per row, or none. `ModalSubject`'s description slot
-     *  truncates to one line by design, and these sentences are all longer
-     *  than the row is wide, so every one of them ends in an ellipsis. */
-    detail?: string;
-    tone: PillTone;
-  }[] = [
-    {
-      key: "still_gate",
-      // Sign-out keeps configs deliberately, so this bucket is not a failure
-      // there and must not read as one. The fixed sentence below reported "the
-      // teardown could not put these back" over an operation that never tried,
-      // which is a false failure report about the app's own decision - and it
-      // arrived with a Retry pill beside it inviting the user to fix nothing.
-      // What the user actually needs to know is where those tools now point.
-      title: signOut
-        ? "Still pointing at Gate"
-        : "Still using Gate’s values",
-      detail: signOut
-        ? "Left as they were, on purpose. Their config still points at Gate, which now has no session behind it."
-        : "The teardown could not put these back. Their config still points at Gate.",
-      tone: "amber",
-    },
-    {
-      key: "awaiting_reopen",
-      title: "Waiting to be reopened",
-      // No sentence. It read "Back on their own settings on disk, but a running
-      // process is still using the route it started with", 103 characters into
-      // a one-line slot, so no reader ever saw past "but a running process is
-      // still...". The heading carries the state; the pill carries the action.
-      // Removed 2026-09-17 rather than reworded, pending a frame: this dialog
-      // is undrawn (`docs/review-flow-overview.md`), so there is no copy to
-      // match and the other three sentences here clip the same way.
-      tone: "amber",
-    },
-    {
-      key: "failed",
-      title: "Could not be checked",
-      detail:
-        "Gate could not read these configs, so nothing about them is known - which is not the same as clean.",
-      tone: "amber",
-    },
-    {
-      key: "defaults",
-      title: "Back on their own settings",
-      detail: "Verified by reading the config, not by trusting the write.",
-      tone: "green",
-    },
-  ];
-  return (
-    <Modal
-      // Sign-out's heading says what happened rather than grading it. "Some
-      // tools were left as they were" is a warning when a restore was supposed
-      // to run and did not; after a deliberate sign-out it is simply the
-      // outcome, and the tone, glyph and count all followed that mistake.
-      tone={signOut ? "neutral" : outstanding > 0 ? "warning" : "success"}
-      icon={signOut ? "logOut" : outstanding > 0 ? "triangleAlert" : "circleCheck"}
-      title={
-        signOut
-          ? "You are signed out"
-          : outstanding > 0
-            ? "Some tools were left as they were"
-            : "Every tool is back on its own settings"
-      }
-      subtitle={
-        signOut
-          ? "Your tools keep their settings. Sign in again to start routing through Gate."
-          : outstanding > 0
-            ? `${outstanding} of ${outstanding + report.defaults.length} tools still need something.`
-            : "Nothing is left pointing at Gate."
-      }
-      primary={{ label: "Close", onClick: onClose }}
-      onDismiss={onClose}
-      width={544}
-    >
-      {sections
-        .filter((section) => report[section.key].length > 0)
-        .map((section) => (
-          <div key={section.key} className="flex flex-col gap-2">
-            <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-              {section.title}
-            </p>
-            {report[section.key].map((tool) => (
-              <ModalSubject
-                key={tool.slug}
-                // A node, not the name of one. `ModalSubject`'s `icon` is a
-                // `ReactNode`, so the bare string rendered as the literal word
-                // "cube" in every teardown row - the one caller that passed a
-                // string where the other five pass a glyph or a brand mark.
-                // The row's own product mark when it has one, and the cube only
-                // as the fallback for a slug with no mark.
-                icon={tool.icon ?? <Icon name="cube" size={16} />}
-                title={tool.name}
-                description={section.detail}
-                // No next-action pill after a sign-out. Nothing was attempted,
-                // so there is nothing to retry: an amber "Retry disconnect"
-                // under a heading that says these were left alone on purpose
-                // offers the user a fix for a failure that did not happen. The
-                // original finding asked for exactly this - the pills should
-                // either act or stop looking like buttons - and correcting the
-                // heading without the pills only fixed half of it.
-                pill={
-                  signOut
-                    ? undefined
-                    : tool.next_action === "none"
-                      ? { label: "Done", tone: section.tone }
-                      : {
-                          label: TEARDOWN_ACTION_LABEL[tool.next_action],
-                          tone: section.tone,
-                        }
-                }
-              />
-            ))}
-          </div>
-        ))}
-    </Modal>
-  );
 }
 
 /** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
@@ -3119,6 +2736,10 @@ export function QuitSafeToCloseDialog({
  * are still pointed at a relay that dies with this process. Retrying is the
  * primary; quitting anyway stays available, because refusing to let someone quit
  * their own app is worse than letting them quit informed.
+ *
+ * Also what Disconnect, Reset and sign-out raise when a tool is still pointing
+ * at Gate afterwards. Without `onQuitAnyway` nobody is quitting, so the escape is
+ * Close and the body says what the tool is pointing at now.
  */
 export function QuitLeftBehindDialog({
   tools,
@@ -3130,17 +2751,27 @@ export function QuitLeftBehindDialog({
   tools: string[];
   busy?: boolean;
   onRetry: () => void;
-  onQuitAnyway: () => void;
+  /** Omitted outside a quit. */
+  onQuitAnyway?: () => void;
   onCancel: () => void;
 }) {
   const plural = tools.length > 1;
+  const quitting = onQuitAnyway !== undefined;
   return (
     <Modal
       tone="warning"
       icon="triangleAlert"
       title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
-      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
-      middle={{ label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }}
+      secondary={{
+        label: quitting ? "Cancel" : "Close",
+        onClick: onCancel,
+        disabled: busy,
+      }}
+      middle={
+        quitting
+          ? { label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }
+          : undefined
+      }
       primary={{
         label: busy ? "Working…" : "Try again",
         onClick: onRetry,
@@ -3151,13 +2782,17 @@ export function QuitLeftBehindDialog({
       <p className="text-sm leading-5 text-neutral-600">
         Couldn’t put {joinNames(tools)} back on{" "}
         {plural ? "their own settings" : "its own settings"}.{" "}
-        {plural ? "They still point" : "It still points"} at Gate, and won’t
-        reach a model until Gate Connect runs again.
+        {plural ? "They still point" : "It still points"} at Gate,{" "}
+        {quitting
+          ? "and won’t reach a model until Gate Connect runs again."
+          : `which has no session behind ${plural ? "them" : "it"} now.`}
       </p>
-      <ModalNote>
-        Everything else was put back. Trying again only retouches the{" "}
-        {plural ? "tools" : "tool"} above.
-      </ModalNote>
+      {quitting && (
+        <ModalNote>
+          Everything else was put back. Trying again only retouches the{" "}
+          {plural ? "tools" : "tool"} above.
+        </ModalNote>
+      )}
     </Modal>
   );
 }

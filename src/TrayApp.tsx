@@ -26,7 +26,7 @@ import {
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import { allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
@@ -63,7 +63,6 @@ import {
   CloseAppsDialog,
   HermesProviderDialog,
   OpenCodeEnvDialog,
-  ReopenProgressDialog,
   ReviewConfigDialog,
 } from "./components/gc/dialogs";
 
@@ -546,6 +545,26 @@ export function TrayApp() {
     nameFor: (slug) => tools.find((t) => t.slug === slug)?.product_name,
   });
 
+  /**
+   * The reopen flow draws a dialog for every stage but one: `work` shows only
+   * "Change is ready", once every tool verifies. Until then the stage runs with
+   * nothing on screen, so the rail carries it, and a CLI waiting for its user to
+   * reopen it can stay there indefinitely.
+   */
+  const reopenDialogShown =
+    runningApps.stage !== null &&
+    (runningApps.stage.kind !== "work" || allVerified(runningApps.stage.tools));
+  /** Every tool is done and they did not all verify: nothing will be drawn, so
+   * end the flow. */
+  const reopenOutcomeUndrawn =
+    runningApps.stage?.kind === "work" &&
+    allSettled(runningApps.stage.tools) &&
+    !allVerified(runningApps.stage.tools);
+  const { dismiss: dismissRunningApps } = runningApps;
+  useEffect(() => {
+    if (reopenOutcomeUndrawn) dismissRunningApps();
+  }, [reopenOutcomeUndrawn, dismissRunningApps]);
+
   /** Same follow-up as the window shell: a config write that actually landed
    * offers to close the app still running on its old route. */
   const routeApp = useCallback(
@@ -847,7 +866,7 @@ export function TrayApp() {
     // popover mid-question, and the answer the next click gives is to a
     // question nobody is being shown. (The session-consent dialog was the
     // other such question and is gone - AG-934.)
-    runningApps.stage !== null ||
+    reopenDialogShown ||
     routingBusy;
   useEffect(() => {
     // Best-effort on both sides: a failed pin must not break the flow it was
@@ -1105,42 +1124,20 @@ export function TrayApp() {
               onGoBack={runningApps.goBack}
               onCloseApps={() => void runningApps.closeApps()}
             />
-          ) : runningApps.stage?.kind === "work" ? (
-            // The all-clear as drawn; anything else is the per-tool account,
-            // which lives in the window. The popover states the outcome and
-            // hands over rather than drawing a shorter second version of it -
-            // the same division `RecoveryCard` makes one card up.
+          ) : runningApps.stage?.kind === "work" &&
             allVerified(runningApps.stage.tools) ? (
-              <ChangeReadyDialog
-                app={{
-                  name:
-                    runningApps.stage.tools.length === 1
-                      ? runningApps.stage.tools[0].name
-                      : "The affected apps",
-                }}
-                plural={runningApps.stage.tools.length !== 1}
-                onDone={runningApps.dismiss}
-              />
-            ) : (
-              <ReopenProgressDialog
-                tools={reopenSubjects(runningApps.stage.tools)}
-                onAction={(slug, action) => {
-                  if (action === "retry_verification") {
-                    void runningApps.checkNow();
-                    return;
-                  }
-                  if (action === "reopen_tool") {
-                    void runningApps.offerAfterChange([slug]);
-                    return;
-                  }
-                  // Retrying a write, reading the diagnostics and reaching
-                  // support are all window-sized. Expanding keeps one account of
-                  // the operation rather than starting a second one here.
-                  expand();
-                }}
-                onDone={runningApps.dismiss}
-              />
-            )
+            // The all-clear as drawn. Anything else is left to the rail, and
+            // `useRunningApps` ends the stage for it.
+            <ChangeReadyDialog
+              app={{
+                name:
+                  runningApps.stage.tools.length === 1
+                    ? runningApps.stage.tools[0].name
+                    : "The affected apps",
+              }}
+              plural={runningApps.stage.tools.length !== 1}
+              onDone={runningApps.dismiss}
+            />
           ) : null}
         </>
       }

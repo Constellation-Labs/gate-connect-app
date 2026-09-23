@@ -137,15 +137,10 @@ test.describe("new UI running apps", () => {
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
 
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
-    // Closed is not applied: Gate cannot reopen a terminal tool, so the account
-    // says whose move it is rather than claiming the route is live.
-    await expect(app.page.getByRole("heading", { name: "What happened" })).toBeVisible();
-    // AG-898 dropped the headed outcome groups, so the account is the row's own
-    // stage rather than a bucket title above it. Same fact, said once.
-    await expect(app.page.getByRole("dialog")).toContainText("Reopen required");
-    await expect(app.page.getByRole("dialog")).toContainText(
-      "Open it again and Gate will check its route.",
-    );
+    // Closed is not applied: Gate cannot reopen a terminal tool, so there is
+    // no all-clear to show. The flow ends and the rail carries the outcome.
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Change is ready" })).toHaveCount(0);
   });
 
   test("backing out of the confirmation closes nothing", async ({ boot }) => {
@@ -273,12 +268,10 @@ test.describe("new UI running apps", () => {
     await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
-    // AG-898 dropped the headed outcome groups, so the account is the row's own
-    // stage rather than a bucket title above it. Same fact, said once.
-    await expect(app.page.getByRole("dialog")).toContainText("Reopen required");
-    await expect(app.page.getByRole("dialog")).toContainText(
-      "Open it again and Gate will check its route.",
-    );
+    // Nothing on screen while Gate waits for the user: only the all-clear is
+    // drawn for this stage.
+    await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
 
     // The user opens it again.
     await app.patch({ runningAgentNames: ["codex"] });

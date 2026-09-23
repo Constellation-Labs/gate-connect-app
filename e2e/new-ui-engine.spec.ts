@@ -85,12 +85,12 @@ test.describe("new UI engine controls", () => {
     await app.page.getByRole("button", { name: "Reset Gate Connect" }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByText("Some tools were left as they were")).toBeVisible();
-    await expect(dialog.getByText("Still using Gate’s values")).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "One tool stayed on Gate" })).toBeVisible();
     await expect(dialog.getByText("Claude Code")).toBeVisible();
-    // The next action per tool, which the AC asks for by name.
-    await expect(dialog.getByText("Retry disconnect")).toBeVisible();
+    // Nobody is quitting, so the quit's own escape is not offered.
+    await expect(dialog.getByRole("button", { name: "Try again" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Quit anyway" })).toHaveCount(0);
   });
 
   test("a chat domain starts the engine rather than routing nothing", async ({ boot }) => {
@@ -101,9 +101,8 @@ test.describe("new UI engine controls", () => {
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
     // A row whose surfaces are all host-intercepted: no config file to write, so
-    // the engine is the only thing that could route it. The OpenRouter row
-    // rather than a session app, so no consent dialog stands between the click
-    // and the flag - that is tested on its own in the routing spec.
+    // the engine is the only thing that could route it. The OpenRouter row,
+    // so no config write stands between the click and the flag.
     await (await app.appSwitch("OpenRouter")).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
