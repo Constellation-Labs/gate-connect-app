@@ -32,7 +32,7 @@ function trayProps(
   overrides: Partial<Parameters<typeof Tray>[0]> = {},
 ): Parameters<typeof Tray>[0] {
   return {
-    master: { on: true },
+    engine: { running: true },
     groups: GROUPS,
     notInstalled: [],
     notInstalledOpen: false,
@@ -69,7 +69,7 @@ const withAlerts = (alerts: Row["alerts"]) => withFigures({ alerts });
 const rowOf = (name: string) => screen.getByText(name).closest("li");
 const row = (name: string) => rowOf(name)?.textContent ?? "";
 
-describe("the master status card", () => {
+describe("the routing status card", () => {
   it("reads protecting when every row is routed", () => {
     renderTray({
       groups: [
@@ -86,7 +86,7 @@ describe("the master status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("On · 2 of 2 tools routing")).toBeTruthy();
+    expect(screen.getByText("2 of 2 tools routing")).toBeTruthy();
   });
 
   it("reads partially routed when only some rows the user asked for are", () => {
@@ -108,7 +108,7 @@ describe("the master status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is partly routing your apps" }),
     ).toBeTruthy();
-    expect(screen.getByText("On · 1 of 2 tools routing")).toBeTruthy();
+    expect(screen.getByText("1 of 2 tools routing")).toBeTruthy();
   });
 
   /**
@@ -127,14 +127,14 @@ describe("the master status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("On · 1 of 1 tools routing")).toBeTruthy();
+    expect(screen.getByText("1 of 1 tools routing")).toBeTruthy();
   });
 
   it("reads not protected with nothing routing, carrying the Off intent", () => {
     // The off state is not drawn; this pins the inferred vocabulary so a
     // redesign replaces it deliberately rather than by accident.
     renderTray({
-      master: { on: false },
+      engine: { running: false },
       groups: [
         {
           id: "anthropic",
@@ -150,7 +150,7 @@ describe("the master status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate is not routing your apps" }),
     ).toBeTruthy();
-    expect(screen.getByText("Off · 0 of 1 tools routing")).toBeTruthy();
+    expect(screen.getByText("Didn’t start · 0 of 1 tools routing")).toBeTruthy();
   });
 
   /**
@@ -163,7 +163,7 @@ describe("the master status card", () => {
    */
   it("prints no ratio when the user has asked for nothing", () => {
     renderTray({
-      master: { on: false },
+      engine: { running: true },
       groups: [
         {
           id: "anthropic",
@@ -174,19 +174,48 @@ describe("the master status card", () => {
         },
       ],
     });
-    // The sentence carries it now, so the sub-line is just the intent. Saying
-    // "Not protected" over this was the fault-claim AG-913 removed.
+    // The sentence carries it, and nothing is left to put beside it: the
+    // fraction is suppressed and the engine is up, so the sub-line goes
+    // entirely rather than printing a bare "On" under a heading that just
+    // said nothing is routing.
     expect(
       screen.getByRole("heading", { name: "No apps are set to route" }),
     ).toBeTruthy();
-    expect(screen.getByText("Off")).toBeTruthy();
+    expect(screen.queryByText("On")).toBeNull();
+    expect(screen.queryByText("Off")).toBeNull();
     expect(screen.queryByText(/0 of 0/)).toBeNull();
     expect(screen.queryByRole("heading", { name: /Not protected/ })).toBeNull();
   });
 
+  /**
+   * The half of the old sub-line that was real keeps a surface.
+   *
+   * An engine that did not come up is worth printing even when the fraction
+   * beside it is suppressed - it is the difference between "you switched
+   * everything off" and "we could not start". It reads "Didn't start", never
+   * "Off": the enable happens at launch with no control behind it, so "Off"
+   * sends the reader looking for a switch that does not exist.
+   */
+  it("says the engine didn't start, with nothing asked for", () => {
+    renderTray({
+      engine: { running: false },
+      groups: [
+        {
+          id: "anthropic",
+          label: "Anthropic",
+          apps: [
+            { slug: "a", name: "A", status: { kind: "not-routed" }, on: false },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText("Didn’t start")).toBeTruthy();
+    expect(screen.queryByText("Off")).toBeNull();
+  });
+
   it("renders no switch: the drawn card is a status, not a control", () => {
     renderTray();
-    // Row switches remain; nothing is named for the master.
+    // Row switches remain; nothing is named for a master.
     expect(
       screen.queryByRole("switch", { name: /route traffic/i }),
     ).toBeNull();
@@ -364,7 +393,7 @@ describe("the command-line tools card", () => {
   it("reports the channel's state rather than offering a switch", () => {
     // The tray introduces no concept of its own: the window's Settings pane
     // owns this control, and two switches for one machine-wide setting is what
-    // AG-893 reported. Same call the master card makes one section up.
+    // AG-893 reported. Same call the routing card makes one section up.
     renderTray({ cli: { on: true } });
 
     expect(screen.getByText("Command-line tools")).toBeTruthy();
@@ -379,6 +408,7 @@ describe("the command-line tools card", () => {
     // the same picture, and they are different facts.
     renderTray({ cli: { on: false } });
 
+    expect(screen.queryByText("On")).toBeNull();
     expect(screen.getByText("Off")).toBeTruthy();
   });
 
