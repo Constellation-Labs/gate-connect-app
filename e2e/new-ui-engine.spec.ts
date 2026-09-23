@@ -101,13 +101,13 @@ test.describe("new UI engine controls", () => {
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
     // A row whose surfaces are all host-intercepted: no config file to write, so
-    // the engine is the only thing that could route it. The OpenAI API row
+    // the engine is the only thing that could route it. The OpenRouter row
     // rather than a session app, so no consent dialog stands between the click
     // and the flag - that is tested on its own in the routing spec.
-    await (await app.appSwitch("OpenAI API")).click();
+    await (await app.appSwitch("OpenRouter")).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "openai",
+      slug: "openrouter",
       enabled: true,
     });
     const cmds = (await app.calls()).map((c) => c.cmd);

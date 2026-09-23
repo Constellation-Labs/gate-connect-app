@@ -214,6 +214,29 @@ describe("buildGroups", () => {
     expect(claude.members.find((m) => m.key === "anthropic")!.cascade).toBe(true);
   });
 
+  it("draws the OpenAI API host only while it is on", () => {
+    // `CLI_ONLY_DOMAINS`: off, it gets no row - not even the catch-all row an
+    // unclaimed member would otherwise get. On, its own row comes back under
+    // OpenAI, so whatever turned it on is never the only way to turn it off.
+    const env = tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" });
+    const off = buildGroups(
+      [env],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app", enabled: false })],
+      ON,
+    );
+    expect(off.map((g) => g.name)).toEqual(["Terminal"]);
+
+    const on = buildGroups(
+      [env],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app", enabled: true })],
+      ON,
+    );
+    expect(on.map((g) => [g.name, g.band])).toEqual([
+      ["OpenAI API", "openai"],
+      ["Terminal", "other"],
+    ]);
+  });
+
   it("drops sections with nothing routable and leaves out what cannot route", () => {
     const groups = buildGroups(
       [tool("hermes", "Hermes", { kind: "not_installed" }, "hermes")],

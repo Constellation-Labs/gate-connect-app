@@ -862,6 +862,29 @@ export function isSettingsManaged(key: string): boolean {
   return SETTINGS_MANAGED_MEMBERS.includes(key);
 }
 
+/**
+ * Domains the app draws only while they are on, by slug. Turning one on is the
+ * CLI's job (`proxy domain <slug> on`); the row appears once it is on so that
+ * turning it off never needs the CLI too.
+ *
+ * Two things can switch one on besides the CLI: an older build, where the row
+ * was always drawn, and the Hermes provider ask, which offers any host a
+ * Hermes provider points at and tells the user they can turn it off again from
+ * its own row. Hiding the row while it is on would strand both.
+ *
+ * Filtered before grouping rather than left out of {@link SECTIONS}, because a
+ * member no section names lands in a catch-all row of its own - which is the
+ * point of that fallback, and exactly what these must not get while off.
+ * Applied here rather than by the callers, unlike
+ * {@link SETTINGS_MANAGED_MEMBERS}, because every surface that lists rows
+ * hides these the same way; there is no Settings row to hand them to.
+ *
+ * `openai` is the api.openai.com host. Nothing OpenAI ships rides it, so the
+ * row is a switch for "every other program on this machine that calls
+ * OpenAI" - a CLI user's decision rather than something to offer in the app.
+ */
+export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
+
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own
  *  name would print every name twice. */
@@ -904,7 +927,9 @@ export function buildGroups(
     // domain must not overwrite the tool. Both are named by the same section
     // and both need a member, which is why this is keyed per kind rather than
     // per slug.
-    if (domain.supported) byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));
+    if (domain.supported && (domain.enabled || !CLI_ONLY_DOMAINS.includes(domain.slug))) {
+      byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));
+    }
   }
 
   const claimed = new Set<string>();
