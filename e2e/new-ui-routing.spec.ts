@@ -1403,8 +1403,8 @@ test.describe("new UI sidebar rail", () => {
     // passes for "0 of 0", so it went green on a rail that drew no rows at all -
     // and a counter that never changes is not a counter.
     // One: ChatGPT / Codex, which the default catalog draws whether or not a
-    // tool is installed. The OpenAI API host is in the catalog too and is
-    // CLI-only, so it must not count here.
+    // tool is installed. The OpenAI API host is in the catalog too, off, and
+    // drawn only while on (`CLI_ONLY_DOMAINS`), so it must not count here.
     await expect(openai).toHaveText("0 of 1");
 
     await app.routeApp("ChatGPT / Codex");

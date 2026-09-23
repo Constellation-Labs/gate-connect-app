@@ -74,7 +74,7 @@ import { trustStoreName, type Platform } from "./platform";
  *
  * Keyed by member key like the descriptions, so a slug with no entry gets no
  * hover rather than a placeholder - which is the right default for the rows
- * whose subject is a host rather than a product (`openrouter`) and
+ * whose subject is a host rather than a product (`openai`, `openrouter`) and
  * for the terminal tools, whose label is already their name.
  */
 export const MEMBER_HINTS: Readonly<Record<string, string>> = {
@@ -644,9 +644,10 @@ function memberFromDomain(
  * longer the shape of the screen. `docs/ui-app-switches-plan.md` has the
  * argument.
  *
- * Membership is by member key rather than by `client`, because sections cut
- * across the client axis on purpose: a section is an app the user has, and
- * `client` is only which program a surface belongs to.
+ * Membership is by member key rather than by `client`, because two sections cut
+ * across the client axis on purpose: `Terminal` and `OpenAI API` are both
+ * `Client::AnyApp` and are separate switches, since they are different
+ * mechanisms with different blast radii and nothing depends on both.
  *
  * Order within a section is the order written here, and it is tools first then
  * hosts: the thing Gate configures, then the hosts it intercepts for it.
@@ -717,6 +718,20 @@ export const SECTIONS: readonly {
     // other two surfaces are the ChatGPT app's chat turn and the endpoint Work
     // mode calls.
     members: ["codex", "chatgpt-apps", "chatgpt"],
+  },
+  {
+    id: "openai-api",
+    providerEndpoint: true,
+    name: "OpenAI API",
+    band: "openai",
+    // Its own switch rather than part of ChatGPT / Codex, because nothing
+    // OpenAI ships rides it: Codex routes through the relay whatever this
+    // says, and the desktop app is on chatgpt.com. What depends on it is
+    // whatever else on the machine calls api.openai.com - in practice the two
+    // harnesses above, which blind-tunnel anything outside the enabled
+    // catalog. Folding it into the app switch would mean routing every script
+    // on the machine as a side effect of routing ChatGPT.
+    members: ["openai"],
   },
   {
     id: "openrouter",
@@ -848,15 +863,24 @@ export function isSettingsManaged(key: string): boolean {
 }
 
 /**
- * Domains the app does not draw at all, by slug. Their switch is the CLI's
- * (`proxy domain <slug> on`) and nothing on screen offers it.
+ * Domains the app draws only while they are on, by slug. Turning one on is the
+ * CLI's job (`proxy domain <slug> on`); the row appears once it is on so that
+ * turning it off never needs the CLI too.
+ *
+ * Two things can switch one on besides the CLI: an older build, where the row
+ * was always drawn, and the Hermes provider ask, which offers any host a
+ * Hermes provider points at and tells the user they can turn it off again from
+ * its own row. Hiding the row while it is on would strand both.
  *
  * Filtered before grouping rather than left out of {@link SECTIONS}, because a
  * member no section names lands in a catch-all row of its own - which is the
- * point of that fallback, and exactly what these must not get.
+ * point of that fallback, and exactly what these must not get while off.
+ * Applied here rather than by the callers, unlike
+ * {@link SETTINGS_MANAGED_MEMBERS}, because every surface that lists rows
+ * hides these the same way; there is no Settings row to hand them to.
  *
  * `openai` is the api.openai.com host. Nothing OpenAI ships rides it, so the
- * row was a switch for "every other program on this machine that calls
+ * row is a switch for "every other program on this machine that calls
  * OpenAI" - a CLI user's decision rather than something to offer in the app.
  */
 export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
@@ -903,7 +927,7 @@ export function buildGroups(
     // domain must not overwrite the tool. Both are named by the same section
     // and both need a member, which is why this is keyed per kind rather than
     // per slug.
-    if (domain.supported && !CLI_ONLY_DOMAINS.includes(domain.slug)) {
+    if (domain.supported && (domain.enabled || !CLI_ONLY_DOMAINS.includes(domain.slug))) {
       byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));
     }
   }

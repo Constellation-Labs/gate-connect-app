@@ -448,8 +448,10 @@ const CLAUDE_WEB_DOMAIN: DomainFixture = {
 
 const OPENAI_DOMAIN: DomainFixture = {
   slug: "openai",
-  // "OpenAI API": the API host, and the one row whose subject is a host
-  // rather than a product surface, so it keeps a name instead of a surface kind.
+  // "OpenAI API": the API host, and a row whose subject is a host rather than
+  // a product surface, so it keeps a name instead of a surface kind. Off here,
+  // which is what keeps it off the rail (`CLI_ONLY_DOMAINS`); the routing spec
+  // counts on it being in the catalog anyway.
   display_name: "OpenAI API",
   hosts: ["api.openai.com"],
   upstream_url: "https://gateway.constellationgate.ai",

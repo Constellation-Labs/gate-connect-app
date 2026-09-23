@@ -142,15 +142,25 @@ describe("buildGroups", () => {
     ]);
   });
 
-  it("leaves the OpenAI API host to the CLI", () => {
-    // `CLI_ONLY_DOMAINS`: no row, and not the catch-all row an unclaimed member
-    // would otherwise get. The environment channel beside it still draws.
+  it("keeps the environment channel and the OpenAI host on separate switches", () => {
+    // Both are `any-app` and they are still two rows: different mechanisms,
+    // different blast radii, and nothing depends on both. Folding either into
+    // an app switch would route it as a side effect of routing that app.
     const groups = buildGroups(
       [tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" })],
       [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["Terminal"]);
+    // Order follows `SECTIONS`, where `openai-api` now sits beside `chatgpt`
+    // so the OpenAI group's rows are contiguous. It used to be last in the
+    // array, which is what drew the group's header twice.
+    expect(groups.map((g) => g.name)).toEqual(["OpenAI API", "Terminal"]);
+    // Two rows, and since 2026-09-22 two different groups: grouping is by
+    // vendor, so the OpenAI host joins OpenAI while the environment channel
+    // has no vendor and falls to the catch-all. They used to share a band,
+    // which is what made "separate switches" the only thing this could assert;
+    // the separateness is the point either way.
+    expect(groups.map((g) => g.band)).toEqual(["openai", "other"]);
   });
 
   it("keeps a tool and a domain of the same slug in one section, both drawn", () => {
@@ -202,6 +212,29 @@ describe("buildGroups", () => {
     expect(chat.scope).toBe("host");
     expect(chat.cascade).toBe(false);
     expect(claude.members.find((m) => m.key === "anthropic")!.cascade).toBe(true);
+  });
+
+  it("draws the OpenAI API host only while it is on", () => {
+    // `CLI_ONLY_DOMAINS`: off, it gets no row - not even the catch-all row an
+    // unclaimed member would otherwise get. On, its own row comes back under
+    // OpenAI, so whatever turned it on is never the only way to turn it off.
+    const env = tool("env-proxy", "Terminal tools", { kind: "detected" }, "any-app", { scope: "machine" });
+    const off = buildGroups(
+      [env],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app", enabled: false })],
+      ON,
+    );
+    expect(off.map((g) => g.name)).toEqual(["Terminal"]);
+
+    const on = buildGroups(
+      [env],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app", enabled: true })],
+      ON,
+    );
+    expect(on.map((g) => [g.name, g.band])).toEqual([
+      ["OpenAI API", "openai"],
+      ["Terminal", "other"],
+    ]);
   });
 
   it("drops sections with nothing routable and leaves out what cannot route", () => {
@@ -412,7 +445,7 @@ describe("member hints", () => {
   it("says nothing on a row whose subject is a host rather than a product", () => {
     const [group] = buildGroups(
       [],
-      [domain({ slug: "openrouter", display_name: "OpenRouter", client: "any-app" })],
+      [domain({ slug: "openai", display_name: "OpenAI API", client: "any-app" })],
       ON,
     );
     expect(group.members[0].hint).toBeUndefined();
@@ -1001,6 +1034,7 @@ describe("isProviderEndpoint", () => {
   // unpinned. Raised in review on #323.
   it("is true only for a destination other programs are pointed at", () => {
     expect(isProviderEndpoint("openrouter")).toBe(true);
+    expect(isProviderEndpoint("openai-api")).toBe(true);
   });
 
   it("is false for an app the user launches", () => {
@@ -1031,6 +1065,13 @@ describe("which group a section draws under", () => {
     // third group is dropped rather than interpreted - it is labelled
     // `OPENCode` and contains OpenRouter, which is a slip no rule settles.
     expect(bandFor("openrouter")).toBe("other");
+  });
+
+  it("files the OpenAI endpoint with the rest of OpenAI, not with the endpoints", () => {
+    // The AG-897 precedent inverted. Grouping by vendor puts `openai` beside
+    // Codex and ChatGPT; grouping by kind put it beside OpenRouter.
+    expect(bandFor("openai")).toBe("openai");
+    expect(bandFor("openai")).not.toBe(bandFor("openrouter"));
   });
 
   it("files Anthropic's apps under Anthropic", () => {
