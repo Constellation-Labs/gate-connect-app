@@ -11,15 +11,27 @@ name = "gate-connect-forwarder"
 path = "src/main.rs"
 
 # Deliberately NOT `gate-connect-core`. The whole point of a separate binary is
-# that it links none of the heavy machinery - keyring, hudsucker, rustls,
-# reqwest - so it stays small, starts fast, and holds nothing worth stealing.
-# Everything shared with core lives in `gate-connect-paths`, which is ~200 lines
-# and has no dependencies of consequence.
+# that it links none of the heavy machinery - keyring, hudsucker, reqwest - so
+# it stays small, starts fast, and holds nothing worth stealing. Everything
+# shared with core lives in `gate-connect-paths`, which has no dependencies of
+# consequence.
+#
+# The one exception is a TLS *client*. The relay listener (`src/relay.rs`)
+# serves relay requests itself when the engine is gone, and those arrive as
+# plaintext on loopback and have to leave for the provider over TLS. It
+# originates TLS only: no server side, no certificate minted, no key held. The
+# three crates are already compiled in the tree through reqwest and hudsucker,
+# at these versions, so this names no new code. `rustls-platform-verifier` is
+# the verifier reqwest uses, so the forwarder trusts exactly what the relay's
+# own direct hop trusts, corporate roots in the OS store included.
 [dependencies]
 anyhow.workspace = true
 gate-connect-paths = { path = "../paths" }
 httparse = "1"
+rustls = "0.23"
+rustls-platform-verifier = "0.7"
 tokio = { workspace = true }
+tokio-rustls = "0.26"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

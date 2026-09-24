@@ -1816,7 +1816,9 @@ fn reveal_popover(app: tauri::AppHandle) {
 /// managed (Connected, or Drifted - either way their configs point at the
 /// loopback relay). macOS / Windows only: there the relay lives in this
 /// process and dies with it, so those tools hard-fail until Gate Connect runs
-/// again. On Linux the engine lives in a detached helper daemon that outlives
+/// again - unless the forwarder holds the relay port, which it normally does,
+/// and then those tools reach their own provider directly and are not on the
+/// list (`proxy::address_dies_with_gui`). On Linux the engine lives in a detached helper daemon that outlives
 /// the GUI (see core's `manager_linux`), so the relay port keeps serving
 /// after a quit and there is nothing to warn about - quit plainly. (In OAuth
 /// mode the daemon serves the last-pushed access token, so routing degrades
@@ -2899,10 +2901,12 @@ pub fn run() {
                 // screen's, and by nothing else: macOS Cmd+Q comes from Tauri's
                 // default app menu, and a logout or a shutdown comes from the
                 // OS, and both land here having touched none of our own code.
-                // Those exits take the relay and the engine down with the
-                // process and leave Codex and OpenCode pointed at a port with
-                // nothing behind it, which is the state the revert exists to
-                // prevent. Doing it here makes every path safe by default and
+                // Those exits take the engine down with the process, and with it
+                // any address only the engine serves - its own port, and the
+                // relay where the forwarder does not hold it - leaving the tools
+                // that name one pointed at a port with nothing behind it, which
+                // is the state the revert exists to prevent. A relay the
+                // forwarder holds survives and is not reverted. Doing it here makes every path safe by default and
                 // leaves the panel to do what it is for, which is offering the
                 // *other* choice.
                 //

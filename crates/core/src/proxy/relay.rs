@@ -78,6 +78,26 @@ pub(crate) fn save_persisted_port(port: u16) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// The port the engine's relay last bound behind the forwarder, if it has.
+///
+/// On macOS and Windows the forwarder holds the public relay port (the one
+/// [`load_persisted_port`] names and every tool config bakes), and the engine's
+/// relay binds this one instead; the forwarder hands connections through while
+/// this listener proves itself and serves them directly when it does not. So
+/// nothing outside the two processes ever names this port, and it moving costs
+/// nothing but a fresh bind.
+pub(crate) fn load_engine_port() -> Option<u16> {
+    super::port_persist::load(gate_connect_paths::RELAY_ENGINE_PORT_NAME)
+        .ok()
+        .flatten()
+}
+
+/// Persist the engine relay's port behind the forwarder. See
+/// [`load_engine_port`].
+pub(crate) fn save_engine_port(port: u16) -> Result<()> {
+    super::port_persist::save(gate_connect_paths::RELAY_ENGINE_PORT_NAME, port)
+}
+
 /// The loopback base URL a CLI tool points at to route through the relay.
 pub(crate) fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
@@ -352,8 +372,24 @@ pub fn serve() -> Result<()> {
         .parse()
         .with_context(|| format!("parsing gateway URL {:?}", account.gateway_base_url))?;
 
-    let (std_listener, port) = bind_relay(load_persisted_port())?;
-    let _ = save_persisted_port(port);
+    // Behind the forwarder when it holds the port configs name, as the engine
+    // does: the public port is not ours to bind, and the forwarder hands
+    // connections through to whatever proves itself on the engine's.
+    let fronted = super::forwarder::fronted_relay_port(std::time::Duration::ZERO);
+    let (std_listener, bound) = match fronted {
+        Some(_) => bind_relay(load_engine_port())?,
+        None => bind_relay(load_persisted_port())?,
+    };
+    let port = match fronted {
+        Some(public) => {
+            let _ = save_engine_port(bound);
+            public
+        }
+        None => {
+            let _ = save_persisted_port(bound);
+            bound
+        }
+    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -829,6 +865,29 @@ mod tests {
 
     fn resolved(path: &str) -> Option<Routed> {
         resolve_route(&default_domains(), path, &HeaderMap::new()).ok()
+    }
+
+    /// The forwarder serves relay requests itself once the engine is gone, from
+    /// its own copy of the catalog's slugs and upstreams, because it cannot
+    /// link this crate. A catalog entry missing from that copy would work while
+    /// the app runs and answer 400 the moment it quits, which nothing else
+    /// would catch.
+    #[test]
+    fn the_forwarder_routes_every_slug_the_relay_does() {
+        let mut catalog: Vec<(String, String)> = default_domains()
+            .into_iter()
+            .map(|d| (d.slug, d.upstream_url))
+            .collect();
+        let mut forwarder: Vec<(String, String)> = gate_connect_paths::RELAY_UPSTREAMS
+            .iter()
+            .map(|(slug, url)| ((*slug).to_string(), (*url).to_string()))
+            .collect();
+        catalog.sort();
+        forwarder.sort();
+        assert_eq!(
+            forwarder, catalog,
+            "update gate_connect_paths::RELAY_UPSTREAMS to match the catalog"
+        );
     }
 
     #[test]

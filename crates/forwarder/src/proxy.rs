@@ -268,10 +268,20 @@ pub async fn handle(
     };
 
     if let Target::Health { proof } = &head.target {
+        // Which relay port this forwarder holds rides along, so the app can
+        // tell whether to put the engine's relay behind it. A forwarder built
+        // before that existed sends no such header at all, which the app reads
+        // as "stale, replace it".
+        let relay = match crate::relay::HELD_PORT.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => "none".to_string(),
+            port => port.to_string(),
+        };
         let _ = client
             .write_all(
                 format!(
-                    "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n                     Connection: close\r\n\r\n"
+                    "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n\
+                     {}: {relay}\r\nConnection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_RELAY_HEADER
                 )
                 .as_bytes(),
             )

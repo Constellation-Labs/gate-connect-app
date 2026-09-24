@@ -1643,7 +1643,10 @@ dependencies = [
  "gate-connect-paths",
  "httparse",
  "libc",
+ "rustls",
+ "rustls-platform-verifier",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

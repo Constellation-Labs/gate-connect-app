@@ -33,11 +33,21 @@
 //! honestly; and linking none of the app's machinery is what keeps a
 //! permanently-running process small and free of anything worth stealing.
 //!
-//! It holds no credential, terminates no TLS, mints no certificate and makes no
-//! routing decision. Its security posture is recorded in
-//! `docs/security-notes-loopback.md`.
+//! # The relay port
+//!
+//! It also holds the port relay tool configs name (Codex, OpenCode), for the
+//! same reason: a config outlives the process that wrote it. While the app's
+//! engine is up, relay connections are handed to it untouched; while it is not,
+//! they go straight to the provider their base URL names, under the tool's own
+//! credential. That listener is the one place this binary reads a request and
+//! opens TLS, and [`relay`] says what bounds it.
+//!
+//! It holds no Gate credential, terminates no TLS, mints no certificate and
+//! makes no routing decision beyond "is the engine there". Its security posture
+//! is recorded in `docs/security-notes-loopback.md`.
 
 mod proxy;
+mod relay;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,7 +65,12 @@ const ENGINE_PORT_NAME: &str = "port";
 
 /// Ports the app may already have remembered for its own listeners, so a fresh
 /// forwarder bind does not take one out from under them.
-const APP_PORT_NAMES: [&str; 3] = [ENGINE_PORT_NAME, "pac-port", "relay-port"];
+const APP_PORT_NAMES: [&str; 4] = [
+    ENGINE_PORT_NAME,
+    "pac-port",
+    gate_connect_paths::RELAY_PORT_NAME,
+    gate_connect_paths::RELAY_ENGINE_PORT_NAME,
+];
 
 /// How often the forwarder checks whether it is still wanted.
 const MARKER_POLL: Duration = Duration::from_secs(2);
@@ -117,6 +132,9 @@ fn run() -> Result<()> {
         .context("building the forwarder runtime")?;
     rt.block_on(async move {
         let listener = TcpListener::from_std(listener)?;
+        // The relay port is taken beside this one, not instead of it: a
+        // forwarder that cannot get it still does its first job.
+        relay::start(port, token.clone());
         serve(
             listener,
             Arc::new(|| gate_connect_paths::load_port(ENGINE_PORT_NAME)),
@@ -130,7 +148,7 @@ fn run() -> Result<()> {
 /// Take the listening socket, from launchd where it offers one and by binding
 /// otherwise.
 fn bind() -> Result<std::net::TcpListener> {
-    if let Some(listener) = activated_socket() {
+    if let Some(listener) = activated_socket("Forwarder") {
         return Ok(listener);
     }
     let skip: Vec<u16> = APP_PORT_NAMES
@@ -148,7 +166,9 @@ fn bind() -> Result<std::net::TcpListener> {
     .context("binding the forwarder listener")
 }
 
-/// The listening socket launchd is holding for us, if we were socket-activated.
+/// The listening socket launchd is holding for us under `name`, if we were
+/// socket-activated. The agent declares `Forwarder` always and `Relay` when the
+/// relay port was free to hand launchd at install.
 ///
 /// With a `Sockets` entry in the LaunchAgent plist, launchd binds and listens on
 /// the port itself at login and starts this process on the first connection,
@@ -158,7 +178,7 @@ fn bind() -> Result<std::net::TcpListener> {
 /// stranded; and nothing can squat the port, because launchd took it before any
 /// other process could.
 #[cfg(target_os = "macos")]
-fn activated_socket() -> Option<std::net::TcpListener> {
+fn activated_socket(name: &str) -> Option<std::net::TcpListener> {
     use std::os::fd::FromRawFd;
 
     // `launch_activate_socket` is the supported way to collect a socket a
@@ -172,7 +192,7 @@ fn activated_socket() -> Option<std::net::TcpListener> {
         ) -> std::ffi::c_int;
     }
 
-    let name = std::ffi::CString::new("Forwarder").ok()?;
+    let name = std::ffi::CString::new(name).ok()?;
     let mut fds: *mut std::ffi::c_int = std::ptr::null_mut();
     let mut count: usize = 0;
     // SAFETY: `name` is a valid NUL-terminated string that outlives the call;
@@ -197,7 +217,7 @@ fn activated_socket() -> Option<std::net::TcpListener> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn activated_socket() -> Option<std::net::TcpListener> {
+fn activated_socket(_name: &str) -> Option<std::net::TcpListener> {
     None
 }
 
