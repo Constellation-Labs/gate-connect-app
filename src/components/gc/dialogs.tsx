@@ -2210,14 +2210,25 @@ export function QuitDialog({
         * which needs no superlative when there is nothing to be safest against
         * - and the note about closing the window, also removed on request.
         *
-        * "need restarting", not "may need": disconnecting stops the forwarder,
-        * and a process's environment is fixed when it spawns, so every tool
-        * already open loses its route. A reporter's editor died on this button
-        * before the sentence said so.
+        * Three beats, in the order they matter: what Gate does, what the
+        * person should do before pressing it, and what it will cost them.
+        *
+        * **"Restores", not "Restore".** Product's draft opened "Restore
+        * configurations and disable routing", which reads as an instruction -
+        * and the next sentence, "Save your work", really is one. Two
+        * imperatives in a row where only the second is the reader's job is the
+        * kind of thing that gets skimmed past. So the first sentence describes
+        * and the second commands, and the difference between them is visible.
+        *
+        * **"will need restarting", not "may need".** Disconnecting stops the
+        * forwarder, and a process's environment is fixed when it spawns, so
+        * every tool already open loses its route. There is no "may" about it.
+        * A reporter's editor died on this button while the sentence still
+        * hedged.
         */}
       <p className="text-sm leading-5 text-base-foreground">
-        Restore all configurations as before Gate. Tools and sessions you
-        already have open need restarting.
+        Restores your configurations and turns routing off. Save your work
+        first. Tools and agents you have running will need restarting.
       </p>
     </Modal>
   );

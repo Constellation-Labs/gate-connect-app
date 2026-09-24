@@ -56,9 +56,12 @@ test.describe("new UI quit", () => {
     // One outcome since 2026-09-24: the second row, its "Safest" pill and the
     // note about closing the window were all removed, so there is nothing to
     // choose between and the sentence carries the whole answer.
-    await expect(dialog).toContainText("Restore all configurations as before Gate");
     await expect(dialog).toContainText(
-      "Tools and sessions you already have open need restarting",
+      "Restores your configurations and turns routing off",
+    );
+    await expect(dialog).toContainText("Save your work first");
+    await expect(dialog).toContainText(
+      "Tools and agents you have running will need restarting",
     );
     await expect(dialog.getByRole("radio")).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Disconnect" })).toBeVisible();

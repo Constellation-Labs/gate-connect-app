@@ -45,16 +45,17 @@ describe("the quit dialog", () => {
    * screen when it was one.
    *
    * Disconnecting stops the forwarder, and a process's environment is fixed
-   * when it spawns - so every tool already open loses its route. "need
+   * when it spawns - so every tool already open loses its route. "will need
    * restarting", not "may need": a reporter's editor died on this button while
    * the row still hedged.
    */
-  it("says what it restores and what the person has to restart", () => {
+  it("says what it restores, what to do first, and what it costs", () => {
     renderChooser();
     const dialog = screen.getByRole("dialog").textContent ?? "";
-    expect(dialog).toContain("Restore all configurations as before Gate");
+    expect(dialog).toContain("Restores your configurations and turns routing off");
+    expect(dialog).toContain("Save your work first");
     expect(dialog).toContain(
-      "Tools and sessions you already have open need restarting",
+      "Tools and agents you have running will need restarting",
     );
   });
 
