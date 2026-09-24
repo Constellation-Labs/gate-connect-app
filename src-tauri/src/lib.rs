@@ -6548,4 +6548,17 @@ mod tests {
         let bodies = quit_notice_bodies(&[], &[], || panic!("preference read"));
         assert!(bodies.is_empty(), "{bodies:?}");
     }
+
+    /// The broken-promise notice does not depend on the preference at all, not
+    /// only on it reading false: a refactor that read the switch up front would
+    /// panic here.
+    #[test]
+    fn quit_says_a_broken_promise_without_reading_the_switch() {
+        let bodies = quit_notice_bodies(&[], &names(&["Hermes"]), || panic!("preference read"));
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].starts_with("Hermes could not be put back"),
+            "{bodies:?}"
+        );
+    }
 }
