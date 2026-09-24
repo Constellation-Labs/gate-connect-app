@@ -172,7 +172,7 @@ describe("GroupMembers inline expansion", () => {
     for (const enabled of [true, false]) {
       renderDetail([], [{ ...domain, enabled }]);
       fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
-      expect(screen.getByText(/only while “Only on this computer” is on in Claude’s settings/)).toBeTruthy();
+      expect(screen.getByText(/routes only when “Only on this computer” is on in Claude’s settings/)).toBeTruthy();
       cleanup();
     }
   });
