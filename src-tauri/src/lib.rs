@@ -2450,15 +2450,10 @@ fn set_device_name(name: String) -> Result<(), String> {
 }
 
 /// Turn native notifications on or off. One switch, because Settings draws one
-/// row: a request blocked or flagged by the security feed (AG-578), a quit that
-/// could not put a tool back on its own settings, and the session-expired notice
-/// fired from the health tick.
-///
-/// **Not quite everything, and not by design.** `signal_session_dead` shows the
-/// same session-expired notice without reading this, and `SESSION_NEEDS_SIGNIN`
-/// lets whichever path fires first suppress the other, so an off switch can
-/// still be beaten to it. That gap predates this switch and is left alone here
-/// rather than widened into a behaviour change on an untouched path.
+/// row: a request blocked or flagged by the security feed (AG-578), a
+/// disconnect-on-quit that could not put a tool back on its own settings, and
+/// the session-expired notice from either of its two paths (the refresh loop and
+/// `signal_session_dead`).
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
@@ -3623,17 +3618,6 @@ static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 /// lifetime.
 const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Raise the dead-session signal from somewhere other than the refresh loop:
-/// the gateway-auth observer, which learns from a refused request that the
-/// session is gone without waiting up to 30s for the next tick.
-///
-/// Edge-guarded on the same flag the loop swaps, so the two can't both react
-/// to one death - whichever gets there first does the work and the other sees
-/// the flag already set. Repaints the tray, nudges a mounted popover (which
-/// re-reads `oauth_status` and routes to sign-in; the frontend has no status
-/// poll by design), and posts the same notification the refresh loop would
-/// have, on the same platforms it notifies on - the tray dot alone is out of
-/// the user's eyeline while they sit watching a tool fail.
 /// Re-verify a session the gateway has just refused, and react to the verdict.
 ///
 /// Shared by the two triggers, which differ only in how the refusal reaches us:
@@ -3674,6 +3658,19 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
     }
 }
 
+/// Raise the dead-session signal from somewhere other than the refresh loop:
+/// a real call the gateway has just refused - the `Dead` verdict in
+/// [`recheck_gate_session`], or [`oauth_list_orgs`] - so the session is known
+/// gone without waiting up to 30s for the next tick.
+///
+/// Edge-guarded on the same flag the loop swaps, so the two can't both react
+/// to one death - whichever gets there first does the work and the other sees
+/// the flag already set. Repaints the tray, nudges a mounted popover (which
+/// re-reads `oauth_status` and routes to sign-in; the frontend has no status
+/// poll by design), and posts the same notification the refresh loop would
+/// have, on the same platforms and under the same notifications switch - the
+/// tray dot alone is out of the user's eyeline while they sit watching a tool
+/// fail.
 fn signal_session_dead(app: &tauri::AppHandle) {
     if SESSION_NEEDS_SIGNIN.swap(true, Ordering::Relaxed) {
         return;
@@ -3684,8 +3681,12 @@ fn signal_session_dead(app: &tauri::AppHandle) {
         .unwrap_or(false);
     update_tray_status(app, running);
     let _ = app.emit("session-signin-required", ());
+    // Gated on the notifications preference like the refresh loop's copy of
+    // this notice: whichever path consumes the `SESSION_NEEDS_SIGNIN` edge is
+    // the only one that notifies, so both have to honour the switch. The tray
+    // and the emit above are in-app state and stay unconditional.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
+    if gate_connect_core::preferences::load().notifications {
         use tauri_plugin_notification::NotificationExt;
         let _ = app
             .notification()
@@ -4916,7 +4917,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Desktop notifications. Registered on all desktop platforms (harmless);
         // fired on macOS + Linux when a dead OAuth session is detected (Windows
-        // relies on the tray tooltip). See the refresh loop in `setup`.
+        // relies on the tray tooltip). See the refresh loop in `setup` and
+        // `signal_session_dead`.
         .plugin(tauri_plugin_notification::init())
         // Login item, controlled by the standalone "Launch at login" setting
         // (see `set_launch_at_login`). It is no longer armed/disarmed by the
@@ -5646,7 +5648,10 @@ pub fn run() {
                         // with a system notification on macOS + Linux, so the
                         // dead session is noticed even when the popover is closed
                         // and the menu-bar/tray dot is out of the user's eyeline.
-                        // Fired once per death by the edge guard above.
+                        // Fired once per death by the edge guard above - or not
+                        // here at all, when `signal_session_dead` took the edge
+                        // first after a refused call; it notifies under the same
+                        // switch.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
                         if dead
                             && gate_connect_core::preferences::load().notifications
