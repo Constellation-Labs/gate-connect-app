@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { useRovingMenu } from "../../lib/useRovingMenu";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
+import { OverflowMenu } from "./OverflowMenu";
+import type { MenuAction } from "./OverflowMenu";
 import type { IconName } from "./Icon";
 
 /**
@@ -19,8 +20,7 @@ import type { IconName } from "./Icon";
  * `744:37692` draws three rows - dashboard, Contact support, docs - and no
  * Quit, while the Overview instance `116:27225` draws four including Quit
  * (its 146px is the height: 4x32 plus 9 top and bottom). We follow the
- * instance on Quit and omit support for the reason below. Raised with
- * design; see `docs/figma-questions-for-design.md`.
+ * instance. The menu itself is `OverflowMenu`, shared with the tray.
  *
  * Two things the design draws are deliberately absent. The traffic lights are
  * the operating system's, so we only reserve the space. The Minimize2 button
@@ -30,41 +30,6 @@ import type { IconName } from "./Icon";
  * Presentational: the shell supplies every handler.
  */
 
-/**
- * All four drawn entries, in the drawn order: dashboard, support, docs, quit
- * (`116:27225`, and the `topnav/menu` component `744:37692` draws the first
- * three).
- *
- * **Contact support has a working destination as of 2026-09-07.** It opens the
- * dashboard's own Overview page, because that is where the support floating
- * action button lives - there is no dedicated support route, so the link lands
- * the user on the page carrying the control rather than on the control itself.
- * Built from `dashboardLinks(...).support`, so it follows the environment this
- * install talks to (AG-598).
- *
- * This entry shipped for three days ahead of that address, by a decision on
- * 2026-09-04 that overruled the argument that an entry opening a 404 is worse
- * than an absent one. The history matters because the same argument had kept
- * `TrayMenu` from drawing its copy, so one drawn item was present on one
- * surface and absent on the other until the address arrived. Both draw it now.
- *
- * `SettingsPane` keeps its Support row omitted, and that is still not the same
- * decision: no Settings frame draws one. That omission survives the address
- * being fixed.
- */
-export type TopnavAction = "dashboard" | "support" | "docs" | "quit";
-
-const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
-  { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
-  { action: "support", icon: "headset", label: "Contact support" },
-  { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
-];
-
-/** Quit, drawn into the menu on 2026-08-28 (`116:27225`) and the one entry that
- *  does not leave the app - so it carries destructive ink and no external-link
- *  glyph, which is how the frame renders it. */
-const QUIT_ITEM = { action: "quit" as const, icon: "logOut" as IconName, label: "Quit Gate Connect" };
-
 export function Topbar({
   menuOpen,
   onMenuToggle,
@@ -72,7 +37,7 @@ export function Topbar({
 }: {
   menuOpen: boolean;
   onMenuToggle: () => void;
-  onMenuSelect: (action: TopnavAction) => void;
+  onMenuSelect: (action: MenuAction) => void;
 }) {
   /** The button the menu opens from. Focus returns to it when the panel
    *  unmounts, and the panel is what holds focus while it is open. */
@@ -128,7 +93,8 @@ export function Topbar({
           buttonRef={menuButton}
         />
         {menuOpen && (
-          <TopnavMenu
+          <OverflowMenu
+            surface="topbar"
             onSelect={onMenuSelect}
             onDismiss={onMenuToggle}
             triggerRef={menuButton}
@@ -190,92 +156,5 @@ export function OutlineIconButton({
     >
       <Icon name={icon} size={16} />
     </button>
-  );
-}
-
-/** The 224px overflow menu. Every destination but Quit opens outside the app,
- *  so those rows carry the external-link glyph and Quit does not.
- *
- *  Keyboard and focus are `useRovingMenu`'s, shared with `TrayMenu`. The two
- *  menus are deliberately not one component - they draw different shadows,
- *  paddings, glyph sizes and corners off different frames - but the interaction
- *  is the same, and diverging on it was the bug this fixes, so it has one home
- *  rather than a copy per surface. This owns the markup and the scrim. */
-function TopnavMenu({
-  onSelect,
-  onDismiss,
-  triggerRef,
-}: {
-  onSelect: (action: TopnavAction) => void;
-  /** Close without choosing: Escape from inside the panel, or a click anywhere
-   *  else. The window-level Escape is the shell's, and goes through the same
-   *  handler. */
-  onDismiss: () => void;
-  /** The button that opened this; focus returns to it on close. See
-   *  `useRovingMenu`. */
-  triggerRef?: RefObject<HTMLButtonElement>;
-}) {
-  const { panel, current, onKeyDown } = useRovingMenu(triggerRef, onDismiss);
-
-  return (
-    <>
-      {/* An invisible scrim, so a click anywhere else closes the menu *and
-          nothing else happens* - the same one `TrayMenu` draws, and for the
-          same reason: without it the menu had no dismissal but the ellipsis
-          button itself, and a click meant to dismiss it landed on whatever pane
-          control was under the pointer. It paints nothing, so it is not a
-          visual change; the design draws no scrim. It also covers the trigger,
-          which is why clicking that while open still closes once rather than
-          toggling twice. */}
-      <div aria-hidden className="fixed inset-0 z-40" onClick={onDismiss} />
-      <div
-        ref={panel}
-        role="menu"
-        // Without a name this announces as a bare "menu". Named for the control
-        // that opens it, so it reads "More, menu" - as `TrayMenu` already did.
-        aria-label="More"
-        onKeyDown={onKeyDown}
-        // Above `AppShell`'s notice wrapper (z-30), not merely above its own
-        // scrim. The reopen banner is a notice, notices are raised over the
-        // modal scrim so a failed rename stays clickable, and the rule was
-        // applied to every notice - so the reopen banner drew across this menu
-        // and hid its middle entries while the first and last stayed visible.
-        // There is no z between the two: the notice is deliberately above
-        // `Modal` (z-20), so anything above the notice is above a dialog too.
-        // That costs nothing here, because a menu and a dialog never coexist -
-        // `onMenuSelect` closes this before opening one - and the scrim above
-        // now takes the first outside click either way.
-        className="absolute right-0 top-10 z-50 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
-      >
-        {MENU_ITEMS.map(({ action, icon, label }, i) => (
-          <button
-            key={action}
-            type="button"
-            role="menuitem"
-            // Roving: only the current item is a tab stop, so Tab leaves the menu
-            // as a unit and the arrows move within it.
-            tabIndex={current === i ? 0 : -1}
-            onClick={() => onSelect(action)}
-            className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-          >
-            <span className="flex items-center gap-2">
-              <Icon name={icon} size={16} />
-              <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
-            </span>
-            <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
-          </button>
-        ))}
-        <button
-          type="button"
-          role="menuitem"
-          tabIndex={current === MENU_ITEMS.length ? 0 : -1}
-          onClick={() => onSelect(QUIT_ITEM.action)}
-          className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-        >
-          <Icon name={QUIT_ITEM.icon} size={16} />
-          <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
-        </button>
-      </div>
-    </>
   );
 }

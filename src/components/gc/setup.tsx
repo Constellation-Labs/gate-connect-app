@@ -6,7 +6,7 @@ import { Icon } from "./Icon";
 import { ModalOption } from "./Modal";
 import { BaseSwitch } from "./base";
 import { Topbar } from "./Topbar";
-import type { TopnavAction } from "./Topbar";
+import type { MenuAction } from "./OverflowMenu";
 
 /**
  * The screens that run before there is anything to navigate: sign-in, choosing
@@ -35,7 +35,7 @@ export function SetupLayout({
 }: {
   menuOpen: boolean;
   onMenuToggle: () => void;
-  onMenuSelect: (action: TopnavAction) => void;
+  onMenuSelect: (action: MenuAction) => void;
   /** How far through setup this pane sits, 0..1. Every drawn Setup frame
    * carries the rail under the topbar (`Flows / Setup`, read 2026-08-21), the
    * same element the onboarding tour has. Omitted draws no rail. */

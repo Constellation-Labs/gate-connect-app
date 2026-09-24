@@ -51,7 +51,7 @@ import { useToolMessages } from "./lib/toolMessages";
 import { orgLabel } from "./lib/orgLabel";
 import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
-import type { TrayMenuAction } from "./components/gc/Tray";
+import type { MenuAction } from "./components/gc/OverflowMenu";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
 import { ErrorBanner, NoteBanner } from "./components/gc/banners";
@@ -878,7 +878,7 @@ export function TrayApp() {
   }, [popoverHeld]);
 
   const onMenuSelect = useCallback(
-    (action: TrayMenuAction) => {
+    (action: MenuAction) => {
       setMenuOpen(false);
       if (action === "dashboard") {
         // Null means this gateway has no dashboard, which is worth saying

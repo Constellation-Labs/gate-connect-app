@@ -24,8 +24,8 @@ function renderTopbar(overrides: Partial<Parameters<typeof Topbar>[0]> = {}) {
 afterEach(cleanup);
 
 /**
- * The topbar's overflow menu. Every behaviour here is `TrayMenu`'s too, because
- * the two menus had diverged: the tray's closed on a click outside, on Escape
+ * The topbar's overflow menu. These cases date from when the two surfaces
+ * drew separate menus that had diverged (both draw `OverflowMenu` now): the tray's closed on a click outside, on Escape
  * and under the arrow keys, and this one closed only by clicking the button
  * that had opened it. The interaction now has one home (`useRovingMenu`), and
  * these cases are the mirror of `Tray.test.tsx`'s - each surface is held to the
