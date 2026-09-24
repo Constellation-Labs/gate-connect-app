@@ -193,8 +193,9 @@ export interface BackendState {
     historyOk?: boolean;
   };
   preferences: {
-    /** The one switch Settings draws, over every native notification. Default
-        on, like every other preference. */
+    /** The one switch Settings draws, over native notifications (all but a
+        plain quit's "could not be put back"). Default on, like every other
+        preference. */
     notifications: boolean;
     security_notification_sound: boolean;
     /** Provider domains Gate switched on for a tool, keyed by tool slug.

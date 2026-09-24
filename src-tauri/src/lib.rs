@@ -2450,13 +2450,16 @@ fn set_device_name(name: String) -> Result<(), String> {
 }
 
 /// Turn native notifications on or off. One switch, because Settings draws one
-/// row: a request blocked or flagged by the security feed (AG-578), a
-/// disconnect-on-quit that could not put a tool back on its own settings, a
-/// plain quit that put tools back as promised, and the session-expired notice
-/// from either of its two paths (the refresh loop and `signal_session_dead`).
+/// row: a request blocked or flagged by the security feed (AG-578); both
+/// notices of [`disconnect_tools_for_quit`], tools back on their own settings
+/// or a tool that could not be put back; the notice of a plain [`quit_app`]
+/// that put tools back as promised; and the session-expired notice from either
+/// of its two paths (the refresh loop and [`signal_session_dead`]).
 ///
-/// One exception: [`quit_app`]'s notice that a tool could *not* be put back
-/// is shown regardless, because nothing else is left to say it.
+/// One exception: a plain quit's notice that a tool could *not* be put back is
+/// shown regardless. The disconnect path can let the switch silence its own
+/// failure because the window lists it too; a plain quit has nothing else left
+/// to say it (see `quit_notice_bodies`).
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
@@ -4514,9 +4517,9 @@ async fn tools_stranded_by_quit() -> Option<Vec<String>> {
 ///
 /// Off the main thread, like `disconnect_tools_for_quit`: it is config-file
 /// I/O. A notification rather than silence, because a rewrite of somebody's
-/// config file is worth a sentence and the popover is gone before it lands -
-/// unless the user turned notifications off. A tool that could not be put back
-/// is said regardless.
+/// config file is worth a sentence and the popover is gone before it lands.
+/// The notifications switch can silence that sentence, but not the one saying
+/// a tool could not be put back - see `quit_notice_bodies`.
 #[tauri::command]
 async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -4545,69 +4548,9 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             .into_iter()
             .filter(|p| !put_back.contains(p))
             .collect();
-        // Gated on the notifications preference: a rewrite that went as
-        // promised is information, and a switch the user turned off has to
-        // stop it. The broken-promise notice below is not gated - see there.
-        if !put_back.is_empty() && gate_connect_core::preferences::load().notifications {
-            let names = put_back;
-            // Both shapes spelled out, as `disconnect_tools_for_quit` does,
-            // rather than assembled from plural conditionals. The Codex
-            // sentence is added only when Codex is in the list: it is the
-            // one tool where "reconnects when it starts again" is per
-            // conversation rather than per process - a conversation pins
-            // its provider when it starts, measured in `integrations::codex`.
-            let mut body = if names.len() == 1 {
-                format!(
-                    "{} is back on its own settings while Gate Connect is closed, and \
-                         reconnects when it starts again.",
-                    names[0]
-                )
-            } else {
-                format!(
-                    "{} are back on their own settings while Gate Connect is closed, and \
-                         reconnect when it starts again.",
-                    join_names(&names)
-                )
-            };
-            if names.iter().any(|n| n == "Codex") {
-                body.push_str(
-                    " Codex conversations already open keep the route they started with \
-                         until you resume them.",
-                );
-            }
-            let _ = app
-                .notification()
-                .builder()
-                .title("Gate Connect")
-                .body(&body)
-                .show();
-        }
-        // The dialog promised these by name and this is the last message
-        // before the process is gone, so a broken promise is said rather than
-        // logged: the whole list when the revert could not run at all (another
-        // routing operation held the guard), or the one tool whose rewrite
-        // failed and was logged out of the answer.
-        //
-        // Deliberately not gated on the notifications switch. The window, the
-        // tray and the process are all gone by the time it lands, so it is the
-        // only way the user learns a tool is now pointed at a dead port;
-        // silencing it would leave that tool failing with no explanation.
-        if !missed.is_empty() {
-            let body = if missed.len() == 1 {
-                format!(
-                    "{} could not be put back on its own settings before Gate Connect closed. \
-                     It stays pointed at Gate and cannot reach its provider until Gate Connect \
-                     runs again.",
-                    missed[0]
-                )
-            } else {
-                format!(
-                    "{} could not be put back on their own settings before Gate Connect closed. \
-                     They stay pointed at Gate and cannot reach their providers until Gate \
-                     Connect runs again.",
-                    join_names(&missed)
-                )
-            };
+        for body in quit_notice_bodies(&put_back, &missed, || {
+            gate_connect_core::preferences::load().notifications
+        }) {
             let _ = app
                 .notification()
                 .builder()
@@ -4617,6 +4560,82 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         }
     }
     app.exit(0);
+}
+
+/// What [`quit_app`] says on its way out, in the order it says it: tools put
+/// back as promised, then tools that were promised and missed. Split out of
+/// the command, which only runs on macOS and Windows, so the one rule that
+/// matters here is pinned by a test on every platform.
+///
+/// `notifications` is asked only when there is something put back to report,
+/// so a quit with nothing to say reads no preferences file.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn quit_notice_bodies(
+    put_back: &[String],
+    missed: &[String],
+    notifications: impl FnOnce() -> bool,
+) -> Vec<String> {
+    let mut bodies = Vec::new();
+    // Gated on the notifications preference: a rewrite that went as promised
+    // is information, and a switch the user turned off has to stop it. The
+    // broken-promise notice below is not gated - see there.
+    if !put_back.is_empty() && notifications() {
+        // Both shapes spelled out, as `disconnect_tools_for_quit` does, rather
+        // than assembled from plural conditionals. The Codex sentence is added
+        // only when Codex is in the list: it is the one tool where "reconnects
+        // when it starts again" is per conversation rather than per process -
+        // a conversation pins its provider when it starts, measured in
+        // `integrations::codex`.
+        let mut body = if put_back.len() == 1 {
+            format!(
+                "{} is back on its own settings while Gate Connect is closed, and \
+                 reconnects when it starts again.",
+                put_back[0]
+            )
+        } else {
+            format!(
+                "{} are back on their own settings while Gate Connect is closed, and \
+                 reconnect when it starts again.",
+                join_names(put_back)
+            )
+        };
+        if put_back.iter().any(|n| n == "Codex") {
+            body.push_str(
+                " Codex conversations already open keep the route they started with \
+                 until you resume them.",
+            );
+        }
+        bodies.push(body);
+    }
+    // The dialog promised these by name and this is the last message before
+    // the process is gone, so a broken promise is said rather than logged: the
+    // whole list when the revert could not run at all (another routing
+    // operation held the guard), or the one tool whose rewrite failed and was
+    // logged out of the answer.
+    //
+    // Deliberately not gated on the notifications switch. The window, the tray
+    // and the process are all gone by the time it lands, so it is the only way
+    // the user learns a tool is now pointed at a dead port; silencing it would
+    // leave that tool failing with no explanation. `disconnect_tools_for_quit`
+    // can gate its own failure notice because the window also shows that list.
+    if !missed.is_empty() {
+        bodies.push(if missed.len() == 1 {
+            format!(
+                "{} could not be put back on its own settings before Gate Connect closed. \
+                 It stays pointed at Gate and cannot reach its provider until Gate Connect \
+                 runs again.",
+                missed[0]
+            )
+        } else {
+            format!(
+                "{} could not be put back on their own settings before Gate Connect closed. \
+                 They stay pointed at Gate and cannot reach their providers until Gate \
+                 Connect runs again.",
+                join_names(missed)
+            )
+        });
+    }
+    bodies
 }
 
 /// The tray popover's own Quit entry: the same three-way quit the tray menu's
@@ -6493,5 +6512,40 @@ mod tests {
     fn survives_a_non_ascii_name() {
         assert_eq!(normalise_agent_name("клод"), "клод");
         assert_eq!(normalise_agent_name("日本語.exe"), "日本語");
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The rule the notifications switch has an exception for: a tool the quit
+    /// dialog promised to put back and did not is said with the switch off,
+    /// because nothing else is left running to say it.
+    #[test]
+    fn quit_says_a_broken_promise_with_notifications_off() {
+        let bodies = quit_notice_bodies(&names(&["Codex"]), &names(&["Hermes"]), || false);
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].starts_with("Hermes could not be put back"),
+            "{bodies:?}"
+        );
+    }
+
+    #[test]
+    fn quit_says_both_with_notifications_on() {
+        let bodies = quit_notice_bodies(&names(&["Codex"]), &names(&["Hermes"]), || true);
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert!(bodies[0].starts_with("Codex is back"), "{bodies:?}");
+        assert!(
+            bodies[1].starts_with("Hermes could not be put back"),
+            "{bodies:?}"
+        );
+    }
+
+    /// Nothing put back means nothing to gate, so the preference is not read.
+    #[test]
+    fn quit_reads_the_switch_only_with_something_put_back() {
+        let bodies = quit_notice_bodies(&[], &[], || panic!("preference read"));
+        assert!(bodies.is_empty(), "{bodies:?}");
     }
 }
