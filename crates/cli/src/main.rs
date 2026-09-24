@@ -64,13 +64,7 @@ enum Command {
         tool: String,
     },
     /// Point a tool at the Gate AI gateway.
-    Connect {
-        tool: String,
-        /// Override the integration's default upstream URL. Sent via
-        /// X-Gate-Upstream-Url.
-        #[arg(long, env = "GATE_UPSTREAM_URL")]
-        upstream_url: Option<String>,
-    },
+    Connect { tool: String },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
     /// Manage the built-in MITM proxy that routes config-less apps
@@ -176,7 +170,7 @@ fn main() -> Result<()> {
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
         Command::Status { tool } => cmd_status(&tool),
-        Command::Connect { tool, upstream_url } => cmd_connect(&tool, upstream_url),
+        Command::Connect { tool } => cmd_connect(&tool),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
@@ -399,14 +393,12 @@ fn cmd_status(tool: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
+fn cmd_connect(tool: &str) -> Result<()> {
     let acct = account::load()?
         .context("Not signed in. Run `gate-connect login --base-url … --api-key …` first.")?;
     let integ = resolve(tool)?;
-    let upstream_url = upstream_url.unwrap_or_else(|| integ.default_upstream_url().to_string());
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
-        upstream_url,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         // `tool_proxy_url`, not the engine's own address: a config written here
         // has to name what the GUI writes, or the two disagree about the same

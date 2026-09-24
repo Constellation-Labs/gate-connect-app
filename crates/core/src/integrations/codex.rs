@@ -401,13 +401,10 @@ impl Integration for Codex {
         let relay_base = input.relay_base_url.as_deref().context(
             "the Gate proxy relay is not running - enable the proxy before connecting Codex",
         )?;
-        // We intentionally ignore `input.upstream_url`. The ChatGPT-mode
+        // The upstream comes from Codex's own login state: the ChatGPT-mode
         // bearer authenticates only against chatgpt.com/backend-api, the
-        // apikey-mode bearer only against api.openai.com/v1, so we
-        // compute both URLs from the current Codex login state instead
-        // of trusting whatever value flowed through the UI/Advanced
-        // field. This mirrors what Codex itself would have done in its
-        // native (non-Gate) routing.
+        // apikey-mode bearer only against api.openai.com/v1. This mirrors
+        // what Codex itself would have done in its native (non-Gate) routing.
         let mode = read_auth_mode()?;
 
         let path = config_path()?;

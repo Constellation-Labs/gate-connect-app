@@ -47,13 +47,12 @@ impl fmt::Display for ToolId {
 /// Inputs the user (or web deep-link) provides to a connect action.
 ///
 /// `gateway_base_url` comes from the account (entered once at sign-in).
-/// `upstream_url` populates `X-Gate-Upstream-Url`. The Gate API key
+/// The Gate API key
 /// (workspace identity) lives in the account keychain entry and is
 /// read by the credential helper at request time.
 #[derive(Debug, Clone)]
 pub struct ConnectInput {
     pub gateway_base_url: String,
-    pub upstream_url: String,
     /// Loopback base URL of the reverse-proxy relay
     /// ([`crate::proxy::relay_base_url`]). Relay-routed integrations point
     /// their tool config here and inject no credential (the relay injects the

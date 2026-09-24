@@ -291,26 +291,6 @@ impl Integration for ClaudeCode {
             "the Gate proxy engine is not running - enable the proxy before connecting Claude Code",
         )?;
         let claude_proxy_url = crate::proxy::claude_code_proxy_url(engine_proxy_url)?;
-        if !input.upstream_url.starts_with("https://") {
-            anyhow::bail!("upstream URL must be https://");
-        }
-        // Unlike a config-editing integration, this one cannot be retargeted:
-        // what makes it work is that the destination stays canonical, and the
-        // route the engine forces for our selector is Anthropic's entry alone
-        // (`proxy::claude_code_route_domain`). So a different `--upstream-url`
-        // has nowhere to go, and accepting it would write a Claude Code that
-        // routes Anthropic traffic anyway - a silent no-op. Refuse instead.
-        let endpoint = crate::proxy::resolve_endpoint(&input.upstream_url)
-            .with_context(|| format!("Gate has no upstream domain for {:?}", input.upstream_url))?;
-        let route = crate::proxy::claude_code_route_domain();
-        if endpoint.slug != route.slug {
-            anyhow::bail!(
-                "Claude Code can only route to {DEFAULT_UPSTREAM_URL}, not {:?} - it reaches Gate \
-                 through the local forward proxy, which keeps Anthropic's address canonical so \
-                 Claude Code keeps its first-party model capabilities",
-                input.upstream_url
-            );
-        }
 
         // A live engine has minted the CA, so this is a should-not-happen
         // state (a cleared app-support dir under a still-running engine). It

@@ -44,7 +44,7 @@ Tool slugs: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`,
 | --- | --- |
 | `list` | Supported tools and their current state. |
 | `status <tool>` | Detailed status: `not installed`, `detected`, `connected`, or `drifted: <reason>`. |
-| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. `--upstream-url <URL>` (or `GATE_UPSTREAM_URL`) overrides the default upstream, sent as `X-Gate-Upstream-Url`. |
+| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. |
 | `disconnect <tool>` | Restore the tool's prior configuration. |
 
 ## Built-in proxy (macOS / Windows / Linux)
@@ -82,4 +82,3 @@ asking. It makes the CA a trusted root for **every user** on the machine; see
 | Variable | Used by |
 | --- | --- |
 | `GATE_BASE_URL` | Default for `login --base-url`. |
-| `GATE_UPSTREAM_URL` | Default for `connect --upstream-url`. |
