@@ -2236,7 +2236,20 @@ export function QuitDialog({
       <div role="radiogroup" aria-label="How to quit" className="flex flex-col gap-2">
         <ModalChoice
           title="Disconnect tools and quit"
-          description="Restore saved configurations, turn routing off, then quit."
+          /* The drawn description is "Restore saved configurations, turn
+             routing off, then quit." - three function names, and none of the
+             three facts a person needs to choose with.
+             What this branch actually leaves: every tool back on its own
+             settings, nothing on the machine pointed at Gate, and - the part
+             that was nowhere on screen - the forwarder stopped. A process's
+             environment is fixed when it spawns, so every tool ALREADY OPEN
+             holding Gate's proxy address loses its route the moment that
+             listener goes. Reported from staging on 2026-09-24 by a user whose
+             editor died on this button.
+             The "Safest" pill is drawn and stays; it is true of the machine's
+             end state and false of the tools in front of you, which is a
+             contradiction for design rather than one to settle here. */
+          description="Every tool goes back to its own settings and Gate leaves the path. Tools you already have open may need restarting."
           pill="Safest"
           selected={choice === "disconnect"}
           onSelect={() => onChoose("disconnect")}
@@ -2260,7 +2273,9 @@ export function QuitDialog({
               : reverting.length === 0
                 ? `Leave configurations pointed at Gate. ${joinNames(tools)} ${
                     plural ? "keep" : "keeps"
-                  } working without Gate until Gate Connect runs again.`
+                  } working, but Gate stops inspecting ${
+                    plural ? "their" : "its"
+                  } traffic until it runs again.`
                 : keeping.length === 0
                   ? `Gate puts ${joinNames(reverting)} back on ${
                       reverting.length > 1 ? "their" : "its"
@@ -2269,7 +2284,9 @@ export function QuitDialog({
                       reverting.length > 1 ? "their" : "its"
                     } own settings; ${joinNames(keeping)} ${
                       keeping.length > 1 ? "keep" : "keeps"
-                    } working without Gate until Gate Connect runs again.`
+                    } working, but Gate stops inspecting ${
+                      keeping.length > 1 ? "their" : "its"
+                    } traffic until it runs again.`
           }
           selected={choice === "leave"}
           onSelect={() => onChoose("leave")}

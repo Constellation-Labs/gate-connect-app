@@ -95,7 +95,11 @@ describe("the quit chooser", () => {
     // per-install difference rather than a per-tool one.
     renderChooser({ reverting: ["Codex"] });
     expect(row()).toContain("Gate puts Codex back on its own settings");
-    expect(row()).toContain("Claude Code keeps working without Gate");
+    // "keeps working" is only half the fact, and the half that mattered was
+    // missing: the traffic still flows, Gate just stops reading it.
+    expect(row()).toContain(
+      "Claude Code keeps working, but Gate stops inspecting its traffic",
+    );
     cleanup();
 
     // Nothing reverts - Linux, where the relay is a daemon that outlives the
@@ -103,7 +107,7 @@ describe("the quit chooser", () => {
     renderChooser({ reverting: [] });
     expect(row()).toContain("Leave configurations pointed at Gate");
     expect(row()).toContain(
-      "Claude Code and Codex keep working without Gate until Gate Connect runs again",
+      "Claude Code and Codex keep working, but Gate stops inspecting their traffic until it runs again",
     );
     cleanup();
 
@@ -112,8 +116,27 @@ describe("the quit chooser", () => {
     // them, and the teardown's own notification then contradicts it.
     renderChooser({ reverting: null });
     expect(row()).toContain("couldn't check which tools it puts back");
-    expect(row()).not.toContain("keep working without Gate");
+    expect(row()).not.toContain("keep working");
     expect(row()).not.toContain("Gate puts");
+  });
+
+  /**
+   * The fact that was nowhere on screen, and the one that costs the most.
+   *
+   * Disconnecting stops the forwarder. A process's environment is fixed when
+   * it spawns, so every tool already open holding Gate's proxy address loses
+   * its route the moment that listener goes - reported from staging on
+   * 2026-09-24 by a user whose editor died on this button, which is labelled
+   * "Safest".
+   */
+  it("warns that disconnecting can cut off tools already open", () => {
+    renderChooser();
+    const row =
+      screen.getByRole("radio", { name: /Disconnect tools and quit/ })
+        .textContent ?? "";
+    expect(row).toContain("Tools you already have open may need restarting");
+    // And not the three function names it used to read as.
+    expect(row).not.toContain("Restore saved configurations");
   });
 
   it("says that closing the window is a different thing", () => {

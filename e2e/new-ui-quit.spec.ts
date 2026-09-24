@@ -102,7 +102,9 @@ test.describe("new UI quit", () => {
     // choice: one tool is handed its own settings back, the other goes on
     // working through the forwarder.
     await expect(leave).toContainText("Gate puts Codex back on its own settings");
-    await expect(leave).toContainText("Claude Code keeps working without Gate");
+    await expect(leave).toContainText(
+      "Claude Code keeps working, but Gate stops inspecting its traffic",
+    );
     await leave.click();
     // The primary is named for what it does, so choosing the other branch
     // renames it - "Disconnect" over this choice would be the wrong word.
@@ -190,7 +192,7 @@ test.describe("new UI quit", () => {
     // read "CLI and CLI" here.
     await expect(
       dialog.getByRole("radio", { name: /Quit without disconnecting/ }),
-    ).toContainText("Claude Code keeps working without Gate");
+    ).toContainText("Claude Code keeps working, but Gate stops inspecting its traffic");
     expect(await app.lastCall("quit_app")).toBeNull();
   });
 
@@ -213,7 +215,7 @@ test.describe("new UI quit", () => {
       .getByRole("dialog")
       .getByRole("radio", { name: /Quit without disconnecting/ });
     await expect(row).toContainText("couldn't check which tools it puts back");
-    await expect(row).not.toContainText("keep working without Gate");
+    await expect(row).not.toContainText("keep working");
   });
 
   /** Linux mirrors the tray's `request_quit`, which exits outright there: the
