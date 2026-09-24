@@ -231,7 +231,9 @@ describe("GroupMembers inline expansion", () => {
   });
 
   it("surfaces a failed toggle next to the member that failed", async () => {
-    const onToggleTool = vi.fn(() => Promise.reject("No upstream credential saved."));
+    const onToggleTool = vi.fn(() => Promise.reject(
+      "the Gate proxy engine is not running - enable the proxy before connecting Claude Code",
+    ));
     renderDetail([tool("claude-code", "Claude Code", { kind: "detected" })], [], { onToggleTool });
     fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
     expect(await screen.findByText("Couldn’t connect this tool")).toBeTruthy();

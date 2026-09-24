@@ -1,6 +1,6 @@
 # `gate-connect` CLI reference
 
-The CLI shares `gate-connect-core` with the menubar app, so anything it does
+The CLI shares `gate-connect-core` with the Gate Connect desktop app, so anything it does
 the app does too (same registry, same config edits, same secret store). Run
 `gate-connect --help` or `gate-connect <command> --help` for the built-in
 text.
@@ -9,6 +9,8 @@ text.
 
 ```bash
 gate-connect login --base-url https://your-gateway.example.com   # prompts for the key
+# connect needs the proxy running: keep the Gate Connect app open, or on a
+# machine without it run `gate-connect proxy enable --foreground` in another terminal
 gate-connect connect codex
 gate-connect status codex
 ```
@@ -18,7 +20,7 @@ gate-connect status codex
 | Command | What it does |
 | --- | --- |
 | `login --base-url <URL>` | Sign in. The URL goes to disk, the credential to the OS secret store (Keychain / Credential Manager / Secret Service). Re-run to update. |
-| `logout` | Remove the stored base URL and the keychain entry. |
+| `logout` | Disconnect every tool Gate manages, then remove the stored base URL and the keychain entry. If a disconnect fails, you stay signed in. |
 | `whoami` | Print the signed-in gateway URL, if any. |
 
 `login` options:
@@ -44,7 +46,7 @@ Tool slugs: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`,
 | --- | --- |
 | `list` | Supported tools and their current state. |
 | `status <tool>` | Detailed status: `not installed`, `detected`, `connected`, or `drifted: <reason>`. |
-| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. |
+| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. Fails unless the proxy is running (see below); it does not start it. |
 | `disconnect <tool>` | Restore the tool's prior configuration. |
 
 ## Built-in proxy (macOS / Windows / Linux)
@@ -56,7 +58,7 @@ is tunnelled untouched.
 | Command | What it does |
 | --- | --- |
 | `proxy status` | Running or not, port, CA trust, provider domains. |
-| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. |
+| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. On Linux the engine runs in a background daemon and stays up. On macOS and Windows it lives in the process that started it, so a CLI `enable` keeps routing only while the app is open to host its own engine; without the app, use `--foreground`. |
 | `proxy enable --foreground` | Host the engine in this process until Ctrl-C / SIGTERM, then restore the prior proxy state. For launchd, systemd or CI on machines without the app. |
 | `proxy disable` | Turn the proxy off and restore the prior system-proxy state. |
 | `proxy relay` | Host only the loopback relay; blocks until killed. No CA, no system-proxy change. For containers, servers and CI. Sign in first. An alternative to `enable`, not a step before it. |
@@ -73,7 +75,7 @@ asking. It makes the CA a trusted root for **every user** on the machine; see
 
 ## Things to know
 
-- If the menubar app is running the proxy, a new `login` key only takes
+- If the app is running the proxy, a new `login` key only takes
   effect once the proxy is toggled off and on. The CLI prints a note when
   that applies.
 

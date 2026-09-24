@@ -21,8 +21,6 @@
 //! Unlike Cowork, Claude Code does not need a separate upstream
 //! credential - it already authenticates to Anthropic with its own
 //! OAuth token or `ANTHROPIC_API_KEY`, and Gate passes that through.
-//! So [`requires_upstream_credential`] returns `false` and the
-//! credential-related trait methods are no-ops.
 //!
 //! We track our own writes via a sibling `_gateConnect` block so
 //! disconnect cleanly reverses what connect did and any prior
@@ -30,8 +28,6 @@
 //! Context-window selection also remains Claude Code-owned: Gate Connect never
 //! writes ANTHROPIC_BETAS. Standard variants therefore stay at 200K, while
 //! Claude Code's [1m] variants add their own 1M beta per selected model.
-//!
-//! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
 //! **Config granularity: per process.** Measured 2026-09-18 on Claude Code
 //! 2.1.276, driving `claude --bare -p --input-format stream-json` against two

@@ -25,7 +25,6 @@
 //! API keys but leaves ChatGPT-mode Codex falling back to its built-in
 //! provider and hitting chatgpt.com directly). Gate passes the bearer
 //! through and forwards to OpenAI per the upstream hint the relay injects.
-//! Therefore [`requires_upstream_credential`] is `false`.
 //!
 //! **Codex re-reads `config.toml` per THREAD, not per process**, so "restart
 //! Codex" is the wrong thing to tell anyone. Measured 2026-09-18 on codex-cli
@@ -55,8 +54,6 @@
 //! while routed unresumable ("Model provider `gate` not found"). The stub
 //! carries no credential, no gateway URL and no upstream hint, so it leaks
 //! nothing and routes nothing through Gate.
-//!
-//! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
 use anyhow::{Context, Result};
 use std::fs;

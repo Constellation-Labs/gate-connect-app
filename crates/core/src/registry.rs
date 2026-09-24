@@ -47,9 +47,8 @@ impl fmt::Display for ToolId {
 /// Inputs the user (or web deep-link) provides to a connect action.
 ///
 /// `gateway_base_url` comes from the account (entered once at sign-in).
-/// The Gate API key
-/// (workspace identity) lives in the account keychain entry and is
-/// read by the credential helper at request time.
+/// The Gate API key (workspace identity) lives in the account keychain
+/// entry and is read by the credential helper at request time.
 #[derive(Debug, Clone)]
 pub struct ConnectInput {
     pub gateway_base_url: String,
@@ -124,11 +123,10 @@ pub trait Integration: Send + Sync {
 
     /// Human-readable name of the upstream model provider this tool talks
     /// to natively (e.g. "Anthropic" for Claude Code, "OpenAI" for Codex).
-    /// Shown in the connect form so the user knows which API key to enter.
     fn upstream_provider_name(&self) -> &'static str;
 
-    /// Default upstream endpoint URL. The user can override it in the
-    /// connect form, but ~all users want the canonical provider URL.
+    /// Canonical upstream endpoint URL. The app shows its host as the
+    /// tool's upstream; nothing overrides it.
     fn default_upstream_url(&self) -> &'static str;
 
     /// Which mechanism carries this tool's traffic - see [`Mechanism`]. Required

@@ -44,7 +44,8 @@ enum Command {
         api_key_file: Option<std::path::PathBuf>,
         /// Sign in via the Constellation Hosted UI (OAuth) instead of an API
         /// key. Prints a URL to open in your browser and captures the redirect
-        /// on a loopback listener. Ignores `--api-key`.
+        /// on a loopback listener. Cannot be combined with `--api-key` or
+        /// `--api-key-file`.
         #[arg(long)]
         oauth: bool,
         /// With `--oauth`, preselect this organization (its UUID or slug)
