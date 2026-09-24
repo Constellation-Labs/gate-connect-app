@@ -132,7 +132,7 @@ export function trayLocationName(p: Platform): string {
  *  settings" rather than promising every browser, because a browser started
  *  from a shell took the other channel and Gate cannot see which. That
  *  launch-time half is advice with something the user can act on, and it lives
- *  where there is room for it: `groups.ts`' `PROXY_REOPEN_ADVICE` for the proxy
+ *  where there is room for it: `groups.ts`' CA-trust note for the browser
  *  pointer and `browserTrustRestartAdvice` for the trust store.
  *
  *  Empty on `unknown` for the same reason it is empty on Linux, plus one: that

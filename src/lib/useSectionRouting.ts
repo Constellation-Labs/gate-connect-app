@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { cascadeTargets, hostReloadAdvice } from "./groups";
+import { cascadeTargets } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { useRouting } from "./useRouting";
 import type { useRunningApps } from "./useRunningApps";
@@ -29,7 +29,6 @@ export function useSectionRouting({
   routing,
   runningApps,
   onBeforeRoute,
-  onHostsRouted,
   routeApp,
 }: {
   groups: Group[];
@@ -52,8 +51,7 @@ export function useSectionRouting({
    * The COPY is not the caller's: `hostReloadAdvice` composes it here, so the
    * window and the tray cannot come to say this differently.
    */
-  onHostsRouted?: (advice: { title: string; body: string }) => void;
-  /** The per-tool path, for a row that is not a section - a catalog entry no
+   /** The per-tool path, for a row that is not a section - a catalog entry no
    *  section has claimed yet. Keeps the drift gate and the OpenCode env
    *  coupling, which only `setAppRouted` raises. */
   routeApp: (slug: string, next: boolean) => void;
@@ -116,37 +114,6 @@ export function useSectionRouting({
         // Gate relay URL until it restarts either way. A section turned off with
         // no offer leaves the tool pointed at a route the person just switched
         // off, with nothing on screen saying so.
-        // Before the offer, not after: `offerAfterChange` opens a dialog and
-        // awaits it, and a note about the user's browser that appears only once
-        // they have finished answering a question about their CLI arrives as a
-        // second event about a click they have stopped thinking about.
-        //
-        // ON only, and `hostReloadAdvice` carries the measurement: switching a
-        // row OFF stops the routing on the very next request, open connection
-        // or not, so the mirror of this notice would be advice about nothing.
-        if (next && moved.length > 0) {
-          // Newly INTERCEPTED, which is not the same set as newly written.
-          //
-          // `cascadeTargets` skips a member that is already `intended`, and for
-          // a proxy row `desired` is just `domain.enabled` - it knows nothing
-          // about whether the engine is up or the certificate is trusted. So a
-          // `claude-web` enabled on its own while routing was off is skipped
-          // here, and yet this click is the one that starts intercepting it:
-          // `connect_tool` enables the engine (`src-tauri/src/lib.rs`), and the
-          // certificate gate above has just been answered. The row goes from
-          // asked-for to actually carrying traffic without appearing in `moved`,
-          // and the tab open on it is exactly as stale as one on a row that did.
-          //
-          // A row that was already routing is not included, which is the half
-          // that keeps this from crying wolf: nothing changed for its tab.
-          // `moved` members are disjoint from these by construction - they were
-          // not `desired` a moment ago, or they would not have been targets.
-          const intercepted = section.members.filter(
-            (m) => moved.includes(m) || (m.desired && !m.routed),
-          );
-          const advice = hostReloadAdvice(intercepted);
-          if (advice) onHostsRouted?.(advice);
-        }
         // Every member that moved, not only the config ones (AG-900).
         //
         // The `kind === "config"` filter that used to sit here is why closing
@@ -177,7 +144,7 @@ export function useSectionRouting({
         inFlight.current = false;
       }
     },
-    [routing, runningApps, onHostsRouted],
+    [routing, runningApps],
   );
 
   /**

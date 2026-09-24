@@ -10,7 +10,6 @@ import type {
   Preferences,
   ProxyState,
   ProviderState,
-  PendingRestore,
   RecoverySummary,
   TeardownReason,
   TeardownTool,
@@ -42,10 +41,7 @@ import {
   disconnectTool,
   disconnectToolsForQuit,
   quitApp,
-  pendingRestore,
-  resumeRestore,
   recoverySummary,
-  retryRestoreEntry,
   teardownReport,
   getPreferences,
   setSecurityNotificationSound,
@@ -71,14 +67,12 @@ import {
   buildGroups,
   hintForMember,
   isSettingsManaged,
-  proxyReopenAdvice,
   sectionHint,
   isProviderEndpoint,
   notInstalledSections,
   sectionMemberKeys,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
-import { recoveryRows, unresolved } from "./lib/recovery";
 import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -155,8 +149,6 @@ import {
   ErrorBanner,
   ErrorDetails,
   NoteBanner,
-  PaneNote,
-  RecoveryBanner,
   ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
@@ -873,25 +865,17 @@ export function NewUiApp() {
   }, [reopenWaiting, refreshVerdicts]);
 
   const loadPending = useCallback(async () => {
-    const [p, s] = await Promise.all([
-      pendingRestore().catch(() => null),
-      // Three outcomes, not two (AG-890). `.catch(() => null)` collapsed "the
-      // read failed" into "there is nothing pending", and the line below acted
-      // on the second - so one transient failure wiped a summary this window
-      // already held. The tray's recovery card runs off its own
-      // `pendingRestore` read and kept showing the unfinished run, which is how
-      // the two surfaces came to disagree about whether anything had happened.
-      recoverySummary().then(
-        (v) => ({ read: true as const, v }),
-        () => ({ read: false as const, v: null }),
-      ),
-    ]);
-    if (p) setPending(p);
-    // Read alongside the pending state, not lazily on click, for two reasons: the
-    // notice decides whether to offer Review details at all, and it can only do
-    // that if it knows whether there is anything to review; and its per-tool rows
-    // are part of the notice itself, so fetching them on expand would leave the
-    // Show tools control claiming a count it has not read.
+    // The `pendingRestore()` read went with the recovery notice on 2026-09-24:
+    // nothing in this shell consumed it once the notice was gone, and the tray's
+    // recovery card runs off its own read. The summary stays, because the
+    // details dialog still draws it and the tray can still ask for it.
+    const s = await recoverySummary().then(
+      (v) => ({ read: true as const, v }),
+      () => ({ read: false as const, v: null }),
+    );
+    // Three outcomes, not two (AG-890). A `.catch(() => null)` here would
+    // collapse "the read failed" into "there is nothing pending", and one
+    // transient failure would wipe a summary this window already held.
     //
     // A successful read of nothing still clears: a master-on runs `restore_all`,
     // which is what shortens the snapshots, and the notice has to go when the
@@ -1166,12 +1150,9 @@ export function NewUiApp() {
    * snapshots. Null until the first read; empty lists mean nothing outstanding,
    * which is the normal case.
    */
-  const [pending, setPending] = useState<PendingRestore | null>(null);
-  const [resuming, setResuming] = useState(false);
   /** Dismissed for this session only. The pending state lives on disk, so the
    * notice returns on the next launch until the work actually finishes - which is
    * the persistence the recovery action is supposed to have. */
-  const [recoveryHidden, setRecoveryHidden] = useState(false);
   /** The whole state of the interrupted operation: what the write reached per
    * tool, what the last checks saw, and what each one still needs. Null when
    * there is nothing to recover, which is the normal case. */
@@ -1182,19 +1163,6 @@ export function NewUiApp() {
   const summaryRef = useRef<RecoverySummary | null>(null);
   summaryRef.current = summary;
   const [detailsOpen, setDetailsOpen] = useState(false);
-  /**
-   * Which entry a resume is on, and what it has attempted this pass.
-   *
-   * The resume drives the entries one at a time (see {@link resumeNow}) so it can
-   * answer "which tool is it working on", which a single spinner over the whole
-   * set cannot. Cleared when the pass ends: the recorded stages take over from
-   * there, and leaving "just attempted" on a row would make the next render claim
-   * an attempt that belongs to a previous resume.
-   */
-  const [resumeProgress, setResumeProgress] = useState<{
-    active: string | null;
-    done: string[];
-  } | null>(null);
   /** The tools a Disconnect or Reset left pointing at Gate, or null when it put
    * every one back. */
   const [teardown, setTeardown] = useState<TeardownTool[] | null>(null);
@@ -1714,11 +1682,7 @@ export function NewUiApp() {
    * certificate on the first enable, and routing claude.ai in the same cascade),
    * and sharing the slot would mean whichever landed second erased the other.
    */
-  const [reloadNote, setReloadNote] = useState<{
-    title: string;
-    body: string;
-  } | null>(null);
-
+ 
   /**
    * The app switch, for the rail and the pane header both.
    *
@@ -1742,14 +1706,7 @@ export function NewUiApp() {
       setActionError(null);
       // And the reload advice, for the same reason one line up: it is a claim
       // about where this person's traffic is going, and the click in progress
-      // is what stops it being the current answer. Turning the section back off
-      // is the case that makes this a bug rather than clutter - the banner went
-      // on saying "Gate now routes claude.ai" over a row that had just been
-      // switched off, and telling someone to reload a page for routing that is
-      // no longer there is worse than saying nothing.
-      setReloadNote(null);
     },
-    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   // Named for what it does rather than where it was: the rail's switch went
@@ -1770,27 +1727,6 @@ export function NewUiApp() {
     return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
   }, [apps.length, scan]);
 
-  /**
-   * Retry one recorded entry, leaving every other entry's recorded work alone.
-   *
-   * The failure is reported and the pending state is still taken from the reply:
-   * a retry changes what is outstanding for the *other* entries too - one may
-   * have completed in another window - so a caller that dropped the reply on
-   * error would redraw the notice from a stale list.
-   */
-  const retryEntry = useCallback(async (slug: string): Promise<boolean> => {
-    const { error, pending: left } = await retryRestoreEntry(slug);
-    setPending(left);
-    // Deliberately not raised as a banner. The error banner outranks the
-    // recovery notice - a failure that just happened beats a recorded one - and
-    // that ordering is right for a failure the notice cannot express, but wrong
-    // for this one: it would replace the notice with a message, taking the retry
-    // button away at the exact moment the user wants it again. The row reports
-    // it instead, as a stage and a category, which is the vocabulary AG-570 asks
-    // for anyway. The raw message still reaches the backend-error buffer, so it
-    // is not lost to telemetry or to the next drain.
-    return error === null;
-  }, []);
 
   /**
    * Finish what the interrupted operation left, one entry at a time.
@@ -1808,73 +1744,8 @@ export function NewUiApp() {
    * reason `runningAgents`'s own docs give - offering to close Claude when the
    * resume touched Codex names processes the change never went near.
    */
-  const resumeNow = useCallback(async () => {
-    const queue = summary ? unresolved(summary) : [];
-    // Nothing to drive: fall back to the batch, which is also what a summary
-    // that could not be read leaves us with.
-    if (queue.length === 0) {
-      setResuming(true);
-      setActionError(null);
-      try {
-        setPending(await resumeRestore());
-        await refresh();
-      } catch (e) {
-        setActionError(classifyError(e, "provider_restore"));
-      } finally {
-        setResuming(false);
-      }
-      return;
-    }
-    setResuming(true);
-    setActionError(null);
-    const done: string[] = [];
-    const restored: string[] = [];
-    try {
-      for (const entry of queue) {
-        // Only an unfinished write is this button's business. A stale process or
-        // a missing account is a real answer with its own action on the row, and
-        // retrying the write would not move either.
-        if (entry.next_step !== "retry") continue;
-        setResumeProgress({ active: entry.slug, done: [...done] });
-        // A rejected command - not a recorded failure - is the case the notice
-        // genuinely cannot express, so that one does reach the banner.
-        const ok = await retryEntry(entry.slug).catch((e) => {
-          setActionError(classifyError(e, "provider_restore"));
-          return false;
-        });
-        done.push(entry.slug);
-        if (ok) restored.push(entry.slug);
-      }
-      setResumeProgress({ active: null, done });
-      await refresh();
-      if (restored.length > 0) await runningApps.offerAfterChange(restored);
-    } finally {
-      setResuming(false);
-      setResumeProgress(null);
-    }
-  }, [summary, retryEntry, refresh, runningApps]);
 
   /** One row's Retry, outside a whole-pass resume. */
-  const retryOne = useCallback(
-    async (slug: string) => {
-      setResuming(true);
-      setResumeProgress({ active: slug, done: [] });
-      setActionError(null);
-      try {
-        const ok = await retryEntry(slug).catch((e) => {
-          setActionError(classifyError(e, "provider_restore"));
-          return false;
-        });
-        setResumeProgress({ active: null, done: [slug] });
-        await refresh();
-        if (ok) await runningApps.offerAfterChange([slug]);
-      } finally {
-        setResuming(false);
-        setResumeProgress(null);
-      }
-    },
-    [retryEntry, refresh, runningApps],
-  );
 
 
   /**
@@ -1887,16 +1758,6 @@ export function NewUiApp() {
    * verified result - so the summary's own unresolved set is unioned in. Names,
    * deduplicated: the two sources overlap by design.
    */
-  const recoveryNames = useMemo(() => {
-    const names = [
-      ...(pending?.providers ?? []),
-      ...(pending?.tools ?? []),
-    ].map((e) => e.name);
-    for (const tool of summary ? unresolved(summary) : []) {
-      if (!names.includes(tool.name)) names.push(tool.name);
-    }
-    return names;
-  }, [pending, summary]);
 
   /**
    * The notice's per-tool rows, against one clock.
@@ -1907,10 +1768,6 @@ export function NewUiApp() {
    * that nobody is watching. The review dialog takes its own `new Date()` for the
    * same reason - it is read once, on open.
    */
-  const recoveryRowList = useMemo(
-    () => (summary ? recoveryRows(summary, new Date()) : undefined),
-    [summary],
-  );
 
   const noop = useCallback(() => {}, []);
 
@@ -2702,33 +2559,7 @@ export function NewUiApp() {
    * measured at all - Gate cannot see these apps. `groups.ts` carries the copy
    * and the argument for why this is one platform's problem rather than three.
    */
-  const proxyAdvice = useMemo(() => {
-    if (view.kind !== "app") return undefined;
-    // Asked of the SECTION, because a row is one now. The pane's slug is a
-    // section id and matches no member key at all, so the old lookup found
-    // nothing and the note stopped being drawn.
-    //
-    // Any host member is enough: the advice is about what interception cannot
-    // reach into a running process, and a section that has one has a surface
-    // that behaves that way - whether or not it also has a config tool. The
-    // Claude row is both at once, which is what the per-surface ledger never had
-    // to reconcile.
-    const member = groups
-      .find((g) => g.id === view.slug)
-      ?.members.find((m) => m.kind === "proxy");
-    if (!member) return undefined;
-    // Except beside a measurement. A reopen verdict is measured, this is not,
-    // and putting a guess next to a reading invites the reader to weigh the two
-    // - so the tool's own card speaks for the app and this stays quiet while it
-    // is up. `ReopenAlert`'s own condition, asked here rather than shared,
-    // because it is declared below this.
-    const measured =
-      openTool !== null && verdicts.get(openTool)?.reason === "reopen_required";
-    if (measured) return undefined;
-    return proxyReopenAdvice(member.kind, platform);
-  }, [view, groups, openTool, verdicts, platform]);
-
-  /**
+   /**
    * The open app's reopen card, when its verdict says a process is holding older
    * settings.
    *
@@ -3036,26 +2867,6 @@ export function NewUiApp() {
         raw={actionError.raw}
         onDismiss={() => setActionError(null)}
       />
-    ) : recoveryNames.length > 0 && !recoveryHidden ? (
-      // Below the error banner: a failure that just happened outranks a
-      // recorded one that can still be resumed.
-      <RecoveryBanner
-        names={recoveryNames}
-        rows={recoveryRowList}
-        progress={resumeProgress ?? undefined}
-        busy={resuming}
-        onResume={() => void resumeNow()}
-        onAction={(slug, step) => {
-          // Retry is this notice's own action; a reopen hands over to the
-          // close-apps conversation, which is the only thing that can act on
-          // a running process. Sign-in is neither - it is a different screen -
-          // so the row names it and offers no control.
-          if (step === "retry") void retryOne(slug);
-          if (step === "reopen_tool") void runningApps.offerAfterChange([slug]);
-        }}
-        onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
-        onFinishLater={() => setRecoveryHidden(true)}
-      />
     ) : browserRestart ? (
       // Bottom of the chain, and neutral where the two above are amber or
       // red: each of those names something still to be fixed in Gate's own
@@ -3086,24 +2897,9 @@ export function NewUiApp() {
    * would ask for one thing twice. That subsumption runs one way only, which is
    * why this is a suppression here rather than an ordering.
    */
-  const reloadBanner =
-    reloadNote && !browserRestart ? (
-      <NoteBanner
-        title={reloadNote.title}
-        body={reloadNote.body}
-        onDismiss={() => setReloadNote(null)}
-      />
-    ) : null;
-
-  /** Both, when there are both. `undefined` rather than an empty fragment when
-   *  there is neither, so `AppShell` draws no notice region at all. */
-  const noticeStack =
-    noticeChain || reloadBanner ? (
-      <>
-        {noticeChain}
-        {reloadBanner}
-      </>
-    ) : undefined;
+   /** `undefined` rather than an empty fragment when there is nothing, so
+   *  `AppShell` draws no notice region at all. */
+  const noticeStack = noticeChain ?? undefined;
 
   return (
     <AppShell
@@ -3697,9 +3493,6 @@ export function NewUiApp() {
                   separate for a different reason - the proxy pointer and the
                   trust store are not one fact - and that argument is about
                   merging the copy, not about ordering it. */}
-              {proxyAdvice && (
-                <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
-              )}
               {paneNotice && (
                 <AlertBanner
                   key={paneNotice.id}

@@ -2220,7 +2220,7 @@ export function RestoreDetailsDialog({
  * verified route, last check, process - are what AG-570 asked for, and they are
  * still here, because handing this summary to someone else is one of the things
  * the review is for. They are no longer the first thing a user meets. A person
- * who opened this from "Routing didn't finish coming back" wants to know which
+ * who opened this from the tray's recovery card wants to know which
  * app is affected and what to do; "Last check: Checked per tool, not per
  * provider" and "Process: Gate has no process to look for" are true, useful to
  * whoever debugs it, and unreadable as an answer to that question.

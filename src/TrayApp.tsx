@@ -54,7 +54,7 @@ import { Tray } from "./components/gc/Tray";
 import type { MenuAction } from "./components/gc/OverflowMenu";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
-import { ErrorBanner, NoteBanner } from "./components/gc/banners";
+import { ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
   reopenSubjects,
@@ -168,11 +168,7 @@ export function TrayApp() {
    * A surface that acts and says nothing is the gap this whole change is about,
    * and it would be a strange fix that closed it in one shell only.
    */
-  const [reloadNote, setReloadNote] = useState<{
-    title: string;
-    body: string;
-  } | null>(null);
-  const platform = usePlatform();
+   const platform = usePlatform();
 
   /** What the last read put on screen, so an unchanged reading is dropped
    * rather than re-rendering the whole popover for it. */
@@ -402,13 +398,6 @@ export function TrayApp() {
         // it was claiming, so carrying it across is how a failure the user
         // already saw comes back undated over an unrelated visit.
         setRoutingError(null);
-        // And the reload advice, which is the same kind of thing in the same
-        // borrowed slot: advice about a click, shown once. This popover is
-        // hidden rather than destroyed, so without this the banner is still
-        // sitting over the rows on a later reveal, describing a flip the person
-        // has long since forgotten - and unlike the window's, it has no
-        // persistent chrome around it to make sense of.
-        setReloadNote(null);
         return;
       }
       void redetect();
@@ -805,9 +794,7 @@ export function TrayApp() {
       setActionError(null);
       // See the window: a routing click retires the previous click's advice,
       // which is what keeps the banner from outliving the claim it makes.
-      setReloadNote(null);
     },
-    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   const toggleApp = section.toggle;
@@ -1043,18 +1030,6 @@ export function TrayApp() {
                   setActionError(null);
                   setRoutingError(null);
                 }}
-              />
-            </div>
-          ) : reloadNote ? (
-            // The same borrowed spot, and never both at once: this window is
-            // 360px of list and two stacked banners would cover the rows the
-            // person came here to flip. A failure outranks advice, which is the
-            // window's precedence too.
-            <div className="absolute inset-x-4 top-20 z-20">
-              <NoteBanner
-                title={reloadNote.title}
-                body={reloadNote.body}
-                onDismiss={() => setReloadNote(null)}
               />
             </div>
           ) : null}

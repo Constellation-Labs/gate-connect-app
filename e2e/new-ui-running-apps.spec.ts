@@ -399,24 +399,7 @@ test.describe("new UI running apps", () => {
    * those two the line would be wrong rather than merely cautious. Gate cannot
    * see these apps at all, so it is drawn as advice and says so.
    */
-  test("a proxy-routed row warns about open apps on Linux, and only there", async ({
-    boot,
-  }) => {
-    const app = await boot({
-      platform: "linux",
-      proxy: { running: true, ca_trusted: true },
-    });
-
-    // The Claude row. Its API surface is routed by domain rather than by a
-    // config file of its own, which is what the advice below is about.
-    await app.page.getByRole("button", { name: "Claude" }).first().click();
-
-    await expect(
-      app.page.getByText("Apps already open may need reopening"),
-    ).toBeVisible();
-    await expect(app.page.getByText(/advice rather than a reading/)).toBeVisible();
-  });
-
+  
   for (const platform of ["macos", "windows"] as const) {
     test(`${platform} says nothing about reopening a proxy-routed app`, async ({
       boot,
@@ -427,10 +410,6 @@ test.describe("new UI running apps", () => {
       });
 
       await app.page.getByRole("button", { name: "Claude" }).first().click();
-
-      await expect(
-        app.page.getByText("Apps already open may need reopening"),
-      ).toHaveCount(0);
     });
   }
 
@@ -453,9 +432,6 @@ test.describe("new UI running apps", () => {
     await app.openSection("ChatGPT / Codex");
 
     await expect(reopenCard(app)).toBeVisible();
-    await expect(
-      app.page.getByText("Apps already open may need reopening"),
-    ).toHaveCount(0);
   });
 
   test("a declined review never reaches the sequence", async ({ boot }) => {

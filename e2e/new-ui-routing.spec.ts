@@ -171,199 +171,11 @@ test.describe("new UI routing", () => {
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
   });
 
-  test("routing an app with a browser surface says the open page is still going around Gate", async ({
-    boot,
-  }) => {
-    // The window offers to close what it can close - a CLI holds its route until
-    // it restarts - and until now said nothing at all about the other half of
-    // the same click. A section switch routes claude.ai in the same cascade, and
-    // a page that was already open keeps the connection it opened before the PAC
-    // named the host, so it goes around Gate for as long as that tab lives. The
-    // popover has told its user this since the chat rows got their own hint;
-    // this shell is the default one.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [
-        {
-          slug: "claude-code",
-          name: "CLI",
-          upstream_provider_name: "Anthropic",
-          default_upstream_url: "https://gw.example/claude-code",
-          status: { kind: "detected" },
-        },
-      ],
-    });
-
-    await app.routeApp("Claude");
-
-    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
-    await expect(note).toBeVisible();
-    // The host, because it is the only part of this the person can recognise
-    // on their own machine, and the stale-connection clause, which is what
-    // makes this more than housekeeping. The explicit "go around Gate" was
-    // dropped when the copy was shortened (2026-09-23).
-    await expect(note).toContainText("claude.ai");
-    await expect(note).toContainText("keeps the connection it opened before");
-  });
-
-  test("a host row nobody browses gets no such notice", async ({ boot }) => {
-    // The other half of the reading, and deliberately a PROXY row rather than
-    // a config one: every proxy row intercepts a host, and if that were the
-    // test an API user would be told to reload a page they have never had
-    // open. This row is brokered, and nothing arrives on it from a tab.
-    const app = await boot({
-      proxy: {
-        running: true,
-        ca_trusted: true,
-        domains: [
-          {
-            // A host-only brokered row that no section claims, so it draws a
-            // row of its own. This was OpenRouter until 2026-09-23, when
-            // Hermes took ownership of that domain and
-            // `TOOL_MANAGED_DOMAINS` stopped it being drawn at all.
-            slug: "acme-router",
-            display_name: "Acme Router",
-            client: "any-app",
-            credential: "brokered",
-            scope: "host",
-            hosts: ["api.acme-router.test"],
-            upstream_url: "https://api.acme-router.test",
-            rewrite_prefixes: ["/v1/"],
-            passthrough_prefixes: [],
-            enabled: false,
-            supported: true,
-          },
-        ],
-      },
-    });
-
-    await (await app.appSwitch("Acme Router")).click();
-
-    // The write first. `routeApp` returns the moment the click dispatched, so
-    // a bare `toHaveCount(0)` is
-    // satisfied on the first poll - before the cascade has written anything,
-    // which would make this pass whether or not the regression it guards
-    // exists.
-    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
-      slug: "acme-router",
-      enabled: true,
-    });
-    await expect(
-      app.page.getByRole("status").filter({ hasText: "Pages already open" }),
-    ).toHaveCount(0);
-  });
-
-  test("the notice goes when the same switch is turned back off", async ({ boot }) => {
-    // It is a claim about where this person's traffic is going. Left standing
-    // over a row that has just been switched off, it tells them to reload a page
-    // for routing that is no longer there.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [
-        {
-          slug: "claude-code",
-          name: "CLI",
-          upstream_provider_name: "Anthropic",
-          default_upstream_url: "https://gw.example/claude-code",
-          status: { kind: "detected" },
-        },
-      ],
-    });
-
-    await app.routeApp("Claude");
-    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
-    await expect(note).toBeVisible();
-
-    // The switch directly, to be explicit that this one is the OFF direction.
-    await (await app.appSwitch("Claude")).click();
-
-    await expect(note).toHaveCount(0);
-  });
-
-  test("it is drawn beside the reopen card, not behind it", async ({ boot }) => {
-    // The case the advice exists for is also the case that raises the reopen
-    // card: a CLI running while its section is switched on. Ranked below the
-    // banner that card replaced, the browser half of one click lost to the CLI
-    // half, and then appeared on its own once the reopen cleared - a second
-    // event about a click the person had stopped thinking about. They are two
-    // remedies for two things the person owns, and both belong on screen.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      // A CLI that is running on the route it started with, which is what
-      // raises the reopen card - and what a real user in this case has.
-      staleAgents: 1,
-      tools: [
-        {
-          slug: "claude-code",
-          name: "CLI",
-          upstream_provider_name: "Anthropic",
-          default_upstream_url: "https://gw.example/claude-code",
-          status: { kind: "detected" },
-        },
-      ],
-    });
-
-    await app.routeApp("Claude");
-
-    // The card is on the tool's pane, and the advice is shell chrome that
-    // follows the user there - which is the whole assertion: one click, two
-    // remedies, both on screen at once.
-    await app.openSection("Claude");
-    // The line that names the tool, because the rail row carries the bare
-    // phrase too and a looser match resolves to two elements.
-    await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
-    await expect(
-      app.page.getByRole("status").filter({ hasText: "Pages already open" }),
-    ).toBeVisible();
-  });
-
-  test("a surface the engine starts intercepting says so, even though nothing wrote it", async ({
-    boot,
-  }) => {
-    // `cascadeTargets` skips a row that is already `desired`, and for a domain
-    // that word means `enabled` alone - it knows nothing about whether the
-    // engine is up. So a `claude-web` enabled on its own while routing was off
-    // is not in `moved`, and this click is still the one that starts
-    // intercepting it, because connecting a tool brings the engine up.
-    const app = await boot({
-      proxy: {
-        running: false,
-        ca_trusted: true,
-        domains: [
-          {
-            slug: "claude-web",
-            display_name: "Chat",
-            client: "claude-desktop",
-            credential: "additive",
-            scope: "host",
-            hosts: ["claude.ai"],
-            upstream_url: "https://claude.ai/api",
-            rewrite_prefixes: ["/organizations/"],
-            passthrough_prefixes: [],
-            // Asked for already, and not carrying anything: the engine is off.
-            enabled: true,
-            supported: true,
-          },
-        ],
-      },
-      tools: [
-        {
-          slug: "claude-code",
-          name: "CLI",
-          upstream_provider_name: "Anthropic",
-          default_upstream_url: "https://gw.example/claude-code",
-          status: { kind: "detected" },
-        },
-      ],
-    });
-
-    await app.routeApp("Claude");
-
-    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
-    await expect(note).toBeVisible();
-    await expect(note).toContainText("claude.ai");
-  });
-
+  
+  
+  
+  
+  
   test("a failed write says why instead of failing silently", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
@@ -762,21 +574,8 @@ test.describe("new UI: an interrupted restore", () => {
     },
   };
 
-  test("what did not finish is named", async ({ boot }) => {
-    const app = await boot(interrupted);
-
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
-    // Providers and tools together: the user does not care which file an entry
-    // came from.
-    await expect(app.page.getByText(/OpenAI, OpenCode/)).toBeVisible();
-  });
-
-  test("nothing outstanding shows no notice", async ({ boot }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
-
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
-  });
-
+  
+  
   /**
    * Resume works through the entries one at a time.
    *
@@ -785,103 +584,22 @@ test.describe("new UI: an interrupted restore", () => {
    * over. `restore_one`'s semantics are the batch's narrowed to one slug, so
    * this still repeats no completed write.
    */
-  test("Resume finishes the job entry by entry and the notice goes", async ({ boot }) => {
-    const app = await boot(interrupted);
-
-    await app.page.getByRole("button", { name: "Resume now" }).click();
-
-    await expect
-      .poll(async () => (await app.state()).retryCalls)
-      .toEqual(["openai", "opencode"]);
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
-  });
-
+  
   /** The per-tool rows AG-570 asks the summary for: every tool the operation
    *  touched, with its stage, its last check and what it still needs. */
-  test("the notice accounts for each tool it is waiting on", async ({ boot }) => {
-    const app = await boot(interrupted);
-    const banner = app.page.getByRole("status");
-
-    await banner.getByRole("button", { name: /Show tools/ }).click();
-
-    // The row's own name cell, not the summary sentence above it that also
-    // lists the tools it is waiting on.
-    await expect(
-      banner.getByRole("listitem").filter({ hasText: "OpenCode" }),
-    ).toBeVisible();
-    // Seeded, never attempted: the interruption's own signature.
-    await expect(banner.getByText("Not started").first()).toBeVisible();
-    // The three readings a stage cannot carry, on the row.
-    await expect(banner.getByText(/Last verified:/).first()).toBeVisible();
-  });
-
+  
   /** One row's Retry, which is the AC's "repeats only the failed or unverified
    *  stage for the selected tool". The other entry is left alone. */
-  test("a row's Retry asks about that entry only", async ({ boot }) => {
-    const app = await boot(interrupted);
-    const banner = app.page.getByRole("status");
-    await banner.getByRole("button", { name: /Show tools/ }).click();
-
-    // The row for OpenCode, not the whole-notice Resume.
-    await banner
-      .getByRole("listitem")
-      .filter({ hasText: "OpenCode" })
-      .getByRole("button", { name: "Retry" })
-      .click();
-
-    await expect.poll(async () => (await app.state()).retryCalls).toEqual(["opencode"]);
-  });
-
+  
   /** A resume that came back offers the close-and-reopen conversation, scoped to
    *  what it actually rewrote. */
-  test("a completed resume offers to close the tools it just rewrote", async ({ boot }) => {
-    const app = await boot({
-      ...interrupted,
-      runningAgents: 1,
-      staleAgents: 1,
-      runningAgentNames: ["opencode"],
-    });
-
-    await app.page.getByRole("button", { name: "Resume now" }).click();
-
-    await expect(app.page.getByRole("dialog")).toBeVisible();
-    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
-      only: ["openai", "opencode"],
-    });
-  });
-
+  
   /**
    * The case that must not read as done: resuming fixed one entry and not the
    * other, so the notice stays and names only what is left.
    */
-  test("a partial resume keeps the notice, naming only what is left", async ({ boot }) => {
-    const app = await boot({
-      ...interrupted,
-      pendingResumeKeeps: ["opencode"],
-      retryErrors: ["opencode"],
-    });
-
-    await app.page.getByRole("button", { name: "Resume now" }).click();
-
-    // Scoped to the banner: the sidebar lists these apps by name too.
-    const banner = app.page.getByRole("status");
-    await expect(banner.getByText("Routing didn’t finish coming back")).toBeVisible();
-    await expect(banner.getByText(/OpenCode is still waiting/)).toBeVisible();
-    await expect(banner.getByText(/OpenAI/)).toHaveCount(0);
-  });
-
-  test("Finish later hides it for this session without resuming anything", async ({ boot }) => {
-    const app = await boot(interrupted);
-
-    await app.page.getByRole("button", { name: "Finish later" }).click();
-
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
-    expect(await app.lastCall("resume_restore")).toBeNull();
-    expect(await app.lastCall("retry_restore_entry")).toBeNull();
-    // Still recorded on disk, which is what makes the notice come back later.
-    expect((await app.state()).pendingRestore.providers).toHaveLength(1);
-  });
-
+  
+  
   test("a live failure outranks a recorded one", async ({ boot }) => {
     const app = await boot({
       ...interrupted,
@@ -890,9 +608,10 @@ test.describe("new UI: an interrupted restore", () => {
       ],
     });
 
-    // The error banner, not the recovery notice: something just went wrong.
+    // The error banner: something just went wrong. It used to have to outrank
+    // the recovery notice, which was removed on 2026-09-24 - so what is left to
+    // pin is that a recorded interruption does not suppress a live failure.
     await expect(app.page.getByRole("button", { name: "Dismiss error" })).toBeVisible();
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
   });
 });
 
@@ -961,7 +680,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
   test("it accounts for every entry, including the ones never reached", async ({ boot }) => {
     const app = await boot(withJournal);
 
-    await app.page.getByRole("button", { name: "Review details" }).click();
+    // The tray's Review, not a window control: the recovery notice that used to
+    // carry "Review details" was removed on 2026-09-24, and the tray's button
+    // reaches this dialog through `recovery-details-requested` (see
+    // `NewUiApp`'s listener). That is the only way in now.
+    await app.emit("recovery-details-requested");
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -988,7 +711,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
   }) => {
     const app = await boot(withJournal);
 
-    await app.page.getByRole("button", { name: "Review details" }).click();
+    // The tray's Review, not a window control: the recovery notice that used to
+    // carry "Review details" was removed on 2026-09-24, and the tray's button
+    // reaches this dialog through `recovery-details-requested` (see
+    // `NewUiApp`'s listener). That is the only way in now.
+    await app.emit("recovery-details-requested");
 
     const dialog = app.page.getByRole("dialog");
     await openTechnicalDetails(dialog);
@@ -1064,7 +791,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
       },
     });
 
-    await app.page.getByRole("button", { name: "Review details" }).click();
+    // The tray's Review, not a window control: the recovery notice that used to
+    // carry "Review details" was removed on 2026-09-24, and the tray's button
+    // reaches this dialog through `recovery-details-requested` (see
+    // `NewUiApp`'s listener). That is the only way in now.
+    await app.emit("recovery-details-requested");
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
 
@@ -1130,13 +861,15 @@ test.describe("new UI: reviewing an interrupted restore", () => {
   test("reviewing changes nothing", async ({ boot }) => {
     const app = await boot(withJournal);
 
-    await app.page.getByRole("button", { name: "Review details" }).click();
+    // The tray's Review, not a window control: the recovery notice that used to
+    // carry "Review details" was removed on 2026-09-24, and the tray's button
+    // reaches this dialog through `recovery-details-requested` (see
+    // `NewUiApp`'s listener). That is the only way in now.
+    await app.emit("recovery-details-requested");
     await app.page.getByRole("button", { name: "Close" }).click();
 
     expect(await app.lastCall("resume_restore")).toBeNull();
     expect(await app.lastCall("connect_tool")).toBeNull();
-    // Still outstanding, so the notice is still there.
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
   });
 
   /**
@@ -1149,8 +882,11 @@ test.describe("new UI: reviewing an interrupted restore", () => {
   test("without a journal the review says nothing was started", async ({ boot }) => {
     const app = await boot({ ...withJournal, restoreJournal: null });
 
-    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
-    await app.page.getByRole("button", { name: "Review details" }).click();
+    // The tray's Review, not a window control: the recovery notice that used to
+    // carry "Review details" was removed on 2026-09-24, and the tray's button
+    // reaches this dialog through `recovery-details-requested` (see
+    // `NewUiApp`'s listener). That is the only way in now.
+    await app.emit("recovery-details-requested");
 
     const dialog = app.page.getByRole("dialog");
     // `exact`: the headline now names the app too ("OpenCode is not routing

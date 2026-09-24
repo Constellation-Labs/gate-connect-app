@@ -48,7 +48,7 @@ function open(tools?: RecoveryTool[]) {
 }
 
 /**
- * AG-886. The reader arrives from "Routing didn't finish coming back" wanting
+ * AG-886. The reader arrives from the tray's recovery card wanting
  * to know which app is affected and what to do. Every assertion here is about
  * what they meet before they expand anything.
  */

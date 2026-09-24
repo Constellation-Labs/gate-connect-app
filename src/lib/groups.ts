@@ -139,52 +139,13 @@ export function sectionHint(group: Group): string | undefined {
 }
 
 /**
- * What a proxy-routed surface cannot promise about an app that is already open.
- *
- * **Linux only, and the platform gate is the substance rather than caution.**
- * A proxy-routed app has no config file to re-read, so nothing here is the
- * `reopen_required` verdict - that one is measured, per tool, from a process
- * older than the last routing change. This is the other thing, and it is
- * genuinely different per platform:
- *
- * - **Windows** writes `AutoConfigURL` under HKCU and then pokes WinINET with
- *   `INTERNET_OPTION_SETTINGS_CHANGED`, precisely so running apps do not keep
- *   the stale settings (`proxy/system_proxy_windows.rs`).
- * - **macOS** sets the auto-proxy URL through `networksetup`, and CFNetwork and
- *   Chromium-based apps apply it to new connections as it changes.
- * - **Linux** has two channels and they disagree. GNOME's `org.gnome.system.proxy`
- *   keys are re-read live by anything on GLib's proxy resolver; the
- *   `environment.d` variables reach a process only at launch, and
- *   `proxy/system_proxy_linux.rs` says so in as many words - "already-running
- *   processes keep their environment until relaunched - nothing can change
- *   that".
- *
- * Which of the two channels a given app uses is not something Gate can see: it
- * cannot even list these processes (`AGENT_PROCESSES` knows three CLIs). So this
- * is written as advice and says that it is - a line that claimed to know would
- * be a reading with nothing behind it, which is the one thing this app does not
- * do with a routing state.
- */
-export const PROXY_REOPEN_ADVICE = {
-  title: "Apps already open may need reopening",
-  body: "Gate routes these through your session's proxy settings. An app that reads those when it starts, rather than watching them, keeps using whatever was in force when it launched. Gate cannot see these apps, so this is advice rather than a reading.",
-} as const;
-
-/** The advice above, where it applies: a proxy-routed row, on Linux. */
-export function proxyReopenAdvice(
-  kind: GroupMember["kind"],
-  platform: Platform,
-): typeof PROXY_REOPEN_ADVICE | undefined {
-  return kind === "proxy" && platform === "linux" ? PROXY_REOPEN_ADVICE : undefined;
-}
-
-/**
  * What a browser that was open across the *first* enable cannot know yet.
  *
- * A different fact from [`PROXY_REOPEN_ADVICE`], and the two must not be merged:
- * that one is about the proxy pointer, which a browser on the desktop's own
- * settings re-reads live, so it would tell a Firefox user to restart for no
- * reason. This is about the trust store, which is read once at process start.
+ * Distinct from the proxy pointer, which a browser on the desktop's own
+ * settings re-reads live - advice about that would tell a Firefox user to
+ * restart for no reason. It had its own note, `PROXY_REOPEN_ADVICE`, removed
+ * with the other advisory banners on 2026-09-24. This one is about the trust
+ * store, which is read once at process start.
  * `ca_linux.rs` installs the CA into the per-user NSS databases Chromium reads
  * and into the system bundle Firefox picks up through p11-kit, and neither is
  * consulted again by a running process - so a browser that was open when the CA
@@ -315,41 +276,6 @@ const BROWSER_SURFACE_ROWS: ReadonlySet<string> = new Set([
  */
 export function hasBrowserSurface(member: GroupMember): boolean {
   return BROWSER_SURFACE_ROWS.has(member.key);
-}
-
-/**
- * What an open page cannot know yet, for the shell that just routed its host.
- *
- * The same fact `RestartHint` puts on a popover row, for the surfaces that have
- * no row: a section switch routes up to three members at once, and the window
- * and tray report the config half of that through the close-and-reopen dialog
- * and the host half nowhere. A person who turns Claude on with claude.ai open
- * keeps browsing on the connection they had, past Gate, with nothing on screen
- * saying so.
- *
- * ON only, and the caller enforces it. The off direction was assumed symmetric
- * and is not: measured in
- * `crates/core/tests/proxy_e2e.rs::a_row_switched_off_stops_rewriting_a_connection_already_open`,
- * one socket carrying two requests with the row switched off between them. The
- * engine re-reads its rule set per REQUEST rather than per connection, so the
- * very next request on a connection that was already open is no longer routed -
- * it goes to the provider. The connection survives the switch; the routing does
- * not, and there is nothing to tell the user to reload.
- *
- * Undefined when nothing that moved has a browser surface, which is every
- * section whose members are config rows and the `chatgpt` row on its own.
- */
-export function hostReloadAdvice(
-  moved: GroupMember[],
-): { title: string; body: string } | undefined {
-  // Deduplicated and in draw order: two members can name one host, and a
-  // banner that says "chatgpt.com, chatgpt.com" reads as a bug in the sentence.
-  const hosts = [...new Set(moved.filter(hasBrowserSurface).flatMap((m) => m.domain?.hosts ?? []))];
-  if (hosts.length === 0) return undefined;
-  return {
-    title: "Pages already open need reloading",
-    body: `Gate now routes ${hosts.join(", ")}. A page that was already open keeps the connection it opened before, so please reload it.`,
-  };
 }
 
 export type MemberAttention =
