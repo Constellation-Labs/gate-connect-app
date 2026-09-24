@@ -269,7 +269,7 @@ ENGINE_RAN=""
 # Declared up here with ENGINE_ON for the same set -u reason - the trap is armed
 # long before start_engine is even defined.
 SYSTEM_TRUSTED=""
-# PID of the `proxy enable --foreground` host on macOS and Windows, which both
+# PID of the `proxy enable` foreground host on macOS and Windows, which both
 # run the engine in the process that enabled it. Declared here with ENGINE_ON so
 # the EXIT trap can stop it under set -u however early the script dies.
 ENGINE_FG_PID=""
@@ -290,7 +290,7 @@ cleanup() {
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
   # SIGTERM makes it restore the system proxy itself, which is the whole point
-  # of --foreground; the inline disable below is the belt to that braces.
+  # of the foreground host; the inline disable below is the belt to that braces.
   if [ -n "$ENGINE_FG_PID" ]; then
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     sleep 2
@@ -434,15 +434,10 @@ start_engine() {
     script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
   else
     # macOS and Windows both host the engine in the process that enabled it -
-    # there is no daemon to adopt it - so a plain `proxy enable` returns, the
-    # process exits, and routing dies with it: the PAC URL is left pointing at a
-    # port nothing answers. `--foreground` parks instead, so the engine lives
-    # for as long as this background process does, which is the phase.
-    #
-    # Windows reached this branch as a plain `proxy enable` until the skip above
-    # was lifted, and would have died exactly that way. Nobody saw it, because
-    # the skip returned before the branch could run.
-    "$CLI" proxy enable --foreground >"$WORK/enable.out" 2>&1 &
+    # there is no daemon to adopt it - so `proxy enable` always stays in the
+    # foreground there (the `--foreground` flag is Linux-only), and the engine
+    # lives for as long as this background process does, which is the phase.
+    "$CLI" proxy enable >"$WORK/enable.out" 2>&1 &
     ENGINE_FG_PID=$!
     local i=0
     while [ "$i" -lt 60 ]; do
@@ -590,8 +585,8 @@ stop_engine() {
   fi
   local rc=0
   if [ -n "$ENGINE_FG_PID" ]; then
-    # The foreground host disables and restores on SIGTERM - that is what the
-    # flag is for - so signalling it IS the disable. Running the CLI's disable
+    # The foreground host disables and restores on SIGTERM - that is what it
+    # stays in the foreground for - so signalling it IS the disable. Running the CLI's disable
     # again afterwards would be asking an already-off proxy to turn off, and
     # this function treats a non-zero disable as a failure. The verification
     # below (snapshot gone) is what actually proves it took, and it does not

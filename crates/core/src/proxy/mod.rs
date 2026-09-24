@@ -964,13 +964,14 @@ pub fn serve_relay() -> anyhow::Result<()> {
 /// Block until the process is asked to stop: SIGINT or SIGTERM on unix, Ctrl-C
 /// on Windows.
 ///
-/// Backs `proxy enable --foreground`. The engine lives in the process-lifetime
-/// [`manager`] static, so on macOS - which hosts it in-process, with no daemon
-/// to outlive the caller - routing lasts exactly as long as the process that
-/// enabled it. `proxy enable` returns immediately, so from the CLI the engine
-/// has always died on the way out, leaving the system proxy pointed at a port
-/// nothing answers. Parking here is what lets a headless machine host it
-/// (launchd, systemd, a CI job) instead of only the menubar app.
+/// Backs the CLI's foreground `proxy enable`. The engine lives in the
+/// process-lifetime [`manager`] static, so on macOS and Windows - which host it
+/// in-process, with no daemon to outlive the caller - routing lasts exactly as
+/// long as the process that enabled it. A `proxy enable` that returned would
+/// take the engine down on the way out and leave the system proxy pointed at a
+/// port nothing answers, so there the CLI always parks here; on Linux it is
+/// opt-in through `--foreground`. Parking is what lets a headless machine host
+/// the engine (launchd, systemd, a CI job) instead of only the desktop app.
 ///
 /// SIGTERM as well as SIGINT because that is what a service manager sends to
 /// stop a unit; without it the caller could not restore the system proxy on the

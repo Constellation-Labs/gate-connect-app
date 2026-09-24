@@ -9,8 +9,8 @@ text.
 
 ```bash
 gate-connect login --base-url https://your-gateway.example.com   # prompts for the key
-# connect needs the proxy running: keep the Gate Connect app open, or on a
-# machine without it run `gate-connect proxy enable --foreground` in another terminal
+# connect needs the proxy running: keep the Gate Connect app open, or run
+# `gate-connect proxy enable` (on macOS/Windows it stays up, so use another terminal)
 gate-connect connect codex
 gate-connect status codex
 ```
@@ -58,8 +58,8 @@ is tunnelled untouched.
 | Command | What it does |
 | --- | --- |
 | `proxy status` | Running or not, port, CA trust, provider domains. |
-| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. On Linux the engine runs in a background daemon and stays up. On macOS and Windows it lives in the process that started it, so a CLI `enable` keeps routing only while the app is open to host its own engine; without the app, use `--foreground`. |
-| `proxy enable --foreground` | Host the engine in this process until Ctrl-C / SIGTERM, then restore the prior proxy state. For launchd, systemd or CI on machines without the app. |
+| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. On macOS and Windows the engine lives in this process, so the command stays in the foreground until Ctrl-C / SIGTERM; then it puts tools whose config names its relay back on their own settings (they reconnect on the next enable), stops routing and restores the prior proxy state. It refuses if the app is already routing. |
+| `proxy enable --foreground` | Linux only. There the engine runs in a background daemon and `enable` returns; `--foreground` instead stays up until Ctrl-C / SIGTERM, then stops routing and restores the prior proxy state. For a systemd unit or CI job that should own the routing lifetime. |
 | `proxy disable` | Turn the proxy off and restore the prior system-proxy state. |
 | `proxy relay` | Host only the loopback relay; blocks until killed. No CA, no system-proxy change. For containers, servers and CI. Sign in first. An alternative to `enable`, not a step before it. |
 | `proxy domains` | List routable provider domains and whether each is on. |

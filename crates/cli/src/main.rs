@@ -88,15 +88,19 @@ enum ProxyCmd {
     Status,
     /// Turn the proxy on: trust the local CA and route the system proxy
     /// through the loopback engine. May prompt for elevation.
+    ///
+    /// On macOS and Windows the engine lives in this process, so the command
+    /// stays in the foreground hosting it. Ctrl-C (or SIGTERM) puts tools
+    /// whose config names this process's relay back on their own settings,
+    /// then stops routing and restores the prior system-proxy state.
+    /// Returning instead would take the engine down with the process and
+    /// leave the system proxy pointed at a port nothing answers.
     Enable {
-        /// Stay in the foreground hosting the engine; Ctrl-C (or SIGTERM)
-        /// stops it and restores the prior system-proxy state.
-        ///
-        /// The engine runs inside this process, so without this the command
-        /// returns and routing goes with it - fine while the menubar app is
-        /// running, since it hosts its own, but it is why a machine with no
-        /// app cannot route through the engine from the CLI. Use this to host
-        /// it from launchd, systemd, or a CI job.
+        /// Linux only: stay in the foreground until Ctrl-C (or SIGTERM), then
+        /// stop routing and restore the prior system-proxy state. Without it
+        /// the command returns and the helper daemon keeps routing. For a
+        /// systemd unit or a CI job that should own the routing lifetime.
+        #[cfg(target_os = "linux")]
         #[arg(long)]
         foreground: bool,
     },
@@ -511,7 +515,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     mgr.set_detached(true);
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
-        ProxyCmd::Enable { foreground } => {
+        ProxyCmd::Enable {
+            #[cfg(target_os = "linux")]
+            foreground,
+        } => {
+            // Only Linux has a daemon to outlive this process; elsewhere the
+            // engine is ours, so returning would end routing on the way out.
+            #[cfg(not(target_os = "linux"))]
+            let foreground = true;
             // The same master-ON ceremony as the app (`routing::enable`):
             // persist the intent, restore providers around the engine start
             // (the all-off state would otherwise trip `enable`'s "at least
@@ -533,6 +544,22 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 // sends SIGTERM, and an engine that vanished without reverting
                 // would leave the machine pointed at a dead loopback port.
                 println!();
+                // This is a quit, not a routing toggle, so do what the app's
+                // quit does first. `routing::disable` parks the engine so tool
+                // configs naming the relay keep answering, but on macOS and
+                // Windows the relay lives in this process and is about to go
+                // with it. Put those tools back on their own settings; the
+                // next enable or app launch reconnects them. Linux skips it,
+                // as the app does: the daemon outlives us and keeps answering.
+                #[cfg(not(target_os = "linux"))]
+                match gate_connect_core::provider::revert_stranded_configs_for_quit() {
+                    Ok(names) if !names.is_empty() => println!(
+                        "Put {} back on their own settings; they reconnect the next time routing is enabled.",
+                        names.join(", ")
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("note: putting tools back on their own settings failed: {e:#}"),
+                }
                 let (_, warnings) = gate_connect_core::routing::disable()?;
                 for w in warnings {
                     eprintln!("note: {} failed: {:#}", w.component, w.error);
@@ -542,10 +569,11 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
         }
         ProxyCmd::Disable => {
             // The app's master-OFF ceremony (`routing::disable`), not a bare
-            // engine stop: the sweep unpoints managed tool configs from the
-            // relay this kills (they would otherwise dial a dead loopback
-            // port), and clearing the intent keeps a later app launch from
-            // silently re-routing what the operator just turned off.
+            // engine stop: the sweep turns the providers off and parks the
+            // engine, leaving tool configs naming Gate so they pass straight
+            // through while it is parked, and clearing the intent keeps a later
+            // app launch from silently re-routing what the operator just
+            // turned off.
             let (_, warnings) = gate_connect_core::routing::disable()?;
             for w in warnings {
                 eprintln!("note: {} failed: {:#}", w.component, w.error);
