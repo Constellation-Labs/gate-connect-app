@@ -43,7 +43,14 @@ fn default_true() -> bool {
 pub struct Preferences {
     /// Whether Gate Connect may show native notifications at all: a request
     /// blocked or flagged by the security feed, and routing itself - a session
-    /// that expired, a disconnect-on-quit that could not put a tool back.
+    /// that expired, a disconnect-on-quit (tools back on their own settings, or
+    /// one that could not be put back), a plain quit that put tools back as
+    /// promised.
+    ///
+    /// One exception: a plain quit that could not put a tool back says so
+    /// regardless. A disconnect-on-quit can be silenced because the window
+    /// lists its failures too; a plain quit's notice is the last word before
+    /// the process is gone, with nothing else left to say it.
     ///
     /// One switch over all of them because Settings draws one row. An earlier
     /// build split it three ways, per AG-594's acceptance criteria; the Figma
