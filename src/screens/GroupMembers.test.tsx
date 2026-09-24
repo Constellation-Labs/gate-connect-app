@@ -150,8 +150,8 @@ describe("GroupMembers inline expansion", () => {
       /Claude Code reaches api\.anthropic\.com through its own config/,
     ).textContent!;
     // The sibling sentence refers back to "this switch", so nothing may sit
-    // between it and the switch sentence: the cloud sentence goes last.
-    expect(text.indexOf("through its own config")).toBeLessThan(text.indexOf("run on cloud"));
+    // between it and the switch sentence: the Cowork setting sentence goes last.
+    expect(text.indexOf("through its own config")).toBeLessThan(text.indexOf("Only on this computer"));
   });
 
   it("claims no such sibling when nothing else routes the host", () => {
@@ -165,19 +165,19 @@ describe("GroupMembers inline expansion", () => {
     expect(screen.queryByText(/through its own config/)).toBeNull();
   });
 
-  it("says a Cowork task run on cloud never reaches Gate, on or off", () => {
-    // Cloud mode executes on Anthropic's servers, so there is no local traffic
-    // to route and nothing Gate reads from the traffic says which mode a task
-    // picked.
+  it("names the Claude setting Cowork needs to route, on or off", () => {
+    // With "Only on this computer" off, Cowork runs on Anthropic's servers, so
+    // there is no local traffic to route and nothing Gate reads from the
+    // traffic says which mode a task picked.
     for (const enabled of [true, false]) {
       renderDetail([], [{ ...domain, enabled }]);
       fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
-      expect(screen.getByText(/set to run on cloud .* Gate can’t route them/)).toBeTruthy();
+      expect(screen.getByText(/only while “Only on this computer” is on in Claude’s settings/)).toBeTruthy();
       cleanup();
     }
   });
 
-  it("keeps the cloud sentence off every other proxy row", () => {
+  it("keeps the Cowork setting sentence off every other proxy row", () => {
     const openai: ProxyDomain = {
       ...domain,
       slug: "openai",
@@ -205,15 +205,15 @@ describe("GroupMembers inline expansion", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "OpenAI API details" }));
     expect(screen.getByText(/routes it through the local proxy/)).toBeTruthy();
-    expect(screen.queryByText(/run on cloud/)).toBeNull();
+    expect(screen.queryByText(/Only on this computer/)).toBeNull();
   });
 
-  it("does not mention Cowork's cloud mode on Linux, which has no Claude Desktop", () => {
+  it("does not mention Cowork's setting on Linux, which has no Claude Desktop", () => {
     platformMock.current = "linux";
     renderDetail([], [domain]);
     fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
     expect(screen.getByText(/routes it through the local proxy/)).toBeTruthy();
-    expect(screen.queryByText(/run on cloud/)).toBeNull();
+    expect(screen.queryByText(/Only on this computer/)).toBeNull();
   });
 
   it("shows a failure's whole message inline", () => {

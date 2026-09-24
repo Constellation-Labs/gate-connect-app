@@ -110,19 +110,21 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
         .filter(Boolean)
         .join(" ");
     }
-    // Cowork can run a task on Anthropic's servers instead of this machine, and
-    // then nothing leaves the machine for the proxy to route - with routing on,
-    // the CA trusted and no error anywhere. Said on the row because nothing
-    // Gate reads from the traffic today tells it which mode a task picked.
-    // Not on Linux, where there is no Claude Desktop to run Cowork in.
-    const cloud =
+    // Cowork runs its tasks on this machine only while Claude's "Only on this
+    // computer" setting is on. Otherwise they run on Anthropic's servers and
+    // nothing leaves the machine for the proxy to route - with routing on, the
+    // CA trusted and no error anywhere. Said on the row, naming the setting,
+    // because nothing Gate reads from the traffic today tells it which mode a
+    // task picked. Not on Linux, where there is no Claude Desktop to run
+    // Cowork in.
+    const coworkSetting =
       member.domain?.slug === "anthropic" &&
       platform !== "linux" &&
-      "Cowork tasks set to run on cloud execute on Anthropic’s servers, not this machine, so Gate can’t route them.";
+      "Cowork routes through Gate only while “Only on this computer” is on in Claude’s settings. With it off, Cowork tasks run on Anthropic’s servers and never reach this machine.";
     if (member.routed) {
       return [
         `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`,
-        cloud,
+        coworkSetting,
       ]
         .filter(Boolean)
         .join(" ");
@@ -141,7 +143,7 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
         `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
       // Last, so it does not sit between the switch sentence and the sibling
       // one that refers back to "this switch".
-      cloud,
+      coworkSetting,
     ]
       .filter(Boolean)
       .join(" ");
