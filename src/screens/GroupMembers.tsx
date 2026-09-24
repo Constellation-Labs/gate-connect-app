@@ -120,7 +120,7 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     const coworkSetting =
       member.domain?.slug === "anthropic" &&
       platform !== "linux" &&
-      "Cowork routes through Gate only while “Only on this computer” is on in Claude’s settings. With it off, Cowork tasks run on Anthropic’s servers and never reach this machine.";
+      "Cowork routes through Gate only while “Only on this computer” is on in Claude’s settings. With it off, Cowork tasks run on Anthropic’s servers and never reach Gate.";
     if (member.routed) {
       return [
         `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`,
