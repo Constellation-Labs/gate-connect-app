@@ -2451,9 +2451,12 @@ fn set_device_name(name: String) -> Result<(), String> {
 
 /// Turn native notifications on or off. One switch, because Settings draws one
 /// row: a request blocked or flagged by the security feed (AG-578), a
-/// disconnect-on-quit that could not put a tool back on its own settings, and
-/// the session-expired notice from either of its two paths (the refresh loop and
-/// `signal_session_dead`).
+/// disconnect-on-quit that could not put a tool back on its own settings, a
+/// plain quit that put tools back as promised, and the session-expired notice
+/// from either of its two paths (the refresh loop and `signal_session_dead`).
+///
+/// One exception: [`quit_app`]'s notice that a tool could *not* be put back
+/// is shown regardless, because nothing else is left to say it.
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
@@ -4511,7 +4514,9 @@ async fn tools_stranded_by_quit() -> Option<Vec<String>> {
 ///
 /// Off the main thread, like `disconnect_tools_for_quit`: it is config-file
 /// I/O. A notification rather than silence, because a rewrite of somebody's
-/// config file is worth a sentence and the popover is gone before it lands.
+/// config file is worth a sentence and the popover is gone before it lands -
+/// unless the user turned notifications off. A tool that could not be put back
+/// is said regardless.
 #[tauri::command]
 async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -4540,7 +4545,10 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             .into_iter()
             .filter(|p| !put_back.contains(p))
             .collect();
-        if !put_back.is_empty() {
+        // Gated on the notifications preference: a rewrite that went as
+        // promised is information, and a switch the user turned off has to
+        // stop it. The broken-promise notice below is not gated - see there.
+        if !put_back.is_empty() && gate_connect_core::preferences::load().notifications {
             let names = put_back;
             // Both shapes spelled out, as `disconnect_tools_for_quit` does,
             // rather than assembled from plural conditionals. The Codex
@@ -4579,6 +4587,11 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         // logged: the whole list when the revert could not run at all (another
         // routing operation held the guard), or the one tool whose rewrite
         // failed and was logged out of the answer.
+        //
+        // Deliberately not gated on the notifications switch. The window, the
+        // tray and the process are all gone by the time it lands, so it is the
+        // only way the user learns a tool is now pointed at a dead port;
+        // silencing it would leave that tool failing with no explanation.
         if !missed.is_empty() {
             let body = if missed.len() == 1 {
                 format!(
