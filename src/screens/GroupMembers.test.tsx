@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ProviderState, ProxyDomain, Tool } from "../lib/api";
 import { buildGroups } from "../lib/groups";
+import type { Platform } from "../lib/platform";
 import { GroupMembers } from "./GroupMembers";
 
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // GroupMembers names the secret store in two of its explainers. Pin the
 // platform so that copy is deterministic, and so the real hook's async
 // resolve does not settle outside act().
+// Switchable for the one explainer that differs on Linux; reset after each test.
+const platformMock = vi.hoisted(() => ({ current: "macos" as Platform }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
-  usePlatform: () => "macos",
+  usePlatform: () => platformMock.current,
 }));
 
 function tool(slug: string, name: string, status: Tool["status"]): Tool {
@@ -72,6 +75,7 @@ function renderDetail(
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  platformMock.current = "macos";
 });
 
 describe("GroupMembers", () => {
@@ -142,9 +146,12 @@ describe("GroupMembers inline expansion", () => {
       [{ ...domain, enabled: false }],
     );
     fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
-    expect(
-      screen.getByText(/Claude Code reaches api\.anthropic\.com through its own config/),
-    ).toBeTruthy();
+    const text = screen.getByText(
+      /Claude Code reaches api\.anthropic\.com through its own config/,
+    ).textContent!;
+    // The sibling sentence refers back to "this switch", so nothing may sit
+    // between it and the switch sentence: the cloud sentence goes last.
+    expect(text.indexOf("through its own config")).toBeLessThan(text.indexOf("run on cloud"));
   });
 
   it("claims no such sibling when nothing else routes the host", () => {
@@ -160,13 +167,53 @@ describe("GroupMembers inline expansion", () => {
 
   it("says a Cowork task run on cloud never reaches Gate, on or off", () => {
     // Cloud mode executes on Anthropic's servers, so there is no local traffic
-    // to route and nothing in the traffic says which mode a task picked.
+    // to route and nothing Gate reads from the traffic says which mode a task
+    // picked.
     for (const enabled of [true, false]) {
       renderDetail([], [{ ...domain, enabled }]);
       fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
       expect(screen.getByText(/set to run on cloud .* Gate can’t route them/)).toBeTruthy();
       cleanup();
     }
+  });
+
+  it("keeps the cloud sentence off every other proxy row", () => {
+    const openai: ProxyDomain = {
+      ...domain,
+      slug: "openai",
+      display_name: "OpenAI API",
+      hosts: ["api.openai.com"],
+      upstream_url: "https://api.openai.com",
+    };
+    const [group] = buildGroups(
+      [{ ...CATALOG[0], slug: "openai", display_name: "OpenAI", tool_slugs: [], domain_slugs: ["openai"] }],
+      [],
+      [openai],
+      { proxyOn: true, caTrusted: true },
+    );
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI API details" }));
+    expect(screen.getByText(/routes it through the local proxy/)).toBeTruthy();
+    expect(screen.queryByText(/run on cloud/)).toBeNull();
+  });
+
+  it("does not mention Cowork's cloud mode on Linux, which has no Claude Desktop", () => {
+    platformMock.current = "linux";
+    renderDetail([], [domain]);
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    expect(screen.getByText(/routes it through the local proxy/)).toBeTruthy();
+    expect(screen.queryByText(/run on cloud/)).toBeNull();
   });
 
   it("shows a failure's whole message inline", () => {

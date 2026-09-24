@@ -112,11 +112,13 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     }
     // Cowork can run a task on Anthropic's servers instead of this machine, and
     // then nothing leaves the machine for the proxy to route - with routing on,
-    // the CA trusted and no error anywhere. Said on the row because nothing in
-    // the traffic tells us which mode a task picked.
+    // the CA trusted and no error anywhere. Said on the row because nothing
+    // Gate reads from the traffic today tells it which mode a task picked.
+    // Not on Linux, where there is no Claude Desktop to run Cowork in.
     const cloud =
       member.domain?.slug === "anthropic" &&
-      "Cowork tasks set to run on cloud run on Anthropic’s servers, not this machine, so Gate can’t route them.";
+      platform !== "linux" &&
+      "Cowork tasks set to run on cloud execute on Anthropic’s servers, not this machine, so Gate can’t route them.";
     if (member.routed) {
       return [
         `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`,
@@ -129,7 +131,6 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     const sibling = configSiblingOnHost(group, member);
     return [
       `${member.name} routes through Gate’s local proxy once you switch it on.`,
-      cloud,
       // This row prints the host right beside its own switch, so an off switch
       // over `api.anthropic.com` reads as "nothing on that host reaches Gate".
       // With a config-routed tool on the same host that is not true - Claude
@@ -138,6 +139,9 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       // the engine does not do.
       sibling &&
         `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
+      // Last, so it does not sit between the switch sentence and the sibling
+      // one that refers back to "this switch".
+      cloud,
     ]
       .filter(Boolean)
       .join(" ");
