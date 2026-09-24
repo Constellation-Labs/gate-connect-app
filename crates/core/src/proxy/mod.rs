@@ -964,17 +964,39 @@ pub fn serve_relay() -> anyhow::Result<()> {
 /// Block until the process is asked to stop: SIGINT or SIGTERM on unix, Ctrl-C
 /// on Windows.
 ///
-/// Backs `proxy enable --foreground`. The engine lives in the process-lifetime
-/// [`manager`] static, so on macOS - which hosts it in-process, with no daemon
-/// to outlive the caller - routing lasts exactly as long as the process that
-/// enabled it. `proxy enable` returns immediately, so from the CLI the engine
-/// has always died on the way out, leaving the system proxy pointed at a port
-/// nothing answers. Parking here is what lets a headless machine host it
-/// (launchd, systemd, a CI job) instead of only the menubar app.
+/// Backs the CLI's foreground `proxy enable`. The engine lives in the
+/// process-lifetime [`manager`] static, so on macOS and Windows - which host it
+/// in-process, with no daemon to outlive the caller - routing lasts exactly as
+/// long as the process that enabled it. A `proxy enable` that returned would
+/// take the engine down on the way out and leave the system proxy pointed at a
+/// port nothing answers, so there the CLI always parks here; on Linux it is
+/// opt-in through `--foreground`. Parking is what lets a headless machine host
+/// the engine (launchd, systemd, a CI job) instead of only the desktop app.
 ///
 /// SIGTERM as well as SIGINT because that is what a service manager sends to
 /// stop a unit; without it the caller could not restore the system proxy on the
-/// way down, which is the whole reason this is worth blocking for.
+/// way down, which is the whole reason this is worth blocking for. SIGHUP too,
+/// because closing the terminal window is how most people stop a foreground
+/// process.
+///
+/// Windows has no signals, only console control events, and tokio answers only
+/// the ones somebody listens for: the rest fall through to the default handler,
+/// which is `ExitProcess` with nothing restored. So every one of them is
+/// listened for - Ctrl-C, Ctrl-Break, closing the console window, logoff and
+/// shutdown (Windows delivers the last two only to some processes, such as a
+/// service; an interactive one may just be ended). For close, logoff and
+/// shutdown Windows grants only a few seconds before it ends the process
+/// anyway. The restore is local and runs first; only the audit emit after it,
+/// bounded at 5s, can be cut short. A
+/// `TerminateProcess` (`taskkill /F`, Task Manager) cannot be caught at all;
+/// `gate-connect proxy disable` from a fresh process is the recovery.
+///
+/// Returns once the first event arrives. The listeners are kept registered for
+/// the rest of the process on purpose: tokio hands an event nobody listens for
+/// to the default handler, so dropping them here would let a second Ctrl-C
+/// during the caller's teardown kill the process halfway through restoring.
+/// Unix needs no such care, since a tokio signal registration outlives its
+/// stream.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn wait_for_shutdown() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -989,16 +1011,32 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
                 signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
             let mut int =
                 signal(SignalKind::interrupt()).context("installing the SIGINT handler")?;
+            let mut hup = signal(SignalKind::hangup()).context("installing the SIGHUP handler")?;
             tokio::select! {
                 _ = term.recv() => {}
                 _ = int.recv() => {}
+                _ = hup.recv() => {}
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .context("waiting for Ctrl-C")?;
+            use tokio::signal::windows;
+            let mut c = windows::ctrl_c().context("installing the Ctrl-C handler")?;
+            let mut brk = windows::ctrl_break().context("installing the Ctrl-Break handler")?;
+            let mut close = windows::ctrl_close().context("installing the close handler")?;
+            let mut logoff = windows::ctrl_logoff().context("installing the logoff handler")?;
+            let mut shutdown =
+                windows::ctrl_shutdown().context("installing the shutdown handler")?;
+            tokio::select! {
+                _ = c.recv() => {}
+                _ = brk.recv() => {}
+                _ = close.recv() => {}
+                _ = logoff.recv() => {}
+                _ = shutdown.recv() => {}
+            }
+            // See the doc comment: still listening is what keeps a second
+            // event from reaching the default handler mid-teardown.
+            std::mem::forget((c, brk, close, logoff, shutdown));
         }
         Ok::<(), anyhow::Error>(())
     })

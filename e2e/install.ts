@@ -103,9 +103,6 @@ export function installFakeTauri(state: BackendState): void {
       t.status = { kind: "detected" };
       return t.status;
     },
-    has_upstream_credential: () => true,
-    save_upstream_api_key: () => null,
-    clear_upstream_credential: () => null,
 
     // ---- account
     get_account: () => state.account,

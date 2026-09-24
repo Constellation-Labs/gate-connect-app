@@ -269,7 +269,7 @@ ENGINE_RAN=""
 # Declared up here with ENGINE_ON for the same set -u reason - the trap is armed
 # long before start_engine is even defined.
 SYSTEM_TRUSTED=""
-# PID of the `proxy enable --foreground` host on macOS and Windows, which both
+# PID of the `proxy enable` foreground host on macOS and Windows, which both
 # run the engine in the process that enabled it. Declared here with ENGINE_ON so
 # the EXIT trap can stop it under set -u however early the script dies.
 ENGINE_FG_PID=""
@@ -290,7 +290,7 @@ cleanup() {
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
   # SIGTERM makes it restore the system proxy itself, which is the whole point
-  # of --foreground; the inline disable below is the belt to that braces.
+  # of the foreground host; the inline disable below is the belt to that braces.
   if [ -n "$ENGINE_FG_PID" ]; then
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     sleep 2
@@ -434,15 +434,10 @@ start_engine() {
     script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
   else
     # macOS and Windows both host the engine in the process that enabled it -
-    # there is no daemon to adopt it - so a plain `proxy enable` returns, the
-    # process exits, and routing dies with it: the PAC URL is left pointing at a
-    # port nothing answers. `--foreground` parks instead, so the engine lives
-    # for as long as this background process does, which is the phase.
-    #
-    # Windows reached this branch as a plain `proxy enable` until the skip above
-    # was lifted, and would have died exactly that way. Nobody saw it, because
-    # the skip returned before the branch could run.
-    "$CLI" proxy enable --foreground >"$WORK/enable.out" 2>&1 &
+    # there is no daemon to adopt it - so `proxy enable` always stays in the
+    # foreground there (the `--foreground` flag is Linux-only), and the engine
+    # lives for as long as this background process does, which is the phase.
+    "$CLI" proxy enable >"$WORK/enable.out" 2>&1 &
     ENGINE_FG_PID=$!
     local i=0
     while [ "$i" -lt 60 ]; do
@@ -590,12 +585,12 @@ stop_engine() {
   fi
   local rc=0
   if [ -n "$ENGINE_FG_PID" ]; then
-    # The foreground host disables and restores on SIGTERM - that is what the
-    # flag is for - so signalling it IS the disable. Running the CLI's disable
-    # again afterwards would be asking an already-off proxy to turn off, and
-    # this function treats a non-zero disable as a failure. The verification
-    # below (snapshot gone) is what actually proves it took, and it does not
-    # care which of the two did the work.
+    # The foreground host disables and restores on SIGTERM - that is what it
+    # stays in the foreground for - so signalling it IS the disable. Running
+    # the CLI's disable again afterwards would be asking an already-off proxy
+    # to turn off, and this function treats a non-zero disable as a failure.
+    # The verification below (snapshot gone) is what actually proves it took,
+    # and it does not care which of the two did the work.
     ckpt "engine: stopping the foreground host (pid=$ENGINE_FG_PID)"
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     local i=0
@@ -697,6 +692,49 @@ stop_engine() {
     kill -0 "$dpid" 2>/dev/null && kill -KILL "$dpid" 2>/dev/null
   fi
   ENGINE_ON=""
+}
+
+# The macOS/Windows foreground host's stop puts tools whose config names its
+# relay back on their own settings (`revert_stranded_configs_for_quit`), so they
+# do not dial a dead loopback port afterwards. Nothing else here can see that:
+# run_tool disconnects every tool before stop_engine. So leave one relay-routed
+# tool connected across the stop and check it came back unrouted.
+#
+# macOS only: on Windows `kill` is a TerminateProcess, which skips the stop path
+# entirely. Last engine phase only, because the revert records the tool for the
+# next enable to reconnect, and a later phase would inherit that.
+REVERT_CHECK=""
+revert_check_prepare() {
+  REVERT_CHECK=""
+  [ "$OS" = "Darwin" ] && [ -n "$ENGINE_FG_PID" ] || return 0
+  if [ -z "$OPENCODE_MODEL" ]; then
+    echo "::notice::skipping the stop-revert check - opencode not installed"
+    return 0
+  fi
+  if "$CLI" connect opencode >"$WORK/revert-connect.out" 2>&1; then
+    REVERT_CHECK=1
+  else
+    echo "FAIL: stop-revert check: could not connect opencode before the stop"
+    sed 's/^/    /' "$WORK/revert-connect.out" 2>/dev/null
+    FAIL=$((FAIL + 1))
+  fi
+}
+revert_check_assert() {
+  [ -n "$REVERT_CHECK" ] || return 0
+  REVERT_CHECK=""
+  local st
+  st="$("$CLI" status opencode 2>&1)"
+  case "$st" in
+    *": detected"*)
+      echo "PASS: stopping the foreground host put opencode back on its own settings"
+      PASS=$((PASS + 1))
+      ;;
+    *)
+      echo "FAIL: opencode still names the stopped host's relay after the stop ($st)"
+      FAIL=$((FAIL + 1))
+      "$CLI" disconnect opencode >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1302,9 @@ if oauth_login; then
   stop_relay
   start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
   run_engine_tools "oauth"
+  revert_check_prepare
   stop_engine
+  revert_check_assert
   "$CLI" logout >/dev/null 2>&1 || true
 else
   echo "::endgroup::"

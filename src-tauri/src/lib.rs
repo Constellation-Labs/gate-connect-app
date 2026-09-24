@@ -115,7 +115,7 @@ fn tool_status(slug: String) -> Result<StatusDto, String> {
 }
 
 #[tauri::command]
-async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, String> {
+async fn connect_tool(slug: String) -> Result<StatusDto, String> {
     // Off the main thread: connect does config-file I/O that shouldn't
     // block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
@@ -149,7 +149,6 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
-            upstream_url,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
         };
@@ -172,12 +171,6 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     .await
     .map_err(|e| format!("disconnect join error: {e}"))?
 }
-
-// The upstream-credential trait surface (`has_upstream_credential` /
-// `save_upstream_credential` / `clear_upstream_credential`) is CLI-only
-// (`gate-connect set-upstream` / `clear-upstream`): no shipped integration
-// requires an upstream credential, so the renderer has no commands for it
-// and no UI to collect one.
 
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
     let id = ToolId::from_slug(slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;

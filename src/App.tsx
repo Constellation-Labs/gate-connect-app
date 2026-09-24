@@ -925,12 +925,11 @@ export function App() {
       let declined = false;
       setProxyBusy(true);
       try {
-        const tool = tools.find((t) => t.slug === slug);
         if (routed) {
           // Connect auto-enables the engine, which trusts the CA; disconnect
           // never prompts.
           await ensureCaTrusted();
-          await connectTool(slug, tool?.default_upstream_url ?? "");
+          await connectTool(slug);
         } else {
           await disconnectTool(slug);
         }
@@ -952,7 +951,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [tools, proxy, ensureCaTrusted, resyncLedger],
+    [proxy, ensureCaTrusted, resyncLedger],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -1011,7 +1010,7 @@ export function App() {
         try {
           if (member.kind === "config" && member.tool) {
             if (on && !member.desired && member.attention !== "drifted") {
-              await connectTool(member.key, member.tool.default_upstream_url);
+              await connectTool(member.key);
             } else if (!on && member.desired) {
               await disconnectTool(member.key);
             }

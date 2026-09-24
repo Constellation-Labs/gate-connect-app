@@ -530,20 +530,6 @@ impl Integration for OpenCode {
         // while status reports the tool as clean and re-disconnect no-ops.
         remove_state()
     }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "OpenCode does not need a separate upstream credential - Gate Connect adds its headers to whatever provider(s) you've already authenticated to via `opencode auth login`."
-        )
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Snapshot the provider's current state, then overwrite `options.baseURL`

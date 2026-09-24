@@ -405,20 +405,6 @@ impl Integration for OpenClaw {
         eprintln!("note: OpenClaw is still using the old proxy setting -- {RESTART_HINT}.");
         Ok(())
     }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "OpenClaw does not need a separate upstream credential -- Gate routes its traffic through the proxy and passes your provider credentials through untouched."
-        )
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Pure drift evaluation, split out of [`OpenClaw::status`] so all five states

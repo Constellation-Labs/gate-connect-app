@@ -339,7 +339,9 @@ pub fn serve() -> Result<()> {
         anyhow::bail!(
             "the Gate proxy is enabled, and it already hosts this relay{where_}. \
              `proxy relay` is the alternative for machines with no app, not an addition to \
-             it - point your tools at that URL, or run `gate-connect proxy disable` first."
+             it - point your tools at that URL, or turn routing off first (`gate-connect \
+             proxy disable`; on macOS and Windows, quit the app or press Ctrl-C in the \
+             `proxy enable` terminal instead)."
         );
     }
 

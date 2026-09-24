@@ -121,7 +121,7 @@ tokio = { version = "1", features = [
   "sync",
   "time",
   "macros",
-  # `proxy enable --foreground` parks on SIGINT/SIGTERM so a service manager can
+  # A foreground `proxy enable` parks on SIGINT/SIGTERM so a service manager can
   # stop it and have the system proxy restored on the way down.
   "signal",
 ] }

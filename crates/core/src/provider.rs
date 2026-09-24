@@ -324,7 +324,6 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, Pr
             }
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
-                upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: crate::proxy::relay_base_url(),
                 engine_proxy_url: crate::proxy::tool_proxy_url(),
             };
@@ -504,10 +503,7 @@ fn engine_up_if_needed(integ: &dyn registry::Integration) -> bool {
 /// up later stays unrouted until this runs (at startup). Idempotent and
 /// best-effort - one tool's failure never strands the rest.
 ///
-/// Only tools that carry their own upstream credential (`requires_upstream_credential
-/// == false`, e.g. Claude Code) are auto-applied; a tool that needs a
-/// Gate-stored key is left for the explicit connect flow. Tools in
-/// [`Status::Detected`] (installed, no Gate config) are connected; a
+/// Tools in [`Status::Detected`] (installed, no Gate config) are connected; a
 /// [`Status::Drifted`] tool is *re*-connected only when its config carries our
 /// own management marker ([`Integration::config_is_managed`]) - i.e. the stale
 /// values are ours (an old scheme, a changed relay port), not a setup the user
@@ -530,9 +526,6 @@ pub fn reconcile_enabled() -> Result<()> {
             let Some(integ) = registry::find(id) else {
                 continue;
             };
-            if integ.requires_upstream_credential() {
-                continue; // needs a stored key; not safe to auto-apply
-            }
             let reapply = match integ.status() {
                 Ok(Status::Detected) => true,
                 // Our own writes gone stale - safe to reassert, but only with
@@ -550,7 +543,6 @@ pub fn reconcile_enabled() -> Result<()> {
             }
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
-                upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: relay_base_url.clone(),
                 engine_proxy_url: crate::proxy::tool_proxy_url(),
             };
@@ -589,9 +581,6 @@ fn reconcile_unmapped_tools(
         if mapped.contains(&integ.id()) {
             continue; // covered by the provider pass above
         }
-        if integ.requires_upstream_credential() {
-            continue; // needs a stored key; not safe to auto-apply
-        }
         if !matches!(integ.status(), Ok(Status::Drifted(_))) {
             continue;
         }
@@ -603,7 +592,6 @@ fn reconcile_unmapped_tools(
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
-            upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: Some(relay_base_url.to_string()),
             engine_proxy_url: crate::proxy::tool_proxy_url(),
         };
@@ -1044,7 +1032,6 @@ fn restore_swept_tools() -> Result<()> {
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
-            upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: relay_base_url.clone(),
             engine_proxy_url: crate::proxy::tool_proxy_url(),
         };
