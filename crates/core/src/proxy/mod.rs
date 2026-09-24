@@ -950,46 +950,10 @@ pub fn chatgpt_app_user_agent() -> Option<String> {
     CHATGPT_APP_USER_AGENT.lock().ok().and_then(|v| v.clone())
 }
 
-/// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
-/// this machine's loopback - the only place our plain-HTTP loopback listeners
-/// (the relay, the PAC responder) may be addressed from.
-///
-/// This is the standard local-daemon DNS-rebinding defense, shared by the
-/// relay and the PAC server so they can't drift: a browser always names its
-/// target in the `Host` header, so a page that rebound `attacker.example` to
-/// 127.0.0.1 still arrives carrying `Host: attacker.example` and is refused,
-/// while the CLI tools these listeners exist for dial `127.0.0.1` directly.
-/// The port is deliberately not pinned - every listener that calls this binds
-/// loopback exclusively, so any request that reached it already used our
-/// port, and pinning would only add a way to break legitimate callers.
-pub(crate) fn authority_is_loopback(authority: &str) -> bool {
-    let authority = authority.trim();
-    // Bracketed IPv6 (`[::1]:8080` / `[::1]`) carries colons inside the
-    // brackets, so strip that form before splitting off a port.
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        rest.split(']').next().unwrap_or("")
-    } else {
-        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
-    };
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
-}
-
-/// Whether an `Origin` header value may talk to our loopback listeners: only
-/// a loopback origin qualifies. Anything else - a remote site's origin, or
-/// the opaque `null` a sandboxed/rebound context sends - marks a cross-site
-/// browser request, which must never spend the owner's Gate credential even
-/// though CORS already keeps the page from reading the response ("simple"
-/// cross-origin POSTs are delivered without a preflight). Non-browser
-/// clients send no `Origin` at all, so they never reach this check.
-pub(crate) fn origin_is_loopback(origin: &str) -> bool {
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    authority_is_loopback(rest.split('/').next().unwrap_or(""))
-}
+// The loopback guards are defined in `gate-connect-paths`, because the
+// forwarder's relay listener applies the same browser boundary as the relay it
+// fronts, and two copies of a security check are two chances to drift.
+pub(crate) use gate_connect_paths::{authority_is_loopback, origin_is_loopback};
 
 /// Cross-process hint that some Gate Connect process has the system proxy
 /// routed through a live engine: the snapshot file exists for exactly that
@@ -1218,7 +1182,13 @@ pub fn relay_listening() -> bool {
 /// intercepting: it predates parking, and every relay that could not park was
 /// routing whenever it was up.
 pub fn relay_report() -> Option<RelayReport> {
-    let port = relay::load_persisted_port()?;
+    relay_report_at(relay::load_persisted_port()?)
+}
+
+/// [`relay_report`] for a relay on `port` rather than on the public relay
+/// port - which is where the engine's relay sits when the forwarder fronts the
+/// public one (`relay::load_engine_port`).
+pub(crate) fn relay_report_at(port: u16) -> Option<RelayReport> {
     let token = forwarder::load_or_create_token().ok()?;
     let headers =
         gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
@@ -1649,8 +1619,12 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// The question a plain quit asks of each address a tool's configuration
 /// names. Three addresses are ours, and they die differently:
 ///
-/// - the **relay** origin (a base URL under it): hosted in the engine, and
-///   nothing fronts it - dies with the engine's process;
+/// - the **relay** origin (a base URL under it): hosted in the engine unless
+///   the forwarder holds it. On macOS and Windows the forwarder normally does
+///   (`relay::load_engine_port` says why), and then it survives - the
+///   forwarder serves relay requests straight to the provider once the engine
+///   is gone. Where it does not (no forwarder, a stale one, something else on
+///   the port), the engine's relay binds it and it dies with the process;
 /// - the **engine's own** proxy address, plain or with Claude Code's route
 ///   selector in the userinfo: same process - dies. Configs still name it on
 ///   an install written before tool configs moved to the forwarder, and on a
@@ -1670,9 +1644,13 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// and `quit_app` gates on exactly that. Keeping the platform out of here is
 /// what lets the rule be tested on any CI runner.
 pub fn address_dies_with_gui(configured: &str) -> bool {
+    // A fronted relay origin is passed as absent: it is not an address that
+    // dies, which is the only thing `address_dies_given` asks of it.
+    let relay_origin = relay_base_url()
+        .filter(|_| forwarder::fronted_relay_port(std::time::Duration::ZERO).is_none());
     address_dies_given(
         configured,
-        relay_base_url().as_deref(),
+        relay_origin.as_deref(),
         persisted_engine_proxy_url().as_deref(),
         exported_proxy_identity_url().as_deref(),
     )
@@ -5439,6 +5417,19 @@ mod address_dies_tests {
         assert!(!dies("http://gate-claude-code:route@127.0.0.1:47150"));
         assert!(!dies("https://api.openai.com/v1"));
         assert!(!dies("http://proxy.corp.example:3128"));
+    }
+
+    /// Behind the forwarder the relay origin is passed as absent, and a base
+    /// URL under it then survives the quit like the forwarder's own address -
+    /// while the engine's own port still dies, because nothing fronts that.
+    #[test]
+    fn a_fronted_relay_survives_and_the_engine_still_dies() {
+        let fronted = |configured| address_dies_given(configured, None, Some(ENGINE), Some(FWD));
+        assert!(!fronted(
+            "http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"
+        ));
+        assert!(!fronted(RELAY));
+        assert!(fronted(ENGINE));
     }
 
     /// A port that is a prefix of ours is not ours.

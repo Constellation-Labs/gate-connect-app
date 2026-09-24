@@ -2053,17 +2053,24 @@ fn candidate_ports(ours: &[u16]) -> Vec<u16> {
 }
 
 /// The ports this install has remembered for its own listeners: the MITM and
-/// PAC ports (`proxy/port`, `proxy/pac-port`) and the relay port
-/// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
+/// PAC ports (`proxy/port`, `proxy/pac-port`), the forwarder's, and both relay
+/// ports (`proxy/relay-port`, `proxy/relay-engine-port`). Best-effort - anything missing or unreadable simply
 /// isn't deferred.
 fn persisted_ports() -> Vec<u16> {
     // `forwarder-port` is in here for the same reason as the rest: it is a port
     // this install remembers and rebinds, so a fresh engine listener taking it
     // would strand every process holding the exported variables.
-    let mut ports: Vec<u16> = ["port", "pac-port", "forwarder-port"]
-        .iter()
-        .filter_map(|name| super::port_persist::load(name).ok().flatten())
-        .collect();
+    // `relay-engine-port` likewise: the relay behind the forwarder rebinds it,
+    // and the forwarder hands relay connections to whatever proves itself there.
+    let mut ports: Vec<u16> = [
+        "port",
+        "pac-port",
+        "forwarder-port",
+        gate_connect_paths::RELAY_ENGINE_PORT_NAME,
+    ]
+    .iter()
+    .filter_map(|name| super::port_persist::load(name).ok().flatten())
+    .collect();
     ports.extend(super::relay::load_persisted_port());
     ports
 }

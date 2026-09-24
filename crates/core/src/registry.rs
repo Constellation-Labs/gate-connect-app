@@ -122,10 +122,13 @@ impl fmt::Display for Status {
 /// being declared rather than matched off an error string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mechanism {
-    /// The config carries a loopback **base URL** for the reverse-proxy relay,
-    /// which lives in the engine and dies with it. On macOS and Windows the
-    /// engine lives in the GUI process, so a plain quit takes this address
-    /// with it and nothing fronts it.
+    /// The config carries a loopback **base URL** for the reverse-proxy relay.
+    /// On macOS and Windows the forwarder normally holds that port, handing
+    /// connections to the engine's relay while it runs and serving them
+    /// straight to the provider once it is gone, so a plain quit leaves the
+    /// address answering. Where the forwarder does not hold it, the engine's
+    /// relay does, in the GUI process, and a plain quit takes it down;
+    /// `proxy::address_dies_with_gui` is what tells the two apart.
     Relay,
     /// The config carries a **proxy address**: the forwarder's, since tool
     /// configs moved off the engine's own port. The forwarder is a separate

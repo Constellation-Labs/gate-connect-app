@@ -1239,10 +1239,13 @@ pub fn tools_stranded_by_quit() -> Vec<String> {
 /// premise for some addresses and not others, and the line between them is
 /// not a tool boundary. Everything naming the forwarder keeps working, because
 /// the forwarder is a separate process and is deliberately left running
-/// (`proxy::forwarder::stop` is not called here). A config naming the relay, or
-/// the engine's own port, names a listener inside this process, and nothing
-/// fronts it: the tool cannot connect until Gate runs again, with an error
-/// about a loopback port the user has never heard of.
+/// (`proxy::forwarder::stop` is not called here). That now includes the relay
+/// on most installs: the forwarder holds the relay port too and serves relay
+/// requests straight to the provider once the engine is gone. A config naming
+/// the engine's own port, or the relay where the forwarder does not hold it,
+/// names a listener inside this process, and nothing fronts it: the tool cannot
+/// connect until Gate runs again, with an error about a loopback port the user
+/// has never heard of.
 ///
 /// So this reverts a config **if and only if an address it names dies with
 /// this process** - [`stranded_by_quit`], which is also what the quit dialog

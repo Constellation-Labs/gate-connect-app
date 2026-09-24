@@ -4,8 +4,8 @@
 //!
 //! This crate exists so `gate-connect-forwarder` can stay a small binary. It
 //! cannot depend on `gate-connect-core` - that would link the keychain, the
-//! MITM stack, rustls and reqwest into a process whose whole job is to copy
-//! bytes between two sockets - and it must not *duplicate* these either: the
+//! MITM stack and reqwest into a process whose job is to copy bytes between
+//! sockets - and it must not *duplicate* these either: the
 //! forwarder and the app read and write the same files, so a disagreement
 //! about where they are is a failure with no error message, just two processes
 //! quietly looking at different directories.
@@ -127,6 +127,116 @@ pub const RELAY_HEALTH_PATH: &str = "/__gate/relay-health";
 /// boundary `docs/security-notes-loopback.md` already accepts, and it carries
 /// nothing secret: whether Gate is routing is what the app's own window says.
 pub const RELAY_INTERCEPTING_HEADER: &str = "x-gate-relay-intercepting";
+
+/// Where the relay's **public** port is persisted: the one every relay tool
+/// config names (`http://127.0.0.1:<port>/...`). On macOS and Windows the
+/// forwarder holds it, so the address keeps answering after the app is gone;
+/// on Linux, and wherever the forwarder could not take it, the engine's relay
+/// binds it directly, as it always did.
+pub const RELAY_PORT_NAME: &str = "relay-port";
+
+/// Where the engine's relay binds when the forwarder fronts
+/// [`RELAY_PORT_NAME`]. The forwarder hands relay connections here while
+/// something here proves it is Gate's relay, and serves them itself when
+/// nothing does. Nothing writes this port into a tool config.
+pub const RELAY_ENGINE_PORT_NAME: &str = "relay-engine-port";
+
+/// Header on the forwarder's own health answer naming the relay port it holds,
+/// or `none` while it holds none.
+///
+/// Its *absence* is information too: a forwarder built before it fronted the
+/// relay never sends it, which is how the app tells a stale forwarder, left
+/// running across an update, from a current one that simply lost the port.
+pub const FORWARDER_RELAY_HEADER: &str = "x-gate-forwarder-relay";
+
+/// Reserved liveness path the relay answers with a bare 204 to anybody.
+pub const RELAY_LIVENESS_PATH: &str = "/__gate/health";
+
+/// Marker a relay base URL carries ahead of the catalog slug to name the tool
+/// configured with it. The why is on `gate_connect_core::proxy::relay`'s
+/// `TOOL_PATH_PREFIX`; it is defined here because the forwarder strips it too.
+pub const RELAY_TOOL_PATH_PREFIX: &str = "/__gate/t/";
+
+/// Every catalog slug a relay base URL may name, and the upstream it forwards
+/// to when Gate is not routing it.
+///
+/// A copy of `slug` / `upstream_url` from `gate_connect_core::proxy::catalog`,
+/// which the forwarder cannot link. A test in core asserts the two are equal,
+/// so adding a catalog entry without adding it here fails the build rather
+/// than 400ing that entry's tools the first time the app is closed.
+///
+/// This is the whole of the forwarder's routing knowledge, and it is what keeps
+/// the relay listener from being an open proxy: a request names one of these
+/// slugs or it goes nowhere.
+pub const RELAY_UPSTREAMS: &[(&str, &str)] = &[
+    ("anthropic", "https://api.anthropic.com"),
+    ("claude-web", "https://claude.ai/api"),
+    ("openai", "https://api.openai.com"),
+    ("chatgpt-apps", "https://chatgpt.com"),
+    ("chatgpt", "https://chatgpt.com/backend-api"),
+    ("openrouter", "https://openrouter.ai/api"),
+    ("opencode", "https://opencode.ai"),
+];
+
+/// [`RELAY_UPSTREAMS`], plus the hermetic e2e's mock upstream in debug builds.
+///
+/// `GATE_CONNECT_TEST_UPSTREAM` is the seam core's relay already honours; read
+/// here too so a test that aims the relay at a mock aims the forwarder at the
+/// same one. Debug builds only, for the reason [`app_support_dir`] gives.
+pub fn relay_upstreams() -> Vec<(String, String)> {
+    #[allow(unused_mut)]
+    let mut out: Vec<(String, String)> = RELAY_UPSTREAMS
+        .iter()
+        .map(|(slug, url)| ((*slug).to_string(), (*url).to_string()))
+        .collect();
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::var_os("GATE_CONNECT_TEST_UPSTREAM").filter(|v| !v.is_empty()) {
+        out.push(("test-upstream".into(), url.to_string_lossy().into_owned()));
+    }
+    out
+}
+
+/// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
+/// this machine's loopback - the only place our plain-HTTP loopback listeners
+/// (the relay, the PAC responder, the forwarder's relay listener) may be
+/// addressed from.
+///
+/// This is the standard local-daemon DNS-rebinding defense: a browser always
+/// names its target in the `Host` header, so a page that rebound
+/// `attacker.example` to 127.0.0.1 still arrives carrying
+/// `Host: attacker.example` and is refused, while the CLI tools these
+/// listeners exist for dial `127.0.0.1` directly. The port is deliberately not
+/// pinned - every listener that calls this binds loopback exclusively, so any
+/// request that reached it already used our port, and pinning would only add a
+/// way to break legitimate callers.
+pub fn authority_is_loopback(authority: &str) -> bool {
+    let authority = authority.trim();
+    // Bracketed IPv6 (`[::1]:8080` / `[::1]`) carries colons inside the
+    // brackets, so strip that form before splitting off a port.
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// Whether an `Origin` header value may talk to our loopback listeners: only
+/// a loopback origin qualifies. Anything else - a remote site's origin, or
+/// the opaque `null` a sandboxed/rebound context sends - marks a cross-site
+/// browser request, which must never spend the owner's Gate credential even
+/// though CORS already keeps the page from reading the response ("simple"
+/// cross-origin POSTs are delivered without a preflight). Non-browser
+/// clients send no `Origin` at all, so they never reach this check.
+pub fn origin_is_loopback(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    authority_is_loopback(rest.split('/').next().unwrap_or(""))
+}
 
 /// Header carrying the forwarder's answer: hex SHA-256 of the token followed by
 /// the challenge. Only a process that can read the 0600 token file can produce
