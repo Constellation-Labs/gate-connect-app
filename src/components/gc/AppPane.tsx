@@ -326,7 +326,13 @@ export function AppPane({
         />
       )}
 
+      {/* Keyed on the app so the reveal count starts at ten on each one.
+        * Nothing above remounts this pane on a switch, and `useToolEvents`
+        * drops its rows when the tool changes but cannot reach this count:
+        * forty rows revealed on Claude opened Codex at forty, and its first
+        * click could fetch a page nobody had asked for. */}
       <RecentActivity
+        key={name}
         activity={activity}
         pending={eventsPending}
         unavailable={unavailable?.events}

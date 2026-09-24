@@ -460,13 +460,6 @@ export function NewUiApp() {
     });
   }, [tools, verdicts, proxy?.running, securityFeed.state]);
 
-  /** The event whose summary is open, or null.
-   *
-   * Held here rather than in the pane because AC7 turns on it *surviving* the
-   * click that opens the dashboard: the summary stays up until the browser has
-   * it, so a failed open leaves the user looking at the event rather than at
-   * nothing. */
-
   // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
   // a budget shared with every other Gate Connect user on the same network.

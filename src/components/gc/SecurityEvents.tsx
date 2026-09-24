@@ -199,11 +199,7 @@ export function SecurityEvents({
       <Card className="p-4" busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
         {/* `heading/16`, the same line the Policies and Token savings cards
-          * above draw. The pill sits on it because it qualifies the rows
-          * underneath - it was in the pane header for the same reason, and the
-          * card header is where that header's job went. `items-baseline` so the
-          * uppercase pill sits on the heading's baseline rather than centring
-          * against a taller line box. */}
+          * above draw. */}
         {/* The feed's connection pill - Live / Reconnecting / Offline - sat
           * beside this heading until 2026-09-23, when product asked for it to
           * go. "Live" was true on every healthy launch and said nothing; the
@@ -211,11 +207,9 @@ export function SecurityEvents({
           * either, the tray's security card having been removed in #334. An
           * offline feed and a quiet machine now look the same here. Raised
           * with the decision, not overlooked. */}
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
-            Security events
-          </h2>
-        </div>
+        <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+          Security events
+        </h2>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">
           <thead>

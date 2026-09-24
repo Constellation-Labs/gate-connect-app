@@ -349,6 +349,22 @@ describe("AppPane recent activity", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("starts the next app at ten rows, whatever the last one revealed", () => {
+    // The count followed the component rather than the app: nothing remounts
+    // the pane on a switch, so a reveal on one app carried into the next.
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entry,
+      id: `req-${i}`,
+      time: `row-${i}`,
+    }));
+    const { rerender } = render(pane({ name: "Claude", activity: many }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getAllByText(/^row-/)).toHaveLength(20);
+
+    rerender(pane({ name: "Codex", activity: many.map((e) => ({ ...e })) }));
+    expect(screen.getAllByText(/^row-/)).toHaveLength(10);
+  });
+
   it("offers Load more only when there is another page", () => {
     const onLoadMore = vi.fn();
     render(pane({ activity: [entry], onLoadMore }));
