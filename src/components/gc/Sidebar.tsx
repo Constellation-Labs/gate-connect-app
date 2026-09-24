@@ -94,7 +94,13 @@ export type AppStatus =
    * this row: for an unknown provider none exists, and inventing one would be
    * the lie this phrase exists to stop telling. AG-932.
    */
-  | { kind: "not-inspected"; detail?: string };
+  | { kind: "not-inspected"; detail?: string }
+  /**
+   * Detection did not find the app on this machine. Drawn only under the
+   * rail's "Not installed" group, on a row that opens nothing - there is no
+   * traffic to report and no route to change. Undrawn in the Figma.
+   */
+  | { kind: "not-installed" };
 
 /**
  * What the last detection scan established, which is not the same as how many
@@ -223,6 +229,9 @@ export interface SidebarGroup {
    * catalog has loaded and grouping is not yet known. */
   label: string;
   apps: SidebarApp[];
+  /** The apps detection did not find. Its rows are display-only and its
+   *  eyebrow carries no counter: "0 of 3" would score apps nobody has. */
+  notInstalled?: true;
 }
 
 /*
@@ -252,6 +261,7 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
   // Amber, not green. It is the honest colour: something the user would want
   // to know about, and not a failure they caused.
   "not-inspected": { label: "Routed, not inspected", className: "text-amber-600" },
+  "not-installed": { label: "Not installed", className: "text-base-muted-foreground" },
 };
 
 /**
@@ -428,10 +438,12 @@ export function Sidebar({
                  * the rows so it can never disagree with them. Not
                  * uppercase: the drawn counter is Geist Mono Regular and
                  * reads "1 of 2". */}
-                <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-                  {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
-                  {group.apps.length}
-                </span>
+                {!group.notInstalled && (
+                  <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
+                    {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
+                    {group.apps.length}
+                  </span>
+                )}
               </div>
             )}
             <ul className="flex flex-col gap-1">
@@ -440,7 +452,7 @@ export function Sidebar({
                   key={app.slug}
                   app={app}
                   selected={view.kind === "app" && view.slug === app.slug}
-                  onSelect={onSelectApp}
+                  onSelect={group.notInstalled ? undefined : onSelectApp}
                 />
               ))}
             </ul>
@@ -611,10 +623,47 @@ function AppRow({
 }: {
   app: SidebarApp;
   selected: boolean;
-  onSelect: (slug: string) => void;
+  /** Omitted for a row that opens nothing - the "Not installed" group's. It
+   *  renders as plain content with no hover, rather than a button that does
+   *  nothing. */
+  onSelect?: (slug: string) => void;
 }) {
   const status = STATUS_TEXT[app.status.kind];
   const suffix = statusSuffix(app.status);
+  const content = (
+    <>
+      <span
+        aria-hidden
+        className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+        // `logo-wrapper` (408:14180): the overlay pair is 24%, not the 32%
+        // this had.
+        style={{
+          backgroundImage:
+            "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
+        }}
+      >
+        {app.logo ?? app.name.charAt(0)}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          title={app.hint}
+          className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
+            selected
+              ? "text-base-primary"
+              : onSelect
+                ? "text-base-foreground group-hover:text-base-primary"
+                : "text-base-foreground"
+          }`}
+        >
+          {app.name}
+        </span>
+        <span className="truncate text-base-2xs font-medium leading-4">
+          <span className={status.className}>{status.label}</span>
+          {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
+        </span>
+      </span>
+    </>
+  );
 
   return (
     <li
@@ -628,42 +677,23 @@ function AppRow({
       className={`group flex w-full items-center gap-4 rounded-control border p-1.5 ${
         selected
           ? "border-base-border bg-base-background shadow-base-xs"
-          : "border-transparent hover:border-base-border hover:bg-base-background"
+          : onSelect
+            ? "border-transparent hover:border-base-border hover:bg-base-background"
+            : "border-transparent"
       }`}
     >
-      <button
-        type="button"
-        onClick={() => onSelect(app.slug)}
-        aria-current={selected ? "page" : undefined}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <span
-          aria-hidden
-          className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
-          // `logo-wrapper` (408:14180): the overlay pair is 24%, not the 32%
-          // this had.
-          style={{
-            backgroundImage:
-              "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
-          }}
+      {onSelect ? (
+        <button
+          type="button"
+          onClick={() => onSelect(app.slug)}
+          aria-current={selected ? "page" : undefined}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
-          {app.logo ?? app.name.charAt(0)}
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span
-            title={app.hint}
-            className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
-              selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
-            }`}
-          >
-            {app.name}
-          </span>
-          <span className="truncate text-base-2xs font-medium leading-4">
-            <span className={status.className}>{status.label}</span>
-            {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
-          </span>
-        </span>
-      </button>
+          {content}
+        </button>
+      ) : (
+        <span className="flex min-w-0 flex-1 items-center gap-2">{content}</span>
+      )}
     </li>
   );
 }

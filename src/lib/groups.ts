@@ -887,8 +887,19 @@ export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
  * not in that record, so it is never switched off for them; it is also never
  * drawn, so the CLI is their only way back. That trade was accepted with the
  * decision.
+ *
+ * `opencode` is Zen / Go on `opencode.ai`, and the OpenCode row is the tool
+ * alone because of it, the way Hermes' and OpenClaw's are. The domain used to
+ * be a second member of that row, so a machine where it was on and the tool
+ * was not routing read "Partly protected - 1 of 2", and a machine without
+ * OpenCode kept the row on the strength of the domain alone. Nothing OpenCode
+ * does needs it: the tool's config already sends its `opencode` and
+ * `opencode-go` providers through the relay (`KNOWN_PROVIDERS` in
+ * `integrations/opencode.rs`). The same trade as above applies, and one more
+ * edge comes with the list: a Hermes provider pointed at `opencode.ai` now
+ * turns it on silently too.
  */
-export const TOOL_MANAGED_DOMAINS: readonly string[] = ["openrouter"];
+export const TOOL_MANAGED_DOMAINS: readonly string[] = ["openrouter", "opencode"];
 
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own
@@ -1048,6 +1059,34 @@ export function appForMember(key: string): { id: string; name: string } | null {
  */
 export function sectionMemberKeys(id: string): readonly string[] {
   return SECTIONS.find((s) => s.id === id)?.members ?? [id];
+}
+
+/**
+ * The sections with no row because nothing behind them is on this machine,
+ * for the rail's "Not installed" group.
+ *
+ * A section qualifies when at least one of its members is a tool reporting
+ * `not_installed` and the ledger drew no row for it. The second half is what
+ * keeps Claude and ChatGPT / Codex out on a machine without Claude Code or
+ * Codex: their domains still give them a row, so the app is there even though
+ * one program inside it is not. Detection is the tool's own, config-directory
+ * fallback included, so a leftover `~/.config/opencode` still counts as
+ * installed.
+ *
+ * Takes the same filtered tool list `buildGroups` was given, so a
+ * settings-managed member cannot come back here.
+ */
+export function notInstalledSections(
+  tools: Tool[],
+  groups: Group[],
+): { id: string; name: string }[] {
+  const missing = new Set(
+    tools.filter((t) => t.status.kind === "not_installed").map((t) => t.slug),
+  );
+  const drawn = new Set(groups.map((g) => g.id));
+  return SECTIONS.filter(
+    (s) => !drawn.has(s.id) && s.members.some((key) => missing.has(key)),
+  ).map((s) => ({ id: s.id, name: s.name }));
 }
 
 /**

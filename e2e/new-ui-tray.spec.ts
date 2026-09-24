@@ -260,9 +260,9 @@ test.describe("tray popover", () => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
-    // OpenClaw: every other section draws from a catalog domain with no tool
-    // installed, so it is never absent to begin with - OpenCode included, which
-    // has its own Zen / Go host row.
+    // OpenClaw: a section with no catalog domain of its own, so it is absent
+    // until the tool appears. Hermes and OpenCode are the same shape now that
+    // their domains are tool-managed.
     const row = app.page.getByRole("switch", { name: "OpenClaw", exact: true });
     await expect(row).toHaveCount(0);
 
