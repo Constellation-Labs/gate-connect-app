@@ -147,7 +147,7 @@ describe("GroupMembers inline expansion", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
     const text = screen.getByText(
-      /Claude Code reaches api\.anthropic\.com through its own config/,
+      /Claude Code routes through its own config, so this switch covers Claude Desktop \/ Cowork only/,
     ).textContent!;
     // The sibling sentence refers back to "this switch", so nothing may sit
     // between it and the switch sentence: the Cowork setting sentence goes last.

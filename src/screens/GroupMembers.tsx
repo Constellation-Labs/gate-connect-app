@@ -140,7 +140,7 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       // this switch says - and saying nothing lets the row promise something
       // the engine does not do.
       sibling &&
-        `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
+        `${sibling.name} routes through its own config, so this switch covers ${member.name} only.`,
       // Last, so it does not sit between the switch sentence and the sibling
       // one that refers back to "this switch".
       coworkSetting,
