@@ -24,13 +24,14 @@ function renderTopbar(overrides: Partial<Parameters<typeof Topbar>[0]> = {}) {
 afterEach(cleanup);
 
 /**
- * The topbar's overflow menu. These cases date from when the two surfaces
- * drew separate menus that had diverged (both draw `OverflowMenu` now): the tray's closed on a click outside, on Escape
- * and under the arrow keys, and this one closed only by clicking the button
- * that had opened it. The interaction now has one home (`useRovingMenu`), and
- * these cases are the mirror of `Tray.test.tsx`'s - each surface is held to the
- * behaviour at its own wiring, so a menu that stops calling the hook, or calls
- * it wrong, fails here rather than shipping.
+ * The topbar's overflow menu. These cases date from when the topbar and the
+ * tray drew separate menus that had diverged: the tray's closed on a click
+ * outside, on Escape and under the arrow keys, and this one closed only by
+ * clicking the button that had opened it. Both surfaces draw `OverflowMenu`
+ * now, so the menu's own behaviour cannot differ between them; what these
+ * cases still hold is the Topbar's wiring - that it mounts the menu when open,
+ * hands it the trigger for focus return, and routes selection and dismissal
+ * through its own props. `Tray.test.tsx` holds the tray's.
  */
 describe("Topbar menu", () => {
   it("draws no menu and no scrim while it is closed", () => {

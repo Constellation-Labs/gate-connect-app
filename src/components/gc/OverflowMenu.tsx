@@ -15,7 +15,7 @@ import type { IconName } from "./Icon";
  * paddings, glyph sizes and corners". Read against the frames on 2026-09-24
  * only the shadow and the glyph held: both draw 8px padding and the same
  * corners. The copies had meanwhile drifted where the frames do not - the
- * tray padded 9px, and dropped `label/12`'s tracking on Quit - and one grew a
+ * tray padded 9px (the frames' 9 is 8 of padding plus the border), and dropped `label/12`'s tracking on Quit - and one grew a
  * row line the other did not have.
  *
  * **No row line.** Every drawn row carries `shadow/2xs`, which Figma renders as
@@ -27,6 +27,12 @@ import type { IconName } from "./Icon";
 
 /**
  * All four drawn entries, in the drawn order: dashboard, support, docs, quit.
+ *
+ * The component and its instances disagree about the CONTENTS: `topnav/menu`
+ * (`744:37692`) draws three rows - dashboard, Contact support, docs - and no
+ * Quit, while both instances (`116:27225`, `744:38192`) draw four including
+ * Quit. We follow the instances. The window's is 146px tall: 4x32 rows, plus
+ * 8px padding and the 1px border top and bottom.
  *
  * **Contact support has a working destination as of 2026-09-07.** It opens the
  * dashboard's own Overview page, because that is where the support floating

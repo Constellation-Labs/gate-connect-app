@@ -16,11 +16,8 @@ import type { IconName } from "./Icon";
  * (Banners `744:37738`, Menus `744:37691`, Sidenav `408:15625`). An earlier
  * note here said both nodes were gone; they are not.
  *
- * The component and the flow instance disagree about the menu's CONTENTS:
- * `744:37692` draws three rows - dashboard, Contact support, docs - and no
- * Quit, while the Overview instance `116:27225` draws four including Quit
- * (its 146px is the height: 4x32 plus 9 top and bottom). We follow the
- * instance. The menu itself is `OverflowMenu`, shared with the tray.
+ * The menu itself is `OverflowMenu`, shared with the tray; its entries, and
+ * why there are four, are documented there.
  *
  * Two things the design draws are deliberately absent. The traffic lights are
  * the operating system's, so we only reserve the space. The Minimize2 button
