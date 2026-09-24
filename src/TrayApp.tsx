@@ -745,6 +745,8 @@ export function TrayApp() {
 
   // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: one row per
   // section under a band eyebrow, with the section's status and its switch.
+  // Less the rail's "Not installed" group, which the tray leaves out on
+  // purpose - see `Tray`'s deviations.
   //
   // Matching matters more than it looks. A tray drawing per-surface rows would
   // put a switch on the session surfaces, which the window's app switch now

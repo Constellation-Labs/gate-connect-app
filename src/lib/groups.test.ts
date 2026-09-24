@@ -162,25 +162,30 @@ describe("buildGroups", () => {
     expect(groups.map((g) => g.band)).toEqual(["openai", "other"]);
   });
 
-  it("draws OpenCode as the tool alone, leaving Zen / Go to the tool", () => {
-    // `opencode` is both a tool slug and a domain slug. The domain is
-    // tool-managed now, so the row is the tool the way Hermes' is, and a
-    // machine without OpenCode does not get a row from the domain alone.
-    const groups = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "detected" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
-      ON,
-    );
-    expect(groups).toHaveLength(1);
-    expect(groups[0].members.map((m) => m.kind)).toEqual(["config"]);
+  it("draws Zen / Go under OpenCode only while it is on", () => {
+    // `opencode` is both a tool slug and a domain slug. Off, the domain is not
+    // drawn, so the row is the tool the way Hermes' is and a machine without
+    // OpenCode gets no row from the domain alone.
+    const zen = (enabled: boolean) =>
+      domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled });
+    const detected = tool("opencode", "OpenCode", { kind: "detected" }, "opencode");
+    const missing = tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode");
 
-    expect(
-      buildGroups(
-        [tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode")],
-        [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
-        ON,
-      ),
-    ).toEqual([]);
+    expect(buildGroups([detected], [zen(false)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "config",
+    ]);
+    expect(buildGroups([missing], [zen(false)], ON)).toEqual([]);
+
+    // On, it is drawn: an older build's OpenCode switch turned it on and
+    // nothing recorded that, so hiding it would leave it with no way off. A
+    // map keyed on the slug alone would silently draw one of the two.
+    expect(buildGroups([detected], [zen(true)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "config",
+      "proxy",
+    ]);
+    expect(buildGroups([missing], [zen(true)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "proxy",
+    ]);
   });
 
   it("gives a member no section names a section of its own", () => {
@@ -1135,5 +1140,33 @@ describe("notInstalledSections", () => {
     // missing even though Claude Code is.
     const groups = buildGroups(tools, [domain()], ON);
     expect(notInstalledSections(tools, groups)).toEqual([{ id: "hermes", name: "Hermes" }]);
+  });
+
+  it("lists every section whose only member is missing, in section order", () => {
+    const tools = [
+      tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode"),
+      tool("hermes", "Hermes", { kind: "not_installed" }, "hermes"),
+      tool("openclaw", "OpenClaw", { kind: "not_installed" }, "openclaw"),
+    ];
+    expect(notInstalledSections(tools, buildGroups(tools, [], ON)).map((s) => s.id)).toEqual([
+      "openclaw",
+      "hermes",
+      "opencode",
+    ]);
+  });
+
+  it("leaves OpenCode out while Zen / Go is on, since the domain still draws its row", () => {
+    const tools = [tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode")];
+    const groups = buildGroups(
+      tools,
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: true })],
+      ON,
+    );
+    expect(notInstalledSections(tools, groups)).toEqual([]);
+  });
+
+  it("lists nothing for a tool no section names, which gets no row either", () => {
+    const tools = [tool("some-new-harness", "CLI", { kind: "not_installed" }, "opencode")];
+    expect(notInstalledSections(tools, buildGroups(tools, [], ON))).toEqual([]);
   });
 });

@@ -865,8 +865,20 @@ export function isSettingsManaged(key: string): boolean {
  * `openai` is the api.openai.com host. Nothing OpenAI ships rides it, so the
  * row is a switch for "every other program on this machine that calls
  * OpenAI" - a CLI user's decision rather than something to offer in the app.
+ *
+ * `opencode` is Zen / Go on `opencode.ai`, which the OpenCode row used to carry
+ * as a second member whether or not it was on. Off, it made that row read
+ * "Partly protected - 1 of 2" and kept it on screen on a machine without
+ * OpenCode. Nothing OpenCode does needs the host: its config already sends the
+ * `opencode` and `opencode-go` providers through the relay, which routes them
+ * whether or not the domain is enabled (`KNOWN_PROVIDERS` in
+ * `integrations/opencode.rs`). Here rather than in {@link TOOL_MANAGED_DOMAINS}
+ * because the OpenCode switch of an older build turned it on and nothing
+ * recorded that, so hiding it while on would leave `opencode.ai` intercepted
+ * with no way off but the CLI. While it is on, the row is two members again and
+ * the OpenCode switch turns it off with the tool.
  */
-export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
+export const CLI_ONLY_DOMAINS: readonly string[] = ["openai", "opencode"];
 
 /**
  * Domains the app never draws, because a tool's own switch owns them.
@@ -887,19 +899,8 @@ export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
  * not in that record, so it is never switched off for them; it is also never
  * drawn, so the CLI is their only way back. That trade was accepted with the
  * decision.
- *
- * `opencode` is Zen / Go on `opencode.ai`, and the OpenCode row is the tool
- * alone because of it, the way Hermes' and OpenClaw's are. The domain used to
- * be a second member of that row, so a machine where it was on and the tool
- * was not routing read "Partly protected - 1 of 2", and a machine without
- * OpenCode kept the row on the strength of the domain alone. Nothing OpenCode
- * does needs it: the tool's config already sends its `opencode` and
- * `opencode-go` providers through the relay (`KNOWN_PROVIDERS` in
- * `integrations/opencode.rs`). The same trade as above applies, and one more
- * edge comes with the list: a Hermes provider pointed at `opencode.ai` now
- * turns it on silently too.
  */
-export const TOOL_MANAGED_DOMAINS: readonly string[] = ["openrouter", "opencode"];
+export const TOOL_MANAGED_DOMAINS: readonly string[] = ["openrouter"];
 
 /** The rail's eyebrow per band. The eyebrow is the band rather than the
  *  section, because a section is a row now and labelling each with its own
@@ -940,9 +941,9 @@ export function buildGroups(
   }
   for (const domain of domains) {
     // Tool and domain slugs share one namespace and `opencode` is both, so the
-    // domain must not overwrite the tool. Both are named by the same section
-    // and both need a member, which is why this is keyed per kind rather than
-    // per slug.
+    // domain must not overwrite the tool. While the domain is on, both are
+    // named by the same section and both need a member, which is why this is
+    // keyed per kind rather than per slug.
     if (TOOL_MANAGED_DOMAINS.includes(domain.slug)) continue;
     if (domain.supported && (domain.enabled || !CLI_ONLY_DOMAINS.includes(domain.slug))) {
       byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));

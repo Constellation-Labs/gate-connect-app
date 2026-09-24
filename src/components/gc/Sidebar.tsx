@@ -98,7 +98,13 @@ export type AppStatus =
   /**
    * Detection did not find the app on this machine. Drawn only under the
    * rail's "Not installed" group, on a row that opens nothing - there is no
-   * traffic to report and no route to change. Undrawn in the Figma.
+   * traffic to report and no route to change.
+   *
+   * No rail frame draws it. The tray's `Connect/full frame` (738:37377) draws a
+   * "Not installed" section collapsed to a count, which is the nearest thing
+   * the file has; the tray itself dropped that section at the user's request
+   * (see `Tray`), and the rail lists the rows instead so it says what Gate can
+   * route once they are there.
    */
   | { kind: "not-installed" };
 
@@ -434,9 +440,10 @@ export function Sidebar({
                   {group.label}
                 </h2>
                 {/* Protected over total, drawn on every eyebrow
-                 * (`Components / Sidenav`, read 2026-08-23). Derived from
-                 * the rows so it can never disagree with them. Not
-                 * uppercase: the drawn counter is Geist Mono Regular and
+                 * (`Components / Sidenav`, read 2026-08-23) except "Not
+                 * installed", where "0 of 3" would score apps nobody has.
+                 * Derived from the rows so it can never disagree with them.
+                 * Not uppercase: the drawn counter is Geist Mono Regular and
                  * reads "1 of 2". */}
                 {!group.notInstalled && (
                   <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
@@ -451,7 +458,9 @@ export function Sidebar({
                 <AppRow
                   key={app.slug}
                   app={app}
-                  selected={view.kind === "app" && view.slug === app.slug}
+                  // A pane left open on an app uninstalled since does not
+                  // mark the display-only row it now sits on.
+                  selected={!group.notInstalled && view.kind === "app" && view.slug === app.slug}
                   onSelect={group.notInstalled ? undefined : onSelectApp}
                 />
               ))}

@@ -577,11 +577,12 @@ test.describe("new UI: refreshing the inventory", () => {
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
-    // OpenClaw, because a section exists as soon as anything in it does: every
-    // other section draws from a catalog domain with no tool installed at all -
-    // ChatGPT / Codex from its two chatgpt.com rows, OpenCode from its own Zen
-    // and Go host - so none of them could test "appears when a tool does".
-    // OpenClaw and Hermes are the two whose only member is the tool.
+    // OpenClaw, because a section exists as soon as anything in it does: Claude
+    // and ChatGPT / Codex draw from catalog domains with no tool installed at
+    // all, so neither could test "appears when a tool does". OpenClaw, Hermes
+    // and OpenCode (while its Zen / Go host is off) are the ones whose only
+    // member is the tool. Until then the name is on a display-only row under
+    // "Not installed", which is not a button, so the count below still holds.
     // The ROW, not its switch, and not through `appSwitch`: that helper opens
     // the app's pane before returning the control, so it cannot answer "is
     // this row absent" - there would be nothing to open. The rail's row is a
@@ -1230,6 +1231,40 @@ test.describe("new UI: the review names the file it will change", () => {
 test.describe("new UI sidebar rail", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("apps detection did not find are listed under Not installed, and counted nowhere", async ({
+    boot,
+  }) => {
+    const missing = (slug: string, name: string) => ({
+      ...OPENCLAW,
+      slug,
+      name,
+      status: { kind: "not_installed" as const },
+    });
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...OPENCLAW }, missing("hermes", "Hermes"), missing("opencode", "OpenCode")],
+    });
+
+    const heading = app.page.getByRole("heading", { name: "Not installed", exact: true });
+    await expect(heading).toBeVisible();
+    // No "0 of 2" beside it: that would score apps nobody has.
+    await expect(heading.locator("xpath=following-sibling::span")).toHaveCount(0);
+    // Listed, and display-only: the names are on screen and neither is a
+    // button that would open a pane with nothing behind it.
+    const list = heading.locator("xpath=../following-sibling::ul");
+    await expect(list.getByText("Hermes", { exact: true })).toBeVisible();
+    await expect(list.getByText("OpenCode", { exact: true })).toBeVisible();
+    await expect(list.getByText("Not installed")).toHaveCount(2);
+    await expect(app.page.getByRole("button", { name: /^Hermes/ })).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: /^OpenCode/ })).toHaveCount(0);
+    // The installed one keeps its ordinary row.
+    await expect(app.page.getByRole("button", { name: /^OpenClaw/ })).toHaveCount(1);
+
+    // The topbar's denominator is every app on the rail, and these are not.
+    // Claude, ChatGPT / Codex and OpenClaw: the three rows drawn above.
+    await expect(app.page.getByText("0 of 3 Apps on", { exact: true })).toBeVisible();
   });
 
   test("an app switch routes every surface that app uses", async ({ boot }) => {

@@ -261,8 +261,8 @@ test.describe("tray popover", () => {
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
     // OpenClaw: a section with no catalog domain of its own, so it is absent
-    // until the tool appears. Hermes and OpenCode are the same shape now that
-    // their domains are tool-managed.
+    // until the tool appears. Hermes is the same shape, and so is OpenCode
+    // while its Zen / Go host is off, as the catalog ships it.
     const row = app.page.getByRole("switch", { name: "OpenClaw", exact: true });
     await expect(row).toHaveCount(0);
 
