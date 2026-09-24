@@ -992,6 +992,15 @@ impl HttpHandler for GateHandler {
             // multipart body, so routing an upload sends the upstream an empty
             // form and the user is told their file cannot be uploaded. See
             // [`carries_multipart_body`].
+            //
+            // So is a navigation on any other host, checked beside the upload.
+            // A page load carries none of the app's client headers, so
+            // `classify_client` reads it as `Unknown`, not `Web`, and keeps
+            // every rewrite prefix the entry claims. Claude Desktop hands a
+            // connector sign-in to the system browser as a page load of
+            // `/api/organizations/{org}/mcp/start-auth/...`, inside the tree
+            // `claude-web` rewrites; routed, claude.ai answered it 403
+            // "Cross-site request not allowed" and the connector never connected.
             if let (Decision::Rewrite { upstream_url }, true, false) = (
                 decide(&rules, host, &path),
                 self.peer_allowed(ctx),
@@ -1008,6 +1017,12 @@ impl HttpHandler for GateHandler {
                     if debug_log() {
                         eprintln!(
                             "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
+                        );
+                    }
+                } else if wants_html(&req) {
+                    if debug_log() {
+                        eprintln!(
+                            "[gate-proxy] {path} is a navigation -> passthrough (a page load is never routed)"
                         );
                     }
                 } else {
@@ -1505,6 +1520,9 @@ fn solve_advice(outcome: crate::proxy::SolveOutcome) -> Option<&'static str> {
 /// preamble covers a client that does not send fetch metadata. The app's own
 /// calls fail both - its chat turn asks for `text/event-stream`, the rest for
 /// `application/json` - which is the separation this is here to make.
+///
+/// Also what keeps a navigation off the gateway on every host, not only
+/// chatgpt.com: see the rewrite in `handle_request`.
 fn wants_html<T>(req: &Request<T>) -> bool {
     let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
     if header("sec-fetch-dest").is_some_and(|v| v.trim().eq_ignore_ascii_case("document")) {
@@ -2757,6 +2775,71 @@ mod tests {
         assert_eq!(
             decide(
                 &rules_for_client(&chat, ClientClass::App),
+                req.uri().host().unwrap(),
+                req.uri().path()
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai/api".into()
+            },
+        );
+    }
+
+    /// Claude Desktop's connector sign-in, as the system browser loads it after
+    /// the app hands it over: a page load inside the `/organizations/` tree.
+    fn connector_start_auth() -> Request<()> {
+        Request::builder()
+            .method("GET")
+            .uri("https://claude.ai/api/organizations/b44129f9-a8ea-4f96-a137-b14a560e58d3/mcp/start-auth/9cffd765-7a91-4f14-9932-e5d1cf574e41?open_in_browser=1&product_surface=cowork&browser_handoff=1")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            )
+            .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("sec-fetch-dest", "document")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-site", "none")
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_connector_sign_in_is_a_navigation() {
+        assert!(wants_html(&connector_start_auth()));
+    }
+
+    #[test]
+    fn the_app_s_own_calls_are_not_navigations() {
+        // What the app actually routes: the chat turn streams, the rest is
+        // JSON. Either reading as a page load would unroute the surface.
+        for accept in ["text/event-stream", "application/json", "*/*"] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("https://claude.ai/api/organizations/b44129f9/chat_conversations/2f261f16/completion")
+                .header("accept", accept)
+                .body(())
+                .unwrap();
+            assert!(!wants_html(&req), "{accept} is not a navigation");
+        }
+    }
+
+    #[test]
+    fn the_connector_sign_in_is_a_path_we_would_otherwise_rewrite() {
+        // Same shape as the upload test above: without this the guard could be
+        // dead code. A page load carries no `anthropic-client-*` header, so it
+        // classifies as `Unknown` rather than `Web` and keeps the whole tree.
+        let mut chat: Vec<ProxyDomain> = crate::proxy::default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "claude-web")
+            .collect();
+        chat[0].enabled = true;
+        let req = connector_start_auth();
+        let client = crate::proxy::classify_client(|name| {
+            req.headers().get(name).and_then(|v| v.to_str().ok())
+        });
+        assert_eq!(client, ClientClass::Unknown);
+        assert_eq!(
+            decide(
+                &rules_for_client(&chat, client),
                 req.uri().host().unwrap(),
                 req.uri().path()
             ),
