@@ -2227,8 +2227,16 @@ export function QuitDialog({
         * hedged.
         */}
       <p className="text-sm leading-5 text-base-foreground">
-        Restores your configurations and turns routing off. Save your work
-        first. Tools and agents you have running will need restarting.
+        Restores your configurations and turns routing off.
+      </p>
+      {/* Its own paragraph, on the modal's own `gap-4` rhythm rather than a
+        * line break: what Gate does and what the person has to do are two
+        * different jobs, and run together they read as one description that a
+        * reader in the middle of quitting skims. This is the half they act on.
+        */}
+      <p className="text-sm leading-5 text-base-foreground">
+        Save your work first. Tools and agents you have running will need
+        restarting.
       </p>
     </Modal>
   );
