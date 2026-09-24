@@ -124,7 +124,8 @@ icon again. Right-click the tray icon for **Quit**.
 
 ### CLI parity
 
-For power users and scripting. Same registry, same code path:
+For power users and scripting. Same registry, same code path. Full option
+reference: [docs/cli.md](docs/cli.md).
 
 ```bash
 # Account
