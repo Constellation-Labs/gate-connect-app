@@ -586,11 +586,11 @@ stop_engine() {
   local rc=0
   if [ -n "$ENGINE_FG_PID" ]; then
     # The foreground host disables and restores on SIGTERM - that is what it
-    # stays in the foreground for - so signalling it IS the disable. Running the CLI's disable
-    # again afterwards would be asking an already-off proxy to turn off, and
-    # this function treats a non-zero disable as a failure. The verification
-    # below (snapshot gone) is what actually proves it took, and it does not
-    # care which of the two did the work.
+    # stays in the foreground for - so signalling it IS the disable. Running
+    # the CLI's disable again afterwards would be asking an already-off proxy
+    # to turn off, and this function treats a non-zero disable as a failure.
+    # The verification below (snapshot gone) is what actually proves it took,
+    # and it does not care which of the two did the work.
     ckpt "engine: stopping the foreground host (pid=$ENGINE_FG_PID)"
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     local i=0
@@ -692,6 +692,49 @@ stop_engine() {
     kill -0 "$dpid" 2>/dev/null && kill -KILL "$dpid" 2>/dev/null
   fi
   ENGINE_ON=""
+}
+
+# The macOS/Windows foreground host's stop puts tools whose config names its
+# relay back on their own settings (`revert_stranded_configs_for_quit`), so they
+# do not dial a dead loopback port afterwards. Nothing else here can see that:
+# run_tool disconnects every tool before stop_engine. So leave one relay-routed
+# tool connected across the stop and check it came back unrouted.
+#
+# macOS only: on Windows `kill` is a TerminateProcess, which skips the stop path
+# entirely. Last engine phase only, because the revert records the tool for the
+# next enable to reconnect, and a later phase would inherit that.
+REVERT_CHECK=""
+revert_check_prepare() {
+  REVERT_CHECK=""
+  [ "$OS" = "Darwin" ] && [ -n "$ENGINE_FG_PID" ] || return 0
+  if [ -z "$OPENCODE_MODEL" ]; then
+    echo "::notice::skipping the stop-revert check - opencode not installed"
+    return 0
+  fi
+  if "$CLI" connect opencode >"$WORK/revert-connect.out" 2>&1; then
+    REVERT_CHECK=1
+  else
+    echo "FAIL: stop-revert check: could not connect opencode before the stop"
+    sed 's/^/    /' "$WORK/revert-connect.out" 2>/dev/null
+    FAIL=$((FAIL + 1))
+  fi
+}
+revert_check_assert() {
+  [ -n "$REVERT_CHECK" ] || return 0
+  REVERT_CHECK=""
+  local st
+  st="$("$CLI" status opencode 2>&1)"
+  case "$st" in
+    *": detected"*)
+      echo "PASS: stopping the foreground host put opencode back on its own settings"
+      PASS=$((PASS + 1))
+      ;;
+    *)
+      echo "FAIL: opencode still names the stopped host's relay after the stop ($st)"
+      FAIL=$((FAIL + 1))
+      "$CLI" disconnect opencode >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1302,9 @@ if oauth_login; then
   stop_relay
   start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
   run_engine_tools "oauth"
+  revert_check_prepare
   stop_engine
+  revert_check_assert
   "$CLI" logout >/dev/null 2>&1 || true
 else
   echo "::endgroup::"

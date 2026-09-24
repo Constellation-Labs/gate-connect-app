@@ -378,8 +378,9 @@ impl<O: DesktopOps> DesktopManager<O> {
             anyhow::bail!(
                 "the Gate proxy is already enabled, hosted by another process on \
                  127.0.0.1:{other}. Starting a second engine would take the system proxy \
-                 over from it and record Gate's own settings as the ones to restore. Quit \
-                 that process, or run `gate-connect proxy disable` first."
+                 over from it and record Gate's own settings as the ones to restore. Stop \
+                 that one first: quit the Gate Connect app, or press Ctrl-C in the terminal \
+                 running `gate-connect proxy enable`."
             );
         }
 

@@ -1,7 +1,7 @@
 # `gate-connect` CLI reference
 
-The CLI shares `gate-connect-core` with the Gate Connect desktop app, so anything it does
-the app does too (same registry, same config edits, same secret store). Run
+The CLI shares `gate-connect-core` with the Gate Connect desktop app, so
+anything it does the app does too (same registry, same config edits, same secret store). Run
 `gate-connect --help` or `gate-connect <command> --help` for the built-in
 text.
 
@@ -46,7 +46,7 @@ Tool slugs: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`,
 | --- | --- |
 | `list` | Supported tools and their current state. |
 | `status <tool>` | Detailed status: `not installed`, `detected`, `connected`, or `drifted: <reason>`. |
-| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. Fails unless the proxy is running (see below); it does not start it. |
+| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. Needs the proxy, and does not start it: Claude Code refuses to connect without it, and Codex and OpenCode connect to the relay's last address, which only answers while the proxy runs. |
 | `disconnect <tool>` | Restore the tool's prior configuration. |
 
 ## Built-in proxy (macOS / Windows / Linux)
@@ -58,9 +58,9 @@ is tunnelled untouched.
 | Command | What it does |
 | --- | --- |
 | `proxy status` | Running or not, port, CA trust, provider domains. |
-| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. On macOS and Windows the engine lives in this process, so the command stays in the foreground until Ctrl-C / SIGTERM; then it puts tools whose config names its relay back on their own settings (they reconnect on the next enable), stops routing and restores the prior proxy state. It refuses if the app is already routing. |
-| `proxy enable --foreground` | Linux only. There the engine runs in a background daemon and `enable` returns; `--foreground` instead stays up until Ctrl-C / SIGTERM, then stops routing and restores the prior proxy state. For a systemd unit or CI job that should own the routing lifetime. |
-| `proxy disable` | Turn the proxy off and restore the prior system-proxy state. |
+| `proxy enable` | Trust the local CA and point the system proxy at the loopback engine. May prompt for elevation. **Linux:** the engine runs in a background daemon, so the command returns and routing stays on until `proxy disable`. **macOS / Windows:** the engine lives in this process, so the command stays in the foreground. Stop it with Ctrl-C or by closing the terminal (or SIGTERM on macOS): it puts tools whose config names its relay or engine back on their own settings (the next enable or app launch reconnects them), stops routing and restores the prior proxy state. It refuses while the app, or another `enable`, is already routing. |
+| `proxy enable --foreground` | Linux only. Stays up until Ctrl-C, SIGTERM or SIGHUP, then stops routing and restores the prior proxy state. For a systemd unit or CI job that should own the routing lifetime. |
+| `proxy disable` | Turn routing off and restore the prior system-proxy state. Tool configs are left naming Gate, and the CA stays trusted (`untrust-ca` removes it). **macOS / Windows:** this is the cleanup after a host that stopped without restoring (`taskkill /F`, a crash); it refuses while one is still routing, since that one restores when you stop it. |
 | `proxy relay` | Host only the loopback relay; blocks until killed. No CA, no system-proxy change. For containers, servers and CI. Sign in first. An alternative to `enable`, not a step before it. |
 | `proxy domains` | List routable provider domains and whether each is on. |
 | `proxy domain <slug> on\|off` | Turn routing on or off for one provider, e.g. `proxy domain anthropic on`. |
@@ -75,9 +75,10 @@ asking. It makes the CA a trusted root for **every user** on the machine; see
 
 ## Things to know
 
-- If the app is running the proxy, a new `login` key only takes
-  effect once the proxy is toggled off and on. The CLI prints a note when
-  that applies.
+- A process that is already routing (usually the app) keeps the key it
+  started with: after `login` it uses the old key until routing restarts
+  there, and after `logout` it keeps using the deleted key until routing
+  stops there. The CLI prints a note in both cases.
 
 ## Environment variables
 
