@@ -4063,6 +4063,20 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // dispatch.
             if !revealed && navigation_challenged && std::time::Instant::now() >= reveal_at {
                 eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
+                // Say why a Cloudflare page just appeared over the ChatGPT
+                // app. A system notification rather than a note in the page:
+                // anything injected into the window sits beside Cloudflare's
+                // own script, and a window wearing the app's user-agent should
+                // not carry a marker saying it is Gate.
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Gate Connect")
+                        .body("Accept the verification screen to continue with chat")
+                        .show();
+                }
                 let _ = window.show();
                 let _ = window.set_focus();
                 #[cfg(target_os = "macos")]

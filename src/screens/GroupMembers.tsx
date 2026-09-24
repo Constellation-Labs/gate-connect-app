@@ -141,8 +141,24 @@ function explain({
         .filter(Boolean)
         .join(" ");
     }
+    // Cowork runs its tasks on this machine only while Claude's "Only on this
+    // computer" setting is on. Otherwise they run on Anthropic's servers and
+    // nothing leaves the machine for the proxy to route - with routing on, the
+    // CA trusted and no error anywhere. Said on the row, naming the setting,
+    // because nothing Gate reads from the traffic today tells it which mode a
+    // task picked. Not on Linux, where there is no Claude Desktop to run
+    // Cowork in.
+    const coworkSetting =
+      member.domain?.slug === "anthropic" &&
+      platform !== "linux" &&
+      "Cowork routes only when “Only on this computer” is on in Claude’s settings.";
     if (member.routed) {
-      return `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`;
+      return [
+        `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`,
+        coworkSetting,
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
     // Sentences, not clauses, by the same rule as the chat branch above.
     const sibling = configSiblingOnHost(group, member);
@@ -155,7 +171,10 @@ function explain({
       // this switch says - and saying nothing lets the row promise something
       // the engine does not do.
       sibling &&
-        `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
+        `${sibling.name} routes through its own config, so this switch covers ${member.name} only.`,
+      // Last, so it does not sit between the switch sentence and the sibling
+      // one that refers back to "this switch".
+      coworkSetting,
     ]
       .filter(Boolean)
       .join(" ");

@@ -926,8 +926,10 @@ impl HttpHandler for GateHandler {
         let path = req.uri().path().to_owned();
         // Asked before the rewrite below, which has to know: a navigation on
         // chatgpt.com is never routed, and never carries anything of ours.
-        // Scoped to that host so the header reads stay off every other
-        // request's path; see both uses further down.
+        // Scoped to that host so these header reads stay off every other
+        // request's path; see both uses further down. Every other host gets the
+        // narrower page-load check in `withhold_rewrite`, asked only once a
+        // request would otherwise be rewritten.
         let navigation = host
             .as_deref()
             .is_some_and(|h| h.eq_ignore_ascii_case("chatgpt.com"))
@@ -987,8 +989,12 @@ impl HttpHandler for GateHandler {
             // without a CONNECT (so `should_intercept` never gated them), and we
             // must not inject the Gate key for a non-owner peer.
             //
-            // A navigation on chatgpt.com is never routed, whatever the rules
-            // say. Gate's own solve webview loads the PATH Cloudflare
+            // Two kinds of request are never routed, whatever the rules say: a
+            // navigation on chatgpt.com, checked here, and on any host a
+            // multipart body or a browser page load, checked in
+            // [`withhold_rewrite`] once the rewrite is otherwise decided.
+            //
+            // A navigation on chatgpt.com is never routed. Gate's own solve webview loads the PATH Cloudflare
             // challenged (`proxy::cf_challenged_path`), and three of the paths
             // it can be sent to - `/backend-api/f/conversation`,
             // `/backend-api/ps/mcp`, `/backend-api/wham/` - are rewrite
@@ -1002,14 +1008,11 @@ impl HttpHandler for GateHandler {
             // challenged" on a ten minute cooldown; and it puts Gate's
             // credential on a top-level document navigation whose answer the
             // webview then renders under chatgpt.com's origin. Nothing real is
-            // given up: the app's own turns ask for `text/event-stream` or
-            // JSON, never HTML, so no routed traffic is a navigation.
+            // given up: the ChatGPT app's own turns ask for `text/event-stream`
+            // or JSON, never HTML, so none of its routed traffic is a navigation.
             //
-            // A file upload is withheld for a different reason, and one about
-            // the gateway rather than about the protocol: it captures no
-            // multipart body, so routing an upload sends the upstream an empty
-            // form and the user is told their file cannot be uploaded. See
-            // [`carries_multipart_body`].
+            // The other two are withheld for their own reasons, both given at
+            // [`withhold_rewrite`].
             if let (Decision::Rewrite { upstream_url, slug }, true, false) = (
                 decide(&rules, host, &path),
                 self.peer_allowed(ctx),
@@ -1022,11 +1025,24 @@ impl HttpHandler for GateHandler {
                 // or a chatgpt.com navigation that happened to carry a form -
                 // printed "multipart" for a request multipart had nothing to do
                 // with.
-                if carries_multipart_body(&req) {
-                    if debug_log() {
-                        eprintln!(
-                            "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
-                        );
+                if let Some(withheld) = withhold_rewrite(&req) {
+                    match withheld {
+                        Withheld::Multipart => {
+                            if debug_log() {
+                                eprintln!(
+                                    "[gate-proxy] {path} carries a multipart body -> passthrough (gate captures no multipart body)"
+                                );
+                            }
+                        }
+                        // Outside `debug_log`: this is a request the rules
+                        // claim leaving for the vendor with routing on, and the
+                        // line is the only trace of it. Not latched, because it
+                        // is rare by construction - a browser loading a page on
+                        // a path the catalog routes - and each one is worth
+                        // seeing.
+                        Withheld::PageLoad => eprintln!(
+                            "[gate-proxy] {path} is a browser page load -> passthrough (a page load is never routed)"
+                        ),
                     }
                 } else {
                     let api_key = self.api_key.borrow().clone();
@@ -1594,6 +1610,62 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
 /// This is a statement about today's gateway, not a decision like the upgrade
 /// passthrough above: it ends the day the gateway captures a multipart body and
 /// forwards it verbatim.
+/// Why a request the rules would rewrite goes to the vendor instead.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Withheld {
+    /// See [`carries_multipart_body`].
+    Multipart,
+    /// See [`is_browser_page_load`].
+    PageLoad,
+}
+
+/// The reason, if any, to pass through a request `decide` has already chosen to
+/// rewrite. The handler asks this and nothing else, so a test on it is a test
+/// on the handler's branch rather than on a predicate beside it.
+///
+/// Multipart first: a page load is a GET and carries no body, so the two
+/// cannot both hold for a real request, and the order only fixes which one a
+/// contrived request is logged as.
+pub(crate) fn withhold_rewrite<T>(req: &Request<T>) -> Option<Withheld> {
+    if carries_multipart_body(req) {
+        Some(Withheld::Multipart)
+    } else if is_browser_page_load(req) {
+        Some(Withheld::PageLoad)
+    } else {
+        None
+    }
+}
+
+/// Whether this is a browser loading a page: a GET or HEAD carrying
+/// `sec-fetch-dest: document`.
+///
+/// Claude Desktop hands a connector sign-in to the system browser as a page
+/// load of `/api/organizations/{org}/mcp/start-auth/...`, inside the tree
+/// `claude-web` rewrites. A page load carries none of the app's client headers,
+/// so `classify_client` reads it as `Unknown`, not `Web`, and keeps every
+/// rewrite prefix the entry claims. Routed, claude.ai answered it 403
+/// "Cross-site request not allowed" and the connector never connected.
+///
+/// **Deliberately narrower than [`wants_html`]**, for the reason
+/// [`carries_multipart_body`] gives for its own width: whatever this matches
+/// leaves for the vendor with the switch on. `wants_html` also accepts an
+/// `accept` header listing `text/html`, which a non-browser client can send by
+/// default on an inference call (Java's `HttpURLConnection` does when the
+/// caller sets none), and that would turn a routed tool into a silent bypass.
+/// `sec-fetch-dest` is a forbidden header name, so a page's script cannot set
+/// it and a browser sends `document` only for a navigation; and every inference
+/// call is a POST. A client that forges both is choosing to leave, which it can
+/// already do by ignoring the proxy.
+fn is_browser_page_load<T>(req: &Request<T>) -> bool {
+    use hudsucker::hyper::Method;
+    (req.method() == Method::GET || req.method() == Method::HEAD)
+        && req
+            .headers()
+            .get("sec-fetch-dest")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("document"))
+}
+
 pub(crate) fn carries_multipart_body<T>(req: &Request<T>) -> bool {
     req.headers()
         .get(hudsucker::hyper::header::CONTENT_TYPE)
@@ -2906,6 +2978,127 @@ mod tests {
         assert_eq!(
             decide(
                 &rules_for_client(&chat, ClientClass::App),
+                req.uri().host().unwrap(),
+                req.uri().path()
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
+            },
+        );
+    }
+
+    /// Claude Desktop's connector sign-in, as the system browser loads it after
+    /// the app hands it over: a page load inside the `/organizations/` tree.
+    fn connector_start_auth() -> Request<()> {
+        Request::builder()
+            .method("GET")
+            .uri("https://claude.ai/api/organizations/b44129f9-a8ea-4f96-a137-b14a560e58d3/mcp/start-auth/9cffd765-7a91-4f14-9932-e5d1cf574e41?open_in_browser=1&product_surface=cowork&browser_handoff=1")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            )
+            .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("sec-fetch-dest", "document")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-site", "none")
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_connector_sign_in_is_withheld_as_a_page_load() {
+        assert_eq!(
+            withhold_rewrite(&connector_start_auth()),
+            Some(Withheld::PageLoad)
+        );
+    }
+
+    #[test]
+    fn an_upload_is_still_withheld_as_multipart() {
+        assert_eq!(
+            withhold_rewrite(&claude_upload()),
+            Some(Withheld::Multipart)
+        );
+    }
+
+    #[test]
+    fn a_turn_is_not_a_page_load() {
+        // What the app actually routes: the chat turn streams, the rest is JSON,
+        // and its fetches carry `sec-fetch-dest: empty`. `text/html` in the
+        // accept list is included on purpose - it must not be enough.
+        for (accept, dest) in [
+            ("text/event-stream", Some("empty")),
+            ("application/json", Some("empty")),
+            ("*/*", None),
+            ("text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2", None),
+        ] {
+            let builder = Request::builder()
+                .method("POST")
+                .uri("https://claude.ai/api/organizations/b44129f9/chat_conversations/2f261f16/completion")
+                .header("accept", accept);
+            let req = match dest {
+                Some(d) => builder.header("sec-fetch-dest", d),
+                None => builder,
+            }
+            .body(())
+            .unwrap();
+            assert_eq!(
+                withhold_rewrite(&req),
+                None,
+                "{accept} / {dest:?} is routed"
+            );
+        }
+    }
+
+    #[test]
+    fn asking_for_html_is_not_a_page_load() {
+        // The Java default `accept` on a GET, with no fetch metadata: a tool,
+        // not a browser. Matching it would unroute that tool silently.
+        let req = Request::builder()
+            .method("GET")
+            .uri("https://api.openai.com/v1/models")
+            .header(
+                "accept",
+                "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2",
+            )
+            .body(())
+            .unwrap();
+        assert_eq!(withhold_rewrite(&req), None);
+    }
+
+    #[test]
+    fn a_document_post_is_not_a_page_load() {
+        // A form submit is a navigation too, but a POST; every inference call is
+        // one, so the method is part of what keeps this from reaching them.
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://claude.ai/api/organizations/b44129f9/chat_conversations/2f261f16/completion")
+            .header("sec-fetch-dest", "document")
+            .body(())
+            .unwrap();
+        assert_eq!(withhold_rewrite(&req), None);
+    }
+
+    #[test]
+    fn the_connector_sign_in_is_a_path_we_would_otherwise_rewrite() {
+        // Same shape as the upload test above: shows the router claims this
+        // request, which is what makes the page-load check reachable for it. A
+        // page load carries no `anthropic-client-*` header, so it classifies as
+        // `Unknown` rather than `Web` and keeps the whole tree.
+        let mut chat: Vec<ProxyDomain> = crate::proxy::default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "claude-web")
+            .collect();
+        chat[0].enabled = true;
+        let req = connector_start_auth();
+        let client = crate::proxy::classify_client(|name| {
+            req.headers().get(name).and_then(|v| v.to_str().ok())
+        });
+        assert_eq!(client, ClientClass::Unknown);
+        assert_eq!(
+            decide(
+                &rules_for_client(&chat, client),
                 req.uri().host().unwrap(),
                 req.uri().path()
             ),
