@@ -120,7 +120,6 @@ import {
   QuitSafeToCloseDialog,
   UseGateModelDialog,
 } from "./components/gc/dialogs";
-import type { QuitChoice } from "./components/gc/dialogs";
 import {
   ApiKeyPane,
   ConnectedPane,
@@ -412,7 +411,7 @@ export function NewUiApp() {
    * registered is not lost - the same reasoning as `App.tsx`.
    */
   const [quit, setQuit] = useState<
-    | { kind: "choose"; tools: string[]; reverting: string[] | null; choice: QuitChoice }
+    | { kind: "choose"; tools: string[] }
     | { kind: "confirm"; disconnected: boolean; reverting: string[] | null }
     | { kind: "left-behind"; tools: string[] }
     | null
@@ -1200,18 +1199,12 @@ export function NewUiApp() {
    */
   const continueQuit = useCallback(() => {
     if (quit?.kind !== "choose") return;
-    if (quit.choice === "leave") {
-      // Nothing to carry out *here* - no teardown runs on this step - so it is
-      // a step rather than an operation. Not the same as touching nothing,
-      // which it used to say: `quit_app` reverts the stranded configs on the
-      // way out, which is why `reverting` travels to the report.
-      setQuit({
-        kind: "confirm",
-        disconnected: false,
-        reverting: quit.reverting,
-      });
-      return;
-    }
+    // One branch since 2026-09-24. There was a second - "quit without
+    // disconnecting", which ran no teardown and let `quit_app` revert only the
+    // stranded configs on the way out - and it was removed rather than
+    // rewritten: it left the user choosing between protected and
+    // looks-protected. The exit path it used still exists, because Cmd+Q from
+    // outside this flow, a logout and a shutdown all take it.
     void runDisconnect();
   }, [quit, runDisconnect]);
 
@@ -2865,12 +2858,6 @@ export function NewUiApp() {
         ) : quit?.kind === "choose" ? (
           <QuitDialog
             tools={quit.tools}
-            reverting={quit.reverting}
-            platform={platform}
-            choice={quit.choice}
-            onChoose={(choice) =>
-              setQuit((q) => (q?.kind === "choose" ? { ...q, choice } : q))
-            }
             busy={quitBusy}
             onContinue={continueQuit}
             onCancel={cancelQuit}

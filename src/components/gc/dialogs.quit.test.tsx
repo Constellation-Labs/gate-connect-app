@@ -3,11 +3,14 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { QuitDialog, QuitSafeToCloseDialog } from "./dialogs";
 
 /**
- * The quit flow's two drawn dialogs (`Flows / Overview`, `overview-quit`, read
- * 2026-08-28). What is worth pinning here is the copy - it is the file's, and
- * the confirmation's two branches say different things about the user's
- * machine - plus the primary label, which is named for the action and so has
- * to follow the selection.
+ * The quit flow's two dialogs.
+ *
+ * The first was a chooser until 2026-09-24 - two selectable rows, a "Safest"
+ * pill, and a note that closing the window is a different action. Product
+ * removed the second option, the pill with it (nothing left to be safest
+ * against) and the note. So what is left to pin is the count, the one sentence
+ * and the primary; the tests for the other branch's per-tool copy went with
+ * the branch.
  */
 
 const noop = () => {};
@@ -18,10 +21,6 @@ function renderChooser(overrides: Partial<Parameters<typeof QuitDialog>[0]> = {}
   return render(
     <QuitDialog
       tools={["Claude Code", "Codex"]}
-      reverting={["Claude Code", "Codex"]}
-      platform="macos"
-      choice="disconnect"
-      onChoose={noop}
       onContinue={noop}
       onCancel={noop}
       {...overrides}
@@ -29,7 +28,7 @@ function renderChooser(overrides: Partial<Parameters<typeof QuitDialog>[0]> = {}
   );
 }
 
-describe("the quit chooser", () => {
+describe("the quit dialog", () => {
   it("counts the apps still routed, and agrees with itself on number", () => {
     // Asserted on the dialog's text rather than one node: the count is drawn in
     // Medium inside a regular sentence, so it is a span of its own.
@@ -41,120 +40,40 @@ describe("the quit chooser", () => {
     expect(dialog()).toContain("1 protected app is still routed through Gate");
   });
 
-  it("offers both outcomes, recommending the safe one", () => {
+  /**
+   * The sentence that replaced the chooser, and the fact that was nowhere on
+   * screen when it was one.
+   *
+   * Disconnecting stops the forwarder, and a process's environment is fixed
+   * when it spawns - so every tool already open loses its route. "need
+   * restarting", not "may need": a reporter's editor died on this button while
+   * the row still hedged.
+   */
+  it("says what it restores and what the person has to restart", () => {
     renderChooser();
-    const safe = screen.getByRole("radio", { name: /Disconnect tools and quit/ });
-    expect(safe.getAttribute("aria-checked")).toBe("true");
-    expect(safe.textContent).toContain("Safest");
-    expect(
-      screen
-        .getByRole("radio", { name: /Quit without disconnecting/ })
-        .getAttribute("aria-checked"),
-    ).toBe("false");
+    const dialog = screen.getByRole("dialog").textContent ?? "";
+    expect(dialog).toContain("Restore all configurations as before Gate");
+    expect(dialog).toContain(
+      "Tools and sessions you already have open need restarting",
+    );
   });
 
-  it("names the primary for the action, so the choice renames it", () => {
+  it("offers one way to quit, not a choice between two", () => {
+    renderChooser();
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    expect(screen.queryByText(/Quit without disconnecting/)).toBeNull();
+    expect(screen.queryByText("Safest")).toBeNull();
+    // The note about closing the window went on the same request.
+    expect(screen.queryByText(/Closing the main window/)).toBeNull();
+  });
+
+  it("names the primary for the action", () => {
     const onContinue = vi.fn();
     renderChooser({ onContinue });
     screen.getByRole("button", { name: "Disconnect" }).click();
     expect(onContinue).toHaveBeenCalled();
-    cleanup();
-    // "Disconnect" over "Quit without disconnecting" would label a button with
-    // the opposite of what it does. The second label is inferred: the frame
-    // draws only the first row selected.
-    renderChooser({ choice: "leave" });
-    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
   });
 
-  /**
-   * What a plain quit will actually do, per tool.
-   *
-   * The drawn description ("Leave configurations pointed at Gate. Requests that
-   * depend on the local proxy may pause.") stopped being true of this branch
-   * when the exit began putting the stranded configs back: it warns of a pause
-   * for tools that will be handed their own settings, and glosses the tools
-   * that really do keep pointing at Gate - which the forwarder keeps working.
-   * `reverting` is the backend's own split, and the row names both sides of it.
-   */
-  it("names which tools a plain quit puts back, and which keep working", () => {
-    const row = () =>
-      screen.getByRole("radio", { name: /Quit without disconnecting/ })
-        .textContent ?? "";
-
-    // Everything reverts: the macOS/Windows relay case, where the address each
-    // config names lives in the process that is about to exit.
-    renderChooser({ reverting: ["Claude Code", "Codex"] });
-    expect(row()).toContain(
-      "Gate puts Claude Code and Codex back on their own settings",
-    );
-    expect(row()).not.toContain("may pause");
-    cleanup();
-
-    // Mixed: one config names the relay, the other the forwarder, which is a
-    // per-install difference rather than a per-tool one.
-    renderChooser({ reverting: ["Codex"] });
-    expect(row()).toContain("Gate puts Codex back on its own settings");
-    // "keeps working" is only half the fact, and the half that mattered was
-    // missing: the traffic still flows, Gate just stops reading it.
-    expect(row()).toContain(
-      "Claude Code keeps working, but Gate stops inspecting its traffic",
-    );
-    cleanup();
-
-    // Nothing reverts - Linux, where the relay is a daemon that outlives the
-    // window, or an install whose configs all name the forwarder.
-    renderChooser({ reverting: [] });
-    expect(row()).toContain("Leave configurations pointed at Gate");
-    expect(row()).toContain(
-      "Claude Code and Codex keep working, but Gate stops inspecting their traffic until it runs again",
-    );
-    cleanup();
-
-    // The read did not complete. Not the empty case: that sentence tells the
-    // user their configs stay put, on an exit that may be about to rewrite
-    // them, and the teardown's own notification then contradicts it.
-    renderChooser({ reverting: null });
-    expect(row()).toContain("couldn't check which tools it puts back");
-    expect(row()).not.toContain("keep working");
-    expect(row()).not.toContain("Gate puts");
-  });
-
-  /**
-   * The fact that was nowhere on screen, and the one that costs the most.
-   *
-   * Disconnecting stops the forwarder. A process's environment is fixed when
-   * it spawns, so every tool already open holding Gate's proxy address loses
-   * its route the moment that listener goes - reported from staging on
-   * 2026-09-24 by a user whose editor died on this button, which is labelled
-   * "Safest".
-   */
-  it("warns that disconnecting can cut off tools already open", () => {
-    renderChooser();
-    const row =
-      screen.getByRole("radio", { name: /Disconnect tools and quit/ })
-        .textContent ?? "";
-    expect(row).toContain("Tools you already have open may need restarting");
-    // And not the three function names it used to read as.
-    expect(row).not.toContain("Restore saved configurations");
-  });
-
-  it("says that closing the window is a different thing", () => {
-    renderChooser();
-    expect(
-      screen.getByText(/Closing the main window is a different action/),
-    ).toBeTruthy();
-  });
-
-  it("reports the selection rather than acting on it", () => {
-    const onChoose = vi.fn();
-    const onContinue = vi.fn();
-    renderChooser({ onChoose, onContinue });
-    screen.getByRole("radio", { name: /Quit without disconnecting/ }).click();
-    expect(onChoose).toHaveBeenCalledWith("leave");
-    // Selecting is not committing: the primary is still the only way on.
-    expect(onContinue).not.toHaveBeenCalled();
-  });
 });
 
 describe("the safe-to-close confirmation", () => {

@@ -11,7 +11,6 @@ import {
   needsOf,
   pinnedModels,
 } from "../../lib/modelCompatibility";
-import { trayLocationName, type Platform } from "../../lib/platform";
 import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type { ReopenTool } from "../../lib/reopen";
@@ -19,7 +18,6 @@ import { REOPEN_STAGE_DETAIL, WHY_REOPEN } from "../../lib/reopen";
 import {
   Modal,
   ModalCheckbox,
-  ModalChoice,
   ModalField,
   ModalNote,
   ModalOption,
@@ -2164,14 +2162,8 @@ function joinNames(names: string[]): string {
  * shells disagree until the popover retires, the same way they already disagree
  * about the org-picker dead end - this is the drawn one.
  */
-export type QuitChoice = "disconnect" | "leave";
-
 export function QuitDialog({
   tools,
-  reverting,
-  platform,
-  choice,
-  onChoose,
   busy,
   onContinue,
   onCancel,
@@ -2179,27 +2171,11 @@ export function QuitDialog({
   /** Config-routed tools still pointed at Gate. Never empty - the shell only
    * raises this dialog when the backend reports at least one. */
   tools: string[];
-  /** The subset of `tools` a plain quit puts back on its own settings, because
-   * the address its config names dies with this process. The backend decides it
-   * off the configured address and `quit_app` acts on the same list, so the
-   * second choice below can name what it will actually rewrite. Empty is an
-   * ordinary answer: on Linux the relay is a daemon that outlives the window,
-   * and a config naming the forwarder keeps answering everywhere. `null` is
-   * the read failing, and gets its own sentence: reading it as empty told the
-   * user their configs stay put on an exit that was about to rewrite them. */
-  reverting: string[] | null;
-  choice: QuitChoice;
-  onChoose: (next: QuitChoice) => void;
   busy?: boolean;
   onContinue: () => void;
   onCancel: () => void;
-  /** Names where the app lives when the window is not on screen. The note below
-   *  said "the menu bar" on every platform, which is a place Windows and GNOME
-   *  users do not have. */
-  platform: Platform;
 }) {
   const plural = tools.length > 1;
-  const keeping = tools.filter((t) => !(reverting ?? []).includes(t));
   return (
     <Modal
       tone="warning"
@@ -2215,104 +2191,34 @@ export function QuitDialog({
       }
       secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{
-        // Named for what it does, which is why it changes with the choice: the
-        // drawn "Disconnect" belongs to the drawn selection, and leaving it
-        // there under "Quit without disconnecting" would label a button with
-        // the opposite of its action. The second label is inferred - the frame
-        // draws only the first row selected.
-        label: busy
-          ? "Working…"
-          : choice === "disconnect"
-            ? "Disconnect"
-            : "Continue",
+        label: busy ? "Working…" : "Disconnect",
         onClick: onContinue,
         disabled: busy,
       }}
       onDismiss={busy ? undefined : onCancel}
     >
-      <p className="text-sm font-medium leading-5 text-base-muted-foreground">
-        Select how you want to quit the app
+      {/* One outcome, so one sentence and no chooser.
+        *
+        * This drew two selectable rows - the drawn shape (`694:32469`) and the
+        * three-button dialog before it - offering "Quit without disconnecting"
+        * beside this. Product removed that option on 2026-09-24: it left the
+        * forwarder running and the configs pointed at Gate, which is a useful
+        * state to develop against and not one to put in front of a user, who
+        * would be choosing between "protected" and "looks protected".
+        *
+        * What went with it: `QuitChoice`, the radiogroup, the "Safest" pill -
+        * which needs no superlative when there is nothing to be safest against
+        * - and the note about closing the window, also removed on request.
+        *
+        * "need restarting", not "may need": disconnecting stops the forwarder,
+        * and a process's environment is fixed when it spawns, so every tool
+        * already open loses its route. A reporter's editor died on this button
+        * before the sentence said so.
+        */}
+      <p className="text-sm leading-5 text-base-foreground">
+        Restore all configurations as before Gate. Tools and sessions you
+        already have open need restarting.
       </p>
-      <div role="radiogroup" aria-label="How to quit" className="flex flex-col gap-2">
-        <ModalChoice
-          title="Disconnect tools and quit"
-          /* The drawn description is "Restore saved configurations, turn
-             routing off, then quit." - three function names, and none of the
-             three facts a person needs to choose with.
-             What this branch actually leaves: every tool back on its own
-             settings, nothing on the machine pointed at Gate, and - the part
-             that was nowhere on screen - the forwarder stopped. A process's
-             environment is fixed when it spawns, so every tool ALREADY OPEN
-             holding Gate's proxy address loses its route the moment that
-             listener goes. Reported from staging on 2026-09-24 by a user whose
-             editor died on this button.
-             The "Safest" pill is drawn and stays; it is true of the machine's
-             end state and false of the tools in front of you, which is a
-             contradiction for design rather than one to settle here. */
-          description="Every tool goes back to its own settings and Gate leaves the path. Tools you already have open may need restarting."
-          pill="Safest"
-          selected={choice === "disconnect"}
-          onSelect={() => onChoose("disconnect")}
-        />
-        <ModalChoice
-          title="Quit without disconnecting"
-          /* The drawn description is "Leave configurations pointed at Gate.
-             Requests that depend on the local proxy may pause.", and it stopped
-             being true of this branch when a plain quit began putting the
-             stranded configs back. Saying it anyway tells someone their tools
-             may pause when Gate has in fact handed them back their own
-             settings - and understates the other half, where the forwarder
-             keeps answering and the tool goes on working. So the row names
-             which tools get which outcome, the same split the popover's
-             `QuitConfirm` paragraph draws from the same two lists. Raised as
-             question 25 in docs/figma-questions-for-design.md rather than
-             decided here. */
-          description={
-            reverting === null
-              ? "Leave configurations pointed at Gate. Gate Connect couldn't check which tools it puts back on their own settings as it closes."
-              : reverting.length === 0
-                ? `Leave configurations pointed at Gate. ${joinNames(tools)} ${
-                    plural ? "keep" : "keeps"
-                  } working, but Gate stops inspecting ${
-                    plural ? "their" : "its"
-                  } traffic until it runs again.`
-                : keeping.length === 0
-                  ? `Gate puts ${joinNames(reverting)} back on ${
-                      reverting.length > 1 ? "their" : "its"
-                    } own settings until Gate Connect runs again.`
-                  : `Gate puts ${joinNames(reverting)} back on ${
-                      reverting.length > 1 ? "their" : "its"
-                    } own settings; ${joinNames(keeping)} ${
-                      keeping.length > 1 ? "keep" : "keeps"
-                    } working, but Gate stops inspecting ${
-                      keeping.length > 1 ? "their" : "its"
-                    } traffic until it runs again.`
-          }
-          selected={choice === "leave"}
-          onSelect={() => onChoose("leave")}
-        />
-      </div>
-      {/* Two corrections to the drawn sentence, both of them about what this
-        * app actually does on the OS it is running on.
-        *
-        * "the menu bar" was hardcoded, so Windows and Linux users were pointed
-        * at somewhere their desktop has no such thing - while `Onboarding`'s
-        * own tray step had been naming all three correctly the whole time.
-        * `trayLocationName` is now the one place that answers this.
-        *
-        * And "minimize this app to" was never true anywhere: minimizing sends
-        * the window to the taskbar or the dock, and it is *closing* it that
-        * hides it and leaves Gate in the tray. Both are safe, which is the
-        * reassurance the note exists to give, so it now says both rather than
-        * naming the one action that does not do what it claimed. */}
-      <ModalNote tone="info">
-        <span className="font-medium">
-          Closing the main window is a different action.
-        </span>{" "}
-        You can safely <span className="font-medium">close or minimize</span>{" "}
-        this window. Gate Connect keeps running in {trayLocationName(platform)},
-        and protection continues quietly.
-      </ModalNote>
     </Modal>
   );
 }
