@@ -10,7 +10,6 @@ import type {
   Preferences,
   ProxyState,
   ProviderState,
-  RecoverySummary,
   TeardownReason,
   TeardownTool,
   Tool,
@@ -41,7 +40,6 @@ import {
   disconnectTool,
   disconnectToolsForQuit,
   quitApp,
-  recoverySummary,
   teardownReport,
   getPreferences,
   setSecurityNotificationSound,
@@ -132,7 +130,6 @@ import {
   CollectedDataDialog,
   DiagnosticsDialog,
   SendDiagnosticsDialog,
-  RestoreDetailsDialog,
   DisconnectGateDialog,
   OAuthOfferDialog,
   OpenCodeEnvDialog,
@@ -864,25 +861,6 @@ export function NewUiApp() {
     return () => clearInterval(id);
   }, [reopenWaiting, refreshVerdicts]);
 
-  const loadPending = useCallback(async () => {
-    // The `pendingRestore()` read went with the recovery notice on 2026-09-24:
-    // nothing in this shell consumed it once the notice was gone, and the tray's
-    // recovery card runs off its own read. The summary stays, because the
-    // details dialog still draws it and the tray can still ask for it.
-    const s = await recoverySummary().then(
-      (v) => ({ read: true as const, v }),
-      () => ({ read: false as const, v: null }),
-    );
-    // Three outcomes, not two (AG-890). A `.catch(() => null)` here would
-    // collapse "the read failed" into "there is nothing pending", and one
-    // transient failure would wipe a summary this window already held.
-    //
-    // A successful read of nothing still clears: a master-on runs `restore_all`,
-    // which is what shortens the snapshots, and the notice has to go when the
-    // work finishes. That is the case this guard must NOT swallow, which is why
-    // it turns on `read` rather than on the value.
-    if (s.read) setSummary(s.v);
-  }, []);
 
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
@@ -902,8 +880,7 @@ export function NewUiApp() {
     // A master-on runs `restore_all`, which is what clears or shortens the
     // snapshots - so the notice has to be re-read on the same event that
     // repaints the switches, or it lingers after the work finished.
-    void loadPending();
-  }, [refreshVerdicts, loadPending]);
+  }, [refreshVerdicts]);
 
   /**
    * Re-read what is installed, without the routing sweep.
@@ -1063,8 +1040,7 @@ export function NewUiApp() {
       setTools(t ?? []);
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
-      void loadPending();
-      setProviders(p);
+        setProviders(p);
       setProxy(px);
       setAccount(acct);
       setOAuth(oauthState);
@@ -1153,16 +1129,6 @@ export function NewUiApp() {
   /** Dismissed for this session only. The pending state lives on disk, so the
    * notice returns on the next launch until the work actually finishes - which is
    * the persistence the recovery action is supposed to have. */
-  /** The whole state of the interrupted operation: what the write reached per
-   * tool, what the last checks saw, and what each one still needs. Null when
-   * there is nothing to recover, which is the normal case. */
-  const [summary, setSummary] = useState<RecoverySummary | null>(null);
-  /** The current summary, for the `recovery-details-requested` listener. That
-   *  effect is subscribed once with no dependencies on purpose (see its doc),
-   *  so it cannot close over this state. */
-  const summaryRef = useRef<RecoverySummary | null>(null);
-  summaryRef.current = summary;
-  const [detailsOpen, setDetailsOpen] = useState(false);
   /** The tools a Disconnect or Reset left pointing at Gate, or null when it put
    * every one back. */
   const [teardown, setTeardown] = useState<TeardownTool[] | null>(null);
@@ -1878,72 +1844,6 @@ export function NewUiApp() {
       quit || routing.prompt || reopenDialogShown || modelOverlay,
     ),
   };
-
-  /**
-   * The tray's "Review details", handed over the same way.
-   *
-   * Subscribed once with no dependencies, for the reason the listener above
-   * spells out at length: Rust emits immediately after revealing this window,
-   * the reveal takes focus, focus is a render, and a listener that tears down
-   * and rebuilds on every render can miss the event in that gap. The symptom
-   * would be identical to the bug this fixes, which is what makes it worth
-   * saying twice.
-   *
-   * **Never arms what it cannot draw.** Setting `detailsOpen` on its own makes
-   * the request a no-op *now* and a surprise *later*: nothing resets it except
-   * the dialog's own `onClose`, which cannot run if the dialog never rendered,
-   * so the next render that satisfies the slot pops a dialog nobody asked for.
-   * Three separate things have to hold, and they are three different problems -
-   * conflating them is what left this half-fixed once already.
-   *
-   * 1. **There has to be something to show.** `recoverySummary()` swallows its
-   *    failure at mount (`loadPending`) and the visibility edge only calls
-   *    `redetect`, so the cache can be empty. Hence the read here rather than a
-   *    read of `summary`.
-   * 2. **There has to be a dialog slot.** Below `setup.stage.kind === "ready"`
-   *    this component returns `SetupLayout`, which has none - and the tray can
-   *    reach us there, because its recovery card runs off its own
-   *    `pendingRestore` read and `recovery_summary` needs no account or session.
-   *    This is not a cache problem and the read above does nothing for it.
-   * 3. **The slot has to be free.** Six arms precede `detailsOpen && summary`
-   *    in the chain (quit, the four routing prompts, the running-apps stages,
-   *    the two model overlays). The in-window banner button is protected from
-   *    this by the scrim over it; a request from the *tray* is a different
-   *    window and no scrim reaches it.
-   *
-   * On 2 and 3 the request is refused rather than deferred, and refused
-   * silently: there is nothing to say that the surface in front of the user is
-   * not already saying, and the recovery notice with its own Review button is
-   * still there when they get back to it. Deferring is the bug.
-   */
-  useEffect(() => {
-    const unlisten = listen("recovery-details-requested", async () => {
-      const { ready, slotBusy } = detailsGate.current;
-      if (!ready || slotBusy) return;
-      const fresh = await recoverySummary().catch(() => null);
-      // Cleared only once we know we are acting on the request. It used to be
-      // cleared on the way in, so a "Review details" press in the popover
-      // silently dismissed a failed rename in this window that the user had not
-      // read yet - and then, on the refused paths, did nothing else at all.
-      setActionError(null);
-      // The one this window already holds, when the fresh read came back with
-      // nothing. The tray only draws Review details over an unfinished run, so
-      // a press means there is one; answering with whatever we last read beats
-      // answering with a page about something else.
-      const target = fresh ?? summaryRef.current;
-      if (target) {
-        setSummary(target);
-        setDetailsOpen(true);
-      }
-      // Nothing to show: refused silently, like the two refusals above. It used
-      // to open Settings (AG-890), which has nothing on it about routing
-      // recovery - so the one surface that could answer the question sent the
-      // user somewhere that could not, with no word about why.
-    });
-    return () => {
-      void unlisten.then((off) => off()).catch(() => {});
-    };
-  }, []);
 
   /**
    * The one-time OAuth offer, for an account still on a pasted key.
@@ -3162,12 +3062,6 @@ export function NewUiApp() {
               setModelOverlay(null);
               void saveModel("gate", ids, true);
             }}
-          />
-        ) : detailsOpen && summary ? (
-          <RestoreDetailsDialog
-            summary={summary}
-            now={new Date()}
-            onClose={() => setDetailsOpen(false)}
           />
         ) : teardown ? (
           // After the review, before the incidental dialogs: a teardown that

@@ -337,8 +337,6 @@ export const requestSwitchOrg = () => invoke<void>("request_switch_org");
  *  dialog over a per-tool table, which does not fit 400px. Replaces a plain
  *  `revealMainWindow()`, which surfaced the window without telling it what the
  *  user had asked to see. */
-export const requestRecoveryDetails = () =>
-  invoke<void>("request_recovery_details");
 
 /** Hold the popover open across a call that raises a system dialog: the dialog
  *  takes focus, and without the pin the dismiss-on-blur handler would hide the
@@ -822,20 +820,14 @@ export interface PendingEntry {
  * failures in the file and clears it only once everything is back - but nothing
  * read them for display, so a half-finished restore left some tools routing, some
  * not, and no statement anywhere that Gate knew. */
-export interface PendingRestore {
-  providers: PendingEntry[];
-  tools: PendingEntry[];
-}
 
 /** What a restore still owes. Read-only and cheap: opens no config, starts
  * nothing, safe on a status refresh. */
-export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
 
 /** Finish an interrupted restore, and report what is still outstanding.
  * `restore_all`'s existing retry semantics mean this repeats no completed write.
  * Returns the remaining state rather than void, because a partial success is the
  * interesting case and must not read as done. */
-export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
 /** What the live security-event feed says about its *own* connection (AG-578).
  *
  * Deliberately separate from anything routing reports, and read from its own
@@ -1088,16 +1080,6 @@ export interface RecoveryTool {
 }
 
 /** The interrupted operation, and every tool it touched. */
-export interface RecoverySummary {
-  /** Which operation this describes. One value today, carried rather than
-   *  assumed so a later operation's summary cannot be read as this one. */
-  operation: "restore";
-  /** When the journal was last written. 0 when there is none, which the UI
-   *  renders as unknown rather than as 1970. */
-  updated_unix: number;
-  requested_routing_on: boolean;
-  tools: RecoveryTool[];
-}
 
 /** The whole state of an interrupted routing operation, per tool: the journal,
  *  the snapshots, the persisted verdict log and the process table, joined.
@@ -1105,17 +1087,8 @@ export interface RecoverySummary {
  *  Null when there is nothing to recover, which is the normal case. Read-only -
  *  it writes nothing and reopens nothing, so the review it feeds cannot change
  *  what it is reviewing. */
-export const recoverySummary = () =>
-  invoke<RecoverySummary | null>("recovery_summary");
 
 /** What one per-tool retry did, plus what is still outstanding. */
-export interface RetryRestore {
-  /** The retry's own failure, or null. In the payload rather than thrown so the
-   *  caller still gets `pending`: a retry changes what is outstanding for the
-   *  other entries too, and a caller left holding a stale list redraws wrong. */
-  error: string | null;
-  pending: PendingRestore;
-}
 
 /** Retry one recorded entry, leaving every other entry's recorded work alone.
  *
@@ -1123,8 +1096,6 @@ export interface RetryRestore {
  *  everything, this re-attempts one slug. It is also what makes per-tool
  *  progress possible - a caller driving the entries one at a time can say which
  *  one it is working on. */
-export const retryRestoreEntry = (slug: string) =>
-  invoke<RetryRestore>("retry_restore_entry", { slug });
 
 /** Why the tools are being reported on, which decides what the report can claim
  *  about them.

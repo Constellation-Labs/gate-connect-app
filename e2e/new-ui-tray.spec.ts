@@ -39,28 +39,6 @@ test.describe("tray popover", () => {
    * reported the problem and offered nothing would be the one place the user
    * could see it and not act.
    */
-  test("an interrupted restore is offered from the tray, not just reported", async ({
-    boot,
-  }) => {
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-      pendingRestore: {
-        providers: [],
-        tools: [{ slug: "opencode", name: "OpenCode" }],
-      },
-    });
-
-    await expect(app.page.getByText("Routing didn’t finish")).toBeVisible();
-    await expect(app.page.getByText(/OpenCode is still waiting/)).toBeVisible();
-
-    await app.page.getByRole("button", { name: "Resume now" }).click();
-
-    // The batch call here, not the window's per-entry walk: a 400px popover has
-    // nowhere to put a progress list, and one that closes on focus loss must not
-    // leave a pass half driven.
-    await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
-  });
 
   /**
    * No reopen card on the tray. The waiting tool still says so on its own row;
@@ -88,27 +66,6 @@ test.describe("tray popover", () => {
     await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
   });
 
-  test("the tray sends the per-tool account to the window", async ({ boot }) => {
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-      pendingRestore: {
-        providers: [],
-        tools: [{ slug: "opencode", name: "OpenCode" }],
-      },
-    });
-
-    await app.page.getByRole("button", { name: "Review details" }).click();
-
-    // Reveals the window rather than drawing a second, shorter version of the
-    // same operation - but it has to say what it came for. This used to call the
-    // bare `reveal_popover`, which surfaces the window on whatever pane it was
-    // last on and opens nothing, so with the window already visible the only
-    // effect was the tray closing.
-    await expect
-      .poll(() => app.lastCall("request_recovery_details"))
-      .not.toBeNull();
-  });
 
   test("Expand app reveals the main window", async ({ boot }) => {
     const app = await boot({ windowLabel: "tray" });
