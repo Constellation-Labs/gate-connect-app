@@ -365,8 +365,9 @@ deliberate reversal of an earlier "no dashboard" rule.
    Protected / Not protected / Config drifted / Not routed, coloured green
    or amber, with any qualifier ("2m ago", "Off") in grey after a dash.
 
-   **Three more exist in `AppStatus` and the Figma draws none of them**, each
-   added because the four above answer a real state wrongly. Do not "correct"
+   **Four more exist in `AppStatus` and no rail frame draws them**, each
+   added because the four above answer a real state wrongly, or have no row to
+   answer on. Do not "correct"
    them back; each is argued at its own variant in `Sidebar.tsx`.
    - **Reopen to finish** - the config landed and a running process has not
      picked it up. "Not protected" on the row someone just switched on reads
@@ -380,8 +381,13 @@ deliberate reversal of an earlier "no dashboard" rule.
      the off state on a switch that is on, and "Not routed" is false twice.
      It counts as routed for every tally (`countsAsRouted`), so the topbar
      banner and the row cannot contradict each other.
+   - **Not installed** - detection did not find the app. Drawn only on the
+     display-only rows of the rail's last group, so an app that is absent is
+     listed rather than hidden. The tray's `738:37377` draws a "Not installed"
+     section collapsed to a count; the tray dropped it on 2026-09-23 and the
+     rail took the rows instead, which is a reading design has not confirmed.
 
-   All three are inferences under principle 6 rather than drawn frames, which
+   All four are inferences under principle 6 rather than drawn frames, which
    is the same licence the loading and failure states run on. They are owed to
    design as questions; `docs/figma-questions-for-design.md` was the place for
    that and was deleted in `4827db4` while this file still cites it, including

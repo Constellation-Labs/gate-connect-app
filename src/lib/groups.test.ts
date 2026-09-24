@@ -14,6 +14,7 @@ import {
   hasBrowserSurface,
   hostReloadAdvice,
   isSettingsManaged,
+  notInstalledSections,
   proxyReopenAdvice,
 } from "./groups";
 
@@ -161,16 +162,30 @@ describe("buildGroups", () => {
     expect(groups.map((g) => g.band)).toEqual(["openai", "other"]);
   });
 
-  it("keeps a tool and a domain of the same slug in one section, both drawn", () => {
-    // `opencode` is both a tool slug and a domain slug, so the two share a
-    // key. A map keyed on the slug alone would silently draw one of them.
-    const groups = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "detected" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
-      ON,
-    );
-    expect(groups).toHaveLength(1);
-    expect(groups[0].members.map((m) => m.kind)).toEqual(["config", "proxy"]);
+  it("draws Zen / Go under OpenCode only while it is on", () => {
+    // `opencode` is both a tool slug and a domain slug. Off, the domain is not
+    // drawn, so the row is the tool the way Hermes' is and a machine without
+    // OpenCode gets no row from the domain alone.
+    const zen = (enabled: boolean) =>
+      domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled });
+    const detected = tool("opencode", "OpenCode", { kind: "detected" }, "opencode");
+    const missing = tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode");
+
+    expect(buildGroups([detected], [zen(false)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "config",
+    ]);
+    expect(buildGroups([missing], [zen(false)], ON)).toEqual([]);
+
+    // On, it is drawn: an older build's OpenCode switch turned it on and
+    // nothing recorded that, so hiding it would leave it with no way off. A
+    // map keyed on the slug alone would silently draw one of the two.
+    expect(buildGroups([detected], [zen(true)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "config",
+      "proxy",
+    ]);
+    expect(buildGroups([missing], [zen(true)], ON)[0].members.map((m) => m.kind)).toEqual([
+      "proxy",
+    ]);
   });
 
   it("gives a member no section names a section of its own", () => {
@@ -324,16 +339,16 @@ describe("sectionStatus", () => {
   });
 
   it("says partly protected, a state a per-surface ledger never had to describe", () => {
-    const [opencode] = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
-      { ...ON, ...sweep("opencode") },
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain({ enabled: false })],
+      { ...ON, ...sweep("claude-code") },
     );
-    const apps = new Map([["opencode", { status: { kind: "protected" } } as never]]);
+    const apps = new Map([["claude-code", { status: { kind: "protected" } } as never]]);
     // The count, not the adverb: "partly" does not say how much of the app is
     // covered, and this line used to render as a bare "Not protected" because
     // the rail drops a `not-protected` detail.
-    expect(sectionStatus(opencode, apps)).toEqual({
+    expect(sectionStatus(claude, apps)).toEqual({
       kind: "partly-protected",
       detail: "1 of 2",
     });
@@ -442,39 +457,38 @@ describe("member hints", () => {
 
 describe("groupSummary", () => {
   it("counts, and names a single failure", () => {
-    // OpenCode's editor and its Zen / Go host, which is a group with both
-    // kinds of member in it. Claude Code and the `anthropic` domain used to be
-    // that pair and are two groups now: one is the CLI, the other the desktop
-    // app, and the summary is per group.
+    // Claude Code and the `anthropic` host, which is a group with both kinds
+    // of member in it. OpenCode and its Zen / Go host were that pair until the
+    // domain became tool-managed.
     const [group] = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "error", message: "m" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
+      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
+      [domain()],
       ON,
     );
     expect(groupSummary(group)).toEqual({
       count: "1 of 2 routing",
-      exception: "OpenCode failed",
+      exception: "Claude Code failed",
       kind: "error",
     });
   });
 
   it("aggregates several failures rather than naming one", () => {
-    // One section with two failing members: OpenCode's editor and its Zen / Go
+    // One section with two failing members: Claude Code and its `anthropic`
     // host. The environment channel is its own section now, so pairing those
     // two would be two summaries rather than one.
     const [group] = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "error", message: "m" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: false })],
+      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
+      [domain({ enabled: false })],
       { proxyOn: false, caTrusted: true },
     );
     expect(group.members).toHaveLength(2);
-    expect(groupSummary(group).exception).toBe("OpenCode failed");
+    expect(groupSummary(group).exception).toBe("Claude Code failed");
   });
 
   it("prefers the certificate over a drifted setup, and reports nothing when all is well", () => {
     const [blocked] = buildGroups(
-      [tool("opencode", "OpenCode", { kind: "drifted", reason: "r" }, "opencode")],
-      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode" })],
+      [tool("claude-code", "Claude Code", { kind: "drifted", reason: "r" })],
+      [domain()],
       { proxyOn: true, caTrusted: false },
     );
     expect(groupSummary(blocked).exception).toBe("certificate not trusted");
@@ -1112,5 +1126,47 @@ describe("which group a section draws under", () => {
     expect(BAND_LABELS.anthropic).toBe("Anthropic");
     expect(BAND_LABELS.openai).toBe("OpenAI");
     expect(BAND_LABELS.other).toBe("Other apps");
+  });
+});
+
+describe("notInstalledSections", () => {
+  it("lists a section with no row, and not one a domain still draws", () => {
+    const tools = [
+      tool("hermes", "Hermes", { kind: "not_installed" }, "hermes"),
+      tool("opencode", "OpenCode", { kind: "detected" }, "opencode"),
+      tool("claude-code", "CLI", { kind: "not_installed" }),
+    ];
+    // Claude keeps its row through the `anthropic` domain, so it is not
+    // missing even though Claude Code is.
+    const groups = buildGroups(tools, [domain()], ON);
+    expect(notInstalledSections(tools, groups)).toEqual([{ id: "hermes", name: "Hermes" }]);
+  });
+
+  it("lists every section whose only member is missing, in section order", () => {
+    const tools = [
+      tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode"),
+      tool("hermes", "Hermes", { kind: "not_installed" }, "hermes"),
+      tool("openclaw", "OpenClaw", { kind: "not_installed" }, "openclaw"),
+    ];
+    expect(notInstalledSections(tools, buildGroups(tools, [], ON)).map((s) => s.id)).toEqual([
+      "openclaw",
+      "hermes",
+      "opencode",
+    ]);
+  });
+
+  it("leaves OpenCode out while Zen / Go is on, since the domain still draws its row", () => {
+    const tools = [tool("opencode", "OpenCode", { kind: "not_installed" }, "opencode")];
+    const groups = buildGroups(
+      tools,
+      [domain({ slug: "opencode", display_name: "Zen / Go", client: "opencode", enabled: true })],
+      ON,
+    );
+    expect(notInstalledSections(tools, groups)).toEqual([]);
+  });
+
+  it("lists nothing for a tool no section names, which gets no row either", () => {
+    const tools = [tool("some-new-harness", "CLI", { kind: "not_installed" }, "opencode")];
+    expect(notInstalledSections(tools, buildGroups(tools, [], ON))).toEqual([]);
   });
 });

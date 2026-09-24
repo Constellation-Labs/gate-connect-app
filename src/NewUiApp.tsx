@@ -74,6 +74,7 @@ import {
   proxyReopenAdvice,
   sectionHint,
   isProviderEndpoint,
+  notInstalledSections,
   sectionMemberKeys,
 } from "./lib/groups";
 import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
@@ -1673,13 +1674,34 @@ export function NewUiApp() {
     if (bySlug.size > 0) {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
+    // Last, below every band: the apps detection did not find, listed rather
+    // than hidden so the rail says what Gate can route once they are there.
+    // Display-only - see `SidebarGroup.notInstalled`.
+    const missing = notInstalledSections(
+      tools.filter((t) => !isSettingsManaged(t.slug)),
+      groups,
+    );
+    grouped.push({
+      id: "not-installed",
+      label: "Not installed",
+      notInstalled: true,
+      apps: missing.map((s) => ({
+        slug: s.id,
+        name: s.name,
+        status: { kind: "not-installed" },
+        on: false,
+        logo: brandMarkForSection(s.id, sectionMemberKeys(s.id)),
+      })),
+    });
     return grouped.filter((g) => g.apps.length > 0);
-  }, [groups, apps, routingBusy]);
+  }, [groups, apps, tools, routingBusy]);
 
   /** Every rail row flat, tools and domains together, for the pane header's
-   *  name and switch state - `apps` alone covers only the tools. */
+   *  name and switch state - `apps` alone covers only the tools. Leaves out the
+   *  "Not installed" group, whose rows would otherwise count as available apps
+   *  in the topbar's totals. */
   const railApps = useMemo(
-    () => sidebarGroups.flatMap((g) => g.apps),
+    () => sidebarGroups.filter((g) => !g.notInstalled).flatMap((g) => g.apps),
     [sidebarGroups],
   );
 

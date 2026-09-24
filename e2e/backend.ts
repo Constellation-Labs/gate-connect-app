@@ -521,9 +521,9 @@ export const OPENROUTER_DOMAIN: DomainFixture = {
 };
 
 /** OpenCode's own hosted models, which is why the row sits with the editor
- *  rather than under a vendor of its own. Also in the real catalog and missing
- *  here, and its absence is what made the OpenCode section look empty without a
- *  tool installed - which it never is on a real machine. */
+ *  rather than under a vendor of its own. Off, as the real catalog ships it, so
+ *  it is not drawn (`CLI_ONLY_DOMAINS`) and the OpenCode section is empty
+ *  without a tool installed, the way Hermes' and OpenClaw's are. */
 export const OPENCODE_DOMAIN: DomainFixture = {
   slug: "opencode",
   display_name: "Zen / Go",

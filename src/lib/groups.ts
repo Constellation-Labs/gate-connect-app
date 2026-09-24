@@ -865,8 +865,20 @@ export function isSettingsManaged(key: string): boolean {
  * `openai` is the api.openai.com host. Nothing OpenAI ships rides it, so the
  * row is a switch for "every other program on this machine that calls
  * OpenAI" - a CLI user's decision rather than something to offer in the app.
+ *
+ * `opencode` is Zen / Go on `opencode.ai`, which the OpenCode row used to carry
+ * as a second member whether or not it was on. Off, it made that row read
+ * "Partly protected - 1 of 2" and kept it on screen on a machine without
+ * OpenCode. Nothing OpenCode does needs the host: its config already sends the
+ * `opencode` and `opencode-go` providers through the relay, which routes them
+ * whether or not the domain is enabled (`KNOWN_PROVIDERS` in
+ * `integrations/opencode.rs`). Here rather than in {@link TOOL_MANAGED_DOMAINS}
+ * because the OpenCode switch of an older build turned it on and nothing
+ * recorded that, so hiding it while on would leave `opencode.ai` intercepted
+ * with no way off but the CLI. While it is on, the row is two members again and
+ * the OpenCode switch turns it off with the tool.
  */
-export const CLI_ONLY_DOMAINS: readonly string[] = ["openai"];
+export const CLI_ONLY_DOMAINS: readonly string[] = ["openai", "opencode"];
 
 /**
  * Domains the app never draws, because a tool's own switch owns them.
@@ -929,9 +941,9 @@ export function buildGroups(
   }
   for (const domain of domains) {
     // Tool and domain slugs share one namespace and `opencode` is both, so the
-    // domain must not overwrite the tool. Both are named by the same section
-    // and both need a member, which is why this is keyed per kind rather than
-    // per slug.
+    // domain must not overwrite the tool. While the domain is on, both are
+    // named by the same section and both need a member, which is why this is
+    // keyed per kind rather than per slug.
     if (TOOL_MANAGED_DOMAINS.includes(domain.slug)) continue;
     if (domain.supported && (domain.enabled || !CLI_ONLY_DOMAINS.includes(domain.slug))) {
       byKey.set(`domain:${domain.slug}`, memberFromDomain(domain, opts));
@@ -1048,6 +1060,34 @@ export function appForMember(key: string): { id: string; name: string } | null {
  */
 export function sectionMemberKeys(id: string): readonly string[] {
   return SECTIONS.find((s) => s.id === id)?.members ?? [id];
+}
+
+/**
+ * The sections with no row because nothing behind them is on this machine,
+ * for the rail's "Not installed" group.
+ *
+ * A section qualifies when at least one of its members is a tool reporting
+ * `not_installed` and the ledger drew no row for it. The second half is what
+ * keeps Claude and ChatGPT / Codex out on a machine without Claude Code or
+ * Codex: their domains still give them a row, so the app is there even though
+ * one program inside it is not. Detection is the tool's own, config-directory
+ * fallback included, so a leftover `~/.config/opencode` still counts as
+ * installed.
+ *
+ * Takes the same filtered tool list `buildGroups` was given, so a
+ * settings-managed member cannot come back here.
+ */
+export function notInstalledSections(
+  tools: Tool[],
+  groups: Group[],
+): { id: string; name: string }[] {
+  const missing = new Set(
+    tools.filter((t) => t.status.kind === "not_installed").map((t) => t.slug),
+  );
+  const drawn = new Set(groups.map((g) => g.id));
+  return SECTIONS.filter(
+    (s) => !drawn.has(s.id) && s.members.some((key) => missing.has(key)),
+  ).map((s) => ({ id: s.id, name: s.name }));
 }
 
 /**
