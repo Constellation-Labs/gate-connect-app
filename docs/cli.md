@@ -9,7 +9,6 @@ text.
 
 ```bash
 gate-connect login --base-url https://your-gateway.example.com   # prompts for the key
-gate-connect set-upstream codex                                   # prompts for the provider key
 gate-connect connect codex
 gate-connect status codex
 ```
@@ -45,9 +44,7 @@ Tool slugs: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`,
 | --- | --- |
 | `list` | Supported tools and their current state. |
 | `status <tool>` | Detailed status: `not installed`, `detected`, `connected`, or `drifted: <reason>`. |
-| `set-upstream <tool>` | Save the upstream provider key for a tool. Takes `--api-key <KEY>` or `--api-key-file <PATH>`, else prompts. |
-| `clear-upstream <tool>` | Forget the saved upstream key. |
-| `connect <tool>` | Edit the tool's config to route through Gate. Needs an upstream key (`set-upstream` first). `--upstream-url <URL>` (or `GATE_UPSTREAM_URL`) overrides the default upstream, sent as `X-Gate-Upstream-Url`. |
+| `connect <tool>` | Edit the tool's config to route through Gate. The tool keeps its own provider login; Gate forwards whatever it sends. `--upstream-url <URL>` (or `GATE_UPSTREAM_URL`) overrides the default upstream, sent as `X-Gate-Upstream-Url`. |
 | `disconnect <tool>` | Restore the tool's prior configuration. |
 
 ## Built-in proxy (macOS / Windows / Linux)

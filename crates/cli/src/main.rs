@@ -63,8 +63,7 @@ enum Command {
         /// Tool slug, e.g. `codex`.
         tool: String,
     },
-    /// Point a tool at the Gate AI gateway. Requires an upstream
-    /// credential - set one via `set-upstream` first.
+    /// Point a tool at the Gate AI gateway.
     Connect {
         tool: String,
         /// Override the integration's default upstream URL. Sent via
@@ -74,19 +73,6 @@ enum Command {
     },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
-    /// Save the upstream provider credential for a tool: paste an API key.
-    SetUpstream {
-        tool: String,
-        /// Paste the upstream provider API key.
-        #[arg(long)]
-        api_key: Option<String>,
-        /// Read the upstream API key from this file (first line) instead
-        /// of passing it on the command line or typing it at the prompt.
-        #[arg(long)]
-        api_key_file: Option<std::path::PathBuf>,
-    },
-    /// Forget the saved upstream credential for a tool.
-    ClearUpstream { tool: String },
     /// Manage the built-in MITM proxy that routes config-less apps
     /// (Claude Desktop, ChatGPT, …) and command-line tools through the Gate
     /// gateway. Enabling installs a local CA and points the system proxy at a
@@ -192,12 +178,6 @@ fn main() -> Result<()> {
         Command::Status { tool } => cmd_status(&tool),
         Command::Connect { tool, upstream_url } => cmd_connect(&tool, upstream_url),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
-        Command::SetUpstream {
-            tool,
-            api_key,
-            api_key_file,
-        } => cmd_set_upstream(&tool, api_key, api_key_file),
-        Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
     };
@@ -423,13 +403,6 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let acct = account::load()?
         .context("Not signed in. Run `gate-connect login --base-url … --api-key …` first.")?;
     let integ = resolve(tool)?;
-    if integ.requires_upstream_credential() && !integ.has_upstream_credential()? {
-        anyhow::bail!(
-            "No upstream credential saved for {}. Run `gate-connect set-upstream {} --api-key …` or `--claude-oauth` first.",
-            integ.display_name(),
-            tool,
-        );
-    }
     let upstream_url = upstream_url.unwrap_or_else(|| integ.default_upstream_url().to_string());
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
@@ -528,32 +501,6 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
             )
         }
     }
-    Ok(())
-}
-
-fn cmd_set_upstream(
-    tool: &str,
-    api_key: Option<String>,
-    api_key_file: Option<std::path::PathBuf>,
-) -> Result<()> {
-    let integ = resolve(tool)?;
-    if !integ.requires_upstream_credential() {
-        anyhow::bail!(
-            "{} brings its own upstream credentials - no separate key needed",
-            integ.display_name()
-        );
-    }
-    let credential = resolve_secret(api_key, api_key_file, "upstream API key")?;
-    integ.save_upstream_credential(&credential)?;
-    println!("Saved upstream credential for {}.", integ.display_name());
-    println!("Next: `gate-connect connect {tool}`.");
-    Ok(())
-}
-
-fn cmd_clear_upstream(tool: &str) -> Result<()> {
-    let integ = resolve(tool)?;
-    integ.clear_upstream_credential()?;
-    println!("Cleared upstream credential for {}.", integ.display_name());
     Ok(())
 }
 

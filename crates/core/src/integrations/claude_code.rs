@@ -431,20 +431,6 @@ impl Integration for ClaudeCode {
         }
         write_settings(&settings)
     }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "Claude Code does not need a separate upstream credential - it uses its own Anthropic auth"
-        );
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Why the proxy address in `settings.json` is not usable, or `None` when it is.

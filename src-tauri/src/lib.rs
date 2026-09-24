@@ -173,12 +173,6 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     .map_err(|e| format!("disconnect join error: {e}"))?
 }
 
-// The upstream-credential trait surface (`has_upstream_credential` /
-// `save_upstream_credential` / `clear_upstream_credential`) is CLI-only
-// (`gate-connect set-upstream` / `clear-upstream`): no shipped integration
-// requires an upstream credential, so the renderer has no commands for it
-// and no UI to collect one.
-
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
     let id = ToolId::from_slug(slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
     registry::find(id).ok_or_else(|| "integration missing from registry".to_string())

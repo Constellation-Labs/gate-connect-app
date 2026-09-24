@@ -132,23 +132,9 @@ pub trait Integration: Send + Sync {
     /// connect form, but ~all users want the canonical provider URL.
     fn default_upstream_url(&self) -> &'static str;
 
-    /// Does this tool need Gate Connect to store an upstream provider
-    /// credential separately? No shipped integration does - Claude Code,
-    /// Codex, and OpenCode all bring their own creds (OAuth token,
-    /// `ANTHROPIC_API_KEY`, `codex login`, per-provider `opencode auth`,
-    /// etc.) and Gate forwards whatever they send. Defaulting `false` keeps
-    /// the method from being a trap: a `true` default silently blocked a new
-    /// integration's `connect` behind a credential there is no UI to enter.
-    /// An integration that opts in must also bring a way to collect the
-    /// credential - today that is the CLI's `set-upstream` only.
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     /// Which mechanism carries this tool's traffic - see [`Mechanism`]. Required
-    /// rather than defaulted: a default would be a trap in exactly the way the
-    /// `requires_upstream_credential` doc above describes, silently filing a
-    /// new integration under a rule that may not fit it.
+    /// rather than defaulted: a default would silently file a new integration
+    /// under a rule that may not fit it.
     fn mechanism(&self) -> Mechanism;
 
     /// Every loopback address this tool's configuration currently names for
@@ -206,26 +192,12 @@ pub trait Integration: Send + Sync {
     fn status(&self) -> Result<Status>;
 
     /// Apply gateway config. Idempotent: a second call with the same
-    /// inputs results in the same state. Requires that an upstream
-    /// credential has already been saved via `save_upstream_credential`.
+    /// inputs results in the same state.
     fn connect(&self, input: &ConnectInput) -> Result<()>;
 
     /// Revert everything `connect` wrote. After this returns the tool
     /// must be back to its prior configuration with zero Gate residue.
     fn disconnect(&self) -> Result<()>;
-
-    /// Persist the upstream provider credential (e.g. Anthropic API key
-    /// or Claude OAuth token) to keychain. Replaces any prior value.
-    fn save_upstream_credential(&self, credential: &str) -> Result<()>;
-
-    /// Expected prefix for this tool's upstream credential (e.g. "sk-"
-    /// for OpenAI). An empty string means no prefix is enforced - the
-    /// credential is still length/charset-validated. The IPC layer passes
-    /// this to `validate_api_key` so a compromised renderer can't write
-    /// arbitrary bytes to a tool's keychain entry under a mismatched slug.
-    fn upstream_credential_prefix(&self) -> &'static str {
-        ""
-    }
 
     /// Keep this tool out of the popover's ledger.
     ///
@@ -241,13 +213,6 @@ pub trait Integration: Send + Sync {
     fn hidden_in_ui(&self) -> bool {
         false
     }
-
-    /// Is an upstream credential currently saved for this tool?
-    fn has_upstream_credential(&self) -> Result<bool>;
-
-    /// Forget the saved upstream credential. Independent of connect
-    /// state - disconnect() does not call this.
-    fn clear_upstream_credential(&self) -> Result<()>;
 }
 
 pub fn registry() -> Vec<Box<dyn Integration>> {

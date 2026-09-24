@@ -134,12 +134,6 @@ impl Integration for EnvProxy {
         crate::proxy::set_env_export(false)
     }
 
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "the environment proxy needs no credential of its own -- Gate injects yours in flight and passes your provider credentials through untouched."
-        )
-    }
-
     /// Kept out of the *ledger*, which is not the same as kept out of the UI.
     ///
     /// Home groups by model family; this is a mechanism spanning every family,
@@ -149,14 +143,6 @@ impl Integration for EnvProxy {
     /// property of routing rather than a tool alongside Claude Code.
     fn hidden_in_ui(&self) -> bool {
         true
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
     }
 }
 

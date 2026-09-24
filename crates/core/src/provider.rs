@@ -504,10 +504,7 @@ fn engine_up_if_needed(integ: &dyn registry::Integration) -> bool {
 /// up later stays unrouted until this runs (at startup). Idempotent and
 /// best-effort - one tool's failure never strands the rest.
 ///
-/// Only tools that carry their own upstream credential (`requires_upstream_credential
-/// == false`, e.g. Claude Code) are auto-applied; a tool that needs a
-/// Gate-stored key is left for the explicit connect flow. Tools in
-/// [`Status::Detected`] (installed, no Gate config) are connected; a
+/// Tools in [`Status::Detected`] (installed, no Gate config) are connected; a
 /// [`Status::Drifted`] tool is *re*-connected only when its config carries our
 /// own management marker ([`Integration::config_is_managed`]) - i.e. the stale
 /// values are ours (an old scheme, a changed relay port), not a setup the user
@@ -530,9 +527,6 @@ pub fn reconcile_enabled() -> Result<()> {
             let Some(integ) = registry::find(id) else {
                 continue;
             };
-            if integ.requires_upstream_credential() {
-                continue; // needs a stored key; not safe to auto-apply
-            }
             let reapply = match integ.status() {
                 Ok(Status::Detected) => true,
                 // Our own writes gone stale - safe to reassert, but only with
@@ -588,9 +582,6 @@ fn reconcile_unmapped_tools(
     for integ in registry::registry() {
         if mapped.contains(&integ.id()) {
             continue; // covered by the provider pass above
-        }
-        if integ.requires_upstream_credential() {
-            continue; // needs a stored key; not safe to auto-apply
         }
         if !matches!(integ.status(), Ok(Status::Drifted(_))) {
             continue;

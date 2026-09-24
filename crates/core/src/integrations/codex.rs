@@ -623,20 +623,6 @@ impl Integration for Codex {
         }
         Ok(())
     }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "Codex does not need a separate upstream credential - it reuses your `codex login` session"
-        );
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 fn config_path() -> Result<PathBuf> {
