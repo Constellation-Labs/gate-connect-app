@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
@@ -325,7 +326,13 @@ export function AppPane({
         />
       )}
 
+      {/* Keyed on the app so the reveal count starts at ten on each one.
+        * Nothing above remounts this pane on a switch, and `useToolEvents`
+        * drops its rows when the tool changes but cannot reach this count:
+        * forty rows revealed on Claude opened Codex at forty, and its first
+        * click could fetch a page nobody had asked for. */}
       <RecentActivity
+        key={name}
         activity={activity}
         pending={eventsPending}
         unavailable={unavailable?.events}
@@ -816,6 +823,10 @@ function InfoRow({
   );
 }
 
+/** Rows per reveal, shared in spirit with `SecurityEvents`' own constant: the
+ *  two tables sit one pane apart and counting differently would be noticed. */
+const PAGE = 10;
+
 function RecentActivity({
   activity,
   pending,
@@ -834,6 +845,24 @@ function RecentActivity({
   onLoadMore?: () => void;
   /** See `AppPane`. */
 }) {
+  /**
+   * How many rows are on screen. Ten to start, ten more per click
+   * (2026-09-23).
+   *
+   * A page from the gateway is whatever size the gateway chose - the request
+   * carries no `limit` - and `useToolEvents` concatenates pages as they
+   * arrive, so this table drew every row ever fetched. Two jobs on one
+   * control now: reveal what is already held, and ask for the next page when
+   * the reveal runs past the end of it.
+   *
+   * A floor rather than a window, so a page arriving does not collapse a
+   * reveal the person asked for.
+   */
+  const [visible, setVisible] = useState(PAGE);
+  const rows = activity.slice(0, visible);
+  /** Something left to show, or something left to fetch. Either is a reason to
+   *  keep the control; neither means it would sit there doing nothing. */
+  const more = activity.length > rows.length || onLoadMore !== undefined;
   return (
     // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
     // own gutter above the heading, as the Overview's savings card does.
@@ -901,7 +930,7 @@ function RecentActivity({
             </tr>
           </thead>
           <tbody>
-            {activity.map((entry) => (
+            {rows.map((entry) => (
               <tr key={entry.id} className="border-t border-base-border">
                 <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
@@ -1025,11 +1054,17 @@ function RecentActivity({
         </table>
       )}
 
-      {onLoadMore && (
+      {more && (
         <div className="mt-4 flex justify-center">
           <button
             type="button"
-            onClick={onLoadMore}
+            onClick={() => {
+              // Reveal first, fetch only when the reveal has run out of held
+              // rows. Fetching on every click would pull pages the person
+              // cannot see yet, which is what made this table unbounded.
+              setVisible((n) => n + PAGE);
+              if (activity.length <= visible + PAGE) onLoadMore?.();
+            }}
             className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more

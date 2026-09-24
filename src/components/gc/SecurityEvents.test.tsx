@@ -20,11 +20,10 @@ function section(props: Partial<Parameters<typeof SecurityEvents>[0]> = {}) {
   return (
     <SecurityEvents
       events={[]}
-      state="live"
       loading={false}
       unavailable={false}
       onRetry={() => {}}
-      onOpenEvent={() => {}}
+      onOpenInDashboard={() => {}}
       {...props}
     />
   );
@@ -70,40 +69,68 @@ describe("the three states a period can be in", () => {
   });
 });
 
+/**
+ * The feed's connection pill is gone (2026-09-23).
+ *
+ * Three tests lived here: that Live / Reconnecting / Offline each drew their
+ * label, and that no pill was claimed before the first read answered. Product
+ * asked for the badge to be removed, so what is left to pin is the
+ * consequence - the section says nothing about its own connection in any
+ * state, and in particular a reconnecting feed still shows the rows it has
+ * rather than blanking the table.
+ */
 describe("the feed's own connection state", () => {
-  // AC4: the feed reports its connection independently of routing. Nothing in
-  // this pane reads a routing value, which is the point.
-  it.each([
-    ["live", "Live"],
-    ["reconnecting", "Reconnecting"],
-    ["offline", "Offline"],
-  ] as const)("shows %s as %s", (state, label) => {
-    render(section({ state }));
-    expect(screen.getByRole("status", { name: `Event feed ${label}` })).toBeTruthy();
-  });
-
-  it("makes no claim about the connection until the first read answers", () => {
-    // `useSecurityFeed` seeds `state` to "offline" because it has to seed it to
-    // something, so an unguarded pill spends every cold launch telling the user
-    // their security feed is down - on the pane the window now opens on. A pill
-    // is a reading and there is no reading yet, which is the same rule the empty
-    // cell follows when it refuses to say "No security events" too early.
-    render(section({ loading: true, state: "offline" }));
+  it("makes no claim about the connection, in any state", () => {
+    render(section({ events: [blocked] }));
     expect(screen.queryByRole("status", { name: /^Event feed/ })).toBeNull();
-    expect(screen.queryByText("Offline")).toBeNull();
-    // Unnamed, but still there: the pill has to arrive as a content change
-    // inside a live region that was already mounted, not as a live region
-    // appearing with its text already in it - which is the case assistive tech
-    // handles least consistently, and the announcement is what the role is for.
-    expect(screen.getByRole("status")).toBeTruthy();
+    for (const label of ["Live", "Reconnecting", "Offline"]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
   });
 
-  it("keeps showing the events it has while reconnecting", () => {
+  it("keeps showing the events it has while the stream is unhappy", () => {
     // A feed having a bad minute is not an empty feed, and blanking the table
-    // would lose what the user was reading.
-    render(section({ state: "reconnecting", events: [blocked] }));
+    // would lose what the user was reading. The section cannot tell the two
+    // apart any more, which is exactly why it must not guess.
+    render(section({ events: [blocked] }));
     expect(screen.getByText("Blocked")).toBeTruthy();
     expect(screen.queryByText("No security events")).toBeNull();
+  });
+});
+
+/**
+ * Ten rows, then ten more per click (2026-09-23), matching the App pane's
+ * recent-activity table.
+ *
+ * Client-side here: the feed arrives over a stream and the whole session is
+ * already in memory, so there is no page to fetch. A session left open was
+ * drawing every event it had ever seen.
+ */
+describe("how many rows it draws", () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ ...blocked, requestId: `req-${i}` }));
+
+  it("draws ten however many it holds", () => {
+    render(section({ events: many(25) }));
+    expect(screen.getAllByRole("row")).toHaveLength(11); // 10 + the header
+  });
+
+  it("reveals ten more per click", () => {
+    render(section({ events: many(25) }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getAllByRole("row")).toHaveLength(21);
+  });
+
+  it("drops the control once everything is on screen", () => {
+    render(section({ events: many(12) }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getAllByRole("row")).toHaveLength(13);
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("offers nothing to load when ten is all there is", () => {
+    render(section({ events: many(10) }));
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 });
 
@@ -142,12 +169,14 @@ describe("what a row shows, and what it must not", () => {
 
 describe("opening an event", () => {
   it("hands the whole event to the caller rather than a bare id", () => {
-    // AC7 needs the summary to stay on screen until the dashboard opens, so the
-    // shell needs the event itself, not just something to build a URL from.
-    const onOpenEvent = vi.fn();
-    render(section({ events: [blocked], onOpenEvent }));
+    // The row leads straight to the dashboard since 2026-09-23; the summary
+    // dialog that used to sit between them is gone. Still the whole event
+    // rather than a request id, so the shell is not the only thing that could
+    // ever build a URL from it.
+    const onOpenInDashboard = vi.fn();
+    render(section({ events: [blocked], onOpenInDashboard }));
     fireEvent.click(screen.getByRole("button", { name: /View/ }));
-    expect(onOpenEvent).toHaveBeenCalledWith(blocked);
+    expect(onOpenInDashboard).toHaveBeenCalledWith(blocked);
   });
 
   it("retries on demand when the feed is unavailable", () => {

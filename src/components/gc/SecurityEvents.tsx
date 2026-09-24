@@ -1,7 +1,7 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
-import type { FeedState, SecurityEvent } from "../../lib/api";
+import type { SecurityEvent } from "../../lib/api";
 import { BADGE_STYLES, Card, EmptyNote, Pill, Skeleton } from "./base";
-import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 
 /**
@@ -36,17 +36,10 @@ import { Icon } from "./Icon";
  *  see `Overview`'s `SAVINGS_SECTION_ID`. */
 export const SECURITY_SECTION_ID = "security-events";
 
-/** What the feed's own connection is doing, in the design's words.
- *
- * Green / amber / neutral rather than green / amber / red: an offline feed is not
- * an error, it is a feed that is not running, and painting it red next to a
- * perfectly healthy routing switch invites the reading that routing broke too.
- * That is the whole distinction AC4 asks the screen to hold. */
-const FEED_LABEL: Record<FeedState, { label: string; className: string }> = {
-  live: { label: "Live", className: "bg-green-100 text-green-900" },
-  reconnecting: { label: "Reconnecting", className: "bg-amber-100 text-amber-900" },
-  offline: { label: "Offline", className: "bg-gray-100 text-neutral-700" },
-};
+/** Rows per reveal. Ten, and the same ten the App pane's recent-activity table
+ *  shows, because the two tables sit one pane apart and a person reading both
+ *  should not have to work out that they count differently. */
+const PAGE = 10;
 
 /** The gateway's verb, in the section's vocabulary - the same mapping
  *  `lib/toolEvents.ts` makes, and for the same reason: the gateway records what a
@@ -132,7 +125,6 @@ function PendingRows() {
 export interface SecurityEventsProps {
   /** Oldest first, as the feed buffers them. The table reverses for display. */
   events: SecurityEvent[];
-  state: FeedState;
   loading: boolean;
   /** The feed could not be read at all. Distinct from an empty feed, and the
    *  distinction is AC6's whole point. */
@@ -143,22 +135,40 @@ export interface SecurityEventsProps {
    *  combination that rendered as "No security events". */
   historyUnavailable?: boolean;
   onRetry: () => void;
-  onOpenEvent: (event: SecurityEvent) => void;
+  /** Open this event in the Gate dashboard. The row's own control, and the
+   *  whole of what a row leads to since 2026-09-23 - see the note on the
+   *  button. */
+  onOpenInDashboard: (event: SecurityEvent) => void;
 }
 
 export function SecurityEvents({
   events,
-  state,
   loading,
   unavailable,
   historyUnavailable,
   onRetry,
-  onOpenEvent,
+  onOpenInDashboard,
 }: SecurityEventsProps) {
-  const feed = FEED_LABEL[state];
   // Newest first on screen: a feed is read from the top, and the event a user
   // scrolled down here for is the one that just happened.
-  const rows = [...events].reverse();
+  const all = [...events].reverse();
+  /**
+   * How many rows are on screen. Ten to start, ten more per click, matching
+   * the App pane's recent-activity table - the surface product named as the
+   * pattern for this (2026-09-23).
+   *
+   * Client-side here, unlike that table: this feed arrives over a stream and
+   * the whole session is already in memory, so there is no page to fetch and
+   * "load more" is purely revealing what is held. A session that has been open
+   * a while was drawing every event it had ever seen.
+   *
+   * Not reset when `events` grows. New events arrive at the top and the count
+   * is a floor, not a window, so a reveal the person asked for is not undone
+   * by traffic arriving after it.
+   */
+  const [visible, setVisible] = useState(PAGE);
+  const rows = all.slice(0, visible);
+  const more = all.length - rows.length;
 
   return (
     // The pane's own `gap-4` separated the notice from the card while this was a
@@ -189,57 +199,17 @@ export function SecurityEvents({
       <Card className="p-4" busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
         {/* `heading/16`, the same line the Policies and Token savings cards
-          * above draw. The pill sits on it because it qualifies the rows
-          * underneath - it was in the pane header for the same reason, and the
-          * card header is where that header's job went. `items-baseline` so the
-          * uppercase pill sits on the heading's baseline rather than centring
-          * against a taller line box. */}
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
-            Security events
-          </h2>
-          {/* The feed's own connection, never routing's - and never the
-              Overview's activity read either, which is a different question
-              answered by a different backend. `role="status"` so a screen
-              reader hears the transition without the table moving.
-
-              Held back until the seed lands, like the rows beside it. The hook
-              starts `state` at `"offline"` because it has to start somewhere,
-              so an unguarded pill spends the first read telling the user their
-              security feed is down - on the pane the window opens on, every
-              cold launch. A pill is a reading and there is no reading yet,
-              which is the same rule the empty cell below follows when it
-              refuses to say "No security events" before the answer is in.
-
-              The region stays mounted through both states and only its contents
-              swap. A live region that appears with its text already in it is the
-              case assistive tech handles least consistently; the announcement
-              this role is here for is the one an unmounted wrapper would lose.
-              `aria-label` waits with the pill, because a region named while
-              loading reports the very connection the guard above refuses to
-              claim. */}
-          <span
-            role="status"
-            aria-label={loading ? undefined : `Event feed ${feed.label}`}
-            // Sized to the pill it replaces, and *placed* on it too. The row is
-            // `items-baseline` and `Skeleton` is a block with no text, so it has
-            // no baseline of its own and the synthesized one is its bottom edge:
-            // matching the pill's height alone hangs the placeholder off the
-            // heading's baseline instead of sitting on it, which pushed the
-            // header to 30px and the heading 6px down for as long as the read
-            // took. Measured in Chromium against both markups - the 2px puts the
-            // placeholder on exactly the pill's own box, so header and card are
-            // 26px and 106px either way and nothing moves when the reading
-            // lands. Same concern as the stat tile's `my-1` in `metrics.tsx`.
-            className={loading ? "mt-0.5 shrink-0 self-start" : undefined}
-          >
-            {loading ? (
-              <Skeleton className="h-6 w-20 rounded-control" />
-            ) : (
-              <Pill className={feed.className}>{feed.label}</Pill>
-            )}
-          </span>
-        </div>
+          * above draw. */}
+        {/* The feed's connection pill - Live / Reconnecting / Offline - sat
+          * beside this heading until 2026-09-23, when product asked for it to
+          * go. "Live" was true on every healthy launch and said nothing; the
+          * cost is that the two unhappy states no longer have a surface
+          * either, the tray's security card having been removed in #334. An
+          * offline feed and a quiet machine now look the same here. Raised
+          * with the decision, not overlooked. */}
+        <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+          Security events
+        </h2>
         {/* 20px under the heading, as on both cards above. */}
         <table className="mt-5 w-full">
           <thead>
@@ -323,9 +293,16 @@ export function SecurityEvents({
                       {e.model ?? UNATTRIBUTED}
                     </td>
                     <td className="py-3 text-right">
+                      {/* Straight to the dashboard. This opened
+                          `SecurityEventDialog` - a summary of the same six
+                          fields the row already draws, with an "Open in
+                          dashboard" button under it - until product removed
+                          that step on 2026-09-23. The external-link icon was
+                          always here and was misleading while it opened a
+                          dialog; it is accurate now. */}
                       <button
                         type="button"
-                        onClick={() => onOpenEvent(e)}
+                        onClick={() => onOpenInDashboard(e)}
                         className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs text-base-foreground shadow-base-btn-sm"
                       >
                         View
@@ -338,66 +315,24 @@ export function SecurityEvents({
             )}
           </tbody>
         </table>
+        {/* Hidden once there is nothing left to reveal, rather than left on
+          * screen doing nothing - the same rule the App pane's copy of this
+          * control follows, and the reason its own test is called "offers Load
+          * more only when there is another page". A control that reliably does
+          * nothing is the thing the empty-state comment above already argues
+          * against. */}
+        {more > 0 && (
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setVisible((n) => n + PAGE)}
+              className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              Load more
+            </button>
+          </div>
+        )}
       </Card>
     </div>
-  );
-}
-
-/**
- * One event's summary, and the way through to the dashboard (AC2, AC7).
- *
- * The dialog does **not** close when Open in dashboard is clicked. AC7 asks for
- * the summary to stay visible "until the matching dashboard detail opens", and
- * opening a browser is a thing that can fail: the opener returns a classified
- * error rather than throwing, so on a failure the user is left looking at the
- * event they asked about instead of at the pane behind a banner. The caller
- * closes it once the open succeeded.
- *
- * Nothing here is content. The fields are the same six the row draws, which is
- * all the payload carries - there is no "show more" behind this, deliberately,
- * because the evidence it would show is what AC3 forbids.
- */
-export function SecurityEventDialog({
-  event,
-  onClose,
-  onOpenDashboard,
-}: {
-  event: SecurityEvent;
-  onClose: () => void;
-  onOpenDashboard: () => void;
-}) {
-  const action = ACTION_LABEL[event.action];
-  return (
-    <Modal
-      icon={event.action === "block" ? "shieldBan" : "triangleAlert"}
-      tone={event.action === "block" ? "danger" : "warning"}
-      title={`${action.label} request`}
-      subtitle={eventTime(event.at)}
-      width={512}
-      closeButton
-      onDismiss={onClose}
-      secondary={{ label: "Close", onClick: onClose }}
-      primary={{ label: "Open in dashboard", onClick: onOpenDashboard }}
-    >
-      <dl className="flex flex-col gap-2 text-base-xs">
-        {[
-          ["Category", event.category],
-          ["Tool", event.tool],
-          ["Model", event.model],
-          ["Provider", event.provider],
-        ].map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-4">
-            <dt className="text-base-muted-foreground">{label}</dt>
-            <dd className="text-base-foreground">{value ?? UNATTRIBUTED}</dd>
-          </div>
-        ))}
-        <div className="flex items-baseline justify-between gap-4">
-          <dt className="text-base-muted-foreground">Request</dt>
-          {/* Mono: an identifier, and the one thing on this dialog the user
-              might read back to support. */}
-          <dd className="font-mono text-base-foreground">{event.requestId}</dd>
-        </div>
-      </dl>
-    </Modal>
   );
 }

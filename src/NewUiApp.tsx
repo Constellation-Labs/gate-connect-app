@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { SecurityEventDialog } from "./components/gc/SecurityEvents";
 import { useSecurityFeed } from "./lib/securityFeed";
-import type { SecurityEvent } from "./lib/api";
 import type {
   Account,
   OAuthStatus,
@@ -461,14 +459,6 @@ export function NewUiApp() {
       feedState: securityFeed.state,
     });
   }, [tools, verdicts, proxy?.running, securityFeed.state]);
-
-  /** The event whose summary is open, or null.
-   *
-   * Held here rather than in the pane because AC7 turns on it *surviving* the
-   * click that opens the dashboard: the summary stays up until the browser has
-   * it, so a failed open leaves the user looking at the event rather than at
-   * nothing. */
-  const [openEvent, setOpenEvent] = useState<SecurityEvent | null>(null);
 
   // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
@@ -3453,33 +3443,6 @@ export function NewUiApp() {
             onCancel={settings.dismissPrompt}
             onReset={() => void settings.confirmReset()}
           />
-        ) : openEvent ? (
-          // Above the offer, below everything the user is in the middle of: they
-          // clicked this row, so it outranks anything unsolicited.
-          <SecurityEventDialog
-            event={openEvent}
-            onClose={() => setOpenEvent(null)}
-            onOpenDashboard={() => {
-              const requestId = openEvent.requestId;
-              // Not `openDashboard`: this call site owns what happens on
-              // failure, and the rule is the same for both failures - the
-              // summary stays up unless the detail actually opened.
-              if (dash === null) {
-                setActionError(NO_DASHBOARD);
-                return;
-              }
-              void openExternal(dash.message(requestId)).then((err) => {
-                if (err) {
-                  // The browser never opened, so AC7's "until the matching
-                  // dashboard detail opens" has not been met: leave the summary
-                  // up and report the failure in the banner stack.
-                  setActionError(err);
-                  return;
-                }
-                setOpenEvent(null);
-              });
-            }}
-          />
         ) : offerOpen ? (
           // Lowest precedence in the stack: anything the user just did, a pending
           // quit, or an update outranks an offer they did not ask for.
@@ -3833,12 +3796,17 @@ export function NewUiApp() {
           // read's states and say nothing about the stream.
           security={{
             events: securityFeed.events,
-            state: securityFeed.state,
             loading: securityFeed.loading,
             unavailable: securityFeed.unavailable,
             historyUnavailable: securityFeed.historyUnavailable,
             onRetry: securityFeed.retry,
-            onOpenEvent: setOpenEvent,
+            // Straight out to the dashboard: the summary dialog between the
+            // row and the browser was removed on 2026-09-23. `openDashboard`
+            // rather than a hand-rolled open, now that this call site has no
+            // dialog of its own to keep up when the open fails - the shared
+            // helper already reports both failures the same way.
+            onOpenInDashboard: (event) =>
+              openDashboard((d) => d.message(event.requestId)),
           }}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we
