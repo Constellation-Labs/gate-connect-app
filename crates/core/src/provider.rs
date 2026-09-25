@@ -1206,11 +1206,12 @@ pub fn snapshot_and_park_everything() -> Result<()> {
 ///
 /// Managed at all (its status is one the sweeps act on), and at least one
 /// address its configuration names is hosted in the engine's process -
-/// [`crate::proxy::address_dies_with_gui`], per address. Not the declared
+/// [`crate::proxy::QuitAddresses::dies`], per address, against identities the
+/// caller read once for the whole sweep. Not the declared
 /// [`registry::Mechanism`]: a forward-proxy tool whose install still names the
 /// engine's own port dies exactly like a relay tool, and a relay tool the user
 /// has repointed by hand dies not at all.
-fn stranded_by_quit(integ: &dyn registry::Integration) -> bool {
+fn stranded_by_quit(integ: &dyn registry::Integration, ours: &crate::proxy::QuitAddresses) -> bool {
     if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
         return false;
     }
@@ -1218,16 +1219,17 @@ fn stranded_by_quit(integ: &dyn registry::Integration) -> bool {
         .configured_addresses()
         .unwrap_or_default()
         .iter()
-        .any(|a| crate::proxy::address_dies_with_gui(a))
+        .any(|a| ours.dies(a))
 }
 
 /// Display names of the tools a plain quit would put back on their own
 /// settings. Read-only, for the quit dialog: the same predicate the revert
 /// applies, so what the dialog names is exactly what gets rewritten.
 pub fn tools_stranded_by_quit() -> Vec<String> {
+    let ours = crate::proxy::QuitAddresses::current();
     registry::registry()
         .into_iter()
-        .filter(|i| stranded_by_quit(i.as_ref()))
+        .filter(|i| stranded_by_quit(i.as_ref(), &ours))
         .map(|i| i.display_name().to_string())
         .collect()
 }
@@ -1241,7 +1243,11 @@ pub fn tools_stranded_by_quit() -> Vec<String> {
 /// the forwarder is a separate process and is deliberately left running
 /// (`proxy::forwarder::stop` is not called here). That now includes the relay
 /// on most installs: the forwarder holds the relay port too and serves relay
-/// requests straight to the provider once the engine is gone. A config naming
+/// requests straight to the provider once the engine is gone - except a tool on
+/// Gate pay-as-you-go, whose config carries no provider credential to go direct
+/// with, and which the forwarder answers with an error saying to open Gate
+/// Connect instead. It is left as it is too, because routing resumes on the
+/// next start with nothing rewritten. A config naming
 /// the engine's own port, or the relay where the forwarder does not hold it,
 /// names a listener inside this process, and nothing fronts it: the tool cannot
 /// connect until Gate runs again, with an error about a loopback port the user
@@ -1271,9 +1277,11 @@ pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
              tools back on their own settings"
         );
     };
+    // Read once for the whole sweep; see `proxy::QuitAddresses`.
+    let ours = crate::proxy::QuitAddresses::current();
     let mut reverted: Vec<(String, String)> = Vec::new();
     for integ in registry::registry() {
-        if !stranded_by_quit(integ.as_ref()) {
+        if !stranded_by_quit(integ.as_ref(), &ours) {
             continue;
         }
         match integ.disconnect() {

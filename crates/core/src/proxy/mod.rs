@@ -1182,22 +1182,35 @@ pub fn relay_listening() -> bool {
 /// intercepting: it predates parking, and every relay that could not park was
 /// routing whenever it was up.
 pub fn relay_report() -> Option<RelayReport> {
-    relay_report_at(relay::load_persisted_port()?)
+    relay_report_at(
+        relay::load_persisted_port()?,
+        gate_connect_paths::RELAY_HEALTH_PATH,
+    )
 }
 
-/// [`relay_report`] for a relay on `port` rather than on the public relay
-/// port - which is where the engine's relay sits when the forwarder fronts the
-/// public one (`relay::load_engine_port`).
-pub(crate) fn relay_report_at(port: u16) -> Option<RelayReport> {
+/// [`relay_report`] for a relay on `port`, asked on `health_path`.
+///
+/// For the engine's own relay port behind the forwarder
+/// (`relay::load_engine_port`), ask on
+/// [`gate_connect_paths::RELAY_ENGINE_HEALTH_PATH`]: only an engine's relay
+/// answers there, so a listener squatting that port cannot pass by relaying
+/// the challenge to the forwarder, which answers the other two paths for
+/// anybody.
+pub(crate) fn relay_report_at(port: u16, health_path: &str) -> Option<RelayReport> {
     let token = forwarder::load_or_create_token().ok()?;
-    let headers =
-        gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
+    let headers = gate_connect_paths::probe_with_proof(port, health_path, &token)?;
     let intercepting = headers
         .iter()
         .find(|(name, _)| name == gate_connect_paths::RELAY_INTERCEPTING_HEADER)
         .map(|(_, value)| value != "0")
         .unwrap_or(true);
-    Some(RelayReport { intercepting })
+    let fronted_by_forwarder = headers.iter().any(|(name, value)| {
+        name == gate_connect_paths::RELAY_FRONT_HEADER && value == "forwarder"
+    });
+    Some(RelayReport {
+        intercepting,
+        fronted_by_forwarder,
+    })
 }
 
 /// What [`relay_report`] learned from a relay that proved itself.
@@ -1206,6 +1219,10 @@ pub struct RelayReport {
     /// Rewriting to the gateway, rather than parked and forwarding straight
     /// through to the tool's own provider.
     pub intercepting: bool,
+    /// The forwarder answered, from its own relay listener, rather than an
+    /// engine's relay behind it or on the port. An enable reads this to tell
+    /// "the forwarder holds the public port" from "another Gate does".
+    pub fronted_by_forwarder: bool,
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
@@ -1644,16 +1661,46 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// and `quit_app` gates on exactly that. Keeping the platform out of here is
 /// what lets the rule be tested on any CI runner.
 pub fn address_dies_with_gui(configured: &str) -> bool {
-    // A fronted relay origin is passed as absent: it is not an address that
-    // dies, which is the only thing `address_dies_given` asks of it.
-    let relay_origin = relay_base_url()
-        .filter(|_| forwarder::fronted_relay_port(std::time::Duration::ZERO).is_none());
-    address_dies_given(
-        configured,
-        relay_origin.as_deref(),
-        persisted_engine_proxy_url().as_deref(),
-        exported_proxy_identity_url().as_deref(),
-    )
+    QuitAddresses::current().dies(configured)
+}
+
+/// The three identities [`address_dies_with_gui`] compares against, read once.
+///
+/// A quit asks about every address of every managed tool, and reading these
+/// per address would probe the forwarder once each - latency on the exit path,
+/// and a sweep that could answer differently for two tools if the forwarder's
+/// claim changed halfway. One read per sweep keeps "what the dialog names is
+/// what gets rewritten" true.
+#[derive(Debug, Clone)]
+pub struct QuitAddresses {
+    relay_origin: Option<String>,
+    engine_url: Option<String>,
+    forwarder_url: Option<String>,
+}
+
+impl QuitAddresses {
+    /// Read them now. A fronted relay origin is recorded as absent: it is not
+    /// an address that dies, which is the only thing [`address_dies_given`]
+    /// asks of it.
+    pub fn current() -> Self {
+        let relay_origin = relay_base_url()
+            .filter(|_| forwarder::fronted_relay_port(std::time::Duration::ZERO).is_none());
+        QuitAddresses {
+            relay_origin,
+            engine_url: persisted_engine_proxy_url(),
+            forwarder_url: exported_proxy_identity_url(),
+        }
+    }
+
+    /// [`address_dies_with_gui`] against these identities.
+    pub fn dies(&self, configured: &str) -> bool {
+        address_dies_given(
+            configured,
+            self.relay_origin.as_deref(),
+            self.engine_url.as_deref(),
+            self.forwarder_url.as_deref(),
+        )
+    }
 }
 
 /// [`address_dies_with_gui`] with its three identities passed in, so the rule
@@ -2315,24 +2362,10 @@ fn strip_client_auth(headers: &mut HeaderMap) {
     }
 }
 
-/// Catalog slugs PAYG can serve, i.e. the ones whose forwarded path is a shape
-/// the gateway's reseller router understands (`/v1/messages`,
-/// `/v1/chat/completions`, `/v1/responses`).
-///
-/// An allowlist, not a denylist, so a domain added later defaults to BYOK and a
-/// new entry can never start spending an org's balance by omission.
-///
-/// Everything left out is left out for a reason:
-/// - `claude-web`, `chatgpt-apps` - consumer chat surfaces authenticated by a
-///   session cookie and covered by the user's own subscription. Gate estimates
-///   their cost rather than billing it, and their paths are not inference-API
-///   shapes the reseller router serves.
-/// - `chatgpt` - Codex's ChatGPT-subscription Responses route. Subscription
-///   traffic is by definition not pay-as-you-go; Codex reaches PAYG through the
-///   `openai` entry instead (see `integrations::codex`).
-/// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
-///   the reseller router recognises.
-const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+// The catalog slugs PAYG can serve. Defined, with the reason each other slug is
+// left out, in `gate-connect-paths`: the forwarder refuses these slugs' direct
+// path under pay-as-you-go and has to agree on which they are.
+use gate_connect_paths::PAYG_ELIGIBLE_SLUGS;
 
 /// The mode to actually route `slug` under. PAYG only applies to the domains in
 /// [`PAYG_ELIGIBLE_SLUGS`]; every other domain keeps its BYOK shape even while

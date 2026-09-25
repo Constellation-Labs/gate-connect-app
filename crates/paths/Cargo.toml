@@ -11,5 +11,6 @@ rand = { workspace = true }
 anyhow.workspace = true
 dirs.workspace = true
 socket2 = "0.6"
-# The forwarder health challenge. Already in the tree via the app.
+# The loopback health challenge. Both already in the tree via the app.
+hmac = "0.12"
 sha2.workspace = true

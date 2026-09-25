@@ -21,15 +21,20 @@ path = "src/main.rs"
 # plaintext on loopback and have to leave for the provider over TLS. It
 # originates TLS only: no server side, no certificate minted, no key held. The
 # three crates are already compiled in the tree through reqwest and hudsucker,
-# at these versions, so this names no new code. `rustls-platform-verifier` is
-# the verifier reqwest uses, so the forwarder trusts exactly what the relay's
-# own direct hop trusts, corporate roots in the OS store included.
+# and `Cargo.lock` resolves these requirements to those same versions, so this
+# names no new code - a bump of reqwest's TLS stack has to move these with it.
+# `rustls-platform-verifier` is the verifier reqwest uses, so the forwarder
+# trusts exactly what the relay's own direct hop trusts, corporate roots in the
+# OS store included.
 [dependencies]
 anyhow.workspace = true
 gate-connect-paths = { path = "../paths" }
 httparse = "1"
 rustls = "0.23"
 rustls-platform-verifier = "0.7"
+# Reads `billing_mode` out of `account.json`, so a pay-as-you-go tool gets an
+# error rather than a credential-less request sent to its provider.
+serde_json.workspace = true
 tokio = { workspace = true }
 tokio-rustls = "0.26"
 

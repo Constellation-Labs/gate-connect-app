@@ -165,40 +165,72 @@ crash, which runs no exit handler, leaving them stranded until Gate ran again.
 
 So the forwarder holds the public relay port (`proxy/relay-port`, the one every
 config bakes) and the engine's relay binds `proxy/relay-engine-port` behind it.
-Per connection, the forwarder asks the engine side to prove it holds the token
-and, if it does, splices the connection to it untouched - Gate routes exactly as
-before, attribution marker and all. If nothing proves itself there, the
-forwarder serves the request itself (`crates/forwarder/src/relay.rs`): it reads
-the catalog slug off the path, strips every `x-gate-*` header, and forwards to
-the provider over TLS under the tool's own credential, which is what a parked
-engine's relay does. The slug table is `gate_connect_paths::RELAY_UPSTREAMS`, a
-copy of the catalog's `slug`/`upstream_url` that a test in core holds equal.
+Per connection, the forwarder connects to the engine's relay, asks it for the
+token proof on `RELAY_ENGINE_HEALTH_PATH` - a path only an engine's relay
+answers - and, if it proves itself, splices the client onto that same
+connection untouched. Gate routes exactly as before, attribution marker and
+all. If nothing accepts the connection, the forwarder serves the request itself
+(`crates/forwarder/src/relay.rs`): it reads the catalog slug off the path,
+strips every `x-gate-*` header, and forwards to the provider over TLS under the
+tool's own credential, which is what a parked engine's relay does. If something
+accepts and does not prove itself, the request gets a 502 rather than either:
+that listener may be a busy engine that is routing, and it may be a stranger
+that would be handed the tool's own key. The slug table is
+`gate_connect_paths::RELAY_UPSTREAMS`, a copy of the catalog's
+`slug`/`upstream_url` that a test in core holds equal.
 
 What follows from it:
 
-- **A plain exit no longer rewrites a relay config.** `address_dies_with_gui`
- passes a fronted relay origin as absent, so `revert_stranded_configs_for_quit`
- and the quit dialog skip it. Codex and OpenCode go direct while Gate is
+- **A plain exit no longer rewrites a relay config.** `QuitAddresses` records a
+ fronted relay origin as absent, so `revert_stranded_configs_for_quit` and the
+ quit dialog skip it. It is read once per sweep, so the dialog and the revert
+ cannot disagree about one tool. Codex and OpenCode go direct while Gate is
  closed and route again on the next start without being touched, and a crash
  leaves them working too.
+- **Pay-as-you-go tools get an error, not a direct request.** A tool Gate
+ serves pay-as-you-go sends no provider credential of its own (Codex's PAYG
+ block deliberately sends no `Authorization`), so going direct would be a 401
+ from the provider. For the slugs in `PAYG_ELIGIBLE_SLUGS`, while
+ `account.json` says `payg`, the forwarder answers 503 with a JSON error both
+ the OpenAI and Anthropic SDKs display: "Gate Connect is not running ... Open
+ Gate Connect and try again." It reads the mode per request, so a switch made
+ with the CLI while the app is closed takes effect at once. The config is not
+ reverted either: there is no own-key setup to revert it to that would work,
+ and routing resumes on the next start with nothing rewritten.
 - **Which file the engine writes is decided after it binds.** `enable` asks the
  forwarder whether it holds the public port (`forwarder::fronted_relay_port`,
- through `DesktopOps::relay_front`) before starting the engine, and binds the
- relay behind it if so. It asks again afterwards to decide which port file to
- write, because the forwarder retries for the port every two seconds while
- something else holds it; a claim landing between the question and the bind
- would otherwise move `relay-port` to the engine's fallback port and repoint
- every tool config away from the listener that survives.
-- **The forwarder is started before the engine now**, not after: the relay port
- has to be claimed before the engine's relay chooses where to bind. It reads
- the engine's port files per connection, so it needs nothing the engine
- writes.
-- **A forwarder left running across an update is replaced.** It predates the
- relay and never claims the port. Its health answer lacks the
- `x-gate-forwarder-relay` header a current build always sends, so the ensure
+ through `DesktopOps::fronted_relay_port`) before starting the engine, and
+ binds the relay behind it if so. When the answer was no and the engine then
+ failed to get the public port, it asks once more, because the forwarder may
+ have claimed the port in between (it retries every second); writing the
+ engine's fallback into `relay-port` would repoint every tool config away from
+ the listener that survives. A yes is never asked again, so one slow probe
+ cannot do that repointing on its own.
+- **The forwarder gives up a port the file stops naming.** If a session did
+ write its own relay port into `relay-port`, the configs follow it, and the
+ forwarder notices within a second that the file names another port, stops
+ listening on its old one, and takes the engine's port over when the app lets
+ go of it. Nothing stays stuck until the next login.
+- **The forwarder is started before the park is released**, not after the
+ engine: the relay port has to be claimed before the engine's relay chooses
+ where to bind, and an ensure that spawns (or retires an old forwarder) should
+ not run while the park's tools have nothing on their ports. It reads the
+ engine's port files per connection, so it needs nothing the engine writes. It
+ also runs before the "another Gate Connect" refusal, so a refused enable has
+ started or adopted a forwarder. That is intended: the forwarder is per-user
+ and shared, so what it adopts is the one the other Gate runs.
+- **A forwarder left running across an update is replaced, once.** It predates
+ the relay and the path-bound proof: it answers only the old proof
+ (`legacy_forwarder_proof`, accepted for this decision alone), so the ensure
  retires it (marker removed, and on macOS the launch agent booted out) and
  starts the new binary. That costs the forwarder's port a few seconds with
- nothing on it, once.
+ nothing on it. At most once per app process: if the installed binary is itself
+ the old one, the replacement is stale too, and it is kept rather than retired
+ every thirty seconds.
+- **Relay tools now depend on the forwarder staying up** while the app runs
+ fronted. If it dies, they get connection refused until the supervisor's next
+ pass restarts it (`FORWARDER_CHECK_INTERVAL`, 30 s), or at once on macOS when
+ launchd holds the relay socket.
 - **Where the forwarder does not hold the port** - no forwarder, one that would
  not start, a headless `proxy relay` or a stranger on it - the engine's relay
  binds the public port itself and everything above reverts to the old
@@ -624,6 +656,11 @@ first table.
 | **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
 | **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
 | **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
+
+On an account using Gate pay-as-you-go, "works unrouted" in the Codex and
+OpenCode exit cells reads instead as an error from the forwarder saying to open
+Gate Connect, for the providers Gate serves that way; those tools carry no key
+of their own to work unrouted with.
 
 Starting Gate *after* a disconnect-and-quit is the start that costs the most:
 `restore_all` rewrites every config, so the last column applies again in

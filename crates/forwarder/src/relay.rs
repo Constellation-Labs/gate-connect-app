@@ -12,12 +12,18 @@
 //!
 //! So the forwarder holds the public port and decides per connection:
 //!
-//! - **The engine's relay is up** (it binds [`RELAY_ENGINE_PORT_NAME`] and
-//!   proves it holds the token): splice the connection to it untouched. Gate
-//!   routes exactly as it did when the engine owned this port.
-//! - **It is not**: serve the request here, straight to the provider the slug
-//!   names, under the tool's own credential. That is what the engine's relay
-//!   does while parked, and what the tool would do with Gate not installed.
+//! - **The engine's relay is up** (it binds [`RELAY_ENGINE_PORT_NAME`]): prove
+//!   it is Gate's on the connection itself, then splice the client onto that
+//!   same connection untouched. Gate routes exactly as it did when the engine
+//!   owned this port.
+//! - **Nothing is listening there**: serve the request here, straight to the
+//!   provider the slug names, under the tool's own credential. That is what the
+//!   engine's relay does while parked, and what the tool would do with Gate not
+//!   installed.
+//! - **Something is listening there and does not prove itself**: refuse with a
+//!   502. Going direct would send traffic around a Gate that may well be
+//!   routing (an engine too busy to answer in time), and handing the request
+//!   over would give a stranger the tool's own provider key.
 //!
 //! What the direct path is not allowed to be, and why each holds:
 //!
@@ -26,11 +32,15 @@
 //!   reachable are the providers Gate already knows.
 //! - **Not a way to spend Gate's credential.** The forwarder has none. Every
 //!   `x-gate-*` header is stripped, not only the ones the relay stamps.
+//! - **Not a way to send a pay-as-you-go request without its credential.** A
+//!   tool on Gate pay-as-you-go sends no provider key - Gate was going to
+//!   supply the provider and the bill - so those slugs get a 503 that says to
+//!   open Gate Connect, not a request the provider will refuse.
 //! - **Not reachable from a web page.** The same `Host` / `Origin` loopback
 //!   boundary the engine's relay applies, from the same definition.
-//! - **Not handed to a stranger.** A process squatting the engine's relay port
-//!   while the app is closed would otherwise receive every tool's own provider
-//!   key in plaintext. The engine side proves itself before a byte is spliced.
+//! - **Not handed to a stranger.** The engine side has to answer a proof on a
+//!   path the forwarder itself never answers ([`RELAY_ENGINE_HEALTH_PATH`]), on
+//!   the very connection the request then travels over.
 //!
 //! One request per connection on the direct path, `Connection: close` both
 //! ways. The engine can come back at any moment, and a connection pinned to
@@ -42,12 +52,13 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use gate_connect_paths::{
-    FORWARDER_CHALLENGE_HEADER, FORWARDER_PROOF_HEADER, RELAY_ENGINE_PORT_NAME, RELAY_HEALTH_PATH,
+    FORWARDER_CHALLENGE_HEADER, FORWARDER_PROOF_HEADER, PAYG_ELIGIBLE_SLUGS,
+    RELAY_ENGINE_HEALTH_PATH, RELAY_ENGINE_PORT_NAME, RELAY_FRONT_HEADER, RELAY_HEALTH_PATH,
     RELAY_INTERCEPTING_HEADER, RELAY_LIVENESS_PATH, RELAY_PORT_NAME, RELAY_TOOL_PATH_PREFIX,
 };
 use tokio::io::{
@@ -55,7 +66,9 @@ use tokio::io::{
 };
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::proxy::EngineLookup;
+use crate::proxy::{
+    EngineLookup, ENGINE_CONNECT_TIMEOUT, HEAD_READ_TIMEOUT, MAX_HEAD, MAX_HEADERS,
+};
 
 /// The relay port this forwarder holds, or 0 while it holds none. Reported on
 /// the forwarder's own health answer ([`gate_connect_paths::FORWARDER_RELAY_HEADER`]),
@@ -63,29 +76,42 @@ use crate::proxy::EngineLookup;
 /// listener or on the public port itself.
 pub static HELD_PORT: AtomicU16 = AtomicU16::new(0);
 
-/// How often to try again for the relay port while something else holds it.
+/// How often to try again for the relay port while something else holds it,
+/// and how often a held port is checked against the port file.
 ///
 /// The ordinary holder is the app's own engine, on a session that started
 /// before this forwarder did; it lets go when the app quits, and this is what
-/// picks the port up so the tools pointed at it keep working. Matches the
-/// marker poll, so a quit is covered within one tick.
-const CLAIM_RETRY: Duration = Duration::from_secs(2);
+/// picks the port up so the tools pointed at it keep working. Short, because a
+/// re-enable that finds the port just released waits for this forwarder to
+/// take it; one loopback probe a second is what it costs.
+const CLAIM_RETRY: Duration = Duration::from_secs(1);
 
-/// How long a client has to finish sending its request head. Same bound, same
-/// reason, as the forward-proxy listener's.
-const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the engine's relay gets to answer its proof. Generous: a live
+/// listener that is ours is only slow when it is busy, and a slow proof is
+/// refused rather than sent around Gate.
+const ENGINE_PROOF_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long to wait for the provider to accept a connection.
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The biggest request or response head held before giving up on it.
-const MAX_HEAD: usize = 64 * 1024;
+/// How long a request body may take to arrive in full. Request bodies here are
+/// JSON prompts; this bounds a client that declares a body and stops sending.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Most headers a head may carry.
-const MAX_HEADERS: usize = 128;
+/// How long the provider may take to start its answer. Long, because a
+/// non-streaming completion only answers when it is done.
+const RESPONSE_HEAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long to wait for the provider's answer once sending the request body
+/// failed. Anything it answered early is already buffered by then.
+const EARLY_RESPONSE_WAIT: Duration = Duration::from_secs(5);
 
 /// The longest chunk-size or trailer line accepted in a chunked body.
 const MAX_LINE: u64 = 8 * 1024;
+
+/// Most trailer lines read after a chunked body's last chunk. They are
+/// consumed and not forwarded.
+const MAX_TRAILERS: usize = 64;
 
 /// Connections served at once on this listener, for the reason the forward
 /// proxy caps its own.
@@ -158,56 +184,98 @@ pub fn upstreams() -> Vec<Upstream> {
         .collect()
 }
 
+/// Whether the account is on Gate pay-as-you-go, read from `account.json`
+/// per request so a switch made while the app is closed (the CLI's
+/// `billing-mode`) is honoured at once.
+///
+/// Anything unreadable reads as not pay-as-you-go, which is the direction
+/// core's `billing_mode_for_injection` fails in too: the own-key shape.
+fn account_is_payg() -> bool {
+    gate_connect_paths::app_support_dir()
+        .ok()
+        .and_then(|dir| std::fs::read(dir.join(gate_connect_paths::ACCOUNT_FILE_NAME)).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|account| account["billing_mode"] == "payg")
+}
+
+/// How a request's billing is looked up. Injectable so tests need no account
+/// file.
+pub type PaygLookup = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Take the relay port and serve it, retrying for as long as something else
-/// holds it.
+/// holds it, and giving it up if the port file comes to name another.
 ///
 /// The first attempt may take a fresh port, because on a first run there is no
 /// persisted one and no config names any port yet. Every retry asks only for
 /// the persisted port: a retry that took a fresh one would persist it, and the
 /// next config write would move every tool off the port the running app is
 /// serving.
+///
+/// Giving the port up is what recovers from an app session that could not
+/// bind behind this listener and wrote its own relay port into the file
+/// instead: the configs are then repointed at the engine's port, this listener
+/// stops answering on a port nothing names, and it takes the engine's port
+/// over the moment the app lets go of it.
 pub fn start(forwarder_port: u16, token: Arc<str>) {
     let table: Arc<Vec<Upstream>> = Arc::new(upstreams());
     let backend: EngineLookup = Arc::new(|| gate_connect_paths::load_port(RELAY_ENGINE_PORT_NAME));
+    let payg: PaygLookup = Arc::new(account_is_payg);
+    // launchd's socket is collected before anything is served, so the health
+    // answer never says "holds nothing" while launchd is already holding the
+    // port for us - which an enable would read as the port being somebody
+    // else's.
+    let mut activated = crate::activated_socket("Relay");
     tokio::spawn(async move {
         let mut first = true;
         loop {
-            let initial = first;
-            let bound = tokio::task::spawn_blocking(move || bind(initial, forwarder_port))
-                .await
-                .ok()
-                .flatten();
-            first = false;
-            if let Some(std_listener) = bound {
-                let adopted = std_listener
-                    .set_nonblocking(true)
-                    .ok()
-                    .and_then(|()| std_listener.local_addr().ok())
-                    .map(|addr| addr.port())
-                    .and_then(|port| TcpListener::from_std(std_listener).ok().map(|l| (l, port)));
-                if let Some((listener, port)) = adopted {
-                    // Recorded once held, so the file the app writes into tool
-                    // configs never names a port nothing answers on.
-                    let _ = gate_connect_paths::save_port(RELAY_PORT_NAME, port);
-                    HELD_PORT.store(port, Ordering::SeqCst);
-                    serve(listener, backend, port, token, table).await;
-                    HELD_PORT.store(0, Ordering::SeqCst);
-                    return;
+            let bound = match activated.take() {
+                Some(listener) => Some(listener),
+                None => {
+                    let initial = first;
+                    tokio::task::spawn_blocking(move || bind(initial, forwarder_port))
+                        .await
+                        .ok()
+                        .flatten()
                 }
+            };
+            first = false;
+            if let Some((listener, port)) = bound.and_then(adopt) {
+                // Recorded once held, so the file the app writes into tool
+                // configs never names a port nothing answers on.
+                let _ = gate_connect_paths::save_port(RELAY_PORT_NAME, port);
+                HELD_PORT.store(port, Ordering::SeqCst);
+                let released = async move {
+                    loop {
+                        tokio::time::sleep(CLAIM_RETRY).await;
+                        let named = gate_connect_paths::load_port(RELAY_PORT_NAME);
+                        if named.is_some_and(|named| named != port) {
+                            return;
+                        }
+                    }
+                };
+                let services = Services {
+                    backend: backend.clone(),
+                    token: token.clone(),
+                    table: table.clone(),
+                    payg: payg.clone(),
+                };
+                serve(listener, port, services, released).await;
+                HELD_PORT.store(0, Ordering::SeqCst);
             }
             tokio::time::sleep(CLAIM_RETRY).await;
         }
     });
 }
 
+fn adopt(std_listener: std::net::TcpListener) -> Option<(TcpListener, u16)> {
+    std_listener.set_nonblocking(true).ok()?;
+    let port = std_listener.local_addr().ok()?.port();
+    Some((TcpListener::from_std(std_listener).ok()?, port))
+}
+
 /// One attempt at the relay port. See [`start`] for why only the first may
 /// fall back to a fresh one.
 fn bind(first: bool, forwarder_port: u16) -> Option<std::net::TcpListener> {
-    if first {
-        if let Some(listener) = crate::activated_socket("Relay") {
-            return Some(listener);
-        }
-    }
     match gate_connect_paths::load_port(RELAY_PORT_NAME) {
         // A live listener is the common reason to be retrying at all - the
         // app's engine, on a session that started before this forwarder - and
@@ -216,10 +284,7 @@ fn bind(first: bool, forwarder_port: u16) -> Option<std::net::TcpListener> {
         Some(port) if !first && gate_connect_paths::port_is_live(port) => None,
         Some(port) => gate_connect_paths::bind_preferred(port).ok(),
         None if first => {
-            let mut skip: Vec<u16> = crate::APP_PORT_NAMES
-                .iter()
-                .filter_map(|n| gate_connect_paths::load_port(n))
-                .collect();
+            let mut skip = gate_connect_paths::remembered_ports_except(RELAY_PORT_NAME);
             skip.push(forwarder_port);
             gate_connect_paths::bind_fresh(&skip).ok()
         }
@@ -227,73 +292,134 @@ fn bind(first: bool, forwarder_port: u16) -> Option<std::net::TcpListener> {
     }
 }
 
-/// Accept forever, serving each connection with [`handle`].
+/// What one relay connection needs besides the socket.
+#[derive(Clone)]
+pub struct Services {
+    pub backend: EngineLookup,
+    pub token: Arc<str>,
+    pub table: Arc<Vec<Upstream>>,
+    pub payg: PaygLookup,
+}
+
+/// Accept until `released` completes, serving each connection with
+/// [`handle`]. Connections already accepted run to completion.
 pub async fn serve(
     listener: TcpListener,
-    backend: EngineLookup,
     own_port: u16,
-    token: Arc<str>,
-    table: Arc<Vec<Upstream>>,
+    services: Services,
+    released: impl std::future::Future<Output = ()>,
 ) {
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    tokio::pin!(released);
     loop {
-        let client = match listener.accept().await {
-            Ok((client, _)) => client,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
+        let client = tokio::select! {
+            _ = &mut released => return,
+            accepted = listener.accept() => match accepted {
+                Ok((client, _)) => client,
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            },
         };
         let Ok(slot) = slots.clone().try_acquire_owned() else {
             continue;
         };
-        let backend = backend.clone();
-        let token = token.clone();
-        let table = table.clone();
+        let services = services.clone();
         tokio::spawn(async move {
             let _slot = slot;
-            let _ = handle(client, backend, own_port, token, table).await;
+            let _ = handle(client, own_port, services).await;
         });
     }
 }
 
-/// Serve one connection: hand it to the engine's relay if that is up and ours,
-/// otherwise answer it here.
-pub async fn handle(
-    mut client: TcpStream,
-    backend: EngineLookup,
-    own_port: u16,
-    token: Arc<str>,
-    table: Arc<Vec<Upstream>>,
-) -> Result<()> {
-    if let Some(port) = backend().filter(|p| *p != own_port) {
-        if backend_is_ours(port, token.clone()).await {
-            let connected = tokio::time::timeout(
-                Duration::from_millis(250),
-                TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))),
-            )
-            .await;
-            if let Ok(Ok(mut engine)) = connected {
+/// What the engine side of the relay turned out to be.
+enum Engine {
+    /// Gate's relay, proven on this connection, which is ready to carry the
+    /// client's bytes.
+    Proved(TcpStream),
+    /// Nothing accepted a connection: the engine is gone.
+    Absent,
+    /// Something accepted and did not prove itself.
+    Unproven,
+}
+
+/// Serve one connection: hand it to the engine's relay if that is up and
+/// proves itself, answer it here if nothing is there, refuse it otherwise.
+pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) -> Result<()> {
+    if let Some(port) = (services.backend)().filter(|p| *p != own_port) {
+        match engine_session(port, &services.token).await {
+            Engine::Proved(mut engine) => {
                 tokio::io::copy_bidirectional(&mut client, &mut engine).await?;
+                return Ok(());
+            }
+            Engine::Absent => {}
+            Engine::Unproven => {
+                respond(
+                    &mut client,
+                    502,
+                    &format!(
+                        "Gate Connect's relay on 127.0.0.1:{port} did not answer as Gate's. \
+                         Retry, or restart Gate Connect."
+                    ),
+                )
+                .await;
                 return Ok(());
             }
         }
     }
-    serve_direct(client, &token, &table).await
+    serve_direct(client, &services).await
 }
 
-/// Whether the listener on the engine's relay port proves it holds our token.
+/// Connect to the engine's relay and prove it on that same connection.
 ///
-/// Asked per connection rather than cached. The proof is one loopback round
-/// trip, and a cache would be a window in which a port the engine had just
-/// released could be taken by something else and still be trusted with a
-/// plaintext request carrying the tool's own provider key.
-async fn backend_is_ours(port: u16, token: Arc<str>) -> bool {
-    tokio::task::spawn_blocking(move || {
-        gate_connect_paths::proves_ours(port, RELAY_HEALTH_PATH, &token)
+/// A refused or timed-out connect is the engine being gone. The timeout counts
+/// as gone, not as unproven, because on Windows a connect to a closed loopback
+/// port is not refused at once: the stack retries the SYN for about two
+/// seconds, and a live listener's connect completes from the accept backlog
+/// in microseconds.
+///
+/// The proof and the request share the connection, so there is no window
+/// between the two in which the port could change hands. The engine's relay
+/// speaks HTTP/1.1 with keep-alive, so the request that follows is served on
+/// the connection the proof was answered on.
+async fn engine_session(port: u16, token: &str) -> Engine {
+    let connected = tokio::time::timeout(
+        ENGINE_CONNECT_TIMEOUT,
+        TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))),
+    )
+    .await;
+    let mut engine = match connected {
+        Ok(Ok(engine)) => engine,
+        _ => return Engine::Absent,
+    };
+    let challenge = gate_connect_paths::fresh_challenge();
+    let expected = gate_connect_paths::forwarder_proof(token, RELAY_ENGINE_HEALTH_PATH, &challenge);
+    let proved = tokio::time::timeout(ENGINE_PROOF_TIMEOUT, async {
+        engine
+            .write_all(
+                format!(
+                    "GET {RELAY_ENGINE_HEALTH_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                     {FORWARDER_CHALLENGE_HEADER}: {challenge}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .ok()?;
+        let mut head = Vec::new();
+        let end = read_head(&mut engine, &mut head, false).await.ok()??;
+        // Nothing may follow the answer: the engine speaks only when asked, so
+        // bytes past it would be bytes the client's request gets mixed with.
+        if end != head.len() || !head.starts_with(b"HTTP/1.1 204") {
+            return None;
+        }
+        gate_connect_paths::parse_proof(&head, &expected)
     })
-    .await
-    .unwrap_or(false)
+    .await;
+    match proved {
+        Ok(Some(_)) => Engine::Proved(engine),
+        _ => Engine::Unproven,
+    }
 }
 
 /// How a message body is delimited.
@@ -335,23 +461,14 @@ fn refuse(status: u16, message: impl Into<String>) -> Refusal {
     }
 }
 
-/// Headers that address this hop and never go further. `host` is replaced, and
-/// `expect` is answered here - see [`Plan::expect_continue`].
+/// Headers that address this hop and never go further: the RFC set both relays
+/// share, plus `host`, which is rewritten, and `expect`, which is answered
+/// here - see [`Plan::expect_continue`].
 fn is_hop_by_hop(name: &str) -> bool {
-    [
-        "host",
-        "connection",
-        "keep-alive",
-        "proxy-connection",
-        "proxy-authorization",
-        "proxy-authenticate",
-        "te",
-        "trailer",
-        "upgrade",
-        "expect",
-    ]
-    .iter()
-    .any(|h| name.eq_ignore_ascii_case(h))
+    gate_connect_paths::HOP_BY_HOP
+        .iter()
+        .chain(["host", "expect"].iter())
+        .any(|h| name.eq_ignore_ascii_case(h))
 }
 
 /// Whether a header is Gate-internal. Every `x-gate-*` name, not a list of the
@@ -373,18 +490,38 @@ fn nominated(headers: &[(String, Vec<u8>)]) -> Vec<String> {
         .collect()
 }
 
-fn header<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a str> {
+/// Every value of the header `name`, raw.
+fn values<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Vec<&'a [u8]> {
+    headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_slice())
+        .collect()
+}
+
+/// The header `name` as text: `None` when absent, `Some(None)` when present and
+/// not UTF-8.
+fn text<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<Option<&'a str>> {
     headers
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(name))
-        .and_then(|(_, v)| std::str::from_utf8(v).ok())
+        .map(|(_, v)| std::str::from_utf8(v).ok())
 }
 
-/// Body framing from a head's headers. `Transfer-Encoding` wins over
+/// Body framing from a head's headers, strictly: at most one
+/// `Transfer-Encoding` and one `Content-Length`, a length of digits only, and a
+/// transfer coding that ends in `chunked`. `Transfer-Encoding` wins over
 /// `Content-Length`, as RFC 9112 says, and the caller drops the length so the
-/// two cannot disagree further along.
+/// two cannot disagree further along. Anything looser is refused rather than
+/// passed on for the next hop to read differently.
 fn framing(headers: &[(String, Vec<u8>)]) -> Result<Framing, ()> {
-    if let Some(te) = header(headers, "transfer-encoding") {
+    let te = values(headers, "transfer-encoding");
+    let cl = values(headers, "content-length");
+    if te.len() > 1 || cl.len() > 1 {
+        return Err(());
+    }
+    if let Some(te) = te.first() {
+        let te = std::str::from_utf8(te).map_err(|_| ())?;
         let last = te.rsplit(',').next().unwrap_or("").trim();
         return if last.eq_ignore_ascii_case("chunked") {
             Ok(Framing::Chunked)
@@ -392,41 +529,16 @@ fn framing(headers: &[(String, Vec<u8>)]) -> Result<Framing, ()> {
             Err(())
         };
     }
-    match header(headers, "content-length") {
-        Some(v) => v.trim().parse().map(Framing::Length).map_err(|_| ()),
+    match cl.first() {
+        Some(v) => {
+            let v = std::str::from_utf8(v).map_err(|_| ())?.trim();
+            if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(());
+            }
+            v.parse().map(Framing::Length).map_err(|_| ())
+        }
         None => Ok(Framing::None),
     }
-}
-
-/// Does the request target carry a `.` or `..` path segment? Refused for the
-/// reason the engine's relay refuses it: the path that is classified has to be
-/// the path that is sent.
-fn has_dot_segment(target: &str) -> bool {
-    let path = target.split_once('?').map_or(target, |(p, _)| p);
-    path.split('/').any(|segment| {
-        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
-            .iter()
-            .any(|form| segment.eq_ignore_ascii_case(form))
-    })
-}
-
-/// Split `/<segment>/rest?query` into `("<segment>", "/rest?query")`. Same rule
-/// as the engine's relay.
-fn split_leading_segment(target: &str) -> Option<(&str, String)> {
-    let rest = target.strip_prefix('/')?;
-    let end = rest.find(['/', '?']).unwrap_or(rest.len());
-    let (segment, tail) = rest.split_at(end);
-    if segment.is_empty() {
-        return None;
-    }
-    let inner = if tail.is_empty() {
-        "/".to_string()
-    } else if tail.starts_with('?') {
-        format!("/{tail}")
-    } else {
-        tail.to_string()
-    };
-    Some((segment, inner))
 }
 
 /// Decide where a relay request goes and rewrite its head for the provider.
@@ -435,23 +547,30 @@ fn split_leading_segment(target: &str) -> Option<(&str, String)> {
 pub fn plan(
     method: &str,
     target: &str,
+    http_minor: u8,
     headers: &[(String, Vec<u8>)],
     table: &[Upstream],
 ) -> Result<Plan, Refusal> {
-    if let Some(host) = header(headers, "host") {
-        if !gate_connect_paths::authority_is_loopback(host) {
+    // A `Host` or `Origin` that is present but unreadable is refused, as the
+    // engine's relay refuses it: reading it as absent would skip the check.
+    match text(headers, "host") {
+        Some(Some(host)) if gate_connect_paths::authority_is_loopback(host) => {}
+        None => {}
+        _ => {
             return Err(refuse(
                 403,
                 "the Gate relay only serves requests addressed to 127.0.0.1/localhost",
-            ));
+            ))
         }
     }
-    if let Some(origin) = header(headers, "origin") {
-        if !gate_connect_paths::origin_is_loopback(origin) {
+    match text(headers, "origin") {
+        Some(Some(origin)) if gate_connect_paths::origin_is_loopback(origin) => {}
+        None => {}
+        _ => {
             return Err(refuse(
                 403,
                 "the Gate relay does not serve cross-origin browser requests",
-            ));
+            ))
         }
     }
     if !target.starts_with('/') {
@@ -460,43 +579,44 @@ pub fn plan(
             "the Gate relay only serves origin-form requests",
         ));
     }
-    if has_dot_segment(target) {
+    if gate_connect_paths::has_dot_segment(target) {
         return Err(refuse(400, "request path contains a `.` or `..` segment"));
     }
 
     // The tool marker comes off first, and its segment goes with it whatever it
     // names: attribution is Gate's business, and there is no Gate on this path.
     let unmarked = match target.strip_prefix(RELAY_TOOL_PATH_PREFIX) {
-        Some(rest) => split_leading_segment(&format!("/{rest}"))
+        Some(rest) => gate_connect_paths::split_leading_segment(&format!("/{rest}"))
             .map(|(_, inner)| inner)
             .unwrap_or_else(|| target.to_string()),
         None => target.to_string(),
     };
-    let by_slug = split_leading_segment(&unmarked).and_then(|(segment, inner)| {
-        table
-            .iter()
-            .position(|u| u.slug == segment)
-            .map(|i| (i, inner))
-    });
+    let by_slug =
+        gate_connect_paths::split_leading_segment(&unmarked).and_then(|(segment, inner)| {
+            table
+                .iter()
+                .position(|u| u.slug == segment)
+                .map(|i| (i, inner))
+        });
     let (index, inner) = match by_slug {
         Some(found) => found,
         // A config written before the slug moved into the path carries the
         // upstream as a header instead. It only selects an entry; the value
         // used is the entry's own.
-        None => match header(headers, "x-gate-upstream-url") {
+        None => match text(headers, "x-gate-upstream-url").flatten() {
             Some(named) => match table.iter().position(|u| u.url == named) {
                 Some(i) => (i, unmarked.clone()),
                 None => {
                     return Err(refuse(
                         403,
-                        format!("upstream {named:?} is not in the built-in catalog"),
+                        "the named upstream is not in the built-in catalog",
                     ))
                 }
             },
             None => {
                 return Err(refuse(
                     400,
-                    format!("{target:?} does not start with a known upstream slug"),
+                    "the request path does not start with a known upstream slug",
                 ))
             }
         },
@@ -527,8 +647,12 @@ pub fn plan(
     }
     head.extend_from_slice(b"Connection: close\r\n\r\n");
 
-    let expect_continue =
-        header(headers, "expect").is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue"));
+    // `100 Continue` is an HTTP/1.1 response; an HTTP/1.0 client never waits
+    // for one.
+    let expect_continue = http_minor >= 1
+        && text(headers, "expect")
+            .flatten()
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue"));
     Ok(Plan {
         upstream: index,
         head,
@@ -559,9 +683,8 @@ pub fn rewrite_response(raw: &[u8], head_request: bool) -> Option<(Vec<u8>, u16,
         Framing::None
     } else {
         match framing(&owned) {
-            Ok(Framing::None) => Framing::UntilClose,
+            Ok(Framing::None) | Err(()) => Framing::UntilClose,
             Ok(f) => f,
-            Err(()) => Framing::UntilClose,
         }
     };
     let nominated = nominated(&owned);
@@ -572,7 +695,10 @@ pub fn rewrite_response(raw: &[u8], head_request: bool) -> Option<(Vec<u8>, u16,
             lower.as_str(),
             "connection" | "keep-alive" | "proxy-connection"
         ) || nominated.contains(&lower)
-            || (framing == Framing::Chunked && lower == "content-length")
+            // A length the body is not framed by would make the client read
+            // it differently from this hop.
+            || (matches!(framing, Framing::Chunked | Framing::UntilClose)
+                && lower == "content-length")
         {
             continue;
         }
@@ -616,27 +742,82 @@ async fn read_head<R: AsyncRead + Unpin>(
     }
 }
 
+/// Answer with a plain-text error, then close so the client reads it.
 async fn respond(client: &mut TcpStream, status: u16, message: &str) {
     let reason = match status {
         400 => "Bad Request",
         403 => "Forbidden",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Error",
     };
+    let body = message.as_bytes();
     let _ = client
         .write_all(
             format!(
                 "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{message}",
-                message.len()
+                 X-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                body.len()
             )
             .as_bytes(),
         )
         .await;
+    let _ = client.write_all(body).await;
+    linger(client).await;
+}
+
+/// The answer a pay-as-you-go tool gets while the app is closed, shaped so both
+/// the OpenAI and the Anthropic SDKs show its message: `error.message` is where
+/// each looks.
+async fn respond_payg(client: &mut TcpStream) {
+    let body = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "gate_connect_not_running",
+            "code": "gate_connect_not_running",
+            "message": "Gate Connect is not running. This tool is set up to use Gate \
+                        pay-as-you-go, which works only while Gate Connect is open. Open Gate \
+                        Connect and try again.",
+        }
+    })
+    .to_string();
+    let _ = client
+        .write_all(
+            format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\
+                 X-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await;
+    linger(client).await;
+}
+
+/// Close gracefully after an answer written before the request was read in
+/// full. Closing a socket that still has unread input sends a reset, and a
+/// client mid-upload then sees ECONNRESET instead of the answer. So: stop
+/// writing, and read and discard what the client is still sending, bounded in
+/// time and size, before letting go.
+async fn linger(client: &mut TcpStream) {
+    let _ = client.shutdown().await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut sink = [0u8; 8192];
+        let mut drained = 0usize;
+        while drained < 1024 * 1024 {
+            match client.read(&mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => drained += n,
+            }
+        }
+    })
+    .await;
 }
 
 /// Answer one request with no engine behind this listener.
-async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) -> Result<()> {
+async fn serve_direct(mut client: TcpStream, services: &Services) -> Result<()> {
     let mut buf = Vec::with_capacity(4096);
     let end = match tokio::time::timeout(HEAD_READ_TIMEOUT, read_head(&mut client, &mut buf, true))
         .await
@@ -648,13 +829,14 @@ async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) ->
             return Ok(());
         }
     };
-    let (method, target, headers) = {
+    let (method, target, minor, headers) = {
         let mut slots = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut slots);
         let _ = req.parse(&buf[..end]);
         (
             req.method.unwrap_or_default().to_string(),
             req.path.unwrap_or_default().to_string(),
+            req.version.unwrap_or(1),
             req.headers
                 .iter()
                 .map(|h| (h.name.to_string(), h.value.to_vec()))
@@ -665,15 +847,20 @@ async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) ->
 
     // Identity first, as the engine's relay does it. `intercepting: 0` is the
     // truth about this path: nothing here reaches Gate, so the tools' status
-    // reads it the way it reads a parked engine.
+    // reads it the way it reads a parked engine. The front header says it is
+    // the forwarder answering, not an engine.
     if method == "GET" && target == RELAY_HEALTH_PATH {
-        let challenge = header(&headers, FORWARDER_CHALLENGE_HEADER).unwrap_or_default();
-        let proof = gate_connect_paths::forwarder_proof(token, challenge);
+        let challenge = text(&headers, FORWARDER_CHALLENGE_HEADER)
+            .flatten()
+            .unwrap_or_default();
+        let proof =
+            gate_connect_paths::forwarder_proof(&services.token, RELAY_HEALTH_PATH, challenge);
         let _ = client
             .write_all(
                 format!(
                     "HTTP/1.1 204 No Content\r\n{FORWARDER_PROOF_HEADER}: {proof}\r\n\
-                     {RELAY_INTERCEPTING_HEADER}: 0\r\nConnection: close\r\n\r\n"
+                     {RELAY_INTERCEPTING_HEADER}: 0\r\n{RELAY_FRONT_HEADER}: forwarder\r\n\
+                     Connection: close\r\n\r\n"
                 )
                 .as_bytes(),
             )
@@ -687,14 +874,18 @@ async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) ->
         return Ok(());
     }
 
-    let plan = match plan(&method, &target, &headers, table) {
+    let plan = match plan(&method, &target, minor, &headers, &services.table) {
         Ok(plan) => plan,
         Err(refusal) => {
             respond(&mut client, refusal.status, &refusal.message).await;
             return Ok(());
         }
     };
-    let upstream = &table[plan.upstream];
+    let upstream = &services.table[plan.upstream];
+    if PAYG_ELIGIBLE_SLUGS.contains(&upstream.slug.as_str()) && (services.payg)() {
+        respond_payg(&mut client).await;
+        return Ok(());
+    }
 
     let tcp = match tokio::time::timeout(
         UPSTREAM_CONNECT_TIMEOUT,
@@ -704,12 +895,8 @@ async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) ->
     {
         Ok(Ok(tcp)) => tcp,
         _ => {
-            respond(
-                &mut client,
-                502,
-                &format!("could not reach {}", upstream.host_header()),
-            )
-            .await;
+            let message = format!("could not reach {}", upstream.host_header());
+            respond(&mut client, 502, &message).await;
             return Ok(());
         }
     };
@@ -719,12 +906,8 @@ async fn serve_direct(mut client: TcpStream, token: &str, table: &[Upstream]) ->
     let tls = match tls_connect(&upstream.host, tcp).await {
         Ok(tls) => tls,
         Err(e) => {
-            respond(
-                &mut client,
-                502,
-                &format!("TLS to {} failed: {e:#}", upstream.host_header()),
-            )
-            .await;
+            let message = format!("TLS to {} failed: {e:#}", upstream.host_header());
+            respond(&mut client, 502, &message).await;
             return Ok(());
         }
     };
@@ -745,38 +928,72 @@ where
         client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
     }
     upstream.write_all(&plan.head).await?;
-    {
+    let upload = {
         // Exactly the declared body and not a byte more. Anything the client
         // pipelined behind it is dropped with the connection, which is what
         // the `Connection: close` it gets back tells it to expect.
         let mut body = BufReader::new(Cursor::new(leftover).chain(&mut client));
-        copy_body(&mut body, &mut upstream, plan.body).await?;
-    }
-    upstream.flush().await?;
+        match tokio::time::timeout(
+            UPLOAD_TIMEOUT,
+            copy_body(&mut body, &mut upstream, plan.body),
+        )
+        .await
+        {
+            Ok(Ok(())) => upstream.flush().await.map_err(anyhow::Error::from),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(anyhow!("the request body did not arrive in time")),
+        }
+    };
+    // A provider may answer before the body is in - a 401 or a 413 - and then
+    // stop reading, which fails the upload. Its answer is what the client
+    // needs, so it is still read; only briefly, since a body that failed on
+    // the client's side leaves a provider that will never answer.
+    let head_wait = if upload.is_ok() {
+        RESPONSE_HEAD_TIMEOUT
+    } else {
+        EARLY_RESPONSE_WAIT
+    };
 
     let mut buf = Vec::with_capacity(4096);
-    let (head, framing) = loop {
-        let Some(end) = read_head(&mut upstream, &mut buf, false).await? else {
-            respond(&mut client, 502, "the provider sent a malformed response").await;
-            return Ok(());
-        };
-        let Some((head, status, framing)) = rewrite_response(&buf[..end], plan.head_request) else {
-            respond(&mut client, 502, "the provider sent a malformed response").await;
-            return Ok(());
-        };
-        // Interim responses (103 Early Hints) are passed on and the real one
-        // is read after them.
-        if (100..200).contains(&status) && status != 101 {
-            client.write_all(&buf[..end]).await?;
+    let response = tokio::time::timeout(head_wait, async {
+        loop {
+            let end = read_head(&mut upstream, &mut buf, false).await.ok()??;
+            let (head, status, framing) = rewrite_response(&buf[..end], plan.head_request)?;
+            // Interim responses (103 Early Hints) are passed on and the real
+            // one is read after them. 101 cannot happen: `Upgrade` is not
+            // forwarded.
+            if (100..200).contains(&status) {
+                if client.write_all(&buf[..end]).await.is_err() {
+                    return None;
+                }
+                buf.drain(..end);
+                continue;
+            }
             buf.drain(..end);
-            continue;
+            return Some((head, framing));
         }
-        buf.drain(..end);
-        break (head, framing);
+    })
+    .await;
+    let Ok(Some((head, framing))) = response else {
+        let message = match upload {
+            Err(e) => format!("sending the request failed: {e:#}"),
+            Ok(()) => "the provider sent no usable response".to_string(),
+        };
+        respond(&mut client, 502, &message).await;
+        return Ok(());
     };
     client.write_all(&head).await?;
-    let mut body = BufReader::new(Cursor::new(buf).chain(&mut upstream));
-    copy_body(&mut body, &mut client, framing).await?;
+    let relayed = {
+        let mut body = BufReader::new(Cursor::new(buf).chain(&mut upstream));
+        copy_body(&mut body, &mut client, framing).await
+    };
+    if relayed.is_err() && framing == Framing::UntilClose {
+        // A close-delimited body that broke off would read as complete if this
+        // side closed cleanly. A reset is how the client learns it was cut.
+        let _ = client.set_zero_linger();
+        return relayed;
+    }
+    relayed?;
     client.flush().await?;
     let _ = client.shutdown().await;
     Ok(())
@@ -806,8 +1023,10 @@ where
     }
 }
 
-/// Relay a chunked body verbatim, reading its framing only to know where it
-/// ends.
+/// Relay a chunked body, re-emitting its framing in canonical form: each size
+/// line as bare hex, chunk extensions dropped, and no trailers. Read strictly -
+/// CRLF line endings, hex digits only - so what this hop takes to be the end of
+/// the body is the only reading the next hop can have.
 async fn copy_chunked<R, W>(r: &mut R, w: &mut W) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -815,79 +1034,86 @@ where
 {
     loop {
         let line = read_line(r).await?;
-        w.write_all(&line).await?;
         let size = parse_chunk_size(&line).context("malformed chunk size")?;
+        w.write_all(format!("{size:x}\r\n").as_bytes()).await?;
         if size == 0 {
-            loop {
-                let trailer = read_line(r).await?;
-                w.write_all(&trailer).await?;
-                if trailer == b"\r\n" || trailer == b"\n" {
-                    break;
+            // Trailers are read to find the end and not forwarded.
+            for _ in 0..=MAX_TRAILERS {
+                if read_line(r).await? == b"\r\n" {
+                    w.write_all(b"\r\n").await?;
+                    w.flush().await?;
+                    return Ok(());
                 }
             }
-            w.flush().await?;
-            return Ok(());
+            bail!("too many trailer lines");
         }
         let copied = tokio::io::copy_buf(&mut (&mut *r).take(size), w).await?;
         if copied != size {
             bail!("chunk ended after {copied} of {size} bytes");
         }
-        let end = read_line(r).await?;
-        if end != b"\r\n" && end != b"\n" {
-            bail!("chunk not terminated by a line break");
+        if read_line(r).await? != b"\r\n" {
+            bail!("chunk not terminated by CRLF");
         }
-        w.write_all(&end).await?;
+        w.write_all(b"\r\n").await?;
         w.flush().await?;
     }
 }
 
+/// One CRLF-terminated line, bounded by [`MAX_LINE`].
 async fn read_line<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<Vec<u8>> {
     let mut line = Vec::new();
     (&mut *r)
         .take(MAX_LINE)
         .read_until(b'\n', &mut line)
         .await?;
-    if !line.ends_with(b"\n") {
-        bail!("chunked body ended mid-line");
+    if !line.ends_with(b"\r\n") {
+        bail!("chunked body line not terminated by CRLF");
     }
     Ok(line)
 }
 
+/// A chunk-size line: 1 to 16 hex digits, optional whitespace, optional
+/// extensions after `;`.
 fn parse_chunk_size(line: &[u8]) -> Option<u64> {
-    let text = std::str::from_utf8(line).ok()?;
-    let hex = text.split(';').next()?.trim();
-    if hex.is_empty() {
+    let text = std::str::from_utf8(line.strip_suffix(b"\r\n")?).ok()?;
+    let hex = text.split(';').next()?.trim_end_matches([' ', '\t']);
+    if hex.is_empty() || hex.len() > 16 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     u64::from_str_radix(hex, 16).ok()
 }
 
-/// The TLS client configuration, built once.
+/// The TLS client configuration, built once it can be.
+///
+/// Only success is cached: a verifier that failed to build (a platform store
+/// unreadable at login, say) is tried again on the next request rather than
+/// answering 502 for as long as the forwarder runs, which on macOS is from
+/// login onward.
 ///
 /// The provider is named rather than taken from the process default: the
 /// workspace compiles rustls with more than one, and with two available and
 /// none installed, `ClientConfig::builder()` panics.
 fn tls_config() -> Result<Arc<rustls::ClientConfig>> {
-    static CONFIG: OnceLock<std::result::Result<Arc<rustls::ClientConfig>, String>> =
-        OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
-                .map_err(|e| format!("building the certificate verifier: {e}"))?;
-            let mut config = rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| format!("choosing TLS versions: {e}"))?
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(verifier))
-                .with_no_client_auth();
-            // This hop speaks HTTP/1.1 and nothing else; offering h2 would let a
-            // provider pick a protocol the bytes relayed here are not.
-            config.alpn_protocols = vec![b"http/1.1".to_vec()];
-            Ok(Arc::new(config))
-        })
-        .clone()
-        .map_err(anyhow::Error::msg)
+    static CONFIG: Mutex<Option<Arc<rustls::ClientConfig>>> = Mutex::new(None);
+    let mut cached = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(config) = cached.as_ref() {
+        return Ok(config.clone());
+    }
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
+        .context("building the certificate verifier")?;
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .context("choosing TLS versions")?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    // This hop speaks HTTP/1.1 and nothing else; offering h2 would let a
+    // provider pick a protocol the bytes relayed here are not.
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let config = Arc::new(config);
+    *cached = Some(config.clone());
+    Ok(config)
 }
 
 async fn tls_connect(
@@ -903,448 +1129,4 @@ async fn tls_connect(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn table(origin_port: u16) -> Vec<Upstream> {
-        vec![
-            Upstream::parse("anthropic", &format!("http://127.0.0.1:{origin_port}")).unwrap(),
-            Upstream::parse("claude-web", &format!("http://127.0.0.1:{origin_port}/api")).unwrap(),
-        ]
-    }
-
-    fn hdrs(list: &[(&str, &str)]) -> Vec<(String, Vec<u8>)> {
-        list.iter()
-            .map(|(n, v)| ((*n).to_string(), v.as_bytes().to_vec()))
-            .collect()
-    }
-
-    fn head_text(plan: &Plan) -> String {
-        String::from_utf8(plan.head.clone()).unwrap()
-    }
-
-    #[test]
-    fn the_catalog_urls_parse() {
-        let u = Upstream::parse("claude-web", "https://claude.ai/api").unwrap();
-        assert_eq!(
-            (u.tls, u.host.as_str(), u.port, u.base_path.as_str()),
-            (true, "claude.ai", 443, "/api")
-        );
-        assert_eq!(u.host_header(), "claude.ai");
-        let u = Upstream::parse("x", "http://127.0.0.1:8080").unwrap();
-        assert_eq!((u.tls, u.port, u.base_path.as_str()), (false, 8080, ""));
-        assert_eq!(u.host_header(), "127.0.0.1:8080");
-        // Every shipped entry has to parse, or its tools lose the direct path.
-        assert_eq!(upstreams().len(), gate_connect_paths::RELAY_UPSTREAMS.len());
-    }
-
-    /// The shape every config written today sends: the tool marker, then the
-    /// slug, then the client's own path.
-    #[test]
-    fn routes_a_marked_request_by_its_slug() {
-        let t = table(9);
-        let plan = plan(
-            "POST",
-            "/__gate/t/opencode/claude-web/v1/messages?beta=true",
-            &hdrs(&[("Host", "127.0.0.1:47111"), ("Content-Length", "2")]),
-            &t,
-        )
-        .unwrap();
-        assert_eq!(plan.upstream, 1);
-        let head = head_text(&plan);
-        assert!(
-            head.starts_with("POST /api/v1/messages?beta=true HTTP/1.1\r\nHost: 127.0.0.1:9\r\n"),
-            "{head}"
-        );
-        assert_eq!(plan.body, Framing::Length(2));
-        assert!(head.contains("Content-Length: 2\r\n"), "{head}");
-        assert!(head.ends_with("Connection: close\r\n\r\n"), "{head}");
-        assert_eq!(head.matches("Host:").count(), 1, "{head}");
-    }
-
-    #[test]
-    fn routes_an_unmarked_request_and_a_legacy_header() {
-        let t = table(9);
-        let plan1 = plan("GET", "/anthropic", &[], &t).unwrap();
-        assert!(head_text(&plan1).starts_with("GET / HTTP/1.1\r\n"));
-
-        let legacy = plan(
-            "POST",
-            "/v1/messages",
-            &hdrs(&[("x-gate-upstream-url", "http://127.0.0.1:9/api")]),
-            &t,
-        )
-        .unwrap();
-        assert_eq!(legacy.upstream, 1);
-        assert!(head_text(&legacy).starts_with("POST /api/v1/messages HTTP/1.1\r\n"));
-    }
-
-    /// The property that keeps the listener from being an open proxy.
-    #[test]
-    fn refuses_anything_outside_the_catalog() {
-        let t = table(9);
-        assert_eq!(
-            plan("GET", "/evil.example/x", &[], &t).unwrap_err().status,
-            400
-        );
-        assert_eq!(
-            plan(
-                "GET",
-                "/x",
-                &hdrs(&[("x-gate-upstream-url", "https://evil.example")]),
-                &t
-            )
-            .unwrap_err()
-            .status,
-            403
-        );
-        assert_eq!(
-            plan("GET", "http://evil.example/x", &[], &t)
-                .unwrap_err()
-                .status,
-            400
-        );
-    }
-
-    #[test]
-    fn refuses_a_dot_segment() {
-        let t = table(9);
-        for target in ["/anthropic/v1/../../x", "/anthropic/%2e%2e/x"] {
-            assert_eq!(
-                plan("GET", target, &[], &t).unwrap_err().status,
-                400,
-                "{target}"
-            );
-        }
-    }
-
-    /// The browser boundary, from the same definition the engine's relay uses.
-    #[test]
-    fn refuses_a_browser() {
-        let t = table(9);
-        let rebound = hdrs(&[("Host", "attacker.example")]);
-        assert_eq!(
-            plan("GET", "/anthropic/x", &rebound, &t)
-                .unwrap_err()
-                .status,
-            403
-        );
-        let cross_site = hdrs(&[
-            ("Host", "127.0.0.1"),
-            ("Origin", "https://attacker.example"),
-        ]);
-        assert_eq!(
-            plan("POST", "/anthropic/x", &cross_site, &t)
-                .unwrap_err()
-                .status,
-            403
-        );
-    }
-
-    /// Nothing Gate-internal reaches a provider, and nothing that addressed
-    /// this hop does either. The tool's own credential does: it is the only
-    /// credential on this path.
-    #[test]
-    fn strips_gate_and_hop_by_hop_headers_and_keeps_the_tools_credential() {
-        let t = table(9);
-        let plan = plan(
-            "POST",
-            "/anthropic/v1/messages",
-            &hdrs(&[
-                ("Host", "localhost"),
-                ("Authorization", "Bearer sk-own"),
-                ("x-api-key", "own-key"),
-                ("X-Gate-Authorization", "Bearer gate"),
-                ("x-gate-api-key", "gate-key"),
-                ("x-gate-something-new", "1"),
-                ("Connection", "keep-alive, X-Custom-Hop"),
-                ("X-Custom-Hop", "1"),
-                ("Keep-Alive", "timeout=5"),
-                ("Proxy-Authorization", "Basic Z2F0ZQ=="),
-                ("Upgrade", "websocket"),
-                ("Content-Length", "0"),
-            ]),
-            &t,
-        )
-        .unwrap();
-        let head = head_text(&plan).to_ascii_lowercase();
-        assert!(head.contains("authorization: bearer sk-own\r\n"), "{head}");
-        assert!(head.contains("x-api-key: own-key\r\n"), "{head}");
-        for gone in [
-            "x-gate-",
-            "x-custom-hop",
-            "keep-alive",
-            "proxy-authorization",
-            "upgrade",
-            "host: localhost",
-        ] {
-            assert!(!head.contains(gone), "{gone} survived: {head}");
-        }
-        assert_eq!(head.matches("connection:").count(), 1, "{head}");
-    }
-
-    /// `Transfer-Encoding` and `Content-Length` together is the classic
-    /// smuggling shape; the length goes so the next hop cannot read it.
-    #[test]
-    fn chunked_wins_over_a_length() {
-        let t = table(9);
-        let plan = plan(
-            "POST",
-            "/anthropic/v1/messages",
-            &hdrs(&[("Transfer-Encoding", "chunked"), ("Content-Length", "5")]),
-            &t,
-        )
-        .unwrap();
-        assert_eq!(plan.body, Framing::Chunked);
-        assert!(!head_text(&plan)
-            .to_ascii_lowercase()
-            .contains("content-length"));
-    }
-
-    #[test]
-    fn a_response_is_closed_and_framed() {
-        let (head, status, framing) = rewrite_response(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\
-              Connection: keep-alive\r\nKeep-Alive: timeout=5\r\n\r\n",
-            false,
-        )
-        .unwrap();
-        let head = String::from_utf8(head).unwrap();
-        assert_eq!((status, framing), (200, Framing::Chunked));
-        assert!(head.contains("Transfer-Encoding: chunked\r\n"), "{head}");
-        assert!(!head.contains("keep-alive"), "{head}");
-        assert!(head.ends_with("Connection: close\r\n\r\n"), "{head}");
-
-        let (_, _, framing) =
-            rewrite_response(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n", true).unwrap();
-        assert_eq!(framing, Framing::None, "a HEAD response has no body");
-        let (_, _, framing) = rewrite_response(b"HTTP/1.1 200 OK\r\n\r\n", false).unwrap();
-        assert_eq!(framing, Framing::UntilClose);
-    }
-
-    #[tokio::test]
-    async fn chunked_bodies_are_relayed_verbatim_and_stop_at_the_end() {
-        let body = b"4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-Trailer: 1\r\n\r\nNEXT REQUEST";
-        let mut reader = BufReader::new(&body[..]);
-        let mut out = Vec::new();
-        copy_chunked(&mut reader, &mut out).await.unwrap();
-        assert_eq!(
-            out,
-            b"4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-Trailer: 1\r\n\r\n".to_vec()
-        );
-    }
-
-    // ---- over real sockets -------------------------------------------------
-
-    const TOKEN: &str = "relay-test-token";
-
-    /// A plain-HTTP origin that records one request and answers `reply`.
-    fn origin(reply: &'static [u8]) -> (u16, tokio::sync::oneshot::Receiver<Vec<u8>>) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut sock, _) = listener.accept().unwrap();
-            let _ = sock.set_read_timeout(Some(Duration::from_millis(300)));
-            let mut seen = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                match sock.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => seen.extend_from_slice(&chunk[..n]),
-                }
-            }
-            let _ = sock.write_all(reply);
-            let _ = tx.send(seen);
-        });
-        (port, rx)
-    }
-
-    async fn start_relay(backend: Option<u16>, table: Vec<Upstream>) -> u16 {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(serve(
-            listener,
-            Arc::new(move || backend),
-            port,
-            Arc::from(TOKEN),
-            Arc::new(table),
-        ));
-        port
-    }
-
-    async fn roundtrip(port: u16, request: &[u8]) -> String {
-        let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        client.write_all(request).await.unwrap();
-        let mut out = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut out))
-            .await
-            .expect("the relay should answer and close")
-            .unwrap();
-        String::from_utf8_lossy(&out).to_string()
-    }
-
-    fn dead_port() -> u16 {
-        std::net::TcpListener::bind(("127.0.0.1", 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
-    /// The whole point: with no engine, a tool's request reaches its provider.
-    #[tokio::test]
-    async fn goes_to_the_provider_when_the_engine_is_gone() {
-        let (origin_port, seen) =
-            origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok");
-        let port = start_relay(Some(dead_port()), table(origin_port)).await;
-
-        let reply = roundtrip(
-            port,
-            b"POST /__gate/t/codex/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-              Authorization: Bearer sk-own\r\nContent-Length: 4\r\n\r\nbody",
-        )
-        .await;
-        assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"), "{reply}");
-        assert!(reply.contains("Connection: close\r\n"), "{reply}");
-        assert!(reply.ends_with("\r\n\r\nok"), "{reply}");
-
-        let seen = String::from_utf8(seen.await.unwrap()).unwrap();
-        assert!(seen.starts_with("POST /v1/messages HTTP/1.1\r\n"), "{seen}");
-        assert!(seen.contains("Authorization: Bearer sk-own\r\n"), "{seen}");
-        assert!(seen.ends_with("\r\n\r\nbody"), "{seen}");
-    }
-
-    /// A relay of ours on the engine port gets the connection, byte for byte.
-    #[tokio::test]
-    async fn hands_the_connection_to_an_engine_that_proves_itself() {
-        let engine = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let engine_port = engine.local_addr().unwrap().port();
-        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
-        tokio::spawn(async move {
-            let mut tx = Some(tx);
-            loop {
-                let (mut sock, _) = engine.accept().await.unwrap();
-                let mut buf = vec![0u8; 4096];
-                let n = sock.read(&mut buf).await.unwrap();
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                if req.starts_with(&format!("GET {RELAY_HEALTH_PATH}")) {
-                    let challenge = req
-                        .lines()
-                        .find_map(|l| l.strip_prefix(&format!("{FORWARDER_CHALLENGE_HEADER}: ")))
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    let proof = gate_connect_paths::forwarder_proof(TOKEN, &challenge);
-                    let _ = sock
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 204 No Content\r\n{FORWARDER_PROOF_HEADER}: {proof}\r\n\r\n"
-                            )
-                            .as_bytes(),
-                        )
-                        .await;
-                    continue;
-                }
-                let _ = sock
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nengine",
-                    )
-                    .await;
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(buf[..n].to_vec());
-                }
-            }
-        });
-        let port = start_relay(Some(engine_port), table(dead_port())).await;
-
-        let request = b"POST /__gate/t/codex/anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-                        x-gate-client: kept-for-the-engine\r\nContent-Length: 0\r\n\r\n";
-        let reply = roundtrip(port, request).await;
-        assert!(reply.ends_with("engine"), "{reply}");
-        assert_eq!(rx.await.unwrap(), request.to_vec(), "spliced untouched");
-    }
-
-    /// A stranger on the engine's port is never handed a request: it would
-    /// carry the tool's own provider key in plaintext.
-    #[tokio::test]
-    async fn never_hands_a_request_to_a_listener_that_cannot_prove_itself() {
-        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let squatter_port = squatter.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            for sock in squatter.incoming() {
-                let Ok(mut sock) = sock else { continue };
-                let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
-                let mut buf = vec![0u8; 4096];
-                let n = sock.read(&mut buf).unwrap_or(0);
-                let _ = tx.send(buf[..n].to_vec());
-                let _ = sock.write_all(b"HTTP/1.1 204 No Content\r\n\r\n");
-            }
-        });
-        let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-        let port = start_relay(Some(squatter_port), table(origin_port)).await;
-
-        let reply = roundtrip(
-            port,
-            b"GET /anthropic/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-              Authorization: Bearer sk-own\r\n\r\n",
-        )
-        .await;
-        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-        assert!(String::from_utf8(seen.await.unwrap())
-            .unwrap()
-            .contains("Bearer sk-own"));
-        while let Ok(got) = rx.try_recv() {
-            let got = String::from_utf8_lossy(&got).to_string();
-            assert!(
-                !got.contains("sk-own"),
-                "the squatter must only ever see the challenge: {got}"
-            );
-        }
-    }
-
-    /// With no engine, the listener still proves it is ours, and says it is
-    /// not routing - the same answer a parked engine gives.
-    #[tokio::test]
-    async fn answers_the_relay_proof_as_not_intercepting() {
-        let port = start_relay(None, table(dead_port())).await;
-        let headers = tokio::task::spawn_blocking(move || {
-            gate_connect_paths::probe_with_proof(port, RELAY_HEALTH_PATH, TOKEN)
-        })
-        .await
-        .unwrap()
-        .expect("the listener must prove the token");
-        assert!(
-            headers
-                .iter()
-                .any(|(n, v)| n == RELAY_INTERCEPTING_HEADER && v == "0"),
-            "{headers:?}"
-        );
-        let reply = roundtrip(
-            port,
-            format!("GET {RELAY_LIVENESS_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes(),
-        )
-        .await;
-        assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
-    }
-
-    #[tokio::test]
-    async fn a_refusal_is_an_answer_not_silence() {
-        let port = start_relay(None, table(dead_port())).await;
-        let reply = roundtrip(port, b"GET /nowhere/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
-        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
-
-        let reply = roundtrip(
-            port,
-            b"GET /anthropic/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
-        )
-        .await;
-        assert!(
-            reply.starts_with("HTTP/1.1 502"),
-            "an unreachable provider: {reply}"
-        );
-    }
-}
+mod tests;

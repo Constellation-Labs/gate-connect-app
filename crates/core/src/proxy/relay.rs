@@ -39,6 +39,7 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -64,7 +65,7 @@ use crate::proxy::{default_domains, ProxyDomain};
 pub(crate) fn port_path() -> Result<std::path::PathBuf> {
     Ok(crate::env::app_support_dir()?
         .join("proxy")
-        .join("relay-port"))
+        .join(gate_connect_paths::RELAY_PORT_NAME))
 }
 
 /// The last relay port we persisted, if any and still parseable.
@@ -131,7 +132,7 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         .to_string_lossy()
         .into_owned();
     Some(ProxyDomain {
-        slug: "test-upstream".into(),
+        slug: gate_connect_paths::TEST_UPSTREAM_SLUG.into(),
         display_name: "Test upstream".into(),
         hosts: Vec::new(),
         upstream_url: url,
@@ -400,19 +401,31 @@ pub fn serve() -> Result<()> {
     // Behind the forwarder when it holds the port configs name, as the engine
     // does: the public port is not ours to bind, and the forwarder hands
     // connections through to whatever proves itself on the engine's.
-    let fronted = super::forwarder::fronted_relay_port(std::time::Duration::ZERO);
-    let (std_listener, bound) = match fronted {
-        Some(_) => bind_relay(load_engine_port())?,
-        None => bind_relay(load_persisted_port())?,
-    };
-    let port = match fronted {
+    //
+    // Behind the forwarder, a relay that proves itself on the engine's port is
+    // a Gate app hosting it, parked or routing, and taking a fresh port instead
+    // would move the forwarder's backend to this process. Asked on the
+    // engine-only path, which nothing but an engine's relay can answer.
+    let (std_listener, port) = match super::forwarder::fronted_relay_port(Duration::ZERO) {
         Some(public) => {
+            let engine_port = load_engine_port();
+            if engine_port.is_some_and(|port| {
+                super::relay_report_at(port, gate_connect_paths::RELAY_ENGINE_HEALTH_PATH).is_some()
+            }) {
+                anyhow::bail!(
+                    "a Gate Connect app already hosts this relay behind {}. `proxy relay` is \
+                     the alternative for machines with no app, not an addition to it.",
+                    base_url(public)
+                );
+            }
+            let (listener, bound) = bind_relay(engine_port)?;
             let _ = save_engine_port(bound);
-            public
+            (listener, public)
         }
         None => {
+            let (listener, bound) = bind_relay(load_persisted_port())?;
             let _ = save_persisted_port(bound);
-            bound
+            (listener, bound)
         }
     };
 
@@ -518,9 +531,20 @@ async fn proxy(
     // above the loopback guards deliberately - it is cheaper than they are and
     // a prober that cannot get an answer has no way to tell a squatted port
     // from a refused one.
+    //
+    // Two paths, one answer shape. [`gate_connect_paths::RELAY_HEALTH_PATH`] is
+    // what status checks ask on the public port, and the forwarder answers it
+    // too while it fronts that port.
+    // [`gate_connect_paths::RELAY_ENGINE_HEALTH_PATH`] is what the forwarder asks
+    // before it hands this relay a connection, and only an engine's relay ever
+    // answers it; the proof binds the path, so an answer on one cannot stand in
+    // for the other.
+    let health_path = req.uri().path();
     if req.method() == hyper::Method::GET
-        && req.uri().path() == gate_connect_paths::RELAY_HEALTH_PATH
+        && (health_path == gate_connect_paths::RELAY_HEALTH_PATH
+            || health_path == gate_connect_paths::RELAY_ENGINE_HEALTH_PATH)
     {
+        let health_path = health_path.to_owned();
         let challenge = req
             .headers()
             .get(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
@@ -533,7 +557,7 @@ async fn proxy(
         // direction - a relay that cannot prove itself must not be trusted.
         let proof = super::forwarder::load_or_create_token()
             .ok()
-            .map(|token| gate_connect_paths::forwarder_proof(&token, &challenge));
+            .map(|token| gate_connect_paths::forwarder_proof(&token, &health_path, &challenge));
         let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
         if let Some(proof) = proof {
             builder = builder.header(gate_connect_paths::FORWARDER_PROOF_HEADER, proof);
@@ -873,26 +897,9 @@ fn split_tool_segment(path_and_query: &str) -> (Option<&'static str>, Cow<'_, st
     (tool, Cow::Owned(inner))
 }
 
-/// Split `/<segment>/rest?query` into `("<segment>", "/rest?query")`, or `None`
-/// when there is no leading segment. A path that ends at the segment becomes
-/// `"/"`, and a query directly after it keeps a `/` in front so the forwarded
-/// path stays absolute.
-fn split_leading_segment(path_and_query: &str) -> Option<(&str, String)> {
-    let rest = path_and_query.strip_prefix('/')?;
-    let end = rest.find(['/', '?']).unwrap_or(rest.len());
-    let (segment, tail) = rest.split_at(end);
-    if segment.is_empty() {
-        return None;
-    }
-    let inner = if tail.is_empty() {
-        "/".to_string()
-    } else if tail.starts_with('?') {
-        format!("/{tail}")
-    } else {
-        tail.to_string()
-    };
-    Some((segment, inner))
-}
+// Shared with the forwarder's relay listener, which applies the same path rules
+// when it serves a request itself.
+use gate_connect_paths::{has_dot_segment, split_leading_segment};
 
 /// Resolve a relayed request against the catalog.
 ///
@@ -973,33 +980,6 @@ fn resolve_route(
     })
 }
 
-/// Does the request target carry a `.` or `..` path segment?
-///
-/// It matters because [`classify`] decides Rewrite vs Passthrough by
-/// `starts_with` on the raw path, while the URL we actually send is built by
-/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
-/// segments per the WHATWG rules. Those two readings disagree:
-/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
-/// prefix - gets the live Gate credential injected, and is then sent to
-/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
-/// preferred over normalizing because it keeps one string all the way through
-/// rather than adding a second one to keep in step.
-///
-/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
-/// looks for these segments, so a check that only matched the literal form would
-/// be the same bug with an extra step.
-fn has_dot_segment(path_and_query: &str) -> bool {
-    let path = path_and_query
-        .split_once('?')
-        .map(|(p, _)| p)
-        .unwrap_or(path_and_query);
-    path.split('/').any(|segment| {
-        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
-            .iter()
-            .any(|form| segment.eq_ignore_ascii_case(form))
-    })
-}
-
 /// Classify a path within one domain the way the MITM engine's `decide` does:
 /// passthrough prefixes win, then inference rewrites; any other path on the
 /// domain passes through.
@@ -1057,20 +1037,14 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(super::GATE_TOOL_HEADER);
 }
 
-/// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).
+/// Hop-by-hop headers must not be forwarded end-to-end: the RFC 9110 set both
+/// relays share ([`gate_connect_paths::HOP_BY_HOP`]), plus the two framing
+/// headers, because reqwest re-frames every body it sends and receives.
 fn is_hop_by_hop(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-            | "content-length"
-    )
+    let name = name.as_str();
+    gate_connect_paths::HOP_BY_HOP.contains(&name)
+        || name == "transfer-encoding"
+        || name == "content-length"
 }
 
 fn strip_hop_by_hop(headers: &mut HeaderMap) {

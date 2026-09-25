@@ -30,8 +30,10 @@
 //! a running process holds a file lock on its own executable, and on Windows
 //! that would block the updater from replacing the app; a distinct name in
 //! Activity Monitor and Task Manager answers "why are there two Gate Connects"
-//! honestly; and linking none of the app's machinery is what keeps a
-//! permanently-running process small and free of anything worth stealing.
+//! honestly; and linking none of the app's machinery - no keychain, no MITM
+//! stack, no Gate credential - is what keeps a permanently-running process free
+//! of anything worth stealing. Its one heavy dependency is a TLS client, for
+//! the relay listener's direct path.
 //!
 //! # The relay port
 //!
@@ -62,15 +64,6 @@ pub const PORT_NAME: &str = "forwarder-port";
 
 /// Name under which the *engine's* port is persisted, written by the app.
 const ENGINE_PORT_NAME: &str = "port";
-
-/// Ports the app may already have remembered for its own listeners, so a fresh
-/// forwarder bind does not take one out from under them.
-const APP_PORT_NAMES: [&str; 4] = [
-    ENGINE_PORT_NAME,
-    "pac-port",
-    gate_connect_paths::RELAY_PORT_NAME,
-    gate_connect_paths::RELAY_ENGINE_PORT_NAME,
-];
 
 /// How often the forwarder checks whether it is still wanted.
 const MARKER_POLL: Duration = Duration::from_secs(2);
@@ -151,10 +144,7 @@ fn bind() -> Result<std::net::TcpListener> {
     if let Some(listener) = activated_socket("Forwarder") {
         return Ok(listener);
     }
-    let skip: Vec<u16> = APP_PORT_NAMES
-        .iter()
-        .filter_map(|n| gate_connect_paths::load_port(n))
-        .collect();
+    let skip = gate_connect_paths::remembered_ports_except(PORT_NAME);
     match gate_connect_paths::load_port(PORT_NAME) {
         // Reclaim the port the exported variables already name. `bind_preferred`
         // refuses to shadow a live listener, so if something else holds it we
@@ -178,7 +168,7 @@ fn bind() -> Result<std::net::TcpListener> {
 /// stranded; and nothing can squat the port, because launchd took it before any
 /// other process could.
 #[cfg(target_os = "macos")]
-fn activated_socket(name: &str) -> Option<std::net::TcpListener> {
+pub(crate) fn activated_socket(name: &str) -> Option<std::net::TcpListener> {
     use std::os::fd::FromRawFd;
 
     // `launch_activate_socket` is the supported way to collect a socket a
@@ -217,7 +207,7 @@ fn activated_socket(name: &str) -> Option<std::net::TcpListener> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn activated_socket(_name: &str) -> Option<std::net::TcpListener> {
+pub(crate) fn activated_socket(_name: &str) -> Option<std::net::TcpListener> {
     None
 }
 
@@ -540,7 +530,7 @@ mod tests {
         .unwrap();
         let reply = read_some(&mut good).await;
         assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
-        let expected = gate_connect_paths::forwarder_proof(TOKEN, challenge);
+        let expected = gate_connect_paths::forwarder_proof(TOKEN, proxy::HEALTH_PATH, challenge);
         assert!(
             reply.to_lowercase().contains(&expected),
             "the reply must carry proof of the token: {reply}"

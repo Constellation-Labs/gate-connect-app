@@ -1661,6 +1661,7 @@ dependencies = [
  "libc",
  "rustls",
  "rustls-platform-verifier",
+ "serde_json",
  "tokio",
  "tokio-rustls",
 ]
@@ -1671,6 +1672,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
+ "hmac",
  "rand 0.8.6",
  "sha2",
  "socket2",

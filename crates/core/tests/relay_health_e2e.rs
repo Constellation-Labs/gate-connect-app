@@ -101,6 +101,73 @@ fn relay_health_proves_itself_and_tracks_the_intercept_flag() {
          read Connected over traffic going direct"
     );
 
+    engine_path_proof_keeps_the_connection(engine.relay_port());
+
     engine.stop();
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// What the forwarder relies on before it hands the engine a relay request:
+/// the engine's relay answers the engine-only proof, and keeps the connection
+/// open for the request that follows on it. If it closed after the proof, the
+/// forwarder would splice every tool request onto a dead socket.
+fn engine_path_proof_keeps_the_connection(port: u16) {
+    use std::io::Write;
+
+    let token = std::fs::read_to_string(
+        gate_connect_core::env::app_support_dir()
+            .unwrap()
+            .join("proxy")
+            .join("forwarder.token"),
+    )
+    .expect("the reports above minted the token");
+    let token = token.trim();
+    let challenge = "0123456789abcdef";
+    let path = gate_connect_paths::RELAY_ENGINE_HEALTH_PATH;
+
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    sock.write_all(
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {challenge}\r\n\r\n",
+            gate_connect_paths::FORWARDER_CHALLENGE_HEADER
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let head = read_head(&mut sock);
+    assert!(head.starts_with("HTTP/1.1 204"), "{head}");
+    let expected = gate_connect_paths::forwarder_proof(token, path, challenge);
+    assert!(
+        head.to_ascii_lowercase().contains(&expected),
+        "the engine must answer the engine-only proof: {head}"
+    );
+
+    sock.write_all(
+        format!(
+            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            gate_connect_core::proxy::RELAY_LIVENESS_PATH
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let second = read_head(&mut sock);
+    assert!(
+        second.starts_with("HTTP/1.1 204"),
+        "a second request on the proved connection must be served: {second}"
+    );
+}
+
+fn read_head(sock: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match sock.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&head).to_string()
 }
