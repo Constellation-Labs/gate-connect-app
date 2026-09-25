@@ -108,7 +108,6 @@ fn connect_input(billing_mode: BillingMode) -> ConnectInput {
 fn connect_input_at(billing_mode: BillingMode, relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
-        upstream_url: "https://api.openai.com".to_string(),
         billing_mode,
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some("http://127.0.0.1:45999".to_string()),

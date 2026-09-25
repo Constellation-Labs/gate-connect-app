@@ -25,7 +25,6 @@
 //! API keys but leaves ChatGPT-mode Codex falling back to its built-in
 //! provider and hitting chatgpt.com directly). Gate passes the bearer
 //! through and forwards to OpenAI per the upstream hint the relay injects.
-//! Therefore [`requires_upstream_credential`] is `false`.
 //!
 //! **Codex re-reads `config.toml` per THREAD, not per process**, so "restart
 //! Codex" is the wrong thing to tell anyone. Measured 2026-09-18 on codex-cli
@@ -55,8 +54,6 @@
 //! while routed unresumable ("Model provider `gate` not found"). The stub
 //! carries no credential, no gateway URL and no upstream hint, so it leaks
 //! nothing and routes nothing through Gate.
-//!
-//! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -507,13 +504,10 @@ impl Integration for Codex {
         let relay_base = input.relay_base_url.as_deref().context(
             "the Gate proxy relay is not running - enable the proxy before connecting Codex",
         )?;
-        // We intentionally ignore `input.upstream_url`. The ChatGPT-mode
+        // The upstream comes from Codex's own login state: the ChatGPT-mode
         // bearer authenticates only against chatgpt.com/backend-api, the
-        // apikey-mode bearer only against api.openai.com/v1, so we
-        // compute both URLs from the current Codex login state instead
-        // of trusting whatever value flowed through the UI/Advanced
-        // field. This mirrors what Codex itself would have done in its
-        // native (non-Gate) routing.
+        // apikey-mode bearer only against api.openai.com/v1. This mirrors
+        // what Codex itself would have done in its native (non-Gate) routing.
         //
         // PAYG has no login state to read: the whole point is that Codex sends
         // no credential of its own, so `auth.json` may not exist at all and
@@ -743,20 +737,6 @@ impl Integration for Codex {
         if helper.exists() {
             fs::remove_file(&helper).with_context(|| format!("removing {}", helper.display()))?;
         }
-        Ok(())
-    }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "Codex does not need a separate upstream credential - it reuses your `codex login` session"
-        );
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
         Ok(())
     }
 }

@@ -977,7 +977,6 @@ export function App() {
       let declined = false;
       setProxyBusy(true);
       try {
-        const tool = tools.find((t) => t.slug === slug);
         if (routed) {
           // Before the certificate, because it is a question about what else
           // this click needs to reach and the OS prompt comes after the in-app
@@ -987,7 +986,7 @@ export function App() {
           // Connect auto-enables the engine, which trusts the CA; disconnect
           // never prompts.
           await ensureCaTrusted();
-          await connectTool(slug, tool?.default_upstream_url ?? "");
+          await connectTool(slug);
           await enableHermesProviders(providerDomains);
         } else {
           await disconnectTool(slug);
@@ -1010,7 +1009,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [tools, proxy, ensureCaTrusted, ensureHermesProvider, enableHermesProviders, resyncLedger],
+    [proxy, ensureCaTrusted, ensureHermesProvider, enableHermesProviders, resyncLedger],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -1079,9 +1078,7 @@ export function App() {
       for (const member of cascade) {
         try {
           if (member.kind === "config" && member.tool) {
-            await (on
-              ? connectTool(member.key, member.tool.default_upstream_url)
-              : disconnectTool(member.key));
+            await (on ? connectTool(member.key) : disconnectTool(member.key));
             if (member.key === HERMES_SLUG) hermesConnected = on;
           } else if (member.domain) {
             await proxySetDomain(member.key, on);

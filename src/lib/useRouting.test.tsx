@@ -138,7 +138,7 @@ describe("useRouting: the drift gate", () => {
       api.current!.resolvePrompt(true);
     });
 
-    expect(connectTool).toHaveBeenCalledWith("codex", "https://gw.example/codex");
+    expect(connectTool).toHaveBeenCalledWith("codex");
   });
 
   it("leaves the config alone when the review is declined", async () => {
@@ -701,7 +701,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     });
 
     expect(api.current!.prompt).toBeNull();
-    expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
+    expect(connectTool).toHaveBeenCalledWith("hermes");
     expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
     // The connect is what starts the engine, and a domain flag written ahead
     // of a bound port routes nothing. Unchanged by the dialog's removal.
@@ -868,7 +868,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
 
     expect(api.current!.prompt).toBeNull();
     expect(proxySetDomain).not.toHaveBeenCalled();
-    expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
+    expect(connectTool).toHaveBeenCalledWith("hermes");
   });
 
   it("stays quiet for an upstream no domain claims", async () => {
@@ -926,7 +926,7 @@ describe("useRouting: Hermes and the provider it talks to", () => {
     await act(async () => {
       await api.current!.setFamilyRouted(g, true);
     });
-    expect(connectTool).toHaveBeenCalledWith("hermes", "https://gw.example/hermes");
+    expect(connectTool).toHaveBeenCalledWith("hermes");
     expect(proxySetDomain).toHaveBeenCalledWith("openrouter", true);
     expect(recordAutoEnabledDomains).toHaveBeenCalledWith("hermes", ["openrouter"]);
 
@@ -985,7 +985,7 @@ describe("useRouting: OpenCode and the environment channel", () => {
       api.current!.resolvePrompt(true);
     });
 
-    expect(connectTool).toHaveBeenCalledWith("opencode", "https://gw.example/opencode");
+    expect(connectTool).toHaveBeenCalledWith("opencode");
     expect(proxySetEnvExport).toHaveBeenCalledWith(true);
   });
 
@@ -1022,7 +1022,7 @@ describe("useRouting: OpenCode and the environment channel", () => {
     });
 
     expect(api.current!.prompt).toBeNull();
-    expect(connectTool).toHaveBeenCalledWith("opencode", "https://gw.example/opencode");
+    expect(connectTool).toHaveBeenCalledWith("opencode");
     expect(proxySetEnvExport).not.toHaveBeenCalled();
   });
 

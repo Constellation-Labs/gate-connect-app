@@ -423,20 +423,6 @@ impl Integration for Hermes {
         // leave our variables in place while status reports the tool clean.
         clear_state()
     }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "Hermes does not need a separate upstream credential -- Gate routes its traffic through the proxy and passes your provider credentials through untouched."
-        )
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Pure drift evaluation, split out of [`Hermes::status`] so all four states are

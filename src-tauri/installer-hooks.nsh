@@ -44,6 +44,15 @@
 ; HTTPS fails with no clear error. All three are per-user; each step is
 ; best-effort, so a missing item is a no-op.
 !macro NSIS_HOOK_PREUNINSTALL
+  ; Put relay tools (Codex, OpenCode) back on their own settings first, while
+  ; the forwarder is still running and the app binary is still here to do it.
+  ; The forwarder holds the relay port those configs name, and it dies with
+  ; the next line; nothing after an uninstall would repair them. Skipped on an
+  ; update, which reinstalls straight away and keeps the forwarder's port.
+  ${If} $UpdateMode <> 1
+    nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --revert-relay-configs'
+    Pop $R0
+  ${EndIf}
   !insertmacro STOP_FORWARDER
 
   ; Trusted cert in the per-user root store, matched by Common Name.

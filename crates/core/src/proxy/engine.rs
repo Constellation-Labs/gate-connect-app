@@ -141,11 +141,27 @@ pub struct RunningEngine {
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
+    /// The CA certificate this engine signs leaves under. Fixed at start: an
+    /// engine cannot change CA, so a caller holding a different one has to
+    /// replace it (see [`signs_with`](Self::signs_with)).
+    ca_cert_pem: String,
 }
 
 impl RunningEngine {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Whether this engine signs its leaves under `ca_cert_pem`.
+    ///
+    /// The Linux helper daemon reuses a running engine across enables, and
+    /// updates everything it can in place - but not the CA, which the signing
+    /// authority is built from at start. A CA that was untrusted and replaced
+    /// while the engine kept running would leave it minting leaves under a root
+    /// nothing trusts any more: every intercepted handshake fails while every
+    /// status reads Protected. This is how the daemon notices.
+    pub fn signs_with(&self, ca_cert_pem: &str) -> bool {
+        self.ca_cert_pem == ca_cert_pem
     }
 
     /// Loopback port of the CLI reverse-proxy relay. CLI tool configs point
@@ -2125,19 +2141,17 @@ fn candidate_ports(ours: &[u16]) -> Vec<u16> {
 }
 
 /// The ports this install has remembered for its own listeners: the MITM and
-/// PAC ports (`proxy/port`, `proxy/pac-port`) and the relay port
-/// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
-/// isn't deferred.
+/// PAC ports (`proxy/port`, `proxy/pac-port`), the forwarder's, and both relay
+/// ports (`proxy/relay-port`, `proxy/relay-engine-port`). Best-effort -
+/// anything missing or unreadable simply isn't deferred.
 fn persisted_ports() -> Vec<u16> {
-    // `forwarder-port` is in here for the same reason as the rest: it is a port
-    // this install remembers and rebinds, so a fresh engine listener taking it
-    // would strand every process holding the exported variables.
-    let mut ports: Vec<u16> = ["port", "pac-port", "forwarder-port"]
+    // Every one of them, the forwarder's and both relay ports included: each is
+    // a port this install remembers and rebinds, so a fresh listener taking one
+    // would strand whatever names it.
+    gate_connect_paths::LOOPBACK_PORT_NAMES
         .iter()
         .filter_map(|name| super::port_persist::load(name).ok().flatten())
-        .collect();
-    ports.extend(super::relay::load_persisted_port());
-    ports
+        .collect()
 }
 
 /// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
@@ -2540,6 +2554,7 @@ where
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let cert_pem = cfg.ca_cert_pem;
+    let signing_cert_pem = cert_pem.clone();
     let key_pem = cfg.ca_key_pem;
     let stopping = Arc::new(AtomicBool::new(false));
     let stopping_thread = Arc::clone(&stopping);
@@ -2746,6 +2761,7 @@ where
             cf_clearance_tx,
             intercept_tx,
             stopping,
+            ca_cert_pem: signing_cert_pem,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
         Err(_) => anyhow::bail!("proxy engine did not signal readiness within 10s"),

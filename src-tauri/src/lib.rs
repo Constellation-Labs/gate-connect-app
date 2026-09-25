@@ -223,7 +223,7 @@ fn tool_status(slug: String) -> Result<StatusDto, String> {
 }
 
 #[tauri::command]
-async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, String> {
+async fn connect_tool(slug: String) -> Result<StatusDto, String> {
     // Off the main thread: connect does config-file I/O that shouldn't
     // block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
@@ -257,7 +257,6 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
-            upstream_url,
             billing_mode: account.billing_mode,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
@@ -281,12 +280,6 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     .await
     .map_err(|e| format!("disconnect join error: {e}"))?
 }
-
-// The upstream-credential trait surface (`has_upstream_credential` /
-// `save_upstream_credential` / `clear_upstream_credential`) is CLI-only
-// (`gate-connect set-upstream` / `clear-upstream`): no shipped integration
-// requires an upstream credential, so the renderer has no commands for it
-// and no UI to collect one.
 
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
     let id = ToolId::from_slug(slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
@@ -754,7 +747,6 @@ fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
     };
     let input = ConnectInput {
         gateway_base_url: account.gateway_base_url,
-        upstream_url: integ.default_upstream_url().to_string(),
         billing_mode: mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
@@ -4067,8 +4059,11 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// managed (Connected, or Drifted - either way their configs point at the
 /// loopback relay). macOS / Windows only: there the relay lives in this
 /// process and dies with it, so those tools hard-fail until Gate Connect runs
-/// again. On Linux the engine lives in a detached helper daemon that outlives
-/// the GUI (see core's `manager_linux`), so the relay port keeps serving
+/// again - unless the forwarder holds the relay port, which it normally does,
+/// and then those tools reach their own provider directly and are not on the
+/// list (`proxy::address_dies_with_gui`). On Linux the engine lives in a
+/// detached helper daemon that outlives the GUI (see core's `manager_linux`),
+/// so the relay port keeps serving
 /// after a quit and there is nothing to warn about - quit plainly. (In OAuth
 /// mode the daemon serves the last-pushed access token, so routing degrades
 /// once it expires; still not the dead-port failure the warning describes.)
@@ -4132,7 +4127,9 @@ fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// chooses. `tools` still route through Gate; `reverting` is the subset whose
 /// configuration names an address that dies with this process and will be put
 /// back on its own settings on the way out - the same predicate `quit_app`
-/// applies, so the dialog names exactly what gets rewritten.
+/// applies, so the dialog names what gets rewritten (up to a forwarder that
+/// takes or loses the relay port in between; `proxy::QuitAddresses` says why
+/// that fails safe).
 #[derive(Clone, serde::Serialize)]
 struct PendingQuit {
     tools: Vec<String>,
@@ -5393,14 +5390,12 @@ pub fn run() {
                     // looks wrong locally while the token ages out. The
                     // gateway's refusal is the only signal that state produces.
                     //
-                    // Acted on as an EDGE, not a level: the count only rises, so
-                    // a move means at least one new refusal since the last look,
-                    // and a tick that could not read it loses nothing. The first
-                    // reading only seeds the baseline - a daemon can outlive
-                    // several GUI runs, and launch-time `refresh_session` has
-                    // already probed for a session that died while we were gone.
-                    // A restarted daemon counts from zero again, which reads as
-                    // no increase and simply re-seeds.
+                    // Acted on as an EDGE, not a level, by
+                    // `proxy::refused_since_last_look`, which carries the rules:
+                    // a rise is a new refusal, the first reading only seeds, and a
+                    // reading below the baseline is a restarted daemon counting
+                    // from zero, whose every refusal is new. A tick that could
+                    // not read the counter loses nothing.
                     //
                     // `None` means nobody answered (routing off, so no control
                     // connection, or a failed round trip). It is not zero, and
@@ -5416,11 +5411,15 @@ pub fn run() {
                     if let Some(refusals) = gate_connect_core::proxy::manager().gate_auth_refusals()
                     {
                         let refused_since_last_tick =
-                            last_refusals.is_some_and(|seen| refusals > seen);
+                            gate_connect_core::proxy::refused_since_last_look(
+                                last_refusals,
+                                refusals,
+                            );
                         last_refusals = Some(refusals);
                         if refused_since_last_tick {
                             eprintln!(
-                                "[gate] the helper daemon's engine reports the gateway refusing                                  our bearer; re-verifying the session"
+                                "[gate] the helper daemon's engine reports the gateway refusing \
+                                 our bearer; re-verifying the session"
                             );
                             recheck_gate_session(&refresh_handle);
                         }
@@ -5587,12 +5586,14 @@ pub fn run() {
                 // screen's, and by nothing else: macOS Cmd+Q comes from Tauri's
                 // default app menu, and a logout or a shutdown comes from the
                 // OS, and both land here having touched none of our own code.
-                // Those exits take the relay and the engine down with the
-                // process and leave Codex and OpenCode pointed at a port with
-                // nothing behind it, which is the state the revert exists to
-                // prevent. Doing it here makes every path safe by default and
-                // leaves the panel to do what it is for, which is offering the
-                // *other* choice.
+                // Those exits take the engine down with the process, and with it
+                // any address only the engine serves - its own port, and the
+                // relay where the forwarder does not hold it - leaving the tools
+                // that name one pointed at a port with nothing behind it, which
+                // is the state the revert exists to prevent. A relay the
+                // forwarder holds survives and is not reverted. Doing it here
+                // makes every path safe by default and leaves the panel to do
+                // what it is for, which is offering the *other* choice.
                 //
                 // Before `disable_quiet` below, deliberately: the revert decides
                 // what to put back by comparing each config against the
@@ -5617,8 +5618,22 @@ pub fn run() {
                 // runs before the exit; by the time this runs the process is
                 // going away and a notification would be a promise we cannot
                 // keep.
+                //
+                // At the end of the login session on Windows the relay is put
+                // back even where the forwarder holds it: the forwarder goes
+                // with the session and nothing but Gate starts it again, so a
+                // tool that starts before Gate after the next login would find
+                // nothing on the relay port. The startup restore reconnects
+                // them, as it does after any revert. `session_ending` is
+                // always false on macOS, where launchd holds the port from
+                // login.
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
-                    match gate_connect_core::provider::revert_stranded_configs_for_quit() {
+                    let revert = if gate_connect_core::proxy::session_ending() {
+                        gate_connect_core::provider::revert_stranded_configs_relay_unfronted
+                    } else {
+                        gate_connect_core::provider::revert_stranded_configs_for_quit
+                    };
+                    match revert() {
                         Ok(names) if !names.is_empty() => eprintln!(
                             "[gate] put {} back on their own settings on exit",
                             join_names(&names)
@@ -5639,6 +5654,9 @@ pub fn run() {
                 if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
+                // The engine's relay goes with this process, parked or not, so
+                // the forwarder should stop asking its port whether it is up.
+                gate_connect_core::proxy::forget_engine_relay_port();
                 // The login item is now a standalone "Launch at login" setting,
                 // decoupled from routing. A deferred opt-out (toggled off while
                 // routing was on) completes here: disable_quiet() above has

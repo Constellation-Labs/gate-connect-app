@@ -60,6 +60,19 @@ rm -rf "$WORK"
 CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
+# Hermes keeps its runtime (Python, venv, the checkout) under HERMES_HOME, which
+# defaults to ~/.hermes. The workflow installed it under the runner's real home,
+# so once HOME moves below, a fresh ~/.hermes has no runtime and Hermes' first
+# run bootstraps one - a new venv and tens of MB of downloads - inside the timed
+# api-key check, with the proxy up. It never sent its request, and the phase
+# failed with nothing captured while the oauth run after it passed. Pointing
+# HERMES_HOME at the real install keeps that out of the test. Gate honours the
+# same variable (`env::hermes_config_dir`), so it writes Hermes' config where
+# Hermes reads it. The runner is throwaway, so its real ~/.hermes may be written.
+if [ "$OS" != "Windows" ] && [ -d "$HOME/.hermes" ]; then
+  export HERMES_HOME="$HOME/.hermes"
+fi
+
 # Redirect home so gate-connect AND the tools agree on a throwaway config root.
 export HOME="$WORK/home"
 mkdir -p "$HOME"
@@ -269,7 +282,7 @@ ENGINE_RAN=""
 # Declared up here with ENGINE_ON for the same set -u reason - the trap is armed
 # long before start_engine is even defined.
 SYSTEM_TRUSTED=""
-# PID of the `proxy enable --foreground` host on macOS and Windows, which both
+# PID of the `proxy enable` foreground host on macOS and Windows, which both
 # run the engine in the process that enabled it. Declared here with ENGINE_ON so
 # the EXIT trap can stop it under set -u however early the script dies.
 ENGINE_FG_PID=""
@@ -290,7 +303,7 @@ cleanup() {
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
   # SIGTERM makes it restore the system proxy itself, which is the whole point
-  # of --foreground; the inline disable below is the belt to that braces.
+  # of the foreground host; the inline disable below is the belt to that braces.
   if [ -n "$ENGINE_FG_PID" ]; then
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     sleep 2
@@ -434,15 +447,10 @@ start_engine() {
     script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
   else
     # macOS and Windows both host the engine in the process that enabled it -
-    # there is no daemon to adopt it - so a plain `proxy enable` returns, the
-    # process exits, and routing dies with it: the PAC URL is left pointing at a
-    # port nothing answers. `--foreground` parks instead, so the engine lives
-    # for as long as this background process does, which is the phase.
-    #
-    # Windows reached this branch as a plain `proxy enable` until the skip above
-    # was lifted, and would have died exactly that way. Nobody saw it, because
-    # the skip returned before the branch could run.
-    "$CLI" proxy enable --foreground >"$WORK/enable.out" 2>&1 &
+    # there is no daemon to adopt it - so `proxy enable` always stays in the
+    # foreground there (the `--foreground` flag is Linux-only), and the engine
+    # lives for as long as this background process does, which is the phase.
+    "$CLI" proxy enable >"$WORK/enable.out" 2>&1 &
     ENGINE_FG_PID=$!
     local i=0
     while [ "$i" -lt 60 ]; do
@@ -590,12 +598,12 @@ stop_engine() {
   fi
   local rc=0
   if [ -n "$ENGINE_FG_PID" ]; then
-    # The foreground host disables and restores on SIGTERM - that is what the
-    # flag is for - so signalling it IS the disable. Running the CLI's disable
-    # again afterwards would be asking an already-off proxy to turn off, and
-    # this function treats a non-zero disable as a failure. The verification
-    # below (snapshot gone) is what actually proves it took, and it does not
-    # care which of the two did the work.
+    # The foreground host disables and restores on SIGTERM - that is what it
+    # stays in the foreground for - so signalling it IS the disable. Running
+    # the CLI's disable again afterwards would be asking an already-off proxy
+    # to turn off, and this function treats a non-zero disable as a failure.
+    # The verification below (snapshot gone) is what actually proves it took,
+    # and it does not care which of the two did the work.
     ckpt "engine: stopping the foreground host (pid=$ENGINE_FG_PID)"
     kill -TERM "$ENGINE_FG_PID" 2>/dev/null
     local i=0
@@ -697,6 +705,49 @@ stop_engine() {
     kill -0 "$dpid" 2>/dev/null && kill -KILL "$dpid" 2>/dev/null
   fi
   ENGINE_ON=""
+}
+
+# The macOS/Windows foreground host's stop puts tools whose config names its
+# relay back on their own settings (`revert_stranded_configs_for_quit`), so they
+# do not dial a dead loopback port afterwards. Nothing else here can see that:
+# run_tool disconnects every tool before stop_engine. So leave one relay-routed
+# tool connected across the stop and check it came back unrouted.
+#
+# macOS only: on Windows `kill` is a TerminateProcess, which skips the stop path
+# entirely. Last engine phase only, because the revert records the tool for the
+# next enable to reconnect, and a later phase would inherit that.
+REVERT_CHECK=""
+revert_check_prepare() {
+  REVERT_CHECK=""
+  [ "$OS" = "Darwin" ] && [ -n "$ENGINE_FG_PID" ] || return 0
+  if [ -z "$OPENCODE_MODEL" ]; then
+    echo "::notice::skipping the stop-revert check - opencode not installed"
+    return 0
+  fi
+  if "$CLI" connect opencode >"$WORK/revert-connect.out" 2>&1; then
+    REVERT_CHECK=1
+  else
+    echo "FAIL: stop-revert check: could not connect opencode before the stop"
+    sed 's/^/    /' "$WORK/revert-connect.out" 2>/dev/null
+    FAIL=$((FAIL + 1))
+  fi
+}
+revert_check_assert() {
+  [ -n "$REVERT_CHECK" ] || return 0
+  REVERT_CHECK=""
+  local st
+  st="$("$CLI" status opencode 2>&1)"
+  case "$st" in
+    *": detected"*)
+      echo "PASS: stopping the foreground host put opencode back on its own settings"
+      PASS=$((PASS + 1))
+      ;;
+    *)
+      echo "FAIL: opencode still names the stopped host's relay after the stop ($st)"
+      FAIL=$((FAIL + 1))
+      "$CLI" disconnect opencode >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -867,9 +918,12 @@ os_channel_checks() {
         echo "FAIL: no PAC URL set on any active network service"
         FAIL=$((FAIL + 1))
       fi
-      # The CA the engine mints leaf certs under, in the login keychain.
+      # The CA the engine mints leaf certs under, in the login keychain. This
+      # harness runs with file-backed secrets and a real data directory, which is
+      # a dev install's shape, so the root carries the dev name
+      # (`cert_authority::ca_common_name`).
       chk "the Gate CA is in the login keychain" \
-        security find-certificate -c "Gate Connect Local CA"
+        security find-certificate -c "Gate Connect Dev CA"
       ;;
     Linux)
       local dropin
@@ -888,10 +942,11 @@ os_channel_checks() {
       # /usr/local/share/ca-certificates and update-ca-certificates links it
       # into /etc/ssl/certs. The link is the half that means "trusted" - the
       # anchor alone is just a file we dropped.
+      # Named for the dev root: see the macOS arm above.
       chk "the CA anchor is installed" \
-        test -f "/usr/local/share/ca-certificates/Gate Connect Local CA.crt"
+        test -f "/usr/local/share/ca-certificates/Gate Connect Dev CA.crt"
       chk "update-ca-certificates linked it into the system store" \
-        test -e "/etc/ssl/certs/Gate_Connect_Local_CA.pem"
+        test -e "/etc/ssl/certs/Gate_Connect_Dev_CA.pem"
       ;;
     Windows)
       # AutoConfigURL is the whole channel here: `enable_pac` writes it and
@@ -1238,9 +1293,11 @@ run_engine_tools() {
   elif [ -z "$ENGINE_ON" ]; then
     echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
   else
-    mkdir -p "$HOME/.hermes"
+    # HERMES_HOME when set (see where HOME is redirected), as Hermes and Gate read.
+    hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
-      > "$HOME/.hermes/config.yaml"
+      > "$hermes_home/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
     # Same as OpenClaw above: proxy-routed, so the User-Agent is the whole of
     # the attribution and this run has never captured it.
@@ -1284,7 +1341,9 @@ if oauth_login; then
   stop_relay
   start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
   run_engine_tools "oauth"
+  revert_check_prepare
   stop_engine
+  revert_check_assert
   "$CLI" logout >/dev/null 2>&1 || true
 else
   echo "::endgroup::"

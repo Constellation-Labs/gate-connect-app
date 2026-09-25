@@ -215,11 +215,11 @@ pub fn app_support_dir() -> Result<PathBuf> {
 ///
 /// Normally `app_support_dir()/proxy`, beside every other proxy file. It moves
 /// to a `dev` subdirectory for one case: a build whose **secrets** have been
-/// redirected to files (`GATE_CONNECT_TEST_SECRETS`, which is what
-/// `pnpm app:local` sets) while its **data directory** has not.
+/// redirected to files (`GATE_CONNECT_TEST_SECRETS`, which a dev run sets
+/// to keep the OS keychain out of it) while its **data directory** has not.
 ///
 /// That combination is the one that broke a machine on 2026-09-21. The dev
-/// build keeps its CA private key in a file under `~/.gate-connect-dev`; the
+/// build keeps its CA private key in a file under its secrets directory; the
 /// release build keeps its in the login keychain; and before this function
 /// both wrote the same `ca-cert.pem`. Whichever ran last left the other holding
 /// a certificate that does not match its key, and that failure is silent in the
@@ -239,10 +239,21 @@ pub fn app_support_dir() -> Result<PathBuf> {
 /// A hermetic test asserting `proxy/ca-cert.pem` keeps asserting it.
 pub fn ca_material_dir() -> Result<PathBuf> {
     let proxy = app_support_dir()?.join("proxy");
-    if test_home_override().is_none() && file_backed_secrets() {
+    if separate_dev_ca() {
         return Ok(proxy.join("dev"));
     }
     Ok(proxy)
+}
+
+/// Whether this run keeps a CA of its own, apart from the release install's:
+/// secrets are file-backed and the data directory is not redirected. Decides
+/// both where the material lives ([`ca_material_dir`]) and what the root is
+/// called (`proxy::cert_authority::ca_common_name`), because separate files
+/// are not enough on their own - every platform's trust store keys its cleanup
+/// on the root's name, so a dev build deleting "its" stale root by name would
+/// delete the release build's trusted one too.
+pub(crate) fn separate_dev_ca() -> bool {
+    test_home_override().is_none() && file_backed_secrets()
 }
 
 /// Are this run's secrets files under a redirected directory rather than the OS
@@ -512,24 +523,36 @@ mod tests {
     /// the body does. `None` removes it, so a developer machine that happens to
     /// export one of these does not decide the result.
     fn with_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let prev = std::env::var_os(name);
+        /// Puts the variable back on drop, so a failing assertion inside `f`
+        /// does not leak the value into the next test.
+        struct Restore<'a> {
+            name: &'a str,
+            prev: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(self.name, v),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+        let _restore = Restore {
+            name,
+            prev: std::env::var_os(name),
+        };
         match value {
             Some(v) => std::env::set_var(name, v),
             None => std::env::remove_var(name),
         }
-        let out = f();
-        match prev {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-        out
+        f()
     }
 
     /// A dev build must not keep its certificate where a release build keeps
     /// its own, because the two keep their *keys* in different places.
     ///
-    /// This is the defect of 2026-09-21 in one assertion. `pnpm app:local`
-    /// sets `GATE_CONNECT_TEST_SECRETS` and nothing else, so the dev build had
+    /// This is the defect of 2026-09-21 in one assertion. A dev run sets
+    /// `GATE_CONNECT_TEST_SECRETS` and nothing else, so the dev build had
     /// its key in a file and its certificate in the shared data directory,
     /// alongside a release build whose key was in the login keychain. Whoever
     /// wrote last left the other with a mismatched pair, every intercepted host

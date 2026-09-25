@@ -136,8 +136,7 @@ export const listTools = () => invoke<Tool[]>("list_tools");
 
 /** Point one tool's own config at Gate. Auto-enables the proxy engine when a
  * relay-routed config needs it (idempotent if already running). */
-export const connectTool = (slug: string, upstreamUrl: string) =>
-  invoke<Status>("connect_tool", { slug, upstreamUrl });
+export const connectTool = (slug: string) => invoke<Status>("connect_tool", { slug });
 
 /** Revert one tool's config to its pre-Gate state. */
 export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });

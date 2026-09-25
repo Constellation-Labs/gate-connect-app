@@ -552,10 +552,30 @@ impl Drop for CfChallengeSolve {
 ///
 /// Not cfg-gated, for the same reason the challenge observer above isn't: the
 /// notify is called from `engine::handle_response`, which compiles on every
-/// desktop OS, and a Linux daemon-hosted engine simply has no observer
-/// registered, so it is a no-op there.
+/// desktop OS. In the Linux helper daemon the observer is the daemon's own
+/// refusal counter, which the GUI polls (`refused_since_last_look`), because the
+/// shell that can recover the session is a different process.
 static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
     std::sync::OnceLock::new();
+
+/// Whether the helper daemon's refusal counter shows a new refusal since the
+/// GUI last read it. The Linux session loop acts on this edge.
+///
+/// The counter only rises within one daemon's life, so a higher reading means
+/// at least one new refusal. The first reading only seeds the baseline: a
+/// daemon can outlive several GUI runs, and launch already probed for a session
+/// that died while the GUI was gone. A reading **below** the baseline means the
+/// daemon restarted and counts from zero again, so everything it reports is
+/// new: comparing it against the old baseline would ignore refusals until the
+/// new daemon had counted past the old one, which at one a minute is how long a
+/// dead session would keep its green dot.
+pub fn refused_since_last_look(baseline: Option<u64>, reading: u64) -> bool {
+    match baseline {
+        None => false,
+        Some(seen) if reading < seen => reading > 0,
+        Some(seen) => reading > seen,
+    }
+}
 
 /// Debounce latch: set by the notify that fired the observer, cleared by
 /// [`gate_auth_check_finished`]. A refused session 401s *every* request from
@@ -950,46 +970,10 @@ pub fn chatgpt_app_user_agent() -> Option<String> {
     CHATGPT_APP_USER_AGENT.lock().ok().and_then(|v| v.clone())
 }
 
-/// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
-/// this machine's loopback - the only place our plain-HTTP loopback listeners
-/// (the relay, the PAC responder) may be addressed from.
-///
-/// This is the standard local-daemon DNS-rebinding defense, shared by the
-/// relay and the PAC server so they can't drift: a browser always names its
-/// target in the `Host` header, so a page that rebound `attacker.example` to
-/// 127.0.0.1 still arrives carrying `Host: attacker.example` and is refused,
-/// while the CLI tools these listeners exist for dial `127.0.0.1` directly.
-/// The port is deliberately not pinned - every listener that calls this binds
-/// loopback exclusively, so any request that reached it already used our
-/// port, and pinning would only add a way to break legitimate callers.
-pub(crate) fn authority_is_loopback(authority: &str) -> bool {
-    let authority = authority.trim();
-    // Bracketed IPv6 (`[::1]:8080` / `[::1]`) carries colons inside the
-    // brackets, so strip that form before splitting off a port.
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        rest.split(']').next().unwrap_or("")
-    } else {
-        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
-    };
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
-}
-
-/// Whether an `Origin` header value may talk to our loopback listeners: only
-/// a loopback origin qualifies. Anything else - a remote site's origin, or
-/// the opaque `null` a sandboxed/rebound context sends - marks a cross-site
-/// browser request, which must never spend the owner's Gate credential even
-/// though CORS already keeps the page from reading the response ("simple"
-/// cross-origin POSTs are delivered without a preflight). Non-browser
-/// clients send no `Origin` at all, so they never reach this check.
-pub(crate) fn origin_is_loopback(origin: &str) -> bool {
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    authority_is_loopback(rest.split('/').next().unwrap_or(""))
-}
+// The loopback guards are defined in `gate-connect-paths`, because the
+// forwarder's relay listener applies the same browser boundary as the relay it
+// fronts, and two copies of a security check are two chances to drift.
+pub(crate) use gate_connect_paths::{authority_is_loopback, origin_is_loopback};
 
 /// Cross-process hint that some Gate Connect process has the system proxy
 /// routed through a live engine: the snapshot file exists for exactly that
@@ -1218,16 +1202,35 @@ pub fn relay_listening() -> bool {
 /// intercepting: it predates parking, and every relay that could not park was
 /// routing whenever it was up.
 pub fn relay_report() -> Option<RelayReport> {
-    let port = relay::load_persisted_port()?;
+    relay_report_at(
+        relay::load_persisted_port()?,
+        gate_connect_paths::RELAY_HEALTH_PATH,
+    )
+}
+
+/// [`relay_report`] for a relay on `port`, asked on `health_path`.
+///
+/// For the engine's own relay port behind the forwarder
+/// (`relay::load_engine_port`), ask on
+/// [`gate_connect_paths::RELAY_ENGINE_HEALTH_PATH`]: only an engine's relay
+/// answers there, so a listener squatting that port cannot pass by relaying
+/// the challenge to the forwarder, which answers the other two paths for
+/// anybody.
+pub(crate) fn relay_report_at(port: u16, health_path: &str) -> Option<RelayReport> {
     let token = forwarder::load_or_create_token().ok()?;
-    let headers =
-        gate_connect_paths::probe_with_proof(port, gate_connect_paths::RELAY_HEALTH_PATH, &token)?;
+    let headers = gate_connect_paths::probe_with_proof(port, health_path, &token)?;
     let intercepting = headers
         .iter()
         .find(|(name, _)| name == gate_connect_paths::RELAY_INTERCEPTING_HEADER)
         .map(|(_, value)| value != "0")
         .unwrap_or(true);
-    Some(RelayReport { intercepting })
+    let fronted_by_forwarder = headers.iter().any(|(name, value)| {
+        name == gate_connect_paths::RELAY_FRONT_HEADER && value == "forwarder"
+    });
+    Some(RelayReport {
+        intercepting,
+        fronted_by_forwarder,
+    })
 }
 
 /// What [`relay_report`] learned from a relay that proved itself.
@@ -1236,6 +1239,10 @@ pub struct RelayReport {
     /// Rewriting to the gateway, rather than parked and forwarding straight
     /// through to the tool's own provider.
     pub intercepting: bool,
+    /// The forwarder answered, from its own relay listener, rather than an
+    /// engine's relay behind it or on the port. An enable reads this to tell
+    /// "the forwarder holds the public port" from "another Gate does".
+    pub fronted_by_forwarder: bool,
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
@@ -1251,17 +1258,39 @@ pub fn serve_relay() -> anyhow::Result<()> {
 /// Block until the process is asked to stop: SIGINT or SIGTERM on unix, Ctrl-C
 /// on Windows.
 ///
-/// Backs `proxy enable --foreground`. The engine lives in the process-lifetime
-/// [`manager`] static, so on macOS - which hosts it in-process, with no daemon
-/// to outlive the caller - routing lasts exactly as long as the process that
-/// enabled it. `proxy enable` returns immediately, so from the CLI the engine
-/// has always died on the way out, leaving the system proxy pointed at a port
-/// nothing answers. Parking here is what lets a headless machine host it
-/// (launchd, systemd, a CI job) instead of only the menubar app.
+/// Backs the CLI's foreground `proxy enable`. The engine lives in the
+/// process-lifetime [`manager`] static, so on macOS and Windows - which host it
+/// in-process, with no daemon to outlive the caller - routing lasts exactly as
+/// long as the process that enabled it. A `proxy enable` that returned would
+/// take the engine down on the way out and leave the system proxy pointed at a
+/// port nothing answers, so there the CLI always parks here; on Linux it is
+/// opt-in through `--foreground`. Parking is what lets a headless machine host
+/// the engine (launchd, systemd, a CI job) instead of only the desktop app.
 ///
 /// SIGTERM as well as SIGINT because that is what a service manager sends to
 /// stop a unit; without it the caller could not restore the system proxy on the
-/// way down, which is the whole reason this is worth blocking for.
+/// way down, which is the whole reason this is worth blocking for. SIGHUP too,
+/// because closing the terminal window is how most people stop a foreground
+/// process.
+///
+/// Windows has no signals, only console control events, and tokio answers only
+/// the ones somebody listens for: the rest fall through to the default handler,
+/// which is `ExitProcess` with nothing restored. So every one of them is
+/// listened for - Ctrl-C, Ctrl-Break, closing the console window, logoff and
+/// shutdown (Windows delivers the last two only to some processes, such as a
+/// service; an interactive one may just be ended). For close, logoff and
+/// shutdown Windows grants only a few seconds before it ends the process
+/// anyway. The restore is local and runs first; only the audit emit after it,
+/// bounded at 5s, can be cut short. A
+/// `TerminateProcess` (`taskkill /F`, Task Manager) cannot be caught at all;
+/// `gate-connect proxy disable` from a fresh process is the recovery.
+///
+/// Returns once the first event arrives. The listeners are kept registered for
+/// the rest of the process on purpose: tokio hands an event nobody listens for
+/// to the default handler, so dropping them here would let a second Ctrl-C
+/// during the caller's teardown kill the process halfway through restoring.
+/// Unix needs no such care, since a tokio signal registration outlives its
+/// stream.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn wait_for_shutdown() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1276,16 +1305,32 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
                 signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
             let mut int =
                 signal(SignalKind::interrupt()).context("installing the SIGINT handler")?;
+            let mut hup = signal(SignalKind::hangup()).context("installing the SIGHUP handler")?;
             tokio::select! {
                 _ = term.recv() => {}
                 _ = int.recv() => {}
+                _ = hup.recv() => {}
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .context("waiting for Ctrl-C")?;
+            use tokio::signal::windows;
+            let mut c = windows::ctrl_c().context("installing the Ctrl-C handler")?;
+            let mut brk = windows::ctrl_break().context("installing the Ctrl-Break handler")?;
+            let mut close = windows::ctrl_close().context("installing the close handler")?;
+            let mut logoff = windows::ctrl_logoff().context("installing the logoff handler")?;
+            let mut shutdown =
+                windows::ctrl_shutdown().context("installing the shutdown handler")?;
+            tokio::select! {
+                _ = c.recv() => {}
+                _ = brk.recv() => {}
+                _ = close.recv() => {}
+                _ = logoff.recv() => {}
+                _ = shutdown.recv() => {}
+            }
+            // See the doc comment: still listening is what keeps a second
+            // event from reaching the default handler mid-teardown.
+            std::mem::forget((c, brk, close, logoff, shutdown));
         }
         Ok::<(), anyhow::Error>(())
     })
@@ -1649,8 +1694,12 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// The question a plain quit asks of each address a tool's configuration
 /// names. Three addresses are ours, and they die differently:
 ///
-/// - the **relay** origin (a base URL under it): hosted in the engine, and
-///   nothing fronts it - dies with the engine's process;
+/// - the **relay** origin (a base URL under it): hosted in the engine unless
+///   the forwarder holds it. On macOS and Windows the forwarder normally does
+///   (`relay::load_engine_port` says why), and then it survives - the
+///   forwarder serves relay requests straight to the provider once the engine
+///   is gone. Where it does not (no forwarder, a stale one, something else on
+///   the port), the engine's relay binds it and it dies with the process;
 /// - the **engine's own** proxy address, plain or with Claude Code's route
 ///   selector in the userinfo: same process - dies. Configs still name it on
 ///   an install written before tool configs moved to the forwarder, and on a
@@ -1670,12 +1719,116 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// and `quit_app` gates on exactly that. Keeping the platform out of here is
 /// what lets the rule be tested on any CI runner.
 pub fn address_dies_with_gui(configured: &str) -> bool {
-    address_dies_given(
-        configured,
-        relay_base_url().as_deref(),
-        persisted_engine_proxy_url().as_deref(),
-        exported_proxy_identity_url().as_deref(),
-    )
+    QuitAddresses::current().dies(configured)
+}
+
+/// The three identities [`address_dies_with_gui`] compares against, read once.
+///
+/// A quit asks about every address of every managed tool, and reading these
+/// per address would probe the forwarder once each - latency on the exit path,
+/// and a sweep that could answer differently for two tools if the forwarder's
+/// claim changed halfway. One read per sweep keeps a sweep consistent with
+/// itself.
+///
+/// It does not make the quit dialog and the revert that follows it one read:
+/// each is its own sweep, seconds apart, and a forwarder that took or lost the
+/// relay port in between makes them differ. The difference fails safe. A
+/// forwarder that lost the port between the two means the revert puts back a
+/// tool the dialog did not name, which is the old quit's behaviour; one that
+/// took it means a tool the dialog named is left alone, and keeps working.
+#[derive(Debug, Clone)]
+pub struct QuitAddresses {
+    relay_origin: Option<String>,
+    engine_url: Option<String>,
+    forwarder_url: Option<String>,
+}
+
+impl QuitAddresses {
+    /// Read them now. A fronted relay origin is recorded as absent: it is not
+    /// an address that dies, which is the only thing [`address_dies_given`]
+    /// asks of it.
+    pub fn current() -> Self {
+        let relay_origin = relay_base_url()
+            .filter(|_| forwarder::fronted_relay_port(std::time::Duration::ZERO).is_none());
+        QuitAddresses {
+            relay_origin,
+            engine_url: persisted_engine_proxy_url(),
+            forwarder_url: exported_proxy_identity_url(),
+        }
+    }
+
+    /// Read them for an exit the forwarder does not outlive either, so the
+    /// relay origin dies whether the forwarder holds it right now or not.
+    ///
+    /// Two exits are like that, both on Windows, where the forwarder is a
+    /// plain detached process with nothing to start it again except Gate
+    /// itself: the end of the login session (a logout or a shutdown, see
+    /// [`session_ending`]), after which a tool that starts before Gate would
+    /// find nothing on the relay port; and an uninstall, whose hook kills the
+    /// forwarder and leaves no Gate at all to repair the configs. macOS needs
+    /// neither: launchd holds the relay port from login, and a drag to the
+    /// Trash runs no code of ours.
+    ///
+    /// The forwarder's own address is still read as surviving. What names it
+    /// is the proxy half, which dies with the forwarder in both cases too, but
+    /// that was already true before the forwarder held the relay port, and
+    /// this is not the change that decides it.
+    pub fn relay_unfronted() -> Self {
+        QuitAddresses {
+            relay_origin: relay_base_url(),
+            engine_url: persisted_engine_proxy_url(),
+            forwarder_url: exported_proxy_identity_url(),
+        }
+    }
+
+    /// [`address_dies_with_gui`] against these identities.
+    pub fn dies(&self, configured: &str) -> bool {
+        address_dies_given(
+            configured,
+            self.relay_origin.as_deref(),
+            self.engine_url.as_deref(),
+            self.forwarder_url.as_deref(),
+        )
+    }
+}
+
+/// Whether the login session is ending: a logout, a restart or a shutdown,
+/// as opposed to the user quitting Gate. Windows only, where it decides
+/// whether the forwarder outlives this exit (see
+/// [`QuitAddresses::relay_unfronted`]); `false` everywhere else.
+///
+/// `SM_SHUTTINGDOWN` is set for the whole of the end-session sequence, which
+/// is when an exit handler that runs at all during a logout runs.
+pub fn session_ending() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+        const SM_SHUTTINGDOWN: i32 = 0x2000;
+        // SAFETY: takes an integer, returns an integer, touches no memory of
+        // ours.
+        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Forget the port the engine's relay bound behind the forwarder, for an exit
+/// that takes that relay down with it.
+///
+/// The forwarder dials that port on every relay connection to ask whether the
+/// engine is up. Left behind, it costs every connection on Windows the full
+/// connect timeout, because a closed loopback port is not refused at once
+/// there; and if some unrelated listener later binds the port, every relay
+/// request gets a 502 for as long as Gate stays closed, where it should have
+/// gone to the provider. A crash still leaves it, and the forwarder reads it
+/// as it always has; the next launch rebinds or replaces it.
+pub fn forget_engine_relay_port() {
+    relay::forget_engine_port();
 }
 
 /// [`address_dies_with_gui`] with its three identities passed in, so the rule
@@ -3124,7 +3277,24 @@ pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: 
         && matches!(decide(domains, host, path), Decision::Rewrite { .. })
 }
 
+// The dot-segment rule the relay, the engine and the forwarder all apply. One
+// definition, in `gate-connect-paths`, because it is a security boundary and
+// the forwarder cannot link this crate.
+pub(crate) use gate_connect_paths::has_dot_segment;
+
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    // A path hiding a dot segment is never rewritten: the path classified here
+    // is not the one a server that normalizes would act on, and a rewrite
+    // carries the Gate credential. It passes through to the real upstream under
+    // the tool's own credential instead - where it would go with Gate off - or
+    // tunnels, if no enabled entry owns the host.
+    if has_dot_segment(path) {
+        return if domains.iter().any(|d| d.enabled && d.matches_host(host)) {
+            Decision::Passthrough
+        } else {
+            Decision::Tunnel
+        };
+    }
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
@@ -3875,6 +4045,29 @@ mod tests {
         assert!(should_intercept_host(&d, "API.ANTHROPIC.COM")); // case-insensitive
         assert!(!should_intercept_host(&d, "example.com"));
         assert!(!should_intercept_host(&d, "statsig.anthropic.com"));
+    }
+
+    /// The engine's half of the relay's dot-segment rule: a path the gateway
+    /// might normalize to somewhere else is never rewritten with the Gate
+    /// credential. It still reaches the provider, under the tool's own.
+    #[test]
+    fn a_dot_segment_is_passed_through_never_rewritten() {
+        let d = anthropic();
+        assert!(matches!(
+            decide(&d, "api.anthropic.com", "/v1/messages"),
+            Decision::Rewrite { .. }
+        ));
+        for path in ["/v1/../../admin", "/v1/%2e%2e/admin", "/v1/..\\..\\admin"] {
+            assert_eq!(
+                decide(&d, "api.anthropic.com", path),
+                Decision::Passthrough,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            decide(&d, "unrelated.example", "/v1/../x"),
+            Decision::Tunnel
+        );
     }
 
     #[test]
@@ -5441,6 +5634,19 @@ mod address_dies_tests {
         assert!(!dies("http://proxy.corp.example:3128"));
     }
 
+    /// Behind the forwarder the relay origin is passed as absent, and a base
+    /// URL under it then survives the quit like the forwarder's own address -
+    /// while the engine's own port still dies, because nothing fronts that.
+    #[test]
+    fn a_fronted_relay_survives_and_the_engine_still_dies() {
+        let fronted = |configured| address_dies_given(configured, None, Some(ENGINE), Some(FWD));
+        assert!(!fronted(
+            "http://127.0.0.1:47101/__gate/t/codex/chatgpt/codex"
+        ));
+        assert!(!fronted(RELAY));
+        assert!(fronted(ENGINE));
+    }
+
     /// A port that is a prefix of ours is not ours.
     #[test]
     fn a_longer_port_is_not_under_the_relay_origin() {
@@ -5508,5 +5714,30 @@ mod loopback_port_tests {
         assert_eq!(loopback_port_of("http://localhost:47150"), None);
         assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
         assert_eq!(loopback_port_of(""), None);
+    }
+}
+
+#[cfg(test)]
+mod refusal_edge_tests {
+    use super::refused_since_last_look;
+
+    #[test]
+    fn the_first_reading_only_seeds() {
+        assert!(!refused_since_last_look(None, 0));
+        assert!(!refused_since_last_look(None, 7));
+    }
+
+    #[test]
+    fn a_rise_is_a_refusal_and_a_repeat_is_not() {
+        assert!(refused_since_last_look(Some(3), 4));
+        assert!(!refused_since_last_look(Some(4), 4));
+    }
+
+    /// A restarted daemon counts from zero, so a reading below the baseline is
+    /// all new - not a quiet period until it passes the old count.
+    #[test]
+    fn a_restarted_daemon_is_read_from_zero() {
+        assert!(!refused_since_last_look(Some(9), 0));
+        assert!(refused_since_last_look(Some(9), 1));
     }
 }

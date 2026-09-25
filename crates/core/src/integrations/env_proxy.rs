@@ -174,12 +174,6 @@ impl Integration for EnvProxy {
         crate::proxy::set_env_export(false)
     }
 
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "the environment proxy needs no credential of its own -- Gate injects yours in flight and passes your provider credentials through untouched."
-        )
-    }
-
     /// Listed now, under Experimental.
     ///
     /// It was hidden because Home groups by model family and this is a mechanism
@@ -198,14 +192,6 @@ impl Integration for EnvProxy {
     /// a tool.
     fn hidden_in_ui(&self) -> bool {
         false
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
     }
 }
 

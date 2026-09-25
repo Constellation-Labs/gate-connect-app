@@ -48,13 +48,11 @@ impl fmt::Display for ToolId {
 /// Inputs the user (or web deep-link) provides to a connect action.
 ///
 /// `gateway_base_url` comes from the account (entered once at sign-in).
-/// `upstream_url` populates `X-Gate-Upstream-Url`. The Gate API key
-/// (workspace identity) lives in the account keychain entry and is
-/// read by the credential helper at request time.
+/// The Gate API key (workspace identity) lives in the account keychain
+/// entry and is read by the credential helper at request time.
 #[derive(Debug, Clone)]
 pub struct ConnectInput {
     pub gateway_base_url: String,
-    pub upstream_url: String,
     /// Who pays the upstream provider, from the account
     /// ([`crate::account::BillingMode`]). Most integrations ignore it: they
     /// write a relay base URL and no credential, so the relay applies the mode
@@ -122,10 +120,13 @@ impl fmt::Display for Status {
 /// being declared rather than matched off an error string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mechanism {
-    /// The config carries a loopback **base URL** for the reverse-proxy relay,
-    /// which lives in the engine and dies with it. On macOS and Windows the
-    /// engine lives in the GUI process, so a plain quit takes this address
-    /// with it and nothing fronts it.
+    /// The config carries a loopback **base URL** for the reverse-proxy relay.
+    /// On macOS and Windows the forwarder normally holds that port, handing
+    /// connections to the engine's relay while it runs and serving them
+    /// straight to the provider once it is gone, so a plain quit leaves the
+    /// address answering. Where the forwarder does not hold it, the engine's
+    /// relay does, in the GUI process, and a plain quit takes it down;
+    /// `proxy::address_dies_with_gui` is what tells the two apart.
     Relay,
     /// The config carries a **proxy address**: the forwarder's, since tool
     /// configs moved off the engine's own port. The forwarder is a separate
@@ -238,30 +239,15 @@ pub trait Integration: Send + Sync {
 
     /// Human-readable name of the upstream model provider this tool talks
     /// to natively (e.g. "Anthropic" for Claude Code, "OpenAI" for Codex).
-    /// Shown in the connect form so the user knows which API key to enter.
     fn upstream_provider_name(&self) -> &'static str;
 
-    /// Default upstream endpoint URL. The user can override it in the
-    /// connect form, but ~all users want the canonical provider URL.
+    /// Canonical upstream endpoint URL. The app shows its host as the
+    /// tool's upstream; nothing overrides it.
     fn default_upstream_url(&self) -> &'static str;
 
-    /// Does this tool need Gate Connect to store an upstream provider
-    /// credential separately? No shipped integration does - Claude Code,
-    /// Codex, and OpenCode all bring their own creds (OAuth token,
-    /// `ANTHROPIC_API_KEY`, `codex login`, per-provider `opencode auth`,
-    /// etc.) and Gate forwards whatever they send. Defaulting `false` keeps
-    /// the method from being a trap: a `true` default silently blocked a new
-    /// integration's `connect` behind a credential there is no UI to enter.
-    /// An integration that opts in must also bring a way to collect the
-    /// credential - today that is the CLI's `set-upstream` only.
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     /// Which mechanism carries this tool's traffic - see [`Mechanism`]. Required
-    /// rather than defaulted: a default would be a trap in exactly the way the
-    /// `requires_upstream_credential` doc above describes, silently filing a
-    /// new integration under a rule that may not fit it.
+    /// rather than defaulted: a default would silently file a new integration
+    /// under a rule that may not fit it.
     fn mechanism(&self) -> Mechanism;
 
     /// Every loopback address this tool's configuration currently names for
@@ -362,26 +348,12 @@ pub trait Integration: Send + Sync {
     fn status(&self) -> Result<Status>;
 
     /// Apply gateway config. Idempotent: a second call with the same
-    /// inputs results in the same state. Requires that an upstream
-    /// credential has already been saved via `save_upstream_credential`.
+    /// inputs results in the same state.
     fn connect(&self, input: &ConnectInput) -> Result<()>;
 
     /// Revert everything `connect` wrote. After this returns the tool
     /// must be back to its prior configuration with zero Gate residue.
     fn disconnect(&self) -> Result<()>;
-
-    /// Persist the upstream provider credential (e.g. Anthropic API key
-    /// or Claude OAuth token) to keychain. Replaces any prior value.
-    fn save_upstream_credential(&self, credential: &str) -> Result<()>;
-
-    /// Expected prefix for this tool's upstream credential (e.g. "sk-"
-    /// for OpenAI). An empty string means no prefix is enforced - the
-    /// credential is still length/charset-validated. The IPC layer passes
-    /// this to `validate_api_key` so a compromised renderer can't write
-    /// arbitrary bytes to a tool's keychain entry under a mismatched slug.
-    fn upstream_credential_prefix(&self) -> &'static str {
-        ""
-    }
 
     /// Keep this tool out of the popover's ledger.
     ///
@@ -397,13 +369,6 @@ pub trait Integration: Send + Sync {
     fn hidden_in_ui(&self) -> bool {
         false
     }
-
-    /// Is an upstream credential currently saved for this tool?
-    fn has_upstream_credential(&self) -> Result<bool>;
-
-    /// Forget the saved upstream credential. Independent of connect
-    /// state - disconnect() does not call this.
-    fn clear_upstream_credential(&self) -> Result<()>;
 }
 
 pub fn registry() -> Vec<Box<dyn Integration>> {

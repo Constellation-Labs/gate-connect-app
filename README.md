@@ -124,11 +124,12 @@ icon again. Right-click the tray icon for **Quit**.
 
 ### CLI parity
 
-For power users and scripting. Same registry, same code path:
+For power users and scripting. Same registry, same code path. Full option
+reference: [docs/cli.md](docs/cli.md).
 
 ```bash
 # Account
-gate-connect login --base-url https://your-gateway.example.com --api-key sk-gw-...
+gate-connect login --base-url https://your-gateway.example.com   # prompts for the key
 gate-connect whoami
 gate-connect logout
 
@@ -140,8 +141,8 @@ gate-connect disconnect codex
 
 # Built-in proxy (macOS / Windows / Linux)
 gate-connect proxy status
-gate-connect proxy enable
-gate-connect proxy disable
+gate-connect proxy enable          # on macOS/Windows stays in the foreground; Ctrl-C stops it
+gate-connect proxy disable         # Linux; on macOS/Windows only to clean up after a killed host
 ```
 
 `status` reports `not installed`, `detected`, `connected`, or

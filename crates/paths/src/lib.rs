@@ -4,8 +4,8 @@
 //!
 //! This crate exists so `gate-connect-forwarder` can stay a small binary. It
 //! cannot depend on `gate-connect-core` - that would link the keychain, the
-//! MITM stack, rustls and reqwest into a process whose whole job is to copy
-//! bytes between two sockets - and it must not *duplicate* these either: the
+//! MITM stack and reqwest into a process whose job is to copy bytes between
+//! sockets - and it must not *duplicate* these either: the
 //! forwarder and the app read and write the same files, so a disagreement
 //! about where they are is a failure with no error message, just two processes
 //! quietly looking at different directories.
@@ -118,7 +118,26 @@ pub const FORWARDER_CHALLENGE_HEADER: &str = "x-gate-forwarder-challenge";
 /// for the other, and under the same `/__gate/` prefix the relay already
 /// reserves for its own routing segments, so it can never collide with a tool's
 /// base URL.
+///
+/// Answered by whatever holds the public relay port: the engine's relay, or
+/// the forwarder while it fronts that port.
 pub const RELAY_HEALTH_PATH: &str = "/__gate/relay-health";
+
+/// Reserved path only the **engine's** relay answers, and the forwarder never
+/// does.
+///
+/// It is what the forwarder asks before it hands a relay connection to the
+/// engine's port, and what an enable asks before refusing because another Gate
+/// holds that port. The proof binds the path it was asked on
+/// ([`forwarder_proof`]), so a listener squatting the engine's port cannot get
+/// this answer by relaying the challenge to one of the forwarder's own health
+/// paths: the forwarder computes proofs for those two paths only, for anybody.
+pub const RELAY_ENGINE_HEALTH_PATH: &str = "/__gate/relay-engine-health";
+
+/// Header the forwarder adds to its own [`RELAY_HEALTH_PATH`] answer, so a
+/// caller that reached the public relay port can tell the forwarder holding it
+/// from an engine's relay holding it. Value `forwarder`.
+pub const RELAY_FRONT_HEADER: &str = "x-gate-relay-front";
 
 /// Header the relay reports interception on: `1` while it rewrites to the
 /// gateway, `0` while it is parked and forwarding straight through.
@@ -128,28 +147,283 @@ pub const RELAY_HEALTH_PATH: &str = "/__gate/relay-health";
 /// nothing secret: whether Gate is routing is what the app's own window says.
 pub const RELAY_INTERCEPTING_HEADER: &str = "x-gate-relay-intercepting";
 
-/// Header carrying the forwarder's answer: hex SHA-256 of the token followed by
-/// the challenge. Only a process that can read the 0600 token file can produce
-/// it, which is exactly the claim the app needs before exporting the port it
-/// answers on as the machine's `HTTPS_PROXY`.
+/// Where the relay's **public** port is persisted: the one every relay tool
+/// config names (`http://127.0.0.1:<port>/...`). On macOS and Windows the
+/// forwarder holds it, so the address keeps answering after the app is gone;
+/// on Linux, and wherever the forwarder could not take it, the engine's relay
+/// binds it directly, as it always did.
+pub const RELAY_PORT_NAME: &str = "relay-port";
+
+/// Where the engine's relay binds when the forwarder fronts
+/// [`RELAY_PORT_NAME`]. The forwarder hands relay connections here while
+/// something here proves it is Gate's relay, and serves them itself when
+/// nothing does. Nothing writes this port into a tool config.
+pub const RELAY_ENGINE_PORT_NAME: &str = "relay-engine-port";
+
+/// Header on the forwarder's own health answer naming the relay port it holds,
+/// or `none` while it holds none.
+///
+/// Its *absence* is information too: a forwarder built before it fronted the
+/// relay never sends it, which is how the app tells a stale forwarder, left
+/// running across an update, from a current one that simply lost the port.
+pub const FORWARDER_RELAY_HEADER: &str = "x-gate-forwarder-relay";
+
+/// Reserved liveness path the relay answers with a bare 204 to anybody.
+pub const RELAY_LIVENESS_PATH: &str = "/__gate/health";
+
+/// Every port file this install keeps under `proxy/`. A fresh bind for any one
+/// listener skips all of them, so it cannot take a port another of our
+/// listeners is about to reclaim; each caller filters out its own name.
+pub const LOOPBACK_PORT_NAMES: [&str; 5] = [
+    "port",
+    "pac-port",
+    "forwarder-port",
+    RELAY_PORT_NAME,
+    RELAY_ENGINE_PORT_NAME,
+];
+
+/// The ports in [`LOOPBACK_PORT_NAMES`] other than `own`, as persisted now.
+pub fn remembered_ports_except(own: &str) -> Vec<u16> {
+    LOOPBACK_PORT_NAMES
+        .iter()
+        .filter(|name| **name != own)
+        .filter_map(|name| load_port(name))
+        .collect()
+}
+
+/// `account.json`, in [`app_support_dir`]. Named here because the forwarder
+/// reads the billing mode out of it (see [`PAYG_ELIGIBLE_SLUGS`]).
+pub const ACCOUNT_FILE_NAME: &str = "account.json";
+
+/// Catalog slugs PAYG can serve, i.e. the ones whose forwarded path is a shape
+/// the gateway's reseller router understands (`/v1/messages`,
+/// `/v1/chat/completions`, `/v1/responses`).
+///
+/// An allowlist, not a denylist, so a domain added later defaults to BYOK and a
+/// new entry can never start spending an org's balance by omission.
+///
+/// Everything left out is left out for a reason:
+/// - `claude-web`, `chatgpt-apps` - consumer chat surfaces authenticated by a
+///   session cookie and covered by the user's own subscription. Gate estimates
+///   their cost rather than billing it, and their paths are not inference-API
+///   shapes the reseller router serves.
+/// - `chatgpt` - Codex's ChatGPT-subscription Responses route. Subscription
+///   traffic is by definition not pay-as-you-go; Codex reaches PAYG through the
+///   `openai` entry instead (see `integrations::codex`).
+/// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
+///   the reseller router recognises.
+///
+/// Here because the forwarder needs it too: a pay-as-you-go tool's request
+/// carries no provider credential of its own - Gate was going to supply the
+/// provider and the bill - so the forwarder must not send it on to the
+/// provider directly once the app is gone. It answers with an error naming the
+/// fix instead. Core does not bill pay-as-you-go in this tree yet; when it
+/// does, its slug list has to be this one.
+pub const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+
+/// Slug of the hermetic e2e's mock upstream (`GATE_CONNECT_TEST_UPSTREAM`),
+/// spelled once for core's relay and the forwarder.
+pub const TEST_UPSTREAM_SLUG: &str = "test-upstream";
+
+/// Marker a relay base URL may carry ahead of the catalog slug to name the tool
+/// configured with it (`/__gate/t/<tool>/<slug>/...`). No config in this tree
+/// writes it yet; the forwarder strips it when present, so a config written by
+/// a build that does keeps working through the forwarder.
+pub const RELAY_TOOL_PATH_PREFIX: &str = "/__gate/t/";
+
+/// Every catalog slug a relay base URL may name, and the upstream it forwards
+/// to when Gate is not routing it.
+///
+/// A copy of `slug` / `upstream_url` from `gate_connect_core::proxy::catalog`,
+/// which the forwarder cannot link. A test in core asserts the two are equal,
+/// so adding a catalog entry without adding it here fails the test suite rather
+/// than 400ing that entry's tools the first time the app is closed.
+///
+/// This is the whole of the forwarder's routing knowledge, and it is what keeps
+/// the relay listener from being an open proxy: a request names one of these
+/// slugs or it goes nowhere.
+pub const RELAY_UPSTREAMS: &[(&str, &str)] = &[
+    ("anthropic", "https://api.anthropic.com"),
+    ("claude-web", "https://claude.ai/api"),
+    ("openai", "https://api.openai.com"),
+    ("chatgpt-apps", "https://chatgpt.com"),
+    ("chatgpt", "https://chatgpt.com/backend-api"),
+    ("openrouter", "https://openrouter.ai/api"),
+    ("opencode", "https://opencode.ai"),
+];
+
+/// [`RELAY_UPSTREAMS`], plus the hermetic e2e's mock upstream in debug builds.
+///
+/// `GATE_CONNECT_TEST_UPSTREAM` is the seam core's relay already honours; read
+/// here too so a test that aims the relay at a mock aims the forwarder at the
+/// same one. Debug builds only, for the reason [`app_support_dir`] gives.
+pub fn relay_upstreams() -> Vec<(String, String)> {
+    #[allow(unused_mut)]
+    let mut out: Vec<(String, String)> = RELAY_UPSTREAMS
+        .iter()
+        .map(|(slug, url)| ((*slug).to_string(), (*url).to_string()))
+        .collect();
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::var_os("GATE_CONNECT_TEST_UPSTREAM").filter(|v| !v.is_empty()) {
+        out.push((
+            TEST_UPSTREAM_SLUG.into(),
+            url.to_string_lossy().into_owned(),
+        ));
+    }
+    out
+}
+
+/// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
+/// this machine's loopback - the only place our plain-HTTP loopback listeners
+/// (the relay, the PAC responder, the forwarder's relay listener) may be
+/// addressed from.
+///
+/// This is the standard local-daemon DNS-rebinding defense: a browser always
+/// names its target in the `Host` header, so a page that rebound
+/// `attacker.example` to 127.0.0.1 still arrives carrying
+/// `Host: attacker.example` and is refused, while the CLI tools these
+/// listeners exist for dial `127.0.0.1` directly. The port is deliberately not
+/// pinned - every listener that calls this binds loopback exclusively, so any
+/// request that reached it already used our port, and pinning would only add a
+/// way to break legitimate callers.
+pub fn authority_is_loopback(authority: &str) -> bool {
+    let authority = authority.trim();
+    // Bracketed IPv6 (`[::1]:8080` / `[::1]`) carries colons inside the
+    // brackets, so strip that form before splitting off a port.
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// Whether an `Origin` header value may talk to our loopback listeners: only
+/// a loopback origin qualifies. Anything else - a remote site's origin, or
+/// the opaque `null` a sandboxed/rebound context sends - marks a cross-site
+/// browser request, which must never spend the owner's Gate credential even
+/// though CORS already keeps the page from reading the response ("simple"
+/// cross-origin POSTs are delivered without a preflight). Non-browser
+/// clients send no `Origin` at all, so they never reach this check.
+pub fn origin_is_loopback(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    authority_is_loopback(rest.split('/').next().unwrap_or(""))
+}
+
+/// Header carrying a listener's answer to a challenge; see [`forwarder_proof`].
+/// Only a process that can read the 0600 token file can produce it, which is
+/// exactly the claim the app needs before exporting the port it answers on as
+/// the machine's `HTTPS_PROXY`.
 pub const FORWARDER_PROOF_HEADER: &str = "x-gate-forwarder-proof";
 
-/// The proof a forwarder holding `token` owes for `challenge`.
+/// The proof a listener holding `token` owes for `challenge` asked on `path`:
+/// hex HMAC-SHA256 keyed by the token over the path, a NUL, and the challenge.
 ///
-/// Defined here so the two binaries cannot disagree about it, and so the one
-/// property that matters is testable in one place: knowing the challenge is not
-/// enough to produce the answer.
-pub fn forwarder_proof(token: &str, challenge: &str) -> String {
+/// **The path is bound in, and that is load-bearing.** The forwarder answers
+/// the forwarder and relay health paths for any caller, and it has to. If the
+/// proof were the same on every path, a process squatting the engine's relay
+/// port could pass the forwarder's own check by relaying its challenge to one of
+/// those public answers, and be handed every relay tool's plaintext request -
+/// the tool's own provider key included. Bound to the path, the answer to
+/// [`RELAY_ENGINE_HEALTH_PATH`] is one the forwarder never computes.
+///
+/// Defined here so the binaries cannot disagree about it, and so the property
+/// that matters is testable in one place: knowing the challenge is not enough
+/// to produce the answer.
+pub fn forwarder_proof(token: &str, path: &str, challenge: &str) -> String {
+    use hmac::{Mac, SimpleHmac};
+    let mut mac = SimpleHmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC takes a key of any length");
+    mac.update(path.as_bytes());
+    mac.update(&[0]);
+    mac.update(challenge.as_bytes());
+    hex(&mac.finalize().into_bytes())
+}
+
+/// The proof forwarders built before [`forwarder_proof`] bound the path:
+/// SHA-256 of the token then the challenge.
+///
+/// Accepted in exactly one place - deciding that a forwarder left running
+/// across an update is ours and should be retired - and never to trust a
+/// listener with traffic.
+pub fn legacy_forwarder_proof(token: &str, challenge: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     hasher.update(challenge.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex(&hasher.finalize())
 }
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Does the request target carry a `.` or `..` path segment?
+///
+/// Both relays route by `starts_with` on the raw path and then build the URL
+/// they send by concatenation, which a URL parser normalizes: the two readings
+/// disagree on `/anthropic/v1/../../x`, and the one that decides where the
+/// request goes is not the one that decided whether to credential it. Refusing
+/// keeps one string all the way through. The encoded spellings count, because
+/// URL parsers treat `%2e` as a dot when they look for these segments.
+///
+/// Shared by core's relay and the forwarder's relay listener, because it is a
+/// security boundary and two copies of it are two chances to drift.
+pub fn has_dot_segment(path_and_query: &str) -> bool {
+    let path = path_and_query
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(path_and_query);
+    // `\` too: for `http` and `https` URLs the URL parser treats a backslash
+    // as a path separator, so `/v1/..\..\x` collapses exactly as
+    // `/v1/../../x` does.
+    path.split(['/', '\\']).any(|segment| {
+        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
+            .iter()
+            .any(|form| segment.eq_ignore_ascii_case(form))
+    })
+}
+
+/// Split `/<segment>/rest?query` into `("<segment>", "/rest?query")`, or `None`
+/// when there is no leading segment. A path that ends at the segment becomes
+/// `"/"`, and a query directly after it keeps a `/` in front so the forwarded
+/// path stays absolute. Shared for the reason [`has_dot_segment`] is.
+pub fn split_leading_segment(path_and_query: &str) -> Option<(&str, String)> {
+    let rest = path_and_query.strip_prefix('/')?;
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (segment, tail) = rest.split_at(end);
+    if segment.is_empty() {
+        return None;
+    }
+    let inner = if tail.is_empty() {
+        "/".to_string()
+    } else if tail.starts_with('?') {
+        format!("/{tail}")
+    } else {
+        tail.to_string()
+    };
+    Some((segment, inner))
+}
+
+/// The hop-by-hop request headers of RFC 9110 section 7.6.1, which never go
+/// past the hop that received them. Both relays drop these; each adds the
+/// headers its own forwarding re-creates (the engine's relay re-frames bodies
+/// through reqwest, the forwarder answers `Expect` itself and writes `Host`).
+pub const HOP_BY_HOP: [&str; 8] = [
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "upgrade",
+];
 
 /// Compare without an early exit on the first differing byte. Timing a local
 /// comparison over loopback is far-fetched, but one that leaks its own prefix
@@ -265,19 +539,22 @@ pub fn bind_fresh(skip: &[u16]) -> std::io::Result<TcpListener> {
 
 /// Does the listener on `port` prove it holds `token`?
 ///
-/// The client half of the challenge-response both of Gate's loopback listeners
-/// answer: a random challenge goes out on one header, and only a process that
-/// can read the 0600 token file can return the matching hash. A bare TCP
-/// connect cannot tell our listener from anything else that happens to accept,
-/// which is the difference between "the port is taken" and "the port is ours".
+/// The client half of the challenge-response Gate's loopback listeners answer:
+/// a random challenge goes out on one header, and only a process that can read
+/// the 0600 token file can return the matching proof for this `health_path`. A
+/// bare TCP connect cannot tell our listener from anything else that happens to
+/// accept, which is the difference between "the port is taken" and "the port
+/// is ours".
 ///
-/// Shared rather than written twice because the forwarder and the relay differ
-/// only in which reserved path they answer on. Every timeout is short and
-/// bounded: a listener that answers slowly forever must not hold up an enable
-/// or a status read.
+/// Bounded as a whole by [`PROBE_DEADLINE`], not only per read: a listener that
+/// trickles its answer a byte at a time must not hold up an enable, a quit, or
+/// the forwarder's relay connections.
 pub fn proves_ours(port: u16, health_path: &str, token: &str) -> bool {
     probe_with_proof(port, health_path, token).is_some()
 }
+
+/// The whole-probe budget for [`probe_with_proof`].
+pub const PROBE_DEADLINE: Duration = Duration::from_millis(750);
 
 /// [`proves_ours`], keeping the headers the listener returned.
 ///
@@ -289,22 +566,45 @@ pub fn probe_with_proof(
     health_path: &str,
     token: &str,
 ) -> Option<Vec<(String, String)>> {
+    probe(port, health_path, |challenge| {
+        forwarder_proof(token, health_path, challenge)
+    })
+}
+
+/// [`probe_with_proof`] against the proof forwarders computed before it bound
+/// the path. Only for recognising such a forwarder so it can be retired; see
+/// [`legacy_forwarder_proof`].
+pub fn probe_with_legacy_proof(
+    port: u16,
+    health_path: &str,
+    token: &str,
+) -> Option<Vec<(String, String)>> {
+    probe(port, health_path, |challenge| {
+        legacy_forwarder_proof(token, challenge)
+    })
+}
+
+fn probe(
+    port: u16,
+    health_path: &str,
+    expected: impl Fn(&str) -> String,
+) -> Option<Vec<(String, String)>> {
     use std::io::{Read, Write};
-    use std::time::Duration;
 
-    let challenge: String = {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        (0..16)
-            .map(|_| format!("{:02x}", rng.gen::<u8>()))
-            .collect()
+    let deadline = Instant::now() + PROBE_DEADLINE;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
     };
-    let expected = forwarder_proof(token, &challenge);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let mut sock = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = sock.set_write_timeout(Some(Duration::from_millis(500)));
+    let challenge = fresh_challenge();
+    let expected = expected(&challenge);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let connect_budget = remaining()?.min(Duration::from_millis(250));
+    let mut sock = std::net::TcpStream::connect_timeout(&addr, connect_budget).ok()?;
+    let _ = sock.set_write_timeout(remaining());
     let req = format!(
         "GET {health_path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{FORWARDER_CHALLENGE_HEADER}: \
          {challenge}\r\nConnection: close\r\n\r\n"
@@ -313,6 +613,8 @@ pub fn probe_with_proof(
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     while buf.len() < 4096 {
+        // Each read gets only what is left of the whole budget.
+        sock.set_read_timeout(Some(remaining()?)).ok()?;
         match sock.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
@@ -322,7 +624,23 @@ pub fn probe_with_proof(
             break;
         }
     }
-    let text = std::str::from_utf8(&buf).ok()?;
+    parse_proof(&buf, &expected)
+}
+
+/// A fresh random challenge for a proof probe: 16 random bytes, hex.
+pub fn fresh_challenge() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..16)
+        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .collect()
+}
+
+/// Read a health answer's headers and check its proof against `expected`.
+/// `None` unless the proof matches. Public so the forwarder can check a proof
+/// it read off a connection it keeps open.
+pub fn parse_proof(head: &[u8], expected: &str) -> Option<Vec<(String, String)>> {
+    let text = std::str::from_utf8(head).ok()?;
     let headers: Vec<(String, String)> = text
         .lines()
         .filter_map(|line| line.split_once(':'))
@@ -382,13 +700,76 @@ mod tests {
     /// pass, however it replies.
     #[test]
     fn a_proof_needs_the_token_not_just_the_challenge() {
-        let proof = forwarder_proof("the-token", "abc123");
+        let proof = forwarder_proof("the-token", RELAY_HEALTH_PATH, "abc123");
         assert_eq!(proof.len(), 64);
-        assert_eq!(proof, forwarder_proof("the-token", "abc123"));
-        assert_ne!(proof, forwarder_proof("another-token", "abc123"));
+        assert_eq!(
+            proof,
+            forwarder_proof("the-token", RELAY_HEALTH_PATH, "abc123")
+        );
+        assert_ne!(
+            proof,
+            forwarder_proof("another-token", RELAY_HEALTH_PATH, "abc123")
+        );
         // And it is bound to the challenge, so one reply cannot be replayed
         // against the next probe.
-        assert_ne!(proof, forwarder_proof("the-token", "abc124"));
+        assert_ne!(
+            proof,
+            forwarder_proof("the-token", RELAY_HEALTH_PATH, "abc124")
+        );
+    }
+
+    /// The property the splice gate rests on: an answer the forwarder gives
+    /// anybody on its own health paths is never the engine path's answer.
+    #[test]
+    fn a_proof_is_bound_to_the_path_it_was_asked_on() {
+        let engine = forwarder_proof("t", RELAY_ENGINE_HEALTH_PATH, "c");
+        assert_ne!(engine, forwarder_proof("t", RELAY_HEALTH_PATH, "c"));
+        assert_ne!(engine, forwarder_proof("t", FORWARDER_HEALTH_PATH, "c"));
+        assert_ne!(engine, legacy_forwarder_proof("t", "c"));
+    }
+
+    /// A listener that trickles its answer is cut off by the whole-probe
+    /// deadline, not allowed a fresh read timeout per byte.
+    #[test]
+    fn a_trickling_listener_cannot_hold_a_probe() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = sock.read(&mut buf);
+            for _ in 0..100 {
+                if sock.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let started = Instant::now();
+        assert!(!proves_ours(port, RELAY_HEALTH_PATH, "t"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn dot_segments_are_found_in_every_spelling() {
+        for bad in [
+            "/anthropic/v1/../../x",
+            "/anthropic/./v1",
+            "/anthropic/%2E%2e/x",
+            "/a/.%2e?q",
+            "/anthropic/v1/..\\..\\x",
+            "/anthropic/v1/.%2E\\.%2e\\x",
+        ] {
+            assert!(has_dot_segment(bad), "{bad}");
+        }
+        for ok in ["/anthropic/v1/messages", "/a/..b/c", "/a?x=../y"] {
+            assert!(!has_dot_segment(ok), "{ok}");
+        }
     }
 
     #[test]

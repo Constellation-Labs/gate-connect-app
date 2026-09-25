@@ -44,7 +44,8 @@ enum Command {
         api_key_file: Option<std::path::PathBuf>,
         /// Sign in via the Constellation Hosted UI (OAuth) instead of an API
         /// key. Prints a URL to open in your browser and captures the redirect
-        /// on a loopback listener. Ignores `--api-key`.
+        /// on a loopback listener. Cannot be combined with `--api-key` or
+        /// `--api-key-file`.
         #[arg(long)]
         oauth: bool,
         /// With `--oauth`, preselect this organization (its UUID or slug)
@@ -52,7 +53,9 @@ enum Command {
         #[arg(long)]
         org: Option<String>,
     },
-    /// Sign out. Removes the stored base URL and the keychain entry.
+    /// Sign out. Disconnects every tool Gate manages first (a failure there
+    /// aborts the sign-out), then removes the stored base URL and the keychain
+    /// entry.
     Logout,
     /// Show or change who pays the upstream provider.
     ///
@@ -74,30 +77,10 @@ enum Command {
         /// Tool slug, e.g. `codex`.
         tool: String,
     },
-    /// Point a tool at the Gate AI gateway. Requires an upstream
-    /// credential - set one via `set-upstream` first.
-    Connect {
-        tool: String,
-        /// Override the integration's default upstream URL. Sent via
-        /// X-Gate-Upstream-Url.
-        #[arg(long, env = "GATE_UPSTREAM_URL")]
-        upstream_url: Option<String>,
-    },
+    /// Point a tool at the Gate AI gateway.
+    Connect { tool: String },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
-    /// Save the upstream provider credential for a tool: paste an API key.
-    SetUpstream {
-        tool: String,
-        /// Paste the upstream provider API key.
-        #[arg(long)]
-        api_key: Option<String>,
-        /// Read the upstream API key from this file (first line) instead
-        /// of passing it on the command line or typing it at the prompt.
-        #[arg(long)]
-        api_key_file: Option<std::path::PathBuf>,
-    },
-    /// Forget the saved upstream credential for a tool.
-    ClearUpstream { tool: String },
     /// Manage the built-in MITM proxy that routes config-less apps
     /// (Claude Desktop, ChatGPT, …) and command-line tools through the Gate
     /// gateway. Enabling installs a local CA and points the system proxy at a
@@ -118,23 +101,32 @@ enum ProxyCmd {
     Status,
     /// Turn the proxy on: trust the local CA and route the system proxy
     /// through the loopback engine. May prompt for elevation.
+    ///
+    /// On macOS and Windows the engine lives in this process, so the command
+    /// stays in the foreground hosting it. Stopping it (Ctrl-C, closing the
+    /// terminal, or SIGTERM on macOS) puts tools whose config names this
+    /// process's relay or engine back on their own settings, then stops
+    /// routing and restores the prior system-proxy state. Returning instead
+    /// would take the engine down with the process and leave the system proxy
+    /// pointed at a port nothing answers.
     Enable {
-        /// Stay in the foreground hosting the engine; Ctrl-C (or SIGTERM)
-        /// stops it and restores the prior system-proxy state.
-        ///
-        /// The engine runs inside this process, so without this the command
-        /// returns and routing goes with it - fine while the menubar app is
-        /// running, since it hosts its own, but it is why a machine with no
-        /// app cannot route through the engine from the CLI. Use this to host
-        /// it from launchd, systemd, or a CI job.
+        /// Linux only: stay in the foreground until Ctrl-C, SIGTERM or SIGHUP, then
+        /// stop routing and restore the prior system-proxy state. Without it
+        /// the command returns and the helper daemon keeps routing. For a
+        /// systemd unit or a CI job that should own the routing lifetime.
+        #[cfg(target_os = "linux")]
         #[arg(long)]
         foreground: bool,
     },
     /// Turn the proxy off and restore the prior system-proxy state.
+    ///
+    /// On macOS and Windows this is recovery for a host that stopped without
+    /// restoring (killed, crashed): it refuses while a Gate process is still
+    /// routing, since that one does the restore itself when it stops.
     Disable,
     /// Host ONLY the loopback reverse-proxy relay; blocks until killed.
     ///
-    /// For environments with no menubar app (containers, servers, CI): CLI
+    /// For environments with no desktop app (containers, servers, CI): CLI
     /// tools whose config points at the relay route through Gate with the live
     /// credential. No CA trust and no system-proxy changes, so nothing else on
     /// this machine is routed - `enable` is the one that does that, and it
@@ -201,14 +193,8 @@ fn main() -> Result<()> {
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
         Command::Status { tool } => cmd_status(&tool),
-        Command::Connect { tool, upstream_url } => cmd_connect(&tool, upstream_url),
+        Command::Connect { tool } => cmd_connect(&tool),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
-        Command::SetUpstream {
-            tool,
-            api_key,
-            api_key_file,
-        } => cmd_set_upstream(&tool, api_key, api_key_file),
-        Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
@@ -240,12 +226,12 @@ fn cmd_login(
     // (the relay reads the mode via `access_token_for_injection`).
     account::set_auth_mode(account::AuthMode::ApiKey)?;
     // The proxy engine lives in whichever process enabled it (usually the
-    // menubar app) - this process can't push the new key into it.
+    // desktop app) - this process can't push the new key into it.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         if proxy::engine_likely_running() {
             println!(
-                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous key until it is toggled off and on."
+                "note: the Gate proxy appears to be enabled in another process (likely the Gate Connect app); it keeps using the previous key until routing is restarted there."
             );
         }
     }
@@ -362,12 +348,12 @@ fn cmd_logout() -> Result<()> {
     registry::disconnect_all_managed()?;
     account::clear()?;
     // The proxy engine lives in whichever process enabled it (usually the
-    // menubar app) - this process can't stop it or revoke its in-memory key.
+    // desktop app) - this process can't stop it or revoke its in-memory key.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         if proxy::engine_likely_running() {
             println!(
-                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the deleted key until it is turned off there."
+                "note: the Gate proxy appears to be enabled in another process (likely the Gate Connect app); it keeps using the deleted key until routing stops there."
             );
         }
     }
@@ -488,21 +474,12 @@ fn cmd_status(tool: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
+fn cmd_connect(tool: &str) -> Result<()> {
     let acct = account::load()?
         .context("Not signed in. Run `gate-connect login --base-url … --api-key …` first.")?;
     let integ = resolve(tool)?;
-    if integ.requires_upstream_credential() && !integ.has_upstream_credential()? {
-        anyhow::bail!(
-            "No upstream credential saved for {}. Run `gate-connect set-upstream {} --api-key …` or `--claude-oauth` first.",
-            integ.display_name(),
-            tool,
-        );
-    }
-    let upstream_url = upstream_url.unwrap_or_else(|| integ.default_upstream_url().to_string());
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
-        upstream_url,
         billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         // `tool_proxy_url`, not the engine's own address: a config written here
@@ -601,32 +578,6 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_upstream(
-    tool: &str,
-    api_key: Option<String>,
-    api_key_file: Option<std::path::PathBuf>,
-) -> Result<()> {
-    let integ = resolve(tool)?;
-    if !integ.requires_upstream_credential() {
-        anyhow::bail!(
-            "{} brings its own upstream credentials - no separate key needed",
-            integ.display_name()
-        );
-    }
-    let credential = resolve_secret(api_key, api_key_file, "upstream API key")?;
-    integ.save_upstream_credential(&credential)?;
-    println!("Saved upstream credential for {}.", integ.display_name());
-    println!("Next: `gate-connect connect {tool}`.");
-    Ok(())
-}
-
-fn cmd_clear_upstream(tool: &str) -> Result<()> {
-    let integ = resolve(tool)?;
-    integ.clear_upstream_credential()?;
-    println!("Cleared upstream credential for {}.", integ.display_name());
-    Ok(())
-}
-
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     let mgr = proxy::manager();
@@ -641,7 +592,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     mgr.set_detached(true);
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
-        ProxyCmd::Enable { foreground } => {
+        ProxyCmd::Enable {
+            #[cfg(target_os = "linux")]
+            foreground,
+        } => {
+            // Only Linux has a daemon to outlive this process; elsewhere the
+            // engine is ours, so returning would end routing on the way out.
+            #[cfg(not(target_os = "linux"))]
+            let foreground = true;
             // The same master-ON ceremony as the app (`routing::enable`):
             // persist the intent, restore providers around the engine start
             // (the all-off state would otherwise trip `enable`'s "at least
@@ -656,31 +614,78 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             print_proxy_hint();
             if foreground {
                 println!();
-                println!("Hosting the proxy engine. Press Ctrl-C to stop routing and restore");
-                println!("the previous system-proxy settings.");
-                proxy::wait_for_shutdown()?;
+                #[cfg(target_os = "linux")]
+                println!(
+                    "Hosting the proxy engine. Press Ctrl-C to stop routing and restore the \
+                     previous system-proxy settings."
+                );
+                #[cfg(not(target_os = "linux"))]
+                println!(
+                    "Hosting the proxy engine. Press Ctrl-C to stop: tools pointed at this \
+                     process go back on their own settings, and the previous system-proxy \
+                     settings are restored."
+                );
+                proxy::wait_for_shutdown().context(
+                    "waiting for a stop signal failed with routing still on; run \
+                     `gate-connect proxy disable` to restore the system proxy",
+                )?;
                 // Restoring here is the point of blocking: a service manager
                 // sends SIGTERM, and an engine that vanished without reverting
                 // would leave the machine pointed at a dead loopback port.
                 println!();
-                let (_, warnings) = gate_connect_core::routing::disable()?;
-                for w in warnings {
-                    eprintln!("note: {} failed: {:#}", w.component, w.error);
+                // Stopping this host is a quit, not a routing toggle.
+                // `routing::disable` alone parks the engine so configs naming
+                // its relay keep answering, which only helps a process that
+                // stays alive; on macOS and Windows the relay lives here and
+                // goes with us. So first put those tools back on their own
+                // settings, as the app's quit does (`quit_app`); the next
+                // enable or app launch reconnects them. Linux skips it, as the
+                // app does: the daemon outlives us and keeps answering.
+                #[cfg(not(target_os = "linux"))]
+                match gate_connect_core::provider::revert_stranded_configs_for_quit() {
+                    Ok(names) if names.len() == 1 => println!(
+                        "Put {} back on its own settings; it reconnects the next time routing is enabled.",
+                        names[0]
+                    ),
+                    Ok(names) if !names.is_empty() => println!(
+                        "Put {} back on their own settings; they reconnect the next time routing is enabled.",
+                        names.join(", ")
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("note: putting tools back on their own settings failed: {e:#}"),
                 }
-                println!("Proxy disabled; prior system-proxy state restored.");
+                disable_routing().context(
+                    "restoring the system proxy failed; run `gate-connect proxy disable` to \
+                     finish",
+                )?;
             }
         }
         ProxyCmd::Disable => {
-            // The app's master-OFF ceremony (`routing::disable`), not a bare
-            // engine stop: the sweep unpoints managed tool configs from the
-            // relay this kills (they would otherwise dial a dead loopback
-            // port), and clearing the intent keeps a later app launch from
-            // silently re-routing what the operator just turned off.
-            let (_, warnings) = gate_connect_core::routing::disable()?;
-            for w in warnings {
-                eprintln!("note: {} failed: {:#}", w.component, w.error);
+            // On macOS and Windows a live host - the app, or a foreground
+            // `proxy enable` - restores the system proxy itself when it stops,
+            // from the snapshot it took. Restoring from here underneath it
+            // deletes that snapshot, so its own stop later finds none and
+            // falls back to forcing every proxy setting off, the user's own
+            // included. So only clean up after a host that is gone; the check
+            // asks the relay to prove it is a routing Gate, which a stale
+            // snapshot or a stranger on the port cannot fake.
+            #[cfg(not(target_os = "linux"))]
+            if let Some(port) = proxy::engine_hosted_elsewhere() {
+                anyhow::bail!(
+                    "the Gate proxy is being routed by another process on 127.0.0.1:{port}. Stop \
+                     it there instead - press Ctrl-C in the terminal running `gate-connect proxy \
+                     enable`, or quit the Gate Connect app - and it restores the system proxy \
+                     itself. `proxy disable` is for cleaning up after one that stopped without \
+                     restoring."
+                );
             }
-            println!("Proxy disabled; prior system-proxy state restored.");
+            // The app's master-OFF ceremony (`routing::disable`), not a bare
+            // engine stop: the sweep turns the providers off and parks the
+            // engine, leaving tool configs naming Gate so they pass straight
+            // through while it is parked, and clearing the intent keeps a later
+            // app launch from silently re-routing what the operator just
+            // turned off.
+            disable_routing()?;
         }
         ProxyCmd::Relay => {
             // Blocks until killed; hosts only the relay (no CA, no system proxy).
@@ -737,6 +742,10 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             }
         }
         ProxyCmd::UntrustCa { system_trust } => {
+            // Untrusting stops routing rather than refusing while it is on, so
+            // say so: nothing else on this path would tell the user their
+            // traffic stopped going through Gate.
+            let was_routing = gate_connect_core::proxy::engine_likely_running();
             if system_trust {
                 mgr.untrust_ca_system()?;
                 println!("Machine-wide proxy CA trust removed.");
@@ -744,8 +753,27 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 mgr.untrust_ca()?;
                 println!("Proxy CA trust removed.");
             }
+            if was_routing {
+                println!(
+                    "Routing was on and has been stopped: the engine signs with this CA, so it \
+                     cannot run once the CA is untrusted. `gate-connect proxy enable` trusts a new \
+                     one and turns routing back on."
+                );
+            }
         }
     }
+    Ok(())
+}
+
+/// `routing::disable` and its notes, shared by `proxy disable` and the
+/// foreground host's stop so the two report the same way.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn disable_routing() -> Result<()> {
+    let (_, warnings) = gate_connect_core::routing::disable()?;
+    for w in warnings {
+        eprintln!("note: {} failed: {:#}", w.component, w.error);
+    }
+    println!("Proxy disabled; prior system-proxy state restored.");
     Ok(())
 }
 

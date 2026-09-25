@@ -297,9 +297,6 @@ export function installFakeTauri(state: BackendState): void {
       t.status = { kind: "detected" };
       return t.status;
     },
-    has_upstream_credential: () => true,
-    save_upstream_api_key: () => null,
-    clear_upstream_credential: () => null,
 
     // ---- model selection (AG-588)
     // The choice is a local file, so these commands are file reads and writes,

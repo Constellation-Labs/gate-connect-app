@@ -125,6 +125,71 @@ pub(crate) fn sign_empty_crl(issuer: &Issuer<'_, KeyPair>) -> Result<Vec<u8>> {
 /// modules, which also use it as the lookup key for trust/untrust.
 pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 
+/// Subject CN of the root a dev run keeps apart from the release one (see
+/// `env::separate_dev_ca`).
+///
+/// Not a suffix of [`CA_COMMON_NAME`], and not containing it: macOS
+/// `security find-certificate -c` / `delete-certificate -c` match the name as
+/// a substring, so "Gate Connect Local CA (dev)" would still be deleted by a
+/// release build cleaning up its own stale roots. The two names share no
+/// prefix a substring match could cross.
+pub(crate) const DEV_CA_COMMON_NAME: &str = "Gate Connect Dev CA";
+
+/// The CN this run's root carries, and the name every trust-store lookup,
+/// install and cleanup on each platform uses.
+///
+/// A dev run (file-backed secrets, real data directory) gets its own name, so
+/// the two installs stop taking turns over trust: each platform's cleanup
+/// deletes by name - `delete-certificate -c` on macOS, `-delstore Root <name>`
+/// on Windows, and on Linux the anchor file is named for it - and with one
+/// shared name, the first dev run on a machine removed the release build's
+/// trusted root and the next release run removed the dev one.
+pub(crate) fn ca_common_name() -> &'static str {
+    if crate::env::separate_dev_ca() {
+        DEV_CA_COMMON_NAME
+    } else {
+        CA_COMMON_NAME
+    }
+}
+
+/// Does this private key belong to this certificate?
+///
+/// The write-order comments in each platform's `load_or_create` argue that a
+/// crash between the two stores leaves a key with no cert, which regenerates -
+/// true, and it only covers a crash *inside* `load_or_create`. Two installs
+/// sharing one data directory are not that: a dev build keeps its key in
+/// `GATE_CONNECT_TEST_SECRETS` while a release build keeps its key in the OS
+/// secret store, and before `env::ca_material_dir` both read and wrote the same
+/// `ca-cert.pem`. Whoever wrote the cert last left the other build holding a
+/// cert that does not match its key. A restored backup or a hand-copied file
+/// can do the same.
+///
+/// The result is the worst shape a failure can take. `Issuer::from_ca_cert_pem`
+/// accepts the pair without complaint, the engine starts, leaves are minted
+/// with the cert's own Authority Key Identifier - so the chain *looks* right,
+/// and every fingerprint comparison passes - and the signature verifies against
+/// nothing. Every intercepted host fails its handshake while Connect reports
+/// Protected.
+///
+/// Compared on the public key: rcgen hands us the key's raw public bytes, and
+/// for an EC key that 65-byte uncompressed point appears verbatim inside the
+/// certificate's SubjectPublicKeyInfo. A containment test rather than a DER
+/// walk because the crates here parse PEM but not X.509. It catches accidental
+/// mismatches, which is what it is for; it is not a defence against a crafted
+/// certificate, which would need write access to Gate's files. A key we cannot
+/// parse counts as a mismatch: unusable is unusable, and regenerating is the
+/// same answer.
+pub(crate) fn key_matches_cert(key_pem: &str, cert_pem: &str) -> bool {
+    let Ok(key) = KeyPair::from_pem(key_pem) else {
+        return false;
+    };
+    let Ok(der) = pem::parse(cert_pem.as_bytes()) else {
+        return false;
+    };
+    let public = key.public_key_raw();
+    !public.is_empty() && der.contents().windows(public.len()).any(|w| w == public)
+}
+
 /// Fingerprint of the host set the root CA was minted for.
 ///
 /// The CA's X.509 name constraints are built from the WHOLE domain catalog at
@@ -234,7 +299,7 @@ pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(DnType::CommonName, CA_COMMON_NAME);
+        .push(DnType::CommonName, ca_common_name());
     params
         .distinguished_name
         .push(DnType::OrganizationName, "Constellation Gate");
@@ -389,6 +454,65 @@ impl CertificateAuthority for GateCa {
                 },
             );
         cfg
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+
+    /// A root minted exactly the way every platform module mints one.
+    fn generate() -> (String, String) {
+        let key = KeyPair::generate().expect("key pair");
+        let cert = ca_certificate_params()
+            .expect("CA params")
+            .self_signed(&key)
+            .expect("self-signed CA");
+        (cert.pem(), key.serialize_pem())
+    }
+
+    /// The pairing check, against the failure that motivated it.
+    ///
+    /// A machine running both a dev build (key in `GATE_CONNECT_TEST_SECRETS`)
+    /// and a release build (key in the login keychain) over one data directory
+    /// ended up with `ca-cert.pem` paired to the dev key while the release app
+    /// signed with the keychain's. Nothing downstream noticed: the pair loads,
+    /// the engine starts, leaves carry the cert's own Authority Key Identifier
+    /// so every fingerprint check passes, and only the handshake fails.
+    ///
+    /// Here rather than in a platform module so it runs on every platform: all
+    /// three `load_or_create`s call it.
+    #[test]
+    fn a_key_from_another_ca_is_not_accepted_for_this_cert() {
+        let (cert_a, key_a) = generate();
+        let (_cert_b, key_b) = generate();
+
+        assert!(
+            key_matches_cert(&key_a, &cert_a),
+            "a CA's own key must match its own certificate"
+        );
+        assert!(
+            !key_matches_cert(&key_b, &cert_a),
+            "a key from a different CA must not pass for this certificate"
+        );
+    }
+
+    /// Unusable is unusable: a key that will not parse cannot sign, so it takes
+    /// the same answer as a mismatch rather than a separate error path.
+    #[test]
+    fn an_unparseable_key_or_cert_counts_as_a_mismatch() {
+        let (cert, key) = generate();
+
+        assert!(!key_matches_cert("not a key", &cert));
+        assert!(!key_matches_cert(&key, "not a certificate"));
+    }
+
+    /// A release build's cleanup deletes by substring on macOS, so the dev
+    /// root's name must not contain the release one, nor the reverse.
+    #[test]
+    fn the_dev_root_name_cannot_be_matched_by_the_release_one() {
+        assert!(!DEV_CA_COMMON_NAME.contains(CA_COMMON_NAME));
+        assert!(!CA_COMMON_NAME.contains(DEV_CA_COMMON_NAME));
     }
 }
 

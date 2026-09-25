@@ -21,8 +21,6 @@
 //! Unlike Cowork, Claude Code does not need a separate upstream
 //! credential - it already authenticates to Anthropic with its own
 //! OAuth token or `ANTHROPIC_API_KEY`, and Gate passes that through.
-//! So [`requires_upstream_credential`] returns `false` and the
-//! credential-related trait methods are no-ops.
 //!
 //! We track our own writes via a sibling `_gateConnect` block so
 //! disconnect cleanly reverses what connect did and any prior
@@ -30,8 +28,6 @@
 //! Context-window selection also remains Claude Code-owned: Gate Connect never
 //! writes ANTHROPIC_BETAS. Standard variants therefore stay at 200K, while
 //! Claude Code's [1m] variants add their own 1M beta per selected model.
-//!
-//! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
 //! **Config granularity: per process.** Measured 2026-09-18 on Claude Code
 //! 2.1.276, driving `claude --bare -p --input-format stream-json` against two
@@ -348,26 +344,6 @@ impl Integration for ClaudeCode {
             "the Gate proxy engine is not running - enable the proxy before connecting Claude Code",
         )?;
         let claude_proxy_url = crate::proxy::claude_code_proxy_url(engine_proxy_url)?;
-        if !input.upstream_url.starts_with("https://") {
-            anyhow::bail!("upstream URL must be https://");
-        }
-        // Unlike a config-editing integration, this one cannot be retargeted:
-        // what makes it work is that the destination stays canonical, and the
-        // route the engine forces for our selector is Anthropic's entry alone
-        // (`proxy::claude_code_route_domain`). So a different `--upstream-url`
-        // has nowhere to go, and accepting it would write a Claude Code that
-        // routes Anthropic traffic anyway - a silent no-op. Refuse instead.
-        let endpoint = crate::proxy::resolve_endpoint(&input.upstream_url)
-            .with_context(|| format!("Gate has no upstream domain for {:?}", input.upstream_url))?;
-        let route = crate::proxy::claude_code_route_domain();
-        if endpoint.slug != route.slug {
-            anyhow::bail!(
-                "Claude Code can only route to {DEFAULT_UPSTREAM_URL}, not {:?} - it reaches Gate \
-                 through the local forward proxy, which keeps Anthropic's address canonical so \
-                 Claude Code keeps its first-party model capabilities",
-                input.upstream_url
-            );
-        }
 
         // A live engine has minted the CA, so this is a should-not-happen
         // state (a cleared app-support dir under a still-running engine). It
@@ -487,20 +463,6 @@ impl Integration for ClaudeCode {
             return Ok(());
         }
         write_settings(&settings)
-    }
-
-    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
-        anyhow::bail!(
-            "Claude Code does not need a separate upstream credential - it uses its own Anthropic auth"
-        );
-    }
-
-    fn has_upstream_credential(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn clear_upstream_credential(&self) -> Result<()> {
-        Ok(())
     }
 }
 

@@ -571,7 +571,6 @@ fn install_opencode_with_stale_managed_config(relay_port: u16) {
     integ
         .connect(&gate_connect_core::registry::ConnectInput {
             gateway_base_url: "https://gw.example.com".into(),
-            upstream_url: integ.default_upstream_url().to_string(),
             billing_mode: Default::default(),
             relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
             engine_proxy_url: None,
@@ -648,7 +647,6 @@ fn opencode_leaves_a_users_own_local_endpoint_alone() {
     let err = integ
         .connect(&gate_connect_core::registry::ConnectInput {
             gateway_base_url: "https://gw.example.com".into(),
-            upstream_url: integ.default_upstream_url().to_string(),
             billing_mode: Default::default(),
             relay_base_url: Some(format!("http://127.0.0.1:{port}")),
             engine_proxy_url: None,

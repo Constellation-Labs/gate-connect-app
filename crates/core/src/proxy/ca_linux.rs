@@ -48,8 +48,12 @@ use crate::proxy::cert_authority;
 use crate::proxy::{NssProbe, NssReading, NssRefusal, NssTrust};
 
 /// Subject CN of our CA. Used both as the cert subject and as the basename of
-/// the installed anchor file.
-pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+/// the installed anchor file. A dev run has its own, so its anchor is a
+/// different file from the release install's; see
+/// [`cert_authority::ca_common_name`].
+fn ca_common_name() -> &'static str {
+    cert_authority::ca_common_name()
+}
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
 /// engine (same process) to build the signing authority.
@@ -90,7 +94,7 @@ struct TrustStore {
 /// family (and Arch) ship `update-ca-certificates`; RHEL-family and openSUSE
 /// ship `update-ca-trust`.
 fn trust_store() -> Result<TrustStore> {
-    let anchor_file = format!("{CA_COMMON_NAME}.crt");
+    let anchor_file = format!("{}.crt", ca_common_name());
     if PathBuf::from("/usr/sbin/update-ca-certificates").exists()
         || PathBuf::from("/usr/bin/update-ca-certificates").exists()
     {
@@ -157,7 +161,11 @@ pub fn load_or_create() -> Result<Ca> {
         // platforms — thumbprint, `verify-cert` against the current file, and a
         // content comparison — so it reports false for the new root and the trust
         // step installs it rather than short-circuiting on the old one.
-        if cert_authority::host_fingerprint_is_current(&path) {
+        // And the key has to belong to the certificate: see
+        // `cert_authority::key_matches_cert` for the mismatch this catches.
+        if cert_authority::host_fingerprint_is_current(&path)
+            && cert_authority::key_matches_cert(&key_pem, &cert_pem)
+        {
             return Ok(Ca { cert_pem, key_pem });
         }
     }
@@ -596,7 +604,7 @@ fn nss_lookup(db: &Path) -> std::result::Result<NssEntry, CertutilFailure> {
         // in the flags column with nothing before it, so an empty nickname is
         // not a row.
         let nickname = nickname.trim();
-        if nickname == CA_COMMON_NAME {
+        if nickname == ca_common_name() {
             return Ok(NssEntry::Present {
                 flags: flags.trim().to_string(),
             });
@@ -619,7 +627,7 @@ fn nss_holds(db: &Path, pem: &str) -> std::result::Result<bool, CertutilFailure>
     if !entry.ssl_ca_trusted() {
         return Ok(false);
     }
-    let held = certutil_output(db, &["-L", "-n", CA_COMMON_NAME, "-a"])?;
+    let held = certutil_output(db, &["-L", "-n", ca_common_name(), "-a"])?;
     Ok(pem_body(&held) == pem_body(pem))
 }
 
@@ -896,10 +904,10 @@ fn ensure_trusted_nss() {
         // than replacing, so a regenerated CA would leave the stale root sitting
         // in the database beside the new one, and the browser would keep
         // offering both. A missing entry fails here, harmlessly.
-        let dropped = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]).is_ok();
+        let dropped = certutil(&dir, &["-D", "-n", ca_common_name()]).is_ok();
         // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME and no
         // object-signing trust. The same flags mkcert uses for the same job.
-        let args = ["-A", "-t", "C,,", "-n", CA_COMMON_NAME, "-i", &cert_arg];
+        let args = ["-A", "-t", "C,,", "-n", ca_common_name(), "-i", &cert_arg];
         // Read the store back rather than reporting the exit code. `Trusted`
         // is a claim about what Chromium will accept, and an add that exits
         // zero is only evidence that certutil was happy - the reading is one
@@ -971,7 +979,7 @@ fn untrust_nss() {
         match nss_lookup(&dir) {
             Ok(NssEntry::Absent) => {}
             Ok(NssEntry::Present { .. }) => {
-                if let Err(e) = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]) {
+                if let Err(e) = certutil(&dir, &["-D", "-n", ca_common_name()]) {
                     failure = Some(NssTrust::WriteFailed);
                     eprintln!(
                         "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
@@ -1273,6 +1281,7 @@ mod tests {
         move |cert: &Path, marker: &Path| {
             let cert = cert.display();
             let marker_s = marker.display();
+            let nick = ca_common_name();
             let add_body = add_body.replace("{marker}", &marker_s.to_string());
             format!(
                 r#"
@@ -1287,7 +1296,7 @@ case "$3" in
     echo '                                                 SSL,S/MIME,JAR/XPI'
     echo ''
     if [ -f '{marker_s}' ]; then
-      echo '{CA_COMMON_NAME}                             {flags}'
+      echo '{nick}                             {flags}'
     fi
     exit 0
     ;;
@@ -1486,7 +1495,7 @@ esac
 exit 0
 "#,
                 cert = cert.display(),
-                nick = CA_COMMON_NAME,
+                nick = ca_common_name(),
             )
         });
         untrust_nss();

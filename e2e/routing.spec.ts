@@ -253,12 +253,7 @@ test.describe("family panel", () => {
     await member.click();
 
     await expect(member).toHaveAttribute("aria-checked", "true");
-    // The tool's own default upstream, taken from the catalog rather than
-    // hardcoded by the frontend.
-    expect(await app.lastCall("connect_tool")).toEqual({
-      slug: "claude-code",
-      upstreamUrl: "https://api.anthropic.com",
-    });
+    expect(await app.lastCall("connect_tool")).toEqual({ slug: "claude-code" });
     expect((await app.state()).tools.find((t) => t.slug === "claude-code")?.status).toEqual({
       kind: "connected",
     });

@@ -510,7 +510,7 @@ export function useRouting({
             });
           }
           await ensureCaTrusted();
-          await connectTool(slug, tool?.default_upstream_url ?? "");
+          await connectTool(slug);
           // After the connect, which is what starts the engine. The channel
           // exports the engine's address, so switching it on ahead of a bound
           // port would write nothing and report success.
@@ -624,9 +624,7 @@ export function useRouting({
         for (const member of targets) {
           try {
             if (member.kind === "config" && member.tool) {
-              await (routed
-                ? connectTool(member.key, member.tool.default_upstream_url)
-                : disconnectTool(member.key));
+              await (routed ? connectTool(member.key) : disconnectTool(member.key));
               if (member.key === HERMES_SLUG) hermesTouched = true;
             } else if (member.domain) {
               await proxySetDomain(member.key, routed);

@@ -39,6 +39,7 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -64,7 +65,7 @@ use crate::proxy::{default_domains, ProxyDomain};
 pub(crate) fn port_path() -> Result<std::path::PathBuf> {
     Ok(crate::env::app_support_dir()?
         .join("proxy")
-        .join("relay-port"))
+        .join(gate_connect_paths::RELAY_PORT_NAME))
 }
 
 /// The last relay port we persisted, if any and still parseable.
@@ -83,6 +84,32 @@ pub(crate) fn save_persisted_port(port: u16) -> Result<()> {
     let path = port_path()?;
     crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// The port the engine's relay last bound behind the forwarder, if it has.
+///
+/// On macOS and Windows the forwarder holds the public relay port (the one
+/// [`load_persisted_port`] names and every tool config bakes), and the engine's
+/// relay binds this one instead; the forwarder hands connections through while
+/// this listener proves itself and serves them directly when it does not. So
+/// nothing outside the two processes ever names this port, and it moving costs
+/// nothing but a fresh bind.
+pub(crate) fn load_engine_port() -> Option<u16> {
+    super::port_persist::load(gate_connect_paths::RELAY_ENGINE_PORT_NAME)
+        .ok()
+        .flatten()
+}
+
+/// Persist the engine relay's port behind the forwarder. See
+/// [`load_engine_port`].
+pub(crate) fn save_engine_port(port: u16) -> Result<()> {
+    super::port_persist::save(gate_connect_paths::RELAY_ENGINE_PORT_NAME, port)
+}
+
+/// Remove the record [`save_engine_port`] keeps. Best-effort: a file that
+/// cannot be removed is read as it was before.
+pub(crate) fn forget_engine_port() {
+    let _ = super::port_persist::remove(gate_connect_paths::RELAY_ENGINE_PORT_NAME);
 }
 
 /// The loopback base URL a CLI tool points at to route through the relay.
@@ -111,7 +138,7 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         .to_string_lossy()
         .into_owned();
     Some(ProxyDomain {
-        slug: "test-upstream".into(),
+        slug: gate_connect_paths::TEST_UPSTREAM_SLUG.into(),
         display_name: "Test upstream".into(),
         hosts: Vec::new(),
         upstream_url: url,
@@ -160,6 +187,23 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
         })?,
         None => super::engine::bind_fresh().context("binding relay loopback port")?,
     };
+    adopt(listener)
+}
+
+/// [`bind_relay`] for the port behind the forwarder, which falls back to a
+/// fresh one where `bind_relay` refuses. Nothing but the forwarder names this
+/// port ([`load_engine_port`]), so a saved one that something else now holds
+/// costs a fresh bind: the "configs point at this port" reason `bind_relay`
+/// refuses for is true of the public port only.
+fn bind_relay_behind(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
+    let listener = preferred
+        .and_then(|p| super::engine::bind_preferred(p).ok())
+        .map_or_else(super::engine::bind_fresh, Ok)
+        .context("binding the relay behind the forwarder")?;
+    adopt(listener)
+}
+
+fn adopt(listener: std::net::TcpListener) -> Result<(std::net::TcpListener, u16)> {
     let port = listener
         .local_addr()
         .context("reading relay listener address")?
@@ -366,7 +410,9 @@ pub fn serve() -> Result<()> {
         anyhow::bail!(
             "the Gate proxy is enabled, and it already hosts this relay{where_}. \
              `proxy relay` is the alternative for machines with no app, not an addition to \
-             it - point your tools at that URL, or run `gate-connect proxy disable` first."
+             it - point your tools at that URL, or turn routing off first (`gate-connect \
+             proxy disable`; on macOS and Windows, quit the app or press Ctrl-C in the \
+             `proxy enable` terminal instead)."
         );
     }
 
@@ -377,8 +423,36 @@ pub fn serve() -> Result<()> {
         .parse()
         .with_context(|| format!("parsing gateway URL {:?}", account.gateway_base_url))?;
 
-    let (std_listener, port) = bind_relay(load_persisted_port())?;
-    let _ = save_persisted_port(port);
+    // Behind the forwarder when it holds the port configs name, as the engine
+    // does: the public port is not ours to bind, and the forwarder hands
+    // connections through to whatever proves itself on the engine's.
+    //
+    // Behind the forwarder, a relay that proves itself on the engine's port is
+    // a Gate app hosting it, parked or routing, and taking a fresh port instead
+    // would move the forwarder's backend to this process. Asked on the
+    // engine-only path, which nothing but an engine's relay can answer.
+    let (std_listener, port) = match super::forwarder::fronted_relay_port(Duration::ZERO) {
+        Some(public) => {
+            let engine_port = load_engine_port();
+            if engine_port.is_some_and(|port| {
+                super::relay_report_at(port, gate_connect_paths::RELAY_ENGINE_HEALTH_PATH).is_some()
+            }) {
+                anyhow::bail!(
+                    "a Gate Connect app already hosts this relay behind {}. `proxy relay` is \
+                     the alternative for machines with no app, not an addition to it.",
+                    base_url(public)
+                );
+            }
+            let (listener, bound) = bind_relay_behind(engine_port)?;
+            let _ = save_engine_port(bound);
+            (listener, public)
+        }
+        None => {
+            let (listener, bound) = bind_relay(load_persisted_port())?;
+            let _ = save_persisted_port(bound);
+            (listener, bound)
+        }
+    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -482,9 +556,20 @@ async fn proxy(
     // above the loopback guards deliberately - it is cheaper than they are and
     // a prober that cannot get an answer has no way to tell a squatted port
     // from a refused one.
+    //
+    // Two paths, one answer shape. [`gate_connect_paths::RELAY_HEALTH_PATH`] is
+    // what status checks ask on the public port, and the forwarder answers it
+    // too while it fronts that port.
+    // [`gate_connect_paths::RELAY_ENGINE_HEALTH_PATH`] is what the forwarder asks
+    // before it hands this relay a connection, and only an engine's relay ever
+    // answers it; the proof binds the path, so an answer on one cannot stand in
+    // for the other.
+    let health_path = req.uri().path();
     if req.method() == hyper::Method::GET
-        && req.uri().path() == gate_connect_paths::RELAY_HEALTH_PATH
+        && (health_path == gate_connect_paths::RELAY_HEALTH_PATH
+            || health_path == gate_connect_paths::RELAY_ENGINE_HEALTH_PATH)
     {
+        let health_path = health_path.to_owned();
         let challenge = req
             .headers()
             .get(gate_connect_paths::FORWARDER_CHALLENGE_HEADER)
@@ -497,7 +582,7 @@ async fn proxy(
         // direction - a relay that cannot prove itself must not be trusted.
         let proof = super::forwarder::load_or_create_token()
             .ok()
-            .map(|token| gate_connect_paths::forwarder_proof(&token, &challenge));
+            .map(|token| gate_connect_paths::forwarder_proof(&token, &health_path, &challenge));
         let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
         if let Some(proof) = proof {
             builder = builder.header(gate_connect_paths::FORWARDER_PROOF_HEADER, proof);
@@ -689,6 +774,19 @@ async fn proxy(
             format!("{}{}", routed.upstream_url, routed.path_and_query)
         }
     };
+    // The route above was chosen by reading `path_and_query` as a string; what
+    // is sent is whatever reqwest's URL parser makes of `target`. If the two
+    // disagree - a dot segment, a backslash the parser treats as `/`, or any
+    // spelling found later - the request would go somewhere its route was not
+    // decided for, carrying a credential chosen for somewhere else. Refused
+    // rather than trusted to the checks in `resolve_route`, which name the
+    // spellings known today; this one does not need to know them.
+    if !path_survives_parsing(&target) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "request path does not survive URL parsing unchanged".to_string(),
+        ));
+    }
 
     let body = req
         .into_body()
@@ -837,26 +935,9 @@ fn split_tool_segment(path_and_query: &str) -> (Option<&'static str>, Cow<'_, st
     (tool, Cow::Owned(inner))
 }
 
-/// Split `/<segment>/rest?query` into `("<segment>", "/rest?query")`, or `None`
-/// when there is no leading segment. A path that ends at the segment becomes
-/// `"/"`, and a query directly after it keeps a `/` in front so the forwarded
-/// path stays absolute.
-fn split_leading_segment(path_and_query: &str) -> Option<(&str, String)> {
-    let rest = path_and_query.strip_prefix('/')?;
-    let end = rest.find(['/', '?']).unwrap_or(rest.len());
-    let (segment, tail) = rest.split_at(end);
-    if segment.is_empty() {
-        return None;
-    }
-    let inner = if tail.is_empty() {
-        "/".to_string()
-    } else if tail.starts_with('?') {
-        format!("/{tail}")
-    } else {
-        tail.to_string()
-    };
-    Some((segment, inner))
-}
+// Shared with the forwarder's relay listener, which splits the slug off the
+// same way when it serves a request itself.
+use gate_connect_paths::split_leading_segment;
 
 /// Resolve a relayed request against the catalog.
 ///
@@ -881,10 +962,10 @@ fn resolve_route(
     headers: &HeaderMap,
 ) -> Result<Routed, (StatusCode, String)> {
     // The path we classify has to be the path we send, and it is not if a dot
-    // segment survives to the URL parser - see [`has_dot_segment`]. Checked on
-    // the raw request target, before the marker comes off, because a dot segment
-    // anywhere in it changes where the concatenated URL lands.
-    if has_dot_segment(path_and_query) {
+    // segment survives to the URL parser - see [`gate_connect_paths::has_dot_segment`].
+    // Checked on the raw request target, before the marker comes off, because a
+    // dot segment anywhere in it changes where the concatenated URL lands.
+    if super::has_dot_segment(path_and_query) {
         return Err((
             StatusCode::BAD_REQUEST,
             "request path contains a `.` or `..` segment".to_string(),
@@ -937,31 +1018,28 @@ fn resolve_route(
     })
 }
 
-/// Does the request target carry a `.` or `..` path segment?
+/// Does the URL reqwest will send to carry the path we routed on, unchanged?
 ///
-/// It matters because [`classify`] decides Rewrite vs Passthrough by
-/// `starts_with` on the raw path, while the URL we actually send is built by
-/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
-/// segments per the WHATWG rules. Those two readings disagree:
-/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
-/// prefix - gets the live Gate credential injected, and is then sent to
-/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
-/// preferred over normalizing because it keeps one string all the way through
-/// rather than adding a second one to keep in step.
-///
-/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
-/// looks for these segments, so a check that only matched the literal form would
-/// be the same bug with an extra step.
-fn has_dot_segment(path_and_query: &str) -> bool {
-    let path = path_and_query
-        .split_once('?')
-        .map(|(p, _)| p)
-        .unwrap_or(path_and_query);
-    path.split('/').any(|segment| {
-        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
-            .iter()
-            .any(|form| segment.eq_ignore_ascii_case(form))
-    })
+/// `target` is `scheme://authority` plus a path we built by concatenation. The
+/// raw path is everything after the authority up to any `?`; the parsed path is
+/// what `Url::parse` makes of it after its own normalization (dot segments
+/// resolved, backslashes turned into slashes, some bytes percent-encoded). They
+/// differ exactly when the parser would send the request somewhere other than
+/// the path `classify` read. A target that does not parse at all fails too,
+/// since reqwest would refuse it anyway.
+fn path_survives_parsing(target: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(target) else {
+        return false;
+    };
+    let Some(after_scheme) = target.split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let raw = after_scheme
+        .find('/')
+        .map(|i| &after_scheme[i..])
+        .unwrap_or("/");
+    let raw_path = raw.split_once('?').map(|(p, _)| p).unwrap_or(raw);
+    url.path() == raw_path
 }
 
 /// Classify a path within one domain the way the MITM engine's `decide` does:
@@ -1021,20 +1099,14 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(super::GATE_TOOL_HEADER);
 }
 
-/// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).
+/// Hop-by-hop headers must not be forwarded end-to-end: the RFC 9110 set both
+/// relays share ([`gate_connect_paths::HOP_BY_HOP`]), plus the two framing
+/// headers, because reqwest re-frames every body it sends and receives.
 fn is_hop_by_hop(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-            | "content-length"
-    )
+    let name = name.as_str();
+    gate_connect_paths::HOP_BY_HOP.contains(&name)
+        || name == "transfer-encoding"
+        || name == "content-length"
 }
 
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
@@ -1196,14 +1268,34 @@ mod tests {
         }
     }
 
-    /// A dot segment is refused rather than forwarded, because the path we
-    /// classify has to be the path we send.
-    ///
-    /// `classify` reads the raw string, but the URL is built by concatenation
-    /// and parsed by `reqwest`, which collapses `.` and `..`. So
-    /// `/anthropic/v1/../../x` reads as Rewrite - it starts with the `/v1/`
-    /// prefix - takes the live Gate credential, and then lands on `<gateway>/x`,
-    /// somewhere `classify` would never have sent a credentialed request.
+    /// The forwarder serves relay requests itself once the engine is gone, from
+    /// its own copy of the catalog's slugs and upstreams, because it cannot
+    /// link this crate. A catalog entry missing from that copy would work while
+    /// the app runs and answer 400 the moment it quits, which nothing else
+    /// would catch.
+    #[test]
+    fn the_forwarder_routes_every_slug_the_relay_does() {
+        let mut catalog: Vec<(String, String)> = default_domains()
+            .into_iter()
+            .map(|d| (d.slug, d.upstream_url))
+            .collect();
+        let mut forwarder: Vec<(String, String)> = gate_connect_paths::RELAY_UPSTREAMS
+            .iter()
+            .map(|(slug, url)| ((*slug).to_string(), (*url).to_string()))
+            .collect();
+        catalog.sort();
+        forwarder.sort();
+        assert_eq!(
+            forwarder, catalog,
+            "update gate_connect_paths::RELAY_UPSTREAMS to match the catalog"
+        );
+    }
+
+    /// A dot segment would let the path that decided the route differ from the
+    /// path that is sent: `/anthropic/v1/../../admin` starts with `/v1/`, so it
+    /// classifies as inference and is credentialed, and then the URL parser
+    /// sends it somewhere `classify` would never have sent a credentialed
+    /// request.
     #[test]
     fn a_dot_segment_is_refused_rather_than_silently_renormalized() {
         for path in [
@@ -1213,11 +1305,26 @@ mod tests {
             // check that only matched the literal one would be the same bug.
             "/anthropic/v1/%2e%2e/%2E%2E/admin",
             "/__gate/t/opencode/anthropic/v1/../../admin",
+            // A backslash is a separator to the URL parser for http(s), so
+            // these collapse exactly like the forward-slash spellings.
+            "/anthropic/v1/..\\..\\admin",
+            "/anthropic/v1/.%2E\\.%2e\\admin",
         ] {
             let err = resolve_route(&default_domains(), path, &HeaderMap::new())
                 .expect_err("a dot segment is refused");
             assert_eq!(err.0, StatusCode::BAD_REQUEST, "{path}");
         }
+
+        // The legacy route, selected by header rather than by slug, is checked
+        // before either branch.
+        let mut legacy = HeaderMap::new();
+        legacy.insert(
+            HeaderName::from_static(UPSTREAM_URL_HEADER),
+            "https://api.anthropic.com".parse().unwrap(),
+        );
+        let err = resolve_route(&default_domains(), "/v1/../../admin", &legacy)
+            .expect_err("the legacy route refuses a dot segment too");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
 
         // A dot inside a segment is not a dot segment, and is none of our
         // business: plenty of real API paths carry one.
@@ -1271,6 +1378,30 @@ mod tests {
         let r = resolved("/anthropic/v1/__gate/t/opencode/messages").expect("resolves");
         assert_eq!(r.tool, None);
         assert_eq!(r.path_and_query, "/v1/__gate/t/opencode/messages");
+    }
+
+    /// The backstop: whatever the spelling, a target whose parsed path differs
+    /// from the path that was routed on is refused, and an ordinary one is not.
+    #[test]
+    fn a_target_is_sent_only_if_its_path_survives_parsing() {
+        for ok in [
+            "https://gateway.example.com/v1/messages",
+            "https://gateway.example.com/v1/messages?beta=true&x=../y",
+            "https://claude.ai/api/organizations",
+            "https://api.anthropic.com/v1/messages.json",
+            "https://gateway.example.com/",
+        ] {
+            assert!(path_survives_parsing(ok), "{ok}");
+        }
+        for bad in [
+            "https://gateway.example.com/v1/../../admin",
+            "https://gateway.example.com/v1/..\\..\\admin",
+            "https://gateway.example.com/v1/%2e%2e/admin",
+            "https://gateway.example.com/v1\\messages",
+            "not a url",
+        ] {
+            assert!(!path_survives_parsing(bad), "{bad}");
+        }
     }
 
     #[test]
@@ -1365,5 +1496,16 @@ mod tests {
         let err = resolve_route(&default_domains(), "/v1/messages", &HeaderMap::new())
             .expect_err("no slug and no header is malformed");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    /// Behind the forwarder a saved port somebody else took costs a fresh
+    /// bind; on the public port it is a refusal, because configs name it.
+    #[test]
+    fn only_the_public_port_refuses_to_move() {
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        let (_listener, bound) = bind_relay_behind(Some(taken)).expect("a fresh port");
+        assert_ne!(bound, taken);
+        assert!(bind_relay(Some(taken)).is_err());
     }
 }
