@@ -36,10 +36,14 @@ test.describe("routing", () => {
     expect(state.proxy.ca_trusted).toBe(true);
   });
 
-  test("with agents running, the first toggle offers to close them", async ({ boot }) => {
+  test("with stale agents running, the first toggle offers to close them", async ({ boot }) => {
     // `ca_trusted`, here and in the two tests below, so the certificate
     // pre-flight stays out of a test that is about the close-agents takeover.
-    const app = await boot({ runningAgents: 2, proxy: { ca_trusted: true } });
+    //
+    // Stale, not merely running: a running agent whose config names the
+    // forwarder is routed as soon as the engine is up, so only one that missed
+    // a change to its config or the certificate is worth closing.
+    const app = await boot({ runningAgents: 2, staleAgents: 2, proxy: { ca_trusted: true } });
 
     await app.routingSwitch.click();
 
@@ -53,7 +57,7 @@ test.describe("routing", () => {
       .toBe(true);
   });
 
-  test("with nothing running, the toggle says so without offering to close it", async ({
+  test("with nothing stale, the toggle says so without offering to close it", async ({
     boot,
   }) => {
     const app = await boot({ runningAgents: 0, proxy: { ca_trusted: true } });
