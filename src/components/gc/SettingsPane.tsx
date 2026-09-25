@@ -475,11 +475,14 @@ export function buildSettingsSections({
         // Main screens", read 2026-08-21) - an earlier build gave it a section
         // of its own because AG-594 names one.
         //
-        // One row, and one switch over every native notification the app can
-        // fire: blocked and flagged requests from the live security feed
-        // (AG-578), plus the two routing ones - an expired session, a quit that
-        // could not put a tool back. A previous build split it into three rows
-        // because AG-594's acceptance criteria names a switch each. The Figma
+        // One row, and one switch over nearly every native notification the
+        // app can fire: blocked and flagged requests from the live security
+        // feed (AG-578), plus the routing ones - an expired session, and what a
+        // quit put back or could not. The one it does not silence is a plain
+        // quit's "could not be put back", which is the last word before the
+        // process is gone (`quit_notice_bodies` in `src-tauri/src/lib.rs`). A
+        // previous build split it into three rows because AG-594's acceptance
+        // criteria names a switch each. The Figma
         // draws one (`116:29086`) with the description below, and the frame wins
         // over the ticket, so the split is gone and the drawn sentence is back on
         // the row it was written for. It under-describes the routing half, which
