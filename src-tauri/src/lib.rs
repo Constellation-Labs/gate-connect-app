@@ -2284,10 +2284,6 @@ fn normalise_agent_name(raw: &str) -> String {
     }
 }
 
-/// Which tool a running process belongs to, by the same normalisation the walk
-/// filtered on ([`agent_name_of`]). `None` for a process no slug claims, which
-/// cannot happen for a process the walk yielded and is handled rather than
-/// asserted: the table is the only thing keeping the two in step.
 /// Whether a process called `codex` is the one the ChatGPT desktop app ships,
 /// rather than the standalone Codex CLI.
 ///
@@ -2299,15 +2295,24 @@ fn normalise_agent_name(raw: &str) -> String {
 /// never opened, on a surface Gate would not offer to relaunch because
 /// [`Surface::Cli`] forbids it (AG-947).
 ///
-/// The detection is the *path*, because the name cannot tell them apart. Any
-/// ancestor directory named `ChatGPT.app` (macOS) or `ChatGPT` (the Windows
-/// install layout) means the app owns this process. A CLI the user installed
-/// themselves lives under `node_modules`, `~/.local/bin`, Homebrew or Cargo,
-/// none of which produce that component.
+/// **Anchored to the bundle, not to the word.** The first version of this
+/// matched any ancestor directory named `ChatGPT`, on any platform, which
+/// claims `~/code/chatgpt/node_modules/.bin/codex` - somebody's project that
+/// happens to be called that. Promoting a process to [`Surface::App`] hands it
+/// to the kill-and-relaunch machinery, so a false positive there does not
+/// merely mislabel: it offers to "reopen ChatGPT" and opens the user's own
+/// script. The match is therefore a `ChatGPT.app` component **immediately
+/// followed by `Contents`**, which is the bundle layout and not a folder name.
 ///
-/// Deliberately not "inside any `.app` bundle": a CLI can legitimately be
-/// vendored inside some other application, and calling every such copy a
-/// ChatGPT app would be a worse error than the one this fixes.
+/// **macOS only, deliberately.** A Windows arm was written from a guess at the
+/// install layout and is gone: the desktop app ships through the Microsoft
+/// Store, which installs under `WindowsApps\OpenAI.ChatGPT-Desktop_<version>_…`
+/// with no component named `ChatGPT`, so the arm matched no real install and
+/// contributed only false positives. It needs a real `process.exe()` from a
+/// Windows machine before it comes back - the diagnostics report's
+/// running-agents list is one place to get one.
+///
+/// Off Windows and macOS there is no ChatGPT desktop app to find.
 fn is_chatgpt_bundled_codex(exe: Option<&std::path::Path>) -> bool {
     let Some(exe) = exe else {
         // No path to judge by. The CLI reading is the safe one: it reports a
@@ -2315,15 +2320,37 @@ fn is_chatgpt_bundled_codex(exe: Option<&std::path::Path>) -> bool {
         // Gate has not identified.
         return false;
     };
-    exe.ancestors().any(|dir| {
-        dir.file_name().is_some_and(|n| {
-            let n = n.to_string_lossy();
-            n.eq_ignore_ascii_case("ChatGPT.app") || n.eq_ignore_ascii_case("ChatGPT")
-        })
+    // The binary itself, first. Without this the check claims every process in
+    // the bundle - including the app's own executable, which then lost its
+    // relaunch target. `agent_row_of` only asks about a process already named
+    // `codex`, but `relaunch_target_for` asks about anything, and a predicate
+    // called "is the bundled codex" should answer that question at either call
+    // site rather than rely on the caller having asked it.
+    let Some(file) = exe.file_name() else {
+        return false;
+    };
+    if normalise_agent_name(&file.to_string_lossy()) != "codex" {
+        return false;
+    }
+    let parts: Vec<_> = exe.components().collect();
+    parts.windows(2).any(|pair| {
+        let bundle = pair[0].as_os_str().to_string_lossy();
+        let inner = pair[1].as_os_str().to_string_lossy();
+        // `eq_ignore_ascii_case` on the bundle because HFS+/APFS are usually
+        // case-insensitive and the name reaches us as the OS spelled it;
+        // `Contents` is what makes it a bundle rather than a directory.
+        bundle.eq_ignore_ascii_case("ChatGPT.app") && inner == "Contents"
     })
 }
 
-/// The [`AGENT_PROCESSES`] row a running process belongs to.
+/// The [`AGENT_PROCESSES`] row a running process belongs to, by the same
+/// normalisation the walk filtered on ([`agent_name_of`]).
+///
+/// `None` for a process no row claims, which cannot happen for a process the
+/// walk yielded and is handled rather than asserted: the table is the only
+/// thing keeping the two in step. (That paragraph was stranded above
+/// `surface_of` before this function existed, and inserting one under it would
+/// have glued it to the wrong thing - raised in review on #352.)
 ///
 /// The one place the process table is consulted, so the walk's filter and every
 /// per-process question below cannot disagree about what a process is - which
@@ -3237,10 +3264,34 @@ static PENDING_REOPEN: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
 /// to reopen it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn relaunch_target(process: &sysinfo::Process, surface: Surface) -> Option<PathBuf> {
+    relaunch_target_for(process.exe(), surface)
+}
+
+/// The half of [`relaunch_target`] that is testable without a live process
+/// table, which is what the bundled-helper rule below is worth having.
+fn relaunch_target_for(exe: Option<&std::path::Path>, surface: Surface) -> Option<PathBuf> {
     if surface != Surface::App {
         return None;
     }
-    let exe = process.exe()?;
+    let exe = exe?;
+    // The ChatGPT app's bundled `codex` reads as that app now
+    // ([`is_chatgpt_bundled_codex`]), which hands it to the relaunch machinery
+    // - and `close_running_agents` pushes one target per killed PROCESS, so
+    // closing ChatGPT queued two `chatgpt` entries: the app and its helper.
+    //
+    // The helper is not a thing to launch. It cannot run without the app, and
+    // the app's own process is killed and queued alongside it, so relaunching
+    // that is what brings the helper back. Returning `None` here leaves exactly
+    // one target for the slug and keeps `can_reopen` honest on the helper's
+    // row.
+    //
+    // On macOS both walked up to the same `.app` and the cost was a duplicate
+    // `open`. The rule is stated at the source rather than at that symptom,
+    // because a platform whose layout has no bundle to walk up to would have
+    // spawned the bare Codex binary as "reopen ChatGPT".
+    if is_chatgpt_bundled_codex(Some(exe)) {
+        return None;
+    }
     #[cfg(target_os = "macos")]
     {
         // `.../Claude.app/Contents/MacOS/Claude` -> `.../Claude.app`. Hand
@@ -6322,21 +6373,11 @@ mod tests {
         assert!(is_chatgpt_bundled_codex(Some(Path::new(
             "/Users/someone/Applications/ChatGPT.app/Contents/Resources/codex"
         ))));
-        // The Windows layout, where there is no `.app` at all - the install
-        // directory itself is the `ChatGPT` component.
-        //
-        // Forward slashes deliberately: `Path` treats a backslash as a
-        // separator only on Windows, so a backslash literal is one long
-        // filename everywhere else and would assert nothing. Windows accepts
-        // both, so the shape under test is the real one.
-        assert!(is_chatgpt_bundled_codex(Some(Path::new(
-            "C:/Users/someone/AppData/Local/Programs/ChatGPT/codex.exe"
-        ))));
     }
 
     /// The half that matters more: a CLI the person installed must keep being
-    /// read as a CLI, or this fix trades one wrong instruction for another -
-    /// and a worse one, since `Surface::App` lets Gate relaunch it.
+    /// read as a CLI, or this fix trades one wrong instruction for a worse one
+    /// - `Surface::App` hands a process to the kill-and-relaunch machinery.
     #[test]
     fn a_codex_the_user_installed_is_still_the_cli() {
         use std::path::Path;
@@ -6346,6 +6387,15 @@ mod tests {
             "/Users/someone/.local/bin/codex",
             "/Users/someone/.cargo/bin/codex",
             "/Users/someone/project/node_modules/.bin/codex",
+            // Raised in review on #352, and it failed against the first
+            // version of this: a project directory that happens to be called
+            // `chatgpt`. Matching the word rather than the bundle would have
+            // had Gate offer to "reopen ChatGPT" and hand this script to
+            // LaunchServices, which opens it in a Terminal window.
+            "/Users/someone/code/chatgpt/node_modules/.bin/codex",
+            // The same trap one level up: a directory named for the bundle but
+            // without the bundle's `Contents` beneath it.
+            "/Users/someone/ChatGPT.app/codex",
         ] {
             assert!(
                 !is_chatgpt_bundled_codex(Some(Path::new(path))),
@@ -6365,5 +6415,41 @@ mod tests {
     #[test]
     fn an_unreadable_path_falls_back_to_the_cli() {
         assert!(!is_chatgpt_bundled_codex(None));
+    }
+
+    /// The bundled helper is not a thing to launch.
+    ///
+    /// `close_running_agents` queues one target per killed PROCESS, so closing
+    /// ChatGPT queued two `chatgpt` entries once the helper read as an app.
+    /// The app's own process is killed and queued alongside it, and relaunching
+    /// that is what brings the helper back - raised in review on #352.
+    #[test]
+    fn the_bundled_helper_is_not_its_own_relaunch_target() {
+        use std::path::Path;
+        assert_eq!(
+            relaunch_target_for(
+                Some(Path::new(
+                    "/Applications/ChatGPT.app/Contents/Resources/codex"
+                )),
+                Surface::App
+            ),
+            None
+        );
+        // The app itself still is, and still resolves to the bundle rather
+        // than the inner Mach-O.
+        assert_eq!(
+            relaunch_target_for(
+                Some(Path::new(
+                    "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+                )),
+                Surface::App
+            ),
+            Some(PathBuf::from("/Applications/ChatGPT.app"))
+        );
+        // A CLI is never relaunched, whatever its path.
+        assert_eq!(
+            relaunch_target_for(Some(Path::new("/opt/homebrew/bin/codex")), Surface::Cli),
+            None
+        );
     }
 }
