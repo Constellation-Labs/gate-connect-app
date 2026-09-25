@@ -150,8 +150,92 @@ and `proxy::tool_proxy_identity_urls` is what a status check compares against:
 an install written before that change holds the engine's, and it routes, so
 calling it drift would draw a repair over a working file.
 
-What no forwarder fronts is the **relay** port, which every `base_url` names -
-Codex and OpenCode. That one is the park's alone.
+The **relay** port, which every `base_url` names - Codex and OpenCode - is
+fronted by the forwarder too now; see the next section.
+
+### The forwarder fronts the relay port too
+
+A relay config outlives its writer exactly as a proxy address does, and until
+2026-09-24 nothing but the engine's relay ever bound its port. On macOS and
+Windows that lives in the GUI process, so a quit took the port down, and every
+exit had to rewrite Codex's and OpenCode's configs on the way out (and the next
+start rewrite them back) to keep them off a dead port - each rewrite a restart
+of every running OpenCode and a resume of every open Codex conversation, and a
+crash, which runs no exit handler, leaving them stranded until Gate ran again.
+
+So the forwarder holds the public relay port (`proxy/relay-port`, the one every
+config bakes) and the engine's relay binds `proxy/relay-engine-port` behind it.
+Per connection, the forwarder connects to the engine's relay, asks it for the
+token proof on `RELAY_ENGINE_HEALTH_PATH` - a path only an engine's relay
+answers - and, if it proves itself, splices the client onto that same
+connection untouched. Gate routes exactly as before. If nothing accepts the connection, the forwarder serves the request itself
+(`crates/forwarder/src/relay.rs`): it reads the catalog slug off the path,
+strips every `x-gate-*` header, and forwards to the provider over TLS under the
+tool's own credential, which is what a parked engine's relay does. If something
+accepts and does not prove itself, the request gets a 502 rather than either:
+that listener may be a busy engine that is routing, and it may be a stranger
+that would be handed the tool's own key. The slug table is
+`gate_connect_paths::RELAY_UPSTREAMS`, a copy of the catalog's
+`slug`/`upstream_url` that a test in core holds equal.
+
+What follows from it:
+
+- **A plain exit no longer rewrites a relay config.** `QuitAddresses` records a
+ fronted relay origin as absent, so `revert_stranded_configs_for_quit` and the
+ quit dialog skip it. It is read once per sweep, so the dialog and the revert
+ cannot disagree about one tool. Codex and OpenCode go direct while Gate is
+ closed and route again on the next start without being touched, and a crash
+ leaves them working too.
+- **Pay-as-you-go requests get an error, not a direct request.** An account
+ billed through Gate pay-as-you-go has its tools send no provider credential
+ of their own, so going direct would only earn a 401 from the provider. The
+ forwarder reads `billing_mode` from `account.json` per request, and while it
+ is `payg` it answers the slugs in `PAYG_ELIGIBLE_SLUGS` with a 503 JSON error
+ both the OpenAI and Anthropic SDKs display: "Gate Connect is not running ...
+ Open Gate Connect and try again." Nothing in this tree writes `payg` yet, so
+ today this never fires; it is here so the forwarder is already right when
+ that billing mode arrives.
+- **Which file the engine writes is decided after it binds.** `enable` asks the
+ forwarder whether it holds the public port (`forwarder::fronted_relay_port`,
+ through `DesktopOps::fronted_relay_port`) before starting the engine, and
+ binds the relay behind it if so. When the answer was no and the engine then
+ failed to get the public port, it asks once more, because the forwarder may
+ have claimed the port in between (it retries every second); writing the
+ engine's fallback into `relay-port` would repoint every tool config away from
+ the listener that survives. A yes is never asked again, so one slow probe
+ cannot do that repointing on its own.
+- **The forwarder gives up a port the file stops naming.** If a session did
+ write its own relay port into `relay-port`, the configs follow it, and the
+ forwarder notices within a second that the file names another port, stops
+ listening on its old one, and takes the engine's port over when the app lets
+ go of it. Nothing stays stuck until the next login.
+- **The forwarder is started before the park is released**, not after the
+ engine: the relay port has to be claimed before the engine's relay chooses
+ where to bind, and an ensure that spawns (or retires an old forwarder) should
+ not run while the park's tools have nothing on their ports. It reads the
+ engine's port files per connection, so it needs nothing the engine writes. It
+ also runs before the "another Gate Connect" refusal, so a refused enable has
+ started or adopted a forwarder. That is intended: the forwarder is per-user
+ and shared, so what it adopts is the one the other Gate runs.
+- **A forwarder left running across an update is replaced, once.** It predates
+ the relay and the path-bound proof: it answers only the old proof
+ (`legacy_forwarder_proof`, accepted for this decision alone), so the ensure
+ retires it (marker removed, and on macOS the launch agent booted out) and
+ starts the new binary. That costs the forwarder's port a few seconds with
+ nothing on it. At most once per app process: if the installed binary is itself
+ the old one, the replacement is stale too, and it is kept rather than retired
+ every thirty seconds.
+- **Relay tools now depend on the forwarder staying up** while the app runs
+ fronted. If it dies, they get connection refused until the supervisor's next
+ pass restarts it (`FORWARDER_CHECK_INTERVAL`, 30 s), or at once on macOS when
+ launchd holds the relay socket.
+- **Where the forwarder does not hold the port** - no forwarder, one that would
+ not start, a headless `proxy relay` or a stranger on it - the engine's relay
+ binds the public port itself and everything above reverts to the old
+ behaviour, quit rewrite included. Linux is untouched: its engine is a daemon
+ and the forwarder does not run there.
+- **The headless `proxy relay`** binds behind the forwarder too when one holds
+ the port, rather than failing to bind it.
 
 ### The routing toggle keeps tool configs; disconnect reverts them
 
@@ -210,10 +294,11 @@ engine parked by clearing domains alone would go on decrypting and billing a
 
 Four paths still release the ports, because a parked listener would be wrong
 there rather than idle: app exit, a gateway switch, a re-enable (which rebinds
-the same port), and untrusting the CA. App exit is the residual - the listeners
-live in the GUI process on macOS and Windows, so quitting still strands
-already-running tools. Closing that needs a listener that outlives the GUI,
-which is what the Linux daemon already is.
+the same port), and untrusting the CA. App exit was the residual - the
+listeners live in the GUI process on macOS and Windows - and is now closed for
+the relay by the forwarder holding its port (previous section). What an exit
+still strands is a config naming the engine's own proxy port, which only
+installs written before tool configs moved to the forwarder carry.
 
 ## 3. Per-tool status
 
@@ -468,10 +553,10 @@ first table.
 
 | event | Gate |
 | --- | --- |
-| **Start** (after a plain quit) | Rebinds the engine and relay on their persisted ports, re-exports the PAC and the env vars, ensures the forwarder (including when the machine-wide export is declined, since tool configs may name it). Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it. |
+| **Start** (after a plain quit) | Ensures the forwarder first (including when the machine-wide export is declined, since tool configs may name it), then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it - and behind the forwarder the quit put back no relay config. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
+| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin where the forwarder does not hold the relay port, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, a relay config the forwarder fronts, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
 | **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
 
 **What the user does:**
@@ -479,16 +564,20 @@ first table.
 | tool | start | routing off | routing on | any exit | disconnect and quit |
 | --- | --- | --- | --- | --- | --- |
 | **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
-| **Codex** | nothing; a conversation opened while Gate was closed keeps its direct route until resumed | nothing | nothing, open conversations route again | nothing; new conversations go direct, open ones need resuming | resume open conversations |
-| **OpenCode** | restart an OpenCode opened while Gate was closed | nothing | nothing | nothing for a new OpenCode; a running one needs a restart | restart |
+| **Codex** | nothing | nothing | nothing, open conversations route again | nothing, works unrouted | resume open conversations |
+| **OpenCode** | nothing | nothing | nothing | nothing, works unrouted | restart |
 | **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
 | **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
 | **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
 
 Starting Gate *after* a disconnect-and-quit is the start that costs the most:
 `restore_all` rewrites every config, so the last column applies again in
-reverse. A start after a plain quit rewrites only the two relay configs, which
-is why the Codex and OpenCode start cells are not "nothing".
+reverse. A start after a plain quit rewrites nothing where the forwarder holds
+the relay port. Where it does not, the quit put the two relay configs back and
+the start rewrites them, and the Codex and OpenCode cells are the ones this
+table carried before the forwarder fronted the relay: a conversation or an
+OpenCode opened while Gate was closed keeps its direct route until resumed or
+restarted, and the exit column says the same of running ones.
 
 Three things to read off this:
 
@@ -511,7 +600,9 @@ Three things to read off this:
  Claude Code, OpenClaw or Hermes install written before the forwarder repoint
  (or whose forwarder would not start) still names the engine's own port. All
  of those live in the GUI process on macOS and Windows, go back to their own
- settings on the way out, and come back at the next start. A config naming
+ settings on the way out, and come back at the next start - except the relay
+ origin where the forwarder holds its port, which survives the exit and is
+ left alone. A config naming
  the forwarder keeps working, because that process is left running on
  purpose; one the user repointed by hand names nothing of ours and is not
  touched. Before this rule the stranded ones were simply broken until Gate
@@ -526,7 +617,11 @@ Three things to read off this:
 
 Confidence: the two routing columns rest on the park keeping its ports and on
 the master-cycle mtime test, verified separately, not on a live toggle with a
-tool open. The OpenClaw row is vendor-stated rather than measured. Everything
+tool open. The Codex and OpenCode start and exit cells rest on the forwarder's
+relay listener by construction - its direct path answers `Connection: close`,
+so the next request after a start opens a fresh connection that is spliced to
+the engine - and on unit and loopback tests of that listener, not on a
+measured quit with either tool open. The OpenClaw row is vendor-stated rather than measured. Everything
 else is measured or read directly off the code path named.
 
 ## 7. Open items

@@ -64,7 +64,9 @@ impl TestRelay {
                     .map(|(_, v)| v.trim().to_string())
                     .unwrap_or_default();
                 let token = super::forwarder::load_or_create_token().unwrap_or_default();
-                let proof = gate_connect_paths::forwarder_proof(&token, &challenge);
+                // The proof binds the path it was asked on.
+                let path = head.split_whitespace().nth(1).unwrap_or_default();
+                let proof = gate_connect_paths::forwarder_proof(&token, path, &challenge);
                 let resp = format!(
                     "HTTP/1.1 204 No Content\r\n{}: {proof}\r\n{}: {}\r\n\
                      Content-Length: 0\r\nConnection: close\r\n\r\n",

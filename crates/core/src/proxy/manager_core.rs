@@ -94,6 +94,10 @@ pub trait DesktopOps: Send + Sync + 'static {
     /// go of this machine" paths - never for a plain disable, which is exactly
     /// when the processes it protects still need it.
     fn stop_env_forwarder(&self);
+    /// The relay port the forwarder is holding, if it holds the one relay tool
+    /// configs name, waiting up to `wait` for it to take a port that has just
+    /// come free. Behind the seam because it probes a live forwarder.
+    fn fronted_relay_port(&self, wait: Duration) -> Option<u16>;
     /// Startup sweep: clear any proxy slot still pointed at a dead loopback
     /// listener. Returns what it cleared, for the log line.
     fn clear_stranded_loopback(&self) -> Result<Vec<String>>;
@@ -121,6 +125,13 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
 /// loopback probe (`forwarder::ensure_running`); no secret is read, so it is
 /// safe on a timer (see `keychain::get_cached` for why that matters).
 const FORWARDER_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long an enable waits for the forwarder to take the relay port once it
+/// is free. The forwarder retries on a one second tick, so this is one tick
+/// and a margin; it is only ever spent when the port is free and the forwarder
+/// holds nothing, which is the first enable after a session that was not
+/// fronted.
+const RELAY_CLAIM_WAIT: Duration = Duration::from_millis(1500);
 
 /// [`DesktopManager::forwarder_answering`] values: nothing has asked yet.
 const FORWARDER_UNKNOWN: u8 = 0;
@@ -406,6 +417,57 @@ impl<O: DesktopOps> DesktopManager<O> {
         let snapshot = self.ops.snapshot()?;
         self.ops.save_snapshot(&snapshot)?;
 
+        // Start the forwarder before anything can fetch the PAC, and hand its
+        // port to both channels that outlive this process: the PAC and,
+        // unless the user declined, the machine-wide variables. Browsers cache
+        // the PAC they fetched, and they fetch it exactly when the system
+        // proxy setting changes below - so the first body served has to be the
+        // one they should keep. Every shell already running keeps the exported
+        // variable for its whole life too; `launchctl unsetenv` and the
+        // registry write beside it only reach processes started afterwards.
+        // So the address either one carries has to keep answering after the
+        // engine goes away, or routing off (or a crash) becomes "no provider
+        // is reachable" for every already-running tool and every open browser.
+        // The forwarder does: it hands connections to the engine while there
+        // is one and goes direct when there is not. See `proxy::forwarder`.
+        //
+        // It needs nothing from the system proxy, and it reads the engine's
+        // port files per connection rather than at startup, so it can run
+        // before the engine exists - and has to, now that it also holds the
+        // relay port the engine's relay binds behind (below). Falling back to
+        // the engine's own port if it will not start: that is exactly what
+        // shipped before there was a forwarder, so a forwarder problem costs
+        // the fail-open property and nothing else.
+        //
+        // Before the park is released, not after: an ensure can take seconds
+        // (a spawn, or retiring a forwarder left over from an older build), and
+        // the tools the park is serving should not spend them with nothing on
+        // their ports. And before the "another Gate Connect" refusal below, so
+        // an enable that refuses has already started or adopted a forwarder.
+        // That is intended: the forwarder is per-user and shared - another Gate
+        // on this machine uses the same marker and port files - so what this
+        // adopts is the one that Gate already runs, and a forwarder is wanted
+        // for as long as any Gate wants routing.
+        let forwarder_port = match self.ops.ensure_env_forwarder() {
+            Ok(port) => Some(port),
+            Err(e) => {
+                eprintln!(
+                    "gate proxy: could not start the environment forwarder ({e}); the PAC and \
+                     the exported variables name the engine port instead, so browsers and \
+                     tools will lose connectivity when routing is switched off until they \
+                     are restarted"
+                );
+                None
+            }
+        };
+        self.forwarder_answering.store(
+            if forwarder_port.is_some() {
+                FORWARDER_ANSWERING
+            } else {
+                FORWARDER_SILENT
+            },
+            Ordering::SeqCst,
+        );
         // Release a parked engine now and not earlier. It has to go before the
         // bind, because it holds exactly the address `preferred_engine_port`
         // names and `bind_preferred` refuses to shadow a live listener - the
@@ -413,9 +475,27 @@ impl<O: DesktopOps> DesktopManager<O> {
         // files under every tool config. And it has to go *after* the exits
         // above: a failed enable used to release the park on its way to
         // refusing, so "turn routing on, cancel the admin prompt" left the
-        // already-running tools with neither routing nor passthrough. Nothing
-        // between here and the bind can fail.
+        // already-running tools with neither routing nor passthrough. The one
+        // exit between here and the bind is the "another Gate Connect" refusal
+        // below, which fires only when another Gate holds these ports - so
+        // there was no park of ours holding them to lose.
         self.stop_dormant();
+
+        // Whether the forwarder holds the relay port every relay config names.
+        // When it does, the engine's relay binds behind it and the forwarder
+        // hands connections through; when the engine is gone - this process
+        // quit or crashed - the forwarder serves them itself, straight to the
+        // provider. That is what lets a relay config outlive this process, so
+        // a quit no longer has to rewrite Codex's and OpenCode's configs (see
+        // `proxy::address_dies_with_gui`). When it does not - no forwarder, a
+        // stale one, or something else on the port - the engine binds the
+        // public port itself, exactly as before the forwarder fronted it.
+        //
+        // After `stop_dormant`, because a park from a session that was not
+        // fronted holds the public port, and the forwarder can only take it
+        // once that is released; `RELAY_CLAIM_WAIT` covers its retry tick.
+        let mut fronted =
+            forwarder_port.and_then(|_| self.ops.fronted_relay_port(RELAY_CLAIM_WAIT));
 
         // Our own park is gone by now, so a relay still answering belongs to
         // somebody else - and it answers a challenge only Gate can, so this is
@@ -443,7 +523,33 @@ impl<O: DesktopOps> DesktopManager<O> {
         // recoverable on its own, because the fallback port is persisted, the
         // configs then read as drifted and the reconcile passes repair them.
         // Refusing there would let any local process keep Gate from starting.
-        if crate::proxy::relay_listening() {
+        //
+        // Behind the forwarder the question moves with the relay: the public
+        // port answering is the forwarder itself, so it is the engine's own
+        // relay port that has to be free - asked on the engine-only path,
+        // because the forwarder answers the other two for anybody and a
+        // squatter could relay one of those answers to pass as another Gate.
+        //
+        // And the forwarder holding the public port is not another Gate even
+        // when its own health check said otherwise - it took the port since it
+        // was asked, or its proxy listener would not answer while its relay
+        // listener does. Its relay answer says which it is, so that decides
+        // before anything is refused.
+        if fronted.is_none() {
+            if let Some(report) = crate::proxy::relay_report() {
+                if report.fronted_by_forwarder {
+                    fronted = crate::proxy::relay::load_persisted_port();
+                }
+            }
+        }
+        let relay_taken = match fronted {
+            Some(_) => crate::proxy::relay::load_engine_port().is_some_and(|port| {
+                crate::proxy::relay_report_at(port, gate_connect_paths::RELAY_ENGINE_HEALTH_PATH)
+                    .is_some()
+            }),
+            None => crate::proxy::relay_listening(),
+        };
+        if relay_taken {
             anyhow::bail!(
                 "another Gate Connect process is already using this machine's proxy ports; \
                  use that one, or quit it before enabling routing here"
@@ -474,8 +580,14 @@ impl<O: DesktopOps> DesktopManager<O> {
                 // fetch fails and it falls back to DIRECT, bypassing Gate.
                 preferred_pac_port: self.ops.preferred_pac_port(),
                 // Reuse the persisted relay port so CLI tool configs (which bake
-                // http://127.0.0.1:<port>) stay valid across restarts.
-                preferred_relay_port: crate::proxy::relay::load_persisted_port(),
+                // http://127.0.0.1:<port>) stay valid across restarts. Behind
+                // the forwarder that port is the forwarder's, and the engine
+                // rebinds its own; nothing but the forwarder names that one.
+                preferred_relay_port: if fronted.is_some() {
+                    crate::proxy::relay::load_engine_port()
+                } else {
+                    crate::proxy::relay::load_persisted_port()
+                },
                 // Per-user UID gating is a Linux concern (the daemon's shared
                 // loopback proxy); unresolvable for TCP peers here.
                 owner_uid: None,
@@ -491,48 +603,26 @@ impl<O: DesktopOps> DesktopManager<O> {
         // Remember the ports for next time (best-effort).
         self.ops.persist_ports(&running);
         // Remember the relay port so the next run rebinds it and baked CLI
-        // configs stay valid (best-effort).
-        let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
-
-        // Start the forwarder before anything can fetch the PAC, and hand its
-        // port to both channels that outlive this process: the PAC and,
-        // unless the user declined, the machine-wide variables. Browsers cache
-        // the PAC they fetched, and they fetch it exactly when the system
-        // proxy setting changes below - so the first body served has to be the
-        // one they should keep. Every shell already running keeps the exported
-        // variable for its whole life too; `launchctl unsetenv` and the
-        // registry write beside it only reach processes started afterwards.
-        // So the address either one carries has to keep answering after the
-        // engine goes away, or routing off (or a crash) becomes "no provider
-        // is reachable" for every already-running tool and every open browser.
-        // The forwarder does: it hands connections to the engine while there
-        // is one and goes direct when there is not. See `proxy::forwarder`.
+        // configs stay valid (best-effort). Behind the forwarder it goes in
+        // `relay-engine-port`, for the forwarder to find.
         //
-        // It needs nothing from the system proxy and finds the engine through
-        // the port file `persist_ports` wrote above, so this can run first.
-        // Falling back to the engine's own port if it will not start: that is
-        // exactly what shipped before there was a forwarder, so a forwarder
-        // problem costs the fail-open property and nothing else.
-        let forwarder_port = match self.ops.ensure_env_forwarder() {
-            Ok(port) => Some(port),
-            Err(e) => {
-                eprintln!(
-                    "gate proxy: could not start the environment forwarder ({e}); the PAC and \
-                     the exported variables name the engine port instead, so browsers and \
-                     tools will lose connectivity when routing is switched off until they \
-                     are restarted"
-                );
-                None
-            }
-        };
-        self.forwarder_answering.store(
-            if forwarder_port.is_some() {
-                FORWARDER_ANSWERING
-            } else {
-                FORWARDER_SILENT
-            },
-            Ordering::SeqCst,
-        );
+        // Asked again in exactly one case: the engine was meant to take the
+        // public port and landed somewhere else, because something took the
+        // port between the question and the bind. If that was the forwarder,
+        // writing the engine's fallback into `relay-port` would repoint every
+        // tool config away from the listener that outlives this process. Not
+        // asked when the first answer was yes: a probe that failed on a busy
+        // moment would then do exactly that repointing for no reason.
+        let behind = fronted.is_some()
+            || (forwarder_port.is_some()
+                && Some(running.relay_port()) != crate::proxy::relay::load_persisted_port()
+                && self.ops.fronted_relay_port(Duration::ZERO).is_some());
+        if behind {
+            let _ = crate::proxy::relay::save_engine_port(running.relay_port());
+        } else {
+            let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
+        }
+
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(port) = forwarder_port {
             running.set_pac_target(port);
@@ -1242,6 +1332,11 @@ mod tests {
         forwarder_busy: bool,
         /// The port `enable_env` was actually told to export.
         exported_port: Option<u16>,
+        /// What `fronted_relay_port` reports: the relay port the forwarder
+        /// holds. `relay_front_answers` is consumed first, one answer per ask,
+        /// to model a forwarder whose claim changes between two questions.
+        relay_front: Option<u16>,
+        relay_front_answers: std::collections::VecDeque<Option<u16>>,
     }
 
     struct FakeOps(StdMutex<FakeState>);
@@ -1422,6 +1517,13 @@ mod tests {
                 .unwrap()
                 .calls
                 .push("stop_env_forwarder".into());
+        }
+
+        fn fronted_relay_port(&self, _wait: Duration) -> Option<u16> {
+            self.record("fronted_relay_port");
+            let mut s = self.0.lock().unwrap();
+            let fallback = s.relay_front;
+            s.relay_front_answers.pop_front().unwrap_or(fallback)
         }
 
         fn clear_stranded_loopback(&self) -> Result<Vec<String>> {
@@ -1798,6 +1900,113 @@ mod tests {
         mgr.disable_quiet().expect("quiet disable");
         mgr.untrust_ca_system()
             .expect("system untrust after disable");
+    }
+
+    /// Behind a forwarder holding the public relay port, the engine's relay
+    /// binds a port of its own and says so in `relay-engine-port`. The public
+    /// port file - the one every relay config bakes - is not touched: writing
+    /// the engine's port there would take every tool off the listener that
+    /// outlives this process.
+    #[test]
+    fn the_relay_binds_behind_a_forwarder_that_holds_the_public_port() {
+        let _home = TestHome::set();
+        // The forwarder's listener on the public port, which the engine must
+        // leave alone.
+        let public = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let public_port = public.local_addr().unwrap().port();
+        crate::proxy::relay::save_persisted_port(public_port).unwrap();
+        let mgr = leak(FakeOps::with(FakeState {
+            relay_front: Some(public_port),
+            ..FakeState::default()
+        }));
+
+        mgr.enable().expect("enable");
+
+        let engine_relay = crate::proxy::relay::load_engine_port().expect("engine relay recorded");
+        assert_ne!(engine_relay, public_port);
+        assert_eq!(
+            crate::proxy::relay::load_persisted_port(),
+            Some(public_port),
+            "the port configs name must stay the forwarder's"
+        );
+        assert_eq!(
+            mgr.ops.count("fronted_relay_port"),
+            1,
+            "a yes is not asked again: a failed second probe would repoint every config"
+        );
+        assert!(
+            mgr.ops.index_of("fronted_relay_port") > mgr.ops.index_of("ensure_env_forwarder"),
+            "fronting is only asked once a forwarder is known to be up"
+        );
+        mgr.shutdown_engine().expect("shutdown");
+        drop(public);
+    }
+
+    /// The forwarder takes the public port between the enable's question and
+    /// the engine's bind. The engine lands on a fallback port, and the second
+    /// question sends that to `relay-engine-port` rather than into the file
+    /// every relay config names.
+    #[test]
+    fn a_claim_landing_between_question_and_bind_keeps_the_configs_on_the_forwarder() {
+        let _home = TestHome::set();
+        let public = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let public_port = public.local_addr().unwrap().port();
+        crate::proxy::relay::save_persisted_port(public_port).unwrap();
+        let mgr = leak(FakeOps::with(FakeState {
+            relay_front_answers: [None, Some(public_port)].into(),
+            ..FakeState::default()
+        }));
+
+        mgr.enable().expect("enable");
+
+        assert_eq!(mgr.ops.count("fronted_relay_port"), 2);
+        assert_eq!(
+            crate::proxy::relay::load_persisted_port(),
+            Some(public_port)
+        );
+        let engine_relay = crate::proxy::relay::load_engine_port().expect("recorded behind");
+        assert_ne!(engine_relay, public_port);
+        mgr.shutdown_engine().expect("shutdown");
+        drop(public);
+    }
+
+    /// Behind the forwarder, an engine relay of another Gate on the engine's
+    /// port is refused as another Gate - found on the engine-only path.
+    #[test]
+    fn another_gate_behind_the_forwarder_is_refused() {
+        let _home = TestHome::set();
+        let other = crate::proxy::test_relay::TestRelay::start(0);
+        let public = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let public_port = public.local_addr().unwrap().port();
+        crate::proxy::relay::save_persisted_port(public_port).unwrap();
+        crate::proxy::relay::save_engine_port(other.port()).unwrap();
+        let mgr = leak(FakeOps::with(FakeState {
+            relay_front: Some(public_port),
+            ..FakeState::default()
+        }));
+
+        let err = mgr
+            .enable()
+            .expect_err("another Gate holds the engine's relay port");
+        assert!(
+            format!("{err:#}").contains("another Gate Connect"),
+            "{err:#}"
+        );
+        drop(public);
+    }
+
+    /// Without a forwarder on it, the engine keeps the public relay port, as it
+    /// always has.
+    #[test]
+    fn the_relay_keeps_the_public_port_when_nothing_fronts_it() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.enable().expect("enable");
+
+        assert!(crate::proxy::relay::load_persisted_port().is_some());
+        assert_eq!(crate::proxy::relay::load_engine_port(), None);
+        mgr.shutdown_engine().expect("shutdown");
     }
 
     /// The exported variables must name the forwarder, not the engine. They

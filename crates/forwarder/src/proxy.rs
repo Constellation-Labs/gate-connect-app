@@ -23,7 +23,7 @@ pub use gate_connect_paths::{
 /// How long to wait for the engine to accept before going direct. A loopback
 /// refusal comes back in microseconds; this only bounds a port held by
 /// something that accepts nothing.
-const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How long to wait for the engine's first response byte on a CONNECT before
 /// concluding it died mid-handshake and going direct instead.
@@ -34,14 +34,14 @@ const ENGINE_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Without this a client that opens a connection and sends nothing holds a task
 /// and a file descriptor forever, which is a denial primitive that costs an
 /// attacker one socket.
-const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The biggest request head buffered before giving up on a client. Only the
 /// head is ever held; once the target is known the connection is spliced.
-const MAX_HEAD: usize = 64 * 1024;
+pub(crate) const MAX_HEAD: usize = 64 * 1024;
 
 /// Most headers any real client sends on a proxy request.
-const MAX_HEADERS: usize = 128;
+pub(crate) const MAX_HEADERS: usize = 128;
 
 /// What the first request line addresses.
 #[derive(Debug, PartialEq, Eq)]
@@ -153,7 +153,11 @@ pub async fn read_head(client: &mut TcpStream, token: &str) -> Result<Option<Hea
                         .and_then(|h| std::str::from_utf8(h.value).ok());
                     match challenge {
                         Some(challenge) => Target::Health {
-                            proof: gate_connect_paths::forwarder_proof(token, challenge),
+                            proof: gate_connect_paths::forwarder_proof(
+                                token,
+                                HEALTH_PATH,
+                                challenge,
+                            ),
                         },
                         None => return Ok(None),
                     }
@@ -268,10 +272,20 @@ pub async fn handle(
     };
 
     if let Target::Health { proof } = &head.target {
+        // Which relay port this forwarder holds rides along, so the app can
+        // tell whether to put the engine's relay behind it. A forwarder built
+        // before that existed sends no such header at all, which the app reads
+        // as "stale, replace it".
+        let relay = match crate::relay::HELD_PORT.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => "none".to_string(),
+            port => port.to_string(),
+        };
         let _ = client
             .write_all(
                 format!(
-                    "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n                     Connection: close\r\n\r\n"
+                    "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n\
+                     {}: {relay}\r\nConnection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_RELAY_HEADER
                 )
                 .as_bytes(),
             )

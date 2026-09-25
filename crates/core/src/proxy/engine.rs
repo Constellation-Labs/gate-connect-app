@@ -1996,19 +1996,17 @@ fn candidate_ports(ours: &[u16]) -> Vec<u16> {
 }
 
 /// The ports this install has remembered for its own listeners: the MITM and
-/// PAC ports (`proxy/port`, `proxy/pac-port`) and the relay port
-/// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
-/// isn't deferred.
+/// PAC ports (`proxy/port`, `proxy/pac-port`), the forwarder's, and both relay
+/// ports (`proxy/relay-port`, `proxy/relay-engine-port`). Best-effort -
+/// anything missing or unreadable simply isn't deferred.
 fn persisted_ports() -> Vec<u16> {
-    // `forwarder-port` is in here for the same reason as the rest: it is a port
-    // this install remembers and rebinds, so a fresh engine listener taking it
-    // would strand every process holding the exported variables.
-    let mut ports: Vec<u16> = ["port", "pac-port", "forwarder-port"]
+    // Every one of them, the forwarder's and both relay ports included: each is
+    // a port this install remembers and rebinds, so a fresh listener taking one
+    // would strand whatever names it.
+    gate_connect_paths::LOOPBACK_PORT_NAMES
         .iter()
         .filter_map(|name| super::port_persist::load(name).ok().flatten())
-        .collect();
-    ports.extend(super::relay::load_persisted_port());
-    ports
+        .collect()
 }
 
 /// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
