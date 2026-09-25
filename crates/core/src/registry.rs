@@ -165,12 +165,14 @@ pub trait Integration: Send + Sync {
     /// What Gate can and cannot see of this tool's upstream, or `None` for a
     /// tool where the question does not arise.
     ///
-    /// Two integrations answer it, and they are the two whose upstream is
-    /// chosen by the user and lives in a *different* section of the rail:
-    /// Hermes reads the `base_url`s out of its config, OpenClaw reads which
-    /// auth profile it is on. Every other tool talks to the provider its own
-    /// section already covers, so one switch routes it and intercepts it and
-    /// the gap cannot open.
+    /// Three integrations answer it. Hermes and OpenClaw are the two whose
+    /// upstream is chosen by the user and lives in a *different* section of the
+    /// rail: Hermes reads the `base_url`s out of its config, OpenClaw reads
+    /// which auth profile it is on. Claude Code is the third since AG-931: its
+    /// upstream is its own section's, unless its settings send it to Bedrock or
+    /// Vertex, which no section covers. Every other tool talks to the provider
+    /// its own section already covers, so one switch routes it and intercepts
+    /// it and the gap cannot open.
     ///
     /// **Read on every poll**, because both halves move underneath: the user
     /// repoints the tool, or a domain is flipped from somewhere else. A value
