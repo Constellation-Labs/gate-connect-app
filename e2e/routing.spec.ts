@@ -1,51 +1,77 @@
 import { test, expect } from "./fixtures";
 
-/** The master switch and the per-member switches behind it. The invariant
- *  worth an e2e: what the UI *does* to the backend after a click, and what it
- *  re-reads before repainting - App re-syncs from `list_tools` / `proxy_status`
- *  rather than trusting the command's return value. */
+/** How the popover starts the engine, and the per-member switches behind it.
+ *  The invariant worth an e2e: what the UI *does* to the backend after a
+ *  click, and what it re-reads before repainting - App re-syncs from
+ *  `list_tools` / `proxy_status` rather than trusting the command's return
+ *  value.
+ *
+ *  There is no master switch to drive any of this from. Routing runs for as
+ *  long as the app is open - the launch enables it and the quit tears it down -
+ *  so the only enable left on this shell is the remedy for a launch that could
+ *  not finish, and that is what every test here clicks. */
+
+/** The state a failed launch enable leaves behind: a tool the user asked to
+ *  route, and an engine that is not running. It is the one state the remedy
+ *  appears in. */
+const routingDidNotStart = {
+  proxy: { running: false },
+  tools: [
+    {
+      slug: "claude-code",
+      name: "CLI",
+      upstream_provider_name: "Anthropic",
+      default_upstream_url: "https://api.anthropic.com",
+      status: { kind: "connected" as const },
+    },
+  ],
+};
+
 test.describe("routing", () => {
-  test("the master switch turns the engine on and reports what is routing", async ({ boot }) => {
-    const app = await boot();
-
-    await app.routingSwitch.click();
-    // An untrusted CA puts the pre-flight in front of the enable; the test
-    // dedicated to that ordering is below.
-    await app.page.getByRole("button", { name: "Install certificate" }).click();
-
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
-    const state = await app.state();
-    expect(state.proxy.running).toBe(true);
-    // Enabling trusts the CA in the same step, so the header must not sit on
-    // "Needs trust" afterwards.
-    expect(state.proxy.ca_trusted).toBe(true);
-    await expect(app.page.getByText("Routing on").first()).toBeVisible();
-  });
-
-  test("turning it off leaves the certificate trusted", async ({ boot }) => {
+  test("the popover offers no way to turn routing off", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.routingSwitch.click();
-
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
-    const state = await app.state();
-    expect(state.proxy.running).toBe(false);
-    // Re-enabling has to stay promptless; untrusting is its own explicit act.
-    expect(state.proxy.ca_trusted).toBe(true);
+    // The card reports; it does not set. Closing the app is the off switch.
+    await expect(app.page.getByRole("switch", { name: "Route through Gate" })).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
   });
 
-  test("with stale agents running, the first toggle offers to close them", async ({ boot }) => {
-    // `ca_trusted`, here and in the two tests below, so the certificate
-    // pre-flight stays out of a test that is about the close-agents takeover.
+  test("the remedy starts the engine and reports what is routing", async ({ boot }) => {
+    const app = await boot(routingDidNotStart);
+
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
+    // An untrusted CA puts the pre-flight in front of the enable; the test
+    // dedicated to that ordering is below.
+    await app.page.getByRole("button", { name: "Install certificate" }).click();
+
+    await expect.poll(async () => (await app.state()).proxy.running).toBe(true);
+    // Enabling trusts the CA in the same step, so the header must not sit on
+    // "Needs trust" afterwards.
+    expect((await app.state()).proxy.ca_trusted).toBe(true);
+    await app.page.getByRole("button", { name: "Back" }).click();
+    await expect(app.page.getByText("Routing on").first()).toBeVisible();
+  });
+
+  test("with stale agents running, the enable offers to close them", async ({ boot }) => {
+    // `ca_trusted`, here and in the tests below, so the certificate pre-flight
+    // stays out of a test that is about the close-agents offer.
     //
     // Stale, not merely running: a running agent whose config names the
     // forwarder is routed as soon as the engine is up, so only one that missed
     // a change to its config or the certificate is worth closing.
-    const app = await boot({ runningAgents: 2, staleAgents: 2, proxy: { ca_trusted: true } });
+    const app = await boot({
+      ...routingDidNotStart,
+      runningAgents: 2,
+      staleAgents: 2,
+      proxy: { running: false, ca_trusted: true },
+    });
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
+    await app.page.getByRole("button", { name: "Back" }).click();
 
     // Two steps: the offer, then the confirm. Closing someone's editor is not
     // a one-click act.
@@ -57,58 +83,41 @@ test.describe("routing", () => {
       .toBe(true);
   });
 
-  test("with nothing stale, the toggle says so without offering to close it", async ({
-    boot,
-  }) => {
-    const app = await boot({ runningAgents: 0, proxy: { ca_trusted: true } });
-
-    await app.routingSwitch.click();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
-
-    // Nothing to close means no takeover: the popover stays on Home, and the
-    // close route is absent because it would close nothing.
-    await expect(app.page.getByRole("button", { name: "Close them…" })).toHaveCount(0);
-    await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
-
-    // But it is NOT silent, which is what this asserted until the probe stopped
-    // deciding whether to speak. `running_agents_count` only knows
-    // claude/codex/opencode, so a browser-routed user probes zero here while
-    // having a page open that is still bypassing Gate - the exact case the
-    // notice exists for, and the one that used to get nothing.
-    await expect(app.page.getByText(/Routing is on\./)).toBeVisible();
-    await expect(app.page.getByText(/Reload any pages you have open\./)).toBeVisible();
-  });
-
-  test("a failed enable says why and re-syncs the switch", async ({ boot }) => {
+  test("a failed enable says why and leaves routing off", async ({ boot }) => {
     const app = await boot({
+      ...routingDidNotStart,
       failures: { proxy_enable: "failed to trust the CA: user cancelled the admin prompt" },
-      proxy: { ca_trusted: true },
+      proxy: { running: false, ca_trusted: true },
     });
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
 
+    // Reported on Home, which owns `providerError` - the panel the click
+    // happened on does not render it.
+    await app.page.getByRole("button", { name: "Back" }).click();
     await expect(app.page.getByText(/couldn|cancel|trust/i).first()).toBeVisible();
-    // Not left showing on over a backend that never started.
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+    // Not left claiming an engine that never started.
     expect((await app.state()).proxy.running).toBe(false);
   });
 
-  test("the master switch trusts the certificate before it enables", async ({ boot }) => {
-    const app = await boot();
+  test("the enable trusts the certificate before it starts the engine", async ({ boot }) => {
+    const app = await boot(routingDidNotStart);
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
 
     // The pre-flight owns the room before the OS dialog does, and nothing has
-    // been asked of the backend yet: the switch waits on this answer.
+    // been asked of the backend yet: the enable waits on this answer.
     const install = app.page.getByRole("button", { name: "Install certificate" });
     await expect(install).toBeVisible();
     expect((await app.calls()).map((c) => c.cmd)).not.toContain("proxy_trust_ca");
     await install.click();
 
     // Settled first: the pin is released in a `finally` that lands after the
-    // switch repaints, and reading the log before that makes the bracket below
+    // repaint, and reading the log before that makes the bracket below
     // straddle the launch pin instead.
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    await expect.poll(async () => (await app.state()).proxy.running).toBe(true);
     await expect
       .poll(async () => {
         const cmds = (await app.calls()).map((c) => c.cmd);
@@ -132,13 +141,12 @@ test.describe("routing", () => {
   });
 
   test("an already-trusted certificate raises no second prompt", async ({ boot }) => {
-    const app = await boot({
-      proxy: { running: false, ca_trusted: true },
-    });
+    const app = await boot({ ...routingDidNotStart, proxy: { running: false, ca_trusted: true } });
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
 
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    await expect.poll(async () => (await app.state()).proxy.running).toBe(true);
     // Nothing to trust, so nothing to warn about: the pre-flight has to stay
     // out of the way of the promptless path.
     await expect(app.page.getByText("One prompt to expect")).toBeHidden();
@@ -149,36 +157,43 @@ test.describe("routing", () => {
 
   test("refusing the system dialog leaves routing off and says so", async ({ boot }) => {
     const app = await boot({
+      ...routingDidNotStart,
       failures: {
         proxy_trust_ca: "couldn’t trust the proxy CA: the certificate trust dialog was cancelled or denied",
       },
     });
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
     await app.page.getByRole("button", { name: "Install certificate" }).click();
 
     // Aborted before the engine was asked for anything - the same outcome the
     // implicit trust produced (`ensure_trusted()?` fails the whole enable),
     // reached without a second unexplained dialog.
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
-    const cmds = (await app.calls()).map((c) => c.cmd);
-    expect(cmds).not.toContain("proxy_enable");
-    // A refused OS dialog is a surprise, so it gets explained.
+    await expect.poll(async () => (await app.calls()).map((c) => c.cmd)).toContain(
+      "proxy_trust_ca",
+    );
+    expect((await app.state()).proxy.running).toBe(false);
+    expect((await app.calls()).map((c) => c.cmd)).not.toContain("proxy_enable");
+    // A refused OS dialog is a surprise, so it gets explained - on Home, which
+    // owns the error note.
+    await app.page.getByRole("button", { name: "Back" }).click();
     await expect(app.page.getByText(/certificate|trust/i).first()).toBeVisible();
   });
 
-  test("Not now abandons the toggle without raising the dialog or an error", async ({
+  test("Not now abandons the attempt without raising the dialog or an error", async ({
     boot,
   }) => {
-    const app = await boot();
+    const app = await boot(routingDidNotStart);
 
-    await app.routingSwitch.click();
+    await app.familyRow("Claude").click();
+    await app.page.getByRole("button", { name: "Turn on routing" }).click();
     await app.page.getByRole("button", { name: "Not now" }).click();
 
     // The decline is the user's own click on our own screen one second ago:
     // nothing is attempted, and nothing is explained back at them.
     await expect(app.page.getByText("One prompt to expect")).toBeHidden();
-    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+    expect((await app.state()).proxy.running).toBe(false);
     const cmds = (await app.calls()).map((c) => c.cmd);
     expect(cmds).not.toContain("proxy_trust_ca");
     expect(cmds).not.toContain("proxy_enable");
@@ -198,11 +213,13 @@ test.describe("routing", () => {
         env_export_opted_in: false,
         env_export_separable: true,
         forwarder_answering: null,
-        ca_nss_trusted: null,
         domains: [
           {
             slug: "anthropic",
-            display_name: "Claude apps",
+            display_name: "API",
+            client: "claude-desktop",
+            credential: "brokered",
+            scope: "host",
             hosts: ["api.anthropic.com"],
             upstream_url: "https://gateway.constellationgate.ai",
             rewrite_prefixes: ["/v1"],
@@ -235,7 +252,7 @@ test.describe("family panel", () => {
     });
 
     await app.familyRow("Claude").click();
-    const member = app.page.getByRole("switch", { name: "Route Claude Code through Gate" });
+    const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await expect(member).toHaveAttribute("aria-checked", "false");
 
     await member.click();
@@ -256,14 +273,15 @@ test.describe("family panel", () => {
     });
 
     await app.familyRow("Claude").click();
-    await app.page.getByRole("switch", { name: "Route Claude apps through Gate" }).click();
+    await app.page.getByRole("switch", { name: "Route API through Gate" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
       slug: "anthropic",
       enabled: true,
     });
-    // The catalog only maps Claude Code to Anthropic, so the UI drives members
-    // one at a time and must never reach for the provider shortcut.
+    // The UI drives members one at a time and must never reach for the
+    // provider shortcut - the ledger groups by client, and `provider_enable`
+    // is a vendor-shaped command the renderer has no handle on.
     expect(await app.lastCall("provider_enable")).toBeNull();
   });
 
@@ -271,38 +289,37 @@ test.describe("family panel", () => {
     boot,
   }) => {
     // chatgpt.com's Responses endpoint is reached with the user's ChatGPT
-    // subscription bearer rather than a brokered key, so it is the one member the
-    // family switch must leave where it is. The backend enforces the same rule by
-    // keeping the slug out of the provider's `proxy_domain_slugs`; this is the
-    // frontend half of it. It is also the switch OpenClaw's subscription traffic
-    // depends on, which its `connect` used to flip unasked.
+    // subscription bearer rather than a brokered key, so this shell's group
+    // switch leaves it where it is. `cascadeTargets` reaches such a row only
+    // for a caller that passes `sessions`, meaning it has asked - which the
+    // window shell's app switch does, after a confirmation, and this popover
+    // does not, having no dialog to ask with. `provider::cascade_domains`
+    // refuses them in Rust either way.
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("OpenAI").click();
+    await app.familyRow("ChatGPT / Codex").click();
     const subscription = app.page.getByRole("switch", {
-      name: "Route ChatGPT (Codex subscription) through Gate",
+      name: "Route Subscription through Gate",
     });
-    const apps = app.page.getByRole("switch", {
-      name: "Route ChatGPT app chat + Codex tools through Gate",
-    });
+    const apps = app.page.getByRole("switch", { name: "Route Chat through Gate" });
     await expect(subscription).toHaveAttribute("aria-checked", "false");
     await expect(apps).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Codex and the OpenAI apps route, neither of these
-    // rows moves.
-    const family = app.page.getByRole("switch", { name: "Route OpenAI through Gate" });
+    // The whole group on: neither of these rows moves, and nothing else in this
+    // section is brokered, so the switch reaches nothing at all here.
+    const family = app.page.getByRole("switch", { name: "Route ChatGPT / Codex through Gate" });
     await family.click();
     // The family switch reads its own state back from `proxy_status`, which
     // `setGroupRouted` calls after the member loop - so "checked" is the point
     // where every member has been attempted and the call log below is final.
-    // Waiting on the domain state alone would not be: chat rows sort last, so a
-    // regression's stray call arrives after the cascaded one has already landed.
+    // Waiting on the domain state alone would not be: a regression's stray
+    // call can arrive after the cascaded one has already landed.
     await expect(family).toHaveAttribute("aria-checked", "true");
     expect(
       (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
-    ).toEqual(["openai"]);
+    ).toEqual([]);
     const domains = (await app.state()).proxy.domains;
     expect(domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(false);
     expect(domains.find((d) => d.slug === "chatgpt-apps")?.enabled).toBe(false);
@@ -330,11 +347,11 @@ test.describe("family panel", () => {
     });
 
     await app.familyRow("Claude").click();
-    const chat = app.page.getByRole("switch", { name: "Route Claude Desktop chat through Gate" });
+    const chat = app.page.getByRole("switch", { name: "Route Chat through Gate" });
     await expect(chat).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Claude Code and Claude apps route, the chat row does
-    // not move. Same completion signal as the test above.
+    // The whole group on: the API surface routes, the chat row does not move.
+    // Same completion signal as the test above.
     const family = app.page.getByRole("switch", { name: "Route Claude through Gate" });
     await family.click();
     await expect(family).toHaveAttribute("aria-checked", "true");
@@ -361,7 +378,7 @@ test.describe("family panel", () => {
     });
 
     await app.familyRow("Claude").click();
-    const member = app.page.getByRole("switch", { name: "Route Claude Code through Gate" });
+    const member = app.page.getByRole("switch", { name: "Route CLI through Gate" });
     await member.click();
 
     await expect(app.page.getByText(/couldn|permission|denied/i).first()).toBeVisible();

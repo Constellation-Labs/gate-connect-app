@@ -15,11 +15,16 @@
 //! see [`RelayState::intercept`].
 //!
 //! The upshot for the design: **a tool's config carries one value and no
-//! headers.** The base URL is `http://127.0.0.1:<port>/<slug><client-path>`,
-//! where `<slug>` names the catalog domain; the relay reads it off the path,
-//! strips it, and injects `x-gate-upstream-url` itself - the same thing the MITM
-//! engine does from the CONNECT host. The credential lives in the keychain and is
-//! injected here per request, so a token refresh is invisible to the tool and
+//! headers.** The base URL is
+//! `http://127.0.0.1:<port>/__gate/t/<tool>/<slug><client-path>`, where
+//! `<slug>` names the catalog domain and `<tool>` names the integration that
+//! wrote the URL; the relay reads both off the path, strips them, and injects
+//! `x-gate-upstream-url` and `x-gate-client` itself - the same thing the MITM
+//! engine does from the CONNECT host, except that the engine has no URL to read
+//! and must guess the tool from the `User-Agent`. See [`TOOL_PATH_PREFIX`] for
+//! why the tool segment is worth a path segment. The credential lives in the
+//! keychain and is injected here per request, so a token refresh is invisible to
+//! the tool and
 //! rotating the key touches nothing on disk. Deriving the upstream from the
 //! catalog rather than trusting the caller also means a local process cannot aim
 //! the gateway at a host of its choosing.
@@ -31,6 +36,7 @@
 //! rather than steps - running both means two processes wanting the same
 //! persisted relay port.
 
+use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +54,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
 /// Where the stable relay port is persisted. CLI tool configs bake
@@ -140,6 +147,13 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
+        // A test seam, never a ledger row: nothing groups it, and it must not
+        // ride a family switch if something ever does enumerate it. `AnyApp`
+        // plus `Observed` is the inert answer; `Client` is the relay's own hop,
+        // which touches no other program.
+        client: crate::taxonomy::Client::AnyApp,
+        credential: crate::taxonomy::Credential::Observed,
+        scope: crate::taxonomy::Scope::Client,
     })
 }
 
@@ -204,7 +218,8 @@ fn adopt(listener: std::net::TcpListener) -> Result<(std::net::TcpListener, u16)
 // injection rule live in the parent module so the relay and the MITM engine
 // can't drift; this module just references them.
 use super::{
-    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_KEY_HEADER, GATE_ORG_HEADER,
+    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_CLIENT_HEADER, GATE_DEVICE_NAME_HEADER,
+    GATE_INSTALL_ID_HEADER, GATE_KEY_HEADER, GATE_MODEL_HEADER, GATE_ORG_HEADER,
     UPSTREAM_URL_HEADER,
 };
 
@@ -223,6 +238,11 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live billing mode. `Payg` drops the upstream hint and the tool's own
+    /// credential on a rewrite, so the gateway bills the org's balance; `Byok`
+    /// is today's shape. Resolved per domain - see
+    /// [`effective_billing_mode`](super::effective_billing_mode).
+    mode: watch::Receiver<BillingMode>,
     /// The built-in domain catalog. Used to (a) resolve the leading path segment
     /// of a request to a known upstream - so a local process can't aim the relay
     /// at an arbitrary host - and (b) classify the remaining path the way the
@@ -247,6 +267,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        mode: watch::Receiver<BillingMode>,
         intercept: watch::Receiver<bool>,
         owner_uid: Option<u32>,
     ) -> Self {
@@ -280,6 +301,7 @@ impl RelayState {
             api_key,
             token,
             org,
+            mode,
             domains,
             intercept,
             owner_uid,
@@ -304,19 +326,24 @@ impl RelayState {
 /// Adopt a pre-bound loopback listener and start serving on the current tokio
 /// runtime. The accept loop lives until the runtime is dropped (engine stop),
 /// mirroring the PAC responder's lifetime.
+// The engine's live channels passed straight through to [`RelayState`]; bundling
+// them into a struct would just restate that struct's fields at the one call
+// site. Same reasoning as `helper_client::set_intercept`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn(
     std_listener: std::net::TcpListener,
     gateway: Uri,
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    mode: watch::Receiver<BillingMode>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
-        &gateway, api_key, token, org, intercept, owner_uid,
+        &gateway, api_key, token, org, mode, intercept, owner_uid,
     ));
     Ok(tokio::spawn(accept_loop(listener, state)))
 }
@@ -441,6 +468,11 @@ pub fn serve() -> Result<()> {
         ));
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+        // Refreshed in the same loop as the org below: a headless host is
+        // long-lived, and `gate-connect billing-mode` writes the account file
+        // from a different process, so re-reading is the only way this host
+        // learns of a switch.
+        let (mode_tx, mode_rx) = watch::channel(account.billing_mode);
         // The standalone host always intercepts - routing through Gate is the
         // whole point of `proxy relay`, and its own loop below keeps the token
         // fresh. The sender lives for the whole (never-ending) block.
@@ -460,6 +492,7 @@ pub fn serve() -> Result<()> {
             key_rx,
             token_rx,
             org_rx,
+            mode_rx,
             intercept_rx,
             owner_uid,
         ));
@@ -492,6 +525,7 @@ pub fn serve() -> Result<()> {
                 crate::oauth::access_token_for_injection().as_str(),
             ));
             let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
+            let _ = mode_tx.send(crate::account::billing_mode_for_injection());
         }
     })
 }
@@ -611,6 +645,19 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
+    // Answered by the relay itself, ahead of catalog resolution: a liveness
+    // check must not need a catalog entry, must not reach the gateway, and must
+    // not spend a token. The identity probes use the proof-carrying path
+    // handled far above instead; this one stays because it answers the weaker
+    // question without a token, which is all the e2e suite needs. Under the
+    // reserved `/__gate/` prefix, which no catalog domain can claim, so it can
+    // never shadow a real upstream path. GET only - a stray POST to this path
+    // is a tool misconfigured, not a health check, and should fall through to
+    // the resolver and get the usual error.
+    if method == hyper::Method::GET && path_and_query == HEALTH_PATH {
+        return Ok(health_response());
+    }
+
     // Which upstream this request belongs to comes from the leading path
     // segment the tool's base URL carries, so no tool config has to hold a
     // header. Inference paths rewrite to the gateway under the Gate credential;
@@ -634,22 +681,91 @@ async fn proxy(
     headers.remove(HOST);
     let target = match route {
         Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("injecting Gate credential: {e:#}"),
-                )
-            })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
-            format!("{}{}", state.gateway_base, routed.path_and_query)
+            let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
+            inject_credential(&mut headers, state, mode, &routed.slug, routed.tool).map_err(
+                |e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("injecting Gate credential: {e:#}"),
+                    )
+                },
+            )?;
+            // Forwarded: we set the upstream hint, overwriting anything the
+            // caller sent. The value comes from the catalog entry we resolved,
+            // so a local process can't aim the gateway at a host of its
+            // choosing.
+            //
+            // Served: the hint's ABSENCE is the whole switch, so it is removed
+            // instead - including anything the caller sent, which would
+            // otherwise be a way for a local process to force a forward and
+            // spend the tool's own credential.
+            //
+            // Two independent things ask Gate to serve, and either is enough.
+            // The org routes this domain pay-as-you-go, so the gateway resolves
+            // a provider and debits its balance. Or the user put this tool on a
+            // Gate model, which is why a chosen model had no effect until this
+            // branch existed: with the hint present the gateway forwards to the
+            // tool's own provider and never reaches the override. That half is
+            // read back from the header `inject_credential` has just stamped
+            // rather than derived a second time - two computations of "is this
+            // served?" could disagree, and the disagreement would be a request
+            // billed one way and routed the other.
+            //
+            // The Gate-model half also turns on the PATH: Gate can only answer
+            // on a route it implements, and withholding the hint on any other
+            // leaves the gateway with nothing to do and the caller waiting. PAYG
+            // is not gated that way - the org routes that domain and its
+            // forwarded path is already a shape the gateway serves. See
+            // `serve_path`.
+            let (req_path, req_query) = routed
+                .path_and_query
+                .split_once('?')
+                .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
+                    (p, Some(q))
+                });
+            let model_serve_path = if super::serves_gate_model(&headers) {
+                super::serve_path(req_path)
+            } else {
+                None
+            };
+            if mode == BillingMode::Byok && model_serve_path.is_none() {
+                set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+                    )
+                })?;
+                // The model header goes too. It is not a label: its own contract says it
+                // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+                // this tool on a Gate model. Leaving it on a forwarded request states
+                // both "Gate serves this, bill the org" and "send this to my own
+                // provider under my own key" at once, and the body's model would be
+                // rewritten to a Gate id the tool's own provider has never heard of.
+                // Unreachable before the serve rewrite existed, because the request hung
+                // instead of falling back; reachable now on any path Gate does not
+                // serve, such as `count_tokens`.
+                headers.remove(GATE_MODEL_HEADER);
+                format!("{}{}", state.gateway_base, routed.path_and_query)
+            } else {
+                headers.remove(UPSTREAM_URL_HEADER);
+                // The tool's own key goes with it - on a served request the
+                // model, the provider and the bill are all Gate's.
+                // `inject_credential` has already done this for PAYG; this
+                // covers the Gate-model case, where the org is still BYOK.
+                super::strip_client_auth(&mut headers);
+                // Onto the path that can answer, which is not always the one the
+                // tool asked on: Codex's `/codex/responses` is served at
+                // `/v1/responses`, the same wire format under a route the
+                // gateway implements. A PAYG request with no model override
+                // keeps the path it arrived on.
+                match model_serve_path {
+                    Some(gateway_path) => match req_query {
+                        Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
+                        None => format!("{}{gateway_path}", state.gateway_base),
+                    },
+                    None => format!("{}{}", state.gateway_base, routed.path_and_query),
+                }
+            }
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
@@ -723,8 +839,15 @@ async fn proxy(
 
 /// Inject the live Gate credential, via the rule shared with the MITM engine
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
+/// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
+/// same helper also strips the tool's own upstream credential.
+fn inject_credential(
+    headers: &mut HeaderMap,
+    state: &RelayState,
+    mode: BillingMode,
+    domain: &str,
+    tool: Option<&'static str>,
+) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
@@ -733,7 +856,16 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> 
     let org_id = (!org.is_empty()).then(|| org.as_ref());
     // The relay has no response hook to feed, so what was injected is not
     // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id).map(|_| ())
+    inject_gate_credential(
+        headers,
+        &api_key,
+        oauth_token,
+        org_id,
+        mode,
+        Some(domain),
+        tool,
+    )
+    .map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -752,14 +884,55 @@ enum Route {
 /// whether that path rewrites to the gateway.
 #[derive(Debug)]
 struct Routed {
-    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting,
-    /// and used as the base of the direct hop when passing through.
+    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting
+    /// under BYOK, and used as the base of the direct hop when passing through.
     upstream_url: String,
+    /// Catalog slug that owns the request, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`](super::effective_billing_mode)).
+    slug: String,
     /// Path + query **relative to `upstream_url`** - our own slug segment
     /// removed. Both the gateway and the direct upstream append this to their
     /// own base, so it must not carry anything Gate-internal.
     path_and_query: String,
     route: Route,
+    /// The tool named by the base URL's [`TOOL_PATH_PREFIX`] marker, when it
+    /// carried one and the slug is a tool we know. `None` for a base URL
+    /// written before the marker existed, or one hand-edited to name something
+    /// else - attribution then falls back to the `User-Agent` guess, which is
+    /// what every relay-routed request used before this.
+    tool: Option<&'static str>,
+}
+
+/// Peel the [`TOOL_PATH_PREFIX`] marker, returning the tool it names and the
+/// path with the marker gone. The unmarked path - every request that predates
+/// the marker, and every proxy-routed one - is returned borrowed.
+///
+/// An unrecognised tool slug is dropped rather than refused, and the segment is
+/// still removed so the catalog lookup behind it succeeds. That asymmetry is
+/// deliberate and matches `inject_attribution`: a request whose tool we cannot
+/// name is worth serving unlabelled, and failing it would be trading the user's
+/// actual work for a data point on a chart.
+///
+/// `env-proxy` is dropped along with the unrecognised ones even though
+/// [`crate::registry::ToolId`] accepts it: it is the environment channel rather
+/// than a program, it has no [`crate::taxonomy::Client`] slug, and stamping it
+/// would put a value in `x-gate-client` that the ledger's own vocabulary has no
+/// name for. Nothing writes such a URL; this keeps the set we accept equal to
+/// the set we write.
+fn split_tool_segment(path_and_query: &str) -> (Option<&'static str>, Cow<'_, str>) {
+    let Some(rest) = path_and_query.strip_prefix(TOOL_PATH_PREFIX) else {
+        return (None, Cow::Borrowed(path_and_query));
+    };
+    // `rest` is `<tool>/<catalog-slug>...`; the leading `/` goes back on so the
+    // segment splitter below sees the shape it documents.
+    let with_slash = format!("/{rest}");
+    let Some((segment, inner)) = split_leading_segment(&with_slash) else {
+        return (None, Cow::Borrowed(path_and_query));
+    };
+    let tool = crate::registry::ToolId::from_slug(segment)
+        .filter(|id| *id != crate::registry::ToolId::EnvProxy)
+        .map(crate::registry::ToolId::slug);
+    (tool, Cow::Owned(inner))
 }
 
 // Shared with the forwarder's relay listener, which splits the slug off the
@@ -790,18 +963,28 @@ fn resolve_route(
 ) -> Result<Routed, (StatusCode, String)> {
     // The path we classify has to be the path we send, and it is not if a dot
     // segment survives to the URL parser - see [`gate_connect_paths::has_dot_segment`].
+    // Checked on the raw request target, before the marker comes off, because a
+    // dot segment anywhere in it changes where the concatenated URL lands.
     if super::has_dot_segment(path_and_query) {
         return Err((
             StatusCode::BAD_REQUEST,
             "request path contains a `.` or `..` segment".to_string(),
         ));
     }
+    // The tool marker sits in front of the catalog slug, so it comes off first
+    // and everything below sees the path it always saw. `original` is kept for
+    // the error text: the caller typed that, not the stripped version.
+    let original = path_and_query;
+    let (tool, path_and_query) = split_tool_segment(path_and_query);
+    let path_and_query = path_and_query.as_ref();
     if let Some((segment, inner)) = split_leading_segment(path_and_query) {
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
                 route: classify(d, &inner),
                 path_and_query: inner,
+                tool,
             });
         }
     }
@@ -812,7 +995,7 @@ fn resolve_route(
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
-                "{path_and_query:?} does not start with a known upstream slug, and no \
+                "{original:?} does not start with a known upstream slug, and no \
                  {UPSTREAM_URL_HEADER} header was supplied"
             ),
         ));
@@ -828,8 +1011,10 @@ fn resolve_route(
         })?;
     Ok(Routed {
         upstream_url: d.upstream_url.clone(),
+        slug: d.slug.clone(),
         route: classify(d, path_and_query),
         path_and_query: path_and_query.to_string(),
+        tool,
     })
 }
 
@@ -895,6 +1080,23 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_KEY_HEADER);
     headers.remove(GATE_ORG_HEADER);
+    // Attribution is for Gate's own activity view. A provider has no business
+    // learning which machine or which tool this was, so it goes no further even
+    // though the passthrough path never stamps it itself.
+    headers.remove(GATE_INSTALL_ID_HEADER);
+    headers.remove(GATE_CLIENT_HEADER);
+    // Same argument, and now load-bearing rather than tidy: `x-gate-model`
+    // rewrites the served model and decides what the user is billed for
+    // (`client_tool`'s doc has the note), so the strip list has to name it. The
+    // passthrough arm never stamps either of these, so the only value that can
+    // be here is one the caller sent - which is exactly the one to drop.
+    headers.remove(GATE_MODEL_HEADER);
+    headers.remove(GATE_DEVICE_NAME_HEADER);
+    // Relayed tools are named by the path marker, so this header has no job
+    // here - but a tool configured for both routes could still send it, and a
+    // passthrough hop is the one place a Gate-internal header would reach the
+    // real provider.
+    headers.remove(super::GATE_TOOL_HEADER);
 }
 
 /// Hop-by-hop headers must not be forwarded end-to-end: the RFC 9110 set both
@@ -918,6 +1120,66 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
+/// Unauthenticated liveness path, served by the relay itself. Under a reserved
+/// prefix that the domain catalog cannot name, so adding a real upstream can
+/// never collide with it. Public so the e2e suite spells it once.
+///
+/// A bare 204 to anybody, so it says a relay of ours serves this port and
+/// nothing about who is asking. The status probes want the opposite and use
+/// [`gate_connect_paths::RELAY_HEALTH_PATH`], whose challenge only a process
+/// that can read the 0600 token can answer; see
+/// [`super::probe_relay_route`], which used to ask here.
+pub const HEALTH_PATH: &str = "/__gate/health";
+
+/// Marker a relay base URL carries ahead of the catalog slug to name the tool
+/// that was configured with it, e.g.
+/// `http://127.0.0.1:PORT/__gate/t/opencode/anthropic/v1`.
+///
+/// **This is what makes per-tool attribution structural rather than a guess.**
+/// The alternative signal is the request's own `User-Agent`, which Gate neither
+/// controls nor versions: it identifies a tool only for as long as that tool
+/// keeps spelling itself the same way, and a prefix arriving in front of the
+/// token is enough to lose it. Gate Connect writes this base URL itself, from
+/// inside the integration that knows which tool it is configuring, so the claim
+/// comes from our own config write instead.
+///
+/// Under the same reserved prefix as [`HEALTH_PATH`] and for the same reason: a
+/// bare `t` segment would be a name the domain catalog could later take, and
+/// then a new upstream would silently shadow every configured tool. `__gate` is
+/// the segment the catalog cannot claim.
+///
+/// It does not make attribution *trustworthy* - any process on the loopback
+/// interface can call any path, exactly as it can send any `User-Agent`. What it
+/// buys is that the honest case stops depending on a string nobody here owns.
+///
+/// Worth knowing before treating this as cosmetic: attribution authorizes
+/// nothing, but it is not inert either. `client_tool`'s result also gates
+/// `inject_model_choice`, so naming a tool correctly can start applying a
+/// Gate-model choice the user stored and the tool was too anonymous to receive.
+/// That is the intent; `client_tool`'s doc has the full note.
+///
+/// **Rolling back is a hard break, not a soft one.** A build that predates this
+/// prefix reads `__gate` as a leading catalog slug, finds no domain and no
+/// `x-gate-upstream-url`, and answers 400 to every request from a config written
+/// by a newer build. Forward compatibility was free and backward was not: an old
+/// URL still routes here (`tool` is simply `None`), a new URL does not route
+/// there. So a downgrade takes the configured tools offline until they are
+/// reconnected, which makes this a poor release lever to reach for in a hurry.
+pub(crate) const TOOL_PATH_PREFIX: &str = "/__gate/t/";
+
+/// 204, no body. The prober only cares that something Gate-shaped answered on
+/// the port; a body would invite callers to parse it into a richer contract than
+/// this endpoint is willing to keep.
+fn health_response() -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::new())
+        .map_err(|never| match never {})
+        .boxed();
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(body)
+        .expect("building relay health response")
+}
+
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {
     let body = Full::new(Bytes::from(message))
         .map_err(|never| match never {})
@@ -934,6 +1196,76 @@ mod tests {
 
     fn resolved(path: &str) -> Option<Routed> {
         resolve_route(&default_domains(), path, &HeaderMap::new()).ok()
+    }
+
+    /// The marker names the tool without disturbing anything behind it: the
+    /// catalog still resolves off the slug, and the path forwarded upstream is
+    /// byte-identical to the same request without a marker. That equality is
+    /// the whole safety claim - a tool segment that changed the forwarded path
+    /// would be a routing change wearing an attribution change's clothes.
+    #[test]
+    fn a_tool_marker_names_the_tool_and_leaves_the_route_untouched() {
+        let marked = resolved("/__gate/t/opencode/anthropic/v1/messages?beta=true")
+            .expect("a marked base URL resolves");
+        let bare = resolved("/anthropic/v1/messages?beta=true").expect("resolves");
+
+        assert_eq!(marked.tool, Some("opencode"));
+        assert_eq!(bare.tool, None);
+        assert_eq!(marked.path_and_query, bare.path_and_query);
+        assert_eq!(marked.upstream_url, bare.upstream_url);
+        assert_eq!(marked.slug, bare.slug);
+        assert_eq!(marked.route, bare.route);
+
+        // The passthrough arm too: account paths are the ones most likely to be
+        // hit by a tool whose base URL we rewrote, and they carry the tool's own
+        // credential, so a marker that broke their path would be the loudest bug
+        // available.
+        let marked = resolved("/__gate/t/codex/anthropic/api/oauth/usage").expect("resolves");
+        assert_eq!(marked.tool, Some("codex"));
+        assert_eq!(marked.route, Route::Passthrough);
+        assert_eq!(marked.path_and_query, "/api/oauth/usage");
+
+        // The one shape where the two segments are the same word: OpenCode's
+        // Zen endpoints are on the `opencode` catalog slug, so the URL this
+        // writes is `/__gate/t/opencode/opencode/zen/v1`. It works because the
+        // positions are fixed, and it is the case a future edit to either
+        // splitter would break while looking like a catalog miss rather than a
+        // marker bug.
+        let marked = resolved("/__gate/t/opencode/opencode/zen/v1/messages").expect("resolves");
+        let bare = resolved("/opencode/zen/v1/messages").expect("resolves");
+        assert_eq!(marked.tool, Some("opencode"));
+        assert_eq!(marked.slug, bare.slug);
+        assert_eq!(marked.path_and_query, bare.path_and_query);
+    }
+
+    /// `env-proxy` is a [`crate::registry::ToolId`] and not a tool, so it is
+    /// dropped like any slug we cannot read. `x-gate-client` is defined over
+    /// [`crate::taxonomy::Client`] slugs, which has no `env-proxy`, so stamping
+    /// it would put a value in the ledger's column that its own vocabulary has
+    /// no name for.
+    #[test]
+    fn the_environment_channel_is_not_a_tool_the_marker_can_name() {
+        let r = resolved("/__gate/t/env-proxy/anthropic/v1/messages").expect("still routes");
+        assert_eq!(r.tool, None);
+        assert_eq!(r.path_and_query, "/v1/messages");
+
+        // Every slug it does accept is one the ledger can name.
+        for id in [
+            crate::registry::ToolId::ClaudeCode,
+            crate::registry::ToolId::Codex,
+            crate::registry::ToolId::OpenCode,
+        ] {
+            let path = format!("/__gate/t/{}/anthropic/v1/messages", id.slug());
+            let r = resolved(&path).expect("routes");
+            assert_eq!(r.tool, Some(id.slug()));
+            assert!(
+                crate::taxonomy::Client::ALL
+                    .iter()
+                    .any(|c| c.slug() == id.slug()),
+                "{} is stamped into x-gate-client but is not a Client slug",
+                id.slug()
+            );
+        }
     }
 
     /// The forwarder serves relay requests itself once the engine is gone, from
@@ -972,6 +1304,7 @@ mod tests {
             // The encoded spellings are the same segment to a URL parser, so a
             // check that only matched the literal one would be the same bug.
             "/anthropic/v1/%2e%2e/%2E%2E/admin",
+            "/__gate/t/opencode/anthropic/v1/../../admin",
             // A backslash is a separator to the URL parser for http(s), so
             // these collapse exactly like the forward-slash spellings.
             "/anthropic/v1/..\\..\\admin",
@@ -997,6 +1330,54 @@ mod tests {
         // business: plenty of real API paths carry one.
         let r = resolved("/anthropic/v1/messages.json?a=..").expect("routes");
         assert_eq!(r.path_and_query, "/v1/messages.json?a=..");
+    }
+
+    /// The `__gate` prefix's whole no-shadowing argument is that the catalog
+    /// cannot claim it. That is prose in [`TOOL_PATH_PREFIX`]'s doc and nothing
+    /// else, so pin it: a new upstream named `__gate` would silently shadow the
+    /// health path and every configured tool at once.
+    #[test]
+    fn the_catalog_cannot_claim_the_reserved_prefix() {
+        let reserved = TOOL_PATH_PREFIX.trim_start_matches('/');
+        let reserved = reserved.split('/').next().expect("a first segment");
+        assert_eq!(reserved, "__gate");
+        for d in default_domains() {
+            assert_ne!(d.slug, reserved, "a catalog domain claimed the reservation");
+        }
+    }
+
+    /// A marker we cannot read loses the label and keeps the request.
+    ///
+    /// Both halves matter. Refusing would fail a request that is otherwise
+    /// perfectly routable to protect a chart, which `inject_attribution` already
+    /// rejects as the wrong trade. Keeping the segment would be worse than
+    /// either: the catalog lookup behind it would miss, and the user would get a
+    /// 400 naming a path they never typed.
+    #[test]
+    fn an_unreadable_tool_marker_is_dropped_rather_than_served_or_refused() {
+        // A slug that is not a tool - a hand-edited config, or a tool this build
+        // predates.
+        let r = resolved("/__gate/t/notatool/anthropic/v1/messages").expect("still routes");
+        assert_eq!(r.tool, None);
+        assert_eq!(r.path_and_query, "/v1/messages");
+        assert_eq!(r.slug, "anthropic");
+
+        // The marker with nothing after it is not a marker.
+        assert!(resolved("/__gate/t/").is_none());
+
+        // `__gate` is reserved, so the health path cannot be read as a tool and
+        // the two reservations cannot collide.
+        assert!(resolved(HEALTH_PATH).is_none());
+    }
+
+    /// The marker only means anything in the leading position it is written in.
+    /// A catalog domain whose own path happens to contain the prefix's spelling
+    /// must not have it stripped out of the middle of a forwarded URL.
+    #[test]
+    fn the_marker_is_only_read_at_the_front() {
+        let r = resolved("/anthropic/v1/__gate/t/opencode/messages").expect("resolves");
+        assert_eq!(r.tool, None);
+        assert_eq!(r.path_and_query, "/v1/__gate/t/opencode/messages");
     }
 
     /// The backstop: whatever the spelling, a target whose parsed path differs

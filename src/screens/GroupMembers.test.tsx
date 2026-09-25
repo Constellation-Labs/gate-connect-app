@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { ProviderState, ProxyDomain, Tool } from "../lib/api";
+import type { ProxyDomain, Tool, Verdict } from "../lib/api";
 import { buildGroups } from "../lib/groups";
 import type { Platform } from "../lib/platform";
 import { GroupMembers } from "./GroupMembers";
@@ -9,20 +9,38 @@ vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 // GroupMembers names the secret store in two of its explainers. Pin the
 // platform so that copy is deterministic, and so the real hook's async
 // resolve does not settle outside act().
-// Switchable for the one explainer that differs on Linux; reset after each test.
+//
+// Through a `vi.hoisted` cell rather than a literal, because some suites below
+// need Linux: the browser scope sentence differs by session rather than by OS,
+// and Linux is the platform where it can be withheld. Reset after each test.
 const platformMock = vi.hoisted(() => ({ current: "macos" as Platform }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
   usePlatform: () => platformMock.current,
 }));
 
-function tool(slug: string, name: string, status: Tool["status"]): Tool {
+function tool(
+  slug: string,
+  name: string,
+  status: Tool["status"],
+  client: Tool["client"] = "claude-code",
+): Tool {
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
+    // One client for every fixture tool, so these suites keep rendering ONE
+    // group with several rows in it. That used to come from a synthetic
+    // provider catalog claiming three tool slugs; membership is the row's own
+    // client now, so the fixture says it here instead.
+    client,
+    scope: "client",
+    credential: "brokered",
   };
 }
 
@@ -35,27 +53,46 @@ const domain: ProxyDomain = {
   passthrough_prefixes: [],
   enabled: true,
   supported: true,
+  client: "claude-code",
+  credential: "brokered",
+  scope: "host",
 };
 
-const CATALOG: ProviderState[] = [
-  {
-    slug: "anthropic",
-    display_name: "Claude",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["claude-code", "openclaw", "codex"],
-    domain_slugs: ["anthropic"],
-    chat_domain_slugs: [],
-  },
-];
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
 
 function renderDetail(
   tools: Tool[],
   domains: ProxyDomain[] = [domain],
   props: Partial<React.ComponentProps<typeof GroupMembers>> = {},
 ) {
-  const [group] = buildGroups(CATALOG, tools, domains, { proxyOn: true, caTrusted: true });
+  const [group] = buildGroups(tools, domains, {
+    proxyOn: true,
+    caTrusted: true,
+    verdicts: sweep(tools),
+  });
   render(
     <GroupMembers
       group={group}
@@ -65,6 +102,10 @@ function renderDetail(
       onTrustCa={vi.fn()}
       trustPending={false}
       proxyOn={true}
+      // No chat row in this catalog, so the value is inert here. The sentence
+      // it drives is exercised in "GroupMembers chat row scope" below, in both
+      // directions.
+      browserChannel={true}
       onEnableRouting={vi.fn()}
       {...props}
     />,
@@ -93,7 +134,9 @@ describe("GroupMembers", () => {
     // OpenCode is claimed by no provider and its default_upstream_url is the
     // constant api.anthropic.com, which is wrong the moment the user has
     // OpenAI configured in it.
-    renderDetail([tool("opencode", "OpenCode", { kind: "detected" })], []);
+    // Its own client, which is what makes it a multi-provider tool: the
+    // client has no vendor, so the row must not name an upstream host.
+    renderDetail([tool("opencode", "OpenCode", { kind: "detected" }, "opencode")], []);
     expect(screen.getByText("the providers Gate routes")).toBeTruthy();
     expect(screen.queryByText("https://api.anthropic.com")).toBeNull();
   });
@@ -185,24 +228,7 @@ describe("GroupMembers inline expansion", () => {
       hosts: ["api.openai.com"],
       upstream_url: "https://api.openai.com",
     };
-    const [group] = buildGroups(
-      [{ ...CATALOG[0], slug: "openai", display_name: "OpenAI", tool_slugs: [], domain_slugs: ["openai"] }],
-      [],
-      [openai],
-      { proxyOn: true, caTrusted: true },
-    );
-    render(
-      <GroupMembers
-        group={group}
-        busy={false}
-        onToggleTool={vi.fn(() => Promise.resolve())}
-        onSetDomain={vi.fn(() => Promise.resolve())}
-        onTrustCa={vi.fn()}
-        trustPending={false}
-        proxyOn
-        onEnableRouting={vi.fn()}
-      />,
-    );
+    renderDetail([], [openai]);
     fireEvent.click(screen.getByRole("button", { name: "OpenAI API details" }));
     expect(screen.getByText(/routes it through the local proxy/)).toBeTruthy();
     expect(screen.queryByText(/Only on this computer/)).toBeNull();
@@ -257,7 +283,7 @@ describe("GroupMembers inline expansion", () => {
 
   it("announces a failed member at the top, not only inside its own row", () => {
     renderDetail([tool("openclaw", "OpenClaw", { kind: "error", message: "bad json" })], []);
-    // The most severe member state was the only one with no banner: master-off
+    // The most severe member state was the only one with no banner: not-routing
     // and drifted each got one, so a failure was the single thing the screen
     // left the user to find by expanding rows.
     expect(screen.getByText(/OpenClaw isn’t reporting its routing state/)).toBeTruthy();
@@ -296,7 +322,7 @@ describe("GroupMembers inline expansion", () => {
 describe("GroupMembers intent versus flow", () => {
   /** Routing on, certificate untrusted: the state that produced the round-6 P0. */
   function renderUntrusted(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
-    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    const [group] = buildGroups([], [domain], { proxyOn: true, caTrusted: false });
     render(
       <GroupMembers
         group={group}
@@ -306,6 +332,7 @@ describe("GroupMembers intent versus flow", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
       proxyOn={true}
+      browserChannel={true}
       onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -373,11 +400,10 @@ describe("GroupMembers intent versus flow", () => {
   });
 });
 
-describe("GroupMembers master-off remedy", () => {
+describe("GroupMembers not-routing remedy", () => {
   /** Switched on, engine down: the state round 6 introduced with prose only. */
   function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
     const [group] = buildGroups(
-      CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       { proxyOn: false, caTrusted: true },
@@ -391,6 +417,7 @@ describe("GroupMembers master-off remedy", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
         proxyOn={false}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -400,7 +427,7 @@ describe("GroupMembers master-off remedy", () => {
 
   it("names the state on the member", () => {
     renderMasterOff();
-    expect(screen.getAllByText("Waiting on routing")).toHaveLength(2);
+    expect(screen.getAllByText("Not routing")).toHaveLength(2);
   });
 
   it("offers the way out from the expanded member, not just prose", () => {
@@ -424,7 +451,7 @@ describe("GroupMembers master-off remedy", () => {
 
 describe("GroupMembers certificate failure", () => {
   it("shows a failed trust next to the button that failed", async () => {
-    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    const [group] = buildGroups([], [domain], { proxyOn: true, caTrusted: false });
     render(
       <GroupMembers
         group={group}
@@ -436,11 +463,76 @@ describe("GroupMembers certificate failure", () => {
         onTrustCa={() => Promise.reject("User canceled (-128)")}
         trustPending={false}
         proxyOn={true}
+        browserChannel={true}
         onEnableRouting={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
+  });
+});
+
+describe("GroupMembers chat row scope", () => {
+  /** A chat surface: its own row, its own switch, out of the family cascade. */
+  const CHAT_DOMAIN: ProxyDomain = {
+    slug: "claude-web",
+    display_name: "Claude web",
+    hosts: ["claude.ai"],
+    upstream_url: "https://claude.ai",
+    rewrite_prefixes: [],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+    client: "claude-code",
+    // The one field that puts this row outside the group switch.
+    credential: "additive",
+    scope: "host",
+  };
+
+  beforeEach(() => {
+    platformMock.current = "linux";
+  });
+  afterEach(() => {
+    platformMock.current = "macos";
+  });
+
+  function renderChat(browserChannel: boolean) {
+    const [group] = buildGroups([], [domain, CHAT_DOMAIN], {
+      proxyOn: true,
+      caTrusted: true,
+    });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn={true}
+        browserChannel={browserChannel}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude web details" }));
+  }
+
+  it("claims the browser where this session has the channel a browser reads", () => {
+    renderChat(true);
+    expect(screen.getByText(/browser that follows your desktop proxy settings/)).toBeTruthy();
+  });
+
+  it("makes no browser claim where it does not", () => {
+    // The wiring this pins, rather than the sentence: `browserScopeNote` has
+    // its own unit tests, and what was untested is that `GroupMembers` threads
+    // the prop into `explain` at all. A default that ignored it would pass
+    // every test above and claim an interception that is not happening - the
+    // one error the reading exists to prevent.
+    renderChat(false);
+    expect(screen.queryByText(/browser that follows/)).toBeNull();
+    // The rest of the row still reads normally: the scope note is a sentence,
+    // not a clause, so dropping it leaves the host sentence standing.
+    expect(screen.getAllByText(/claude\.ai/).length).toBeGreaterThan(0);
   });
 });
 
@@ -504,23 +596,16 @@ describe("GroupMembers chat-row reload hint", () => {
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "chatgpt",
+    // The field that makes this the row the reload hint is for, now that
+    // membership is the row's own taxonomy rather than a provider catalog
+    // listing it under `chat_domain_slugs`.
+    credential: "additive",
+    scope: "host",
   };
 
-  const OPENAI: ProviderState[] = [
-    {
-      slug: "openai",
-      display_name: "OpenAI",
-      subtitle: "",
-      enabled: false,
-      available: true,
-      tool_slugs: [],
-      domain_slugs: [],
-      chat_domain_slugs: ["chatgpt-apps"],
-    },
-  ];
-
   function renderChat(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
-    const [group] = buildGroups(OPENAI, [], [chatDomain], { proxyOn: true, caTrusted: true });
+    const [group] = buildGroups([], [chatDomain], { proxyOn: true, caTrusted: true });
     render(
       <GroupMembers
         group={group}
@@ -530,6 +615,9 @@ describe("GroupMembers chat-row reload hint", () => {
         onTrustCa={vi.fn()}
         trustPending={false}
         proxyOn
+        // Inert for this suite: the hint is about a stale connection, not about
+        // the scope sentence the flag drives.
+        browserChannel={true}
         onEnableRouting={vi.fn()}
         {...props}
       />,
@@ -565,5 +653,77 @@ describe("GroupMembers chat-row reload hint", () => {
       expect(screen.queryByText(/keeps the connection it had before/)).toBeNull(),
     );
     expect(onSetDomain).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GroupMembers subscription row", () => {
+  // The row that reads as a chat surface on every field the ledger carries and
+  // is not one: `chatgpt` is `additive`, `host` and `Client::ChatGpt`, exactly
+  // like `chatgpt-apps` beside it, and what talks to it is Codex through the
+  // relay and the ChatGPT app's Work mode. Told to reload chatgpt.com, its user
+  // has no tab to reload; told to "Close Subscription", they have nothing by
+  // that name to close either.
+  const subscription: ProxyDomain = {
+    slug: "chatgpt",
+    display_name: "Subscription",
+    hosts: ["chatgpt.com"],
+    upstream_url: "https://chatgpt.com",
+    rewrite_prefixes: ["/backend-api/codex/responses"],
+    passthrough_prefixes: [],
+    enabled: true,
+    supported: true,
+    client: "chatgpt",
+    credential: "additive",
+    scope: "host",
+  };
+
+  function renderSubscription({ expand = true } = {}) {
+    const onSetDomain = vi.fn(() => Promise.resolve());
+    const [group] = buildGroups([], [subscription], { proxyOn: true, caTrusted: true });
+    render(
+      <GroupMembers
+        group={group}
+        busy={false}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={onSetDomain}
+        onTrustCa={vi.fn()}
+        trustPending={false}
+        proxyOn
+        browserChannel={true}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    if (expand) fireEvent.click(screen.getByRole("button", { name: "Subscription details" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Route Subscription through Gate" }));
+    return onSetDomain;
+  }
+
+  it("names the programs to close, not the row", async () => {
+    const onSetDomain = renderSubscription();
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    const hint = await screen.findByText(/the next time you open them/);
+    expect(hint.textContent).toContain("Close the ChatGPT app and Codex");
+    // The row's own name is a mode rather than an application, which is what
+    // made the generic sentence unusable here.
+    expect(screen.queryByText(/Close Subscription/)).toBeNull();
+  });
+
+  it("does not tell the user to reload a tab that does not exist", async () => {
+    const onSetDomain = renderSubscription();
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    await screen.findByText(/the next time you open them/);
+    expect(screen.queryByText(/keeps the connection it had before/)).toBeNull();
+    expect(screen.queryByText(/Reload/)).toBeNull();
+  });
+
+  it("keeps the hint inside the disclosure, where the other closeable rows have it", async () => {
+    // Not an oversight, and the one behaviour that moves with this row's
+    // reading. The hint is drawn outside the disclosure only for the browser
+    // surfaces, on the argument that a tab outlives a flip by a month while a
+    // program gets quit in the ordinary course of a week. Codex and the ChatGPT
+    // app are programs, so this row belongs with the rows that say "close".
+    const onSetDomain = renderSubscription({ expand: false });
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalled());
+    expect(screen.queryByText(/the next time you open them/)).toBeNull();
   });
 });

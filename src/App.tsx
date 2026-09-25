@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, OAuthStatus, ProviderState, ProxyState, Tool } from "./lib/api";
+import type {
+  Account,
+  OAuthStatus,
+  ProviderState,
+  ProxyState,
+  Tool,
+  Verdict,
+} from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -20,6 +27,7 @@ import {
   proxySetEnvExport,
   proxyUntrustCa,
   proxySetDomain,
+  hermesUpstreamCoverage,
   listProviders,
   listTools,
   connectTool,
@@ -29,12 +37,12 @@ import {
   pinPopover,
   openOnboardingWindow,
   routedClientsStale,
+  routingVerdicts,
   staleAgentsCount,
-  drainBackendErrors,
   pendingQuitTools,
+  getPreferences,
   type PendingQuit,
 } from "./lib/api";
-import { consoleUrlFor } from "./lib/config";
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
@@ -45,19 +53,27 @@ import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
+import { forwardBackendErrors } from "./lib/backendErrors";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
+import { HermesProviderNotice } from "./components/HermesProviderNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
 import {
-  backendErrorContext,
   classifyError,
+  ProviderDeclined,
   TrustDeclined,
   type ClassifiedError,
 } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { buildGroups, cascadeTargets } from "./lib/groups";
+import { HERMES_SLUG, type HermesProviderChoice } from "./lib/useRouting";
+import { logInfo, logWarn } from "./lib/log";
+import { describe as describeError } from "./lib/log";
+import { verdictsBySlug } from "./lib/verdict";
+import { dashboardLinks } from "./lib/dashboard";
+import { isSignedIn, needsOrg } from "./lib/session";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -105,7 +121,7 @@ const SCREEN_DEPTH: Record<Screen, number> = {
 // upstream hint. That stopped being true: OpenClaw's managed proxy mode sends
 // its ChatGPT-subscription model calls to the same host through the MITM
 // engine, and that switch is the only thing that lets Gate see them, so it is
-// something the user routes deliberately - see `provider::chat_domain_slugs`.
+// something the user routes deliberately - see `Credential::Additive`.
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -113,56 +129,6 @@ function hostOf(url: string | undefined): string {
     return new URL(url).host;
   } catch {
     return url;
-  }
-}
-
-/** Contexts whose failure means traffic is not flowing. These are the startup
- *  restore paths, which is exactly why the buffer exists: they run before the
- *  webview does, so the user has no other way to learn the engine never came
- *  up. A failure here is a total routing outage that the popover would
- *  otherwise render as a healthy screen. */
-const ROUTING_DOWN_CONTEXTS = new Set(["restore_routing", "provider_restore", "provider_reconcile"]);
-
-/** Drain the backend's buffered failures into the analytics seam, and hand back
- *  the first one that means routing is down so a human sees it too. The raw
- *  message is classified frontend-side like any invoke rejection; only the
- *  title goes over the wire.
- *
- *  Telemetry was the only consumer. A buffered "failed to bind loopback port
- *  8317: address in use" produced zero pixels of UI, in the one app whose
- *  first principle is reassurance through transparency, on the one error class
- *  the user cannot discover any other way. */
-async function forwardBackendErrors(): Promise<ClassifiedError | null> {
-  const errs = await drainBackendErrors().catch(() => []);
-  let surfaced: ClassifiedError | null = null;
-  for (const e of errs) {
-    const context = backendErrorContext(e.context);
-    trackError(e.message, context);
-    if (!surfaced && ROUTING_DOWN_CONTEXTS.has(e.context)) {
-      surfaced = classifyError(e.message, context);
-    }
-  }
-  return surfaced;
-}
-
-// The routing takeover teaches its lesson once per install; after the first
-// acknowledgment (persisted like the tour flag), later toggles fall back to
-// the inline restart hint that carries the same advice, so the daily user
-// isn't re-interrupted every session. Storage failures degrade to "already
-// seen" - never trap the user in a recurring takeover.
-const ROUTING_TAKEOVER_SEEN_KEY = "gc.routing-takeover.v1.seen";
-function hasSeenRoutingTakeover(): boolean {
-  try {
-    return localStorage.getItem(ROUTING_TAKEOVER_SEEN_KEY) === "1";
-  } catch {
-    return true;
-  }
-}
-function markRoutingTakeoverSeen(): void {
-  try {
-    localStorage.setItem(ROUTING_TAKEOVER_SEEN_KEY, "1");
-  } catch {
-    /* noop */
   }
 }
 
@@ -201,20 +167,6 @@ function noticeFor(
 /** Whether the account is fully usable right now: a stored key in legacy mode,
  *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
  *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
-function isSignedIn(account: Account | null, oauth: OAuthStatus | null): boolean {
-  if (!account) return false;
-  if (account.auth_mode === "oauth") return (oauth?.signed_in ?? false) && !!account.org_id;
-  return account.has_api_key;
-}
-
-/** An OAuth session that's authenticated but hasn't picked an org yet - the
- *  one state that routes to the org picker rather than sign-in or home. */
-function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
-  return (
-    account?.auth_mode === "oauth" && (oauth?.signed_in ?? false) && !account.org_id
-  );
-}
-
 export function App() {
   const platform = usePlatform();
   // Text scaling owns the rem root and the Cmd/Ctrl +/-/0 accelerators. Mounted
@@ -243,6 +195,10 @@ export function App() {
   }
   const [account, setAccount] = useState<Account | null>(null);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+  /** Whether the last sign-out was one the user asked for, rather than a session
+   *  that died. Only meaningful on the sign-in screen, which is the one place
+   *  that has to describe how the session ended. */
+  const [signedOutDeliberately, setSignedOutDeliberately] = useState(false);
   // Where the org picker returns to when done: "home" (startup re-pick),
   // "success" (fresh sign-in), or "settings" (Switch organization).
   const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
@@ -273,6 +229,15 @@ export function App() {
   // panel's two buttons settle.
   const [trustAsk, setTrustAsk] = useState(false);
   const trustDecision = useRef<((install: boolean) => void) | null>(null);
+  // The Hermes provider gate, in the same shape and for the same reason: the
+  // connect the user just asked for is suspended on this panel's answer, so it
+  // arrives through a resolver rather than a state read. Null when nothing is
+  // being asked.
+  const [hermesAsk, setHermesAsk] = useState<{
+    domains: HermesProviderChoice[];
+    defaulted: boolean;
+  } | null>(null);
+  const hermesDecision = useRef<((allow: boolean) => void) | null>(null);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // The provider catalog is the grouping contract for Home's ledger
@@ -376,6 +341,28 @@ export function App() {
   // `announce` separates the two callers: the backend's startup nudge is a
   // state *change* worth a banner and an analytics event, whereas reopening the
   // popover is just the user looking, and must stay silent.
+  /**
+   * The routing sweep, on this shell too.
+   *
+   * The popover used to read a row's state off its config file: connected plus a
+   * running engine meant routing. AG-570 rules that out - "routing is verified
+   * after every Gate Connect or device restart", and "a saved preference or
+   * completed file write does not produce On or Off without verification" - and
+   * the popover is the shipping default, so it is the surface the requirement is
+   * actually about.
+   *
+   * Its own state rather than a shared one: the two shells are separate webviews
+   * with no state between them, and the sweep is cheap enough to run per shell
+   * (one relay probe, one session probe, one process walk) but not cheap enough
+   * to run per render - hence a callback the load path and the routing nudge
+   * both call, and nothing else.
+   */
+  const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
+  const refreshVerdicts = useCallback(async () => {
+    const v = await routingVerdicts().catch(() => null);
+    if (v) setVerdicts(verdictsBySlug(v));
+  }, []);
+
   const refreshState = useCallback(async (announce: boolean) => {
     const px = await proxyStatus().catch(() => null);
     const toolList = await listTools().catch(() => []);
@@ -389,13 +376,16 @@ export function App() {
     setTools(toolList);
     setProviders(provs);
     if (stale) setStaleAgentsHint(true);
+    // After the snapshot: the engine coming up or going down changes every
+    // verdict, since the relay health check is shared.
+    void refreshVerdicts();
     if (announce && px?.running) {
       if (agents > 0) setChangeNotice("on");
       // The backend only emits this nudge after its startup auto-enable, so
       // routing coming up here is a restored session, not a user toggle.
       track("proxy_enabled", { source: "restored" });
     }
-  }, []);
+  }, [refreshVerdicts]);
 
   useEffect(() => {
     let alive = true;
@@ -449,6 +439,11 @@ export function App() {
       setTools(toolList);
       setProviders(provs);
       if (stale) setStaleAgentsHint(true);
+      // The first sweep of the launch. AG-570's "routing is verified after every
+      // Gate Connect or device restart" is this line on this shell: without it
+      // the ledger opens on the config's word, which is the claim the AC
+      // forbids.
+      void refreshVerdicts();
       if (px?.running && agents > 0) setChangeNotice("on");
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
@@ -509,13 +504,18 @@ export function App() {
   // routing is down also lands on Home, where blockers render.
   useEffect(() => {
     const sweep = () =>
-      void forwardBackendErrors().then((e) => {
+      // Reports to analytics: this is the `main` window's shell, and it is
+      // either this or `NewUiApp` on the flag, never both, so exactly one
+      // reporter is mounted. The tray drains for display only - the buffer
+      // hands each webview its own copy, and two reporters would double every
+      // `error_shown`.
+      void forwardBackendErrors({ reportToAnalytics: true }).then((e) => {
         if (e) setProviderError(e);
       });
     sweep();
     const unlisten = listen("backend-error-pending", sweep);
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -567,7 +567,7 @@ export function App() {
     });
     return () => {
       alive = false;
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, [account]);
 
@@ -600,7 +600,7 @@ export function App() {
   useEffect(() => {
     const unlisten = listen(TOUR_SEEN_EVENT, () => markTourSeen());
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -780,6 +780,82 @@ export function App() {
     }
   }, [proxy, runTrustCa]);
 
+  /**
+   * Ask about the provider Hermes talks to, when Gate knows it and has it off.
+   *
+   * The popover's copy of the window's gate (`useRouting`'s
+   * `askHermesProvider`), because the popover connects tools through this file
+   * and not through that hook. Same decision, same rule: `hermes` is a
+   * one-member section, so its switch routes the tool and inspects nothing, and
+   * without this the popover reported Protected while every request tunnelled
+   * past unseen.
+   *
+   * Resolves to the slugs to enable once Hermes is connected. Declining throws
+   * `ProviderDeclined`, which aborts the connect exactly as a declined
+   * certificate does and is reported as nothing at all: the user chose it, one
+   * second ago, on our own screen.
+   *
+   * A coverage read that cannot be reached connects without the question rather
+   * than costing the person the toggle, and says so in the log - the state that
+   * leaves is the one this gate exists to prevent, and a silent fall-through is
+   * how it went unnoticed for an afternoon the first time.
+   */
+  const ensureHermesProvider = useCallback(async (): Promise<string[]> => {
+    const coverage = await hermesUpstreamCoverage().catch((e: unknown) => {
+      logWarn(`popover: hermes coverage read failed, connecting without asking: ${describeError(e)}`);
+      return null;
+    });
+    if (coverage === null) return [];
+    if (coverage.unknown.length > 0) {
+      // No switch fixes these, so no panel. Logged because it is the only
+      // record that Hermes has traffic Gate will never see.
+      logInfo(`popover: hermes upstreams Gate has no domain for: ${coverage.unknown.join(", ")}`);
+    }
+    if (coverage.switched_off.length === 0) return [];
+    const domains: HermesProviderChoice[] = coverage.switched_off.map(
+      ({ slug, hosts, tools }) => ({
+        // The row's own display name, which is what the person will look for
+        // in the sidebar. The host is the fallback for a row the catalog
+        // cannot name, which a `switched_off` entry never is.
+        name: (proxy?.domains ?? []).find((d) => d.slug === slug)?.display_name ?? hosts[0] ?? slug,
+        slug,
+        tools,
+      }),
+    );
+    setHermesAsk({ domains, defaulted: coverage.defaulted });
+    // Pinned for the panel's whole life, like the certificate pre-flight: it
+    // asks the user to read and decide, and an unpinned popover hides itself
+    // the moment they glance at another window.
+    await pinPopover().catch(() => {});
+    try {
+      const allow = await new Promise<boolean>((resolve) => {
+        hermesDecision.current = resolve;
+      });
+      if (!allow) throw new ProviderDeclined();
+      return domains.map((d) => d.slug);
+    } finally {
+      hermesDecision.current = null;
+      setHermesAsk(null);
+      await unpinPopover().catch(() => {});
+    }
+  }, [proxy]);
+
+  /** Turn the provider domains on, after the connect that starts the engine.
+   *
+   *  Each on its own, and a failure is reported against the domain rather than
+   *  thrown at the tool: by this point Hermes' config is written, so failing
+   *  the connect over it would say the opposite of what happened. */
+  const enableHermesProviders = useCallback(async (slugs: string[]) => {
+    for (const slug of slugs) {
+      try {
+        await proxySetDomain(slug, true);
+      } catch (e) {
+        logWarn(`popover: turning on ${slug} for hermes failed: ${describeError(e)}`);
+        trackError(e, "provider_toggle", { domain: slug, routed: true });
+      }
+    }
+  }, []);
+
   // Re-read what a routing mutation may have changed: the tool ledger and the
   // proxy state. A transient listTools failure keeps the previous list rather
   // than blanking the ledger. Returns whether the engine is running (false
@@ -795,14 +871,21 @@ export function App() {
     } catch {
       /* non-macOS: no proxy subsystem */
     }
+    // A write landed, so the ledger's own claim about what is routing is stale.
+    // Re-swept here rather than left to the next nudge: the row the user just
+    // switched on would otherwise sit at "Not verified" until something else
+    // happened, which reads as the switch not having worked.
+    void refreshVerdicts();
     return running;
-  }, []);
+  }, [refreshVerdicts]);
 
-  // `takeover: true` (the home-screen toggle) surfaces the result as the
-  // full-popover routing notice; the Routing screen's toggle keeps its
-  // inline hints instead.
+  /** Start the engine from one of the two "turn routing on" remedies: the
+   *  setup screen's and the routing notice's. The home screen's master switch
+   *  was the third caller and is gone - routing now starts with the app and
+   *  stops with it, so these two are retries of a launch enable that did not
+   *  complete rather than a choice the user is making. */
   const toggleProxy = useCallback(
-    async (takeover: boolean) => {
+    async () => {
       if (proxyBusyRef.current) return;
       proxyBusyRef.current = true;
       setProxyBusy(true);
@@ -813,14 +896,14 @@ export function App() {
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
-        // The takeover and the inline hints say the same thing ("restart your
-        // agents"), so show one or the other, never both.
+        // No takeover: it went with the master switch that was its only
+        // caller. Both remaining callers are "turn routing on" remedies, and
+        // they get the inline hint.
         //
         // Nothing to say on the way off. Routing off keeps every tool's config
         // and parks the engine, so a tool already open reaches its own provider
         // through the forwarder and a reopen would put it straight back on
-        // Gate's values: the old "close them and they go back to their own
-        // settings" was false on both counts.
+        // Gate's values.
         //
         // On the way on, a config naming the forwarder or the relay reaches the
         // engine as soon as it is up, so a running CLI is routed without a
@@ -828,25 +911,19 @@ export function App() {
         // its own config or to the certificate (`stale_agents_count`), and a
         // page that kept the connection it opened before the PAC named its
         // host. The count decides the remedy, not whether to speak: with
-        // something to close, the takeover (or, once acknowledged, the inline
-        // hint) offers to close it; with nothing, the inline hint carries the
-        // reload advice alone. A failed probe defaults to showing.
+        // nothing stale the hint carries the reload advice alone. A failed
+        // probe defaults to showing.
         if (!next.running) {
           setChangeNotice(null);
         } else {
           const agents = await staleAgentsCount().catch(() => 1);
           setNothingToClose(agents === 0);
-          if (takeover && agents > 0 && !hasSeenRoutingTakeover()) {
-            markRoutingTakeoverSeen();
-            setRoutingNotice({ dir: "on", confirming: false });
-          } else {
-            setChangeNotice("on");
-          }
+          setChangeNotice("on");
         }
-        // The backend owns the routed set across a master toggle: turning off
-        // snapshots what was on and disables all; turning on restores that
-        // snapshot. Just reflect the result (the returned ProxyState already
-        // carries the restored domains) and refresh the tool ledger.
+        // The backend owns the routed set across an engine start: turning on
+        // restores the snapshot the last teardown took. Just reflect the result
+        // (the returned ProxyState already carries the restored domains) and
+        // refresh the tool ledger.
         await resyncLedger();
       } catch (e) {
         // The user pressed Not now on the pre-flight: the switch stays off and
@@ -918,19 +995,25 @@ export function App() {
       setProxyBusy(true);
       try {
         if (routed) {
+          // Before the certificate, because it is a question about what else
+          // this click needs to reach and the OS prompt comes after the in-app
+          // ones. Empty for every tool but Hermes.
+          const providerDomains =
+            slug === HERMES_SLUG ? await ensureHermesProvider() : [];
           // Connect auto-enables the engine, which trusts the CA; disconnect
           // never prompts.
           await ensureCaTrusted();
           await connectTool(slug);
+          await enableHermesProviders(providerDomains);
         } else {
           await disconnectTool(slug);
         }
         track("tool_toggled", { tool: slug, routed });
       } catch (e) {
         // Not a failure and not the caller's problem: the user answered Not now
-        // on our own screen, so this resolves quietly rather than rethrowing
-        // into the row's error note.
-        if (e instanceof TrustDeclined) {
+        // or Cancel on our own screen, so this resolves quietly rather than
+        // rethrowing into the row's error note.
+        if (e instanceof TrustDeclined || e instanceof ProviderDeclined) {
           declined = true;
           return;
         }
@@ -943,7 +1026,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [proxy, ensureCaTrusted, resyncLedger],
+    [proxy, ensureCaTrusted, ensureHermesProvider, enableHermesProviders, resyncLedger],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -958,9 +1041,10 @@ export function App() {
   const setGroupRouted = useCallback(
     async (id: string, on: boolean) => {
       if (proxyBusyRef.current) return;
-      const group = buildGroups(providers, tools, proxy?.domains ?? [], {
+      const group = buildGroups(tools, proxy?.domains ?? [], {
         proxyOn: proxy?.running ?? false,
         caTrusted: proxy?.ca_trusted ?? false,
+        verdicts,
       }).find((g) => g.id === id);
       if (!group) return;
       const wasRunning = proxy?.running ?? false;
@@ -972,15 +1056,22 @@ export function App() {
       // first command rather than sprung from member three. A refusal aborts the
       // whole family, which is what the implicit trust already did to that
       // member's connect.
+      // Hermes' section is one member, so its family switch is the app switch
+      // by another control and runs the same provider gate - asked ahead of the
+      // certificate, for the reason the row does.
+      let providerDomains: string[] = [];
       if (on) {
         try {
+          if (cascadeTargets(group, on).some((m) => m.kind === "config" && m.key === HERMES_SLUG)) {
+            providerDomains = await ensureHermesProvider();
+          }
           await ensureCaTrusted();
         } catch (e) {
           proxyBusyRef.current = false;
           setProxyBusy(false);
           // A declined pre-flight aborts the family the same way, minus the
           // note: the user just chose this on our own screen.
-          if (e instanceof TrustDeclined) return;
+          if (e instanceof TrustDeclined || e instanceof ProviderDeclined) return;
           trackError(e, "connect", { provider: id, enabled: on });
           setProviderError(classifyError(e, "connect", account?.auth_mode));
           return;
@@ -992,23 +1083,22 @@ export function App() {
       // and the failures are named.
       const failed: string[] = [];
       let lastError: unknown = null;
-      // Chat members are excluded, not skipped inside the loop: they intercept
-      // a session-cookie surface (claude.ai, the ChatGPT app's own turn), so
-      // routing one is a deliberate per-row act and must not ride a family
-      // switch. This mirrors the backend, where those slugs are kept out of
-      // `proxy_domain_slugs` for the same reason - see `provider.rs`.
-      const cascade = group.members.filter((m) => !m.chat);
+      // Whether Hermes' own connect landed. Its provider is turned on only
+      // behind a Hermes that is actually routed - inspecting a provider for a
+      // tool that failed to connect watches traffic nothing is sending.
+      let hermesConnected = false;
+      // Which members a family switch may touch is `cascadeTargets` in
+      // lib/groups.ts, shared with the window UI: chat members never ride a
+      // family switch, a drifted config is never adopted by one, and members
+      // already in the target state are left alone.
+      const cascade = cascadeTargets(group, on);
       for (const member of cascade) {
         try {
           if (member.kind === "config" && member.tool) {
-            if (on && !member.desired && member.attention !== "drifted") {
-              await connectTool(member.key);
-            } else if (!on && member.desired) {
-              await disconnectTool(member.key);
-            }
+            await (on ? connectTool(member.key) : disconnectTool(member.key));
+            if (member.key === HERMES_SLUG) hermesConnected = on;
           } else if (member.domain) {
-            if (on && !member.domain.enabled) await proxySetDomain(member.key, true);
-            else if (!on && member.domain.enabled) await proxySetDomain(member.key, false);
+            await proxySetDomain(member.key, on);
           }
         } catch (e) {
           failed.push(member.name);
@@ -1016,6 +1106,7 @@ export function App() {
           trackError(e, "connect", { provider: id, enabled: on, tool: member.key });
         }
       }
+      if (hermesConnected) await enableHermesProviders(providerDomains);
       track("group_toggled", { provider: id, enabled: on });
       if (lastError !== null) {
         const classified = classifyError(lastError, "connect", account?.auth_mode);
@@ -1032,7 +1123,16 @@ export function App() {
       proxyBusyRef.current = false;
       setProxyBusy(false);
     },
-    [providers, tools, proxy, account, ensureCaTrusted, resyncLedger],
+    [
+      providers,
+      tools,
+      proxy,
+      account,
+      ensureCaTrusted,
+      ensureHermesProvider,
+      enableHermesProviders,
+      resyncLedger,
+    ],
   );
 
   /** Toggle the shell-environment channel, the master's sub-setting. Its own
@@ -1164,11 +1264,45 @@ export function App() {
     setScreen("firstrun");
   }, [proxy]);
 
+  /**
+   * What to call the sign-out, read when the sign-in screen is entered.
+   *
+   * Signing out and a session expiring leave identical state behind - no token,
+   * `auth_mode` still OAuth, kept that way on purpose so this screen offers
+   * sign-in rather than the legacy key form. So the reason has to be recorded,
+   * and `oauth_sign_out` records it; this is the read.
+   *
+   * On entering the screen rather than cached at sign-out, because FOUR paths
+   * land here and only one of them is a sign-out: the focus check and
+   * `session-signin-required` above both route here for a session that died on
+   * its own, and neither passes through `signOut`. A value cached when the user
+   * signed out would still be true after they signed back in, and would then
+   * tell someone whose session really did expire that they had signed
+   * themselves out - the same wrong answer this fixes, pointing the other way.
+   * Asking the backend each time cannot drift.
+   *
+   * A failed read leaves the previous answer, and the initial `false` is the
+   * expiry wording: that is what this screen said before, and it is the safe
+   * direction to be wrong in.
+   */
+  useEffect(() => {
+    if (screen !== "firstrun") return;
+    let alive = true;
+    getPreferences()
+      .then((prefs) => {
+        if (alive) setSignedOutDeliberately(prefs.signed_out_deliberately);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [screen]);
+
   const gatewayHost = hostOf(account?.gateway_base_url);
-  // Derived from the account rather than baked in, because the baked-in
-  // console was production for everyone: an app switched to staging in Dev
-  // mode kept offering links to a dashboard reading a different database.
-  const consoleUrl = consoleUrlFor(account?.gateway_base_url);
+  /** The dashboard for the gateway this account talks to, or null when it has
+   *  none. Was four production constants until 2026-09-07; see
+   *  `lib/dashboard.ts` for why deriving it matters on a staging install. */
+  const dashboard = dashboardLinks(account?.gateway_base_url);
   // The header's mono sub-label answers "who am I here?", and the gateway host
   // cannot: it is byte-identical for every customer of a given deployment. The
   // org is what gets billed and what the gateway rejects requests without (see
@@ -1185,9 +1319,10 @@ export function App() {
   const visibleDomains = proxy?.domains ?? [];
   // The ledger, grouped by model family; the group screen reads the same
   // shape Home renders so both stay in step after a toggle.
-  const groups = buildGroups(providers, tools, visibleDomains, {
+  const groups = buildGroups(tools, visibleDomains, {
     proxyOn,
     caTrusted: proxy?.ca_trusted ?? false,
+    verdicts,
   });
   // The family whose panel is open, re-resolved from the ledger on every render
   // so a toggle inside the panel repaints it. `undefined` when the family
@@ -1221,12 +1356,17 @@ export function App() {
         // signed in (silent refresh failed / explicit sign-out): show the
         // welcome-back re-auth copy rather than the first-run welcome.
         reauth={!!account && account.auth_mode === "oauth"}
+        // Which kind of return it was. Without this the pane called every one
+        // of them an expiry, including the two the app causes itself: the
+        // org-picker dead end signs the user out to get them back here, and so
+        // does "use an API key instead".
+        deliberate={signedOutDeliberately}
       />
     );
   } else if (screen === "orgpicker") {
     body = (
       <OrgPicker
-        consoleUrl={consoleUrl}
+        dashboardUrl={dashboard?.root ?? null}
         onDone={onOrgChosen}
         onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
         onReauth={signOut}
@@ -1246,7 +1386,7 @@ export function App() {
         onTurnOnRouting={async () => {
           // Inline hints (not the takeover): the user is mid-flow and lands on
           // Home right after, where the restart hint carries the follow-up.
-          await toggleProxy(false);
+          await toggleProxy();
           setScreen("home");
         }}
         onDone={() => setScreen("home")}
@@ -1299,7 +1439,14 @@ export function App() {
         onTrustCa={trustCa}
         trustPending={trustPending}
         proxyOn={proxy?.running ?? false}
-        onEnableRouting={() => void toggleProxy(false)}
+        // `?? false` for the reason the Home call site spells out below: an
+        // unresolved proxy state is not evidence, and the reassuring default
+        // here would be a claim that Gate is intercepting a browser. Only
+        // load-bearing on Linux - `browserScopeNote` makes the claim
+        // unconditionally on macOS and Windows, where the PAC goes into the
+        // setting the browser itself reads.
+        browserChannel={proxy?.browser_proxy_channel ?? false}
+        onEnableRouting={() => void toggleProxy()}
         authMode={account?.auth_mode}
       />
     );
@@ -1309,18 +1456,22 @@ export function App() {
       <Home
         workspace={orgName ?? ""}
         gatewayHost={gatewayHost}
-        consoleUrl={consoleUrl}
+        dashboardUrl={dashboard?.root ?? null}
         proxyOn={proxyOn}
         // `?? false`, matching the other three call sites. An unresolved
         // proxy state is not evidence that the CA is trusted, and defaulting
         // a security fact to the reassuring answer is the wrong direction
         // even where nothing visible currently depends on it.
         caTrusted={proxy?.ca_trusted ?? false}
-        caNssTrusted={proxy?.ca_nss_trusted ?? null}
+        // Null stays null: no reading is not a negative one. Only a recorded
+        // `trusted` counts as held, so a missing certutil raises the card.
+        caNssTrusted={
+          proxy?.ca_nss_trust == null ? null : proxy.ca_nss_trust === "trusted"
+        }
         showProxy={showProxy}
-        providers={providers}
         tools={tools}
         domains={visibleDomains}
+        verdicts={verdicts}
         busy={proxyBusy}
         error={providerError}
         changeNotice={changeNotice}
@@ -1339,10 +1490,9 @@ export function App() {
             confirming: true,
           })
         }
-        onEnableRouting={() => void toggleProxy(false)}
+        onEnableRouting={() => void toggleProxy()}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
-        onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
         trustPending={trustPending}
         onOpenFamily={(groupId) => {
@@ -1375,7 +1525,8 @@ export function App() {
     routingNotice !== null ||
     updateTakeoverVisible ||
     oauthOffer ||
-    trustAsk;
+    trustAsk ||
+    hermesAsk !== null;
 
   // Whether the body has content below the fold, so the scroll region can fade
   // its bottom edge instead of letting the footer's hairline cut a row in half.
@@ -1425,7 +1576,11 @@ export function App() {
           reason: an operation is suspended waiting on that panel's answer. */}
       <UpdatePanel
         suppressTakeover={
-          quitTools !== null || routingNotice !== null || oauthOffer || trustAsk
+          quitTools !== null ||
+          routingNotice !== null ||
+          oauthOffer ||
+          trustAsk ||
+          hermesAsk !== null
         }
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
@@ -1451,6 +1606,17 @@ export function App() {
           onDecline={() => trustDecision.current?.(false)}
         />
       )}
+      {/* The other pre-flight an operation is suspended on, and it shares the
+          certificate's level for that reason. The two cannot be up together:
+          this one is asked and answered before `ensureCaTrusted` is called. */}
+      {hermesAsk !== null && (
+        <HermesProviderNotice
+          domains={hermesAsk.domains}
+          defaulted={hermesAsk.defaulted}
+          onConfirm={() => hermesDecision.current?.(true)}
+          onCancel={() => hermesDecision.current?.(false)}
+        />
+      )}
       {/* Lowest-priority takeover: anything the user just did, or a pending
           update, outranks an offer they did not ask for. Dismissing marks it
           seen whichever way they leave, so it never returns. */}
@@ -1459,6 +1625,7 @@ export function App() {
         quitTools === null &&
         routingNotice === null &&
         !trustAsk &&
+        hermesAsk === null &&
         !updateTakeoverVisible && (
           <OAuthOffer
             onUpgrade={upgradeToOAuth}

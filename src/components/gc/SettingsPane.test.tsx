@@ -1,0 +1,430 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
+import { cleanup, render, screen } from "@testing-library/react";
+import { buildSettingsSections, SettingsPane } from "./SettingsPane";
+
+const noop = () => {};
+
+function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]> = {}) {
+  return buildSettingsSections({
+    deviceName: "MacBook Pro",
+    installId: "gc_a1b2c3d4",
+    loginId: "jdoe@acme.com",
+    plan: "Free",
+    gateway: "Managed by Gate",
+    apiKeyMasked: "sk-gw***********",
+    launchAtLogin: true,
+    notifications: true,
+    securityNotificationSound: true,
+    shareDiagnostics: true,
+    version: "v0.1.4",
+    onRenameDevice: noop,
+    onCopyInstallId: noop,
+    onUpgradePlan: noop,
+    onReplaceKey: noop,
+    onDisconnect: noop,
+    onToggleLaunchAtLogin: noop,
+    onRetryLaunchAtLogin: noop,
+    onToggleNotifications: noop,
+    onToggleSecurityNotificationSound: noop,
+    onToggleShareDiagnostics: noop,
+    onRetryPreferences: noop,
+    onReplayTutorial: noop,
+    onOpenDocs: noop,
+    onContactSupport: noop,
+    onCheckForUpdates: noop,
+    onViewDiagnostics: noop,
+    onReviewReset: noop,
+    ...overrides,
+  });
+}
+
+afterEach(cleanup);
+
+describe("the way back to a Gate account", () => {
+  it("offers a key account a Gate account, under its key", () => {
+    // The popover has always carried this. The new shell had only the one-time
+    // OAuthOfferDialog, so dismissing that once left no route to OAuth at all.
+    const built = sections({ onSwitchToGateAccount: noop });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+
+    expect(ids).toContain("sign-in-method");
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("api-key") + 1);
+
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.value).toBe("API key");
+    expect(row.action?.label).toBe("Use a Gate account");
+  });
+
+  it("omits it when the shell does not offer one", () => {
+    // An OAuth account has nowhere to switch to, and the shell says so by
+    // withholding the handler - the same way it withholds Replace key.
+    const built = sections({ onSwitchToGateAccount: undefined });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("sign-in-method");
+  });
+
+  it("speaks for itself while the browser flow is open", () => {
+    const built = sections({
+      onSwitchToGateAccount: noop,
+      signInNote: "Finish signing in on the page that opened in your browser.",
+    });
+    const row = built
+      .find((sec) => sec.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.description).toBe(
+      "Finish signing in on the page that opened in your browser.",
+    );
+  });
+});
+
+/**
+ * An OAuth account keeps its old key in the keychain - the upgrade does not
+ * delete it - so `has_api_key` stays true and the pane drew a masked key under
+ * "API key" for a session a Cognito bearer authenticates. On the one screen
+ * whose job is to say where the credential lives, that named the wrong one, and
+ * offered no way to change it either (`onReplaceKey` is withheld for OAuth).
+ */
+describe("what a Gate account sees under Connection", () => {
+  const gateAccount = { authMode: "oauth" as const, onReplaceKey: undefined };
+
+  it("drops the API key row entirely", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("api-key");
+  });
+
+  it("puts the sign-in method in its place rather than going quiet", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.value).toBe("Gate account");
+    // Where the key row used to be: directly under the gateway.
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("gateway") + 1);
+  });
+
+  it("offers no switch to a Gate account it already is", () => {
+    const row = sections(gateAccount)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.action).toBeUndefined();
+  });
+
+  it("keeps Disconnect Gate, which is the row that ends the session", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("session");
+  });
+
+  it("leaves a key account's rows alone", () => {
+    const connection = sections({ authMode: "api_key" }).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    expect(ids).toContain("api-key");
+    expect(ids).not.toContain("sign-in-method");
+  });
+
+  /** The state before the account read lands. The key row is the older default,
+   *  and flashing it away and back is worse than showing it a beat early. */
+  it("keeps the key row while the auth mode is still unknown", () => {
+    const connection = sections({ authMode: undefined }).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("api-key");
+  });
+});
+
+describe("buildSettingsSections", () => {
+  it("keeps Diagnostics reachable from Settings", () => {
+    // The Figma does not draw this row. `screens/Diagnostics.tsx` has nowhere
+    // else to live in the new IA, so losing it here loses the feature. It now
+    // lives in its own section rather than under About.
+    const diagnostics = sections().find((s) => s.id === "diagnostics");
+    expect(diagnostics?.rows.map((r) => r.id)).toContain("diagnostics-report");
+  });
+
+  it("offers Send diagnostics now, after the report it sends", () => {
+    // AG-603. Ordered below the report deliberately: the row above is how a
+    // user reads what they are about to hand over, so the screen reads in the
+    // order the decision is made.
+    const rows = sections({ onSendDiagnostics: noop }).find(
+      (s) => s.id === "diagnostics",
+    )!.rows;
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain("send-diagnostics");
+    expect(ids.indexOf("send-diagnostics")).toBe(ids.indexOf("diagnostics-report") + 1);
+    expect(rows.find((r) => r.id === "send-diagnostics")?.action?.label).toBe("Send");
+  });
+
+  it("omits Send diagnostics now where the build has no destination", () => {
+    // Withheld the way Replace key is: a build with no PostHog key configured -
+    // every dev build - would offer a button that can only fail.
+    const ids = sections({ onSendDiagnostics: undefined })
+      .find((s) => s.id === "diagnostics")!
+      .rows.map((r) => r.id);
+    expect(ids).not.toContain("send-diagnostics");
+  });
+
+  it("marks only the two destructive actions destructive", () => {
+    const destructive = sections()
+      .flatMap((s) => s.rows)
+      .filter((r) => r.action?.destructive)
+      .map((r) => r.id);
+    expect(destructive).toEqual(["session", "reset"]);
+  });
+
+  it("marks removing the certificate destructive too", () => {
+    // The third red action on the screen, and a deliberate one: until it is
+    // trusted again, nothing routed through the local proxy is inspected.
+    const rows = sections({ certificate: "Trusted", onRemoveCertificate: noop }).flatMap(
+      (s) => s.rows,
+    );
+    expect(rows.filter((r) => r.action?.destructive).map((r) => r.id)).toEqual([
+      "certificate",
+      "session",
+      "reset",
+    ]);
+  });
+
+  it("renders every value in sans, identifiers included", () => {
+    // The exception to CLAUDE.md's mono-for-identifiers rule, and the design's
+    // own call rather than an oversight: the Settings frame styles the install
+    // ID, gateway, key and version as `copy/14` (Geist Regular), while the same
+    // file reaches for `mono/body-14` in the diagnostics report a screen away.
+    // An earlier browser read of the frame recorded these as mono; the node
+    // data says otherwise. Regressing this looks like "identifiers should be
+    // mono".
+    render(<SettingsPane sections={sections()} />);
+    for (const value of ["gc_a1b2c3d4", "Managed by Gate", "sk-gw***********", "v0.1.4"]) {
+      expect(screen.getByText(value).className).not.toContain("font-mono");
+    }
+  });
+});
+
+describe("buildSettingsSections: rows with nothing behind them", () => {
+  // The alternative is a control that visibly does nothing, which the user
+  // cannot tell from broken. Regressing this looks like "add a noop handler".
+  it("omits an action whose handler is absent", () => {
+    const device = sections({ onRenameDevice: undefined }).find((s) => s.id === "device");
+    expect(device?.rows.find((r) => r.id === "device")?.action).toBeUndefined();
+    // The row itself survives: the device name is still worth reading.
+    expect(device?.rows.map((r) => r.id)).toContain("device");
+  });
+
+  it("omits a row left with nothing to do at all", () => {
+    // Active session is only ever a button, and Notifications only ever a
+    // switch, so an absent handler leaves an inert label.
+    const ids = sections({
+      onDisconnect: undefined,
+      onToggleNotifications: undefined,
+    })
+      .flatMap((s) => s.rows)
+      .map((r) => r.id);
+    expect(ids).not.toContain("session");
+    expect(ids).not.toContain("notifications");
+  });
+
+  /**
+   * A failed read must not draw a switch. `false` and "could not be read" look
+   * identical on a toggle, and the user cannot tell one from a setting they
+   * turned off themselves.
+   */
+  it("replaces a switch with Unavailable and Retry when its value never loaded", () => {
+    const startup = sections({ launchAtLoginUnavailable: true }).find(
+      (s) => s.id === "startup",
+    );
+    const launch = startup?.rows.find((r) => r.id === "launch");
+    expect(launch?.toggle).toBeUndefined();
+    expect(launch?.unavailable).toBeDefined();
+  });
+
+  it("marks every preference switch unavailable together, since they share one read", () => {
+    const built = sections({ preferencesUnavailable: true });
+    const rows = built.flatMap((s) => s.rows);
+    expect(rows.find((r) => r.id === "notifications")?.unavailable).toBeDefined();
+    // The sound row comes from the same read and sits directly under the one
+    // above, so a switch here is a value nobody read drawn beside a Retry.
+    expect(rows.find((r) => r.id === "security-sound")?.unavailable).toBeDefined();
+    expect(rows.find((r) => r.id === "share-diagnostics")?.unavailable).toBeDefined();
+    expect(rows.find((r) => r.id === "security-sound")?.toggle).toBeUndefined();
+  });
+
+  /** Only the preference switches; a failed preferences read says nothing about
+   * launch-at-login, which is a separate command. */
+  it("does not spread one failed read onto an unrelated row", () => {
+    const startup = sections({ preferencesUnavailable: true }).find((s) => s.id === "startup");
+    expect(startup?.rows.find((r) => r.id === "launch")?.toggle).toBeDefined();
+  });
+
+  it("omits the whole Danger zone when reset is not wired", () => {
+    // A card drawn to alarm that does nothing teaches the user to ignore it.
+    expect(sections({ onReviewReset: undefined }).map((s) => s.id)).not.toContain("danger");
+  });
+
+  it("keeps every other section when the unwired ones drop out", () => {
+    const ids = sections({
+      onRenameDevice: undefined,
+      onUpgradePlan: undefined,
+      onDisconnect: undefined,
+      onToggleNotifications: undefined,
+      onToggleShareDiagnostics: undefined,
+      onCheckForUpdates: undefined,
+      onOpenDocs: undefined,
+      onContactSupport: undefined,
+      onReviewReset: undefined,
+    }).map((s) => s.id);
+    expect(ids).toEqual(["device", "account", "connection", "startup", "diagnostics", "about"]);
+  });
+});
+
+describe("SettingsPane", () => {
+  it("renders every section heading and row label", () => {
+    render(<SettingsPane sections={sections()} />);
+
+    for (const heading of [
+      "Device",
+      "Account",
+      "Connection",
+      "Startup",
+      "Diagnostics",
+      "About",
+      "Help",
+      "Danger zone",
+    ]) {
+      expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+    }
+    expect(screen.getByText("MacBook Pro")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View report" })).toBeTruthy();
+  });
+
+  it("drives each switch from its own value, not from the row label", () => {
+    render(
+      <SettingsPane
+        sections={sections({ launchAtLogin: false, notifications: true })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("switch", { name: "Launch at login" }).getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(
+      screen.getByRole("switch", { name: "Notifications" }).getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("renders Unavailable and a Retry in place of a switch that could not load", () => {
+    render(<SettingsPane sections={sections({ launchAtLoginUnavailable: true })} />);
+
+    expect(screen.queryByRole("switch", { name: "Launch at login" })).toBeNull();
+    expect(screen.getByText("Unavailable")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+});
+
+describe("the Gate plan row", () => {
+  const planRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "account")!
+      .rows.find((r) => r.id === "plan")!;
+
+  it("names the plan the gateway reported", () => {
+    // It was the literal string "Unavailable" on a comment saying no gateway
+    // field carried a plan. One does, and the App pane had been drawing it
+    // since AG-592 - so Settings claimed nothing was known while another pane
+    // named the plan in the same session (AG-891).
+    expect(planRow({ plan: "Pro" }).value).toBe("Pro");
+    expect(planRow({ plan: "Pro" }).unavailable).toBeUndefined();
+  });
+
+  it("says nothing at all while the read is in flight", () => {
+    // Not "Unavailable": nothing has failed yet, and a row that cries failure
+    // during a normal load teaches the user to ignore it when it means it.
+    expect(planRow({ plan: undefined }).value).toBeUndefined();
+    expect(planRow({ plan: undefined }).unavailable).toBeUndefined();
+  });
+
+  it("marks the in-flight row pending rather than leaving the slot blank", () => {
+    // Principle 6 asks for a skeleton where a reading is in flight, and the
+    // flag is also what keeps the row in its value shape: without it the label
+    // column reads as a description row, takes the full width, and snaps back
+    // to 189px when the plan lands, dragging "Upgrade plan" across the row.
+    expect(planRow({ plan: undefined }).valuePending).toBe(true);
+    expect(planRow({ plan: "Pro" }).valuePending).toBe(false);
+    // A failed read draws Unavailable and a Retry, not a skeleton that waits
+    // for something nobody is fetching.
+    expect(planRow({ plan: undefined, planUnreadable: true }).valuePending).toBe(false);
+  });
+
+  it("draws a dash for a landed read that named no plan", () => {
+    // Principle 6: a reading happened and carried no plan. That is not the same
+    // as no reading, and neither is "Free" - the one value a reader would act
+    // on by upgrading something they may already have.
+    expect(planRow({ plan: null }).value).toBe("-");
+  });
+
+  it("offers a retry when the read failed", () => {
+    const onRetryPlan = vi.fn();
+    const row = planRow({ plan: undefined, planUnreadable: true, onRetryPlan });
+
+    expect(row.unavailable).toBeDefined();
+    row.unavailable!.onRetry();
+    expect(onRetryPlan).toHaveBeenCalled();
+  });
+});
+
+describe("the command-line tools row", () => {
+  const shellRow = (overrides: Parameters<typeof sections>[0] = {}) =>
+    sections(overrides)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "shell-proxy");
+
+  it("puts the machine-wide channel in Settings, not the app list", () => {
+    // AG-893. It used to be a card in the rail and a row in the app list, both
+    // describing the same coverage in different words. The rail is a list of
+    // apps and this is a setting, so there is one control now and it is here.
+    const onToggle = vi.fn();
+    const row = shellRow({ shellProxy: { on: true, onToggle } })!;
+
+    expect(row.label).toBe("Command-line tools");
+    expect(row.toggle?.on).toBe(true);
+    row.toggle!.onToggle();
+    expect(onToggle).toHaveBeenCalled();
+  });
+
+  it("carries the in-flight flag through to the switch", () => {
+    // `setEnvExport` returns early while `useRouting` is busy, so a switch that
+    // does not know it would swallow the click and stay put. Every rail switch
+    // already reports this; the control moving to Settings must not lose it.
+    expect(shellRow({ shellProxy: { on: true, busy: true, onToggle: noop } })!.toggle?.busy).toBe(
+      true,
+    );
+    expect(shellRow({ shellProxy: { on: true, onToggle: noop } })!.toggle?.busy).toBeUndefined();
+  });
+
+  it("says what it reaches and what it costs", () => {
+    // Neither old control did. "Terminal" and "command line tools that follow
+    // your proxy settings" said neither, and the certificate half was stated
+    // nowhere at all.
+    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
+
+    expect(row.description).toMatch(/every program you start from now on/);
+    expect(row.description).toMatch(/certificate/i);
+    // Not "Required by OpenCode": OpenCode's configured providers route
+    // through a `baseURL` rewrite and need none of this. The dialog that
+    // couples the two is where the real reason is said.
+    expect(row.description).not.toMatch(/OpenCode/);
+  });
+
+  it("draws the same coverage sentence the popover's Terminal blurb does", () => {
+    // AG-893 was one control described two ways. The first fix described it a
+    // third ("afterwards" here, "after your next login" in the popover), so the
+    // sentence is one exported string and this pins that both surfaces read it.
+    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
+
+    expect(row.description).toBe(SHELL_CHANNEL_COVERAGE);
+  });
+
+  it("is absent where the platform cannot offer it separately", () => {
+    // Linux: these variables ARE the system proxy, so declining them means
+    // turning routing off, which is a different control.
+    expect(shellRow({ shellProxy: undefined })).toBeUndefined();
+  });
+});

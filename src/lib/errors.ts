@@ -27,6 +27,16 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  /** Opening a link in the user's browser failed: an opener-ACL miss, no
+   *  browser, a sandbox refusal. Its own context because the remedy is nothing
+   *  to do with Gate - the user can still copy the address - and because it used
+   *  to vanish into a console nobody reads. */
+  | "open_external"
+  /** The re-read that follows a routing write. Its own context because a failed
+   *  resync is not a failed write - the write landed, and only the view of it is
+   *  stale. It used to be invisible: thrown from a `finally` into a `void` call
+   *  site, where it took every switch in the app down with it. */
+  | "resync"
   | "provider_disable"
   | "provider_reconcile"
   | "routing_intent"
@@ -69,6 +79,20 @@ export class TrustDeclined extends Error {
   constructor() {
     super("certificate trust declined by the user");
     this.name = "TrustDeclined";
+  }
+}
+
+/** The user pressed Cancel on the Hermes provider gate
+ * (`HermesProviderNotice`), which leaves Hermes switched off.
+ *
+ * Its own sentinel rather than [`TrustDeclined`] because the two abort for
+ * different reasons and a caller may one day want to tell them apart; what they
+ * share is the rule that makes both sentinels exist - a choice the user made on
+ * purpose is not an error, and must never reach `classifyError`. */
+export class ProviderDeclined extends Error {
+  constructor() {
+    super("provider interception declined by the user");
+    this.name = "ProviderDeclined";
   }
 }
 
@@ -149,6 +173,25 @@ export function classifyError(
     };
   }
 
+  // The sign-in page's own Cancel, which is a browser button and not a system
+  // prompt.
+  //
+  // Ahead of the prompt branch below, and that order is the fix: Cognito
+  // answers a declined authorization with `access_denied`, `oauth.rs` wraps it
+  // as "authorization failed (access_denied)", and the branch below matches
+  // "authorization" AND "denied" - so pressing Cancel in the browser produced
+  // "The system prompt was cancelled - approve your system password prompt",
+  // naming a dialog the user never saw. It is the same misdiagnosis as the
+  // timeout one below, on the likelier path: declining takes a click, walking
+  // away takes five minutes.
+  if (lc.includes("access_denied") || lc.includes("access denied")) {
+    return {
+      title: "The sign-in was declined",
+      hint: "Try again and approve the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
   // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
   // credential prompts report their own cancels through the same branch).
   if (
@@ -210,6 +253,24 @@ export function classifyError(
     };
   }
 
+  // The browser login was never finished.
+  //
+  // Ahead of the network branch on purpose: `oauth.rs` gives up after
+  // `LOGIN_TIMEOUT_SECS` with "timed out waiting for the login redirect", and
+  // that sentence contains "timed out", so the connectivity arm below claimed
+  // it and told the user to check that they were online and that the gateway
+  // URL was right. Neither was the problem - the gateway was never asked. The
+  // most common cause is the one that produced this: the sign-in page opened in
+  // a browser profile the person was not signed into, and they walked away from
+  // it.
+  if (lc.includes("login redirect") || lc.includes("waiting for the login")) {
+    return {
+      title: "The browser sign-in was not finished",
+      hint: "Gate stopped waiting after five minutes. Try again, and complete the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
   // Network: gateway unreachable.
   if (
     lc.includes("connection refused") ||
@@ -250,7 +311,15 @@ export function classifyError(
 
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
-    sign_in: "Couldn’t save your account",
+    // The write already succeeded; only the re-read of it failed, so this says
+    // the rows may be stale rather than implying the change did not land.
+    resync: "Couldn’t refresh what’s on screen",
+    open_external: "Couldn’t open that link",
+    // Three of the four `sign_in` call sites are browser flows, not writes:
+    // the OAuth offer, Settings’ switch to a Gate account, and first run’s
+    // sign-in. "Couldn’t save your account" described the fourth and read as
+    // a non sequitur after a Cognito round-trip that never saved anything.
+    sign_in: "Couldn’t complete sign-in",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",
     forget: "Couldn’t reset Gate Connect",

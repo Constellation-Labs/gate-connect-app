@@ -22,3 +22,18 @@
 /playwright-report/
 /blob-report/
 /src-tauri/binaries/
+
+.figma-mcp/.env
+.figma-mcp/assets/
+
+# TypeScript incremental build stamp (tsc -b). Machine-local, never reviewable.
+/*.tsbuildinfo
+
+# Planning notes for future sessions. Working documents, not part of the app.
+feature-plans/
+
+# Scratch output from local verification runs. These were committed once by
+# accident (a `git add -A` during a conflict resolution) and are 443KB of
+# build logs; ignore them so it cannot happen again.
+review/
+untitled.md

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { hasBrowserSurface } from "../lib/groups";
 import type { Group, GroupMember } from "../lib/groups";
 import type { AuthMode } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
@@ -56,12 +57,38 @@ function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | u
  * Takes the platform because two of these branches name the secret store, and
  * naming the wrong vault undoes the reassurance they exist to give. Takes the
  * group because one branch has to look sideways at its siblings: see
- * `configSiblingOnHost`. */
-function explain(member: GroupMember, platform: Platform, group: Group): string {
-  if (member.attention === "master-off") {
+ * `configSiblingOnHost`.
+ *
+ * One object rather than four positionals: the last two are a `Group` and a
+ * boolean, and the two before them are both things a caller could plausibly
+ * hand over in the wrong order. */
+function explain({
+  member,
+  platform,
+  group,
+  browserChannel,
+}: {
+  member: GroupMember;
+  platform: Platform;
+  group: Group;
+  /** `ProxyState.browser_proxy_channel`: whether this session has the proxy
+   *  channel a running browser re-reads. Only the chat branch consults it. */
+  browserChannel: boolean;
+}): string {
+  if (member.attention === "not-routing") {
+    // "didn't start", not "is off". Routing runs for as long as the app is
+    // open, so there is no off for the user to have chosen - being here means
+    // the launch enable did not complete.
     return member.kind === "proxy"
-      ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
-      : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
+      ? `${member.name} is switched on, but routing didn’t start, so nothing is going through Gate yet.`
+      : `${member.name}’s config points at Gate, but routing didn’t start, so it can’t reach the gateway.`;
+  }
+  if (member.attention === "unverified") {
+    // Says what is *not* known, not what is wrong. Gate has the configuration it
+    // wants and cannot confirm the traffic is following it, and the honest
+    // sentence for that is the absence of a reading - inventing a cause here
+    // would send the user to fix whichever one we guessed.
+    return `${member.name}’s config points at Gate, but Gate hasn’t been able to confirm its traffic is routing.`;
   }
   if (member.kind === "proxy") {
     if (member.attention === "needs-trust") {
@@ -85,15 +112,19 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
     // reassurance: these rows are the ones where transparency about the
     // mechanism IS the product.
     //
-    // Which clients that covers is the platform's answer, not ours, so the
-    // browser half goes through `browserScopeNote`, which is empty wherever
-    // there is nothing to claim - on Linux the proxy is wired through
-    // environment variables a browser never reads, and the host sentence has
-    // already bounded the scope without it. Sentences, not clauses, so dropping
-    // one leaves the rest reading normally.
-    if (member.chat) {
+    // Which clients that covers is the platform's *and the session's* answer,
+    // not ours, so the browser half goes through `browserScopeNote` with the
+    // `browser_proxy_channel` reading. It is empty wherever there is nothing to
+    // claim - a Linux session with no GNOME proxy schema, where Gate writes
+    // only environment variables a running browser never re-reads - and the
+    // host sentence has already bounded the scope without it. Sentences, not
+    // clauses, so dropping one leaves the rest reading normally.
+    // Keyed on the credential now, not on a `chat` flag: what makes this row
+    // want its own paragraph is that Gate is not supplying the key, and the
+    // protocol was only ever a proxy for that.
+    if (member.credential !== "brokered") {
       const hosts = member.domain?.hosts.join(", ") ?? "";
-      const scope = browserScopeNote(platform);
+      const scope = browserScopeNote(platform, browserChannel);
       const covers = member.routed
         ? `That covers everything on ${hosts}.`
         : `Switch it on and Gate records and inspects that traffic - everything on ${hosts}.`;
@@ -153,12 +184,37 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       return `${member.name}'s own config points at your Gate gateway. Requests carry the key from ${secretStoreName(platform)}; the key itself never lands in the config file.`;
     case "drifted":
       return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
+    case "overridden":
+      return `${member.name} has Gate's configuration, and another configuration it reads first sends its traffic elsewhere. The details below name that file; change it there, then re-check.`;
     case "error":
       return `Gate Connect couldn’t read ${member.name}’s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
     default:
       return `${member.name} is installed, but its config doesn’t point at Gate. Switch it on and Gate Connect will write the config for you.`;
   }
 }
+
+/**
+ * What to close for a row whose NAME is not a program.
+ *
+ * Every other row in the ledger is named for the thing you quit - "Claude Code",
+ * "Claude Desktop / Cowork" - so the generic sentence below names `member.name`
+ * and is right. `chatgpt` is not: it is drawn as "Subscription", a mode rather
+ * than an application, and "Close Subscription" asks for something nobody can
+ * do.
+ *
+ * The READING comes from `MEMBER_HINTS` in `lib/groups.ts`, which already
+ * answers "the programs behind this row"; the wording is this sentence's own,
+ * because the hint is a noun phrase for a hover ("Work in the ChatGPT app, and
+ * Codex, on your ChatGPT subscription") and does not slot into "Close …". So
+ * this is a second table, deliberately, and the thing to check when either
+ * moves is that they still name the same programs.
+ * `proxy/catalog.rs` says OpenClaw reaches this entry too, through the engine
+ * rather than the relay, and the hint does not name it; the hint is the UI's
+ * one answer and this follows it rather than inventing a second.
+ */
+const PROGRAMS_TO_CLOSE: Readonly<Record<string, string>> = {
+  chatgpt: "the ChatGPT app and Codex",
+};
 
 /** The band that tells the user their flip has not reached the thing it is
  * about yet. Shown only when the change actually put traffic in flight:
@@ -179,6 +235,7 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
  * tells the user WHICH tab to reload. */
 function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: () => void }) {
   const hosts = member.domain?.hosts.join(", ") ?? "";
+  const programs = PROGRAMS_TO_CLOSE[member.key];
   return (
     <div
       role="status"
@@ -186,13 +243,18 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
     >
       <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
       <div className="min-w-0 flex-1 text-gc-caption-lg font-medium leading-snug text-gc-ink">
-        {member.chat ? (
+        {hasBrowserSurface(member) ? (
           <>
             <span className="font-semibold">
               Reload <span className="font-mono">{hosts}</span>
             </span>{" "}
             in any tab that was already open; until you do, it keeps the
             connection it had before.
+          </>
+        ) : programs ? (
+          <>
+            <span className="font-semibold">Close {programs}</span> to apply the
+            change; they pick this up the next time you open them.
           </>
         ) : (
           <>
@@ -205,7 +267,7 @@ function RestartHint({ member, onDismiss }: { member: GroupMember; onDismiss: ()
         icon="x"
         size={13}
         onClick={onDismiss}
-        aria-label={member.chat ? "Dismiss reload hint" : "Dismiss restart hint"}
+        aria-label={hasBrowserSurface(member) ? "Dismiss reload hint" : "Dismiss restart hint"}
       />
     </div>
   );
@@ -217,6 +279,9 @@ function rawDetail(member: GroupMember): string | null {
   const status = member.tool?.status;
   if (status?.kind === "error") return status.message;
   if (status?.kind === "drifted") return status.reason || null;
+  // The winning layer, verbatim. It is the only thing on screen that says where
+  // to go and look, so it gets the same treatment as a drift reason.
+  if (status?.kind === "overridden") return status.source || null;
   return null;
 }
 
@@ -282,6 +347,7 @@ export function GroupMembers({
   onTrustCa,
   trustPending,
   proxyOn,
+  browserChannel,
   onEnableRouting,
   authMode,
 }: {
@@ -297,9 +363,14 @@ export function GroupMembers({
    * can name the dialog instead of showing a dead button. */
   trustPending: boolean;
   /** Whether the engine is running. A member can be switched on and still not
-   * route, which is what the master-off state is. */
+   * route, which is what the not-routing state is. */
   proxyOn: boolean;
-  /** The remedy for the master-off state, for the same reason `onTrustCa`
+  /** Whether the session has the proxy channel a running browser reads, so a
+   * chat row's copy can say whether it covers the browser. A reading
+   * (`ProxyState.browser_proxy_channel`), not a platform guess: on Linux it is
+   * false wherever GNOME's proxy schema is absent. */
+  browserChannel: boolean;
+  /** The remedy for the not-routing state, for the same reason `onTrustCa`
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
   /** So a gateway 401 sends an OAuth user to sign-in and a key user to the
@@ -387,8 +458,8 @@ export function GroupMembers({
         <div className="mx-3.5 mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
           <div className="min-w-0 flex-1 basis-[9em] text-gc-caption leading-snug text-gc-ink-2">
-            Switched on, but routing is off, so nothing here is going through
-            Gate.
+            Switched on, but routing didn’t start, so nothing here is going
+            through Gate.
           </div>
           <Button
             variant="accent"
@@ -404,7 +475,7 @@ export function GroupMembers({
 
       {(untrusted.length > 0 || trustPending) && (
         // The last member state to get a banner, and the only blocking one that
-        // did not have one: `master-off`, `error` and `drifted` each announced
+        // did not have one: `not-routing`, `error` and `drifted` each announced
         // themselves at group level while the certificate was named on the
         // family row and then explained nowhere, with its remedy two disclosures
         // down inside a member. Since the family row says "certificate not
@@ -417,8 +488,8 @@ export function GroupMembers({
         // still coming up. Without this the OS dialog appeared over a panel
         // that never mentioned it.
         //
-        // Mutually exclusive with the master-off banner above: a member can only
-        // be untrusted while the engine is running, and only master-off while it
+        // Mutually exclusive with the not-routing banner above: a member can only
+        // be untrusted while the engine is running, and only not-routing while it
         // is not. Warning wash with the colour on the icon and the sentence in
         // ink, per the Wash-First rule, and the same words Home's card uses so
         // the two screens do not describe one certificate two ways.
@@ -625,7 +696,7 @@ export function GroupMembers({
               {/* Its own full-width line, below the name/pill/switch row. In
                   that row the host shared width with the pill, so the wider
                   the pill the shorter the identifier: "Set up elsewhere" left
-                  49px and rendered "api.ope…", "Waiting on routing" left 44px
+                  49px and rendered "api.ope…", "Not routing" left 44px
                   and rendered "api.an…". The identifier was cut hardest in
                   exactly the two states that report a problem.
 
@@ -701,7 +772,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform, group)}
+                    {explain({ member, platform, group, browserChannel })}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide
@@ -720,7 +791,7 @@ export function GroupMembers({
                       with two members expanded the screen showed three
                       identical "Turn on routing" buttons for one action. The
                       remedy-travels-with-the-problem rule needs this clause. */}
-                  {member.attention === "master-off" && !(group.desired > 0 && !proxyOn) && (
+                  {member.attention === "not-routing" && !(group.desired > 0 && !proxyOn) && (
                     <Button
                       variant="accent"
                       size="sm"
@@ -771,15 +842,19 @@ export function GroupMembers({
                   )}
 
                   {/* Inside the disclosure, where it has always been, for
-                      the members it has always served. The chat rows take the
-                      copy outside it instead - see below. */}
-                  {changed === member.key && !error && member.routed && !member.chat && (
+                      the members it has always served - the rows whose remedy is
+                      closing a program, `chatgpt` now included. The rows a
+                      browser tab sits on take the copy outside it instead - see
+                      below. */}
+                  {changed === member.key && !error && member.routed && !hasBrowserSurface(member) && (
                     <RestartHint member={member} onDismiss={() => setChanged(null)} />
                   )}
                 </div>
               )}
 
-              {/* OUTSIDE the disclosure, and only for the chat rows. The hint
+              {/* OUTSIDE the disclosure, and only for the rows a browser tab can
+                  be sitting on - which is not the same set as the signed-in
+                  ones, see `hasBrowserSurface`. The hint
                   above renders inside `open`, so a user who flips a switch
                   without also expanding the row never sees it - survivable for a
                   config tool, whose own launch is the next thing that applies
@@ -796,9 +871,13 @@ export function GroupMembers({
                   nothing. The flip is the only moment the advice reliably lands,
                   so on these rows it has to be visible at the flip.
 
+                  Which is why `chatgpt` is not here despite reading as a chat
+                  row on every field: what talks to it is Codex and the ChatGPT
+                  app's Work mode, and both are programs that get closed.
+
                   Its own padded band rather than the disclosure's `px-3.5 pb-3`,
                   since collapsed rows have no such wrapper to sit in. */}
-              {changed === member.key && !error && member.routed && member.chat && (
+              {changed === member.key && !error && member.routed && hasBrowserSurface(member) && (
                 <div className="px-3.5 pb-3">
                   <RestartHint member={member} onDismiss={() => setChanged(null)} />
                 </div>

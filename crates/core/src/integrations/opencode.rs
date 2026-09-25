@@ -18,13 +18,16 @@
 //! "provider": {
 //!   "<id>": {
 //!     "options": {
-//!       "baseURL": "http://127.0.0.1:<relay-port>/<slug><client-path>"
+//!       "baseURL": "http://127.0.0.1:<relay-port>/__gate/t/opencode/<slug><client-path>"
 //!     }
 //!   }
 //! }
 //! ```
 //!
-//! That single value is the entire write. Both parts come from
+//! That single value is the entire write. The `/__gate/t/opencode` marker names
+//! the tool to the relay, which is what lets `x-gate-client` be read off the
+//! route we wrote rather than guessed from OpenCode's `User-Agent`; see
+//! `proxy::relay`'s `TOOL_PATH_PREFIX`. The rest comes from
 //! [`crate::proxy::resolve_endpoint`]: `<slug>` names the catalog domain, which
 //! is how the relay knows where to forward, and `<client-path>` is whatever sits
 //! between the upstream host and the SDK's own suffix - `/v1` for Anthropic and
@@ -70,9 +73,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::env;
+use crate::integrations::binaries;
+use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -224,6 +229,18 @@ impl Integration for OpenCode {
         "OpenCode"
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::OpenCode
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["opencode"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -232,8 +249,28 @@ impl Integration for OpenCode {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        settings_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // The sidecar under app support is deliberately absent: it changes
+        // because `connect` wrote it, and that path already refreshes.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::opencode_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         Ok(env::opencode_config_dir()?.exists())
@@ -267,10 +304,6 @@ impl Integration for OpenCode {
     /// `provider.<id>.options.baseURL` names the loopback relay, which dies with the engine.
     fn mechanism(&self) -> Mechanism {
         Mechanism::Relay
-    }
-
-    fn config_location(&self) -> Option<PathBuf> {
-        settings_path().ok()
     }
 
     fn configured_addresses(&self) -> Result<Vec<String>> {
@@ -346,9 +379,17 @@ impl Integration for OpenCode {
                 drifted.push(provider_id.clone());
             }
         }
+        // Neither message blames the user for the edit. A hand edit is one cause
+        // of this state and the loud one, but the other is a base URL of ours
+        // that has gone stale - a new relay port, or the tool marker the URL now
+        // carries - and that one is ours, arrives for everybody at once on an
+        // upgrade, and is repaired without the user doing anything. Saying
+        // "edited by hand" there is both wrong and alarming. The first message
+        // also used to name headers, which this integration stopped writing when
+        // the baseURL became the whole test.
         if healthy == 0 {
             return Ok(Status::Drifted(format!(
-                "no providers carry Gate headers; expected: {}",
+                "no providers point at the Gate relay; expected: {}",
                 state
                     .providers
                     .keys()
@@ -386,9 +427,15 @@ impl Integration for OpenCode {
         }
         if !drifted.is_empty() {
             return Ok(Status::Drifted(format!(
-                "some providers were edited by hand and no longer route via Gate: {}",
+                "some providers no longer point at the Gate relay: {}",
                 drifted.join(", ")
             )));
+        }
+        // Our redirect is in the file we are allowed to write. OpenCode merges
+        // five more layers over that one, and two of them are visible from here
+        // (AG-674).
+        if let Some(o) = overriding_layer(state.providers.keys(), &expected_base) {
+            return Ok(o.into_status());
         }
         Ok(Status::Connected)
     }
@@ -430,6 +477,21 @@ impl Integration for OpenCode {
         // user-custom gateways like `gateway` are already outside
         // KNOWN_PROVIDERS, so this only ever fires on collisions
         // inside the allowlist.
+        //
+        // Except when the private endpoint is *ours*. The relay lives on
+        // `http://127.0.0.1:<port>`, which `looks_local` answers `true` for, so
+        // without this exemption the guard fires on every already-connected
+        // provider and a re-apply finds nothing left to target. That is not
+        // theoretical: it is what a re-apply always is - the reconcile pass
+        // rewriting a base URL of our own that has gone stale, which is exactly
+        // how an existing install picks up a new relay port, or the tool marker
+        // this file now writes.
+        //
+        // `is_relay_base_url` and not "is it in the sidecar", which would have
+        // been the easy test and the wrong one: a provider we connected and the
+        // user has since repointed at their own local server is in the sidecar
+        // too, and exempting it would take their endpoint back. It asks whether
+        // the string is one we could have written, at whatever port it names.
         let mut skipped_local: Vec<&str> = Vec::new();
         let targets: Vec<&KnownProvider> = candidates
             .into_iter()
@@ -444,7 +506,9 @@ impl Integration for OpenCode {
                     .and_then(|o| o.get("baseURL"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if !existing.is_empty() && looks_local(existing) {
+                let ours = crate::proxy::resolve_endpoint(p.endpoint)
+                    .is_some_and(|r| r.is_relay_base_url(existing, ToolId::OpenCode));
+                if !existing.is_empty() && looks_local(existing) && !ours {
                     skipped_local.push(p.id);
                     false
                 } else {
@@ -486,7 +550,7 @@ impl Integration for OpenCode {
                 skipped_off_catalog.push(target.id);
                 continue;
             };
-            let base_url = resolved.relay_base_url(relay_base_url);
+            let base_url = resolved.relay_base_url(relay_base_url, ToolId::OpenCode);
             apply_override(provider_map, &mut state, target, &base_url);
             applied += 1;
         }
@@ -665,7 +729,102 @@ fn restore_provider(
 fn expected_base_url(provider_id: &str, relay_base_url: &str) -> Option<String> {
     let target = KNOWN_PROVIDERS.iter().find(|p| p.id == provider_id)?;
     let resolved = crate::proxy::resolve_endpoint(target.endpoint)?;
-    Some(resolved.relay_base_url(relay_base_url))
+    Some(resolved.relay_base_url(relay_base_url, ToolId::OpenCode))
+}
+
+// --- precedence -------------------------------------------------------
+
+/// A layer OpenCode merges over the file Gate writes, when it repoints one of
+/// the providers we redirect.
+///
+/// OpenCode merges its config from six sources, later winning, and scalars like
+/// `options.baseURL` are overwritten rather than combined. Lowest to highest:
+/// the remote org config, the global `opencode.json` Gate writes, the
+/// `OPENCODE_CONFIG` file, the project's `./opencode.json`, its `.opencode/`
+/// directory, and `OPENCODE_CONFIG_CONTENT` - with a managed `/etc/opencode`
+/// above all of them.
+///
+/// Two of those are reachable from a windowed process: the managed file, whose
+/// path does not move, and `OPENCODE_CONFIG_CONTENT` when it is in our own login
+/// environment. `OPENCODE_CONFIG` needs no check here because
+/// [`crate::env::opencode_config_path`] already writes there when it is set - we
+/// are that layer, not under it.
+///
+/// **The project layer stays invisible, and it is the common one.** Per-repo
+/// `opencode.json` is a documented, ordinary pattern (finding O1 in
+/// `docs/harness-integration-validation.md`), and which repo the user is in is
+/// not something this process knows. So this narrows the failure rather than
+/// closing it: what it can see it now reports, and the rest is written down
+/// instead of being quietly counted as connected.
+fn overriding_layer<'a>(
+    providers: impl Iterator<Item = &'a String>,
+    relay_base_url: &str,
+) -> Option<Override> {
+    let providers: Vec<String> = providers.cloned().collect();
+
+    let managed_path = env::opencode_managed_config_path();
+    // An unreadable managed file is not evidence of an override. It is an
+    // administrator's, we never write it, and failing `status` on somebody
+    // else's malformed JSON would replace a wrong answer with a useless one.
+    if let Some(managed) = super::json_config::load_object(&managed_path)
+        .ok()
+        .flatten()
+    {
+        if let Some(o) = override_in(
+            &managed,
+            &managed_path.display().to_string(),
+            &providers,
+            relay_base_url,
+        ) {
+            return Some(o);
+        }
+    }
+
+    let inline = std::env::var("OPENCODE_CONFIG_CONTENT").ok()?;
+    let parsed: Map<String, Value> = serde_json::from_str(&inline).ok()?;
+    override_in(
+        &parsed,
+        "the OPENCODE_CONFIG_CONTENT environment variable",
+        &providers,
+        relay_base_url,
+    )
+}
+
+/// One layer, read for the providers we redirect. Split from where the layer
+/// comes from so both sources are the same check, and so a test can supply one
+/// without writing to `/etc`.
+fn override_in(
+    layer: &Map<String, Value>,
+    source: &str,
+    providers: &[String],
+    relay_base_url: &str,
+) -> Option<Override> {
+    let block = layer.get("provider").and_then(|v| v.as_object())?;
+    for provider_id in providers {
+        let Some(base_url) = block
+            .get(provider_id)
+            .and_then(|v| v.as_object())
+            .and_then(|b| b.get("options"))
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("baseURL"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        // The same value is not a conflict: a managed layer that happens to
+        // name our relay leaves the traffic exactly where we put it.
+        if expected_base_url(provider_id, relay_base_url).as_deref() == Some(base_url) {
+            continue;
+        }
+        return Some(Override::new(
+            source,
+            format!(
+                "points provider {provider_id:?} at {base_url:?}, which OpenCode merges over the \
+                 Gate redirect in its global config"
+            ),
+        ));
+    }
+    None
 }
 
 // --- file I/O ---------------------------------------------------------
@@ -723,6 +882,93 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// AG-674's disagreement case for OpenCode. Our redirect is in the global
+    /// file and correct; a layer OpenCode merges over it sends `anthropic`
+    /// straight to Anthropic. Reporting that as Connected is the exact failure
+    /// finding O1 describes.
+    #[test]
+    fn a_higher_layer_repointing_a_gated_provider_is_an_override() {
+        let layer: Map<String, Value> = json!({
+            "provider": {
+                "anthropic": { "options": { "baseURL": "https://api.anthropic.com/v1" } }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let o = override_in(
+            &layer,
+            "/etc/opencode/opencode.json",
+            &["anthropic".to_string()],
+            "http://127.0.0.1:9977",
+        )
+        .expect("a repointed provider is an override");
+        assert!(o.source.contains("/etc/opencode/opencode.json"));
+        assert!(o.to_string().contains("api.anthropic.com"));
+    }
+
+    /// A layer that names the same relay URL we wrote changes nothing, and a
+    /// layer that only touches providers we never gated is not our business.
+    #[test]
+    fn a_layer_agreeing_with_us_or_touching_other_providers_is_not_an_override() {
+        let same: Map<String, Value> = json!({
+            "provider": {
+                "anthropic": {
+                    "options": { "baseURL": "http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1" }
+                }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &same,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+
+        let elsewhere: Map<String, Value> = json!({
+            "provider": { "llamacpp": { "options": { "baseURL": "http://localhost:8080/v1" } } }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &elsewhere,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+    }
+
+    /// A layer can set other provider options without deciding the route. Only
+    /// `options.baseURL` moves the traffic, so only it counts.
+    #[test]
+    fn a_layer_setting_other_options_is_not_an_override() {
+        let layer: Map<String, Value> = json!({
+            "provider": { "anthropic": { "options": { "timeout": 60000 } } }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &layer,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+    }
+
     #[test]
     fn expected_base_url_carries_the_per_provider_path() {
         // Each base URL names the catalog slug the relay routes on, then the
@@ -730,24 +976,24 @@ mod tests {
         // OpenRouter, whose API lives under `/api`.
         assert_eq!(
             expected_base_url("anthropic", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/anthropic/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/anthropic/v1")
         );
         assert_eq!(
             expected_base_url("openai", "http://127.0.0.1:9977/").as_deref(),
-            Some("http://127.0.0.1:9977/openai/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/openai/v1")
         );
         assert_eq!(
             expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/openrouter/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1")
         );
         // Zen and Go keep their own paths under the shared opencode.ai upstream.
         assert_eq!(
             expected_base_url("opencode", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/opencode/zen/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/opencode/zen/v1")
         );
         assert_eq!(
             expected_base_url("opencode-go", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/opencode/zen/go/v1")
+            Some("http://127.0.0.1:9977/__gate/t/opencode/opencode/zen/go/v1")
         );
         // An id that is not one we redirect has no expected value at all.
         assert_eq!(expected_base_url("nope", "http://127.0.0.1:9977"), None);

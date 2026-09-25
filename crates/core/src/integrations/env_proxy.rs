@@ -11,13 +11,24 @@
 //! ```
 //!
 //! Why it is its own entry rather than per-tool code. Some tools cannot be
-//! configured at all: OpenCode has no proxy or CA setting anywhere in its
-//! config schema and loads no dotenv, so these variables are the *only* way to
-//! route it. Writing an OpenCode-shaped integration for that would be a
-//! fiction - nothing tool-specific happens. The same export simultaneously
-//! covers anything else that reads `HTTPS_PROXY`, which is most of the
-//! Node/Bun/Python ecosystem. One mechanism, many beneficiaries, so it is
+//! *proxied* by their own config: OpenCode has no proxy or CA setting anywhere
+//! in its config schema and loads no dotenv, so these variables are the only way
+//! its sockets reach the engine. Writing an OpenCode-shaped proxy integration
+//! for that would be a fiction - nothing tool-specific happens. The same export
+//! simultaneously covers anything else that reads `HTTPS_PROXY`, which is most
+//! of the Node/Bun/Python ecosystem. One mechanism, many beneficiaries, so it is
 //! modelled once.
+//!
+//! **These variables are not the only way OpenCode routes**, which is what this
+//! doc used to say. [`crate::integrations::opencode`] rewrites
+//! `provider.<id>.options.baseURL` to the loopback relay, needing neither a
+//! variable nor the CA, and it predates this module. The two cover different
+//! sets and neither subsumes the other: the rewrite is a snapshot taken at
+//! connect time over that module's `KNOWN_PROVIDERS`, so a provider the user
+//! adds afterwards, one outside the allowlist, or one its `looks_local` guard
+//! skips has no rewrite and is this channel's to carry. That is why turning
+//! OpenCode on also turns this channel on rather than either standing alone -
+//! see `useRouting`'s `opencode-env` prompt.
 //!
 //! Why it is a *choice*. These variables are machine-wide: `HTTPS_PROXY`
 //! redirects git, curl, npm and everything else, not just the AI tools. That is
@@ -42,10 +53,16 @@
 //! something else decides the wire.
 
 use anyhow::Result;
+use std::path::PathBuf;
 
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
-const DISPLAY_NAME: &str = "Environment proxy";
+/// "Terminal tools", not "Environment proxy". The row is under Experimental
+/// beside OpenCode, and it is read by someone deciding whether to let Gate touch
+/// their shell - so it names the beneficiaries (git, curl, npm, every CLI that
+/// reads the variables) rather than the mechanism. The mechanism is still the
+/// module doc above, and the description beside the row says it too.
+const DISPLAY_NAME: &str = "Terminal tools";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 
@@ -60,6 +77,22 @@ impl Integration for EnvProxy {
         DISPLAY_NAME
     }
 
+    /// Not a program, so not a client of its own: this row is the machine
+    /// itself, and it shares the heading with the host entries that also cover
+    /// whatever happens to be running.
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::AnyApp
+    }
+
+    /// The one integration that is not [`Scope::Client`]. It writes the login
+    /// environment, so what it routes is every program started afterwards -
+    /// `git` and `curl` included, not only AI tools.
+    ///
+    /// [`Scope::Client`]: crate::taxonomy::Scope::Client
+    fn scope(&self) -> crate::taxonomy::Scope {
+        crate::taxonomy::Scope::Machine
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -70,6 +103,13 @@ impl Integration for EnvProxy {
 
     /// "Installed" means the platform can export at all. There is no binary to
     /// look for: the capability is the OS, not a tool.
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // Empty, and a real answer: this channel writes machine-wide settings
+        // rather than a file, and its status comes from the engine - which
+        // emits `proxy-state-changed` on its own.
+        Vec::new()
+    }
+
     fn detect(&self) -> Result<bool> {
         Ok(supported())
     }
@@ -134,15 +174,24 @@ impl Integration for EnvProxy {
         crate::proxy::set_env_export(false)
     }
 
-    /// Kept out of the *ledger*, which is not the same as kept out of the UI.
+    /// Listed now, under Experimental.
     ///
-    /// Home groups by model family; this is a mechanism spanning every family,
-    /// so it has no honest row there. It surfaces instead as a switch under the
-    /// master one in the Routing card, fed by `ProxyState.env_export_opted_in`
-    /// rather than by `list_tools` - which is the right shape, because it is a
-    /// property of routing rather than a tool alongside Claude Code.
+    /// It was hidden because Home groups by model family and this is a mechanism
+    /// spanning every family, so it had no honest row there. `src/lib/groups.ts`
+    /// no longer forces that choice: the leftovers the provider catalog claims
+    /// for nobody are split by slug, and this one lands under Experimental
+    /// beside OpenCode - which is the tool that cannot route without it.
+    ///
+    /// That pairing is the reason to show it. Turning OpenCode on turns this on
+    /// too, and a switch that flips something the user cannot see is the failure
+    /// this row removes.
+    ///
+    /// The Routing card's env-export switch stays: both write
+    /// `proxy::set_env_export`, so the row and the switch cannot disagree, and
+    /// the card is where someone looks for a property of routing rather than for
+    /// a tool.
     fn hidden_in_ui(&self) -> bool {
-        true
+        false
     }
 }
 

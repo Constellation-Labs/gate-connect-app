@@ -51,14 +51,97 @@ export class App {
     }, patch as Record<string, unknown>);
   }
 
-  /** The switch that turns routing on and off. */
-  get routingSwitch() {
-    return this.page.getByRole("switch", { name: "Route through Gate" });
-  }
-
-  /** A family row on Home ("Claude", "OpenAI", "Other tools"). */
+  /** A section row on Home ("Claude", "ChatGPT / Codex", "Terminal"). */
   familyRow(name: string) {
     return this.page.getByRole("button", { name: `${name} details` });
+  }
+
+  /** Open one app's pane from the rail.
+   *
+   *  One button per row since the switch went: the row's own select control.
+   *  Its accessible name leads with the app name and carries the status after
+   *  it, so this matches on the name rather than requiring the whole string. */
+  openApp(name: string) {
+    return this.page
+      .getByRole("listitem")
+      .filter({ has: this.page.getByRole("button", { name }) })
+      .getByRole("button", { name })
+      .first()
+      .click();
+  }
+
+  /** The TRAY's switch for one app row, which the tray still has.
+   *
+   *  The window's rail lost its switches on 2026-09-22 and the tray did not -
+   *  it is a different surface and design scoped the change to the rail. A
+   *  tray spec must therefore address its own control rather than go through
+   *  {@link appSwitch}, which now opens a window pane the tray has not got. */
+  trayAppSwitch(name: string) {
+    return this.page.getByRole("switch", { name, exact: true });
+  }
+
+  /** {@link routeApp} for the tray, clicking the row's own switch. */
+  async routeTrayApp(name: string) {
+    await this.trayAppSwitch(name).click();
+  }
+
+  /**
+   * The switch for one app section - on that app's own PANE.
+   *
+   * The rail had one until 2026-09-22 and this returned it, named for the app
+   * alone. Design removed it: a rail row drew the app's state and a control
+   * for its intent on one line, and those are different questions. Routing
+   * happens on the pane now, where there is room to say what the switch will
+   * do before it is flipped.
+   *
+   * So this opens the pane first. Every caller that only ever clicked reads
+   * the same; the ones that ASSERT on it without clicking used to be able to
+   * do so from any pane and now cannot, which is honest - there is one switch
+   * on screen and it belongs to the app you are looking at.
+   *
+   * The pane's label is `Route <name>`, not `<name>`, which is also what
+   * disambiguates it from the tray's rows in a shared DOM.
+   */
+  async appSwitch(name: string) {
+    await this.openApp(name);
+    return this.page.getByRole("switch", { name: `Route ${name}`, exact: true });
+  }
+
+  /**
+   * Turn an app section ON.
+   *
+   * Used to answer the session-consent dialog on the way through: a section
+   * switch routes every surface that app uses, and for Claude and ChatGPT /
+   * Codex that includes a surface the person is signed in to, which the switch
+   * asked about once per install. The dialog was removed (AG-934,
+   * 2026-09-23) and nothing asks now, so this is a click.
+   *
+   * Still only for turning ON, so a confirmation that ever appears on the way
+   * OFF fails a spec rather than being absorbed here.
+   */
+  async routeApp(name: string) {
+    await (await this.appSwitch(name)).click();
+  }
+
+  /**
+   * Open a section's pane from the rail.
+   *
+   * The rail draws one row per app section, so a tool is reached through the
+   * section that holds it - Codex through "ChatGPT / Codex". `.first()` because
+   * the row's accessible name is the section name plus its status, and a pane
+   * header can repeat the name once the pane is open.
+   *
+   * Four specs had grown their own copy of this line; the pane is where the
+   * per-tool notices are drawn (#277 and the reopen card), so it is a fixture
+   * now rather than a helper per file.
+   *
+   * Why those specs open a pane at all: the rail row prints the coloured
+   * phrase alone ("Protected", "Not protected", "Not routed"), and the pane is
+   * the only place a reason or a notice is drawn. A spec that wants the phrase
+   * reads the row; one that wants the reason, or a notice, opens the pane.
+   */
+  openSection(name: string) {
+    return this.page.getByRole("button", { name }).first().click();
   }
 
   openSettings() {

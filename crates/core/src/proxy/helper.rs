@@ -296,6 +296,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
             api_key,
             oauth_token,
             org_id,
+            billing_mode,
             ca_cert_pem,
             ca_key_pem,
             domains,
@@ -351,6 +352,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                     running.update_api_key(&api_key);
                     running.update_token(&oauth_token);
                     running.update_org(&org_id);
+                    running.update_mode(billing_mode);
                     running.update_domains(&domains);
                     running.set_intercept(true);
                     Response::Intercepting {
@@ -365,6 +367,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                             api_key,
                             oauth_token,
                             org_id,
+                            billing_mode,
                             domains,
                             ca_cert_pem,
                             ca_key_pem,
@@ -520,6 +523,7 @@ mod tests {
             ca_cert_pem: ca.0.clone(),
             ca_key_pem: ca.1.clone(),
             domains: crate::proxy::default_domains(),
+            billing_mode: Default::default(),
             detached: false,
             preferred_port: None,
             preferred_relay_port: None,

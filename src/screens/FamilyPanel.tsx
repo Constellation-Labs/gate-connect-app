@@ -28,7 +28,7 @@ import { GroupMembers } from "./GroupMembers";
  * rotating caret that meant "expands in place" has nothing left to open.
  *
  * The count sits under the switch rather than the exception sentence. Every
- * exception `groupSummary` can name - error, needs-trust, master-off, drifted -
+ * exception `groupSummary` can name - error, needs-trust, not-routing, drifted -
  * has a banner below with the remedy attached, so printing the summary here too
  * would state one fact twice on one screen and put the shorter, unactionable
  * copy first. The count is the half the banners do not carry, and on a panel
@@ -43,6 +43,7 @@ export function FamilyPanel({
   onTrustCa,
   trustPending,
   proxyOn,
+  browserChannel,
   onEnableRouting,
   authMode,
 }: {
@@ -57,6 +58,8 @@ export function FamilyPanel({
   onTrustCa: () => Promise<void>;
   trustPending: boolean;
   proxyOn: boolean;
+  /** Passed straight through to `GroupMembers`, which explains it. */
+  browserChannel: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
 }) {
@@ -146,6 +149,7 @@ export function FamilyPanel({
         onTrustCa={onTrustCa}
         trustPending={trustPending}
         proxyOn={proxyOn}
+        browserChannel={browserChannel}
         onEnableRouting={onEnableRouting}
         authMode={authMode}
       />

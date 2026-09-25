@@ -1,0 +1,213 @@
+import { test, expect } from "./fixtures";
+
+/**
+ * The routing verdict on screen: AG-562's rule that a status line reports
+ * verified behaviour rather than what a config file says.
+ *
+ * What this covers that `lib/verdict.test.ts` cannot: that the sidebar actually
+ * asks the backend for a verdict rather than deriving the line from
+ * `Tool.status`, and that the switch stays on intent while the line moves. Those
+ * two are the same bug `lib/groups.ts` documents, one level down.
+ *
+ * Opts into the new shell per-test, like the rest of the `new-ui-*` specs; the
+ * suite default is the popover (`VITE_NEW_UI=0`).
+ */
+const useNewUi = { gc: "gc.newUi" };
+
+const connectedCodex = {
+  slug: "codex",
+  // The surface, not the product: rows are named for what they cover and the
+  // eyebrow over them says "OpenAI".
+  name: "CLI",
+  upstream_provider_name: "OpenAI",
+  default_upstream_url: "https://gw.example/codex",
+  status: { kind: "connected" as const },
+};
+
+test.describe("new UI routing verdict", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("a connected app reads Protected only once the sweep confirms it", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+    });
+
+    // `exact`, because the sidebar's own eyebrow reads "Protected apps".
+    await expect(app.page.getByText("Protected", { exact: true })).toBeVisible();
+    // The sweep is a real command, not a derivation from the tool list.
+    await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
+  });
+
+  /**
+   * The behaviour the whole ticket turns on. The config still says connected -
+   * nothing was written - but with the engine down the relay cannot carry
+   * anything, so the row must not claim protection.
+   */
+  test("a connected app whose relay is down reads Not protected, and says why in the pane", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: false, ca_trusted: true },
+      tools: [connectedCodex],
+    });
+
+    // The row's job is to stop claiming protection. Its reason is the pane's.
+    await expect(app.page.getByText("Not protected").first()).toBeVisible();
+    await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
+
+    // Both cards: the routing card carries the fix, and the status card says
+    // what the sweep measured. Neither stands in for the other, because a
+    // pane's notice can be about a different member than its reason.
+    await app.openSection("ChatGPT / Codex");
+    await expect(
+      app.page.getByText("Routing didn’t start when Gate Connect opened", { exact: false }),
+    ).toBeVisible();
+    const note = statusNote(app.page);
+    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
+    await expect(note).toContainText("Connection problem");
+  });
+
+  /**
+   * Intent and observation stay separate. A tool that cannot be verified is
+   * still one the user asked to route, so its switch must read on - otherwise
+   * clicking it turns off the setting they were trying to turn on.
+   */
+  test("a failing verdict does not move the switch", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: false, ca_trusted: true },
+      tools: [connectedCodex],
+    });
+
+    // Waits for the sweep to have landed before reading the switch.
+    await expect(app.page.getByText("Not protected").first()).toBeVisible();
+    const sidebarSwitch = await app.appSwitch("ChatGPT / Codex");
+    await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("a tool whose process predates the routing change is told to reopen, in the pane", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+      staleAgents: 1,
+    });
+
+    await app.openSection("ChatGPT / Codex");
+    // `ReopenAlert`, which is the pane's own card. The bare phrase "Reopen to
+    // finish" is on the rail row and the tray row too - the surfaces that
+    // carry one fact, which is what the phrase is for - so this takes the
+    // one that names the tool inside the sentence. It read "Reopen required"
+    // until the rail had a phrase for this state: the row drew a bare
+    // "Not protected" then, so the reason matched here and nowhere else.
+    await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
+    // The reopen card names this cause and carries its fix, so the status card
+    // does not repeat it.
+    await expect(statusNote(app.page)).toHaveCount(0);
+  });
+
+  /**
+   * AG-570's reopen requirement, minus the half nothing measured.
+   *
+   * The card used to print "In use: <the tool's own upstream>" against a
+   * managed config, and "In use: <the gateway>" against an absent one, both
+   * inferred from the file rather than read off the process. Gate cannot see
+   * inside another process, and the inference was caught being wrong: a tool
+   * with no Gate values in its environment or its config for a week, under a
+   * card saying it was still on the gateway. The pair is drawn only when both
+   * halves are present, so the card now carries the phrase and the action and
+   * names no endpoint at all.
+   */
+  test("the reopen card names the situation and the action, and claims no route", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+      staleAgents: 1,
+      runningAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    await app.openSection("ChatGPT / Codex");
+
+    await expect(
+      app.page.getByText(/It was already running when its configuration changed/),
+    ).toBeVisible();
+    await expect(app.page.getByText(/In use:/)).toHaveCount(0);
+    await expect(app.page.getByText("https://gw.example/codex")).toHaveCount(0);
+
+    await app.page.getByRole("button", { name: "Close tool" }).click();
+
+    // Hands over to the close-and-reopen conversation, scoped to this tool:
+    // Gate can close a process, and only the user can reopen it.
+    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
+      only: ["codex"],
+    });
+    await expect(app.page.getByRole("dialog")).toBeVisible();
+  });
+
+  test("a disconnected app reads Not routed", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...connectedCodex, status: { kind: "detected" as const } }],
+    });
+
+    // Scoped to the Codex row: the catalog's proxy domains are rail rows too
+    // now, and while disabled they read "Not routed" as well.
+    const row = app.page
+      .getByRole("listitem")
+      .filter({
+        // The row's select button, since the rail's switches went on
+        // 2026-09-22. Its accessible name leads with the app name.
+        has: app.page.getByRole("button", { name: "ChatGPT / Codex" }),
+      });
+    await expect(row.getByText("Not routed")).toBeVisible();
+  });
+
+  test("a drifted config reads Not protected, and the pane offers the reconnect", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          ...connectedCodex,
+          status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
+        },
+      ],
+    });
+
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Not protected" }),
+    ).toBeVisible();
+    await app.openSection("ChatGPT / Codex");
+    await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
+    // The drift card is the reason, with its fix; no second card says it.
+    await expect(statusNote(app.page)).toHaveCount(0);
+  });
+
+  test("an unanswered sweep draws no status card", async ({ boot }) => {
+    // The row reads "Not protected" with "Checking" behind it for as long as
+    // the sweep has no answer. That is not a measured fault, so the pane must
+    // not raise a card saying the app isn't protected.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+      failures: { routing_verdicts: "sweep failed" },
+    });
+
+    await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
+    await app.openSection("ChatGPT / Codex");
+    await expect(app.page.getByRole("heading", { name: "ChatGPT / Codex" })).toBeVisible();
+    await expect(statusNote(app.page)).toHaveCount(0);
+  });
+});
+
+/** The pane's status card, found by its title rather than by position. */
+function statusNote(page: import("@playwright/test").Page) {
+  return page.getByRole("status").filter({ hasText: /isn’t protected/ });
+}

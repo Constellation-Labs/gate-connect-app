@@ -73,17 +73,190 @@ export function installFakeTauri(state: BackendState): void {
   }
 
   /** Recompute a provider's headline from its members, the way the Rust
-   *  provider layer does: on when at least one member is routed. */
+   *  provider layer does: on when at least one member is routed.
+   *
+   *  `cascade_domain_slugs`, not `domain_slugs`. The two split apart on the
+   *  taxonomy branch: the first is what the family switch may flip, the second
+   *  is everything in the family including the session surfaces it must never
+   *  touch (`provider::cascade_domains`, and `proxy_domains_enabled` which reads
+   *  only the cascade). Reading the wide one here made the fake say `openai` was
+   *  enabled because someone had turned on the ChatGPT chat row, which the real
+   *  provider cannot do - its cascade is empty. */
   function syncProvider(slug: string) {
     const p = provider(slug);
     const toolsOn = p.tool_slugs.some(
       (s) => state.tools.find((t) => t.slug === s)?.status.kind === "connected",
     );
-    const domainsOn = p.domain_slugs.some(
+    const domainsOn = p.cascade_domain_slugs.some(
       (s) => state.proxy.domains.find((d) => d.slug === s)?.enabled,
     );
     p.enabled = toolsOn || domainsOn;
     return p;
+  }
+
+  /** Rust's `AGENT_PROCESSES`: tool slug to the process name it runs under.
+
+      The last two are the desktop apps, and their slugs are proxy-domain keys
+      rather than registry tool ids - Gate routes them through the system proxy
+      instead of rewriting a config. They were missing here, which is why no
+      spec could reach AG-900: the harness could not model a Claude desktop app
+      being open at all.
+
+      **Case is the difference between the first row and the fourth**, exactly
+      as in Rust: `Claude` is the desktop app, `claude` is the CLI, and
+      `agent_name_of` deliberately does not fold them together. */
+  const AGENT_PROCESSES: [string, string][] = [
+    ["claude-code", "claude"],
+    ["codex", "codex"],
+    ["opencode", "opencode"],
+    ["anthropic", "Claude"],
+    ["chatgpt", "ChatGPT"],
+  ];
+
+  /** Rust's `agent_names_for`: null/undefined asks about every tool, a list
+      narrows to those slugs, and an unknown slug narrows to nothing. */
+  function agentNamesFor(only: string[] | null | undefined): string[] {
+    return AGENT_PROCESSES.filter(([slug]) => only == null || only.includes(slug)).map(
+      ([, name]) => name,
+    );
+  }
+
+  /** Rust's `Surface::App` rows: the desktop apps, which own their own window
+      and can therefore be relaunched, unlike a CLI inside a shell session Gate
+      does not own. */
+  const APP_SURFACE_SLUGS = ["anthropic", "chatgpt"];
+
+  /** Rust's `display_name` per slug, for the surfaces that list tools rather
+      than rail rows. A fixture's own `displayName` wins over it. */
+  const PRODUCT_NAMES: Record<string, string> = {
+    "claude-code": "Claude Code",
+    codex: "Codex",
+    opencode: "OpenCode",
+    anthropic: "Claude Desktop",
+    chatgpt: "ChatGPT",
+  };
+
+  /** Rust's `agent_slug_of`: which tool a process belongs to, matched on the
+      same name the walk filtered by.
+
+      `normalise_agent_name` strips a `.exe` suffix case-insensitively and
+      leaves the name itself alone, so the comparison is exact. It used to
+      lowercase here, which folded `Claude` onto the `claude-code` row - the
+      very bug Rust's own comment records having fixed. */
+  function agentSlugOf(name: string): string {
+    const bare = /\.exe$/i.test(name) ? name.slice(0, -4) : name;
+    return AGENT_PROCESSES.find(([, n]) => n === bare)?.[0] ?? "";
+  }
+
+  /** What the verdict layer calls the Gate route: the account's own gateway URL,
+      or the same fallback the backend uses when it cannot read one. */
+  function gateRoute(): string {
+    return state.account?.gateway_base_url ?? "Constellation Gate";
+  }
+
+  /** Rust's `recovery_summary`, assembled from the same four sources: the
+      journal (what the write reached), the snapshots (what is still owed), the
+      verdict log (what the last check saw) and the process table.
+
+      The verdict half is derived from `routing_verdicts` rather than stubbed per
+      slug, so a spec cannot set up a summary the real backend could never
+      produce - the same rule the verdict handler above follows. */
+  function recoverySummary() {
+    const journal = state.restoreJournal;
+    const pending = [
+      ...state.pendingRestore.providers.map((e) => ({ ...e, kind: "provider" as const })),
+      ...state.pendingRestore.tools.map((e) => ({ ...e, kind: "tool" as const })),
+    ];
+    if (!journal && pending.length === 0) return null;
+    const verdicts = commands.routing_verdicts({}) as {
+      slug: string;
+      state: string;
+      reason: string | null;
+    }[];
+    const rows = [
+      ...(journal?.entries.map((e) => ({
+        slug: e.slug,
+        name: e.name,
+        kind: e.kind,
+        stage: e.outcome,
+        at: e.at_unix,
+        error: e.error ?? null,
+      })) ?? []),
+      // Pending entries the journal never mentioned, seeded `pending` - what
+      // `JournalWriter::reopen` does, for the same reason.
+      ...pending
+        .filter((p) => !journal?.entries.some((e) => e.slug === p.slug))
+        .map((p) => ({
+          slug: p.slug,
+          name: p.name,
+          kind: p.kind,
+          stage: "pending" as const,
+          at: 0,
+          error: null,
+        })),
+    ];
+    const complete = ["restored", "not_installed", "unknown"];
+    return {
+      operation: "restore",
+      updated_unix: journal?.updated_unix ?? 0,
+      requested_routing_on: journal?.requested_routing_on ?? true,
+      tools: rows.map((row) => {
+        const verdict = verdicts.find((v) => v.slug === row.slug) ?? null;
+        const reopenPending = verdict?.reason === "reopen_required";
+        const stageComplete = complete.includes(row.stage);
+        return {
+          slug: row.slug,
+          name: row.name,
+          kind: row.kind,
+          stage: row.stage,
+          stage_complete: stageComplete,
+          error_category:
+            row.stage === "write_failed"
+              ? "write"
+              : row.stage === "deferred_signed_out"
+                ? "account"
+                : row.stage === "not_installed"
+                  ? "not_installed"
+                  : row.stage === "unknown"
+                    ? "unknown"
+                    // `deferred_engine_down` lands here with `pending` and
+                    // `restored`: nothing was attempted, so nothing failed.
+                    : "none",
+          error: row.error,
+          stage_at_unix: row.at,
+          last_verified_state:
+            verdict?.state === "on" || verdict?.state === "off" ? verdict.state : null,
+          last_verified_unix:
+            verdict?.state === "on" || verdict?.state === "off" ? state.nowUnix : 0,
+          check_state: verdict?.state ?? null,
+          check_reason: verdict?.reason ?? null,
+          check_at_unix: verdict ? state.nowUnix : 0,
+          // `null` where Rust's `agent_process_names` is empty, which is every
+          // provider slug and the three tools with no process name of their own
+          // - and the reason "Not running" used to be printed for rows nothing
+          // had looked for. Modelled here so a spec cannot assert a claim the
+          // real backend does not make.
+          running: AGENT_PROCESSES.some(([slug]) => slug === row.slug)
+            ? state.runningAgentNames.some(
+                (n) => agentSlugOf(n) === row.slug,
+              )
+            : null,
+          reopen_pending: reopenPending,
+          // `recovery::next_step`, including its ordering: an unfinished write
+          // outranks a stale process, because there is nothing on disk yet for
+          // a reopen to pick up.
+          next_step: !stageComplete
+            ? row.stage === "deferred_signed_out"
+              ? "sign_in"
+              // Including the engine deferral: a resume either finds the engine
+              // up and does the work, or changes nothing.
+              : "retry"
+            : reopenPending
+              ? "reopen_tool"
+              : "none",
+        };
+      }),
+    };
   }
 
   const commands: Record<string, (args: Record<string, any>) => unknown> = {
@@ -92,7 +265,28 @@ export function installFakeTauri(state: BackendState): void {
     "plugin:app|version": () => state.version,
 
     // ---- tools
-    list_tools: () => state.tools,
+    // Fill the field the real backend always sends, so a fixture that omits it
+    // still produces a well-formed Tool rather than an undefined the UI has to
+    // guess about.
+    // `displayName` is fixture-only: the real `list_tools` sends `row_label()`
+    // and nothing else, so it is dropped here rather than leaked into the DTO.
+    list_tools: () =>
+      state.tools.map(({ displayName, ...t }) => ({
+        config_location: null,
+        // Rust sends both: `name` is the ledger's row label and `product_name`
+        // the registry's distinct display name. The fixtures already carry the
+        // latter as `displayName`, so it is renamed here rather than doubled.
+        product_name: displayName ?? PRODUCT_NAMES[t.slug] ?? t.name,
+        // The taxonomy the ledger groups and explains by. Every real tool
+        // answers all three, so a fixture that omits them must still produce a
+        // well-formed Tool: the client defaults to the tool's own slug, which
+        // is the answer for five of the six integrations, and the environment
+        // channel's `any-app` / `machine` pair is set on its fixture.
+        client: t.slug,
+        scope: "client" as const,
+        credential: "brokered" as const,
+        ...t,
+      })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -103,6 +297,37 @@ export function installFakeTauri(state: BackendState): void {
       t.status = { kind: "detected" };
       return t.status;
     },
+
+    // ---- model selection (AG-588)
+    // The choice is a local file, so these commands are file reads and writes,
+    // not gateway calls. The fake enforces the one rule the real setter has -
+    // consent is recorded only when moving to `gate` - because a mock that
+    // accepted everything would let the confirmation flow rot unnoticed.
+    tool_model_preferences: () => ({
+      tools: state.toolModels.choices,
+      paid_ack_unix: state.toolModels.paidAckUnix,
+    }),
+    set_tool_model: ({ tool, source, modelIds, acknowledgePaidUse }) => {
+      const slug = String(tool);
+      if (!state.tools.some((t) => t.slug === slug)) throw `unknown tool slug "${slug}"`;
+      if (source !== "tool" && source !== "gate") throw `unknown model source "${String(source)}"`;
+      if (source === "gate" && acknowledgePaidUse === true && state.toolModels.paidAckUnix === null) {
+        state.toolModels.paidAckUnix = 1787740800;
+      }
+      state.toolModels.choices[slug] = {
+        source,
+        model_ids: (modelIds as string[]) ?? [],
+      };
+      return null;
+    },
+    gate_credits: () =>
+      JSON.stringify({
+        generatedAt: "2026-08-25T10:00:00.000Z",
+        org: { orgId: "org-e2e", name: state.account?.org_name ?? null },
+        ...state.toolModels.credits,
+      }),
+    gate_model_catalogue: () =>
+      JSON.stringify({ object: "list", data: state.toolModels.catalogue }),
 
     // ---- account
     get_account: () => state.account,
@@ -145,10 +370,18 @@ export function installFakeTauri(state: BackendState): void {
         expires_at_unix: 4102444800,
       };
       if (state.account) state.account.auth_mode = "oauth";
+      // Cleared on the way in, as the real command does: whatever ended the
+      // last session, this one is live.
+      state.preferences.signed_out_deliberately = false;
       return state.oauth;
     },
     oauth_sign_out: () => {
       state.oauth = { signed_in: false, email: null, expires_at_unix: 0 };
+      // The real command records that this sign-out was asked for, which is the
+      // only thing that tells the welcome pane apart from an expiry. The fake
+      // omitted it, so every harness run modelled a session that had died and
+      // no test could see the pane get it wrong.
+      state.preferences.signed_out_deliberately = true;
       return null;
     },
     set_auth_mode: ({ oauth }) => {
@@ -220,8 +453,15 @@ export function installFakeTauri(state: BackendState): void {
       }
       // Proxy domains only follow when the engine is already running -
       // enabling a provider never starts it.
+      //
+      // And only the CASCADE, which is the invariant this whole branch is about:
+      // `provider::enable` iterates `cascade_domains`, so enabling the anthropic
+      // family cannot reach `claude-web` and enabling openai cannot reach either
+      // chatgpt row. Iterating `domain_slugs` here made the fake do exactly what
+      // `claude_web_is_not_reachable_by_enabling_the_anthropic_provider` exists
+      // to forbid, so the suite modelled the opposite of the rule.
       if (state.proxy.running) {
-        for (const s of p.domain_slugs) {
+        for (const s of p.cascade_domain_slugs) {
           const d = state.proxy.domains.find((x) => x.slug === s);
           if (d) d.enabled = true;
         }
@@ -235,7 +475,7 @@ export function installFakeTauri(state: BackendState): void {
         if (t && t.status.kind === "connected") t.status = { kind: "detected" };
       }
       if (state.proxy.running) {
-        for (const s of p.domain_slugs) {
+        for (const s of p.cascade_domain_slugs) {
           const d = state.proxy.domains.find((x) => x.slug === s);
           if (d) d.enabled = false;
         }
@@ -251,31 +491,319 @@ export function installFakeTauri(state: BackendState): void {
     },
     set_updater_relaunching: () => null,
 
+    // ---- preferences
+    // A copy, not the live object. Real IPC serialises every response, so the
+    // frontend always gets a fresh value; handing out the reference this stub
+    // mutates in place meant `setPrefs` received an identical object, React
+    // skipped the re-render, and a preference change was invisible to anything
+    // derived from it.
+    get_preferences: () => ({ ...state.preferences }),
+    set_notifications: ({ enabled }) => {
+      state.preferences.notifications = enabled as boolean;
+      return null;
+    },
+    set_security_notification_sound: ({ enabled }) => {
+      state.preferences.security_notification_sound = enabled as boolean;
+      return null;
+    },
+    // The live security-event feed (AG-578). The real backend holds the
+    // connection and pushes; here a spec pushes with `app.emit`, which is the
+    // same thing from the window's side.
+    security_feed_state: () => state.securityFeed.state,
+    security_feed_recent: () => state.securityFeed.events.map((e) => ({ ...e })),
+    // Defaults to true where a fixture leaves it out: not knowing whether the
+    // history is missing is not evidence that it is - the same rule the hook
+    // applies when this command is unavailable.
+    security_feed_history_ok: () => state.securityFeed.historyOk ?? true,
+    security_feed_retry: () => null,
+    set_share_diagnostics: ({ enabled }) => {
+      state.preferences.share_diagnostics = enabled as boolean;
+      // Answering is what the real command records too, and it is what dismisses
+      // the onboarding step.
+      state.preferences.share_diagnostics_recorded = true;
+      return null;
+    },
+    // Provenance, matching `preferences::record_auto_enabled_domains`:
+    // replaces rather than merges, and an empty list removes the entry.
+    record_auto_enabled_domains: ({ tool, domains }) => {
+      const key = tool as string;
+      const list = domains as string[];
+      if (list.length === 0) delete state.preferences.auto_enabled_domains[key];
+      else state.preferences.auto_enabled_domains[key] = [...list];
+      return null;
+    },
+    // Read, not take: the caller writes the record back once it knows what it
+    // actually undid, so clearing here would strand a domain whose disable
+    // failed - it has no row to be reached from.
+    read_auto_enabled_domains: ({ tool }) =>
+      state.preferences.auto_enabled_domains[(tool as string)] ?? [],
+    // Derived from the proxy state the spec set rather than stubbed free-hand, so
+    // a report cannot describe an install the rest of the fake backend is not
+    // running. The window's diagnostics dialog reads this; before it did, four
+    // sections of the report were hard-coded to unknown.
+    diagnostics: () => ({
+      os_name: "macOS 15.3 (24D60)",
+      os_kernel: "",
+      arch: "aarch64",
+      data_dir: "/Users/e2e/Library/Application Support/gate-connect",
+      ca_cert_path: "/Users/e2e/Library/Application Support/gate-connect/ca.crt",
+      ca_cert_present: state.proxy.ca_trusted,
+      routing_intent: state.proxy.running,
+      persisted_engine_proxy_url: state.proxy.running
+        ? `http://127.0.0.1:${state.proxy.port}`
+        : null,
+      relay_base_url: state.proxy.relay_base_url,
+      exported_proxy_url: state.proxy.env_export_opted_in
+        ? `http://127.0.0.1:${state.proxy.port}`
+        : null,
+      system_proxy: state.proxy.running ? "PAC http://127.0.0.1:8" : null,
+    }),
+
     // ---- agents / quit
+    install_id: () => state.installId,
+    // Mirrors the Rust resolution: the stored override, or the hostname.
+    device_name: () => state.preferences.device_name ?? state.hostName,
+    set_device_name: ({ name }) => {
+      const trimmed = (name as string).trim();
+      state.preferences.device_name = trimmed === "" ? null : trimmed;
+      return null;
+    },
     routed_clients_stale: () => state.routedClientsStale,
+    // The startup enable has always settled in the harness: a mock backend
+    // has no startup thread to be in flight.
+    routing_startup_pending: () => false,
     running_agents_count: () => state.runningAgents,
+    // `only` is a list of tool slugs, or null for "every tool". Mirrors the
+    // Rust `AGENT_PROCESSES` table: a slug with no process name of its own
+    // (`hermes`, `openclaw`, `env-proxy`, a proxy domain key) matches nothing
+    // rather than everything, which is the whole point of the filter.
+    running_agents: ({ only }) => {
+      const names = agentNamesFor(only as string[] | null | undefined);
+      return {
+        scanned_names: names,
+        agents: state.runningAgentNames
+          .map((name, i) => ({
+            slug: agentSlugOf(name),
+            name,
+            // Rust derives this from `Surface` and a resolved relaunch target:
+            // a CLI runs inside a shell session Gate does not own, so it can
+            // never be relaunched; a desktop app owns its own window and can.
+            // Modelled by surface here rather than hardcoded to false, so a
+            // spec cannot set up an offer to reopen a CLI that the real backend
+            // would never make - nor miss the desktop case, which is the one
+            // AG-900 is about.
+            can_reopen: APP_SURFACE_SLUGS.includes(agentSlugOf(name)),
+            // The table's product name, which is what the reopen flow draws
+            // when `list_tools` cannot name the slug.
+            product_name: PRODUCT_NAMES[agentSlugOf(name)] ?? name,
+            // `ToolId::from_slug(slug).is_some()` in Rust: whether the verdict
+            // sweep can answer for this row at all. True for the three CLIs,
+            // which are registry tools; false for the two desktop apps, whose
+            // slugs are proxy-domain keys the registry has no entry for.
+            verifiable: !APP_SURFACE_SLUGS.includes(agentSlugOf(name)),
+            pid: 100 + i,
+            started_at_unix: 1_700_000_000,
+            // Whether a process predates the last routing change. `staleAgents`
+            // is the switch the specs already use for that, and reading it here
+            // is what lets a reopened tool look reopened: close a tool, drop the
+            // staleness, and the scan reports a fresh process.
+            needs_reopen: state.staleAgents > 0,
+          }))
+          // Exact, like `for_each_agent_process`'s own comparison. It used to
+          // lowercase, which would let a running `Claude` answer a scan that
+          // only asked about `claude` - the collision Rust's `agent_name_of`
+          // stopped folding together on purpose.
+          .filter((a) => names.includes(a.name)),
+      };
+    },
     stale_agents_count: () => state.staleAgents,
-    close_running_agents: () => {
-      const n = state.runningAgents;
-      state.runningAgents = 0;
-      state.staleAgents = 0;
+    // Mirrors `routing_health::verdict_for`'s precedence over the state a spec
+    // can actually set. The relay is hosted by the engine, so `proxy.running`
+    // stands in for relay reachability, and `staleAgents` for a process that
+    // predates the last routing change. Derived rather than stubbed per-slug so
+    // a spec cannot set up a verdict that the real backend could never produce.
+    // The Gate route as the verdict names it: the account's own gateway URL, or
+    // the fallback the backend uses when it cannot be read.
+    routing_verdicts: () =>
+      state.tools.map((t) => {
+        const attention = (reason: string, next_action: string) => ({
+          slug: t.slug,
+          state: "needs_attention",
+          reason,
+          next_action,
+          // Only the reopen verdict names a route, and only the requested one:
+          // the backend cannot see inside a running process, so it publishes no
+          // `route_in_use` at all. Mirrors `routing_verdicts_now`, which builds
+          // the pair through `reopen::reopen_routes` - a fake that kept
+          // inventing the in-use half would let a spec assert a claim the real
+          // app has stopped making.
+          route_in_use: null,
+          requested_route:
+            reason === "reopen_required"
+              ? t.status.kind === "connected"
+                ? gateRoute()
+                : t.default_upstream_url
+              : null,
+        });
+        const plain = (verdictState: string) => ({
+          slug: t.slug,
+          state: verdictState,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        });
+        if (t.status.kind === "not_installed") return plain("not_installed");
+        if (t.status.kind === "error")
+          return attention("verification_failed", "retry_check");
+        if (t.status.kind === "drifted")
+          return attention("configuration_changed", "apply_gate_configuration");
+        // Above the liveness branches below, as in `verdict_for`: the tool is
+        // not on Gate's route whatever the relay is doing, so naming a dead
+        // relay here would send the reader to fix the wrong thing.
+        if (t.status.kind === "overridden")
+          return attention("configuration_overridden", "show_conflicting_config");
+        if (t.status.kind === "detected")
+          return state.staleAgents > 0
+            ? attention("reopen_required", "reopen_tool")
+            : plain("off");
+        if (!state.proxy.running) return attention("connection_problem", "reconnect");
+        if (state.staleAgents > 0) return attention("reopen_required", "reopen_tool");
+        return plain("on");
+      }),
+    close_running_agents: ({ only }) => {
+      const names = agentNamesFor(only as string[] | null | undefined);
+      const doomed = state.runningAgentNames.filter((n) => names.includes(n.toLowerCase()));
+      state.runningAgentNames = state.runningAgentNames.filter(
+        (n) => !names.includes(n.toLowerCase()),
+      );
+      // The unfiltered count probe has no per-name breakdown to subtract from,
+      // so a scoped close leaves it alone; only a close-everything zeroes it.
+      const n = doomed.length || (only == null ? state.runningAgents : 0);
+      if (only == null) {
+        state.runningAgents = 0;
+        state.staleAgents = 0;
+      }
       return n;
     },
     quit_app: () => null,
+    // Window choreography the tray popover invokes: revealing the main window
+    // and requesting the tray-menu quit are Rust-side effects with nothing to
+    // model here - the call log is what a spec asserts on.
+    reveal_popover: () => null,
+    // Reveal plus a destination. Distinct from `reveal_popover` on purpose: the
+    // tray's "Review details" used the bare reveal and so opened nothing, and a
+    // spec can only tell the two apart if the fake backend can.
+    request_app_quit: () => null,
     pending_quit_tools: () => {
       const pending = state.pendingQuitTools;
       state.pendingQuitTools = null;
       return pending;
     },
+    // Not drained, unlike the buffer above: the menu entry asks this every time
+    // it raises the flow.
+    tools_stranded_by_quit: () => state.strandedByQuit,
     disconnect_tools_for_quit: () => {
+      // A tool the teardown could not put back stays connected, which is what
+      // leaves it pointing at a relay about to die.
       for (const t of state.tools) {
-        if (t.status.kind === "connected") t.status = { kind: "detected" };
+        if (t.status.kind === "connected" && !state.quitLeftBehind.includes(t.name)) {
+          t.status = { kind: "detected" };
+        }
       }
-      return null;
+      return state.quitLeftBehind;
     },
 
     // ---- analytics seam
-    drain_backend_errors: () => [],
+    // Drains, like the real buffer: a second call returns nothing.
+    drain_backend_errors: () => state.backendErrors.splice(0),
+
+    // ---- interrupted restore
+    // Copies, for the reason `get_preferences` does: real IPC serialises every
+    // response, and handing out the live object hides mutations from React.
+    pending_restore: () => ({
+      providers: [...state.pendingRestore.providers],
+      tools: [...state.pendingRestore.tools],
+    }),
+    recovery_summary: () => recoverySummary(),
+    retry_restore_entry: ({ slug }) => {
+      state.retryCalls.push(slug as string);
+      const stuck = state.pendingResumeKeeps.includes(slug as string);
+      if (!stuck) {
+        // Mirrors `restore_one`: the slug leaves its snapshot only once it is
+        // actually back, and the journal records what happened to it.
+        state.pendingRestore = {
+          providers: state.pendingRestore.providers.filter((e) => e.slug !== slug),
+          tools: state.pendingRestore.tools.filter((e) => e.slug !== slug),
+        };
+        if (state.restoreJournal) {
+          for (const entry of state.restoreJournal.entries) {
+            if (entry.slug === slug) entry.outcome = "restored";
+          }
+        }
+      } else if (state.restoreJournal && state.retryErrors.includes(slug as string)) {
+        for (const entry of state.restoreJournal.entries) {
+          if (entry.slug === slug) entry.outcome = "write_failed";
+        }
+      }
+      return {
+        error: state.retryErrors.includes(slug as string)
+          ? `writing ${slug} failed`
+          : null,
+        pending: {
+          providers: [...state.pendingRestore.providers],
+          tools: [...state.pendingRestore.tools],
+        },
+      };
+    },
+    // Read back from the tools' own state, never from what a teardown believed
+    // it wrote - the whole point of the report. Same bucket rules as Rust:
+    // managed means still on Gate's values, clean-plus-stale-process means
+    // waiting for a reopen, an unreadable config is its own answer.
+    teardown_report: () => {
+      // The product name, not the row label: this dialog has no family heading
+      // over it, so "CLI" on its own would name nothing. Rust reads
+      // `display_name()` here where `list_tools` reads `row_label()`.
+      const bucket =
+        (next_action: string) => (t: { slug: string; name: string; displayName?: string }) => ({
+          slug: t.slug,
+          name: t.displayName ?? t.name,
+          next_action,
+        });
+      const installed = state.tools.filter((t) => t.status.kind !== "not_installed");
+      return {
+        defaults: installed
+          .filter((t) => t.status.kind === "detected" && state.staleAgents === 0)
+          .map(bucket("none")),
+        still_gate: installed
+          .filter(
+            (t) =>
+              t.status.kind === "connected" ||
+              t.status.kind === "drifted" ||
+              // Gate's values are still in this tool's file whoever outranks
+              // them, so the teardown still has them to take out. Mirrors
+              // `teardown_report`.
+              t.status.kind === "overridden",
+          )
+          .map(bucket("retry_disconnect")),
+        awaiting_reopen: installed
+          .filter((t) => t.status.kind === "detected" && state.staleAgents > 0)
+          .map(bucket("reopen_tool")),
+        failed: installed.filter((t) => t.status.kind === "error").map(bucket("retry_check")),
+      };
+    },
+    resume_restore: () => {
+      // Mirrors restore_all: entries that fail stay recorded, the rest clear.
+      const keep = (e: { slug: string }) => state.pendingResumeKeeps.includes(e.slug);
+      state.pendingRestore = {
+        providers: state.pendingRestore.providers.filter(keep),
+        tools: state.pendingRestore.tools.filter(keep),
+      };
+      return {
+        providers: [...state.pendingRestore.providers],
+        tools: [...state.pendingRestore.tools],
+      };
+    },
 
     // ---- event plugin
     "plugin:event|listen": ({ event, handler }) => {
@@ -331,8 +859,8 @@ export function installFakeTauri(state: BackendState): void {
     },
     convertFileSrc: (path: string) => path,
     metadata: {
-      currentWindow: { label: "main" },
-      currentWebview: { windowLabel: "main", label: "main" },
+      currentWindow: { label: state.windowLabel },
+      currentWebview: { windowLabel: state.windowLabel, label: state.windowLabel },
     },
   };
 

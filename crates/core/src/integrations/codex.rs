@@ -60,7 +60,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
+use crate::account::BillingMode;
 use crate::env;
+use crate::integrations::binaries;
+use crate::integrations::precedence::Override;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
@@ -159,7 +162,7 @@ fn relay_base_url_for(relay_base: &str, mode: AuthMode) -> Result<String> {
     let endpoint = format!("{}{}", mode.upstream_url(), mode.gateway_path_suffix());
     let resolved = crate::proxy::resolve_endpoint(&endpoint)
         .with_context(|| format!("Gate has no upstream domain for {endpoint:?}"))?;
-    Ok(resolved.relay_base_url(relay_base))
+    Ok(resolved.relay_base_url(relay_base, ToolId::Codex))
 }
 
 /// The path suffix on Codex's side of the relay, for the passthrough stub that
@@ -226,6 +229,28 @@ impl Integration for Codex {
         "Codex"
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::Codex
+    }
+
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
+    /// (`src/lib/groups.ts`); it is a description of the surface, not something
+    /// the integration knows.
+    fn row_label(&self) -> &'static str {
+        "CLI"
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["codex.exe", "codex.cmd", "codex.bat", "codex"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["codex"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -234,20 +259,68 @@ impl Integration for Codex {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        config_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::codex_config_dir());
+        paths.extend(config_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // The packaged paths, then PATH, then the bin directories a login
+        // shell adds and a GUI process does not inherit - see
+        // `integrations::binaries`. The old check was the first of those three
+        // alone, which is why a tool installed anywhere else was only found
+        // through the config-directory fallback below, and a tool installed but
+        // never run was not found at all.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
         Ok(env::codex_config_dir()?.exists())
     }
 
+    fn config_is_managed(&self) -> Result<bool> {
+        // Two-part marker, the same shape OpenCode, Hermes and OpenClaw use and
+        // for the same reason. Codex's config is TOML with no schema policing
+        // it, so unlike OpenCode - which needs a sidecar because opencode.json
+        // rejects unknown keys - the marker can live in the file it describes.
+        // That buys the first half only: the marker records who *created* the
+        // block, not who wrote the values in it now, so on its own it cannot
+        // tell our stale write apart from a config the user has since repointed
+        // by hand. So also require that the config still aims at us.
+        //
+        // The connect keys are the marker, not the `[model_providers.gate]`
+        // block: `connect` adopts a hand-written block under that name and
+        // `disconnect` deletes it, so the block's presence says nothing about
+        // who wrote it. One of the two keys is always recorded, including when
+        // there was no prior `model_provider` to stash.
+        //
+        // The stub `disconnect` leaves behind carries its own key and is
+        // excluded by [`is_connected_marker`]. Do not read more into that than
+        // it says: it keeps this answer consistent with `status`, which reports
+        // the stub as `Detected`, and it is *not* what keeps a disconnected
+        // Codex disconnected. `reconcile_enabled` reapplies `Detected`
+        // unconditionally, without ever asking this question, so a machine whose
+        // OpenAI domains are still enabled reconnects Codex on the next pass by
+        // that other branch. That is the provider flag working as designed - the
+        // enabled domain is the intent it reads - and it is a separate decision
+        // from this one.
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        let doc = read_doc(&path)?;
+        Ok(is_connected_marker(&doc) && still_aims_at_us(&doc))
+    }
+
     /// `base_url` names the loopback relay, which dies with the engine.
     fn mechanism(&self) -> Mechanism {
         Mechanism::Relay
-    }
-
-    fn config_location(&self) -> Option<PathBuf> {
-        config_path().ok()
     }
 
     fn configured_addresses(&self) -> Result<Vec<String>> {
@@ -310,17 +383,36 @@ impl Integration for Codex {
             )));
         }
 
-        // Require `requires_openai_auth = true`. A block without it is the
-        // old `[auth] command` shape that left ChatGPT-mode Codex bypassing
-        // the gateway - report drift so the user reconnects into the fix.
+        // What the block should say about auth depends on who pays, so the two
+        // modes have opposite expectations here and each reads the other's
+        // shape as drift - which is right: a mode switch has to reconnect
+        // Codex, and status is how the app knows to.
+        let billing_mode = crate::account::billing_mode().unwrap_or_default();
         let requires_openai_auth = provider_block
             .get("requires_openai_auth")
             .and_then(|i| i.as_bool())
             .unwrap_or(false);
-        if !requires_openai_auth {
-            return Ok(Status::Drifted(format!(
-                "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
-            )));
+        match billing_mode {
+            // BYOK requires `requires_openai_auth = true`. A block without it
+            // is the old `[auth] command` shape that left ChatGPT-mode Codex
+            // bypassing the gateway - report drift so the user reconnects into
+            // the fix.
+            BillingMode::Byok if !requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
+                )));
+            }
+            // PAYG requires its ABSENCE: with it, Codex attaches its own
+            // credential, the gateway reads that as a passthrough token, and
+            // the request is refused for want of an upstream URL. A block
+            // carrying it is a BYOK config the account has since moved off.
+            BillingMode::Payg if requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] carries requires_openai_auth = true, which \
+                     Codex cannot use while this account bills through Gate"
+                )));
+            }
+            _ => {}
         }
 
         // The provider points at the relay's loopback base; the relay only
@@ -336,8 +428,12 @@ impl Integration for Codex {
         // Accept whichever auth-mode shape is currently written. If auth.json
         // can't be read, fall back to ChatGPT (the only mode where the bug
         // bites - wrong base_url shape causes 404s; API-key mode just needs
-        // an OPENAI_API_KEY to authenticate).
-        let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
+        // an OPENAI_API_KEY to authenticate). In PAYG there is no login to
+        // read and `connect` pinned the apikey shape, so expect that.
+        let mode = match billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode().unwrap_or(AuthMode::Chatgpt),
+        };
         let expected_base = relay_base_url_for(&relay_base, mode)?;
         let base_url = provider_block
             .get("base_url")
@@ -390,6 +486,12 @@ impl Integration for Codex {
             )));
         }
 
+        // Everything Gate writes is in place. The last question is whether Codex
+        // reads it, which the pointer above does not settle on its own (AG-674).
+        if let Some(o) = active_profile_override(&doc, &path.display().to_string()) {
+            return Ok(o.into_status());
+        }
+
         Ok(Status::Connected)
     }
 
@@ -406,7 +508,17 @@ impl Integration for Codex {
         // bearer authenticates only against chatgpt.com/backend-api, the
         // apikey-mode bearer only against api.openai.com/v1. This mirrors
         // what Codex itself would have done in its native (non-Gate) routing.
-        let mode = read_auth_mode()?;
+        //
+        // PAYG has no login state to read: the whole point is that Codex sends
+        // no credential of its own, so `auth.json` may not exist at all and
+        // `read_auth_mode` would hard-fail on a user who never ran
+        // `codex login`. The apikey shape is the only one PAYG can use anyway -
+        // the ChatGPT route is a subscription, which is by definition not
+        // pay-as-you-go - so pin it rather than asking.
+        let mode = match input.billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode()?,
+        };
 
         let path = config_path()?;
         let mut doc = if path.exists() {
@@ -430,14 +542,7 @@ impl Integration for Codex {
         // and a re-connect that ignored it would re-snapshot our own
         // `"gate"` pointer - disconnect would then "restore" `model_provider
         // = "gate"` after deleting the provider block.
-        let marker_has_prev = doc
-            .get("_gate_connect")
-            .and_then(|i| i.as_table_like())
-            .map(|t| {
-                t.contains_key("previous_model_provider")
-                    || t.contains_key("previous_model_provider_absent")
-            })
-            .unwrap_or(false);
+        let marker_has_prev = has_connect_key(&doc);
         // A pre-existing `"gate"` pointer is never worth restoring: it came
         // from a hand-written setup whose block we adopt and later delete,
         // so treat it like no prior value.
@@ -467,14 +572,27 @@ impl Integration for Codex {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert("base_url", value(base_url.as_str()));
         provider.insert("wire_api", value("responses"));
-        // Codex sources the upstream bearer from its own `codex login`
+        // BYOK: Codex sources the upstream bearer from its own `codex login`
         // session (ChatGPT OAuth token or API key in ~/.codex/auth.json)
         // and attaches it to this provider. This is the only mechanism
         // that carries a ChatGPT-subscription login through a custom
         // base_url - without it, ChatGPT-mode Codex ignores this provider
         // and hits chatgpt.com directly. Mutually exclusive with `env_key`
         // and `[auth] command` per the Codex docs, so we set neither.
-        provider.insert("requires_openai_auth", value(true));
+        //
+        // PAYG: set NEITHER `requires_openai_auth` nor `env_key`, which the
+        // Codex docs define as the third, unauthenticated provider case -
+        // "Codex assumes the provider doesn't require authentication", offered
+        // for local models, and our `base_url` is a loopback address. Codex
+        // then sends no `Authorization` at all, which is exactly what PAYG
+        // needs: the gateway reads any non-`sk-gw-` token in that slot as a
+        // passthrough credential, which forces BYOK and is then refused for
+        // want of an upstream URL. Sending nothing is the only shape that
+        // cannot be misread, and it keeps us from writing a credential (real
+        // or placeholder) into the user's Codex config.
+        if input.billing_mode == BillingMode::Byok {
+            provider.insert("requires_openai_auth", value(true));
+        }
 
         // No `http_headers` at all: the relay reads the upstream off the slug
         // segment in `base_url` and injects the hint itself, and the Gate
@@ -627,6 +745,45 @@ fn config_path() -> Result<PathBuf> {
     env::codex_config_toml_path()
 }
 
+/// The selected profile, when it points Codex at a provider that is not ours.
+///
+/// Codex resolves `model_provider` from the active profile first and only falls
+/// back to the top-level key Gate writes. So `profile = "work"` plus
+/// `[profiles.work] model_provider = "openai"` sends every request straight to
+/// OpenAI while `model_provider = "gate"` sits above it in the same file,
+/// untouched and inert - and until AG-674 that read as Connected, because we
+/// checked our own key and stopped.
+///
+/// Profiles are the user's, not ours: `connect` writes the top-level pointer and
+/// leaves the rest of the file alone. So this reports the disagreement rather
+/// than resolving it - editing somebody's profile to win an argument with them
+/// is not a repair.
+///
+/// What stays invisible here is `--profile` on the command line, which outranks
+/// the file's own `profile` key. A shell flag is not a thing this process can
+/// see, on the same terms as the project-level layers in
+/// [`crate::integrations::precedence`].
+fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> {
+    let profile = doc.get("profile").and_then(|i| i.as_str())?;
+    let provider = doc
+        .get("profiles")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get(profile))
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("model_provider"))
+        .and_then(|i| i.as_str())?;
+    if provider == PROVIDER_ID {
+        return None;
+    }
+    Some(Override::new(
+        source,
+        format!(
+            "selects profile {profile:?}, whose model_provider is {provider:?} - Codex reads that \
+             before the top-level pointer at {PROVIDER_ID:?}"
+        ),
+    ))
+}
+
 fn read_doc(path: &Path) -> Result<DocumentMut> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     raw.parse::<DocumentMut>()
@@ -669,6 +826,88 @@ fn passthrough_stub(mode: AuthMode) -> Table {
     t
 }
 
+/// Whether `doc` carries the marker `connect` leaves, i.e. this is a config
+/// Gate Connect wrote and has not disconnected.
+///
+/// The stub exclusion is unconditional here, where [`Integration::status`]'s is
+/// qualified by `model_provider != PROVIDER_ID`. The asymmetry is deliberate and
+/// conservative: a config carrying both the stub marker and a `"gate"` pointer
+/// is something none of our own writes can produce (`connect` clears
+/// [`PASSTHROUGH_MARKER`]), so it reads as drift there and is not reapplied
+/// here - which is the right way round for a shape we cannot explain.
+///
+/// Split out from [`Integration::config_is_managed`] so it can be tested on a
+/// parsed document like the rest of this module, rather than needing a config
+/// directory on disk.
+fn is_connected_marker(doc: &DocumentMut) -> bool {
+    if is_passthrough_stub(doc) {
+        return false;
+    }
+    has_connect_key(doc)
+}
+
+/// Whether the config still points at Gate: `model_provider` is ours, and our
+/// block's `base_url` is still one we would have written.
+///
+/// The second half of [`Integration::config_is_managed`], and the half that
+/// decides whether `reconcile_enabled` may rewrite this file without asking.
+/// Both tests are about values the *user* could have changed to mean "stop
+/// routing Codex through Gate": pointing `model_provider` at another provider is
+/// how you turn Gate off without running disconnect, and repointing `base_url`
+/// is how you send the traffic somewhere else. Either one, and the config stops
+/// being ours to silently reapply.
+///
+/// `is_relay_base_url` rather than the loopback test [`super::hermes`] uses for
+/// the same job: a user who repoints Codex at their own local server is still on
+/// loopback, and that answer would hand the reapply a licence to take it back.
+/// It judges the URL at its own origin, so a relay that came back on a different
+/// port - the drift this exists to repair - still reads as ours.
+///
+/// Both auth modes count. Each writes a different upstream and therefore a
+/// different path, and a config in the other one is drift `status` already
+/// reports; what matters here is only that the URL is one of ours.
+///
+/// Split out for the same testability reason as [`is_connected_marker`].
+fn still_aims_at_us(doc: &DocumentMut) -> bool {
+    let points_at_gate = doc
+        .get("model_provider")
+        .and_then(|i| i.as_str())
+        .is_some_and(|p| p == PROVIDER_ID);
+    if !points_at_gate {
+        return false;
+    }
+    let Some(base_url) = doc
+        .get("model_providers")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get(PROVIDER_ID))
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("base_url"))
+        .and_then(|i| i.as_str())
+    else {
+        return false;
+    };
+    [AuthMode::Apikey, AuthMode::Chatgpt]
+        .into_iter()
+        .any(|mode| {
+            crate::proxy::resolve_endpoint(&direct_base_url(mode))
+                .is_some_and(|r| r.is_relay_base_url(base_url, ToolId::Codex))
+        })
+}
+
+/// The `[_gate_connect]` keys `connect` records, either of which says the table
+/// is one we wrote. Spelled once: a third key added to `connect` and missed at
+/// one of the two read sites would silently narrow the marker.
+fn has_connect_key(doc: &DocumentMut) -> bool {
+    doc.get("_gate_connect")
+        .and_then(|i| i.as_table_like())
+        .is_some_and(has_connect_key_in)
+}
+
+fn has_connect_key_in(table: &dyn toml_edit::TableLike) -> bool {
+    table.contains_key("previous_model_provider")
+        || table.contains_key("previous_model_provider_absent")
+}
+
 /// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
 fn is_passthrough_stub(doc: &DocumentMut) -> bool {
     doc.get("_gate_connect")
@@ -694,17 +933,140 @@ fn upgrade_inline_to_table(item: &mut Item) {
 mod tests {
     use super::*;
 
+    /// AG-674's disagreement case for Codex. Our provider block and pointer are
+    /// exactly as `connect` left them; the selected profile names a different
+    /// provider, and that is the one Codex resolves.
+    #[test]
+    fn a_profile_naming_another_provider_overrides_our_pointer() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/__gate/t/codex/openai/v1"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        let o = active_profile_override(&doc, "/home/u/.codex/config.toml")
+            .expect("an active profile on another provider is an override");
+        assert!(o.to_string().contains("\"work\""));
+        assert!(o.to_string().contains("\"openai\""));
+    }
+
+    /// A profile that names Gate, or one that names no provider at all and so
+    /// inherits the top-level pointer, is agreement rather than a conflict.
+    #[test]
+    fn a_profile_on_gate_or_silent_about_the_provider_is_not_an_override() {
+        let on_gate: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_provider = "gate"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&on_gate, "config.toml"), None);
+
+        let silent: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_reasoning_effort = "high"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&silent, "config.toml"), None);
+    }
+
+    /// A profile nobody selected decides nothing. Codex reads `profile` to pick
+    /// one, and a file full of unselected profiles is the normal shape.
+    #[test]
+    fn an_unselected_profile_is_not_an_override() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&doc, "config.toml"), None);
+    }
+
+    /// The marker gates auto-reapply, so it has to say yes exactly when the
+    /// config is a connected one we wrote.
+    ///
+    /// The stale-shape case is the one that matters: a base URL written by an
+    /// older build is drift `reconcile_enabled` should fix silently, and
+    /// without this the user is left re-running connect by hand.
+    #[test]
+    fn the_marker_tracks_connect_and_disconnect_not_the_provider_block() {
+        let managed =
+            |toml: &str| is_connected_marker(&toml.parse::<DocumentMut>().expect("valid TOML"));
+
+        // An empty config is nobody's.
+        assert!(!managed(""));
+
+        // A hand-written `gate` block is not ours until we adopt it. The block
+        // name alone proves nothing, which is why the marker keys are what get
+        // checked and not the block - `connect` adopts one under that name and
+        // `disconnect` deletes it.
+        assert!(!managed(
+            r#"model_provider = "gate"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+"#
+        ));
+
+        // Connected over a config that had no `model_provider`, and carrying a
+        // base URL from an older build: ours, so reapplied.
+        assert!(managed(
+            r#"model_provider = "gate"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+
+[_gate_connect]
+previous_model_provider_absent = true
+"#
+        ));
+
+        // The other connect key, from a config that did have one.
+        assert!(managed(
+            r#"[_gate_connect]
+previous_model_provider = "openai"
+"#
+        ));
+
+        // Disconnected: the stub is not something to reconnect behind the
+        // user's back, even though `disconnect` leaves the block in place.
+        assert!(!managed(
+            r#"[model_providers.gate]
+base_url = "https://api.openai.com/v1"
+
+[_gate_connect]
+passthrough_stub = true
+"#
+        ));
+    }
+
     #[test]
     fn chatgpt_mode_base_url_carries_the_chatgpt_slug_and_codex_path() {
         // The relay strips `/chatgpt` and forwards `/codex/responses`, which the
         // gateway concatenates onto `https://chatgpt.com/backend-api`.
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977", AuthMode::Chatgpt).unwrap(),
-            "http://127.0.0.1:9977/chatgpt/codex"
+            "http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex"
         );
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977/", AuthMode::Chatgpt).unwrap(),
-            "http://127.0.0.1:9977/chatgpt/codex"
+            "http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex"
         );
     }
 
@@ -712,7 +1074,7 @@ mod tests {
     fn apikey_mode_base_url_carries_the_openai_slug_and_v1_path() {
         assert_eq!(
             relay_base_url_for("http://127.0.0.1:9977", AuthMode::Apikey).unwrap(),
-            "http://127.0.0.1:9977/openai/v1"
+            "http://127.0.0.1:9977/__gate/t/codex/openai/v1"
         );
     }
 
@@ -775,7 +1137,9 @@ mod tests {
         // slug the relay routes on, and ends in /codex so Codex sends
         // /chatgpt/codex/responses. The relay strips the slug and forwards
         // /codex/responses.
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:9977/chatgpt/codex\""));
+        assert!(
+            rendered.contains("base_url = \"http://127.0.0.1:9977/__gate/t/codex/chatgpt/codex\"")
+        );
         // Nothing else is written: no header table, no upstream hint, and above
         // all no credential - the relay injects all of it live.
         assert!(!rendered.contains("http_headers"));

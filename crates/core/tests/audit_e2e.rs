@@ -177,6 +177,11 @@ impl TempDataDir {
 
 impl Drop for TempDataDir {
     fn drop(&mut self) {
+        // Before clearing the seams, and while this test still holds `LOCK`: an
+        // emit thread outliving its test would read the *next* test's endpoint
+        // and land on the next test's mock. `LOCK` cannot prevent that - the
+        // thread never takes it. See the flush rule in the module doc.
+        audit::flush();
         std::env::remove_var("GATE_CONNECT_TEST_HOME");
         std::env::remove_var("GATE_CONNECT_TEST_AUDIT_ENDPOINT");
         let _ = fs::remove_dir_all(&self.dir);

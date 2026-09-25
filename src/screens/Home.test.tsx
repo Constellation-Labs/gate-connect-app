@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ClientId, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
 import { openExternal } from "../lib/openExternal";
 import { Home } from "./Home";
@@ -30,14 +30,20 @@ function makeTool(
   slug: string,
   name: string,
   status: Tool["status"],
-  upstream = "Anthropic",
+  client: ClientId = "claude-code",
 ): Tool {
   return {
     slug,
     name,
-    upstream_provider_name: upstream,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
+    upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
+    config_location: null,
     status,
+    client,
+    scope: "client",
+    credential: "brokered",
   };
 }
 
@@ -51,34 +57,37 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
     passthrough_prefixes: [],
     enabled: true,
     supported: true,
+    client: "claude-desktop",
+    credential: "brokered",
+    scope: "host",
     ...overrides,
   };
 }
 
-/** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Other tools". */
-const CATALOG: ProviderState[] = [
-  {
-    slug: "anthropic",
-    display_name: "Claude",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["claude-code"],
-    domain_slugs: ["anthropic"],
-    chat_domain_slugs: [],
-  },
-  {
-    slug: "openai",
-    display_name: "OpenAI",
-    subtitle: "",
-    enabled: false,
-    available: true,
-    tool_slugs: ["codex"],
-    domain_slugs: ["openai"],
-    chat_domain_slugs: [],
-  },
-];
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
 
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
@@ -88,13 +97,15 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
-      consoleUrl="https://app.constellationgate.ai/"
+      dashboardUrl="https://app.constellationgate.ai/"
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
-      providers={CATALOG}
       tools={[]}
       domains={[]}
+      // Gated on the same flag for the reason `FamilyPanel.test` states: the
+      // sweep cannot report `on` while the engine it probes is down.
+      verdicts={props.proxyOn === false ? new Map() : sweep(props.tools ?? [])}
       busy={false}
       error={null}
       changeNotice={null}
@@ -103,7 +114,6 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onEnableRouting={vi.fn()}
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
-      onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
       trustPending={false}
       onOpenFamily={vi.fn()}
@@ -222,12 +232,10 @@ describe("Home CA-trust card", () => {
   });
 });
 
-describe("Home master toggle", () => {
-  it("calls onToggleProxy", () => {
-    const onToggleProxy = vi.fn();
-    renderHome({ onToggleProxy });
-    fireEvent.click(screen.getByRole("switch", { name: "Route through Gate" }));
-    expect(onToggleProxy).toHaveBeenCalledTimes(1);
+describe("Home routing card", () => {
+  it("draws no switch: routing follows the app, so there is nothing to set", () => {
+    renderHome();
+    expect(screen.queryByRole("switch", { name: "Route through Gate" })).toBeNull();
   });
 
   it("keeps the count and lets the card carry the certificate message", () => {
@@ -247,8 +255,14 @@ describe("Home master toggle", () => {
         makeTool("opencode", "OpenCode", { kind: "detected" }),
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
       ],
-      // One enabled app row plus one available-but-off row.
-      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI apps", enabled: false })],
+      // One enabled app row plus one available-but-off row. `claude-web`
+      // rather than `openrouter`, which is no longer drawn at all - Hermes
+      // owns that domain and `TOOL_MANAGED_DOMAINS` filters it out of every
+      // shell, so a fixture using it counts three rows and not four.
+      domains: [
+        makeDomain(),
+        makeDomain({ slug: "claude-web", display_name: "Claude web", enabled: false }),
+      ],
     });
     // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
     expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
@@ -347,7 +361,7 @@ describe("Home ledger rows", () => {
     // Four chevrons used to reach one panel that differed only by which family
     // arrived expanded. The id is the destination now, not a hint about where to
     // scroll once you get there.
-    expect(onOpenFamily).toHaveBeenCalledWith("anthropic");
+    expect(onOpenFamily).toHaveBeenCalledWith("claude");
   });
 
   it("keeps the rows off the routing card", () => {
@@ -355,11 +369,11 @@ describe("Home ledger rows", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // The card is one control and its address; a list of the things it governs
+    // The card is one report and its address; a list of the things it covers
     // is a different grain, so it gets its own surface.
     const row = screen.getByRole("button", { name: "Claude details" });
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
-    expect(master.closest(".shadow-border")!.contains(row)).toBe(false);
+    const card = screen.getByRole("heading", { name: "Routing" });
+    expect(card.closest(".shadow-border")!.contains(row)).toBe(false);
   });
 
   it("puts the dashboard link after anything the app has to say", () => {
@@ -377,31 +391,30 @@ describe("Home ledger rows", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("codex", "Codex", { kind: "connected" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "connected" }, "codex"),
       ],
       domains: [makeDomain()],
     });
     // The door printed "Claude, OpenAI" as one line of prose. A row per family
     // is what lets each carry its own pill, which is the point of the screen.
     expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "OpenAI details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "ChatGPT / Codex details" })).toBeTruthy();
     expect(screen.queryByText("Claude, OpenAI")).toBeNull();
   });
 
-  it("still names the families when routing is off", () => {
-    // Every member reports master-off with routing down, so ranking that state
-    // as an exception made the door print "waiting on routing" and drop the
-    // inventory - under a card already reading "Off · 1 waiting". Routing-off is
-    // the one state whose only question is what comes back when you flip it.
+  it("still names the families when routing did not start", () => {
+    // Every member reports not-routing with routing down, so ranking that state
+    // as an exception made the door print "not routing" and drop the
+    // inventory - under a card already reporting it once, countably.
     renderHome({
       proxyOn: false,
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [],
     });
     expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.queryByText("waiting on routing")).toBeNull();
-    // The master card keeps sole ownership of its own state.
-    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+    expect(screen.queryByText("not routing")).toBeNull();
+    // The routing card keeps sole ownership of its own state.
+    expect(screen.getByText("Didn’t start · 1 unprotected")).toBeTruthy();
   });
 
   it("names the failure and keeps the family it belongs to, in its own ink", () => {
@@ -414,14 +427,14 @@ describe("Home ledger rows", () => {
     });
     const note = screen.getByText("Claude Code failed");
     expect(note.className).toContain("text-gc-error-deep");
-    expect(screen.getByText("Claude")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
   });
 
   it("floats the failure to the top and still shows the quieter exception", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" }),
-        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
       ],
       domains: [makeDomain()],
     });
@@ -449,7 +462,7 @@ describe("Home ledger rows", () => {
 
   it("keeps a hand-written setup in the quieter ink", () => {
     renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex")],
       domains: [],
     });
     const note = screen.getByText("Codex set up elsewhere");
@@ -460,7 +473,10 @@ describe("Home ledger rows", () => {
   it("stops the header claiming green while a tool is failing", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
-      domains: [makeDomain()],
+      // Same client as the tool, so both land in one group: the assertion below
+      // counts the header's roll-up and ONE group pill agreeing with it, which
+      // needs a group holding both a failing member and a routing one.
+      domains: [makeDomain({ client: "claude-code" })],
     });
     // Traffic is flowing (the app row routes) and something failed, so the
     // header reports the honest half-state. It used to fly green "Routing on"
@@ -483,7 +499,7 @@ describe("Home ledger rows", () => {
 
   it("leaves a hand-written setup out of the header pill", () => {
     renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex")],
       domains: [makeDomain()],
     });
     // Drift is a setup the user chose and the family switch deliberately
@@ -517,7 +533,7 @@ describe("Home ledger rows", () => {
     // Was a module constant pinned to production, which is precisely how a
     // staging-routed app sent its user to a dashboard reading a different
     // database.
-    renderHome({ consoleUrl: "https://app-staging.constellationgate.ai/" });
+    renderHome({ dashboardUrl: "https://app-staging.constellationgate.ai/" });
     fireEvent.click(screen.getByRole("button", { name: /Gate dashboard/ }));
     expect(openExternal).toHaveBeenCalledWith("https://app-staging.constellationgate.ai/");
   });
@@ -657,7 +673,7 @@ describe("Home master card is a control that owns up", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "codex"),
       ],
       domains: [makeDomain()],
     });
@@ -689,9 +705,10 @@ describe("Home says what is waiting", () => {
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [],
     });
-    // "Off · not routing" while two families read "waiting on routing" is the
-    // fact that makes flipping the switch feel safe rather than speculative.
-    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+    // A launch whose enable did not complete leaves apps switched on and
+    // unprotected. Counting them is what turns "something is wrong" into a
+    // number the user can check against what they have connected.
+    expect(screen.getByText("Didn’t start · 1 unprotected")).toBeTruthy();
   });
 
   it("does not offer to close apps when nothing is installed", () => {
@@ -758,8 +775,8 @@ describe("Home family pill vocabulary", () => {
     expect(screen.queryByText("Not routed")).toBeNull();
   });
 
-  it("leaves master-off to the card, which says it once as a count", () => {
-    // `master-off` is `enabled && !proxyOn`, and proxyOn is global, so it can
+  it("leaves not-routing to the card, which says it once as a count", () => {
+    // `not-routing` is `enabled && !proxyOn`, and proxyOn is global, so it can
     // never distinguish one family from another: on the pill it is four
     // identical capsules restating the card directly above them. DESIGN.md:
     // "Card-owned states never print on a row."
@@ -767,10 +784,10 @@ describe("Home family pill vocabulary", () => {
       proxyOn: false,
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
     });
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Not routing")).toBeNull();
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
     // The card carries it, once, and countably.
-    expect(screen.getByText(/Off .+ waiting$/)).toBeTruthy();
+    expect(screen.getByText(/Didn’t start .+ unprotected$/)).toBeTruthy();
   });
 
   it("still says Not routed when the user is the reason", () => {
@@ -779,7 +796,7 @@ describe("Home family pill vocabulary", () => {
       domains: [makeDomain({ enabled: false })],
     });
     expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Not routing")).toBeNull();
     expect(screen.queryByText("Needs trust")).toBeNull();
   });
 });
@@ -842,15 +859,12 @@ describe("Home command-line tools switch", () => {
 
   it("toggles the shell-environment channel without touching routing", () => {
     const onToggleEnvExport = vi.fn();
-    const onToggleProxy = vi.fn();
-    renderHome({ ...withFamily, onToggleEnvExport, onToggleProxy });
+    renderHome({ ...withFamily, onToggleEnvExport });
     fireEvent.click(screen.getByRole("switch", { name: NAME }));
     expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
-    // It spans every family, so it must never move the master as a side effect.
-    expect(onToggleProxy).not.toHaveBeenCalled();
   });
 
-  it("reflects the backend's choice rather than the master's state", () => {
+  it("reflects the backend's choice rather than the engine's state", () => {
     renderHome({ ...withFamily, proxyOn: true, envExportOn: false });
     expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
   });
@@ -862,27 +876,28 @@ describe("Home command-line tools switch", () => {
     expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
   });
 
-  it("sits below the ledger, not beside the master switch", () => {
-    // The arrangement this replaced put the two switches 66px apart wearing the
+  it("sits below the ledger, not beside the routing card", () => {
+    // The arrangement this replaced put two switches 66px apart wearing the
     // same track in the same indigo, which said a machine-wide change to git and
-    // curl was routing's equal. The ledger between them is the fix.
+    // curl was routing's equal. The master switch is gone and this one is not,
+    // so the ordering still has to hold: the card, the ledger, then this.
     renderHome(withFamily);
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
+    const card = screen.getByRole("heading", { name: "Routing" });
     const shell = screen.getByRole("switch", { name: NAME });
     const heading = screen.getByRole("heading", { name: "What routes through Gate" });
-    expect(master.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(heading.compareDocumentPosition(shell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("stays a line rather than a card, so the master keeps the weight", () => {
+  it("stays a line rather than a card, so the routing card keeps the weight", () => {
     renderHome(withFamily);
     const row = screen.getByText("Command-line tools").closest("div")!.parentElement!;
     expect(row.className).not.toContain("shadow-border");
   });
 
-  it("is absent when there is no ledger to separate it from the master", () => {
-    // With nothing installed the two switches would be adjacent again, which is
-    // exactly the geometry that failed. Costs nothing: the panel this used to
+  it("is absent when there is no ledger to separate it from the card", () => {
+    // With nothing installed it would sit straight under the routing card,
+    // which is the geometry that failed. Costs nothing: the panel this used to
     // live on was reachable only through a family row.
     renderHome({ tools: [], domains: [] });
     expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
@@ -891,13 +906,13 @@ describe("Home command-line tools switch", () => {
   it("answers for reading on over a channel that cannot be live", () => {
     renderHome({ ...withFamily, proxyOn: false, envExportOn: true });
     const toggle = screen.getByRole("switch", { name: NAME });
-    // The switch reports the stored choice, which survives routing being turned
-    // off. It points at the card's status line rather than repeating it: the
-    // master card owns `master-off` and says it once, countably.
+    // The switch reports the stored choice, which survives the engine being
+    // down. It points at the card's status line rather than repeating it: the
+    // routing card owns `not-routing` and says it once, countably.
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     const described = document.getElementById(toggle.getAttribute("aria-describedby")!);
-    expect(described?.textContent).toMatch(/^Off/);
-    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(described?.textContent).toMatch(/^Didn’t start/);
+    expect(screen.queryByText("Not routing")).toBeNull();
   });
 
   it("carries its instruction in ink that clears AA", () => {
@@ -911,22 +926,37 @@ describe("Home command-line tools switch", () => {
 });
 
 describe("Home family roster", () => {
-  it("names the members of the family named by exclusion", () => {
+  it("draws no roster, because every section names what is in it", () => {
+    // There is no group named by exclusion any more. "Other tools", then
+    // "Experimental", then "Any app on this machine" each needed their contents
+    // listed; a section is an app or a mechanism the user has, and its heading
+    // is the answer.
     renderHome({
-      tools: [
-        makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+      tools: [makeTool("env-proxy", "Terminal tools", { kind: "connected" }, "any-app")],
+      // A slug no section claims, which is what `openrouter` effectively was
+      // here and is no longer: its section went with its row, and
+      // `TOOL_MANAGED_DOMAINS` filters it out before grouping either way. An
+      // unclaimed member still gets a row of its own - that is the guarantee
+      // `buildGroups` documents - so it demonstrates the same thing.
+      domains: [
+        makeDomain({ slug: "acme-router", display_name: "Acme Router", client: "any-app" }),
       ],
     });
-    // "Other tools" is the label on a filter; it is the one row a first-timer
-    // cannot map to anything on their own machine.
-    expect(screen.getByText("Other tools")).toBeTruthy();
-    expect(screen.getByText("OpenCode · OpenClaw")).toBeTruthy();
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByText("Acme Router")).toBeTruthy();
+    expect(screen.queryByText("Terminal tools · Acme Router")).toBeNull();
+  });
+
+  it("has no catch-all heading left to reach", () => {
+    renderHome({ tools: [makeTool("hermes", "Hermes", { kind: "connected" }, "hermes")] });
+    expect(screen.queryByText("Other tools")).toBeNull();
+    expect(screen.queryByText("Experimental")).toBeNull();
+    expect(screen.getByText("Hermes")).toBeTruthy();
   });
 
   it("joins with a middot, because a member name can contain a slash", () => {
     renderHome({
-      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers")],
+      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "opencode")],
       domains: [makeDomain({ slug: "anthropic" })],
     });
     // "Claude Desktop / Cowork" is one member. A slash-joined roster would read
@@ -934,23 +964,22 @@ describe("Home family roster", () => {
     expect(screen.queryByText(/OpenCode \/ /)).toBeNull();
   });
 
-  it("stays off a family whose name already says what it covers", () => {
+  it("stays off a group whose name already says what it covers", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // Same rule the panel's blurb follows: "Claude Code · Claude Desktop /
-    // Cowork" under an h3 reading "Anthropic" costs a line for nearly the same
-    // fact, and these are the rows that carry an exception instead.
+    // One section, named for the app: the CLI and the desktop app's API
+    // surface are two surfaces of Claude and ride one switch.
     expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.queryByText("Claude Code · Claude Desktop / Cowork")).toBeNull();
+    expect(screen.queryByText(/Claude Code · /)).toBeNull();
   });
 
   it("yields the line to an exception, which already names a member", () => {
     renderHome({
       tools: [
-        makeTool("opencode", "OpenCode", { kind: "error", message: "bad json" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+        makeTool("opencode", "OpenCode", { kind: "error", message: "bad json" }, "opencode"),
+        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "openclaw"),
       ],
     });
     // Both would put a third line on the row that already grew.

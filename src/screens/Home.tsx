@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { Tool, ProxyDomain, Verdict } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import type { Group, GroupException } from "../lib/groups";
-import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "../lib/groups";
+import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
@@ -25,12 +25,11 @@ import { openExternal } from "../lib/openExternal";
 export function Home({
   workspace,
   gatewayHost,
-  consoleUrl,
+  dashboardUrl,
   proxyOn,
   caTrusted,
   caNssTrusted,
   showProxy,
-  providers,
   tools,
   domains,
   busy,
@@ -42,7 +41,6 @@ export function Home({
   onEnableRouting,
   staleAgentsHint,
   onDismissStaleAgents,
-  onToggleProxy,
   onTrustCa,
   trustPending,
   onOpenFamily,
@@ -50,6 +48,7 @@ export function Home({
   envExportSeparable,
   envExportOn,
   onToggleEnvExport,
+  verdicts,
   forwarderAnswering,
 }: {
   workspace: string;
@@ -57,13 +56,14 @@ export function Home({
    * carries the org, so the identifier traffic actually leaves through needs a
    * line of its own rather than disappearing with it. */
   gatewayHost: string;
-  /** The console that reads this gateway's database. Derived per account
-   * rather than fixed, because the fixed one sent staging users to production. */
-  consoleUrl: string;
+  /** The dashboard for the gateway this install talks to, or null when it has
+   *  none (a local gateway). Passed in rather than imported: it is derived from
+   *  the account now, not a constant, and the button is omitted when there is
+   *  nowhere to go - see `lib/dashboard.ts`. */
+  dashboardUrl: string | null;
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
-  providers: ProviderState[];
   tools: Tool[];
   domains: ProxyDomain[];
   busy: boolean;
@@ -85,7 +85,6 @@ export function Home({
   onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
-  onToggleProxy: () => void;
   onTrustCa: () => void;
   /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
    * certificate card's sentence for the one that names that dialog. */
@@ -103,6 +102,14 @@ export function Home({
   envExportSeparable: boolean;
   envExportOn: boolean;
   onToggleEnvExport: () => void;
+  /** The routing sweep, by slug.
+   *
+   * Threaded in rather than fetched here because the ledger is built in three
+   * places from the same inputs and they must agree. Undefined while the sweep
+   * is in flight, which is a real state and not an opt-out: a member with no
+   * verdict does not count as routing, which is the point - AG-570 forbids a
+   * completed file write from producing On on its own. */
+  verdicts?: Map<string, Verdict>;
   /** Whether the forwarder sidecar the PAC and HTTPS_PROXY name is answering;
    * null when unknown or not this process's to know. False while routing is
    * on means browsers and tools are quietly going direct - the one state the
@@ -116,7 +123,11 @@ export function Home({
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
-  const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(tools, domains, {
+    proxyOn,
+    caTrusted,
+    verdicts,
+  });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
@@ -143,7 +154,7 @@ export function Home({
   // Switched on but not flowing because the master is off. Saying so is what
   // makes flipping the switch feel safe rather than speculative.
   const waitingCount = groups.reduce(
-    (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
+    (n, g) => n + g.members.filter((m) => m.attention === "not-routing").length,
     0,
   );
   // What the user has asked to route, as opposed to what is actually flowing.
@@ -165,10 +176,10 @@ export function Home({
   // top, everything else holds catalog order. `sort` is stable, so the healthy
   // tail never reshuffles between renders.
   //
-  // `master-off` is deliberately absent, as it was when this ranking fed the
+  // `not-routing` is deliberately absent, as it was when this ranking fed the
   // door. It is not per-family news, it is the master switch's own state, and
   // the card above already says "Off · N waiting". Ranked here it would print
-  // "waiting on routing" on every row at once - the same sentence the card just
+  // "not routing" on every row at once - the same sentence the banner just
   // said, repeated four times, while naming nothing.
   const EXCEPTION_RANK: Record<string, number> = {
     error: 0,
@@ -302,12 +313,12 @@ export function Home({
                 : partial
                   ? "Routing on, certificate not trusted"
                   : `Routing on, ${routedCount} of ${routableCount} routing`
-              : "Routing off"
+              : "Routing did not start"
             : ""}
       </span>
       <div className="flex flex-col gap-2.5 p-3.5">
-        {/* One box, two parts: the master control and the door to what it
-            controls. They were two cards with two 36px tiles stacked 10px apart,
+        {/* One box, two parts: the routing report and the door to what it
+            covers. They were two cards with two 36px tiles stacked 10px apart,
             which read as two unrelated errands when they are the same subject
             seen at two grains.
 
@@ -340,15 +351,19 @@ export function Home({
                   {showProxy && (
                     <>
                       {/* A heading, not a styled div: this is the screen's
-                          primary control and it was absent from the document
+                          primary report and it was absent from the document
                           outline, so the outline read h1 -> h2 "What routes
-                          through Gate" with the master switch unheaded. */}
+                          through Gate" with this block unheaded. It carried a
+                          switch until routing started following the app. */}
                       <h2 className="text-gc-body font-semibold text-gc-ink">Routing</h2>
                       {/* Identified, because it is the screen's one report of
                           whether anything is flowing: the shell-channel switch
                           below points at it for the reality half of its own
                           state, the way a family switch used to point at its
-                          row's sentence. */}
+                          row's sentence. "Didn't start" rather than "Off":
+                          routing is not something the user can have switched
+                          off any more, so the only way to be here is a launch
+                          enable that did not complete. */}
                       <div id="routing-status" className="mt-0.5 text-gc-caption text-gc-ink-3">
                         {/* The count survives the certificate state. Dropping it
                             was backwards: that is exactly when the user wants to
@@ -364,8 +379,8 @@ export function Home({
                             finding out which tool it was. */}
                         {!proxyOn
                           ? waitingCount > 0
-                            ? `Off · ${waitingCount} waiting`
-                            : "Off · not routing"
+                            ? `Didn’t start · ${waitingCount} unprotected`
+                            : "Didn’t start"
                           : unrouted
                             ? "On · forwarder not answering, going direct"
                             : routableCount === 0
@@ -377,18 +392,6 @@ export function Home({
                     </>
                   )}
                 </div>
-                {showProxy && (
-                  <Switch
-                    className="ml-auto"
-                    on={proxyOn}
-                    label="Route through Gate"
-                    busy={busy}
-                    onClick={() => {
-                      setInteracted(true);
-                      onToggleProxy();
-                    }}
-                  />
-                )}
               </div>
             )}
 
@@ -725,7 +728,7 @@ export function Home({
                   // up to four rows directly under the card that just said it,
                   // and in the certificate's case alongside the only button that
                   // fixes it. The pill still reports what it costs the family.
-                  exception={kind === "master-off" || kind === "needs-trust" ? null : exception}
+                  exception={kind === "not-routing" || kind === "needs-trust" ? null : exception}
                   kind={kind}
                   last={i === ranked.length - 1}
                   onOpen={() => onOpenFamily(group.id)}
@@ -775,12 +778,12 @@ export function Home({
                 Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
                 shell, so OpenCode and other terminal tools route too.
               </div>
-              {/* No "Waiting on routing" line here, unlike the panel this came
+              {/* No "Not routing" line here, unlike the panel this came
                   from. That panel had no master card, so the sentence had
                   nowhere else to live; Home's card sits 190px up reporting
                   "Off · N waiting", and DESIGN.md's own rule is that
                   card-owned states never reprint further down - it is why the
-                  ledger rows below suppress `master-off` too. Printing it here
+                  ledger rows below suppress `not-routing` too. Printing it here
                   would be the third copy of one fact on one screen.
 
                   The switch still has to answer for reading "on" over a channel
@@ -889,16 +892,18 @@ export function Home({
             DESIGN.md and this is the nearest step to it; the two are half a
             pixel apart. The padding takes the hit area from 19px to 32px, which
             also clears the 24px target minimum it used to miss. */}
-        <button
-          type="button"
-          onClick={() => {
-            void openExternal(consoleUrl);
-          }}
-          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-        >
-          <Icon name="cube" size={15} />
-          Gate dashboard
-        </button>
+        {dashboardUrl && (
+          <button
+            type="button"
+            onClick={() => {
+              void openExternal(dashboardUrl);
+            }}
+            className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          >
+            <Icon name="cube" size={15} />
+            Gate dashboard
+          </button>
+        )}
       </div>
 
     </div>
@@ -947,24 +952,14 @@ function FamilyRow({
   onOpen: () => void;
 }) {
   const label = groupPillLabel(group);
-  // The roster, on the one family whose name does not say what is in it.
-  //
-  // Same rule the panel's `blurb` already follows, one layer up: a family named
-  // after a provider says what it covers, and "Claude Code · Claude Desktop /
-  // Cowork" under an h3 reading "Anthropic" is close enough to the same fact
-  // that it cost a line for very little. "Other tools" is named by exclusion, so
-  // it is the row that cannot be read at all without its members, and the one
-  // the user could not map to anything on their own machine.
-  //
-  // Measured, the provider rosters were also the ones earning least where space
-  // was tightest: with a restart notice up, the two rows still showing a roster
-  // were "OpenRouter · OpenRouter apps" and the one that mattered, while
-  // Anthropic and OpenAI were showing exceptions and had no roster anyway.
-  //
-  // Suppressed by an exception for the same reason as before: that sentence
-  // takes this slot and already names a member.
-  const roster = !exception && group.id === MULTI_PROVIDER_ID && group.members.length > 0;
-  const secondLine = !!exception || roster;
+  // No roster line. Every section is named for an app or a mechanism the user
+  // has, so the heading already says what is in it; this existed for the one
+  // group named by exclusion ("Other tools", then "Experimental", then "Any app
+  // on this machine"), and there is no such group now. It was retired by
+  // assigning `false` to the variable that gated it, which left the branch, the
+  // markup and three paragraphs arguing about where a roster earns its line -
+  // none of it reachable, and none of it visible to `tsc`.
+  const secondLine = !!exception;
   return (
     <div
       role="listitem"
@@ -995,8 +990,8 @@ function FamilyRow({
       <span id={`home-family-${group.id}`} className="sr-only">
         {label}. {count}
         {/* Not when the pill already said it. A dark family now names its own
-            cause, so `master-off` read "Waiting on routing. 0 of 2 routing.
-            waiting on routing". The visible row already suppresses this pair;
+            cause, so `not-routing` read "Not routing. 0 of 2 routing. not
+            routing". The visible row already suppresses this pair;
             the description was the copy that still had both. */}
         {exception && exception.toLowerCase() !== label.toLowerCase() ? `. ${exception}` : ""}
       </span>
@@ -1009,15 +1004,15 @@ function FamilyRow({
           and the name keeps the full width. The stretch button is
           `absolute inset-0`, so a taller row stays entirely clickable.
 
-          Tighter under the name when a second line follows it. The roster and
-          the exception both belong to the name, so 10px of air between a name
-          and its own members read as separation between unrelated things; 4px
-          groups them, which is the "tight groups, generous separation" rule with
-          the row separator doing the separating. It also pays for the roster: at
-          10px the ledger pushed Home from fitting exactly to overflowing by 10px
-          in the mixed state, and a 10px overflow is the worst size there is,
-          because the fold cue fades 22px and would have been hiding less than it
-          obscured. */}
+          Tighter under the name when a second line follows it. The exception
+          belongs to the name, so 10px of air between a name and the sentence
+          about it read as separation between unrelated things; 4px groups them,
+          which is the "tight groups, generous separation" rule with the row
+          separator doing the separating. It was measured against a taller row
+          than this one - there was a member roster under the name then - and at
+          10px the ledger pushed Home from fitting exactly to overflowing by
+          10px, which is the worst overflow there is: the fold cue fades 22px and
+          would have been hiding less than it obscured. */}
       <div
         className={`pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 pt-2.5 ${
           secondLine ? "pb-1" : "pb-2.5"
@@ -1035,28 +1030,6 @@ function FamilyRow({
           <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
         </div>
       </div>
-      {/* Who is in this family, so the row that cannot be read without it is not
-          just a category. "Other tools" is the label on a
-          `filter(t => !claimed.has(t.slug))`; it tells the user nothing about
-          their own machine, and the panel's blurb explaining it is a click away.
-          This is the line that answers "what is that?" in place.
-
-          Separated by "·", not "/". Two member names in the real catalog
-          already contain a slash - "Claude Desktop / Cowork" is one member, not
-          two - so a slash-joined roster reads as three tools where there are
-          two. The middot is also what the app already uses to join a domain's
-          hosts, so it is the existing vocabulary for "these, together".
-
-          No `truncate` and no clamp. It wraps, because a cut roster is a list
-          the user has to open the panel to trust, and this family holds two or
-          three tools so the growth is bounded. */}
-      {roster && (
-        <div className="relative px-3.5 pb-2">
-          <span className="pointer-events-none block text-gc-micro leading-snug text-gc-ink-3">
-            {group.members.map((m) => m.name).join(" · ")}
-          </span>
-        </div>
-      )}
       {exception && (
         <div className="relative flex items-center gap-2 px-3.5 pb-2">
           {/* The sentence carries its own severity, so a failure and a

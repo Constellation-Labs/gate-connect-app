@@ -40,13 +40,40 @@ pub struct Diagnostics {
     /// mint leaves from.
     pub ca_cert_path: Option<String>,
     pub ca_cert_present: bool,
-    /// Linux only: whether every per-user NSS database found holds our current
-    /// CA. Chromium-based browsers read that store and never the system one, so
-    /// `Some(false)` next to a `ca_trusted` of true is exactly the "Firefox
+    /// Linux only: what every per-user NSS database found holds, **probed
+    /// now**. Chromium-based browsers read that store and never the system one,
+    /// so `Absent` next to a `ca_trusted` of true is exactly the "Firefox
     /// works, Chrome doesn't" report, and it is invisible from the popover.
     /// `None` where the question does not apply: not Linux, or no Chromium
     /// browser has ever run for this user.
-    pub ca_nss_trusted: Option<bool>,
+    ///
+    /// [`crate::proxy::NssProbe`] rather than a bool because a store that could
+    /// not be opened - locked by another NSS client, on a stalled mount, or
+    /// with no `certutil` to open it with - is not a store that lacks the CA,
+    /// and this line is read as a statement of fact by whoever the report is
+    /// pasted to. It said `CA MISSING` for both until the bounded certutil call
+    /// gave "could not open" a second way to happen.
+    ///
+    /// A different question from [`Diagnostics::ca_nss_write`] below, and the
+    /// two are kept apart rather than reconciled. This one is answerable with no
+    /// write having happened, which is the common case for someone who opens
+    /// Settings and copies a report; it is also a fold over the stores, so it
+    /// cannot say *which* refused or why. That is what the other one is for.
+    pub ca_nss_trusted: Option<crate::proxy::NssProbe>,
+    /// Linux only: what the last NSS write **on this machine** did, and which
+    /// stores refused it.
+    ///
+    /// Here because the copy raised on a failed write tells the user this report
+    /// names the store and the reason, and for a while it did not - the outcome
+    /// reached the UI as one enum and the detail went to stderr. `None` before
+    /// any write on this machine, which is the honest answer for a report taken
+    /// without one; the copy that makes the promise is raised from inside the
+    /// enable that just wrote, so it is never `None` where the promise is made.
+    ///
+    /// `None` also covers a record written for a different CA: the file is
+    /// keyed by the certificate's fingerprint, so a regenerated root retires
+    /// the reading that described the old one rather than carrying it forward.
+    pub ca_nss_write: Option<crate::proxy::NssReading>,
     /// The persisted "routing should be on" intent. Compared against the live
     /// `running` flag it answers the commonest report we get: routing was on
     /// yesterday and the app came back with it off.
@@ -85,6 +112,7 @@ pub fn collect() -> Diagnostics {
         ca_cert_present: ca_cert_path.as_ref().is_some_and(|p| p.exists()),
         ca_cert_path: ca_cert_path.map(|p| p.display().to_string()),
         ca_nss_trusted: ca_nss_trusted(),
+        ca_nss_write: ca_nss_write(),
         routing_intent: crate::proxy::intent::load_intent(),
         persisted_engine_proxy_url: crate::proxy::persisted_engine_proxy_url(),
         relay_base_url: crate::proxy::relay_base_url(),
@@ -93,20 +121,45 @@ pub fn collect() -> Diagnostics {
     }
 }
 
+/// A live read of the store Chromium reads. Three answers rather than a bool -
+/// see [`crate::proxy::NssProbe`]: a database that could not be opened is not a
+/// database that does not hold the CA, and this line is printed as a fact.
 #[cfg(target_os = "linux")]
-fn ca_nss_trusted() -> Option<bool> {
+fn ca_nss_trusted() -> Option<crate::proxy::NssProbe> {
     crate::proxy::ca::nss_ca_trusted()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn ca_nss_trusted() -> Option<bool> {
+fn ca_nss_trusted() -> Option<crate::proxy::NssProbe> {
     // macOS and Windows put user-added roots in the same store the browser
     // reads, so there is no second store here to disagree with the first.
     None
 }
 
+/// The recorded write outcome, for the report. Not a probe: it is what the write
+/// itself saw, which is the only place the per-store reason exists. Written to
+/// a file rather than held in memory, so the reading survives the process that
+/// took it - see `ca_linux`'s `record_nss_trust`.
 #[cfg(target_os = "linux")]
-fn os_name() -> String {
+fn ca_nss_write() -> Option<crate::proxy::NssReading> {
+    crate::proxy::ca::recorded_nss_trust()
+}
+
+/// `None` off Linux, where there is no second store to have written.
+#[cfg(not(target_os = "linux"))]
+fn ca_nss_write() -> Option<crate::proxy::NssReading> {
+    None
+}
+
+/// The OS marketing name and version, on its own.
+///
+/// Public because it is the one field of [`Diagnostics`] worth reading without
+/// the rest: the analytics error context wants it at startup, and [`collect`]
+/// is explicitly not for that - its system-proxy readback shells out to
+/// `networksetup` once per active network service on macOS. This is a file
+/// read, a registry read, or two `sw_vers` calls.
+#[cfg(target_os = "linux")]
+pub fn os_name() -> String {
     // PRETTY_NAME is the one field every distro fills in and the one a bug
     // report wants ("Ubuntu 25.10", "Fedora Linux 41 (Workstation Edition)").
     std::fs::read_to_string("/etc/os-release")
@@ -121,7 +174,7 @@ fn os_name() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn os_name() -> String {
+pub fn os_name() -> String {
     let field = |arg: &str| {
         std::process::Command::new("/usr/bin/sw_vers")
             .arg(arg)
@@ -146,7 +199,7 @@ fn os_name() -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn os_name() -> String {
+pub fn os_name() -> String {
     use winreg::enums::HKEY_LOCAL_MACHINE;
     use winreg::RegKey;
 
@@ -179,7 +232,7 @@ fn os_name() -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn os_name() -> String {
+pub fn os_name() -> String {
     std::env::consts::OS.to_string()
 }
 

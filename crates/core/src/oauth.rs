@@ -23,6 +23,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
 use crate::env;
@@ -638,6 +639,73 @@ pub const REDIRECT_PORTS: &[u16] = &[8977, 8978, 8979];
 /// giving up on an interactive login.
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
+/// The in-flight login's own cancel flag, for [`cancel_login`] to reach.
+///
+/// Five minutes is a long time to be unable to leave a modal, and the common
+/// way to reach that is not a slow user: it is the sign-in page opening in a
+/// browser profile they are not signed into, which they abandon. Without this
+/// the UI could only *look* away from a flow that went on waiting, and any
+/// later success would upgrade an account the user had already declined to
+/// upgrade.
+///
+/// **A registered per-attempt flag, not one global bool, and the difference is
+/// not theoretical.** The first version was a `static AtomicBool` that every
+/// login shared and consumed with `swap`. Review called that out as
+/// single-consumer, and two of this module's own tests then proved it on CI:
+/// running in one process, one test's `login` cleared the flag the other test
+/// had just set, so the cancel was lost and the wait ran to its full deadline.
+/// macOS and Windows failed, Linux passed on scheduling luck. Anything that can
+/// happen between two threads of a test binary can happen between the main
+/// window and the onboarding webview, which share this process too.
+///
+/// Each attempt now owns an `Arc<AtomicBool>` and observes only its own, so a
+/// second attempt can neither swallow the first's cancel nor clear it.
+static CURRENT_LOGIN: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Abandon an interactive login that is still waiting for the browser.
+///
+/// Idempotent and safe to call when none is running: with no attempt
+/// registered there is nothing to set, so a cancel that arrives late lands
+/// nowhere rather than on the next attempt.
+pub fn cancel_login() {
+    if let Ok(current) = CURRENT_LOGIN.lock() {
+        if let Some(flag) = current.as_ref() {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Registers this attempt's flag for [`cancel_login`], and deregisters it on
+/// the way out however the attempt ends.
+struct CancelScope(Arc<AtomicBool>);
+
+impl CancelScope {
+    fn new() -> Self {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut current) = CURRENT_LOGIN.lock() {
+            *current = Some(Arc::clone(&flag));
+        }
+        Self(flag)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for CancelScope {
+    fn drop(&mut self) {
+        if let Ok(mut current) = CURRENT_LOGIN.lock() {
+            // Only if it is still ours. A second attempt that started while
+            // this one was finishing has already replaced the registration, and
+            // clearing it here would leave that one uncancellable.
+            if current.as_ref().is_some_and(|f| Arc::ptr_eq(f, &self.0)) {
+                *current = None;
+            }
+        }
+    }
+}
+
 const SUCCESS_HTML: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title>\
 <body style=\"font:15px system-ui;margin:4rem auto;max-width:24rem;text-align:center;color:#1a1a1a\">\
 <h1 style=\"font-size:1.1rem\">You're signed in</h1>\
@@ -692,10 +760,15 @@ impl LoopbackListener {
 
     /// Block until the browser hits `/callback`, validate `state`, and return
     /// the authorization `code`. Ignores unrelated requests (e.g. favicon).
-    pub fn wait_for_code(
+    /// Private, because its `cancel` argument is: a caller outside this module
+    /// has no `CancelScope` to pass and no business making one - the scope is
+    /// created by `login_waiting` so that exactly one attempt is registered
+    /// with `CURRENT_LOGIN` at a time.
+    fn wait_for_code(
         &self,
         expected_state: &str,
         timeout: std::time::Duration,
+        cancel: &CancelScope,
     ) -> Result<String> {
         for listener in &self.listeners {
             listener
@@ -715,6 +788,13 @@ impl LoopbackListener {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(e).context("accepting loopback callback"),
                 }
+            }
+            // Checked on the same 100ms tick the accept loop already runs on,
+            // so a cancel lands within a tick rather than at the deadline.
+            // A plain `load` of this attempt's own flag: there is nothing to
+            // consume, because the flag dies with the attempt.
+            if cancel.cancelled() {
+                bail!("the browser sign-in was stopped from Gate Connect");
             }
             if std::time::Instant::now() >= deadline {
                 bail!("timed out waiting for the login redirect");
@@ -806,13 +886,57 @@ pub fn login<F>(cfg: &OAuthConfig, candidate_ports: &[u16], open_url: F) -> Resu
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    login_waiting(
+        cfg,
+        candidate_ports,
+        open_url,
+        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
+    )
+}
+
+/// [`login`] with the callback deadline as an argument.
+///
+/// A seam, not an API: the deadline is five minutes, and a test that exercises
+/// the paths where no callback ever arrives would otherwise sit through it.
+/// `login` is the only caller outside tests and pins the real value.
+fn login_waiting<F>(
+    cfg: &OAuthConfig,
+    candidate_ports: &[u16],
+    open_url: F,
+    wait_for: std::time::Duration,
+) -> Result<OAuthTokens>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    // Registered BEFORE anything the caller can cancel against, which means
+    // before `open_url`. The flag used to be cleared *after* it, directly under
+    // a comment saying a cancel pressed "while the browser was opening must
+    // still stop this attempt" - the code did the opposite of its own sentence
+    // and wiped exactly that cancel. `open_url` is not instant: it hands off to
+    // the desktop's opener, and `xdg-open` with no default handler can block
+    // for seconds. The UI arms its decline the moment the click is sent, so
+    // that window is reachable.
+    //
+    // Nothing is cleared now - the flag is this attempt's own and starts false.
+    let cancel = CancelScope::new();
     let listener = LoopbackListener::bind(candidate_ports)?;
     let req = begin_login(cfg, listener.redirect_uri())?;
     open_url(&req.authorize_url).context("opening the sign-in page in the browser")?;
-    let code = listener.wait_for_code(
-        &req.state,
-        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
-    )?;
+    let code = listener.wait_for_code(&req.state, wait_for, &cancel)?;
+    // Checked again after the callback lands, and this is the half that was
+    // missing. `wait_for_code` returning means the browser answered - but the
+    // token exchange and the keychain write are still ahead, and a decline
+    // pressed in that window used to be ignored outright: the login completed,
+    // the account was upgraded, and nothing said so, because the UI had already
+    // closed the dialog and suppresses the error it asked for.
+    //
+    // Refusing here is what makes "declining stops the sign-in" true rather
+    // than merely likely. Nothing has been persisted at this point - `store`
+    // runs below - so abandoning the code is clean; it simply goes unused and
+    // expires.
+    if cancel.cancelled() {
+        bail!("the browser sign-in was stopped from Gate Connect");
+    }
     let tokens = complete_login(cfg, &code, &req.verifier, listener.redirect_uri())?;
     store(&tokens)?;
     Ok(tokens)
@@ -822,12 +946,126 @@ where
 mod tests {
     use super::*;
 
+    /// One interactive login at a time, which is what the product has and what
+    /// `cancel_login` means by "the current attempt".
+    ///
+    /// `cargo test` runs these on parallel threads, and without this they
+    /// overlap in a way the app cannot: two attempts register, the later one
+    /// owns the slot, and a `cancel_login()` meant for the first lands on the
+    /// second. That is not a bug in the registration - it is these tests
+    /// inventing a second simultaneous user. Serialising them tests the real
+    /// semantic instead.
+    ///
+    /// Poisoning is stepped over deliberately: a panic in one cancel test must
+    /// fail that test, not cascade into every other one as a `PoisonError`.
+    static LOGIN_TESTS: Mutex<()> = Mutex::new(());
+
+    fn one_login_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        LOGIN_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn cfg() -> OAuthConfig {
         OAuthConfig {
             hosted_domain: "auth.example.test".to_string(),
             client_id: "client123".to_string(),
             scopes: vec!["openid".to_string(), "email".to_string()],
         }
+    }
+
+    /// The cancel path, which shipped with no test at all and had two defects
+    /// that one would have caught.
+    ///
+    /// `login` is driven through its `open_url` seam: the closure runs at the
+    /// exact moment the browser would be handed the URL, so cancelling from
+    /// inside it reproduces "the user pressed decline while the opener was
+    /// still working" - the case the clear used to wipe by running after it.
+    #[test]
+    fn a_cancel_during_the_browser_handoff_stops_the_login() {
+        let _serial = one_login_at_a_time();
+        // `&[0]` binds an ephemeral port, so this needs no fixed port and
+        // cannot collide with a real login or another test.
+        //
+        // Through the deadline seam, so a regression fails in a second rather
+        // than hanging for the real five minutes. That is not hypothetical:
+        // when the cancel flag was one process-global bool, the sibling test
+        // below cleared this one's cancel and this test sat out the whole
+        // deadline before failing - 300s per run, on two of three CI platforms.
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| {
+                cancel_login();
+                Ok(())
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .expect_err("a cancelled login must not return tokens");
+
+        assert!(
+            err.to_string().contains("stopped from Gate Connect"),
+            "expected the cancel's own message, got: {err}"
+        );
+    }
+
+    /// A cancel that arrives with no attempt running must not kill the next
+    /// one. With a registered per-attempt flag this is structural - there is
+    /// nothing for the cancel to land on - where the global bool needed it
+    /// cleared on entry and lost races doing so.
+    #[test]
+    fn a_stale_cancel_does_not_kill_the_next_attempt() {
+        let _serial = one_login_at_a_time();
+        cancel_login();
+
+        // The next attempt registers its own flag, which starts false, so the
+        // wait runs and fails on its own terms (nothing ever hits the
+        // callback) rather than on the earlier cancel.
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(150),
+        )
+        .expect_err("no callback arrives here");
+
+        assert!(
+            !err.to_string().contains("stopped from Gate Connect"),
+            "a stale cancel leaked into the next login: {err}"
+        );
+    }
+
+    /// Two attempts in one process do not share a cancel.
+    ///
+    /// The regression these tests were failing on before the flag became
+    /// per-attempt: `cargo test` runs them on parallel threads, one `login`
+    /// cleared the flag another had just set, and the robbed attempt waited out
+    /// its deadline. The same two-attempts-one-process shape is reachable in
+    /// the app, where the main window and the onboarding webview share a
+    /// backend.
+    #[test]
+    fn one_attempts_cancel_does_not_reach_another() {
+        let _serial = one_login_at_a_time();
+        // A first attempt registers, then ends - as an abandoned login does.
+        drop(login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(50),
+        ));
+        // Its late cancel now has nothing to land on.
+        cancel_login();
+
+        let err = login_waiting(
+            &cfg(),
+            &[0],
+            |_url| Ok(()),
+            std::time::Duration::from_millis(150),
+        )
+        .expect_err("no callback arrives here");
+
+        assert!(
+            !err.to_string().contains("stopped from Gate Connect"),
+            "a finished attempt's cancel reached a later one: {err}"
+        );
     }
 
     #[test]

@@ -11,6 +11,11 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e",
+  // The live suite has its own config (`playwright.live.config.ts`): it needs a
+  // different webServer set, and Playwright resolves `webServer` per CONFIG and
+  // not per project, so a project here would have started the Rust harness on
+  // every `pnpm test:e2e` - including the CI job that installs no Rust.
+  testIgnore: "live/**",
   // The popover is one room: 360px wide, ~520px tall. Layout assertions are
   // only meaningful at the size the window actually is.
   use: {
@@ -41,6 +46,18 @@ export default defineConfig({
   webServer: {
     command: "pnpm exec vite --port 5599 --strictPort --host 127.0.0.1",
     url: "http://127.0.0.1:5599",
+    // Pin these tests to the popover, which is no longer the app's default.
+    //
+    // They assert on popover flows - first run, the org picker, routing counts -
+    // in the popover's own copy and layout, so they keep testing the surface
+    // they were written against. This line used to say the new shell's
+    // routing was inert and could not satisfy them; it is wired
+    // (`src/lib/useRouting.ts`), and `playwright.live.config.ts` drives it.
+    //
+    // Retire this line together with the popover screens. `newUiEnabled()`
+    // reads localStorage first and a fresh browser context has none, so the
+    // build-time default is what decides here.
+    env: { VITE_NEW_UI: "0" },
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     // So the next startup failure says why instead of only that it timed out.
