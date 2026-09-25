@@ -2739,14 +2739,12 @@ pub fn run() {
                     // looks wrong locally while the token ages out. The
                     // gateway's refusal is the only signal that state produces.
                     //
-                    // Acted on as an EDGE, not a level: the count only rises, so
-                    // a move means at least one new refusal since the last look,
-                    // and a tick that could not read it loses nothing. The first
-                    // reading only seeds the baseline - a daemon can outlive
-                    // several GUI runs, and launch-time `refresh_session` has
-                    // already probed for a session that died while we were gone.
-                    // A restarted daemon counts from zero again, which reads as
-                    // no increase and simply re-seeds.
+                    // Acted on as an EDGE, not a level, by
+                    // `proxy::refused_since_last_look`, which carries the rules:
+                    // a rise is a new refusal, the first reading only seeds, and a
+                    // reading below the baseline is a restarted daemon counting
+                    // from zero, whose every refusal is new. A tick that could
+                    // not read the counter loses nothing.
                     //
                     // `None` means nobody answered (routing off, so no control
                     // connection, or a failed round trip). It is not zero, and
@@ -2762,11 +2760,15 @@ pub fn run() {
                     if let Some(refusals) = gate_connect_core::proxy::manager().gate_auth_refusals()
                     {
                         let refused_since_last_tick =
-                            last_refusals.is_some_and(|seen| refusals > seen);
+                            gate_connect_core::proxy::refused_since_last_look(
+                                last_refusals,
+                                refusals,
+                            );
                         last_refusals = Some(refusals);
                         if refused_since_last_tick {
                             eprintln!(
-                                "[gate] the helper daemon's engine reports the gateway refusing                                  our bearer; re-verifying the session"
+                                "[gate] the helper daemon's engine reports the gateway refusing \
+                                 our bearer; re-verifying the session"
                             );
                             recheck_gate_session(&refresh_handle);
                         }

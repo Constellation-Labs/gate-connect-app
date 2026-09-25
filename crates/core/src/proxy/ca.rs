@@ -35,8 +35,11 @@ use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the lookup
-/// key for trust/untrust via `security`.
-pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+/// key for trust/untrust via `security`. A dev run has its own; see
+/// [`cert_authority::ca_common_name`].
+fn ca_common_name() -> &'static str {
+    cert_authority::ca_common_name()
+}
 
 /// The root-owned System keychain. Older builds installed CA trust here
 /// (admin domain) rather than the user login keychain; a stale root left
@@ -79,46 +82,8 @@ fn generate() -> Result<(String, String)> {
 }
 
 /// Load the CA, generating + persisting one on first use. The pair is kept
-/// in sync: if either half is missing we regenerate both.
-/// Does this private key belong to this certificate?
-///
-/// **The check the write-order comment below assumed could not be needed.** It
-/// argues that a crash between the two stores leaves a key with no cert, which
-/// regenerates - true, and it only covers a crash *inside* `load_or_create`.
-/// Two installs sharing one data directory are not that: a dev build keeps its
-/// key in `GATE_CONNECT_TEST_SECRETS` while a release build keeps its key in
-/// the login keychain, and both read and write the same `ca-cert.pem`. Whoever
-/// wrote the cert last leaves the other build holding a cert that does not
-/// match its key.
-///
-/// Observed, not hypothesised: a machine running both had `ca-cert.pem` paired
-/// with the *dev* key while the release app signed with the keychain's. The
-/// result is the worst shape a failure can take. `Issuer::from_ca_cert_pem`
-/// accepts the pair without complaint, the engine starts, leaves are minted
-/// with the cert's own Authority Key Identifier - so the chain *looks* right,
-/// and every fingerprint comparison passes - and the signature verifies against
-/// nothing. Every intercepted host fails its handshake while Connect reports
-/// Protected, and only a tunnelled host still works, so the surfaces that say
-/// routing is healthy all agree and all are wrong.
-///
-/// Compared on the public key: rcgen hands us the key's raw public bytes, and
-/// for an EC key that 65-byte uncompressed point appears verbatim inside the
-/// certificate's SubjectPublicKeyInfo. A containment test rather than a DER
-/// walk because the crates here parse PEM but not X.509, and the direction that
-/// matters is sound - 65 bytes of curve point do not collide. A key we cannot
-/// parse counts as a mismatch: unusable is unusable, and regenerating is the
-/// same answer.
-fn key_matches_cert(key_pem: &str, cert_pem: &str) -> bool {
-    let Ok(key) = KeyPair::from_pem(key_pem) else {
-        return false;
-    };
-    let Ok(der) = pem::parse(cert_pem.as_bytes()) else {
-        return false;
-    };
-    let public = key.public_key_raw();
-    !public.is_empty() && der.contents().windows(public.len()).any(|w| w == public)
-}
-
+/// in sync: if either half is missing, or the key does not belong to the
+/// certificate ([`cert_authority::key_matches_cert`]), we regenerate both.
 pub fn load_or_create() -> Result<Ca> {
     let user = env::current_user()?;
     let service = key_service();
@@ -144,7 +109,7 @@ pub fn load_or_create() -> Result<Ca> {
         // content comparison — so it reports false for the new root and the trust
         // step installs it rather than short-circuiting on the old one.
         if cert_authority::host_fingerprint_is_current(&path)
-            && key_matches_cert(&key_pem, &cert_pem)
+            && cert_authority::key_matches_cert(&key_pem, &cert_pem)
         {
             return Ok(Ca { cert_pem, key_pem });
         }
@@ -156,7 +121,7 @@ pub fn load_or_create() -> Result<Ca> {
     // any previous cert (and its trust settings, via -t) before persisting
     // the new pair.
     let _ = Command::new("/usr/bin/security")
-        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .args(["delete-certificate", "-c", ca_common_name(), "-t"])
         .arg(login_keychain()?)
         .status();
 
@@ -233,7 +198,7 @@ fn login_keychain() -> Result<PathBuf> {
 /// to remove (e.g. every normal first-time enable).
 fn system_keychain_has_ca() -> Result<bool> {
     let out = Command::new("/usr/bin/security")
-        .args(["find-certificate", "-c", CA_COMMON_NAME])
+        .args(["find-certificate", "-c", ca_common_name()])
         .arg(SYSTEM_KEYCHAIN)
         .output()
         .context("running security find-certificate")?;
@@ -273,7 +238,7 @@ fn remove_login_keychain_ca() {
         return;
     };
     let _ = Command::new("/usr/bin/security")
-        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .args(["delete-certificate", "-c", ca_common_name(), "-t"])
         .arg(keychain)
         .status();
 }
@@ -461,7 +426,7 @@ fn system_trust_install_script(cert: &std::path::Path) -> String {
 fn system_trust_remove_script() -> String {
     format!(
         "/usr/bin/security delete-certificate -c {cn} {kc}",
-        cn = sh_quote(CA_COMMON_NAME),
+        cn = sh_quote(ca_common_name()),
         kc = sh_quote(SYSTEM_KEYCHAIN),
     )
 }
@@ -487,39 +452,6 @@ fn remove_ca_material() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The pairing check, against the failure that motivated it.
-    ///
-    /// A machine running both a dev build (key in `GATE_CONNECT_TEST_SECRETS`)
-    /// and a release build (key in the login keychain) over one data directory
-    /// ended up with `ca-cert.pem` paired to the dev key while the release app
-    /// signed with the keychain's. Nothing downstream noticed: the pair loads,
-    /// the engine starts, leaves carry the cert's own Authority Key Identifier
-    /// so every fingerprint check passes, and only the handshake fails.
-    #[test]
-    fn a_key_from_another_ca_is_not_accepted_for_this_cert() {
-        let (cert_a, key_a) = generate().expect("first CA");
-        let (_cert_b, key_b) = generate().expect("second CA");
-
-        assert!(
-            key_matches_cert(&key_a, &cert_a),
-            "a CA's own key must match its own certificate"
-        );
-        assert!(
-            !key_matches_cert(&key_b, &cert_a),
-            "a key from a different CA must not pass for this certificate"
-        );
-    }
-
-    /// Unusable is unusable: a key that will not parse cannot sign, so it takes
-    /// the same answer as a mismatch rather than a separate error path.
-    #[test]
-    fn an_unparseable_key_or_cert_counts_as_a_mismatch() {
-        let (cert, key) = generate().expect("CA");
-
-        assert!(!key_matches_cert("not a key", &cert));
-        assert!(!key_matches_cert(&key, "not a certificate"));
-    }
-
     /// The flags are the feature here: `-d` is what makes the install
     /// promptless, and dropping `-p ssl` would quietly widen a machine-wide
     /// anchor to every trust policy. Asserted on the command string because the
@@ -542,7 +474,7 @@ mod tests {
     fn the_machine_wide_removal_deletes_the_cert_without_touching_trust_settings() {
         let script = system_trust_remove_script();
         assert!(script.contains("delete-certificate"), "{script}");
-        assert!(script.contains(CA_COMMON_NAME), "{script}");
+        assert!(script.contains(ca_common_name()), "{script}");
         assert!(script.contains(SYSTEM_KEYCHAIN), "{script}");
         assert!(!script.contains(" -t"), "{script}");
     }

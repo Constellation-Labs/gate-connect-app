@@ -336,6 +336,16 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
             if guard.as_ref().is_some_and(|e| e.is_finished()) {
                 *guard = None;
             }
+            // Nor can one signing under another CA. Everything else below is
+            // updated in place, but the signing authority is built at start,
+            // so an engine that survived an untrust and re-mint would go on
+            // minting leaves under the old root: every intercepted handshake
+            // fails while every status reads Protected. Replace it instead.
+            if guard.as_ref().is_some_and(|e| !e.signs_with(&ca_cert_pem)) {
+                if let Some(stale) = guard.take() {
+                    stale.stop();
+                }
+            }
             match guard.as_ref() {
                 Some(running) => {
                     running.update_api_key(&api_key);
@@ -490,5 +500,75 @@ mod tests {
             before + 2,
             "the count must rise rather than latch, so the GUI sees a new edge"
         );
+    }
+
+    fn mint_ca() -> (String, String) {
+        let key = hudsucker::rcgen::KeyPair::generate().expect("key pair");
+        let cert = crate::proxy::cert_authority::ca_certificate_params()
+            .expect("CA params")
+            .self_signed(&key)
+            .expect("self-signed CA");
+        (cert.pem(), key.serialize_pem())
+    }
+
+    fn set_intercept(ca: &(String, String)) -> Request {
+        Request::SetIntercept {
+            gateway_base_url: "https://gateway.example.com".into(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            ca_cert_pem: ca.0.clone(),
+            ca_key_pem: ca.1.clone(),
+            domains: crate::proxy::default_domains(),
+            detached: false,
+            preferred_port: None,
+            preferred_relay_port: None,
+        }
+    }
+
+    /// An engine is reused across enables and updated in place - except for
+    /// its CA, which it cannot change. After an untrust and re-mint the daemon
+    /// must replace it, or it goes on signing under the untrusted root while
+    /// every status reads Protected.
+    #[test]
+    fn an_enable_under_a_new_ca_replaces_the_engine() {
+        let engine: Shared = Arc::new(Mutex::new(None));
+        let detached = AtomicBool::new(false);
+        let first = mint_ca();
+        let second = mint_ca();
+
+        let resp = handle_request(set_intercept(&first), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        assert!(engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .signs_with(&first.0));
+
+        // Same CA: reused, not replaced.
+        let resp = handle_request(set_intercept(&first), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        assert!(engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .signs_with(&first.0));
+
+        let resp = handle_request(set_intercept(&second), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        let guard = engine.lock().unwrap();
+        let running = guard.as_ref().expect("an engine is running");
+        assert!(
+            running.signs_with(&second.0),
+            "the engine must sign under the new CA"
+        );
+        assert!(!running.signs_with(&first.0));
+        drop(guard);
+        let stale = engine.lock().unwrap().take();
+        if let Some(e) = stale {
+            e.stop();
+        }
     }
 }

@@ -550,10 +550,30 @@ impl Drop for CfChallengeSolve {
 ///
 /// Not cfg-gated, for the same reason the challenge observer above isn't: the
 /// notify is called from `engine::handle_response`, which compiles on every
-/// desktop OS, and a Linux daemon-hosted engine simply has no observer
-/// registered, so it is a no-op there.
+/// desktop OS. In the Linux helper daemon the observer is the daemon's own
+/// refusal counter, which the GUI polls (`refused_since_last_look`), because the
+/// shell that can recover the session is a different process.
 static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
     std::sync::OnceLock::new();
+
+/// Whether the helper daemon's refusal counter shows a new refusal since the
+/// GUI last read it. The Linux session loop acts on this edge.
+///
+/// The counter only rises within one daemon's life, so a higher reading means
+/// at least one new refusal. The first reading only seeds the baseline: a
+/// daemon can outlive several GUI runs, and launch already probed for a session
+/// that died while the GUI was gone. A reading **below** the baseline means the
+/// daemon restarted and counts from zero again, so everything it reports is
+/// new: comparing it against the old baseline would ignore refusals until the
+/// new daemon had counted past the old one, which at one a minute is how long a
+/// dead session would keep its green dot.
+pub fn refused_since_last_look(baseline: Option<u64>, reading: u64) -> bool {
+    match baseline {
+        None => false,
+        Some(seen) if reading < seen => reading > 0,
+        Some(seen) => reading > seen,
+    }
+}
 
 /// Debounce latch: set by the notify that fired the observer, cleared by
 /// [`gate_auth_check_finished`]. A refused session 401s *every* request from
@@ -2060,7 +2080,52 @@ pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: 
         && matches!(decide(domains, host, path), Decision::Rewrite { .. })
 }
 
+/// Does the request target carry a `.` or `..` path segment?
+///
+/// It matters because the relay's `classify` (and [`decide`] for the MITM
+/// engine) decides Rewrite vs Passthrough by
+/// `starts_with` on the raw path, while the URL we send is built by
+/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
+/// segments per the WHATWG rules. Those two readings disagree:
+/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
+/// prefix - gets the live Gate credential injected, and is then sent to
+/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
+/// preferred over normalizing because it keeps one string all the way through
+/// rather than adding a second one to keep in step.
+///
+/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
+/// looks for these segments, so a check that only matched the literal form would
+/// be the same bug with an extra step.
+///
+/// Split on `\` as well as `/`: for `http` and `https` URLs the parser treats
+/// a backslash as a path separator, so `/v1/..\..\x` collapses exactly as
+/// `/v1/../../x` does. The relay's `path_survives_parsing` is the backstop behind this
+/// for any spelling neither names.
+pub(crate) fn has_dot_segment(path_and_query: &str) -> bool {
+    let path = path_and_query
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(path_and_query);
+    path.split(['/', '\\']).any(|segment| {
+        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
+            .iter()
+            .any(|form| segment.eq_ignore_ascii_case(form))
+    })
+}
+
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    // A path hiding a dot segment is never rewritten: the path classified here
+    // is not the one a server that normalizes would act on, and a rewrite
+    // carries the Gate credential. It passes through to the real upstream under
+    // the tool's own credential instead - where it would go with Gate off - or
+    // tunnels, if no enabled entry owns the host.
+    if has_dot_segment(path) {
+        return if domains.iter().any(|d| d.enabled && d.matches_host(host)) {
+            Decision::Passthrough
+        } else {
+            Decision::Tunnel
+        };
+    }
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
@@ -2539,6 +2604,29 @@ mod tests {
         assert!(should_intercept_host(&d, "API.ANTHROPIC.COM")); // case-insensitive
         assert!(!should_intercept_host(&d, "example.com"));
         assert!(!should_intercept_host(&d, "statsig.anthropic.com"));
+    }
+
+    /// The engine's half of the relay's dot-segment rule: a path the gateway
+    /// might normalize to somewhere else is never rewritten with the Gate
+    /// credential. It still reaches the provider, under the tool's own.
+    #[test]
+    fn a_dot_segment_is_passed_through_never_rewritten() {
+        let d = anthropic();
+        assert!(matches!(
+            decide(&d, "api.anthropic.com", "/v1/messages"),
+            Decision::Rewrite { .. }
+        ));
+        for path in ["/v1/../../admin", "/v1/%2e%2e/admin", "/v1/..\\..\\admin"] {
+            assert_eq!(
+                decide(&d, "api.anthropic.com", path),
+                Decision::Passthrough,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            decide(&d, "unrelated.example", "/v1/../x"),
+            Decision::Tunnel
+        );
     }
 
     #[test]
@@ -3656,5 +3744,30 @@ mod loopback_port_tests {
         assert_eq!(loopback_port_of("http://localhost:47150"), None);
         assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
         assert_eq!(loopback_port_of(""), None);
+    }
+}
+
+#[cfg(test)]
+mod refusal_edge_tests {
+    use super::refused_since_last_look;
+
+    #[test]
+    fn the_first_reading_only_seeds() {
+        assert!(!refused_since_last_look(None, 0));
+        assert!(!refused_since_last_look(None, 7));
+    }
+
+    #[test]
+    fn a_rise_is_a_refusal_and_a_repeat_is_not() {
+        assert!(refused_since_last_look(Some(3), 4));
+        assert!(!refused_since_last_look(Some(4), 4));
+    }
+
+    /// A restarted daemon counts from zero, so a reading below the baseline is
+    /// all new - not a quiet period until it passes the old count.
+    #[test]
+    fn a_restarted_daemon_is_read_from_zero() {
+        assert!(!refused_since_last_look(Some(9), 0));
+        assert!(refused_since_last_look(Some(9), 1));
     }
 }

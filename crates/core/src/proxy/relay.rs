@@ -635,6 +635,19 @@ async fn proxy(
             format!("{}{}", routed.upstream_url, routed.path_and_query)
         }
     };
+    // The route above was chosen by reading `path_and_query` as a string; what
+    // is sent is whatever reqwest's URL parser makes of `target`. If the two
+    // disagree - a dot segment, a backslash the parser treats as `/`, or any
+    // spelling found later - the request would go somewhere its route was not
+    // decided for, carrying a credential chosen for somewhere else. Refused
+    // rather than trusted to the checks in `resolve_route`, which name the
+    // spellings known today; this one does not need to know them.
+    if !path_survives_parsing(&target) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "request path does not survive URL parsing unchanged".to_string(),
+        ));
+    }
 
     let body = req
         .into_body()
@@ -753,8 +766,8 @@ fn resolve_route(
     headers: &HeaderMap,
 ) -> Result<Routed, (StatusCode, String)> {
     // The path we classify has to be the path we send, and it is not if a dot
-    // segment survives to the URL parser - see [`has_dot_segment`].
-    if has_dot_segment(path_and_query) {
+    // segment survives to the URL parser - see [`super::has_dot_segment`].
+    if super::has_dot_segment(path_and_query) {
         return Err((
             StatusCode::BAD_REQUEST,
             "request path contains a `.` or `..` segment".to_string(),
@@ -797,31 +810,28 @@ fn resolve_route(
     })
 }
 
-/// Does the request target carry a `.` or `..` path segment?
+/// Does the URL reqwest will send to carry the path we routed on, unchanged?
 ///
-/// It matters because [`classify`] decides Rewrite vs Passthrough by
-/// `starts_with` on the raw path, while the URL we send is built by
-/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
-/// segments per the WHATWG rules. Those two readings disagree:
-/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
-/// prefix - gets the live Gate credential injected, and is then sent to
-/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
-/// preferred over normalizing because it keeps one string all the way through
-/// rather than adding a second one to keep in step.
-///
-/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
-/// looks for these segments, so a check that only matched the literal form would
-/// be the same bug with an extra step.
-fn has_dot_segment(path_and_query: &str) -> bool {
-    let path = path_and_query
-        .split_once('?')
-        .map(|(p, _)| p)
-        .unwrap_or(path_and_query);
-    path.split('/').any(|segment| {
-        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
-            .iter()
-            .any(|form| segment.eq_ignore_ascii_case(form))
-    })
+/// `target` is `scheme://authority` plus a path we built by concatenation. The
+/// raw path is everything after the authority up to any `?`; the parsed path is
+/// what `Url::parse` makes of it after its own normalization (dot segments
+/// resolved, backslashes turned into slashes, some bytes percent-encoded). They
+/// differ exactly when the parser would send the request somewhere other than
+/// the path `classify` read. A target that does not parse at all fails too,
+/// since reqwest would refuse it anyway.
+fn path_survives_parsing(target: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(target) else {
+        return false;
+    };
+    let Some(after_scheme) = target.split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let raw = after_scheme
+        .find('/')
+        .map(|i| &after_scheme[i..])
+        .unwrap_or("/");
+    let raw_path = raw.split_once('?').map(|(p, _)| p).unwrap_or(raw);
+    url.path() == raw_path
 }
 
 /// Classify a path within one domain the way the MITM engine's `decide` does:
@@ -939,16 +949,55 @@ mod tests {
             // The encoded spellings are the same segment to a URL parser, so a
             // check that only matched the literal one would be the same bug.
             "/anthropic/v1/%2e%2e/%2E%2E/admin",
+            // A backslash is a separator to the URL parser for http(s), so
+            // these collapse exactly like the forward-slash spellings.
+            "/anthropic/v1/..\\..\\admin",
+            "/anthropic/v1/.%2E\\.%2e\\admin",
         ] {
             let err = resolve_route(&default_domains(), path, &HeaderMap::new())
                 .expect_err("a dot segment is refused");
             assert_eq!(err.0, StatusCode::BAD_REQUEST, "{path}");
         }
 
+        // The legacy route, selected by header rather than by slug, is checked
+        // before either branch.
+        let mut legacy = HeaderMap::new();
+        legacy.insert(
+            HeaderName::from_static(UPSTREAM_URL_HEADER),
+            "https://api.anthropic.com".parse().unwrap(),
+        );
+        let err = resolve_route(&default_domains(), "/v1/../../admin", &legacy)
+            .expect_err("the legacy route refuses a dot segment too");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
         // A dot inside a segment is not a dot segment, and is none of our
         // business: plenty of real API paths carry one.
         let r = resolved("/anthropic/v1/messages.json?a=..").expect("routes");
         assert_eq!(r.path_and_query, "/v1/messages.json?a=..");
+    }
+
+    /// The backstop: whatever the spelling, a target whose parsed path differs
+    /// from the path that was routed on is refused, and an ordinary one is not.
+    #[test]
+    fn a_target_is_sent_only_if_its_path_survives_parsing() {
+        for ok in [
+            "https://gateway.example.com/v1/messages",
+            "https://gateway.example.com/v1/messages?beta=true&x=../y",
+            "https://claude.ai/api/organizations",
+            "https://api.anthropic.com/v1/messages.json",
+            "https://gateway.example.com/",
+        ] {
+            assert!(path_survives_parsing(ok), "{ok}");
+        }
+        for bad in [
+            "https://gateway.example.com/v1/../../admin",
+            "https://gateway.example.com/v1/..\\..\\admin",
+            "https://gateway.example.com/v1/%2e%2e/admin",
+            "https://gateway.example.com/v1\\messages",
+            "not a url",
+        ] {
+            assert!(!path_survives_parsing(bad), "{bad}");
+        }
     }
 
     #[test]

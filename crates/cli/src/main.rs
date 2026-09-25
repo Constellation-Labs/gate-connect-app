@@ -653,12 +653,23 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             }
         }
         ProxyCmd::UntrustCa { system_trust } => {
+            // Untrusting stops routing rather than refusing while it is on, so
+            // say so: nothing else on this path would tell the user their
+            // traffic stopped going through Gate.
+            let was_routing = gate_connect_core::proxy::engine_likely_running();
             if system_trust {
                 mgr.untrust_ca_system()?;
                 println!("Machine-wide proxy CA trust removed.");
             } else {
                 mgr.untrust_ca()?;
                 println!("Proxy CA trust removed.");
+            }
+            if was_routing {
+                println!(
+                    "Routing was on and has been stopped: the engine signs with this CA, so it \
+                     cannot run once the CA is untrusted. `gate-connect proxy enable` trusts a new \
+                     one and turns routing back on."
+                );
             }
         }
     }

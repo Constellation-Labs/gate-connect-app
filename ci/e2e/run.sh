@@ -905,9 +905,12 @@ os_channel_checks() {
         echo "FAIL: no PAC URL set on any active network service"
         FAIL=$((FAIL + 1))
       fi
-      # The CA the engine mints leaf certs under, in the login keychain.
+      # The CA the engine mints leaf certs under, in the login keychain. This
+      # harness runs with file-backed secrets and a real data directory, which is
+      # a dev install's shape, so the root carries the dev name
+      # (`cert_authority::ca_common_name`).
       chk "the Gate CA is in the login keychain" \
-        security find-certificate -c "Gate Connect Local CA"
+        security find-certificate -c "Gate Connect Dev CA"
       ;;
     Linux)
       local dropin
@@ -926,10 +929,11 @@ os_channel_checks() {
       # /usr/local/share/ca-certificates and update-ca-certificates links it
       # into /etc/ssl/certs. The link is the half that means "trusted" - the
       # anchor alone is just a file we dropped.
+      # Named for the dev root: see the macOS arm above.
       chk "the CA anchor is installed" \
-        test -f "/usr/local/share/ca-certificates/Gate Connect Local CA.crt"
+        test -f "/usr/local/share/ca-certificates/Gate Connect Dev CA.crt"
       chk "update-ca-certificates linked it into the system store" \
-        test -e "/etc/ssl/certs/Gate_Connect_Local_CA.pem"
+        test -e "/etc/ssl/certs/Gate_Connect_Dev_CA.pem"
       ;;
     Windows)
       # AutoConfigURL is the whole channel here: `enable_pac` writes it and
