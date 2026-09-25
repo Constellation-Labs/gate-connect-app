@@ -59,10 +59,12 @@ test.describe("new UI quit", () => {
     await expect(dialog).toContainText(
       "Restores your configurations and turns routing off",
     );
-    await expect(dialog).toContainText("Save your work first");
-    await expect(dialog).toContainText(
-      "Tools and agents you have running will need restarting",
-    );
+    // And no restart warning: quit-and-disconnect drains the forwarder rather
+    // than stopping it (#363), so a tool already holding its address keeps
+    // working until the login session ends. The claim is asserted ABSENT
+    // because it was true until that landed.
+    await expect(dialog).not.toContainText("Save your work");
+    await expect(dialog).not.toContainText("restarting");
     await expect(dialog.getByRole("radio")).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Disconnect" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();

@@ -2197,46 +2197,36 @@ export function QuitDialog({
       }}
       onDismiss={busy ? undefined : onCancel}
     >
-      {/* One outcome, so one sentence and no chooser.
+      {/* One sentence, because one thing happens.
         *
         * This drew two selectable rows - the drawn shape (`694:32469`) and the
         * three-button dialog before it - offering "Quit without disconnecting"
         * beside this. Product removed that option on 2026-09-24: it left the
         * forwarder running and the configs pointed at Gate, which is a useful
         * state to develop against and not one to put in front of a user, who
-        * would be choosing between "protected" and "looks protected".
-        *
-        * What went with it: `QuitChoice`, the radiogroup, the "Safest" pill -
-        * which needs no superlative when there is nothing to be safest against
-        * - and the note about closing the window, also removed on request.
-        *
-        * Three beats, in the order they matter: what Gate does, what the
-        * person should do before pressing it, and what it will cost them.
+        * would be choosing between "protected" and "looks protected". The
+        * "Safest" pill went with it - no superlative is needed against nothing
+        * - as did the note about closing the window, on request.
         *
         * **"Restores", not "Restore".** Product's draft opened "Restore
-        * configurations and disable routing", which reads as an instruction -
-        * and the next sentence, "Save your work", really is one. Two
-        * imperatives in a row where only the second is the reader's job is the
-        * kind of thing that gets skimmed past. So the first sentence describes
-        * and the second commands, and the difference between them is visible.
+        * configurations and disable routing", which reads as an instruction to
+        * the reader when it is what Gate does.
         *
-        * **"will need restarting", not "may need".** Disconnecting stops the
-        * forwarder, and a process's environment is fixed when it spawns, so
-        * every tool already open loses its route. There is no "may" about it.
-        * A reporter's editor died on this button while the sentence still
-        * hedged.
+        * **A second paragraph stood here and has stopped being true**, which
+        * is worth recording rather than quietly deleting. It read "Save your
+        * work first. Tools and agents you have running will need restarting.",
+        * and it was accurate: quit-and-disconnect STOPPED the forwarder, so
+        * every tool already holding its address lost its route - a reporter's
+        * editor died on this button. #363 changed the teardown to DRAIN it
+        * instead. The forwarder keeps serving whatever already holds its
+        * address, direct, until the login session ends, and every process that
+        * could hold it started in this session. So nothing needs restarting
+        * and nothing here says so. That PR took the same claim out of the quit
+        * notification and #362 out of three popover notices; this was the last
+        * place still making it.
         */}
       <p className="text-sm leading-5 text-base-foreground">
         Restores your configurations and turns routing off.
-      </p>
-      {/* Its own paragraph, on the modal's own `gap-4` rhythm rather than a
-        * line break: what Gate does and what the person has to do are two
-        * different jobs, and run together they read as one description that a
-        * reader in the middle of quitting skims. This is the half they act on.
-        */}
-      <p className="text-sm leading-5 text-base-foreground">
-        Save your work first. Tools and agents you have running will need
-        restarting.
       </p>
     </Modal>
   );

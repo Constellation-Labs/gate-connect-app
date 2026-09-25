@@ -41,22 +41,24 @@ describe("the quit dialog", () => {
   });
 
   /**
-   * The sentence that replaced the chooser, and the fact that was nowhere on
-   * screen when it was one.
+   * The one sentence that replaced the chooser.
    *
-   * Disconnecting stops the forwarder, and a process's environment is fixed
-   * when it spawns - so every tool already open loses its route. "will need
-   * restarting", not "may need": a reporter's editor died on this button while
-   * the row still hedged.
+   * A second paragraph stood beside it - "Save your work first. Tools and
+   * agents you have running will need restarting." - and was true while
+   * quit-and-disconnect STOPPED the forwarder: every tool already holding its
+   * address lost its route, and a reporter's editor died on this button. #363
+   * changed the teardown to DRAIN it, so the forwarder serves whatever already
+   * holds its address until the login session ends and nothing needs
+   * restarting. The claim is asserted absent rather than merely dropped: it
+   * was correct for a fortnight, and it should not come back without the
+   * behaviour coming back with it.
    */
-  it("says what it restores, what to do first, and what it costs", () => {
+  it("says what it does, and claims no cost that no longer exists", () => {
     renderChooser();
     const dialog = screen.getByRole("dialog").textContent ?? "";
     expect(dialog).toContain("Restores your configurations and turns routing off");
-    expect(dialog).toContain("Save your work first");
-    expect(dialog).toContain(
-      "Tools and agents you have running will need restarting",
-    );
+    expect(dialog).not.toContain("Save your work");
+    expect(dialog).not.toContain("restarting");
   });
 
   it("offers one way to quit, not a choice between two", () => {
