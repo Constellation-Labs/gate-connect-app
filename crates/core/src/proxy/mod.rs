@@ -3136,6 +3136,18 @@ pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: 
 }
 
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    // A path hiding a dot segment is never rewritten: the path classified here
+    // is not the one a server that normalizes would act on, and a rewrite
+    // carries the Gate credential. It passes through to the real upstream under
+    // the tool's own credential instead - where it would go with Gate off - or
+    // tunnels, if no enabled entry owns the host.
+    if gate_connect_paths::has_dot_segment(path) {
+        return if domains.iter().any(|d| d.enabled && d.matches_host(host)) {
+            Decision::Passthrough
+        } else {
+            Decision::Tunnel
+        };
+    }
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
@@ -3886,6 +3898,29 @@ mod tests {
         assert!(should_intercept_host(&d, "API.ANTHROPIC.COM")); // case-insensitive
         assert!(!should_intercept_host(&d, "example.com"));
         assert!(!should_intercept_host(&d, "statsig.anthropic.com"));
+    }
+
+    /// The engine's half of the relay's dot-segment rule: a path the gateway
+    /// might normalize to somewhere else is never rewritten with the Gate
+    /// credential. It still reaches the provider, under the tool's own.
+    #[test]
+    fn a_dot_segment_is_passed_through_never_rewritten() {
+        let d = anthropic();
+        assert!(matches!(
+            decide(&d, "api.anthropic.com", "/v1/messages"),
+            Decision::Rewrite { .. }
+        ));
+        for path in ["/v1/../../admin", "/v1/%2e%2e/admin", "/v1/..\\..\\admin"] {
+            assert_eq!(
+                decide(&d, "api.anthropic.com", path),
+                Decision::Passthrough,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            decide(&d, "unrelated.example", "/v1/../x"),
+            Decision::Tunnel
+        );
     }
 
     #[test]

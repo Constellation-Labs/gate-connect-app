@@ -379,7 +379,10 @@ pub fn has_dot_segment(path_and_query: &str) -> bool {
         .split_once('?')
         .map(|(p, _)| p)
         .unwrap_or(path_and_query);
-    path.split('/').any(|segment| {
+    // `\` too: for `http` and `https` URLs the URL parser treats a backslash
+    // as a path separator, so `/v1/..\..\x` collapses exactly as
+    // `/v1/../../x` does.
+    path.split(['/', '\\']).any(|segment| {
         [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
             .iter()
             .any(|form| segment.eq_ignore_ascii_case(form))
@@ -759,6 +762,8 @@ mod tests {
             "/anthropic/./v1",
             "/anthropic/%2E%2e/x",
             "/a/.%2e?q",
+            "/anthropic/v1/..\\..\\x",
+            "/anthropic/v1/.%2E\\.%2e\\x",
         ] {
             assert!(has_dot_segment(bad), "{bad}");
         }
