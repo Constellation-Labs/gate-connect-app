@@ -146,6 +146,7 @@ import {
   ErrorBanner,
   ErrorDetails,
   NoteBanner,
+  PaneNote,
   ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
@@ -2267,9 +2268,7 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
-  // `countsAsRouted`, not `kind === "protected"`: a row that is routed but
-  // uninspected is still routed, and counting it out gave a banner saying
-  // Gate was not routing over a row saying it was. See the predicate. AG-932.
+  // `countsAsRouted`, the one predicate every counter shares.
   const protectedCount = desiredApps.filter((a) => countsAsRouted(a.status)).length;
 
   /**
@@ -2452,6 +2451,22 @@ export function NewUiApp() {
       />
     );
   }, [view, openTool, verdicts, apps, runningApps]);
+
+  /**
+   * Why the open app is not protected, when no card above already says it.
+   *
+   * The rail and the pane header print the three drawn phrases alone
+   * ("Protected", "Not protected", "Not routed"), so this is where a
+   * `not-protected` reason is read. Drift, a check error, a routing or
+   * certificate cause and a reopen each have a card of their own with an
+   * action, and those speak for the app instead of this.
+   */
+  const statusNote = useMemo(() => {
+    if (view.kind !== "app" || reopenAlert || paneNotice) return undefined;
+    const app = appFor(railApps, view.slug);
+    if (app?.status.kind !== "not-protected" || !app.status.detail) return undefined;
+    return <PaneNote title={`${app.name} isn’t protected`} body={`${app.status.detail}.`} />;
+  }, [view, reopenAlert, paneNotice, railApps]);
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -3159,9 +3174,8 @@ export function NewUiApp() {
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
           // the setting the user was trying to turn on.
           isProtected={appFor(railApps, view.slug)?.on ?? false}
-          // Observation, and the whole of it: the rail row prints the phrase
-          // alone because its reason does not fit 250px, so this pane is where
-          // "Not protected - Verification failed" is legible.
+          // Observation, printed as the rail prints it. The reason behind a
+          // "Not protected" is `statusNote`, in the alert slot below.
           status={appFor(railApps, view.slug)?.status}
           busy={routingBusy}
           onToggleProtected={() =>
@@ -3332,6 +3346,7 @@ export function NewUiApp() {
           alert={
             <>
               {reopenAlert}
+              {statusNote}
               {/* Scope first, then the caveat on it. On a Linux chat row both of
                   these draw, and in the other order they read as two unrelated
                   paragraphs where the second happens to contradict the first:

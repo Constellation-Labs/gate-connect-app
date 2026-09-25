@@ -312,6 +312,27 @@ export function NoteBanner({
   );
 }
 
+/**
+ * A quiet card on a pane: why this app is not protected, when no card with an
+ * action already says it (see `statusNote` in `NewUiApp`).
+ *
+ * Neutral rather than amber, like `NoteBanner`: `AlertBanner` and `ReopenAlert`
+ * each offer the fix for what they name, and this has no action to offer, so
+ * drawing it in their palette would read as a fault the user is expected to
+ * clear from here. The amber is already on the status line above it.
+ */
+export function PaneNote({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm">
+      <Icon name="info" size={16} className="mt-0.5 shrink-0 text-neutral-500" />
+      <div className="min-w-0">
+        <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
+        <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+      </div>
+    </div>
+  );
+}
+
 export function AlertBanner({
   title,
   body,

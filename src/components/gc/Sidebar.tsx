@@ -29,72 +29,26 @@ export type SidebarView =
   | { kind: "app"; slug: string };
 
 /**
- * What is actually happening to this app's traffic. The design draws four:
- * "Protected - 2m ago", "Not protected", "Config drifted", "Not routed - Off".
- * Each renders as a coloured phrase plus an optional grey suffix.
+ * What is actually happening to this app's traffic. The design draws three
+ * (`status-label`, 434:136): "Protected", "Not protected", "Not routed". Each
+ * renders as a coloured phrase plus an optional grey suffix.
  *
- * Two more are added below, and the Figma draws neither - the same inference the
- * loading and failure states already run on (CLAUDE.md principle 6). Both exist
- * because `not-protected` was answering for states it describes wrongly: a row
- * mid-reopen and a section carrying a mix both drew a bare amber "Not protected"
- * with their reason dropped by {@link statusSuffix}, which is the off state's
- * reading printed on a switch that is on.
+ * Three phrases, one per pairing of switch and outcome: on and working, on and
+ * not working, off. Every way of being on and not working - drift, a process
+ * that has to be reopened, a provider Gate does not inspect, a section only
+ * partly routed, a certificate that blocks it - is `not-protected`, and its
+ * `detail` says which. The rail prints the phrase alone and the app pane draws
+ * the reason as a card. This used to be seven phrases, each argued as the only
+ * honest reading of its state; design cut it back to the drawn three on
+ * 2026-09-25, with the reason moved to the pane.
  */
 export type AppStatus =
   | { kind: "protected"; since?: string }
-  /** `detail` carries the routing verdict's reason ("Connection problem",
-   * "Configuration update failed"), which is what turns an amber phrase into
-   * something the user can act on. See `lib/verdict.ts`. */
+  /** `detail` carries the reason ("Connection problem", "Config drifted",
+   * "Reopen to finish"), which is what turns an amber phrase into something the
+   * user can act on. See `lib/verdict.ts`. */
   | { kind: "not-protected"; detail?: string }
-  | { kind: "drifted" }
-  /**
-   * The configuration is written and the process that was running when that
-   * happened is still up, so its traffic is still on the old route.
-   *
-   * **Not `not-protected`, which is what it used to be.** That phrase is the
-   * right answer everywhere else it is drawn and the wrong one here: this is
-   * the single state where the user's click *did* land, and an amber "Not
-   * protected" on the row they just switched on reads as a failure Gate
-   * invented. Everything is saved; one program has to be reopened.
-   *
-   * The phrase is `ReopenAlert`'s own, so the row and the card the pane draws
-   * beside it cannot phrase one fact two ways. `detail` names which program,
-   * for a section whose heading is the app rather than the program - see
-   * `sectionStatus`.
-   */
-  | { kind: "reopen"; detail?: string }
-  /**
-   * Some of a section's surfaces are routing and the rest are plainly off.
-   *
-   * Reachable only since a rail row became an app rather than a surface: a
-   * per-surface ledger had nothing to be partly anything about. `detail` is the
-   * count rather than the word "partly" on its own, because the row has space
-   * for a reading and principle 6 prefers one.
-   */
-  | { kind: "partly-protected"; detail?: string }
   | { kind: "not-routed"; detail?: string }
-  /**
-   * Routed, and Gate cannot see any of it.
-   *
-   * The tool's config names Gate and its traffic really does go through the
-   * engine - so every other reading here says Protected - but the provider it
-   * talks to is not one Gate intercepts, either because no catalog entry
-   * claims that host or because the entry's switch is off. The requests
-   * tunnel straight through, unread.
-   *
-   * **A seventh phrase, and the Figma draws none of it**, on the same
-   * reasoning the two above were added: the existing vocabulary answers
-   * wrongly. "Protected" is false, "Not protected" reads as the off state on
-   * a switch that is on, and "Not routed" is false twice over - it IS routed.
-   * Principle 6 again: the row is making a claim about the user's traffic, so
-   * it had better be one that is true.
-   *
-   * `detail` names the host, because "not inspected" without saying what is
-   * not inspected leaves nowhere to go. There is deliberately no action on
-   * this row: for an unknown provider none exists, and inventing one would be
-   * the lie this phrase exists to stop telling. AG-932.
-   */
-  | { kind: "not-inspected"; detail?: string }
   /**
    * Detection did not find the app on this machine. Drawn only under the
    * rail's "Not installed" group, on a row that opens nothing - there is no
@@ -258,66 +212,36 @@ export interface SidebarGroup {
 export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
   protected: { label: "Protected", className: "text-green-600" },
   "not-protected": { label: "Not protected", className: "text-amber-600" },
-  drifted: { label: "Config drifted", className: "text-amber-600" },
-  reopen: { label: "Reopen to finish", className: "text-amber-600" },
-  "partly-protected": { label: "Partly protected", className: "text-amber-600" },
   // Grey, not amber: `status-label` status=not-routed (434:134) resolves
   // `base/muted-foreground`, where not-protected beside it is amber-600.
   "not-routed": { label: "Not routed", className: "text-base-muted-foreground" },
-  // Amber, not green. It is the honest colour: something the user would want
-  // to know about, and not a failure they caused.
-  "not-inspected": { label: "Routed, not inspected", className: "text-amber-600" },
   "not-installed": { label: "Not installed", className: "text-base-muted-foreground" },
 };
 
 /**
  * Does this row count as routed, for the counters and the topbar banner?
  *
- * `protected` and `not-inspected` both do, and that pairing is the decision
- * this function exists to hold in one place. Raised in review on #328: with
- * Hermes the only app on and pointed at Bedrock, counting only `protected`
- * gave `routingState(0, 1)` and a banner reading "Gate is not routing your
- * apps" over a row reading "Routed, not inspected". One of the two had to be
- * wrong, and this PR's whole argument is that it IS routed - the shortfall is
- * inspection, which is the row's nuance to carry and not the banner's.
- *
- * So the banner stays a statement about routing and the row says what routing
- * did not get you. The alternative - leave it uncounted and reword
- * `routingState` - would make the banner's copy depend on which KIND of
- * shortfall it was, which is a second vocabulary for one number.
- *
  * Four counters read this: the topbar's `protectedCount`, `RoutingCard`, the
  * tray's per-group fraction and the rail's. They were four separate
- * `kind === "protected"` filters and are one predicate now, because four
- * copies of a pairing is four chances to disagree.
+ * `kind === "protected"` filters and are one predicate, because four copies of
+ * a pairing is four chances to disagree.
  */
 export function countsAsRouted(status: AppStatus): boolean {
-  return status.kind === "protected" || status.kind === "not-inspected";
+  return status.kind === "protected";
 }
 
 /**
- * The grey suffix a rail row draws: "2m ago", "Off", "Blocked", "Claude Code",
- * "2 of 3" - the short ones the design draws inside 250px.
+ * The grey suffix a rail row draws: "2m ago", "Off" - the short ones the design
+ * draws inside 250px.
  *
- * A `not-protected` detail is deliberately not among them. Those are the
- * verdict's remaining reasons ("Configuration update failed", "Verification
- * failed"), and at rail width they truncate mid-word, which turns an actionable
- * sentence into an ellipsis. The row keeps the coloured phrase and the app
- * pane's header carries the reason in full - see `statusDetail`.
- *
- * `reopen` and `partly-protected` are not in that bucket and keep their
- * suffixes. Both carry a short noun rather than a sentence - a program's name
- * and a count - and the reason they are separate phrases at all is that
- * "Not protected" with its detail dropped said nothing the off state below it
- * did not already say.
+ * A `not-protected` detail is deliberately not among them. It is the reason
+ * ("Configuration update failed", "Reopen to finish"), and the app pane draws it
+ * as a card rather than as a suffix. The tray, which has no pane, prints it
+ * through `statusDetail`.
  */
-function statusSuffix(status: AppStatus): string | undefined {
+export function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
-  if (status.kind === "reopen" || status.kind === "partly-protected") return status.detail;
   if (status.kind === "not-routed") return status.detail;
-  // The host, which is the whole of what makes this row actionable - or at
-  // least understandable, since for an unknown provider there is no action.
-  if (status.kind === "not-inspected") return status.detail;
   return undefined;
 }
 

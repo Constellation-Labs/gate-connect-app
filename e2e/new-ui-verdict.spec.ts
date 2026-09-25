@@ -58,8 +58,12 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
 
+    // The routing card speaks for the app here, because it carries the fix;
+    // the connection problem is what that cause looks like from the sweep.
     await app.openSection("ChatGPT / Codex");
-    await expect(app.page.getByText("Connection problem")).toBeVisible();
+    await expect(
+      app.page.getByText("Routing didn’t start when Gate Connect opened", { exact: false }),
+    ).toBeVisible();
   });
 
   /**
@@ -157,7 +161,9 @@ test.describe("new UI routing verdict", () => {
     await expect(row.getByText("Not routed")).toBeVisible();
   });
 
-  test("a drifted config keeps the design's own phrase", async ({ boot }) => {
+  test("a drifted config reads Not protected, and the pane offers the reconnect", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [
@@ -168,6 +174,10 @@ test.describe("new UI routing verdict", () => {
       ],
     });
 
-    await expect(app.page.getByText("Config drifted")).toBeVisible();
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Not protected" }),
+    ).toBeVisible();
+    await app.openSection("ChatGPT / Codex");
+    await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
   });
 });
