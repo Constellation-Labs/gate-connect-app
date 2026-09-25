@@ -507,59 +507,6 @@ export function ModalNote({
 }
 
 /**
- * One row of a "pick how this happens" choice: a title, the consequence under
- * it, and an optional pill recommending one of them.
- *
- * Distinct from `ModalOption`, which is the organization switcher's row and
- * leads with an initials avatar. This one is drawn by the quit chooser
- * (`694:32280` / `694:32456`): 12px padding at radius 8, and unlike the org
- * picker *both* states carry `shadow/sm` - only the hairline moves, from
- * `base/input` to `base/primary`.
- */
-export function ModalChoice({
-  title,
-  description,
-  pill,
-  selected,
-  onSelect,
-}: {
-  title: string;
-  description: string;
-  /** The drawn recommendation ("SAFEST"). Green-200 on green-800 at radius 4 -
-   * a third pairing beside the Overview pills' 200/900 and the App table's
-   * 100/700, so it is spelled out here rather than folded into `PillTone`. */
-  pill?: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onSelect}
-      className={`flex w-full items-center gap-3 rounded-md border bg-base-card p-3 text-left shadow-base-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-        selected ? "border-base-primary" : "border-base-input hover:bg-gray-50"
-      }`}
-    >
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium leading-5 text-base-foreground">
-          {title}
-        </span>
-        <span className="block text-base-xs font-medium leading-4 text-base-muted-foreground">
-          {description}
-        </span>
-      </span>
-      {pill && (
-        <span className="shrink-0 rounded-control bg-green-200 px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label text-green-800">
-          {pill}
-        </span>
-      )}
-    </button>
-  );
-}
-
-/**
  * A selectable row, used by the organization switcher. Distinct from
  * `ModalSubject`: this one is a radio, and it leads with an initials avatar
  * rather than a product mark.
