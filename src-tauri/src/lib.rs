@@ -2003,22 +2003,20 @@ async fn quit_app(app: tauri::AppHandle) {
 /// settings while Gate Connect is closed, WITHOUT touching the routing
 /// intent - the startup restore reapplies both snapshots the next time the
 /// app runs with routing intended on. Fires a system notification (the
-/// popover dies with the process) telling the user to restart running CLI
-/// agents, which keep the relay address they resolved at their own launch.
+/// popover dies with the process) saying so.
 #[tauri::command]
 async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
     // Off the main thread: disconnect does config-file I/O.
-    let names = tauri::async_runtime::spawn_blocking(|| {
-        // Collected before the disconnect, which is what makes them stop being
-        // managed.
-        let names = gate_connect_core::registry::managed_tool_names();
+    tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::provider::snapshot_and_disable_everything()
             .map_err(|e| format!("{e:#}"))?;
         // This is a disconnect, not a routing-off: the user asked Gate out of
-        // the path, so the passthrough listener goes too. The plain quit
-        // deliberately leaves it running - see `proxy::forwarder::stop`.
-        gate_connect_core::proxy::forwarder::stop();
-        Ok::<_, String>(names)
+        // the path, so nothing starts the passthrough listener again. It is
+        // drained rather than stopped, because a tool already running still
+        // holds its address and would otherwise fail until reopened - see
+        // `proxy::forwarder::drain`.
+        gate_connect_core::proxy::forwarder::drain();
+        Ok::<_, String>(())
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
@@ -2034,27 +2032,12 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
                 // seconds after a panel that called them tools. The rest of the
                 // wording is shared with QuitConfirm on purpose.
                 //
-                // The tools are named when we know them, because "restart any
-                // running CLI agents" asks the user to work out which - and a
-                // disconnect stops the passthrough too, so a session that was
-                // working a moment ago stops, which is worth being precise
-                // about. Anything else started while routing was on still holds
-                // the proxy variables, hence the sentence after the list.
-                &if names.is_empty() {
-                    "Your tools are back on their own settings while Gate \
-                     Connect is closed. Restart any terminal or editor you \
-                     opened while routing was on; everything reconnects when \
-                     Gate Connect starts again."
-                        .to_string()
-                } else {
-                    format!(
-                        "Your tools are back on their own settings while Gate \
-                         Connect is closed. Restart {} - and any other terminal \
-                         or editor you opened while routing was on. Everything \
-                         reconnects when Gate Connect starts again.",
-                        join_names(&names)
-                    )
-                },
+                // No restart to ask for: the forwarder keeps serving whatever
+                // already holds its address until the session ends, so a
+                // session that was working a moment ago keeps working.
+                "Your tools are back on their own settings while Gate Connect \
+                 is closed. Anything already open keeps working, and everything \
+                 reconnects when Gate Connect starts again.",
             )
             .show();
     }
@@ -2063,6 +2046,7 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
 
 /// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
 /// comma-join reads as a fragment at two items.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn join_names(names: &[String]) -> String {
     match names {
         [] => String::new(),
