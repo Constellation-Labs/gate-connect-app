@@ -968,11 +968,17 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
     assert!(quiet.is_err(), "an idle splice ends");
     assert!(started.elapsed() < Duration::from_secs(5));
 
+    // The busy half gets its own, longer idle window. With the 300ms one, a
+    // byte every 100ms left a 3x margin, and a loaded CI runner stretching one
+    // sleep past 300ms made the splice close as idle - correctly - and the test
+    // fail (seen on macOS). A byte every 50ms against 1s is a 20x margin, and
+    // 45 of them still run past two idle periods in total.
+    let busy_idle = Duration::from_secs(1);
     let (mut client, mut tool) = pair().await;
     let (mut engine, mut gate) = pair().await;
     let talk = tokio::spawn(async move {
-        for _ in 0..6 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        for _ in 0..45 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
             tool.write_all(b"x").await.unwrap();
             let mut one = [0u8; 1];
             gate.read_exact(&mut one).await.unwrap();
@@ -981,7 +987,7 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
         drop(tool);
         drop(gate);
     });
-    splice(&mut client, &mut engine, idle)
+    splice(&mut client, &mut engine, busy_idle)
         .await
         .expect("a splice that keeps moving runs to its close");
     talk.await.unwrap();
