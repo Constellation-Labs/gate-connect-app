@@ -150,6 +150,17 @@ pub trait Integration: Send + Sync {
     /// reads; the policy lives in one place.
     fn configured_addresses(&self) -> Result<Vec<String>>;
 
+    /// The file this tool reads its configuration from once, when it starts.
+    ///
+    /// Its modification time is what decides whether a running process missed
+    /// a change and needs opening again: a process started before the file was
+    /// last written is still using whatever it loaded. `None` for a tool with
+    /// no file of its own, which reads as no recorded change rather than as
+    /// everything running being stale.
+    fn config_location(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Does this tool's `connect` need the forward-proxy engine to be up?
     ///
     /// True for the [`Mechanism::ForwardProxy`] integrations - Claude Code,

@@ -644,7 +644,12 @@ export function Home({
                   : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
-                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
+                    ? canCloseAgents
+                      ? "Routing is on. Anything already open isn’t routing through Gate yet."
+                      : // Nothing missed a change, so a running tool is already
+                        // routed; only a page that kept an earlier connection is
+                        // not, and the reload advice below is the whole remedy.
+                        "Routing is on."
                     : "Routing is off. Anything already open still points at Gate."}
               {/* The remedy moves into the sentence when there is no button to
                   carry it. A page is the thing that is stale in this case, and

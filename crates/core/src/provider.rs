@@ -893,6 +893,26 @@ pub fn tools_stranded_by_quit() -> Vec<String> {
         .collect()
 }
 
+/// Does any managed tool's configuration name the loopback proxy on `port`?
+///
+/// Asked about the engine's previous port when it comes back on a new one. On
+/// macOS and Windows tool configs name the forwarder, which reads the engine's
+/// port per connection, so a moved engine strands nothing - except a config
+/// that names the engine itself: one written before tool configs moved to the
+/// forwarder, or on a machine where the forwarder would not start and
+/// `proxy::tool_proxy_url` fell back. Those are the ones still dialing the old
+/// port, and the only ones worth telling the user to close.
+pub fn managed_tool_names_port(port: u16) -> bool {
+    registry::registry().iter().any(|integ| {
+        matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)))
+            && integ
+                .configured_addresses()
+                .unwrap_or_default()
+                .iter()
+                .any(|a| crate::proxy::loopback_port_of(a) == Some(port))
+    })
+}
+
 /// Plain quit's teardown, on the platforms where the engine lives in the GUI.
 ///
 /// [`ToolConfigs::Kept`] is the routing toggle's rule: leave a config alone,

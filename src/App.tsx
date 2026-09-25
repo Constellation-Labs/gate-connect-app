@@ -29,7 +29,6 @@ import {
   pinPopover,
   openOnboardingWindow,
   routedClientsStale,
-  runningAgentsCount,
   staleAgentsCount,
   drainBackendErrors,
   pendingQuitTools,
@@ -816,40 +815,33 @@ export function App() {
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
         // The takeover and the inline hints say the same thing ("restart your
         // agents"), so show one or the other, never both.
-        if (takeover) {
-          // A failed probe defaults to showing.
-          const agents = await runningAgentsCount().catch(() => 1);
-          // Nothing running means nothing to CLOSE, which is not the same as
-          // nothing to say - and conflating the two is what left a whole class
-          // of user with no notice at all. `AGENT_PROCESS_NAMES` is
-          // `claude`/`codex`/`opencode`, so a user whose routed clients are a
-          // browser tab and a desktop app probes 0 every time, and this branch
-          // used to answer that by rendering nothing: the one user who most
-          // needs telling that an already-open page is still bypassing Gate was
-          // the one user told nothing. The count cannot simply be widened to
-          // fix that, because the same set drives `close_running_agents`, and
-          // an app that offers to close your browser is a worse bug than the
-          // one being fixed.
-          //
-          // So the count decides the REMEDY, not whether to speak. With
-          // something to close, the takeover (or, once acknowledged, the inline
-          // hint) offers to close it. With nothing to close, the inline hint
-          // carries the advice that does apply - reload what you have open -
-          // and drops the close action, exactly as the `pending` banner already
-          // drops it for the same reason.
-          setNothingToClose(agents === 0);
-          if (agents > 0 && !hasSeenRoutingTakeover()) {
-            markRoutingTakeoverSeen();
-            setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
-          } else {
-            setChangeNotice(next.running ? "on" : "off");
-          }
+        //
+        // Nothing to say on the way off. Routing off keeps every tool's config
+        // and parks the engine, so a tool already open reaches its own provider
+        // through the forwarder and a reopen would put it straight back on
+        // Gate's values: the old "close them and they go back to their own
+        // settings" was false on both counts.
+        //
+        // On the way on, a config naming the forwarder or the relay reaches the
+        // engine as soon as it is up, so a running CLI is routed without a
+        // restart. What can still be stale is an agent that missed a change to
+        // its own config or to the certificate (`stale_agents_count`), and a
+        // page that kept the connection it opened before the PAC named its
+        // host. The count decides the remedy, not whether to speak: with
+        // something to close, the takeover (or, once acknowledged, the inline
+        // hint) offers to close it; with nothing, the inline hint carries the
+        // reload advice alone. A failed probe defaults to showing.
+        if (!next.running) {
+          setChangeNotice(null);
         } else {
-          // The Routing screen's own toggle never probed, and its banner has
-          // always offered the close route. Unchanged: assuming there is
-          // something to close is this path's existing behaviour.
-          setNothingToClose(false);
-          setChangeNotice(next.running ? "on" : "off");
+          const agents = await staleAgentsCount().catch(() => 1);
+          setNothingToClose(agents === 0);
+          if (takeover && agents > 0 && !hasSeenRoutingTakeover()) {
+            markRoutingTakeoverSeen();
+            setRoutingNotice({ dir: "on", confirming: false });
+          } else {
+            setChangeNotice("on");
+          }
         }
         // The backend owns the routed set across a master toggle: turning off
         // snapshots what was on and disables all; turning on restores that
