@@ -745,13 +745,21 @@ use gate_connect_paths::split_leading_segment;
 /// `upstream_url` - so it cannot widen where the relay will forward.
 ///
 /// `Err` carries the status to answer with: a caller that named an upstream we
-/// don't serve is refused (403), while one that named nothing at all is a
-/// malformed request (400).
+/// don't serve is refused (403), while one that named nothing at all, or one
+/// that hid a dot segment in its path, is a malformed request (400).
 fn resolve_route(
     domains: &[ProxyDomain],
     path_and_query: &str,
     headers: &HeaderMap,
 ) -> Result<Routed, (StatusCode, String)> {
+    // The path we classify has to be the path we send, and it is not if a dot
+    // segment survives to the URL parser - see [`has_dot_segment`].
+    if has_dot_segment(path_and_query) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "request path contains a `.` or `..` segment".to_string(),
+        ));
+    }
     if let Some((segment, inner)) = split_leading_segment(path_and_query) {
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
@@ -786,6 +794,33 @@ fn resolve_route(
         upstream_url: d.upstream_url.clone(),
         route: classify(d, path_and_query),
         path_and_query: path_and_query.to_string(),
+    })
+}
+
+/// Does the request target carry a `.` or `..` path segment?
+///
+/// It matters because [`classify`] decides Rewrite vs Passthrough by
+/// `starts_with` on the raw path, while the URL we send is built by
+/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
+/// segments per the WHATWG rules. Those two readings disagree:
+/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
+/// prefix - gets the live Gate credential injected, and is then sent to
+/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
+/// preferred over normalizing because it keeps one string all the way through
+/// rather than adding a second one to keep in step.
+///
+/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
+/// looks for these segments, so a check that only matched the literal form would
+/// be the same bug with an extra step.
+fn has_dot_segment(path_and_query: &str) -> bool {
+    let path = path_and_query
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(path_and_query);
+    path.split('/').any(|segment| {
+        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
+            .iter()
+            .any(|form| segment.eq_ignore_ascii_case(form))
     })
 }
 
@@ -889,6 +924,31 @@ mod tests {
             forwarder, catalog,
             "update gate_connect_paths::RELAY_UPSTREAMS to match the catalog"
         );
+    }
+
+    /// A dot segment would let the path that decided the route differ from the
+    /// path that is sent: `/anthropic/v1/../../admin` starts with `/v1/`, so it
+    /// classifies as inference and is credentialed, and then the URL parser
+    /// sends it somewhere `classify` would never have sent a credentialed
+    /// request.
+    #[test]
+    fn a_dot_segment_is_refused_rather_than_silently_renormalized() {
+        for path in [
+            "/anthropic/v1/../../admin",
+            "/anthropic/v1/./messages",
+            // The encoded spellings are the same segment to a URL parser, so a
+            // check that only matched the literal one would be the same bug.
+            "/anthropic/v1/%2e%2e/%2E%2E/admin",
+        ] {
+            let err = resolve_route(&default_domains(), path, &HeaderMap::new())
+                .expect_err("a dot segment is refused");
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "{path}");
+        }
+
+        // A dot inside a segment is not a dot segment, and is none of our
+        // business: plenty of real API paths carry one.
+        let r = resolved("/anthropic/v1/messages.json?a=..").expect("routes");
+        assert_eq!(r.path_and_query, "/v1/messages.json?a=..");
     }
 
     #[test]
