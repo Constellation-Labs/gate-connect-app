@@ -809,3 +809,248 @@ fn only_the_first_attempt_may_take_a_fresh_port() {
     std::env::remove_var("GATE_CONNECT_TEST_HOME");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `Connection` may not take away the headers the body is framed by: the body
+/// would go on with nothing saying where it ends, and the next hop would read
+/// its bytes as a second request.
+#[test]
+fn connection_cannot_nominate_the_framing_headers() {
+    let t = table(9);
+    let plan = plan11(
+        "/anthropic/v1/messages",
+        &hdrs(&[("Connection", "content-length"), ("Content-Length", "5")]),
+        &t,
+    )
+    .unwrap();
+    assert_eq!(plan.body, Framing::Length(5));
+    assert!(head_text(&plan).contains("Content-Length: 5\r\n"));
+
+    let plan = plan11(
+        "/anthropic/v1/messages",
+        &hdrs(&[
+            ("Connection", "Transfer-Encoding"),
+            ("Transfer-Encoding", "chunked"),
+        ]),
+        &t,
+    )
+    .unwrap();
+    assert_eq!(plan.body, Framing::Chunked);
+    assert!(head_text(&plan).contains("Transfer-Encoding: chunked\r\n"));
+
+    // The response side: a chunked body re-emitted as chunks has to keep the
+    // header that says so.
+    let (head, _, framing) = rewrite_response(
+        b"HTTP/1.1 200 OK\r\nConnection: transfer-encoding\r\nTransfer-Encoding: chunked\r\n\r\n",
+        false,
+    )
+    .unwrap();
+    assert_eq!(framing, Framing::Chunked);
+    assert!(String::from_utf8(head)
+        .unwrap()
+        .contains("Transfer-Encoding: chunked\r\n"));
+}
+
+/// `chunked` exactly once and last; and none at all on HTTP/1.0, which has no
+/// transfer codings.
+#[test]
+fn chunked_twice_or_on_http_1_0_is_refused() {
+    let t = table(9);
+    for te in [
+        "chunked, chunked",
+        "chunked, gzip, chunked",
+        ", chunked",
+        "chunked,",
+    ] {
+        assert_eq!(
+            plan11("/anthropic/x", &hdrs(&[("Transfer-Encoding", te)]), &t)
+                .unwrap_err()
+                .status,
+            400,
+            "{te}"
+        );
+    }
+    let ok = plan11(
+        "/anthropic/x",
+        &hdrs(&[("Transfer-Encoding", "gzip, Chunked")]),
+        &t,
+    )
+    .unwrap();
+    assert_eq!(ok.body, Framing::Chunked);
+
+    let te = hdrs(&[("Transfer-Encoding", "chunked")]);
+    assert_eq!(
+        plan("POST", "/anthropic/x", 0, &te, &t).unwrap_err().status,
+        400
+    );
+}
+
+/// A 103 loses the provider's connection management, like a final head, and
+/// gains no `Connection: close` of its own. An HTTP/1.0 client gets no 1xx at
+/// all: it would read one as the final answer.
+#[tokio::test]
+async fn an_interim_response_is_rewritten_and_only_for_http_1_1() {
+    const REPLY: &[u8] = b"HTTP/1.1 103 Early Hints\r\nLink: </x>\r\nConnection: keep-alive\r\n\
+        Keep-Alive: timeout=5\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    let (origin_port, _seen) = origin(REPLY);
+    let port = start_relay(Some(dead_port()), table(origin_port)).await;
+    let reply = roundtrip(
+        port,
+        b"GET /anthropic/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    .await;
+    let (interim, rest) = reply.split_once("\r\n\r\n").unwrap();
+    assert!(
+        interim.starts_with("HTTP/1.1 103 Early Hints\r\n"),
+        "{reply}"
+    );
+    assert!(interim.contains("Link: </x>"), "{reply}");
+    let lower = interim.to_ascii_lowercase();
+    assert!(
+        !lower.contains("keep-alive") && !lower.contains("connection:"),
+        "{reply}"
+    );
+    assert!(rest.starts_with("HTTP/1.1 200 OK\r\n"), "{reply}");
+
+    let (origin_port, _seen) = origin(REPLY);
+    let port = start_relay(Some(dead_port()), table(origin_port)).await;
+    let reply = roundtrip(
+        port,
+        b"GET /anthropic/x HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"), "{reply}");
+    assert!(!reply.contains("103"), "{reply}");
+}
+
+/// A provider that accepts the connection and never answers the ClientHello
+/// costs its budget, not the connection's slot forever.
+#[tokio::test]
+async fn a_stalled_tls_handshake_is_bounded() {
+    let silent = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = silent.local_addr().unwrap();
+    let _hold = tokio::spawn(async move {
+        let (sock, _) = silent.accept().await.unwrap();
+        std::future::pending::<()>().await;
+        drop(sock);
+    });
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let started = std::time::Instant::now();
+    let Err(err) = tls_connect("example.com", tcp, Duration::from_millis(200)).await else {
+        panic!("a handshake nobody answers fails");
+    };
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(format!("{err:#}").contains("did not complete"), "{err:#}");
+}
+
+/// A spliced connection on which nothing moves is let go; one that keeps
+/// moving is not.
+#[tokio::test]
+async fn a_spliced_connection_is_closed_only_when_idle() {
+    async fn pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let near = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (far, _) = listener.accept().await.unwrap();
+        (near, far)
+    }
+    let idle = Duration::from_millis(300);
+
+    let (mut client, _tool) = pair().await;
+    let (mut engine, _gate) = pair().await;
+    let started = std::time::Instant::now();
+    let quiet = splice(&mut client, &mut engine, idle).await;
+    assert!(quiet.is_err(), "an idle splice ends");
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    let (mut client, mut tool) = pair().await;
+    let (mut engine, mut gate) = pair().await;
+    let talk = tokio::spawn(async move {
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tool.write_all(b"x").await.unwrap();
+            let mut one = [0u8; 1];
+            gate.read_exact(&mut one).await.unwrap();
+        }
+        // Past two idle periods in total, and never idle for one.
+        drop(tool);
+        drop(gate);
+    });
+    splice(&mut client, &mut engine, idle)
+        .await
+        .expect("a splice that keeps moving runs to its close");
+    talk.await.unwrap();
+}
+
+/// Past the cap a connection is told so, rather than reset.
+#[tokio::test]
+async fn a_connection_over_the_cap_gets_an_answer() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(serve_capped(
+        listener,
+        port,
+        services(None, table(dead_port()), false),
+        std::future::pending(),
+        1,
+    ));
+    // Holds the one slot: a head that never finishes.
+    let mut first = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    first
+        .write_all(b"GET /anthropic/x HTTP/1.1\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let reply = roundtrip(
+        port,
+        b"GET /anthropic/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 503 "), "{reply}");
+    let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+    assert!(
+        head.contains(&format!("Content-Length: {}", body.len())),
+        "{reply}"
+    );
+}
+
+/// A proof followed by bytes nobody asked for is not a proof: those bytes
+/// would be read as the answer to the client's request.
+#[tokio::test]
+async fn a_proof_with_trailing_bytes_is_not_trusted() {
+    let engine = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let engine_port = engine.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = engine.accept().await {
+            let mut buf = Vec::new();
+            let Ok(Some(end)) = read_head(&mut sock, &mut buf, true).await else {
+                continue;
+            };
+            let req = String::from_utf8_lossy(&buf[..end]).to_string();
+            let proof = gate_connect_paths::forwarder_proof(
+                TOKEN,
+                RELAY_ENGINE_HEALTH_PATH,
+                &challenge_of(&req),
+            );
+            let _ = sock
+                .write_all(
+                    format!(
+                        "HTTP/1.1 204 No Content\r\n{FORWARDER_PROOF_HEADER}: {proof}\r\n\r\n\
+                         HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nforged"
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+    let port = start_relay(Some(engine_port), table(dead_port())).await;
+    let reply = roundtrip(
+        port,
+        b"GET /anthropic/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
+    assert!(!reply.contains("forged"), "{reply}");
+}

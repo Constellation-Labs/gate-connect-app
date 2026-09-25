@@ -99,6 +99,12 @@ pub(crate) fn save_engine_port(port: u16) -> Result<()> {
     super::port_persist::save(gate_connect_paths::RELAY_ENGINE_PORT_NAME, port)
 }
 
+/// Remove the record [`save_engine_port`] keeps. Best-effort: a file that
+/// cannot be removed is read as it was before.
+pub(crate) fn forget_engine_port() {
+    let _ = super::port_persist::remove(gate_connect_paths::RELAY_ENGINE_PORT_NAME);
+}
+
 /// The loopback base URL a CLI tool points at to route through the relay.
 pub(crate) fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
@@ -167,6 +173,23 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
         })?,
         None => super::engine::bind_fresh().context("binding relay loopback port")?,
     };
+    adopt(listener)
+}
+
+/// [`bind_relay`] for the port behind the forwarder, which falls back to a
+/// fresh one where `bind_relay` refuses. Nothing but the forwarder names this
+/// port ([`load_engine_port`]), so a saved one that something else now holds
+/// costs a fresh bind: the "configs point at this port" reason `bind_relay`
+/// refuses for is true of the public port only.
+fn bind_relay_behind(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
+    let listener = preferred
+        .and_then(|p| super::engine::bind_preferred(p).ok())
+        .map_or_else(super::engine::bind_fresh, Ok)
+        .context("binding the relay behind the forwarder")?;
+    adopt(listener)
+}
+
+fn adopt(listener: std::net::TcpListener) -> Result<(std::net::TcpListener, u16)> {
     let port = listener
         .local_addr()
         .context("reading relay listener address")?
@@ -393,7 +416,7 @@ pub fn serve() -> Result<()> {
                     base_url(public)
                 );
             }
-            let (listener, bound) = bind_relay(engine_port)?;
+            let (listener, bound) = bind_relay_behind(engine_port)?;
             let _ = save_engine_port(bound);
             (listener, public)
         }
@@ -983,5 +1006,16 @@ mod tests {
         let err = resolve_route(&default_domains(), "/v1/messages", &HeaderMap::new())
             .expect_err("no slug and no header is malformed");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    /// Behind the forwarder a saved port somebody else took costs a fresh
+    /// bind; on the public port it is a refusal, because configs name it.
+    #[test]
+    fn only_the_public_port_refuses_to_move() {
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        let (_listener, bound) = bind_relay_behind(Some(taken)).expect("a fresh port");
+        assert_ne!(bound, taken);
+        assert!(bind_relay(Some(taken)).is_err());
     }
 }

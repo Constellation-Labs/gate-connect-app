@@ -1396,8 +1396,15 @@ pub fn address_dies_with_gui(configured: &str) -> bool {
 /// A quit asks about every address of every managed tool, and reading these
 /// per address would probe the forwarder once each - latency on the exit path,
 /// and a sweep that could answer differently for two tools if the forwarder's
-/// claim changed halfway. One read per sweep keeps "what the dialog names is
-/// what gets rewritten" true.
+/// claim changed halfway. One read per sweep keeps a sweep consistent with
+/// itself.
+///
+/// It does not make the quit dialog and the revert that follows it one read:
+/// each is its own sweep, seconds apart, and a forwarder that took or lost the
+/// relay port in between makes them differ. The difference fails safe. A
+/// forwarder that lost the port between the two means the revert puts back a
+/// tool the dialog did not name, which is the old quit's behaviour; one that
+/// took it means a tool the dialog named is left alone, and keeps working.
 #[derive(Debug, Clone)]
 pub struct QuitAddresses {
     relay_origin: Option<String>,
@@ -1419,6 +1426,30 @@ impl QuitAddresses {
         }
     }
 
+    /// Read them for an exit the forwarder does not outlive either, so the
+    /// relay origin dies whether the forwarder holds it right now or not.
+    ///
+    /// Two exits are like that, both on Windows, where the forwarder is a
+    /// plain detached process with nothing to start it again except Gate
+    /// itself: the end of the login session (a logout or a shutdown, see
+    /// [`session_ending`]), after which a tool that starts before Gate would
+    /// find nothing on the relay port; and an uninstall, whose hook kills the
+    /// forwarder and leaves no Gate at all to repair the configs. macOS needs
+    /// neither: launchd holds the relay port from login, and a drag to the
+    /// Trash runs no code of ours.
+    ///
+    /// The forwarder's own address is still read as surviving. What names it
+    /// is the proxy half, which dies with the forwarder in both cases too, but
+    /// that was already true before the forwarder held the relay port, and
+    /// this is not the change that decides it.
+    pub fn relay_unfronted() -> Self {
+        QuitAddresses {
+            relay_origin: relay_base_url(),
+            engine_url: persisted_engine_proxy_url(),
+            forwarder_url: exported_proxy_identity_url(),
+        }
+    }
+
     /// [`address_dies_with_gui`] against these identities.
     pub fn dies(&self, configured: &str) -> bool {
         address_dies_given(
@@ -1428,6 +1459,45 @@ impl QuitAddresses {
             self.forwarder_url.as_deref(),
         )
     }
+}
+
+/// Whether the login session is ending: a logout, a restart or a shutdown,
+/// as opposed to the user quitting Gate. Windows only, where it decides
+/// whether the forwarder outlives this exit (see
+/// [`QuitAddresses::relay_unfronted`]); `false` everywhere else.
+///
+/// `SM_SHUTTINGDOWN` is set for the whole of the end-session sequence, which
+/// is when an exit handler that runs at all during a logout runs.
+pub fn session_ending() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+        const SM_SHUTTINGDOWN: i32 = 0x2000;
+        // SAFETY: takes an integer, returns an integer, touches no memory of
+        // ours.
+        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Forget the port the engine's relay bound behind the forwarder, for an exit
+/// that takes that relay down with it.
+///
+/// The forwarder dials that port on every relay connection to ask whether the
+/// engine is up. Left behind, it costs every connection on Windows the full
+/// connect timeout, because a closed loopback port is not refused at once
+/// there; and if some unrelated listener later binds the port, every relay
+/// request gets a 502 for as long as Gate stays closed, where it should have
+/// gone to the provider. A crash still leaves it, and the forwarder reads it
+/// as it always has; the next launch rebinds or replaces it.
+pub fn forget_engine_relay_port() {
+    relay::forget_engine_port();
 }
 
 /// [`address_dies_with_gui`] with its three identities passed in, so the rule

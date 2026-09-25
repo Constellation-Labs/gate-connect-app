@@ -41,6 +41,17 @@ pub(super) fn save(name: &str, port: u16) -> Result<()> {
     save_at(&path(name)?, port)
 }
 
+/// Forget the port persisted under `name`. A file already gone is success.
+pub(super) fn remove(name: &str) -> Result<()> {
+    let path = path(name)?;
+    match fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("removing {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn load_at(path: &Path) -> Result<Option<u16>> {
     match fs::read_to_string(path) {
         Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
@@ -91,6 +102,22 @@ mod tests {
         assert_eq!(load_at(&b).unwrap(), Some(40556));
         let _ = fs::remove_file(&a);
         let _ = fs::remove_file(&b);
+    }
+
+    #[test]
+    fn a_removed_port_reads_as_none_and_removing_twice_is_fine() {
+        let _home = crate::env::path_env_lock();
+        let dir = std::env::temp_dir().join(format!("gate-port-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
+        save("relay-engine-port", 47150).unwrap();
+        assert_eq!(load("relay-engine-port").unwrap(), Some(47150));
+        remove("relay-engine-port").unwrap();
+        assert_eq!(load("relay-engine-port").unwrap(), None);
+        remove("relay-engine-port").unwrap();
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

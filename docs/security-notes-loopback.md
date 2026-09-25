@@ -292,6 +292,13 @@ process as a whole. What bounds it:
   cannot fake that either. A process running as the owner can read the token
   and forge any proof; this defends against other local users and sandboxed
   processes that cannot read Gate's data directory.
+  A connect to the engine port that has not completed in 250 ms is read per
+  platform: on macOS it is a listener that has not accepted (a busy engine
+  with a full backlog) and gets the 502, not the direct path, so a routing Gate
+  is not bypassed for being slow; on Windows, which does not refuse a closed
+  loopback port at once, it is the engine being gone. A full backlog is
+  refused outright on Windows and so also reads as gone there: that is the one
+  way a live engine's traffic can go around it, and it is accepted.
 - **Probes are bounded as a whole.** Every proof probe has a 750 ms budget for
   the whole exchange, not per read, so a listener trickling bytes cannot hold
   an enable, a quit, or a relay connection. The forwarder's own proof of the
@@ -302,15 +309,28 @@ process as a whole. What bounds it:
   credential of their own, and a bare request to the provider would only earn
   a 401. Nothing writes that mode in this tree yet.
 - **Its framing is strict.** At most one `Content-Length` and one
-  `Transfer-Encoding`, lengths of digits only, chunk sizes of hex digits only
-  with CRLF line endings; the chunked framing is re-emitted canonically and
-  trailers are dropped. Anything looser is refused rather than passed on for
+  `Transfer-Encoding`, lengths of digits only, `chunked` exactly once and last
+  in the coding list and never on an HTTP/1.0 request, chunk sizes of hex
+  digits only with CRLF line endings; the chunked framing is re-emitted
+  canonically and trailers are dropped. `Connection` cannot nominate
+  `Content-Length` or `Transfer-Encoding` away in either direction, since the
+  body is framed by them before any header is dropped. Interim (1xx) responses
+  lose the provider's connection headers as a final one does, and are not sent
+  to an HTTP/1.0 client at all. Anything looser is refused rather than passed on for
   the provider to read differently. A present but unreadable `Host` or `Origin`
   is refused, as the engine's relay refuses it.
-- **It bounds the slow phases.** The request head has 30 s, the request body
+- **It bounds the slow phases.** The request head has 30 s, the TCP connect
+  to the provider 30 s and its TLS handshake another 30 s, the request body
   5 minutes, the provider's first byte 10 minutes (a non-streaming completion
-  answers only when it is done). Streaming response bodies and spliced
-  connections have no idle limit, as on the engine's relay.
+  answers only when it is done). A streaming response body and a spliced
+  connection are closed after 10 minutes with no bytes in either direction,
+  so neither a stalled provider nor a client that stopped reading holds a
+  connection for good.
+- **It caps connections at 512**, as the forward proxy does. Past that, up to
+  64 more at a time are answered with a 503 saying the relay is busy, rather
+  than reset; any beyond those are dropped. Any local process can still fill
+  the cap and deny the relay to every tool while it holds it, which is the
+  local-DoS class accepted everywhere else in this file.
 - **It originates TLS and terminates none.** It verifies providers with
   `rustls-platform-verifier`, the verifier reqwest uses for the relay's own
   direct hop, so it trusts what that hop trusts and nothing extra.

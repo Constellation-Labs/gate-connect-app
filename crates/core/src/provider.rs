@@ -881,7 +881,9 @@ fn stranded_by_quit(integ: &dyn registry::Integration, ours: &crate::proxy::Quit
 
 /// Display names of the tools a plain quit would put back on their own
 /// settings. Read-only, for the quit dialog: the same predicate the revert
-/// applies, so what the dialog names is exactly what gets rewritten.
+/// applies, so the dialog names what gets rewritten - unless the forwarder
+/// takes or loses the relay port between the two reads, which fails safe
+/// (`proxy::QuitAddresses` says how).
 pub fn tools_stranded_by_quit() -> Vec<String> {
     let ours = crate::proxy::QuitAddresses::current();
     registry::registry()
@@ -924,6 +926,18 @@ pub fn tools_stranded_by_quit() -> Vec<String> {
 /// logged and does not hide the names - that is the one case the sentence
 /// matters most, since nothing will restore those tools on the next start.
 pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
+    revert_stranded_configs(crate::proxy::QuitAddresses::current)
+}
+
+/// [`revert_stranded_configs_for_quit`] for an exit the forwarder does not
+/// outlive: relay configs are put back whether the forwarder holds the relay
+/// port right now or not. See [`crate::proxy::QuitAddresses::relay_unfronted`]
+/// for which exits those are.
+pub fn revert_stranded_configs_relay_unfronted() -> Result<Vec<String>> {
+    revert_stranded_configs(crate::proxy::QuitAddresses::relay_unfronted)
+}
+
+fn revert_stranded_configs(read: fn() -> crate::proxy::QuitAddresses) -> Result<Vec<String>> {
     let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
         anyhow::bail!(
             "another routing operation is still running; quitting without putting relay \
@@ -931,7 +945,7 @@ pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
         );
     };
     // Read once for the whole sweep; see `proxy::QuitAddresses`.
-    let ours = crate::proxy::QuitAddresses::current();
+    let ours = read();
     let mut reverted: Vec<(String, String)> = Vec::new();
     for integ in registry::registry() {
         if !stranded_by_quit(integ.as_ref(), &ours) {
