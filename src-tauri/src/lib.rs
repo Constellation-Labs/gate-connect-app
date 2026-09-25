@@ -4352,14 +4352,22 @@ async fn disconnect_tools_for_quit<R: tauri::Runtime>(
              reconnects when Gate Connect starts again."
                 .to_string()
         } else {
-            format!(
-                "Gate Connect closed, but {} could not be put back on {} own \
-                 settings. {} still point at Gate and will not reach a model until \
-                 Gate Connect runs again.",
-                failed.join(", "),
-                if failed.len() == 1 { "its" } else { "their" },
-                if failed.len() == 1 { "It" } else { "They" },
-            )
+            // Actionable over explanatory: what the tool does next depends on
+            // whether the session has ended since (the drained forwarder keeps
+            // serving it until then), and the fix is the same either way.
+            if failed.len() == 1 {
+                format!(
+                    "{} could not be put back on its own settings. It still points \
+                     at Gate; update its config by hand.",
+                    failed[0]
+                )
+            } else {
+                format!(
+                    "{} could not be put back on their own settings. They still \
+                     point at Gate; update their config by hand.",
+                    join_names(&failed)
+                )
+            }
         };
         let _ = app
             .notification()
@@ -4373,7 +4381,6 @@ async fn disconnect_tools_for_quit<R: tauri::Runtime>(
 
 /// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
 /// comma-join reads as a fragment at two items.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn join_names(names: &[String]) -> String {
     match names {
         [] => String::new(),
