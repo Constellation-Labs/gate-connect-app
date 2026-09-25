@@ -6447,16 +6447,26 @@ mod tests {
             ),
             None
         );
-        // The app itself still is, and still resolves to the bundle rather
-        // than the inner Mach-O.
+        // The app itself still is. **What it resolves TO is per platform**, so
+        // the shared assertion is only that a target exists: the walk up to the
+        // `.app` is `cfg(target_os = "macos")`, and asserting the bundle on
+        // every platform failed CI on Linux and Windows, where the same call
+        // returns the executable unchanged.
+        let app = relaunch_target_for(
+            Some(Path::new(
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+            )),
+            Surface::App,
+        );
+        assert!(app.is_some());
+        #[cfg(target_os = "macos")]
+        assert_eq!(app, Some(PathBuf::from("/Applications/ChatGPT.app")));
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
-            relaunch_target_for(
-                Some(Path::new(
-                    "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
-                )),
-                Surface::App
-            ),
-            Some(PathBuf::from("/Applications/ChatGPT.app"))
+            app,
+            Some(PathBuf::from(
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+            ))
         );
         // A CLI is never relaunched, whatever its path.
         assert_eq!(
