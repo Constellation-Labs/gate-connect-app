@@ -594,6 +594,9 @@ describe("Home routing-change notice", () => {
     expect(screen.getByText(/Routing is on\./)).toBeTruthy();
     // The remedy that does apply, in place of the one that does not.
     expect(screen.getByText(/Reload any pages you have open\./)).toBeTruthy();
+    // Nothing missed a change, so a running tool is already routed through the
+    // forwarder and the banner must not say otherwise.
+    expect(screen.queryByText(/Anything already open/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
     expect(onCloseAgents).not.toHaveBeenCalled();
   });

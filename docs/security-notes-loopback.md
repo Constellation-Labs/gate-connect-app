@@ -136,6 +136,14 @@ goes direct when it is not. Two consequences are new and recorded here:
   which holds the port from every login onward. Declining the export no longer
   means "no Gate process besides the app"; it means only that `HTTPS_PROXY` is
   not set. Signing out and untrusting the CA remain the paths that retire it.
+  The quit that disconnects the tools *drains* it instead (`forwarder::drain`):
+  tool configs go back to their own settings, and the forwarder keeps serving
+  whatever already holds its address, direct, until the login session ends. On
+  macOS the agent's plist is deleted and the loaded job left alone, so launchd
+  keeps the sockets until logout and loads nothing at the next login; on
+  Windows nothing but Gate starts it. So after that choice the forward-proxy
+  capability lasts until logout rather than ending at the click - the price of
+  not failing every running tool closed.
 - The fallback makes a forwarder that stops answering a *silent* fail-open for
   the browser channel, where before the PAC named the engine and failed
   closed. Any same-user process can kill it; any local user can saturate it

@@ -607,7 +607,7 @@ export function installFakeTauri(state: BackendState): void {
             // is the switch the specs already use for that, and reading it here
             // is what lets a reopened tool look reopened: close a tool, drop the
             // staleness, and the scan reports a fresh process.
-            predates_routing: state.staleAgents > 0,
+            needs_reopen: state.staleAgents > 0,
           }))
           // Exact, like `for_each_agent_process`'s own comparison. It used to
           // lowercase, which would let a running `Claude` answer a scan that

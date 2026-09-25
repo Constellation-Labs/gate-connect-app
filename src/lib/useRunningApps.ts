@@ -261,7 +261,7 @@ export function useRunningApps({
           if (mine.length === 0) return [slug, "gone" as ReopenPresence];
           return [
             slug,
-            mine.some((a) => a.predates_routing) ? "stale" : "fresh",
+            mine.some((a) => a.needs_reopen) ? "stale" : "fresh",
           ] as [string, ReopenPresence];
         }),
       );

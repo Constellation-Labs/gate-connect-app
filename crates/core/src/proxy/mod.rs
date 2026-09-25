@@ -1135,7 +1135,7 @@ pub fn address_health(configured: &str) -> AddressHealth {
 /// accepted a bare `http://127.0.0.1:` read every Claude Code install as
 /// unreachable. Only the loopback literal is recognised, because the caller is
 /// always comparing against an address this module wrote.
-fn loopback_port_of(url: &str) -> Option<u16> {
+pub(crate) fn loopback_port_of(url: &str) -> Option<u16> {
     let authority = url.strip_prefix("http://")?.split('/').next()?;
     // `rsplit` so a password containing '@' cannot hide the real host.
     let host_port = authority.rsplit('@').next()?;

@@ -24,7 +24,7 @@ const agent = (over: Partial<RunningAgent> = {}): RunningAgent => ({
   can_reopen: false,
   pid: 1,
   started_at_unix: 100,
-  predates_routing: true,
+  needs_reopen: true,
   ...over,
 });
 

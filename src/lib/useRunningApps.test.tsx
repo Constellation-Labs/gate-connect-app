@@ -51,7 +51,7 @@ const agent = (
   verifiable: REGISTRY_SLUGS.includes(slug),
   pid,
   started_at_unix: 1000,
-  predates_routing: stale,
+  needs_reopen: stale,
 });
 
 const verdict = (

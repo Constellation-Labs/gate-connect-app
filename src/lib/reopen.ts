@@ -357,7 +357,7 @@ export function reopenTools(
  * close.
  *
  * `stale` is the process that was running when the configuration changed - the
- * backend's own `predates_routing`, so this cannot disagree with the verdict
+ * backend's own `needs_reopen`, so this cannot disagree with the verdict
  * beside it. `fresh` is one started since, which is what a reopen looks like
  * from outside.
  */

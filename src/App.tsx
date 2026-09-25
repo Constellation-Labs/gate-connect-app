@@ -896,13 +896,30 @@ export function App() {
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
-        // The close-running-agents takeover went with the master switch that
-        // was its only caller: it probed `running_agents_count` and offered to
-        // close what it found. Both remaining callers are "turn routing on"
-        // remedies, and both always took this arm. The inline hint is what they
-        // get, and it is what they got before.
-        setNothingToClose(false);
-        setChangeNotice(next.running ? "on" : "off");
+        // No takeover: it went with the master switch that was its only
+        // caller. Both remaining callers are "turn routing on" remedies, and
+        // they get the inline hint.
+        //
+        // Nothing to say on the way off. Routing off keeps every tool's config
+        // and parks the engine, so a tool already open reaches its own provider
+        // through the forwarder and a reopen would put it straight back on
+        // Gate's values.
+        //
+        // On the way on, a config naming the forwarder or the relay reaches the
+        // engine as soon as it is up, so a running CLI is routed without a
+        // restart. What can still be stale is an agent that missed a change to
+        // its own config or to the certificate (`stale_agents_count`), and a
+        // page that kept the connection it opened before the PAC named its
+        // host. The count decides the remedy, not whether to speak: with
+        // nothing stale the hint carries the reload advice alone. A failed
+        // probe defaults to showing.
+        if (!next.running) {
+          setChangeNotice(null);
+        } else {
+          const agents = await staleAgentsCount().catch(() => 1);
+          setNothingToClose(agents === 0);
+          setChangeNotice("on");
+        }
         // The backend owns the routed set across an engine start: turning on
         // restores the snapshot the last teardown took. Just reflect the result
         // (the returned ProxyState already carries the restored domains) and

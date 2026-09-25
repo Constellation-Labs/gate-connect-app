@@ -55,12 +55,17 @@ test.describe("routing", () => {
     await expect(app.page.getByText("Routing on").first()).toBeVisible();
   });
 
-  test("with agents running, the enable offers to close them", async ({ boot }) => {
+  test("with stale agents running, the enable offers to close them", async ({ boot }) => {
     // `ca_trusted`, here and in the tests below, so the certificate pre-flight
     // stays out of a test that is about the close-agents offer.
+    //
+    // Stale, not merely running: a running agent whose config names the
+    // forwarder is routed as soon as the engine is up, so only one that missed
+    // a change to its config or the certificate is worth closing.
     const app = await boot({
       ...routingDidNotStart,
       runningAgents: 2,
+      staleAgents: 2,
       proxy: { running: false, ca_trusted: true },
     });
 

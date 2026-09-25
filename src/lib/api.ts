@@ -693,10 +693,10 @@ export interface RunningAgent {
   pid: number;
   /** Process start, Unix seconds. 0 when the platform wouldn't say. */
   started_at_unix: number;
-  /** Started before routing last came up, so it resolved its connection
-   * pre-Gate and needs a restart to route. Same rule as
-   * {@link staleAgentsCount}. */
-  predates_routing: boolean;
+  /** Started before the last change to its own configuration or to Gate's
+   * certificate, so it is still using what it loaded and needs a restart.
+   * Same rule as {@link staleAgentsCount}. */
+  needs_reopen: boolean;
 }
 
 export interface RunningAgents {
@@ -709,7 +709,7 @@ export interface RunningAgents {
 }
 
 /** The running agents themselves rather than a count: name, pid, start time,
- * and whether each predates routing. Same process set and staleness rule as
+ * and whether each needs a reopen. Same process set and staleness rule as
  * the two count probes above.
  *
  * `only` narrows the scan to the tools whose configs were just rewritten - a

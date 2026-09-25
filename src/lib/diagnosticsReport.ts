@@ -112,7 +112,7 @@ function orUnknown(value: string | null | undefined): string {
 
 /** A duration in whole units, largest two first: "3d 4h", "2h 46m", "9m".
  *  Days matter because an agent process left running over a weekend is
- *  exactly the one that predates routing. */
+ *  exactly the one that missed a change. */
 function span(totalSec: number): string {
   const days = Math.floor(totalSec / 86400);
   const hours = Math.floor((totalSec % 86400) / 3600);
@@ -138,7 +138,7 @@ function isoSecond(unixSeconds: number): string {
 }
 
 /** One running tool: what it is, how long it has been up, and whether it
- *  predates routing - the last being the whole reason this section exists. */
+ *  needs a reopen - the last being the whole reason this section exists. */
 export function agentLine(agent: RunningAgent, now: Date): string {
   const parts = [`pid ${agent.pid}`];
   if (agent.started_at_unix > 0) {
@@ -147,7 +147,7 @@ export function agentLine(agent: RunningAgent, now: Date): string {
   } else {
     parts.push("start time unavailable");
   }
-  if (agent.predates_routing) parts.push("predates routing");
+  if (agent.needs_reopen) parts.push("needs reopen");
   return row(agent.name, parts.join(", "));
 }
 
