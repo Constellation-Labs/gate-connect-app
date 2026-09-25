@@ -178,9 +178,9 @@ export function RoutingBanner({
 /**
  * A tool whose config is right and whose running process has not picked it up.
  *
- * The pane's version of the sidebar's "Reopen to finish": the row has 250px and
- * prints the phrase plus the program's name, and this has the width for the part
- * that matters, which is *which route the traffic is on right now*. AG-570 asks for
+ * The pane's card for a "Reopen to finish" reason, which the rail row reads as a
+ * bare "Not protected". This has the width for the part that matters, which is
+ * *which route the traffic is on right now*. AG-570 asks for
  * the route in use, the requested route, and the action, and the first two are
  * the whole reason this is a card rather than a sentence - "reopen required"
  * without them does not say what reopening would change.
@@ -323,7 +323,12 @@ export function NoteBanner({
  */
 export function PaneNote({ title, body }: { title: string; body: string }) {
   return (
-    <div className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm">
+    // `role="status"`, as `NoteBanner`: a reading, announced without taking
+    // focus.
+    <div
+      role="status"
+      className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm"
+    >
       <Icon name="info" size={16} className="mt-0.5 shrink-0 text-neutral-500" />
       <div className="min-w-0">
         <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>

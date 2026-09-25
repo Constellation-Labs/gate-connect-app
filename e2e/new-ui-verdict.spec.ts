@@ -58,12 +58,16 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
 
-    // The routing card speaks for the app here, because it carries the fix;
-    // the connection problem is what that cause looks like from the sweep.
+    // Both cards: the routing card carries the fix, and the status card says
+    // what the sweep measured. Neither stands in for the other, because a
+    // pane's notice can be about a different member than its reason.
     await app.openSection("ChatGPT / Codex");
     await expect(
       app.page.getByText("Routing didn’t start when Gate Connect opened", { exact: false }),
     ).toBeVisible();
+    const note = statusNote(app.page);
+    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
+    await expect(note).toContainText("Connection problem");
   });
 
   /**
@@ -100,6 +104,9 @@ test.describe("new UI routing verdict", () => {
     // until the rail had a phrase for this state: the row drew a bare
     // "Not protected" then, so the reason matched here and nowhere else.
     await expect(app.page.getByText(/^Reopen .+ to finish$/)).toBeVisible();
+    // The reopen card names this cause and carries its fix, so the status card
+    // does not repeat it.
+    await expect(statusNote(app.page)).toHaveCount(0);
   });
 
   /**
@@ -179,5 +186,28 @@ test.describe("new UI routing verdict", () => {
     ).toBeVisible();
     await app.openSection("ChatGPT / Codex");
     await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
+    // The drift card is the reason, with its fix; no second card says it.
+    await expect(statusNote(app.page)).toHaveCount(0);
+  });
+
+  test("an unanswered sweep draws no status card", async ({ boot }) => {
+    // The row reads "Not protected" with "Checking" behind it for as long as
+    // the sweep has no answer. That is not a measured fault, so the pane must
+    // not raise a card saying the app isn't protected.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+      failures: { routing_verdicts: "sweep failed" },
+    });
+
+    await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
+    await app.openSection("ChatGPT / Codex");
+    await expect(app.page.getByRole("heading", { name: "ChatGPT / Codex" })).toBeVisible();
+    await expect(statusNote(app.page)).toHaveCount(0);
   });
 });
+
+/** The pane's status card, found by its title rather than by position. */
+function statusNote(page: import("@playwright/test").Page) {
+  return page.getByRole("status").filter({ hasText: /isn’t protected/ });
+}

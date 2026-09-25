@@ -361,37 +361,34 @@ deliberate reversal of an earlier "no dashboard" rule.
    observed state.
 
 3. **Apps are nouns, routing is a verb.** The sidebar lists apps; each row
-   pairs a status line with a switch. Status vocabulary is
-   Protected / Not protected / Config drifted / Not routed, coloured green
-   or amber, with any qualifier ("2m ago", "Off") in grey after a dash.
+   pairs a status line with a switch. **The status vocabulary is exactly the
+   three `status-label` draws (`434:136`)**, one per pairing of switch and
+   outcome:
+   - **Protected** (green) - switch on, and it works.
+   - **Not protected** (amber) - switch on, and something is wrong.
+   - **Not routed** (grey) - switch off, qualified "Off" in grey after a dash.
 
-   **Four more exist in `AppStatus` and no rail frame draws them**, each
-   added because the four above answer a real state wrongly, or have no row to
-   answer on. Do not "correct"
-   them back; each is argued at its own variant in `Sidebar.tsx`.
-   - **Reopen to finish** - the config landed and a running process has not
-     picked it up. "Not protected" on the row someone just switched on reads
-     as a failure Gate invented.
-   - **Partly protected** - some of a section's surfaces route and the rest
-     are plainly off. Reachable only since a row became an app rather than a
-     surface.
-   - **Routed, not inspected** (AG-932) - the tool really is routed, and the
-     provider it talks to is one Gate does not intercept, so the traffic
-     tunnels through unread. "Protected" is false, "Not protected" reads as
-     the off state on a switch that is on, and "Not routed" is false twice.
-     It counts as routed for every tally (`countsAsRouted`), so the topbar
-     banner and the row cannot contradict each other.
-   - **Not installed** - detection did not find the app. Drawn only on the
-     display-only rows of the rail's last group, so an app that is absent is
-     listed rather than hidden. The tray's `738:37377` draws a "Not installed"
-     section collapsed to a count; the tray dropped it on 2026-09-23 and the
-     rail took the rows instead, which is a reading design has not confirmed.
+   Every way of being on and not working is "Not protected": a drifted config,
+   a process that has to be reopened, a provider Gate does not inspect, a
+   section only partly routed, a certificate that blocks a domain, a failed
+   write. The row and the pane header print the phrase alone. **The reason goes
+   in the app's pane**, as `statusNote` in `NewUiApp` (a `PaneNote`), unless a
+   card with the fix already names the same cause (the reopen card, the drift
+   card). The tray prints the rail's line, without the reason.
 
-   All four are inferences under principle 6 rather than drawn frames, which
-   is the same licence the loading and failure states run on. They are owed to
-   design as questions; `docs/figma-questions-for-design.md` was the place for
-   that and was deleted in `4827db4` while this file still cites it, including
-   a "question 22" that no longer resolves.
+   This replaced seven phrases on 2026-09-25 ("Config drifted", "Reopen to
+   finish", "Partly protected", "Routed, not inspected" and "Not routed -
+   Blocked" among them), by the user's decision. Do not add a fourth phrase
+   for a new state; give `not-protected` a `detail` instead. `countsAsProtected`
+   counts Protected only, so the topbar cannot call protected what the row
+   calls not protected.
+
+   **One more exists and is not a rail frame: Not installed** (grey).
+   Detection did not find the app. Drawn only on the display-only rows of the
+   rail's last group, so an app that is absent is listed rather than hidden.
+   The tray's `738:37377` draws a "Not installed" section collapsed to a
+   count; the tray dropped it on 2026-09-23 and the rail took the rows
+   instead, which is a reading design has not confirmed.
 
 4. **Mono earns its place.** Geist Mono marks an eyebrow or a pill label,
    and that is all. Identifiers, numbers, body copy and labels are sans -

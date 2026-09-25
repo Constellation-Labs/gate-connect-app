@@ -135,12 +135,10 @@ export class App {
    * per-tool notices are drawn (#277 and the reopen card), so it is a fixture
    * now rather than a helper per file.
    *
-   * It carries the reason those specs open a pane at all, from the copy this
-   * replaced: a 250px rail row cannot fit "Not protected - Configuration update
-   * failed" and truncates the reason mid-word, so the row prints the coloured
-   * phrase alone and the pane carries the reason in full. A spec that wants the
-   * phrase reads the row; one that wants the reason, or a notice, opens the
-   * pane.
+   * Why those specs open a pane at all: the rail row prints the coloured
+   * phrase alone ("Protected", "Not protected", "Not routed"), and the pane is
+   * the only place a reason or a notice is drawn. A spec that wants the phrase
+   * reads the row; one that wants the reason, or a notice, opens the pane.
    */
   openSection(name: string) {
     return this.page.getByRole("button", { name }).first().click();

@@ -70,7 +70,13 @@ import {
   notInstalledSections,
   sectionMemberKeys,
 } from "./lib/groups";
-import { sectionStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import {
+  CHECKING_DETAIL,
+  REASON_DETAIL,
+  sectionStatus,
+  verdictStatus,
+  verdictsBySlug,
+} from "./lib/verdict";
 import { msUntilHourRollover } from "./lib/activity";
 import type { Band, Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -150,7 +156,7 @@ import {
   ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
-import { countsAsRouted } from "./components/gc/Sidebar";
+import { countsAsProtected } from "./components/gc/Sidebar";
 import type {
   InventoryState,
   SidebarApp,
@@ -2268,8 +2274,8 @@ export function NewUiApp() {
    * that own them.
    */
   const desiredApps = railApps.filter((a) => a.on);
-  // `countsAsRouted`, the one predicate every counter shares.
-  const protectedCount = desiredApps.filter((a) => countsAsRouted(a.status)).length;
+  // `countsAsProtected`, the one predicate every counter shares.
+  const protectedCount = desiredApps.filter((a) => countsAsProtected(a.status)).length;
 
   /**
    * The open app's own notice, for its own pane.
@@ -2453,19 +2459,35 @@ export function NewUiApp() {
   }, [view, openTool, verdicts, apps, runningApps]);
 
   /**
-   * Why the open app is not protected, when no card above already says it.
+   * Why the open app is not protected.
    *
    * The rail and the pane header print the three drawn phrases alone
-   * ("Protected", "Not protected", "Not routed"), so this is where a
-   * `not-protected` reason is read. Drift, a check error, a routing or
-   * certificate cause and a reopen each have a card of their own with an
-   * action, and those speak for the app instead of this.
+   * ("Protected", "Not protected", "Not routed"), so this is the one place a
+   * `not-protected` reason is read in the window.
+   *
+   * It stands down only for a card that names the SAME cause and carries its
+   * fix: the reopen card for "Reopen to finish", the drift card for "Config
+   * drifted". Any other card on the pane can be about a different member of
+   * the section - a certificate notice for the Claude domain while Claude Code
+   * failed verification - so standing down for it would leave this reason
+   * shown nowhere, which is what the pane header used to prevent.
+   *
+   * Nothing for "Checking" either: the sweep has not answered, and a card
+   * saying the app isn't protected would be a claim nobody measured.
    */
   const statusNote = useMemo(() => {
-    if (view.kind !== "app" || reopenAlert || paneNotice) return undefined;
+    if (view.kind !== "app") return undefined;
     const app = appFor(railApps, view.slug);
-    if (app?.status.kind !== "not-protected" || !app.status.detail) return undefined;
-    return <PaneNote title={`${app.name} isn’t protected`} body={`${app.status.detail}.`} />;
+    if (app?.status.kind !== "not-protected") return undefined;
+    const detail = app.status.detail;
+    if (!detail || detail === CHECKING_DETAIL) return undefined;
+    if (reopenAlert && detail === REASON_DETAIL.reopen_required) return undefined;
+    if (
+      paneNotice?.id.startsWith("drifted:") &&
+      detail === REASON_DETAIL.configuration_changed
+    )
+      return undefined;
+    return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
   }, [view, reopenAlert, paneNotice, railApps]);
 
   /**
@@ -2721,10 +2743,9 @@ export function NewUiApp() {
    * that tool's pane, where `ReopenAlert` names both routes rather than listing
    * names - the shell banner drew it over Overview, Settings and every other
    * tool's pane, which is the thing #277 took the drift and check-error cards
-   * off Overview for. The rail still reads "Reopen to finish" on each affected
-   * row - its own amber phrase, deliberately not "Not protected" - with the
-   * program named after the dash on a multi-surface section. This drops AG-566
-   * AC 3, which asked for the invitation on Overview.
+   * off Overview for. The rail reads "Not protected" on each affected row, and
+   * the pane's reopen card names the cause. This drops AG-566 AC 3, which asked
+   * for the invitation on Overview.
    *
    * Lifted out of the `AppShell` call so the reload note below can be stacked
    * beside it rather than ranked inside it. Unchanged otherwise.
@@ -3346,7 +3367,6 @@ export function NewUiApp() {
           alert={
             <>
               {reopenAlert}
-              {statusNote}
               {/* Scope first, then the caveat on it. On a Linux chat row both of
                   these draw, and in the other order they read as two unrelated
                   paragraphs where the second happens to contradict the first:
@@ -3376,6 +3396,7 @@ export function NewUiApp() {
                   }
                 />
               )}
+              {statusNote}
               {modelError && (
                 // The gateway's own sentence, not a code. A role refusal and a
                 // dead network want different things from the reader, and on a

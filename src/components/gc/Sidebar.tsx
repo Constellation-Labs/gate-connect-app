@@ -38,9 +38,9 @@ export type SidebarView =
  * that has to be reopened, a provider Gate does not inspect, a section only
  * partly routed, a certificate that blocks it - is `not-protected`, and its
  * `detail` says which. The rail prints the phrase alone and the app pane draws
- * the reason as a card. This used to be seven phrases, each argued as the only
- * honest reading of its state; design cut it back to the drawn three on
- * 2026-09-25, with the reason moved to the pane.
+ * the reason as a card. Until 2026-09-25 the rail had seven phrases besides
+ * "Not installed", each argued as the only honest reading of its state; it was
+ * cut back to the drawn three then, with the reason moved to the pane.
  */
 export type AppStatus =
   | { kind: "protected"; since?: string }
@@ -219,14 +219,18 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
 };
 
 /**
- * Does this row count as routed, for the counters and the topbar banner?
+ * Does this row count as protected, for the counters and the topbar banner?
+ *
+ * Protected only. A row routed to a provider Gate does not inspect reads "Not
+ * protected", so the counters count it out too, and the topbar says it is not
+ * protected rather than contradicting the row.
  *
  * Four counters read this: the topbar's `protectedCount`, `RoutingCard`, the
  * tray's per-group fraction and the rail's. They were four separate
  * `kind === "protected"` filters and are one predicate, because four copies of
  * a pairing is four chances to disagree.
  */
-export function countsAsRouted(status: AppStatus): boolean {
+export function countsAsProtected(status: AppStatus): boolean {
   return status.kind === "protected";
 }
 
@@ -236,19 +240,12 @@ export function countsAsRouted(status: AppStatus): boolean {
  *
  * A `not-protected` detail is deliberately not among them. It is the reason
  * ("Configuration update failed", "Reopen to finish"), and the app pane draws it
- * as a card rather than as a suffix. The tray, which has no pane, prints it
- * through `statusDetail`.
+ * as a card rather than as a suffix. The tray prints the same line as the rail.
  */
 export function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
   if (status.kind === "not-routed") return status.detail;
   return undefined;
-}
-
-/** The same suffix, plus the reason the rail drops. For a surface with the room
- *  to print it. */
-export function statusDetail(status: AppStatus): string | undefined {
-  return status.kind === "not-protected" ? status.detail : statusSuffix(status);
 }
 
 /**
@@ -371,7 +368,7 @@ export function Sidebar({
                  * reads "1 of 2". */}
                 {!group.notInstalled && (
                   <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-                    {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
+                    {group.apps.filter((a) => countsAsProtected(a.status)).length} of{" "}
                     {group.apps.length}
                   </span>
                 )}

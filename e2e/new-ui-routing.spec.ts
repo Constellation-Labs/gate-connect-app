@@ -298,7 +298,10 @@ test.describe("new UI drift repair", () => {
     //
     // Opened by the section's name: the row is the app, and Codex is inside it.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+    // The status card, not the action banner, which can say the same words.
+    const note = app.page.getByRole("status").filter({ hasText: /isn’t protected/ });
+    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
+    await expect(note).toContainText("Configuration update failed");
   });
 
   test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {

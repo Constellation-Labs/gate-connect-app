@@ -372,6 +372,39 @@ describe("sectionStatus", () => {
     expect(sectionStatus(claude, apps)).toEqual(reopen);
   });
 
+  it("does not call a section protected when its tool's provider is not inspected", () => {
+    // On the base of #360 this read "Protected": `not-inspected` was not an
+    // exception, so a section whose only config member tunnelled past Gate
+    // fell through to the all-routed rule.
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain()],
+      { ...ON, ...sweep("claude-code") },
+    );
+    const uninspected = {
+      kind: "not-protected",
+      detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
+    };
+    const apps = new Map([["claude-code", { status: uninspected } as never]]);
+    expect(sectionStatus(claude, apps)).toEqual(uninspected);
+  });
+
+  it("reads a switched-on domain the certificate blocks as Not protected, not Not routed", () => {
+    // Switch on, and something is wrong: that is Not protected. It read
+    // "Not routed - Blocked" until 2026-09-25, the off state's phrase on a
+    // switch that is on.
+    const [claude] = buildGroups([], [domain()], { proxyOn: true, caTrusted: false });
+    expect(sectionStatus(claude, new Map())).toEqual({
+      kind: "not-protected",
+      detail: "Blocked",
+    });
+  });
+
+  it("reads a switched-off domain as Not routed - Off", () => {
+    const [claude] = buildGroups([], [domain({ enabled: false })], ON);
+    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed", detail: "Off" });
+  });
+
   it("does not read off as off because a session surface is off", () => {
     // The session row answers the same switch but does not define it: with the
     // brokered surface routing, the section is routing.

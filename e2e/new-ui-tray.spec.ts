@@ -41,8 +41,9 @@ test.describe("tray popover", () => {
    */
 
   /**
-   * No reopen card on the tray. The waiting tool still says so on its own row;
-   * the card and its "Close tool" action live in the window only.
+   * No reopen card on the tray. The waiting tool reads "Not protected" on its
+   * own row, as the rail does; the card and its "Close tool" action live in the
+   * window only.
    */
   test("a tool waiting to be reopened draws no card on the tray", async ({ boot }) => {
     const app = await boot({
@@ -61,8 +62,11 @@ test.describe("tray popover", () => {
       runningAgentNames: ["codex"],
     });
 
-    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
-    await expect(app.page.getByRole("heading", { name: "Reopen to finish" })).toHaveCount(0);
+    // The row reads "Not protected" before the sweep lands too, so wait for
+    // the sweep itself before asserting what it did not draw.
+    await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
+    await expect(app.page.getByText("Not protected", { exact: true })).toBeVisible();
+    await expect(app.page.getByText("Reopen to finish")).toHaveCount(0);
     await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
   });
 

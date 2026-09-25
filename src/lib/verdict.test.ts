@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
-import { countsAsRouted } from "../components/gc/Sidebar";
+import { countsAsProtected } from "../components/gc/Sidebar";
 import { NEXT_ACTION_LABEL, verdictStatus, verdictsBySlug } from "./verdict";
 
 // `sectionStatus` is tested in `groups.test.ts`, against a real `buildGroups`
@@ -164,7 +164,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     ).toEqual({ kind: "not-protected", detail: "Routed, not inspected: openrouter.ai" });
   });
 
-  it("names one host and counts the rest, because the rail is 250px", () => {
+  it("names every host, because the pane card has the room", () => {
     expect(
       verdictStatus(on(), {
         coverage: coverage({
@@ -172,7 +172,10 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
           unknown: ["api.groq.com", "api.together.xyz"],
         }),
       }),
-    ).toEqual({ kind: "not-protected", detail: "Routed, not inspected: openrouter.ai +2" });
+    ).toEqual({
+      kind: "not-protected",
+      detail: "Routed, not inspected: openrouter.ai, api.groq.com, api.together.xyz",
+    });
   });
 
   it("stays Protected when coverage is complete, absent, or null", () => {
@@ -205,11 +208,11 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     const status = verdictStatus(on(), {
       coverage: coverage({ unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] }),
     });
-    expect(countsAsRouted(status)).toBe(false);
+    expect(countsAsProtected(status)).toBe(false);
     // And the rest, because four counters read this one predicate.
-    expect(countsAsRouted({ kind: "protected" })).toBe(true);
-    expect(countsAsRouted({ kind: "not-routed", detail: "Off" })).toBe(false);
-    expect(countsAsRouted({ kind: "not-protected", detail: "Config drifted" })).toBe(false);
+    expect(countsAsProtected({ kind: "protected" })).toBe(true);
+    expect(countsAsProtected({ kind: "not-routed", detail: "Off" })).toBe(false);
+    expect(countsAsProtected({ kind: "not-protected", detail: "Config drifted" })).toBe(false);
   });
 
   it("does not outrank a failed write either", () => {
