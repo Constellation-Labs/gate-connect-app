@@ -453,7 +453,7 @@ export function Sidebar({
                 )}
               </div>
             )}
-            <ul className="flex flex-col gap-1">
+            <ul className="flex flex-col">
               {group.apps.map((app) => (
                 <AppRow
                   key={app.slug}
@@ -508,7 +508,7 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick?: () => void }) 
   const line = (
     <span className="flex min-w-0 items-center gap-2" title={name}>
       <Icon name="usersRound" size={16} />
-      <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
+      <span className="truncate text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
         {name}
       </span>
     </span>
@@ -553,7 +553,7 @@ function NavItem({
       // loses 2 to 1). Active text is `base/primary` on `base/background`,
       // which is the same #f9fafb the set's `sidebar-primary-foreground`
       // variable resolves to.
-      className={`flex w-full items-center gap-2 rounded-control p-1.5 text-base-xs font-medium leading-4 tracking-label-12 ${
+      className={`flex w-full items-center gap-2 rounded-control p-1.5 text-sm font-medium leading-5 tracking-label-14 ${
         active
           ? "border border-base-border bg-base-background text-base-primary shadow-base-2xs"
           : "text-base-foreground"
@@ -656,7 +656,7 @@ function AppRow({
       <span className="flex min-w-0 flex-1 flex-col">
         <span
           title={app.hint}
-          className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
+          className={`truncate text-sm font-medium leading-5 tracking-label-14 ${
             selected
               ? "text-base-primary"
               : onSelect
@@ -666,7 +666,7 @@ function AppRow({
         >
           {app.name}
         </span>
-        <span className="truncate text-base-2xs font-medium leading-4">
+        <span className="truncate text-base-xs font-medium leading-4 tracking-label-12">
           <span className={status.className}>{status.label}</span>
           {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
         </span>
