@@ -668,7 +668,10 @@ fn coverage_from(
 /// self-hosted provider is reached directly and never passes the engine at all.
 /// Keyed by slug, not host: two hosts one row claims are one switch, and a
 /// caller that named the row per host would ask about it twice.
-fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
+///
+/// Crate-visible because Claude Code asks the same question of the cloud
+/// endpoint its settings select (AG-931), and two lookups could disagree.
+pub(crate) fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
     let mut coverage = Coverage::default();
     for url in urls {
         if is_loopback_url(url) {
@@ -838,8 +841,68 @@ fn parsed_config() -> Option<serde_yaml::Value> {
 /// machine.
 fn config_base_urls() -> Option<Vec<String>> {
     parsed_config()
-        .map(|root| base_urls_in(&root))
+        .map(|root| {
+            let mut urls = base_urls_in(&root);
+            urls.extend(bedrock_endpoint_in(&root, env_file_region().as_deref()));
+            urls
+        })
         .filter(|urls| !urls.is_empty())
+}
+
+/// The names Hermes accepts for its Bedrock provider (`hermes_cli/providers.py`).
+const BEDROCK_PROVIDER_IDS: &[&str] =
+    &["bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"];
+
+/// The Bedrock runtime endpoint a `model.provider: bedrock` config will call,
+/// when nothing in the file already names it. AG-931.
+///
+/// Hermes' Bedrock provider is the one upstream that needs no URL: it builds a
+/// boto3 client from a region. Its own setup flow writes `model.base_url`
+/// anyway, and [`base_urls_in`] already finds that, but a config written by
+/// hand with only `bedrock.region` names no endpoint at all. That fell through
+/// to [`DEFAULT_UPSTREAM_URL`], so the row reported OpenRouter, a provider
+/// Hermes was not calling, about traffic Gate cannot see.
+///
+/// The region follows Hermes' own order (`resolve_bedrock_runtime_region`):
+/// `bedrock.region`, then the `.env` beside the config, then `us-east-1`. The
+/// shell environment and `~/.aws/config` rank above that default and are not
+/// visible from here, so the region can be wrong. The finding cannot: whatever
+/// the region, it is a Bedrock host and no catalog entry claims it.
+fn bedrock_endpoint_in(root: &serde_yaml::Value, env_region: Option<&str>) -> Option<String> {
+    let provider = root.get("model")?.get("provider")?.as_str()?.trim();
+    if !BEDROCK_PROVIDER_IDS
+        .iter()
+        .any(|id| provider.eq_ignore_ascii_case(id))
+    {
+        return None;
+    }
+    if base_urls_in(root)
+        .iter()
+        .any(|url| url_host(url).starts_with("bedrock-runtime."))
+    {
+        return None;
+    }
+    let region = root
+        .get("bedrock")
+        .and_then(|b| b.get("region"))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .or(env_region)
+        .unwrap_or("us-east-1");
+    Some(format!("https://bedrock-runtime.{region}.amazonaws.com"))
+}
+
+/// `AWS_REGION`, then `AWS_DEFAULT_REGION`, from Hermes' `.env`. Hermes loads
+/// that file into its own environment at startup, so it is the one place its
+/// environment can be read from outside the process.
+fn env_file_region() -> Option<String> {
+    let path = env_file_path().ok()?;
+    ["AWS_REGION", "AWS_DEFAULT_REGION"]
+        .iter()
+        .find_map(|key| dotenv::read_var(&path, key).ok().flatten())
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
 }
 
 /// The endpoint-collecting half of [`config_base_urls`], over an already-parsed
@@ -1113,6 +1176,64 @@ mod tests {
             ],
             "all three aliases, in all three places, and a bare model name skipped"
         );
+    }
+
+    #[test]
+    fn a_bedrock_provider_with_no_url_names_the_runtime_host() {
+        // AG-931: Hermes' Bedrock provider builds its client from a region, so
+        // a hand-written config can select it without naming any endpoint. It
+        // used to fall through to the OpenRouter default.
+        let root: serde_yaml::Value =
+            serde_yaml::from_str("model:\n  provider: bedrock\nbedrock:\n  region: eu-west-1\n")
+                .unwrap();
+        assert!(base_urls_in(&root).is_empty());
+        assert_eq!(
+            bedrock_endpoint_in(&root, Some("us-west-2")).as_deref(),
+            Some("https://bedrock-runtime.eu-west-1.amazonaws.com"),
+            "bedrock.region outranks the environment, as it does in Hermes"
+        );
+
+        let coverage = coverage_from(
+            &catalog_with("anthropic"),
+            bedrock_endpoint_in(&root, None).map(|u| vec![u]),
+        );
+        assert!(!coverage.defaulted);
+        assert!(coverage.switched_off.is_empty(), "{coverage:?}");
+        assert_eq!(
+            coverage.unknown,
+            vec!["bedrock-runtime.eu-west-1.amazonaws.com"]
+        );
+    }
+
+    #[test]
+    fn a_bedrock_region_falls_back_through_the_env_file_to_hermes_default() {
+        let root: serde_yaml::Value =
+            serde_yaml::from_str("model:\n  provider: Amazon-Bedrock\n").unwrap();
+        assert_eq!(
+            bedrock_endpoint_in(&root, Some("ap-south-1")).as_deref(),
+            Some("https://bedrock-runtime.ap-south-1.amazonaws.com"),
+            "an alias, in any case, and the region from .env"
+        );
+        assert_eq!(
+            bedrock_endpoint_in(&root, None).as_deref(),
+            Some("https://bedrock-runtime.us-east-1.amazonaws.com")
+        );
+    }
+
+    #[test]
+    fn a_bedrock_config_that_already_names_its_endpoint_is_not_doubled() {
+        // What `hermes model` writes: the provider, the runtime URL and the
+        // region. `base_urls_in` finds the URL, so nothing is added.
+        let root: serde_yaml::Value = serde_yaml::from_str(
+            "model:\n  provider: bedrock\n  base_url: https://bedrock-runtime.us-west-2.amazonaws.com\n\
+             bedrock:\n  region: us-west-2\n",
+        )
+        .unwrap();
+        assert_eq!(bedrock_endpoint_in(&root, None), None);
+
+        let other: serde_yaml::Value =
+            serde_yaml::from_str("model:\n  provider: openrouter\n").unwrap();
+        assert_eq!(bedrock_endpoint_in(&other, Some("us-east-1")), None);
     }
 
     #[test]

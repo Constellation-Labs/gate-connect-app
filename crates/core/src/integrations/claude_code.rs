@@ -145,6 +145,22 @@ impl Integration for ClaudeCode {
         "CLI"
     }
 
+    /// AG-931: Claude Code can be told to skip Anthropic and call Bedrock or
+    /// Vertex instead, and then its traffic reaches the engine for a host no
+    /// catalog entry claims and is tunnelled through unseen. The route is still
+    /// ours - `HTTPS_PROXY` is honoured either way - so the row is routed, and
+    /// Protected would be false about the inspection half.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        let catalog = crate::proxy::config::load_domains()
+            .unwrap_or_else(|_| crate::proxy::default_domains());
+        let urls = cloud_endpoints(&effective_env());
+        if urls.is_empty() {
+            return None;
+        }
+        let coverage = super::hermes::coverage_of(&catalog, &urls);
+        (!coverage.is_covered()).then_some(coverage)
+    }
+
     fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
         #[cfg(windows)]
         const NAMES: &[&str] = &["claude.exe", "claude.cmd", "claude.bat", "claude"];
@@ -598,6 +614,73 @@ fn override_in(
     None
 }
 
+/// The `env` block Claude Code will run with, as far as it can be read from
+/// here: `~/.claude/settings.json`, overlaid by the enterprise managed settings
+/// that outrank it. The project layers and the shell sit in between and are
+/// not visible, for the reason [`managed_settings_override`] gives, so a
+/// provider selected there reads as Anthropic.
+fn effective_env() -> Map<String, Value> {
+    let mut merged = Map::new();
+    let user = load_settings().ok().flatten();
+    let managed = super::json_config::load_object(&env::claude_code_managed_settings_path())
+        .ok()
+        .flatten();
+    for layer in [user, managed].into_iter().flatten() {
+        if let Some(block) = layer.get("env").and_then(Value::as_object) {
+            merged.extend(block.clone());
+        }
+    }
+    merged
+}
+
+/// The cloud endpoint an `env` block sends Claude Code to instead of
+/// Anthropic, or nothing when it selects none.
+///
+/// Bedrock and Vertex are chosen by a flag rather than a URL, so the host is
+/// rebuilt the way Claude Code builds it: the explicit base URL when one is
+/// set, otherwise the regional runtime host. A missing region falls back to
+/// the provider's default, which may not be the one the shell supplies; the
+/// finding does not depend on it, since no region's host is in the catalog.
+fn cloud_endpoints(env_block: &Map<String, Value>) -> Vec<String> {
+    let var = |key: &str| {
+        env_block
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    let flag = |key: &str| {
+        var(key).is_some_and(|v| {
+            !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+    };
+    let mut urls = Vec::new();
+    if flag("CLAUDE_CODE_USE_BEDROCK") {
+        urls.push(var("ANTHROPIC_BEDROCK_BASE_URL").map_or_else(
+            || {
+                let region = var("AWS_REGION").unwrap_or("us-east-1");
+                format!("https://bedrock-runtime.{region}.amazonaws.com")
+            },
+            str::to_string,
+        ));
+    }
+    if flag("CLAUDE_CODE_USE_VERTEX") {
+        urls.push(var("ANTHROPIC_VERTEX_BASE_URL").map_or_else(
+            || match var("CLOUD_ML_REGION") {
+                Some(region) if !region.eq_ignore_ascii_case("global") => {
+                    format!("https://{region}-aiplatform.googleapis.com")
+                }
+                _ => "https://aiplatform.googleapis.com".to_string(),
+            },
+            str::to_string,
+        ));
+    }
+    urls
+}
+
 fn load_settings() -> Result<Option<Map<String, Value>>> {
     super::json_config::load_object(&settings_path()?)
 }
@@ -774,5 +857,80 @@ mod proxy_health_tests {
             proxy_health_drift(addr, crate::proxy::AddressHealth::Dead).expect("dead drifts");
         assert!(dead.contains("nothing is listening"), "unexpected: {dead}");
         assert!(dead.contains(addr), "must name the address: {dead}");
+    }
+}
+
+#[cfg(test)]
+mod cloud_endpoint_tests {
+    use super::*;
+
+    fn env_of(pairs: &[(&str, &str)]) -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            .collect()
+    }
+
+    /// AG-931: the flag, not a URL, is what sends Claude Code to Bedrock, so
+    /// the host has to be rebuilt from the region.
+    #[test]
+    fn a_bedrock_flag_names_the_regional_runtime_host() {
+        let urls = cloud_endpoints(&env_of(&[
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_REGION", "eu-central-1"),
+        ]));
+        assert_eq!(
+            urls,
+            vec!["https://bedrock-runtime.eu-central-1.amazonaws.com"]
+        );
+
+        let coverage =
+            crate::integrations::hermes::coverage_of(&crate::proxy::default_domains(), &urls);
+        assert_eq!(
+            coverage.unknown,
+            vec!["bedrock-runtime.eu-central-1.amazonaws.com"]
+        );
+        assert!(!coverage.is_covered());
+    }
+
+    #[test]
+    fn an_explicit_cloud_base_url_wins_over_the_region() {
+        let urls = cloud_endpoints(&env_of(&[
+            ("CLAUDE_CODE_USE_BEDROCK", "true"),
+            ("AWS_REGION", "eu-central-1"),
+            (
+                "ANTHROPIC_BEDROCK_BASE_URL",
+                "https://bedrock.corp.example/v1",
+            ),
+            ("CLAUDE_CODE_USE_VERTEX", "1"),
+            ("CLOUD_ML_REGION", "us-east5"),
+        ]));
+        assert_eq!(
+            urls,
+            vec![
+                "https://bedrock.corp.example/v1",
+                "https://us-east5-aiplatform.googleapis.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_flag_set_to_off_selects_no_cloud_provider() {
+        // Claude Code reads these as booleans, and a settings file that turned
+        // Bedrock off by writing "0" must not be reported as calling it.
+        for off in ["0", "false", "FALSE", "", "  "] {
+            assert!(
+                cloud_endpoints(&env_of(&[("CLAUDE_CODE_USE_BEDROCK", off)])).is_empty(),
+                "{off:?} selects nothing"
+            );
+        }
+        assert!(cloud_endpoints(&Map::new()).is_empty());
+        assert_eq!(
+            cloud_endpoints(&env_of(&[
+                ("CLAUDE_CODE_USE_VERTEX", "1"),
+                ("CLOUD_ML_REGION", "global")
+            ])),
+            vec!["https://aiplatform.googleapis.com"]
+        );
     }
 }
