@@ -9,6 +9,10 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 dirs.workspace = true
+# Decodes the CA cert PEM to DER. Windows already used it for the trust
+# thumbprint; every platform needs it now to check the CA private key against
+# the CA certificate (`proxy::ca::key_matches_cert`).
+pem = "3.0"
 # Shared with the standalone forwarder binary so the two cannot disagree about
 # where the port files live or what the health contract is.
 gate-connect-paths = { path = "../paths" }
@@ -66,14 +70,14 @@ socket2 = "0.6"
 # `winreg` backs the Windows proxy's system-proxy wiring, which reads and
 # writes the per-user WinINET `Internet Settings` registry values.
 #
-# `sha1` + `pem` compute the CA cert's SHA-1 thumbprint in-process (decode the
-# PEM to DER, then digest) so the trust check feeds `certutil -store Root` a
-# known-good fingerprint instead of scraping certutil's locale-/encoding-
-# dependent text output.
+# `sha1` computes the CA cert's SHA-1 thumbprint in-process (decode the PEM to
+# DER, then digest) so the trust check feeds `certutil -store Root` a known-good
+# fingerprint instead of scraping certutil's locale-/encoding-dependent text
+# output. `pem` did the decoding half and is no longer Windows-only - every
+# platform needs it to check the CA key against the CA cert (`ca::key_matches_cert`).
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
 sha1 = "0.10"
-pem = "3.0"
 
 # Test-only. The proxy end-to-end tests (`tests/proxy_e2e.rs`,
 # `tests/relay_e2e.rs`) mint a throwaway CA with `rcgen`, run a tiny loopback

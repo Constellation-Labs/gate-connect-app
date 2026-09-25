@@ -25,11 +25,12 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-/// Where the synthesized bundle lives - beside the CA it is built from.
+/// Where the synthesized bundle lives - beside the CA it is built from, which
+/// is what `ca_material_dir` resolves and why this does not spell the path out
+/// a second time. A bundle that stayed in the shared directory while the CA
+/// moved would hand every tool a bundle vouching for somebody else's root.
 pub fn path() -> Result<PathBuf> {
-    Ok(crate::env::app_support_dir()?
-        .join("proxy")
-        .join("ca-bundle.pem"))
+    Ok(crate::env::ca_material_dir()?.join("ca-bundle.pem"))
 }
 
 /// Platform trust roots in PEM form, as the base to append our CA to.

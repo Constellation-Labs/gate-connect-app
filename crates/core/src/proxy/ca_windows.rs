@@ -214,7 +214,7 @@ impl Ca {
 }
 
 fn cert_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+    Ok(env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 fn key_service() -> String {

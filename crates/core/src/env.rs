@@ -210,6 +210,48 @@ pub fn app_support_dir() -> Result<PathBuf> {
         .join("Gate Connect"))
 }
 
+/// Where the CA's certificate file lives, which must be wherever its private
+/// key lives.
+///
+/// Normally `app_support_dir()/proxy`, beside every other proxy file. It moves
+/// to a `dev` subdirectory for one case: a build whose **secrets** have been
+/// redirected to files (`GATE_CONNECT_TEST_SECRETS`, which is what
+/// `pnpm app:local` sets) while its **data directory** has not.
+///
+/// That combination is the one that broke a machine on 2026-09-21. The dev
+/// build keeps its CA private key in a file under `~/.gate-connect-dev`; the
+/// release build keeps its in the login keychain; and before this function
+/// both wrote the same `ca-cert.pem`. Whichever ran last left the other holding
+/// a certificate that does not match its key, and that failure is silent in the
+/// worst way - see `proxy::ca::key_matches_cert`, which now catches it. Catching
+/// it only converts a silent breakage into a re-mint, and two installs then take
+/// turns re-minting over each other, breaking every tool that was running each
+/// time. Separating the material is what ends it.
+///
+/// **Scoped on the secrets seam, not on `debug_assertions`.** A debug build with
+/// a real keychain is the same install as the release one as far as this file is
+/// concerned, and moving its certificate would strand the trust already granted
+/// to the shared one.
+///
+/// **And not applied when the home is redirected**, because then there is no
+/// sharing to prevent: `GATE_CONNECT_TEST_HOME` already gives that run its own
+/// `app-support`, so both halves are private and the plain path is correct.
+/// A hermetic test asserting `proxy/ca-cert.pem` keeps asserting it.
+pub fn ca_material_dir() -> Result<PathBuf> {
+    let proxy = app_support_dir()?.join("proxy");
+    if test_home_override().is_none() && file_backed_secrets() {
+        return Ok(proxy.join("dev"));
+    }
+    Ok(proxy)
+}
+
+/// Are this run's secrets files under a redirected directory rather than the OS
+/// secret store? Read through [`test_seam`], so a release build always answers
+/// false however the environment is set.
+fn file_backed_secrets() -> bool {
+    test_seam("GATE_CONNECT_TEST_SECRETS").is_some_and(|v| !v.is_empty())
+}
+
 /// Optional process-global override for [`app_support_dir`], installed only by
 /// tests via [`set_app_support_dir_for_tests`]. `None` in every normal build, so
 /// production always resolves the real per-OS data dir above. It exists because
@@ -372,4 +414,79 @@ pub fn hermes_config_dir() -> Result<PathBuf> {
 /// `~/.hermes/config.yaml` -- Hermes's config file.
 pub fn hermes_config_path() -> Result<PathBuf> {
     Ok(hermes_config_dir()?.join("config.yaml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Set a variable for the body of `f` and put the environment back, whatever
+    /// the body does. `None` removes it, so a developer machine that happens to
+    /// export one of these does not decide the result.
+    fn with_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var_os(name);
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        let out = f();
+        match prev {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        out
+    }
+
+    /// A dev build must not keep its certificate where a release build keeps
+    /// its own, because the two keep their *keys* in different places.
+    ///
+    /// This is the defect of 2026-09-21 in one assertion. `pnpm app:local`
+    /// sets `GATE_CONNECT_TEST_SECRETS` and nothing else, so the dev build had
+    /// its key in a file and its certificate in the shared data directory,
+    /// alongside a release build whose key was in the login keychain. Whoever
+    /// wrote last left the other with a mismatched pair, every intercepted host
+    /// failed its handshake, and every surface still said Protected.
+    #[test]
+    fn file_backed_secrets_move_the_certificate_off_the_shared_path() {
+        let _lock = path_env_lock();
+
+        with_var("GATE_CONNECT_TEST_HOME", None, || {
+            let shared = with_var("GATE_CONNECT_TEST_SECRETS", None, || {
+                ca_material_dir().unwrap()
+            });
+            let dev = with_var(
+                "GATE_CONNECT_TEST_SECRETS",
+                Some("/tmp/gate-dev-secrets"),
+                || ca_material_dir().unwrap(),
+            );
+
+            assert_eq!(shared, app_support_dir().unwrap().join("proxy"));
+            assert_eq!(dev, shared.join("dev"));
+            assert_ne!(shared, dev);
+        });
+    }
+
+    /// ...but only where there is sharing to prevent.
+    ///
+    /// `GATE_CONNECT_TEST_HOME` already gives the run its own `app-support`, so
+    /// both halves are private and the plain path is right. Scoping again would
+    /// move the file under every hermetic test that sets both seams, for no
+    /// gain, and `ca-cert.hosts` and `ca-bundle.pem` derive from this path.
+    #[test]
+    fn a_redirected_home_is_already_private_and_keeps_the_plain_path() {
+        let _lock = path_env_lock();
+
+        with_var("GATE_CONNECT_TEST_HOME", Some("/tmp/gate-hermetic"), || {
+            with_var(
+                "GATE_CONNECT_TEST_SECRETS",
+                Some("/tmp/gate-hermetic/secrets"),
+                || {
+                    assert_eq!(
+                        ca_material_dir().unwrap(),
+                        app_support_dir().unwrap().join("proxy")
+                    );
+                },
+            );
+        });
+    }
 }
