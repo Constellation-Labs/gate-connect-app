@@ -6,7 +6,7 @@ import { providerMarkFor } from "./ProviderMark";
 import { categoryTone } from "../../lib/toolEvents";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
-import { STATUS_TEXT, statusDetail } from "./Sidebar";
+import { STATUS_TEXT, statusSuffix } from "./Sidebar";
 import type { AppStatus } from "./Sidebar";
 
 /**
@@ -92,12 +92,8 @@ export function AppPane({
   name: string;
   isProtected: boolean;
   /**
-   * Observed status, which the header line draws in full.
-   *
-   * This is the pane's half of the split the rail makes: a 250px row cannot fit
-   * "Not protected - Configuration update failed" and truncates the reason
-   * away, so `Sidebar`'s row prints the phrase alone and the reason lands here,
-   * where the header has the width for a sentence.
+   * Observed status, drawn as the rail draws it. The reason behind a
+   * `not-protected` is the caller's to draw as a card in `alert`.
    *
    * Absent falls back to the intent flag below, which is the older, coarser
    * line: "Protected" or "Not protected", with no reason behind it.
@@ -213,8 +209,9 @@ export function AppPane({
    *  exist directly above two cards claiming it could not be read - a fault
    *  report over a permanent, intended shape of the data. */
   unattributed?: boolean;
-  /** Slot for the `AlertBanner` about this app: drift, a check error, or a
-   *  whole-machine cause worded for this app. */
+  /** Slot for the `AlertBanner` about this app: drift, a check error, a
+   *  whole-machine cause worded for this app, or the reason it is not
+   *  protected. */
   alert?: ReactNode;
 }) {
   return (
@@ -344,9 +341,9 @@ export function AppPane({
 }
 
 /**
- * The header's status line: the rail's coloured phrase, and after it the reason
- * the rail had no room for. It wraps rather than truncates - the reason is the
- * only thing on screen telling the user why their tool is not covered.
+ * The header's status line: the rail's coloured phrase and suffix, the same
+ * line the rail draws. A `not-protected` reason is not printed here; the pane
+ * draws it as a card in the `alert` slot.
  */
 function AppStatusLine({
   isProtected,
@@ -362,7 +359,7 @@ function AppStatusLine({
     : isProtected
       ? STATUS_TEXT.protected
       : STATUS_TEXT["not-protected"];
-  const detail = status ? statusDetail(status) : since;
+  const detail = status ? statusSuffix(status) : since;
 
   return (
     // `label/16` (408:25101): `copy/16`'s size, leading and -2% at Medium.

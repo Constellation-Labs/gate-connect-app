@@ -2772,15 +2772,14 @@ that reads "Verifying" on one surface and "Reopen required" on another.
 
 **"Reopen to finish" is on one surface as a card**: `ReopenAlert` on tool
 detail. The tray card went on 2026-09-23 at the user's request, since no tray
-frame (`694:34005`) draws one; the tray row still reads "Reopen to finish". It
+frame (`694:34005`) draws one; the tray row reads "Not protected". It
 was on three before that - a `ReopenBanner` in the shell's banner slot, which
 is how Overview carried it for AC 3 - and that banner is gone. One tool's
 pending reopen drawn in shell chrome appeared over Overview, Settings and every
 other tool's pane; it is the same thing #277 took the drift and check-error
-cards off Overview for, and the rail still reads "Reopen to finish" on each
-affected row - its own amber phrase rather than "Not protected", with the
-program named after the dash on a multi-surface section. So AC 3's Overview
-half is deliberately not met.
+cards off Overview for. The rail reads "Not protected" on each affected row
+(since 2026-09-25; it had its own "Reopen to finish" phrase before), and the
+pane's card names the cause. So AC 3's Overview half is deliberately not met.
 
 **Both keep sweeping, and both say "Close tool".** Two later
 corrections, both from the same root: the reopen is the one reading in this app

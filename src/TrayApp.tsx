@@ -222,9 +222,9 @@ export function TrayApp() {
    * The window shell's effect, for the window shell's reason: a tool picks up
    * its new route when the person opens a terminal, and no event says so -
    * `tool_watch.rs` watches config files and binaries, never the process table.
-   * Both shells draw "Reopen to finish" on the row, so both have to notice, and on the same
-   * cadence: two numbers here is how the tray comes to clear a status the window
-   * is still showing.
+   * Both shells draw a pending reopen on the row (as "Not protected"), so both
+   * have to notice, and on the same cadence: two numbers here is how the tray
+   * comes to clear a status the window is still showing.
    *
    * Armed on the condition rather than always, because the sweep probes the
    * relay and the account's session - and this surface is behind a tray icon

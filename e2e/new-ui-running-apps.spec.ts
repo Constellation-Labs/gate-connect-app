@@ -299,16 +299,18 @@ test.describe("new UI running apps", () => {
     // Positive first, and that ordering is the assertion. `boot` waits only for
     // the first heading while `refreshVerdicts` is still in flight, so a bare
     // count of zero passes against a page that has not heard about the reopen
-    // yet - which would let the banner come back unnoticed. The rail row is
-    // what proves the sweep landed on this screen.
-    await expect(
-      app.page.getByRole("button", { name: "ChatGPT / Codex Reopen to finish" }),
-    ).toBeVisible();
-    // And with the fact on screen, nothing in shell chrome offers the action.
+    // yet - which would let the banner come back unnoticed. The pane's card is
+    // what proves the sweep landed; the rail row reads a bare "Not protected"
+    // both before and after it.
+    await app.openSection("ChatGPT / Codex");
+    const card = reopenCard(app);
+    await expect(card).toBeVisible();
+
+    // And with the fact known, nothing on Overview offers the action.
+    await app.page.getByRole("button", { name: "Overview" }).click();
     await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
 
     await app.openSection("ChatGPT / Codex");
-    const card = reopenCard(app);
     await expect(card).toBeVisible();
 
     await card.getByRole("button", { name: "Close tool" }).click();

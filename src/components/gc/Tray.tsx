@@ -6,7 +6,7 @@ import { Icon } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
 import { OverflowMenu } from "./OverflowMenu";
 import type { MenuAction } from "./OverflowMenu";
-import { countsAsRouted, STATUS_TEXT, statusDetail } from "./Sidebar";
+import { countsAsProtected, STATUS_TEXT, statusSuffix } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
 import { routingState, showsFraction } from "../../lib/routingState";
 
@@ -274,7 +274,7 @@ function RoutingCard({
 }) {
   const all = groups.flatMap((g) => g.apps);
   const apps = all.filter((a) => a.on);
-  const routed = apps.filter((a) => countsAsRouted(a.status)).length;
+  const routed = apps.filter((a) => countsAsProtected(a.status)).length;
   // The same reading the topbar banner takes, from the same module (AG-913).
   // This card used to word it differently - "Partially routed" against the
   // banner's "partly routing your apps" - and to fold "nothing was asked for"
@@ -355,7 +355,7 @@ function TrayGroup({
             {group.label}
           </h2>
           <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
-            {group.apps.filter((a) => countsAsRouted(a.status)).length} of{" "}
+            {group.apps.filter((a) => countsAsProtected(a.status)).length} of{" "}
             {group.apps.length}
           </span>
         </div>
@@ -402,13 +402,13 @@ function TrayGroup({
   );
 }
 
-/** The coloured phrase plus grey qualifier, in the tray's own type. Uses
- * `statusDetail` rather than the rail's suffix: the frames draw the
- * "Not protected" qualifier too ("- 3d ago", 738:37562), and 368px rows have
- * the room the 250px rail does not. */
+/** The coloured phrase plus grey qualifier, in the tray's own type. The rail's
+ * line, without the reason: a `not-protected` reason ("Config drifted", "Partly
+ * protected: 1 of 2") printed after "Not protected -" reads as a second status
+ * contradicting the first, and the window's app pane is where it is read. */
 function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
   const status = STATUS_TEXT[app.status.kind];
-  const suffix = statusDetail(app.status);
+  const suffix = statusSuffix(app.status);
   return (
     <span className="truncate text-base-2xs font-medium leading-4">
       <span className={status.className}>{status.label}</span>

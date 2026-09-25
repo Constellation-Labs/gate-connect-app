@@ -305,7 +305,12 @@ describe("the group rows", () => {
           id: "anthropic",
           label: "Anthropic",
           apps: [
-            { slug: "codex", name: "Codex", status: { kind: "drifted" }, on: true },
+            {
+              slug: "codex",
+              name: "Codex",
+              status: { kind: "not-protected", detail: "Config drifted" },
+              on: true,
+            },
           ],
         },
       ],

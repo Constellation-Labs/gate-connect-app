@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
-import { countsAsRouted } from "../components/gc/Sidebar";
+import { countsAsProtected } from "../components/gc/Sidebar";
 import { NEXT_ACTION_LABEL, verdictStatus, verdictsBySlug } from "./verdict";
 
 // `sectionStatus` is tested in `groups.test.ts`, against a real `buildGroups`
@@ -32,7 +32,7 @@ describe("verdictStatus", () => {
     });
   });
 
-  it("maps a changed configuration onto Config drifted with no repeated suffix", () => {
+  it("maps a changed configuration onto Not protected, with drift as the reason", () => {
     const status = verdictStatus(
       verdict({
         state: "needs_attention",
@@ -40,7 +40,7 @@ describe("verdictStatus", () => {
         next_action: "apply_gate_configuration",
       }),
     );
-    expect(status).toEqual({ kind: "drifted" });
+    expect(status).toEqual({ kind: "not-protected", detail: "Config drifted" });
   });
 
   it.each<[Exclude<VerdictReason, "configuration_changed" | "reopen_required">, string]>([
@@ -55,13 +55,9 @@ describe("verdictStatus", () => {
     });
   });
 
-  /**
-   * The one `needs_attention` reason where nothing has gone wrong: the write
-   * landed and a process has to restart. It used to render as a bare amber
-   * "Not protected" - the rail drops a `not-protected` detail - which is the
-   * off state's own reading printed on a switch the user had just turned on.
-   */
-  it("gives a pending reopen its own phrase rather than an amber negative", () => {
+  /** The write landed and a process has to restart, so the traffic is still on
+   *  the old route: Not protected, with the reopen as the reason. */
+  it("reads a pending reopen as Not protected, with the reopen as the reason", () => {
     expect(
       verdictStatus(
         verdict({
@@ -70,7 +66,7 @@ describe("verdictStatus", () => {
           next_action: "reopen_tool",
         }),
       ),
-    ).toEqual({ kind: "reopen" });
+    ).toEqual({ kind: "not-protected", detail: "Reopen to finish" });
   });
 
   /**
@@ -151,8 +147,8 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
         coverage: coverage({ unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] }),
       }),
     ).toEqual({
-      kind: "not-inspected",
-      detail: "bedrock-runtime.us-east-1.amazonaws.com",
+      kind: "not-protected",
+      detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
     });
   });
 
@@ -165,10 +161,10 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
       verdictStatus(on(), {
         coverage: coverage({ switched_off: [off("openrouter", "openrouter.ai")] }),
       }),
-    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai" });
+    ).toEqual({ kind: "not-protected", detail: "Routed, not inspected: openrouter.ai" });
   });
 
-  it("names one host and counts the rest, because the rail is 250px", () => {
+  it("names every host, because the pane card has the room", () => {
     expect(
       verdictStatus(on(), {
         coverage: coverage({
@@ -176,7 +172,10 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
           unknown: ["api.groq.com", "api.together.xyz"],
         }),
       }),
-    ).toEqual({ kind: "not-inspected", detail: "openrouter.ai +2" });
+    ).toEqual({
+      kind: "not-protected",
+      detail: "Routed, not inspected: openrouter.ai, api.groq.com, api.together.xyz",
+    });
   });
 
   it("stays Protected when coverage is complete, absent, or null", () => {
@@ -200,25 +199,20 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
         verdict({ state: "needs_attention", reason: "configuration_changed" }),
         { coverage: uninspected },
       ),
-    ).toEqual({ kind: "drifted" });
+    ).toEqual({ kind: "not-protected", detail: "Config drifted" });
   });
 
-  it("counts as routed, so the banner and the row cannot contradict", () => {
-    // Raised in review on #328. With Hermes the only app on and pointed at
-    // Bedrock, counting only `protected` gave `routingState(0, 1)` and a
-    // topbar reading "Gate is not routing your apps" over a row reading
-    // "Routed, not inspected". This PR's argument is that it IS routed, so
-    // the banner keeps its meaning and the row carries the nuance.
+  it("counts only Protected as routed, so the banner and the row cannot contradict", () => {
+    // An uninspected provider reads Not protected on the row, so the topbar
+    // must not count it as protected either.
     const status = verdictStatus(on(), {
       coverage: coverage({ unknown: ["bedrock-runtime.us-east-1.amazonaws.com"] }),
     });
-    expect(status.kind).toBe("not-inspected");
-    expect(countsAsRouted(status)).toBe(true);
-    // And the pairing, because four counters read this one predicate.
-    expect(countsAsRouted({ kind: "protected" })).toBe(true);
-    expect(countsAsRouted({ kind: "not-routed", detail: "Off" })).toBe(false);
-    expect(countsAsRouted({ kind: "drifted" })).toBe(false);
-    expect(countsAsRouted({ kind: "reopen" })).toBe(false);
+    expect(countsAsProtected(status)).toBe(false);
+    // And the rest, because four counters read this one predicate.
+    expect(countsAsProtected({ kind: "protected" })).toBe(true);
+    expect(countsAsProtected({ kind: "not-routed", detail: "Off" })).toBe(false);
+    expect(countsAsProtected({ kind: "not-protected", detail: "Config drifted" })).toBe(false);
   });
 
   it("does not outrank a failed write either", () => {

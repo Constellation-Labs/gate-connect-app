@@ -43,7 +43,10 @@ test.describe("new UI routing", () => {
     // because disconnecting restores what was there.
     const app = await boot(driftedCodex);
 
-    await expect(app.page.getByText("Config drifted")).toBeVisible();
+    // The drift card is what proves the sweep landed; the row reads a bare
+    // "Not protected" both before and after it.
+    await app.openSection("ChatGPT / Codex");
+    await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
     const sidebarSwitch = await app.appSwitch("ChatGPT / Codex");
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
 
@@ -277,7 +280,7 @@ test.describe("new UI drift repair", () => {
     await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
   });
 
-  test("a failed write says so in the pane header, not only in a banner", async ({ boot }) => {
+  test("a failed write says so in the pane, not only in a banner", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -289,16 +292,19 @@ test.describe("new UI drift repair", () => {
     // below is a plain click.
     await app.routeApp("ChatGPT / Codex");
 
-    // The rail row keeps the phrase and drops the reason, which does not fit
-    // 250px. The pane header is the surface with room for the sentence, and it
-    // outlives the banner - which is the half of this that still matters.
+    // The rail row and the pane header print the phrase alone. The pane's
+    // status card carries the reason, and it outlives the banner - which is
+    // the half of this that still matters.
     //
     // Opened by the section's name: the row is the app, and Codex is inside it.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+    // The status card, not the action banner, which can say the same words.
+    const note = app.page.getByRole("status").filter({ hasText: /isn’t protected/ });
+    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
+    await expect(note).toContainText("Configuration update failed");
   });
 
-  test("a retry that succeeds clears the failure from the pane header", async ({ boot }) => {
+  test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],

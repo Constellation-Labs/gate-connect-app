@@ -331,11 +331,12 @@ describe("sectionStatus", () => {
       [domain()],
       ON,
     );
-    const apps = new Map([["claude-code", { status: { kind: "drifted" } } as never]]);
-    expect(sectionStatus(claude, apps)?.kind).toBe("drifted");
+    const drifted = { kind: "not-protected", detail: "Config drifted" };
+    const apps = new Map([["claude-code", { status: drifted } as never]]);
+    expect(sectionStatus(claude, apps)).toEqual(drifted);
   });
 
-  it("says partly protected, a state a per-surface ledger never had to describe", () => {
+  it("says partly protected as the reason, a state a per-surface ledger never had to describe", () => {
     const [claude] = buildGroups(
       [tool("claude-code", "CLI", { kind: "connected" })],
       [domain({ enabled: false })],
@@ -343,31 +344,21 @@ describe("sectionStatus", () => {
     );
     const apps = new Map([["claude-code", { status: { kind: "protected" } } as never]]);
     // The count, not the adverb: "partly" does not say how much of the app is
-    // covered, and this line used to render as a bare "Not protected" because
-    // the rail drops a `not-protected` detail.
+    // covered.
     expect(sectionStatus(claude, apps)).toEqual({
-      kind: "partly-protected",
-      detail: "1 of 2",
+      kind: "not-protected",
+      detail: "Partly protected: 1 of 2",
     });
   });
 
   /**
    * The common shape of a group switch: it writes one config and enables the
    * hosts beside it, the hosts route immediately, and the tool waits on a
-   * restart. The honest line names the restart.
+   * restart. The honest line names the restart, and names it as the reason.
    *
-   * **And nothing else.** This asserted `detail: "CLI"` until 2026-09-22, on
-   * the reasoning that the heading is the app and the suffix should say which
-   * program inside it to reopen. `Tool.name` is a surface label, so the rail
-   * drew the row's state and the row's TYPE in one line - "Reopen to finish -
-   * CLI" - which design rejected: "we're mixing CLI and On/Off ... the type
-   * cannot live in the same label."
-   *
-   * The product name is not the fix either. On a one-member section it
-   * repeats the row's own heading, which is why the old code special-cased
-   * those, and on a multi-member one the remedy is the same whichever member
-   * it is: reopen the app this row names. The pane says which program, where
-   * there is room for it.
+   * No program name in it. "Reopen to finish - CLI" drew the row's state and
+   * the row's TYPE in one line, which design rejected on 2026-09-22: "we're
+   * mixing CLI and On/Off ... the type cannot live in the same label."
    */
   it("names the restart and nothing else", () => {
     const [claude] = buildGroups(
@@ -375,13 +366,43 @@ describe("sectionStatus", () => {
       [domain()],
       ON,
     );
-    const apps = new Map([["claude-code", { status: { kind: "reopen" } } as never]]);
-    const status = sectionStatus(claude, apps);
+    const reopen = { kind: "not-protected", detail: "Reopen to finish" };
+    const apps = new Map([["claude-code", { status: reopen } as never]]);
 
-    expect(status).toEqual({ kind: "reopen" });
-    // Named explicitly: a suffix of any kind is what design ruled out, so an
-    // assertion that only checks the kind would let the type back in.
-    expect(status).not.toHaveProperty("detail");
+    expect(sectionStatus(claude, apps)).toEqual(reopen);
+  });
+
+  it("does not call a section protected when its tool's provider is not inspected", () => {
+    // On the base of #360 this read "Protected": `not-inspected` was not an
+    // exception, so a section whose only config member tunnelled past Gate
+    // fell through to the all-routed rule.
+    const [claude] = buildGroups(
+      [tool("claude-code", "CLI", { kind: "connected" })],
+      [domain()],
+      { ...ON, ...sweep("claude-code") },
+    );
+    const uninspected = {
+      kind: "not-protected",
+      detail: "Routed, not inspected: bedrock-runtime.us-east-1.amazonaws.com",
+    };
+    const apps = new Map([["claude-code", { status: uninspected } as never]]);
+    expect(sectionStatus(claude, apps)).toEqual(uninspected);
+  });
+
+  it("reads a switched-on domain the certificate blocks as Not protected, not Not routed", () => {
+    // Switch on, and something is wrong: that is Not protected. It read
+    // "Not routed - Blocked" until 2026-09-25, the off state's phrase on a
+    // switch that is on.
+    const [claude] = buildGroups([], [domain()], { proxyOn: true, caTrusted: false });
+    expect(sectionStatus(claude, new Map())).toEqual({
+      kind: "not-protected",
+      detail: "Blocked",
+    });
+  });
+
+  it("reads a switched-off domain as Not routed - Off", () => {
+    const [claude] = buildGroups([], [domain({ enabled: false })], ON);
+    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed", detail: "Off" });
   });
 
   it("does not read off as off because a session surface is off", () => {
