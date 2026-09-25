@@ -3190,7 +3190,19 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
     // Oldest first: the ones that predate routing are the ones being looked
     // for, and a stable order keeps two reports from the same machine
     // diffable.
-    agents.sort_by_key(|agent| agent.started_at_unix);
+    //
+    // **The tie-break is load-bearing, not tidiness.** `reopen.ts`'s
+    // `reopenTools` keeps the FIRST row per slug, and since the ChatGPT app and
+    // the `codex` it bundles resolve to one slug (AG-947), two rows now compete
+    // to speak for that app. `start_time` is whole seconds and both processes
+    // can land in the same one; the walk itself is a `HashMap` iteration, and
+    // `sort_by_key` is stable, so a tie would hand the row to whichever the map
+    // happened to yield first. When that is the helper the app reports
+    // `can_reopen: false` and the dialog offers no way to reopen it.
+    //
+    // So: relaunchable first among equals, then pid, which is total. Before
+    // the two shared a slug there was no contest and the plain sort was right.
+    agents.sort_by_key(|agent| (agent.started_at_unix, !agent.can_reopen, agent.pid));
     RunningAgentsDto {
         scanned_names: names.iter().map(|n| n.to_string()).collect(),
         agents,
