@@ -916,33 +916,91 @@ impl<O: DesktopOps> DesktopManager<O> {
         self.status()
     }
 
-    /// Untrust the CA. Refuses while the engine is running, since the engine
-    /// mints leaf certs the OS would then reject. This is the explicit way to
-    /// remove the standing trusted root (disable alone leaves it trusted).
+    /// Untrust the CA, stopping routing first if it is running.
+    ///
+    /// The engine mints leaf certs the OS would reject the moment this root
+    /// stops being trusted, so the two cannot overlap - but that is this
+    /// function's problem to sequence, not the user's to pre-arrange. This is
+    /// the explicit way to remove the standing trusted root (disable alone
+    /// leaves it trusted), and it is what Reset runs.
     pub fn untrust_ca(&self) -> Result<ProxyState> {
-        self.prepare_untrust()?;
-        self.ops.ca_untrust()?;
-        self.status()
+        self.untrust_with(|| self.ops.ca_untrust())
     }
 
     /// Remove a machine-wide trust install with no prompt. The counterpart of
-    /// [`trust_ca_system`](Self::trust_ca_system), and refuses while running
-    /// for the same reason [`untrust_ca`](Self::untrust_ca) does.
+    /// [`trust_ca_system`](Self::trust_ca_system), and stops a running engine
+    /// first for the same reason [`untrust_ca`](Self::untrust_ca) does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
-        self.prepare_untrust()?;
-        self.ops.ca_untrust_system()?;
-        self.status()
+        self.untrust_with(|| self.ops.ca_untrust_system())
     }
 
-    fn prepare_untrust(&self) -> Result<()> {
-        if self
+    /// Stop routing, run `untrust`, and make sure nothing is routing on the
+    /// untrusted root when it returns.
+    ///
+    /// Three things this sequencing owns, each a way the user could otherwise be
+    /// left with routing on and every intercepted handshake failing:
+    ///
+    /// - **The stop does not stop the untrust.** If reverting the system proxy
+    ///   fails, the untrust still runs - the user asked for the root gone - and
+    ///   the failure is reported afterwards. It used to abort here, leaving the
+    ///   root trusted after the engine was already down.
+    /// - **An enable that lands in between is undone.** The stop and the
+    ///   untrust are separate steps, and holding the engine lock across a trust
+    ///   store change would stall every status read behind a dialog. So the
+    ///   engine is checked again afterwards and stopped if one came up.
+    /// - **Routing stays off across a restart.** Startup re-enables routing
+    ///   when the stored intent says it was on; left alone, the next launch
+    ///   would turn it back on and ask to trust a new root. Cleared only when
+    ///   this actually stopped routing.
+    fn untrust_with(&self, untrust: impl FnOnce() -> Result<()>) -> Result<ProxyState> {
+        let (was_routing, stopped) = self.prepare_untrust();
+        untrust()?;
+        let raced = self
             .engine
             .lock()
             .expect("proxy engine mutex poisoned")
-            .is_some()
-        {
-            anyhow::bail!("turn the proxy off before untrusting the CA");
+            .is_some();
+        if raced {
+            self.disable_inner(Teardown::Stop)
+                .context("stopping routing that started while the CA was being untrusted")?;
         }
+        if was_routing || raced {
+            if let Err(e) = crate::proxy::intent::set_intent(false) {
+                eprintln!("gate proxy: could not record routing as off after untrusting ({e:#})");
+            }
+        }
+        stopped.context("the CA is untrusted, but reverting the system proxy failed")?;
+        self.status()
+    }
+
+    /// Stop what untrusting would break. Returns whether routing was on, and
+    /// how the stop went - reported by the caller after the untrust, not
+    /// allowed to prevent it.
+    fn prepare_untrust(&self) -> (bool, Result<()>) {
+        // Stops a running engine rather than refusing to proceed.
+        //
+        // It used to bail with "turn the proxy off before untrusting the CA".
+        // The reason was right - the engine mints leaf certs that the OS would
+        // reject the moment the root stopped being trusted, so untrusting
+        // underneath a live engine breaks every connection it is carrying - but
+        // the remedy was a control the user had to find and flip first, on the
+        // one path a user reaches when their certificate is already broken.
+        //
+        // Sequencing it here is not new behaviour so much as honest ownership:
+        // this function already stops a parked engine and retires the
+        // forwarder, because untrusting is the explicit "Gate should let go of
+        // this machine" action. A live engine is the same statement, one step
+        // louder.
+        let was_routing = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .is_some();
+        let stopped = if was_routing {
+            self.disable_inner(Teardown::Stop)
+        } else {
+            Ok(())
+        };
         // Untrusting the CA is the explicit "Gate should let go of this
         // machine" action (it is what Reset runs), so both things Gate leaves
         // bound on this machine go with it.
@@ -959,7 +1017,7 @@ impl<O: DesktopOps> DesktopManager<O> {
         // exactly when the processes holding our exported variables still need
         // it.
         self.ops.stop_env_forwarder();
-        Ok(())
+        (was_routing, stopped)
     }
 
     /// Fail-safe invoked from the engine thread if the engine exits without a
@@ -1337,6 +1395,8 @@ mod tests {
         /// to model a forwarder whose claim changes between two questions.
         relay_front: Option<u16>,
         relay_front_answers: std::collections::VecDeque<Option<u16>>,
+        /// Make `restore` fail, modeling a system-proxy revert that errors.
+        restore_fails: bool,
     }
 
     struct FakeOps(StdMutex<FakeState>);
@@ -1429,6 +1489,9 @@ mod tests {
 
         fn restore(&self, snapshot: &String) -> Result<()> {
             self.record(&format!("restore:{snapshot}"));
+            if self.0.lock().unwrap().restore_fails {
+                anyhow::bail!("restore failed");
+            }
             Ok(())
         }
 
@@ -1748,20 +1811,88 @@ mod tests {
         mgr.disable_quiet().expect("release for the next test");
     }
 
+    /// Untrusting stops a running engine itself instead of refusing.
+    ///
+    /// This asserted the refusal, and the refusal was the defect: its remedy
+    /// was "turn the proxy off", named by an error a user only meets when their
+    /// certificate is already broken. The ordering constraint is real - a live
+    /// engine mints leaves the OS would reject the instant the root is
+    /// untrusted - so it is enforced by doing it, not by asking.
     #[test]
-    fn untrust_is_refused_while_running_and_allowed_after_disable() {
+    fn untrust_stops_a_running_engine_rather_than_refusing() {
         let _home = TestHome::set();
         let mgr = leak(FakeOps::new());
 
         mgr.enable().expect("enable");
+        mgr.untrust_ca()
+            .expect("untrust must not refuse while running");
+
+        assert_eq!(
+            mgr.ops.count("untrust"),
+            1,
+            "the untrust must have happened"
+        );
+        assert!(
+            !mgr.status().expect("status").running,
+            "the engine must be stopped, not left minting leaves against an untrusted root"
+        );
+    }
+
+    /// Untrusting while routing leaves routing off across a restart: startup
+    /// re-enables routing from the stored intent, and would otherwise turn it
+    /// back on and ask to trust a new root.
+    #[test]
+    fn untrust_while_routing_records_routing_as_off() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+        crate::proxy::intent::set_intent(true).unwrap();
+
+        mgr.enable().expect("enable");
+        mgr.untrust_ca().expect("untrust");
+
+        assert!(!crate::proxy::intent::load_intent());
+    }
+
+    /// With nothing routing, untrusting leaves the stored intent alone: it did
+    /// not turn anything off.
+    #[test]
+    fn untrust_with_nothing_routing_leaves_the_intent_alone() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+        crate::proxy::intent::set_intent(true).unwrap();
+
+        mgr.untrust_ca().expect("untrust");
+
+        assert!(crate::proxy::intent::load_intent());
+    }
+
+    /// A revert that fails does not keep the root trusted: the untrust runs,
+    /// and the failure is reported after it.
+    #[test]
+    fn a_failed_revert_still_untrusts_and_says_so() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+        mgr.enable().expect("enable");
+        mgr.ops.0.lock().unwrap().restore_fails = true;
+
         let err = mgr
             .untrust_ca()
-            .expect_err("untrust must refuse while running");
-        assert!(err.to_string().contains("turn the proxy off"));
-        assert_eq!(mgr.ops.count("untrust"), 0);
+            .expect_err("the revert failure is reported");
 
-        mgr.disable().expect("disable");
-        mgr.untrust_ca().expect("untrust after disable");
+        assert_eq!(mgr.ops.count("untrust"), 1, "the untrust must still run");
+        assert!(
+            format!("{err:#}").contains("the CA is untrusted"),
+            "{err:#}"
+        );
+    }
+
+    /// And it is still the ordinary path with nothing running.
+    #[test]
+    fn untrust_works_with_no_engine_running() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+
+        mgr.untrust_ca().expect("untrust with no engine");
         assert_eq!(mgr.ops.count("untrust"), 1);
     }
 

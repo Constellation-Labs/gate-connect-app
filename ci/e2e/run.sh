@@ -60,6 +60,19 @@ rm -rf "$WORK"
 CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
+# Hermes keeps its runtime (Python, venv, the checkout) under HERMES_HOME, which
+# defaults to ~/.hermes. The workflow installed it under the runner's real home,
+# so once HOME moves below, a fresh ~/.hermes has no runtime and Hermes' first
+# run bootstraps one - a new venv and tens of MB of downloads - inside the timed
+# api-key check, with the proxy up. It never sent its request, and the phase
+# failed with nothing captured while the oauth run after it passed. Pointing
+# HERMES_HOME at the real install keeps that out of the test. Gate honours the
+# same variable (`env::hermes_config_dir`), so it writes Hermes' config where
+# Hermes reads it. The runner is throwaway, so its real ~/.hermes may be written.
+if [ "$OS" != "Windows" ] && [ -d "$HOME/.hermes" ]; then
+  export HERMES_HOME="$HOME/.hermes"
+fi
+
 # Redirect home so gate-connect AND the tools agree on a throwaway config root.
 export HOME="$WORK/home"
 mkdir -p "$HOME"
@@ -905,9 +918,12 @@ os_channel_checks() {
         echo "FAIL: no PAC URL set on any active network service"
         FAIL=$((FAIL + 1))
       fi
-      # The CA the engine mints leaf certs under, in the login keychain.
+      # The CA the engine mints leaf certs under, in the login keychain. This
+      # harness runs with file-backed secrets and a real data directory, which is
+      # a dev install's shape, so the root carries the dev name
+      # (`cert_authority::ca_common_name`).
       chk "the Gate CA is in the login keychain" \
-        security find-certificate -c "Gate Connect Local CA"
+        security find-certificate -c "Gate Connect Dev CA"
       ;;
     Linux)
       local dropin
@@ -926,10 +942,11 @@ os_channel_checks() {
       # /usr/local/share/ca-certificates and update-ca-certificates links it
       # into /etc/ssl/certs. The link is the half that means "trusted" - the
       # anchor alone is just a file we dropped.
+      # Named for the dev root: see the macOS arm above.
       chk "the CA anchor is installed" \
-        test -f "/usr/local/share/ca-certificates/Gate Connect Local CA.crt"
+        test -f "/usr/local/share/ca-certificates/Gate Connect Dev CA.crt"
       chk "update-ca-certificates linked it into the system store" \
-        test -e "/etc/ssl/certs/Gate_Connect_Local_CA.pem"
+        test -e "/etc/ssl/certs/Gate_Connect_Dev_CA.pem"
       ;;
     Windows)
       # AutoConfigURL is the whole channel here: `enable_pac` writes it and
@@ -1258,9 +1275,11 @@ run_engine_tools() {
   elif [ -z "$ENGINE_ON" ]; then
     echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
   else
-    mkdir -p "$HOME/.hermes"
+    # HERMES_HOME when set (see where HOME is redirected), as Hermes and Gate read.
+    hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
-      > "$HOME/.hermes/config.yaml"
+      > "$hermes_home/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
     run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini

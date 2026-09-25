@@ -406,6 +406,28 @@ impl ProxyManager {
         }
     }
 
+    /// How many times the daemon's engine has seen the gateway refuse a request
+    /// carrying our OAuth bearer, or `None` when there is no reading: this
+    /// process holds no control connection, or the round trip failed.
+    ///
+    /// `None` is not zero, and the caller must not treat it as "no refusals" -
+    /// it means nobody answered. The GUI polls this because on Linux the engine
+    /// runs in the daemon, so the 401 that means "this session is dead" is
+    /// observed in a different process from the shell that can recover it.
+    ///
+    /// Deliberately does not adopt or reconnect to a daemon the way
+    /// [`Self::status`] does. The only caller is the GUI's own session loop,
+    /// which holds the connection for as long as routing is on; a tick with no
+    /// handle has nothing to recover and should cost nothing.
+    pub fn gate_auth_refusals(&self) -> Option<u64> {
+        self.client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()?
+            .gate_auth_refusals()
+            .ok()
+    }
+
     /// Push a refreshed OAuth access token into the running daemon, if any.
     /// Empty string reverts to the API key. Re-sends the current account/CA
     /// so the live update carries the new token to in-flight routing.
@@ -512,34 +534,58 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Untrust the CA. Refuses while the proxy is on, since the engine mints
-    /// leaf certs the OS would then reject. This is the explicit way to remove
-    /// the standing trusted root (disable alone leaves it trusted).
+    /// Untrust the CA, stopping the engine first, since it mints leaf certs the
+    /// OS would then reject. This is the explicit way to remove the standing
+    /// trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        let was_routing = self.stop_before_untrust()?;
         ca::untrust()?;
+        Self::record_routing_off(was_routing);
         self.status()
     }
 
     /// Remove a machine-wide trust install with no prompt. The counterpart of
-    /// [`ProxyManager::trust_ca_system`], and refuses while running for the same
-    /// reason [`ProxyManager::untrust_ca`] does.
+    /// [`ProxyManager::trust_ca_system`], and stops a running proxy first for the
+    /// same reason [`ProxyManager::untrust_ca`] does.
     pub fn untrust_ca_system(&self) -> Result<ProxyState> {
-        self.refuse_untrust_while_running()?;
+        let was_routing = self.stop_before_untrust()?;
         ca::untrust_system()?;
+        Self::record_routing_off(was_routing);
         self.status()
     }
 
-    fn refuse_untrust_while_running(&self) -> Result<()> {
-        if self
-            .client
-            .lock()
-            .expect("proxy client mutex poisoned")
-            .is_some()
-        {
-            anyhow::bail!("turn the proxy off before untrusting the CA");
+    /// Stops the engine so the untrust can proceed, rather than refusing.
+    /// Returns whether routing was on.
+    ///
+    /// Same change and same reasoning as the desktop manager's
+    /// `prepare_untrust`: untrusting under a live engine breaks every
+    /// connection it carries, which is this function's problem to sequence
+    /// rather than a precondition to put on the user.
+    ///
+    /// **Stops the daemon's engine, not only this process's view of it.** A
+    /// pass-through drop (`disable_quiet`) is not enough here: the daemon keeps
+    /// the engine, and with it the old CA's key in memory, and on the next
+    /// enable it reuses that engine, which would sign under a root that was
+    /// just untrusted and replaced. `shutdown_engine` replaces the daemon, and
+    /// it finds a running one whichever process started it - so a CLI untrust,
+    /// which holds no connection of its own, stops a daemon the app left
+    /// running too. The daemon also refuses to reuse an engine under a
+    /// different CA now (`helper`'s `signs_with` check), as a second guard.
+    fn stop_before_untrust(&self) -> Result<bool> {
+        let was_routing = crate::proxy::engine_likely_running();
+        self.shutdown_engine()?;
+        Ok(was_routing)
+    }
+
+    /// Record routing as off after an untrust that stopped it, so the next
+    /// launch does not re-enable routing from the stored intent and ask to
+    /// trust a new root. Best-effort: the untrust has already happened.
+    fn record_routing_off(was_routing: bool) {
+        if was_routing {
+            if let Err(e) = crate::proxy::intent::set_intent(false) {
+                eprintln!("gate proxy: could not record routing as off after untrusting ({e:#})");
+            }
         }
-        Ok(())
     }
 
     /// Called once at app startup. A leftover snapshot means the proxy was on

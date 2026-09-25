@@ -550,10 +550,30 @@ impl Drop for CfChallengeSolve {
 ///
 /// Not cfg-gated, for the same reason the challenge observer above isn't: the
 /// notify is called from `engine::handle_response`, which compiles on every
-/// desktop OS, and a Linux daemon-hosted engine simply has no observer
-/// registered, so it is a no-op there.
+/// desktop OS. In the Linux helper daemon the observer is the daemon's own
+/// refusal counter, which the GUI polls (`refused_since_last_look`), because the
+/// shell that can recover the session is a different process.
 static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
     std::sync::OnceLock::new();
+
+/// Whether the helper daemon's refusal counter shows a new refusal since the
+/// GUI last read it. The Linux session loop acts on this edge.
+///
+/// The counter only rises within one daemon's life, so a higher reading means
+/// at least one new refusal. The first reading only seeds the baseline: a
+/// daemon can outlive several GUI runs, and launch already probed for a session
+/// that died while the GUI was gone. A reading **below** the baseline means the
+/// daemon restarted and counts from zero again, so everything it reports is
+/// new: comparing it against the old baseline would ignore refusals until the
+/// new daemon had counted past the old one, which at one a minute is how long a
+/// dead session would keep its green dot.
+pub fn refused_since_last_look(baseline: Option<u64>, reading: u64) -> bool {
+    match baseline {
+        None => false,
+        Some(seen) if reading < seen => reading > 0,
+        Some(seen) => reading > seen,
+    }
+}
 
 /// Debounce latch: set by the notify that fired the observer, cleared by
 /// [`gate_auth_check_finished`]. A refused session 401s *every* request from
@@ -1033,9 +1053,7 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
 /// trust bundle instead of using the OS trust store (Node, Python) have to be
 /// pointed at this to accept the engine's minted leaf certs.
 pub fn ca_cert_path() -> Result<std::path::PathBuf> {
-    Ok(crate::env::app_support_dir()?
-        .join("proxy")
-        .join("ca-cert.pem"))
+    Ok(crate::env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 /// The proxy environment variables the system proxy exports for an engine on
@@ -2132,7 +2150,24 @@ pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: 
         && matches!(decide(domains, host, path), Decision::Rewrite { .. })
 }
 
+// The dot-segment rule the relay, the engine and the forwarder all apply. One
+// definition, in `gate-connect-paths`, because it is a security boundary and
+// the forwarder cannot link this crate.
+pub(crate) use gate_connect_paths::has_dot_segment;
+
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    // A path hiding a dot segment is never rewritten: the path classified here
+    // is not the one a server that normalizes would act on, and a rewrite
+    // carries the Gate credential. It passes through to the real upstream under
+    // the tool's own credential instead - where it would go with Gate off - or
+    // tunnels, if no enabled entry owns the host.
+    if has_dot_segment(path) {
+        return if domains.iter().any(|d| d.enabled && d.matches_host(host)) {
+            Decision::Passthrough
+        } else {
+            Decision::Tunnel
+        };
+    }
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
@@ -2611,6 +2646,29 @@ mod tests {
         assert!(should_intercept_host(&d, "API.ANTHROPIC.COM")); // case-insensitive
         assert!(!should_intercept_host(&d, "example.com"));
         assert!(!should_intercept_host(&d, "statsig.anthropic.com"));
+    }
+
+    /// The engine's half of the relay's dot-segment rule: a path the gateway
+    /// might normalize to somewhere else is never rewritten with the Gate
+    /// credential. It still reaches the provider, under the tool's own.
+    #[test]
+    fn a_dot_segment_is_passed_through_never_rewritten() {
+        let d = anthropic();
+        assert!(matches!(
+            decide(&d, "api.anthropic.com", "/v1/messages"),
+            Decision::Rewrite { .. }
+        ));
+        for path in ["/v1/../../admin", "/v1/%2e%2e/admin", "/v1/..\\..\\admin"] {
+            assert_eq!(
+                decide(&d, "api.anthropic.com", path),
+                Decision::Passthrough,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            decide(&d, "unrelated.example", "/v1/../x"),
+            Decision::Tunnel
+        );
     }
 
     #[test]
@@ -3728,5 +3786,30 @@ mod loopback_port_tests {
         assert_eq!(loopback_port_of("http://localhost:47150"), None);
         assert_eq!(loopback_port_of("http://127.0.0.1:not-a-port"), None);
         assert_eq!(loopback_port_of(""), None);
+    }
+}
+
+#[cfg(test)]
+mod refusal_edge_tests {
+    use super::refused_since_last_look;
+
+    #[test]
+    fn the_first_reading_only_seeds() {
+        assert!(!refused_since_last_look(None, 0));
+        assert!(!refused_since_last_look(None, 7));
+    }
+
+    #[test]
+    fn a_rise_is_a_refusal_and_a_repeat_is_not() {
+        assert!(refused_since_last_look(Some(3), 4));
+        assert!(!refused_since_last_look(Some(4), 4));
+    }
+
+    /// A restarted daemon counts from zero, so a reading below the baseline is
+    /// all new - not a quiet period until it passes the old count.
+    #[test]
+    fn a_restarted_daemon_is_read_from_zero() {
+        assert!(!refused_since_last_look(Some(9), 0));
+        assert!(refused_since_last_look(Some(9), 1));
     }
 }

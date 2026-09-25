@@ -13,7 +13,7 @@
 
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -28,6 +28,51 @@ use crate::proxy::engine::{self, EngineConfig, RunningEngine};
 /// `SetPassthrough` / client-disconnect only drop it to pass-through
 /// ([`set_passthrough`]), never stop it, so the ports stay bound.
 type Shared = Arc<Mutex<Option<RunningEngine>>>;
+
+/// Times the engine here has seen the gateway refuse a request carrying our own
+/// OAuth bearer. Reported to the GUI in [`Response::Status`] and never acted on
+/// locally; see that field's docs and [`register_gate_auth_counter`].
+///
+/// A process-wide static rather than daemon-loop state because the engine's
+/// observer hook is itself process-wide, and there is exactly one engine per
+/// daemon.
+static GATE_AUTH_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// Record gateway refusals of our bearer so the GUI can poll for them.
+///
+/// The engine notifies on a 401 whether or not anyone is listening; without a
+/// registered observer that notify is a no-op, which is exactly why Linux got
+/// none of the 401-driven session recovery the other platforms have - the
+/// engine is here in the daemon and the shell that can do something about it is
+/// in another process.
+///
+/// This observer only counts. It does not re-verify, and it must not: deciding
+/// a session is dead takes a probe with our own token against the gateway
+/// (`startup::reverify_session`), which needs the keychain and the OAuth config
+/// the GUI owns. Doing it here would also make the daemon a second writer to
+/// the token store, racing the GUI's refresh loop over a rotating refresh
+/// token.
+///
+/// The guard is taken and dropped immediately: counting is the whole check, so
+/// the engine-side debounce ([`crate::proxy::GateAuthCheck`]) should start its
+/// cooldown right away. That cooldown is what keeps a dead session - which
+/// 401s every request from every routed tool - from bumping this counter once
+/// per failed request; the GUI needs to see only that it moved.
+fn register_gate_auth_counter() {
+    crate::proxy::set_gate_auth_observer(|| {
+        let _release = crate::proxy::GateAuthCheck;
+        count_gate_auth_refusal();
+    });
+}
+
+/// Record one refusal. Split out of the closure above only so it can be tested
+/// without registering an observer: that registration is a process-global
+/// `OnceLock` whose single slot belongs to the debounce test in
+/// [`crate::proxy`], and the debounce is that test's subject, not this one's.
+fn count_gate_auth_refusal() {
+    let seen = GATE_AUTH_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
+    eprintln!("[gate-proxyd] the gateway refused a request carrying our bearer (refusal {seen}); the GUI re-verifies the session on its next poll");
+}
 
 /// Entry point invoked from the desktop binary when launched with
 /// `--proxy-helper`. Builds a tokio runtime and serves the control socket until
@@ -81,6 +126,10 @@ async fn serve() -> Result<()> {
         UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("locking down {}", sock.display()))?;
+
+    // Before the first connection can arm an engine, so no refusal can land
+    // before something is counting it.
+    register_gate_auth_counter();
 
     let engine: Shared = Arc::new(Mutex::new(None));
     // Set by a client that told us its lifetime is not the routing lifetime
@@ -287,6 +336,16 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
             if guard.as_ref().is_some_and(|e| e.is_finished()) {
                 *guard = None;
             }
+            // Nor can one signing under another CA. Everything else below is
+            // updated in place, but the signing authority is built at start,
+            // so an engine that survived an untrust and re-mint would go on
+            // minting leaves under the old root: every intercepted handshake
+            // fails while every status reads Protected. Replace it instead.
+            if guard.as_ref().is_some_and(|e| !e.signs_with(&ca_cert_pem)) {
+                if let Some(stale) = guard.take() {
+                    stale.stop();
+                }
+            }
             match guard.as_ref() {
                 Some(running) => {
                     running.update_api_key(&api_key);
@@ -359,11 +418,16 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                     running: true,
                     port: Some(running.port()),
                     intercepting: running.intercepting(),
+                    gate_auth_refusals: GATE_AUTH_REFUSALS.load(Ordering::Relaxed),
                 },
+                // Reported off the same counter even with no engine: the
+                // refusals happened, and a client that polls just after a drop
+                // to pass-through still needs to hear about the last one.
                 None => Response::Status {
                     running: false,
                     port: None,
                     intercepting: 0,
+                    gate_auth_refusals: GATE_AUTH_REFUSALS.load(Ordering::Relaxed),
                 },
             }
         }
@@ -404,4 +468,107 @@ async fn write_response(w: &mut (impl AsyncWriteExt + Unpin), resp: &Response) -
         .context("writing response")?;
     w.flush().await.context("flushing response")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The counter the GUI polls is monotone, so a poll can act on the edge:
+    /// "it moved" means at least one new refusal since the last look, and a
+    /// tick that fails to read it loses nothing rather than missing the signal.
+    ///
+    /// Deliberately does not go through the registered observer. The debounce
+    /// that keeps a dead session from counting one refusal per failed request
+    /// belongs to `proxy::notify_gate_auth_observer` and is covered where it
+    /// lives; reaching it from here would mean claiming the process-global
+    /// observer slot that test needs.
+    #[test]
+    fn refusals_accumulate_monotonically() {
+        let before = GATE_AUTH_REFUSALS.load(Ordering::Relaxed);
+
+        count_gate_auth_refusal();
+        assert_eq!(
+            GATE_AUTH_REFUSALS.load(Ordering::Relaxed),
+            before + 1,
+            "a refusal must be recorded for the GUI to poll for"
+        );
+
+        count_gate_auth_refusal();
+        assert_eq!(
+            GATE_AUTH_REFUSALS.load(Ordering::Relaxed),
+            before + 2,
+            "the count must rise rather than latch, so the GUI sees a new edge"
+        );
+    }
+
+    fn mint_ca() -> (String, String) {
+        let key = hudsucker::rcgen::KeyPair::generate().expect("key pair");
+        let cert = crate::proxy::cert_authority::ca_certificate_params()
+            .expect("CA params")
+            .self_signed(&key)
+            .expect("self-signed CA");
+        (cert.pem(), key.serialize_pem())
+    }
+
+    fn set_intercept(ca: &(String, String)) -> Request {
+        Request::SetIntercept {
+            gateway_base_url: "https://gateway.example.com".into(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            ca_cert_pem: ca.0.clone(),
+            ca_key_pem: ca.1.clone(),
+            domains: crate::proxy::default_domains(),
+            detached: false,
+            preferred_port: None,
+            preferred_relay_port: None,
+        }
+    }
+
+    /// An engine is reused across enables and updated in place - except for
+    /// its CA, which it cannot change. After an untrust and re-mint the daemon
+    /// must replace it, or it goes on signing under the untrusted root while
+    /// every status reads Protected.
+    #[test]
+    fn an_enable_under_a_new_ca_replaces_the_engine() {
+        let engine: Shared = Arc::new(Mutex::new(None));
+        let detached = AtomicBool::new(false);
+        let first = mint_ca();
+        let second = mint_ca();
+
+        let resp = handle_request(set_intercept(&first), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        assert!(engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .signs_with(&first.0));
+
+        // Same CA: reused, not replaced.
+        let resp = handle_request(set_intercept(&first), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        assert!(engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .signs_with(&first.0));
+
+        let resp = handle_request(set_intercept(&second), &engine, &detached);
+        assert!(matches!(resp, Response::Intercepting { .. }), "{resp:?}");
+        let guard = engine.lock().unwrap();
+        let running = guard.as_ref().expect("an engine is running");
+        assert!(
+            running.signs_with(&second.0),
+            "the engine must sign under the new CA"
+        );
+        assert!(!running.signs_with(&first.0));
+        drop(guard);
+        let stale = engine.lock().unwrap().take();
+        if let Some(e) = stale {
+            e.stop();
+        }
+    }
 }

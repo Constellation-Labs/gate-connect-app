@@ -41,8 +41,11 @@ use crate::keychain;
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the match token
-/// for trust/untrust via `certutil`.
-pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+/// for trust/untrust via `certutil`. A dev run has its own; see
+/// [`cert_authority::ca_common_name`].
+fn ca_common_name() -> &'static str {
+    cert_authority::ca_common_name()
+}
 
 /// `CREATE_NO_WINDOW`: spawn the child without allocating a console, so the
 /// `certutil` calls below don't flash a black terminal window each time the
@@ -214,7 +217,7 @@ impl Ca {
 }
 
 fn cert_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+    Ok(env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 fn key_service() -> String {
@@ -256,7 +259,11 @@ pub fn load_or_create() -> Result<Ca> {
         // platforms — thumbprint, `verify-cert` against the current file, and a
         // content comparison — so it reports false for the new root and the trust
         // step installs it rather than short-circuiting on the old one.
-        if cert_authority::host_fingerprint_is_current(&path) {
+        // And the key has to belong to the certificate: see
+        // `cert_authority::key_matches_cert` for the mismatch this catches.
+        if cert_authority::host_fingerprint_is_current(&path)
+            && cert_authority::key_matches_cert(&key_pem, &cert_pem)
+        {
             return Ok(Ca { cert_pem, key_pem });
         }
     }
@@ -266,7 +273,7 @@ pub fn load_or_create() -> Result<Ca> {
     // every MITM handshake fails against the new CA. Best-effort delete of
     // any previous cert from the per-user root store before persisting.
     let mut stale = certutil();
-    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    stale.args(["-user", "-delstore", "Root", ca_common_name()]);
     let _ = certutil_bounded(stale);
 
     let (cert_pem, key_pem) = generate()?;
@@ -404,7 +411,7 @@ pub fn ensure_trusted() -> Result<()> {
     // per-user store; drop it so we don't stack a duplicate before adding the
     // current cert. Best-effort - a missing cert just makes this a no-op.
     let mut stale = certutil();
-    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    stale.args(["-user", "-delstore", "Root", ca_common_name()]);
     let _ = certutil_bounded(stale);
     let cert = cert_path()?;
     // `output()` rather than `status()`: the dialog is a window certutil raises,
@@ -456,7 +463,7 @@ pub fn untrust() -> Result<()> {
     // and turn a nothing-to-do into a hard failure.
     if per_user_store_has_our_ca() {
         let mut cmd = certutil();
-        cmd.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+        cmd.args(["-user", "-delstore", "Root", ca_common_name()]);
         let finished = certutil_bounded(cmd).context("running certutil -delstore Root")?;
         let status = finished.ok_or_else(|| certutil_timed_out("-delstore Root"))?;
         if !status.success() {
@@ -502,7 +509,7 @@ pub fn ensure_trusted_system() -> Result<()> {
     // per-user store, where it would keep shadowing ours. Best-effort, and
     // non-privileged - this is the user's own store.
     let mut stale = certutil();
-    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    stale.args(["-user", "-delstore", "Root", ca_common_name()]);
     let _ = certutil_bounded(stale);
     let cert = cert_path()?;
     let out = certutil()
@@ -526,7 +533,7 @@ pub fn ensure_trusted_system() -> Result<()> {
 pub fn untrust_system() -> Result<()> {
     if machine_store_has_our_ca() {
         let out = certutil()
-            .args(["-delstore", "Root", CA_COMMON_NAME])
+            .args(["-delstore", "Root", ca_common_name()])
             .output()
             .context("running certutil -delstore Root")?;
         if !out.status.success() {
@@ -541,7 +548,7 @@ pub fn untrust_system() -> Result<()> {
     // the cert file the thumbprint is computed from.
     if per_user_store_has_our_ca() {
         let mut stale = certutil();
-        stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+        stale.args(["-user", "-delstore", "Root", ca_common_name()]);
         let _ = certutil_bounded(stale);
     }
     forget_trust_reading();

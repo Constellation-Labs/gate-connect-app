@@ -111,7 +111,12 @@ fn refuses_anything_outside_the_catalog() {
 #[test]
 fn refuses_a_dot_segment() {
     let t = table(9);
-    for target in ["/anthropic/v1/../../x", "/anthropic/%2e%2e/x"] {
+    for target in [
+        "/anthropic/v1/../../x",
+        "/anthropic/%2e%2e/x",
+        // A provider behind a URL parser would read a backslash as `/`.
+        "/anthropic/v1/..\\..\\x",
+    ] {
         assert_eq!(plan11(target, &[], &t).unwrap_err().status, 400, "{target}");
     }
 }

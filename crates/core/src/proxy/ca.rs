@@ -35,8 +35,11 @@ use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the lookup
-/// key for trust/untrust via `security`.
-pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+/// key for trust/untrust via `security`. A dev run has its own; see
+/// [`cert_authority::ca_common_name`].
+fn ca_common_name() -> &'static str {
+    cert_authority::ca_common_name()
+}
 
 /// The root-owned System keychain. Older builds installed CA trust here
 /// (admin domain) rather than the user login keychain; a stale root left
@@ -62,7 +65,7 @@ impl Ca {
 }
 
 fn cert_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+    Ok(env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 fn key_service() -> String {
@@ -79,7 +82,8 @@ fn generate() -> Result<(String, String)> {
 }
 
 /// Load the CA, generating + persisting one on first use. The pair is kept
-/// in sync: if either half is missing we regenerate both.
+/// in sync: if either half is missing, or the key does not belong to the
+/// certificate ([`cert_authority::key_matches_cert`]), we regenerate both.
 pub fn load_or_create() -> Result<Ca> {
     let user = env::current_user()?;
     let service = key_service();
@@ -104,7 +108,9 @@ pub fn load_or_create() -> Result<Ca> {
         // platforms — thumbprint, `verify-cert` against the current file, and a
         // content comparison — so it reports false for the new root and the trust
         // step installs it rather than short-circuiting on the old one.
-        if cert_authority::host_fingerprint_is_current(&path) {
+        if cert_authority::host_fingerprint_is_current(&path)
+            && cert_authority::key_matches_cert(&key_pem, &cert_pem)
+        {
             return Ok(Ca { cert_pem, key_pem });
         }
     }
@@ -115,7 +121,7 @@ pub fn load_or_create() -> Result<Ca> {
     // any previous cert (and its trust settings, via -t) before persisting
     // the new pair.
     let _ = Command::new("/usr/bin/security")
-        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .args(["delete-certificate", "-c", ca_common_name(), "-t"])
         .arg(login_keychain()?)
         .status();
 
@@ -192,7 +198,7 @@ fn login_keychain() -> Result<PathBuf> {
 /// to remove (e.g. every normal first-time enable).
 fn system_keychain_has_ca() -> Result<bool> {
     let out = Command::new("/usr/bin/security")
-        .args(["find-certificate", "-c", CA_COMMON_NAME])
+        .args(["find-certificate", "-c", ca_common_name()])
         .arg(SYSTEM_KEYCHAIN)
         .output()
         .context("running security find-certificate")?;
@@ -232,7 +238,7 @@ fn remove_login_keychain_ca() {
         return;
     };
     let _ = Command::new("/usr/bin/security")
-        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .args(["delete-certificate", "-c", ca_common_name(), "-t"])
         .arg(keychain)
         .status();
 }
@@ -420,7 +426,7 @@ fn system_trust_install_script(cert: &std::path::Path) -> String {
 fn system_trust_remove_script() -> String {
     format!(
         "/usr/bin/security delete-certificate -c {cn} {kc}",
-        cn = sh_quote(CA_COMMON_NAME),
+        cn = sh_quote(ca_common_name()),
         kc = sh_quote(SYSTEM_KEYCHAIN),
     )
 }
@@ -468,7 +474,7 @@ mod tests {
     fn the_machine_wide_removal_deletes_the_cert_without_touching_trust_settings() {
         let script = system_trust_remove_script();
         assert!(script.contains("delete-certificate"), "{script}");
-        assert!(script.contains(CA_COMMON_NAME), "{script}");
+        assert!(script.contains(ca_common_name()), "{script}");
         assert!(script.contains(SYSTEM_KEYCHAIN), "{script}");
         assert!(!script.contains(" -t"), "{script}");
     }

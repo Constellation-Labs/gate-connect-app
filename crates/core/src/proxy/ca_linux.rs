@@ -44,8 +44,12 @@ use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the basename of
-/// the installed anchor file.
-pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+/// the installed anchor file. A dev run has its own, so its anchor is a
+/// different file from the release install's; see
+/// [`cert_authority::ca_common_name`].
+fn ca_common_name() -> &'static str {
+    cert_authority::ca_common_name()
+}
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
 /// engine (same process) to build the signing authority.
@@ -65,7 +69,7 @@ impl Ca {
 }
 
 fn cert_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+    Ok(env::ca_material_dir()?.join("ca-cert.pem"))
 }
 
 fn key_service() -> String {
@@ -86,7 +90,7 @@ struct TrustStore {
 /// family (and Arch) ship `update-ca-certificates`; RHEL-family and openSUSE
 /// ship `update-ca-trust`.
 fn trust_store() -> Result<TrustStore> {
-    let anchor_file = format!("{CA_COMMON_NAME}.crt");
+    let anchor_file = format!("{}.crt", ca_common_name());
     if PathBuf::from("/usr/sbin/update-ca-certificates").exists()
         || PathBuf::from("/usr/bin/update-ca-certificates").exists()
     {
@@ -153,7 +157,11 @@ pub fn load_or_create() -> Result<Ca> {
         // platforms — thumbprint, `verify-cert` against the current file, and a
         // content comparison — so it reports false for the new root and the trust
         // step installs it rather than short-circuiting on the old one.
-        if cert_authority::host_fingerprint_is_current(&path) {
+        // And the key has to belong to the certificate: see
+        // `cert_authority::key_matches_cert` for the mismatch this catches.
+        if cert_authority::host_fingerprint_is_current(&path)
+            && cert_authority::key_matches_cert(&key_pem, &cert_pem)
+        {
             return Ok(Ca { cert_pem, key_pem });
         }
     }
@@ -423,7 +431,7 @@ fn certutil(db: &Path, args: &[&str]) -> std::result::Result<(), CertutilFailure
 /// such entry - and also when there is no `certutil` to ask with, which callers
 /// that care about the difference have to read from [`certutil_output`] instead.
 fn nss_entry_pem(db: &Path) -> Option<String> {
-    certutil_output(db, &["-L", "-n", CA_COMMON_NAME, "-a"]).ok()
+    certutil_output(db, &["-L", "-n", ca_common_name(), "-a"]).ok()
 }
 
 /// Whether `db` already holds exactly the certificate in `pem` under our
@@ -503,10 +511,10 @@ fn ensure_trusted_nss() {
         // than replacing, so a regenerated CA would leave the stale root sitting
         // in the database beside the new one, and the browser would keep
         // offering both. A missing entry fails here, harmlessly.
-        let dropped = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]).is_ok();
+        let dropped = certutil(&dir, &["-D", "-n", ca_common_name()]).is_ok();
         // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME and no
         // object-signing trust. The same flags mkcert uses for the same job.
-        let args = ["-A", "-t", "C,,", "-n", CA_COMMON_NAME, "-i", &cert_arg];
+        let args = ["-A", "-t", "C,,", "-n", ca_common_name(), "-i", &cert_arg];
         if let Err(e) = certutil(&dir, &args) {
             // Say so when the delete landed and the add did not: that leaves the
             // store worse than we found it, and a browser that stopped working
@@ -541,9 +549,9 @@ fn ensure_trusted_nss() {
 /// nor remove and anything the install put there is still there.
 fn untrust_nss() {
     for dir in nss_db_dirs() {
-        match certutil_output(&dir, &["-L", "-n", CA_COMMON_NAME, "-a"]) {
+        match certutil_output(&dir, &["-L", "-n", ca_common_name(), "-a"]) {
             Ok(_) => {
-                if let Err(e) = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]) {
+                if let Err(e) = certutil(&dir, &["-D", "-n", ca_common_name()]) {
                     eprintln!(
                         "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
                          Chromium-based browsers still trust it",
