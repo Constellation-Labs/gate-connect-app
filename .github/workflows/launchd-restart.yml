@@ -22,12 +22,14 @@ on:
     paths:
       - "crates/core/src/crash_restart.rs"
       - "crates/core/tests/launchd_restart.rs"
+      - "crates/core/tests/launchd_plist_removed.rs"
       - ".github/workflows/launchd-restart.yml"
   push:
     branches: [main]
     paths:
       - "crates/core/src/crash_restart.rs"
       - "crates/core/tests/launchd_restart.rs"
+      - "crates/core/tests/launchd_plist_removed.rs"
       - ".github/workflows/launchd-restart.yml"
   workflow_dispatch:
 
@@ -61,3 +63,6 @@ jobs:
 
       - name: Crash restarts, clean exit and kill do not
         run: cargo test -p gate-connect-core --test launchd_restart -- --ignored --nocapture
+
+      - name: A loaded socket agent survives its plist being deleted
+        run: cargo test -p gate-connect-core --test launchd_plist_removed -- --ignored --nocapture
