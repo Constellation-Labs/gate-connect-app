@@ -364,7 +364,9 @@ mod launch_agent {
     const RELAY_SOCKET_NAME: &str = "Relay";
 
     fn plist_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("resolving the home directory")?;
+        // Through the test seam, so the tests below never touch the real
+        // `~/Library/LaunchAgents`; `$HOME` otherwise, as before.
+        let home = crate::env::home().context("resolving the home directory")?;
         Ok(home
             .join("Library")
             .join("LaunchAgents")
@@ -394,22 +396,23 @@ mod launch_agent {
 
     /// The relay port to hand launchd, if it can have one.
     ///
-    /// The persisted one, when nothing else is live on it - or when the agent
-    /// already on disk declares it, because then the listener on it is this
-    /// agent's own and leaving it out would rewrite the plist and bounce the
-    /// agent on every ensure. A port something else holds is left out: launchd
-    /// cannot bind it, and the forwarder retries for it on its own once it is
-    /// free. On a first run there is none, so one is chosen the way
-    /// [`choose_port`] chooses and persisted here, as the forwarder's own port
-    /// is.
-    fn choose_relay_port(forwarder_port: u16) -> Result<Option<u16>> {
-        let path = plist_path()?;
+    /// The persisted one, when nothing else is live on it - or when the
+    /// listener on it is this agent's own, because leaving it out would then
+    /// rewrite the plist and bounce the agent on every ensure. Ours means the
+    /// agent on disk declares it, or `fronting` names it: the forwarder has
+    /// said it holds that port, which is how a plist written without it gets
+    /// it back ([`needs_relay_socket`]). A port something else holds is left
+    /// out: launchd cannot bind it, and the forwarder retries for it on its
+    /// own once it is free. On a first run there is none, so one is chosen the
+    /// way [`choose_port`] chooses and persisted here, as the forwarder's own
+    /// port is.
+    pub(super) fn choose_relay_port(
+        forwarder_port: u16,
+        fronting: Option<u16>,
+    ) -> Result<Option<u16>> {
         match super::super::relay::load_persisted_port() {
             Some(port) => {
-                let ours = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|old| declared_relay_port(&old))
-                    == Some(port);
+                let ours = declared_on_disk() == Some(port) || fronting == Some(port);
                 Ok((ours || !gate_connect_paths::port_is_live(port)).then_some(port))
             }
             None => {
@@ -425,6 +428,34 @@ mod launch_agent {
                 Ok(Some(port))
             }
         }
+    }
+
+    /// The relay port the agent on disk declares, if there is one.
+    fn declared_on_disk() -> Option<u16> {
+        let path = plist_path().ok()?;
+        declared_relay_port(&std::fs::read_to_string(path).ok()?)
+    }
+
+    /// Whether an installed agent should be rewritten to hold `held`, the
+    /// relay port its forwarder has just said it holds.
+    ///
+    /// The agent leaves the relay socket out when something else is live on
+    /// the port at install time - normally this app's own engine, on a session
+    /// that started before the forwarder did. The forwarder then binds the
+    /// port itself once the engine lets go, and fronts it from then on, but
+    /// only for as long as that process lives: after a logout launchd holds
+    /// the forwarder's own socket and not this one, so relay tools find
+    /// nothing on the port until something wakes the forwarder or Gate starts.
+    /// Rewriting the plist once the port is the forwarder's is what closes
+    /// that. Only for an agent that exists (a forwarder spawned directly after
+    /// the agent failed has no plist to fix), only for the port configs name,
+    /// and at most once per process, because the rewrite bounces the agent.
+    pub(super) fn needs_relay_socket(held: u16) -> bool {
+        static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let wanted = plist_path().is_ok_and(|p| p.exists())
+            && super::super::relay::load_persisted_port() == Some(held)
+            && declared_on_disk() != Some(held);
+        wanted && !ASKED.swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The port an agent plist of ours declares for its relay socket, read
@@ -504,10 +535,12 @@ mod launch_agent {
     }
 
     /// Install (or refresh) the agent and return the port launchd is holding.
-    pub(super) fn install() -> Result<u16> {
+    /// `fronting` is a relay port the running forwarder holds; see
+    /// [`choose_relay_port`].
+    pub(super) fn install(fronting: Option<u16>) -> Result<u16> {
         let binary = forwarder_binary()?;
         let port = choose_port()?;
-        let relay_port = choose_relay_port(port)?;
+        let relay_port = choose_relay_port(port, fronting)?;
         let path = plist_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -614,6 +647,23 @@ fn ensure_running_locked() -> Result<u16> {
                 crate::primitives::write_file(&marker, b"", 0o600)
                     .with_context(|| format!("writing {}", marker.display()))?;
             }
+            #[cfg(target_os = "macos")]
+            Some(RelayClaim::Holds(held)) if launch_agent::needs_relay_socket(held) => {
+                match launch_agent::install(Some(held)) {
+                    Ok(port) if await_health(port, &token) => return Ok(port),
+                    Ok(_) => {
+                        eprintln!(
+                            "gate proxy: the forwarder launch agent did not answer after adding \
+                             the relay socket; removing it and starting the forwarder directly"
+                        );
+                        launch_agent::remove();
+                    }
+                    Err(e) => eprintln!(
+                        "gate proxy: could not add the relay socket to the forwarder launch \
+                         agent ({e:#})"
+                    ),
+                }
+            }
             Some(_) => return Ok(port),
             None => {}
         }
@@ -643,7 +693,7 @@ fn ensure_running_locked() -> Result<u16> {
     // platforms do anyway.
     #[cfg(target_os = "macos")]
     {
-        match launch_agent::install() {
+        match launch_agent::install(None) {
             Ok(port) => {
                 if await_health(port, &token) {
                     return Ok(port);
@@ -889,6 +939,48 @@ mod tests {
         assert_eq!(launch_agent::declared_relay_port(&body), None);
     }
 
+    /// An agent written while something else held the relay port leaves the
+    /// socket out. Once its own forwarder holds that port, the next ensure
+    /// puts it back - once - and the port counts as the agent's own rather
+    /// than as somebody else's live listener.
+    #[cfg(unix)]
+    #[test]
+    fn a_relay_socket_left_out_is_added_once_the_forwarder_holds_it() {
+        let home = TestHome::set("relay-socket");
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let relay = held.local_addr().unwrap().port();
+        super::super::relay::save_persisted_port(relay).unwrap();
+
+        assert!(
+            !launch_agent::needs_relay_socket(relay),
+            "no agent installed, nothing to fix"
+        );
+        let agents = home.dir.join("Library").join("LaunchAgents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let plist = agents.join("ai.constellation.gate-connect.forwarder.plist");
+        std::fs::write(
+            &plist,
+            launch_agent::plist(std::path::Path::new("/bin/fwd"), 47101, None),
+        )
+        .unwrap();
+
+        assert_eq!(launch_agent::choose_relay_port(47101, None).unwrap(), None);
+        assert_eq!(
+            launch_agent::choose_relay_port(47101, Some(relay)).unwrap(),
+            Some(relay)
+        );
+        assert!(
+            !launch_agent::needs_relay_socket(relay + 1),
+            "only the port configs name"
+        );
+        assert!(launch_agent::needs_relay_socket(relay));
+        assert!(
+            !launch_agent::needs_relay_socket(relay),
+            "at most once per process: the rewrite bounces the agent"
+        );
+        drop(held);
+    }
+
     /// Fronted means holding the port relay configs name - not merely holding
     /// some relay port.
     #[test]
@@ -903,6 +995,28 @@ mod tests {
 
         super::super::relay::save_persisted_port(47102).unwrap();
         assert_eq!(fronted_relay_port(Duration::ZERO), None);
+    }
+
+    /// What a quit reads with a live forwarder holding the relay port: a
+    /// relay config survives an ordinary quit, and dies on an exit the
+    /// forwarder does not outlive either.
+    #[test]
+    fn a_fronted_relay_survives_a_quit_but_not_the_forwarder() {
+        let _home = TestHome::set("quit-fronted");
+        let token = load_or_create_token().unwrap();
+        let port = fake_forwarder(token.clone(), Build::Current(Some("47101")));
+        super::super::port_persist::save("forwarder-port", port).unwrap();
+        super::super::relay::save_persisted_port(47101).unwrap();
+        let config = "http://127.0.0.1:47101/__gate/t/codex/openai/v1";
+
+        assert!(!crate::proxy::QuitAddresses::current().dies(config));
+        assert!(crate::proxy::QuitAddresses::relay_unfronted().dies(config));
+
+        // With the forwarder holding some other port, an ordinary quit
+        // reverts too, as it did before the forwarder fronted anything.
+        super::super::relay::save_persisted_port(47102).unwrap();
+        assert!(crate::proxy::QuitAddresses::current()
+            .dies("http://127.0.0.1:47102/__gate/t/codex/openai/v1"));
     }
 
     /// A stale forwarder is never "fronting", however long the caller waits.

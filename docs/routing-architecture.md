@@ -182,10 +182,35 @@ What follows from it:
 
 - **A plain exit no longer rewrites a relay config.** `QuitAddresses` records a
  fronted relay origin as absent, so `revert_stranded_configs_for_quit` and the
- quit dialog skip it. It is read once per sweep, so the dialog and the revert
- cannot disagree about one tool. Codex and OpenCode go direct while Gate is
- closed and route again on the next start without being touched, and a crash
- leaves them working too.
+ quit dialog skip it. It is read once per sweep, so one sweep cannot disagree
+ with itself about a tool; the dialog and the revert are two sweeps, and a
+ forwarder that takes or loses the port between them makes them differ in the
+ safe direction (`proxy::QuitAddresses` says how). Codex and OpenCode go
+ direct while Gate is closed and route again on the next start without being
+ touched, and a crash leaves them working too.
+- **Except on Windows when the forwarder goes too.** It is a plain detached
+ process there, and nothing but Gate starts it again. So at the end of the
+ login session (`proxy::session_ending`, Windows' `SM_SHUTTINGDOWN`) the exit
+ handler reverts relay configs whether the forwarder holds the port or not
+ (`provider::revert_stranded_configs_relay_unfronted`), and the startup
+ restore reconnects them; otherwise a tool that started before Gate after the
+ next login would find nothing on the relay port. The uninstaller does the
+ same through the app binary (`--revert-relay-configs`, from
+ `installer-hooks.nsh`) before it kills the forwarder, and skips it on an
+ update. macOS needs neither: launchd holds the relay port from login. A drag
+ to the Trash runs no code of ours and can leave the launch agent naming a
+ binary that is gone; that is not addressed here.
+- **A clean exit forgets `relay-engine-port`.** The forwarder dials that port
+ on every relay connection, and left behind it costs each one the full
+ connect timeout on Windows, or a 502 per request if something unrelated binds
+ the port while Gate is closed. A crash still leaves it.
+- **The launch agent gains the relay socket late if it has to.** It leaves the
+ socket out when something else is live on the port at install time, normally
+ this app's own engine from a session that predates the forwarder. The
+ forwarder then binds the port itself and fronts it, but only for as long as
+ it runs; after a logout launchd would not hold that port. So once the
+ forwarder says it holds the port configs name, the next ensure rewrites the
+ plist to include it, once per process, since the rewrite bounces the agent.
 - **Pay-as-you-go requests get an error, not a direct request.** An account
  billed through Gate pay-as-you-go has its tools send no provider credential
  of their own, so going direct would only earn a 401 from the provider. The
@@ -235,7 +260,9 @@ What follows from it:
  behaviour, quit rewrite included. Linux is untouched: its engine is a daemon
  and the forwarder does not run there.
 - **The headless `proxy relay`** binds behind the forwarder too when one holds
- the port, rather than failing to bind it.
+ the port, rather than failing to bind it. Behind it, a saved engine port that
+ something else took is replaced by a fresh one, since nothing but the
+ forwarder names it.
 
 ### The routing toggle keeps tool configs; disconnect reverts them
 
@@ -556,7 +583,7 @@ first table.
 | **Start** (after a plain quit) | Ensures the forwarder first (including when the machine-wide export is declined, since tool configs may name it), then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it - and behind the forwarder the quit put back no relay config. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin where the forwarder does not hold the relay port, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, a relay config the forwarder fronts, or one the user repointed by hand, is untouched. The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
+| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin where the forwarder does not hold the relay port, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, a relay config the forwarder fronts, or one the user repointed by hand, is untouched. On Windows at the end of the login session, relay configs are reverted even where the forwarder holds the port, because it goes with the session (`provider::revert_stranded_configs_relay_unfronted`). The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
 | **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
 
 **What the user does:**

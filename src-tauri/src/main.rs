@@ -14,5 +14,22 @@ fn main() {
         return;
     }
 
+    // Windows uninstall: the NSIS hook runs this before it kills the
+    // forwarder, so relay tools are put back on their own settings while a
+    // Gate is still here to do it. Nothing after the uninstall would repair a
+    // config naming a relay port that nothing serves. See
+    // `src-tauri/installer-hooks.nsh`.
+    #[cfg(target_os = "windows")]
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--revert-relay-configs")
+    {
+        if let Err(e) = gate_connect_core::provider::revert_stranded_configs_relay_unfronted() {
+            eprintln!("putting relay tools back on their own settings failed: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     gate_connect_desktop_lib::run()
 }

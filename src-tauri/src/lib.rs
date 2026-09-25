@@ -1868,7 +1868,9 @@ fn request_quit(app: &tauri::AppHandle) {
 /// chooses. `tools` still route through Gate; `reverting` is the subset whose
 /// configuration names an address that dies with this process and will be put
 /// back on its own settings on the way out - the same predicate `quit_app`
-/// applies, so the dialog names exactly what gets rewritten.
+/// applies, so the dialog names what gets rewritten (up to a forwarder that
+/// takes or loses the relay port in between; `proxy::QuitAddresses` says why
+/// that fails safe).
 #[derive(Clone, serde::Serialize)]
 struct PendingQuit {
     tools: Vec<String>,
@@ -2934,8 +2936,22 @@ pub fn run() {
                 // runs before the exit; by the time this runs the process is
                 // going away and a notification would be a promise we cannot
                 // keep.
+                //
+                // At the end of the login session on Windows the relay is put
+                // back even where the forwarder holds it: the forwarder goes
+                // with the session and nothing but Gate starts it again, so a
+                // tool that starts before Gate after the next login would find
+                // nothing on the relay port. The startup restore reconnects
+                // them, as it does after any revert. `session_ending` is
+                // always false on macOS, where launchd holds the port from
+                // login.
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
-                    match gate_connect_core::provider::revert_stranded_configs_for_quit() {
+                    let revert = if gate_connect_core::proxy::session_ending() {
+                        gate_connect_core::provider::revert_stranded_configs_relay_unfronted
+                    } else {
+                        gate_connect_core::provider::revert_stranded_configs_for_quit
+                    };
+                    match revert() {
                         Ok(names) if !names.is_empty() => eprintln!(
                             "[gate] put {} back on their own settings on exit",
                             join_names(&names)
@@ -2956,6 +2972,9 @@ pub fn run() {
                 if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
+                // The engine's relay goes with this process, parked or not, so
+                // the forwarder should stop asking its port whether it is up.
+                gate_connect_core::proxy::forget_engine_relay_port();
                 // The login item is now a standalone "Launch at login" setting,
                 // decoupled from routing. A deferred opt-out (toggled off while
                 // routing was on) completes here: disable_quiet() above has

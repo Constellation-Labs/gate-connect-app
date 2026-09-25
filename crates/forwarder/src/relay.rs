@@ -91,7 +91,10 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// refused rather than sent around Gate.
 const ENGINE_PROOF_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long to wait for the provider to accept a connection.
+/// How long to wait for the provider to accept a connection, and then as long
+/// again for its TLS handshake. Two budgets, not one: a middlebox that accepts
+/// the TCP connection and never answers the ClientHello (a captive portal, a
+/// DPI box) would otherwise hold the task, and its connection slot, forever.
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a request body may take to arrive in full. Request bodies here are
@@ -116,6 +119,26 @@ const MAX_TRAILERS: usize = 64;
 /// Connections served at once on this listener, for the reason the forward
 /// proxy caps its own.
 const MAX_CONNECTIONS: usize = 512;
+
+/// How long a connection may carry no bytes in either direction before it is
+/// closed, once past its head. As long as a provider may take to start an
+/// answer, because a non-streaming completion is exactly that silence; past
+/// it, the connection is holding one of [`MAX_CONNECTIONS`] for nothing - a
+/// tool's pooled keep-alive socket on a spliced connection, or a client that
+/// stopped reading.
+const IDLE_TIMEOUT: Duration = RESPONSE_HEAD_TIMEOUT;
+
+/// Connections over [`MAX_CONNECTIONS`] that are told so at once, rather than
+/// dropped. A reset alone reads as Gate being broken, but the answer has to
+/// [`linger`] or the client's unread request turns the close into a reset
+/// anyway, and that takes a task - so these are capped too, and past this many
+/// a connection is dropped as before.
+const MAX_REFUSALS: usize = 64;
+
+/// What a connection over [`MAX_CONNECTIONS`] is told.
+const OVER_CAPACITY: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; \
+    charset=utf-8\r\nContent-Length: 45\r\nConnection: close\r\n\r\n\
+    Gate Connect's relay is busy. Retry shortly.\n";
 
 /// One entry of the routing table: a catalog slug and where it forwards.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,7 +332,19 @@ pub async fn serve(
     services: Services,
     released: impl std::future::Future<Output = ()>,
 ) {
-    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    serve_capped(listener, own_port, services, released, MAX_CONNECTIONS).await
+}
+
+/// [`serve`] with its connection cap passed in, so a test can reach it.
+async fn serve_capped(
+    listener: TcpListener,
+    own_port: u16,
+    services: Services,
+    released: impl std::future::Future<Output = ()>,
+    cap: usize,
+) {
+    let slots = Arc::new(tokio::sync::Semaphore::new(cap));
+    let refusals = Arc::new(tokio::sync::Semaphore::new(MAX_REFUSALS));
     tokio::pin!(released);
     loop {
         let client = tokio::select! {
@@ -323,6 +358,20 @@ pub async fn serve(
             },
         };
         let Ok(slot) = slots.clone().try_acquire_owned() else {
+            if let Ok(refusal) = refusals.clone().try_acquire_owned() {
+                tokio::spawn(async move {
+                    let _refusal = refusal;
+                    let mut client = client;
+                    let written = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        client.write_all(OVER_CAPACITY),
+                    )
+                    .await;
+                    if matches!(written, Ok(Ok(()))) {
+                        linger(&mut client).await;
+                    }
+                });
+            }
             continue;
         };
         let services = services.clone();
@@ -340,7 +389,8 @@ enum Engine {
     Proved(TcpStream),
     /// Nothing accepted a connection: the engine is gone.
     Absent,
-    /// Something accepted and did not prove itself.
+    /// Something accepted and did not prove itself, or (outside Windows) a
+    /// listener that did not accept in time.
     Unproven,
 }
 
@@ -350,7 +400,7 @@ pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) ->
     if let Some(port) = (services.backend)().filter(|p| *p != own_port) {
         match engine_session(port, &services.token).await {
             Engine::Proved(mut engine) => {
-                tokio::io::copy_bidirectional(&mut client, &mut engine).await?;
+                splice(&mut client, &mut engine, IDLE_TIMEOUT).await?;
                 return Ok(());
             }
             Engine::Absent => {}
@@ -373,11 +423,21 @@ pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) ->
 
 /// Connect to the engine's relay and prove it on that same connection.
 ///
-/// A refused or timed-out connect is the engine being gone. The timeout counts
-/// as gone, not as unproven, because on Windows a connect to a closed loopback
-/// port is not refused at once: the stack retries the SYN for about two
-/// seconds, and a live listener's connect completes from the accept backlog
-/// in microseconds.
+/// A refused connect is the engine being gone. A connect that times out is
+/// read per platform, because the two stacks mean different things by it:
+///
+/// - **macOS and Linux** refuse a connect to a closed loopback port at once,
+///   so a timeout there is a listener that exists and has not accepted - an
+///   engine with a full accept backlog, whose SYN was dropped. That is a busy
+///   Gate, and it gets the 502 a slow proof gets rather than having its
+///   traffic sent around it.
+/// - **Windows** does not refuse a closed loopback port at once: the stack
+///   retries the SYN for about two seconds, while a live listener's connect
+///   completes from the accept backlog in microseconds. So a timeout there is
+///   the engine being gone, and the direct path is the right answer. A full
+///   backlog is refused outright on Windows, which reads as gone as well; the
+///   app clears [`RELAY_ENGINE_PORT_NAME`] when it quits cleanly, so the only
+///   time this path is asked at all with no engine is after a crash.
 ///
 /// The proof and the request share the connection, so there is no window
 /// between the two in which the port could change hands. The engine's relay
@@ -391,7 +451,9 @@ async fn engine_session(port: u16, token: &str) -> Engine {
     .await;
     let mut engine = match connected {
         Ok(Ok(engine)) => engine,
-        _ => return Engine::Absent,
+        Ok(Err(_)) => return Engine::Absent,
+        Err(_) if cfg!(windows) => return Engine::Absent,
+        Err(_) => return Engine::Unproven,
     };
     let challenge = gate_connect_paths::fresh_challenge();
     let expected = gate_connect_paths::forwarder_proof(token, RELAY_ENGINE_HEALTH_PATH, &challenge);
@@ -445,6 +507,10 @@ pub struct Plan {
     pub expect_continue: bool,
     /// Whether the request was a `HEAD`, which decides the response framing.
     pub head_request: bool,
+    /// Whether the client speaks HTTP/1.1, which is what decides whether it
+    /// may be sent an interim (1xx) response: an HTTP/1.0 client reads one as
+    /// the final answer.
+    pub http11: bool,
 }
 
 /// A request this listener will not forward, and the answer it gets instead.
@@ -479,6 +545,11 @@ fn is_gate_header(name: &str) -> bool {
 }
 
 /// Header names a `Connection` value nominates as hop-by-hop.
+///
+/// Never the two that frame the message. The body is read by them before any
+/// header is dropped, so a hop that let `Connection: content-length` remove
+/// the length would send the body on with nothing saying where it ends, and
+/// the next hop would read it as a second request.
 fn nominated(headers: &[(String, Vec<u8>)]) -> Vec<String> {
     headers
         .iter()
@@ -486,7 +557,7 @@ fn nominated(headers: &[(String, Vec<u8>)]) -> Vec<String> {
         .filter_map(|(_, v)| std::str::from_utf8(v).ok())
         .flat_map(|v| v.split(','))
         .map(|t| t.trim().to_ascii_lowercase())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && t != "content-length" && t != "transfer-encoding")
         .collect()
 }
 
@@ -510,10 +581,12 @@ fn text<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<Option<&'a s
 
 /// Body framing from a head's headers, strictly: at most one
 /// `Transfer-Encoding` and one `Content-Length`, a length of digits only, and a
-/// transfer coding that ends in `chunked`. `Transfer-Encoding` wins over
-/// `Content-Length`, as RFC 9112 says, and the caller drops the length so the
-/// two cannot disagree further along. Anything looser is refused rather than
-/// passed on for the next hop to read differently.
+/// transfer coding list with `chunked` exactly once, last. Twice is forbidden
+/// (RFC 9112 6.1): this hop decodes one layer and re-emits one, so the next hop
+/// would try to decode the payload itself as chunks. `Transfer-Encoding` wins
+/// over `Content-Length`, as RFC 9112 says, and the caller drops the length so
+/// the two cannot disagree further along. Anything looser is refused rather
+/// than passed on for the next hop to read differently.
 fn framing(headers: &[(String, Vec<u8>)]) -> Result<Framing, ()> {
     let te = values(headers, "transfer-encoding");
     let cl = values(headers, "content-length");
@@ -521,9 +594,16 @@ fn framing(headers: &[(String, Vec<u8>)]) -> Result<Framing, ()> {
         return Err(());
     }
     if let Some(te) = te.first() {
-        let te = std::str::from_utf8(te).map_err(|_| ())?;
-        let last = te.rsplit(',').next().unwrap_or("").trim();
-        return if last.eq_ignore_ascii_case("chunked") {
+        let codings: Vec<&str> = std::str::from_utf8(te)
+            .map_err(|_| ())?
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let chunked = |c: &str| c.eq_ignore_ascii_case("chunked");
+        return if codings.last().is_some_and(|c| chunked(c))
+            && codings.iter().filter(|c| chunked(c)).count() == 1
+            && codings.iter().all(|c| !c.is_empty())
+        {
             Ok(Framing::Chunked)
         } else {
             Err(())
@@ -624,6 +704,11 @@ pub fn plan(
     let upstream = &table[index];
 
     let body = framing(headers).map_err(|()| refuse(400, "unsupported request body framing"))?;
+    // HTTP/1.0 has no transfer codings, so a `Transfer-Encoding` on one is
+    // framing the client and this hop may not agree on (RFC 9112 6.1).
+    if http_minor == 0 && body == Framing::Chunked {
+        return Err(refuse(400, "unsupported request body framing"));
+    }
     let nominated = nominated(headers);
     let mut head = format!(
         "{method} {}{inner} HTTP/1.1\r\nHost: {}\r\n",
@@ -659,12 +744,17 @@ pub fn plan(
         body,
         expect_continue,
         head_request: method.eq_ignore_ascii_case("HEAD"),
+        http11: http_minor >= 1,
     })
 }
 
 /// Rewrite a response head for the client: the provider's own connection
 /// management goes, and `Connection: close` replaces it. Returns the head and
 /// how its body is framed.
+///
+/// An interim (1xx) head loses the same headers and gains nothing: it has no
+/// connection of its own to close, and the final response that follows says
+/// `close` for both.
 pub fn rewrite_response(raw: &[u8], head_request: bool) -> Option<(Vec<u8>, u16, Framing)> {
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut resp = httparse::Response::new(&mut headers);
@@ -707,7 +797,10 @@ pub fn rewrite_response(raw: &[u8], head_request: bool) -> Option<(Vec<u8>, u16,
         out.extend_from_slice(value);
         out.extend_from_slice(b"\r\n");
     }
-    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    if !(100..200).contains(&status) {
+        out.extend_from_slice(b"Connection: close\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
     Some((out, status, framing))
 }
 
@@ -903,7 +996,7 @@ async fn serve_direct(mut client: TcpStream, services: &Services) -> Result<()> 
     if !upstream.tls {
         return exchange(client, tcp, plan, leftover).await;
     }
-    let tls = match tls_connect(&upstream.host, tcp).await {
+    let tls = match tls_connect(&upstream.host, tcp, UPSTREAM_CONNECT_TIMEOUT).await {
         Ok(tls) => tls,
         Err(e) => {
             let message = format!("TLS to {} failed: {e:#}", upstream.host_header());
@@ -959,11 +1052,12 @@ where
         loop {
             let end = read_head(&mut upstream, &mut buf, false).await.ok()??;
             let (head, status, framing) = rewrite_response(&buf[..end], plan.head_request)?;
-            // Interim responses (103 Early Hints) are passed on and the real
-            // one is read after them. 101 cannot happen: `Upgrade` is not
+            // Interim responses (103 Early Hints) are passed on, rewritten as
+            // a final one is, and the real one is read after them - to an
+            // HTTP/1.1 client only. 101 cannot happen: `Upgrade` is not
             // forwarded.
             if (100..200).contains(&status) {
-                if client.write_all(&buf[..end]).await.is_err() {
+                if plan.http11 && client.write_all(&head).await.is_err() {
                     return None;
                 }
                 buf.drain(..end);
@@ -984,8 +1078,13 @@ where
     };
     client.write_all(&head).await?;
     let relayed = {
-        let mut body = BufReader::new(Cursor::new(buf).chain(&mut upstream));
-        copy_body(&mut body, &mut client, framing).await
+        let clock = Clock::new();
+        let mut body = BufReader::new(Watched::new(
+            Cursor::new(buf).chain(&mut upstream),
+            clock.clone(),
+        ));
+        let mut to = Watched::new(&mut client, clock.clone());
+        until_idle(&clock, IDLE_TIMEOUT, copy_body(&mut body, &mut to, framing)).await
     };
     if relayed.is_err() && framing == Framing::UntilClose {
         // A close-delimited body that broke off would read as complete if this
@@ -1020,6 +1119,114 @@ where
             Ok(())
         }
         Framing::Chunked => copy_chunked(r, w).await,
+    }
+}
+
+/// Carry a proven engine connection both ways, until either side closes or
+/// nothing moves for `idle`.
+async fn splice(client: &mut TcpStream, engine: &mut TcpStream, idle: Duration) -> Result<()> {
+    let clock = Clock::new();
+    let mut a = Watched::new(client, clock.clone());
+    let mut b = Watched::new(engine, clock.clone());
+    until_idle(&clock, idle, async {
+        tokio::io::copy_bidirectional(&mut a, &mut b).await?;
+        Ok(())
+    })
+    .await
+}
+
+/// When a connection last moved a byte, shared by the [`Watched`] wrappers on
+/// its streams.
+#[derive(Clone)]
+struct Clock(Arc<Mutex<tokio::time::Instant>>);
+
+impl Clock {
+    fn new() -> Self {
+        Clock(Arc::new(Mutex::new(tokio::time::Instant::now())))
+    }
+
+    fn touch(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+
+    fn last(&self) -> tokio::time::Instant {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A stream that stamps its [`Clock`] whenever bytes cross it.
+struct Watched<S> {
+    inner: S,
+    clock: Clock,
+}
+
+impl<S> Watched<S> {
+    fn new(inner: S, clock: Clock) -> Self {
+        Watched { inner, clock }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if buf.filled().len() > before {
+            self.clock.touch();
+        }
+        polled
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let polled = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(polled, std::task::Poll::Ready(Ok(n)) if n > 0) {
+            self.clock.touch();
+        }
+        polled
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Run `work` until it finishes, or until `clock` has not moved for `idle`.
+async fn until_idle<T>(
+    clock: &Clock,
+    idle: Duration,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let stalled = async {
+        loop {
+            let deadline = clock.last() + idle;
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep_until(deadline).await;
+        }
+    };
+    tokio::select! {
+        done = work => done,
+        () = stalled => Err(anyhow!("nothing moved on the connection for {idle:?}")),
     }
 }
 
@@ -1116,16 +1323,19 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>> {
     Ok(config)
 }
 
+/// The TLS handshake to the provider, bounded by `budget`.
 async fn tls_connect(
     host: &str,
     tcp: TcpStream,
+    budget: Duration,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let name = rustls::pki_types::ServerName::try_from(host.to_string())
         .with_context(|| format!("{host:?} is not a valid server name"))?;
-    tokio_rustls::TlsConnector::from(tls_config()?)
-        .connect(name, tcp)
-        .await
-        .context("TLS handshake")
+    let handshake = tokio_rustls::TlsConnector::from(tls_config()?).connect(name, tcp);
+    match tokio::time::timeout(budget, handshake).await {
+        Ok(done) => done.context("TLS handshake"),
+        Err(_) => bail!("the TLS handshake did not complete within {budget:?}"),
+    }
 }
 
 #[cfg(test)]
