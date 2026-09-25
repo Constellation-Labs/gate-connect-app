@@ -87,7 +87,7 @@ function resolveProbes(snapshot: BackendDiagnostics | null = backend) {
         name: "claude",
         pid: 12345,
         started_at_unix: Math.floor(Date.now() / 1000) - 3600,
-        predates_routing: true,
+        needs_reopen: true,
       },
     ],
   });

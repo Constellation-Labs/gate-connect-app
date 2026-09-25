@@ -11,7 +11,7 @@ use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gate_connect_core::proxy::SolveOutcome;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -145,7 +145,6 @@ async fn connect_tool(slug: String) -> Result<StatusDto, String> {
             gate_connect_core::proxy::manager()
                 .enable()
                 .map_err(|e| format!("{e:#}"))?;
-            mark_routing_enabled();
         }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
@@ -621,7 +620,6 @@ async fn proxy_enable(
             eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
             report_backend_error(w.component, format!("{:#}", w.error));
         }
-        mark_routing_enabled();
         // Status re-read rather than enable's own state: the post-enable
         // restore pass can flip domains, and the UI wants the settled set.
         gate_connect_core::proxy::manager()
@@ -1019,6 +1017,8 @@ static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
 /// launch keep dialing the dead old port until relaunched, so the popover
 /// shows a "restart your AI apps" notice while this is set. One-shot per app
 /// run: once the port persists, later restarts reuse it and this stays false.
+/// On macOS and Windows an engine move counts only when a tool's config still
+/// names the old port; everything else names the forwarder, which follows it.
 static ROUTED_CLIENTS_MAY_BE_STALE: AtomicBool = AtomicBool::new(false);
 
 /// Whether already-running routed clients may be pointing at a dead port
@@ -1084,23 +1084,6 @@ fn drain_backend_errors() -> Vec<BackendError> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 
-/// Unix seconds of the most recent successful engine enable in this process
-/// (user toggle, startup restore, or a connect_tool auto-enable). 0 = never;
-/// `stale_agents_count` then falls back to our own process start, the
-/// conservative bound for the Linux case where the detached engine outlived
-/// a previous GUI session. Lets the frontend show its "restart your tools"
-/// startup hint only for processes that genuinely predate routing, instead
-/// of nagging every launch.
-static ROUTING_ENABLED_AT_UNIX: AtomicU64 = AtomicU64::new(0);
-
-fn mark_routing_enabled() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    ROUTING_ENABLED_AT_UNIX.store(now, Ordering::Release);
-}
-
 /// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
 /// our own pid. Shared by the close command and the count probe so both match
 /// the exact same process set.
@@ -1153,62 +1136,87 @@ fn running_agents_count() -> u32 {
     count
 }
 
-/// The Unix second before which a running process counts as pre-routing: the
-/// last in-process enable, falling back to our own process start when routing
-/// was already up before we launched (detached Linux engine). `None` when
-/// neither is available, which callers degrade on rather than guessing.
-///
-/// Extracted so the count probe and the diagnostics listing cannot answer
-/// "does this process predate routing" two different ways.
+/// The tool whose configuration a running agent read at launch, by the agent's
+/// lowercased process name (see [`AGENT_PROCESS_NAMES`]).
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn routing_bound_unix() -> Option<u64> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-    let enabled_at = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
-    if enabled_at != 0 {
-        return Some(enabled_at);
+fn agent_tool(name: &str) -> Option<gate_connect_core::registry::ToolId> {
+    use gate_connect_core::registry::ToolId;
+    match name {
+        "claude" => Some(ToolId::ClaudeCode),
+        "codex" => Some(ToolId::Codex),
+        "opencode" => Some(ToolId::OpenCode),
+        _ => None,
     }
-    // Our own pid only. `All` would walk every process in the table to read
-    // one field off exactly one of them, and this fallback is the *Linux* path
-    // (the detached engine is what leaves `ROUTING_ENABLED_AT_UNIX` at 0), so
-    // the listing below would otherwise scan the table twice per call.
-    //
-    // `without_tasks` matters even here: the pid filter is applied *after* the
-    // walk, so with threads left on this still descends every `task/` dir to
-    // then throw all of it away (~14ms, against ~0.5ms for the one process we
-    // asked for). Same refresh kind as `for_each_agent_process`, whose comment
-    // has the rest of the reasoning.
-    let pid = sysinfo::get_current_pid().ok()?;
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        false,
-        ProcessRefreshKind::nothing().without_tasks(),
-    );
-    sys.process(pid)
-        .map(|p| p.start_time())
-        .filter(|start| *start != 0)
 }
 
-/// Count running agent processes that were started *before* routing last came
-/// up, i.e. the ones that resolved their connection pre-Gate and genuinely
-/// need a restart to route. Same process set as `running_agents_count`; the
-/// bound is the last in-process enable, falling back to our own process start
-/// when routing was already up before we launched (detached Linux engine).
+/// A file's modification time in Unix seconds. `None` when there is no file or
+/// the filesystem will not say, which callers read as no recorded change.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn modified_unix(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Did this agent start before the last change to something it reads once at
+/// launch, and so is still using what it loaded then?
 ///
-/// `(async)` for the reason on [`running_agents_count`], and doubly so here:
-/// the fallback bound costs a second refresh, and this is the probe the boot
-/// path and the `proxy-state-changed` handler both call.
+/// Two files qualify: the tool's own configuration, and Gate's CA certificate,
+/// which the agents are pointed at through `NODE_EXTRA_CA_CERTS`. Either one
+/// written after the process started means the process missed it.
+///
+/// **Not "started before routing came up".** That was the rule until the
+/// forwarder fronted both the proxy and the relay, and it asked the wrong
+/// question: a config naming the forwarder or the relay port reaches the engine
+/// the moment the engine is up, so an agent that predates the enable is routed
+/// without a restart. It also reset on every launch of Gate, so every agent
+/// already running was reported stale each time the app opened. The files are
+/// durable across restarts and name the actual event the process missed.
+///
+/// No file to read means no claim, not "stale": nothing on disk says the
+/// process missed anything.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_needs_reopen(process: &sysinfo::Process, ca_cert_changed_at: Option<u64>) -> bool {
+    let name = process.name().to_string_lossy().to_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    let config_changed_at = agent_tool(name)
+        .and_then(gate_connect_core::registry::find)
+        .and_then(|integ| integ.config_location())
+        .and_then(|path| modified_unix(&path));
+    [config_changed_at, ca_cert_changed_at]
+        .into_iter()
+        .flatten()
+        .max()
+        .map(|changed_at| process.start_time() < changed_at)
+        .unwrap_or(false)
+}
+
+/// When Gate's CA certificate was last written, read once per scan: every
+/// agent is pointed at the same file.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn ca_cert_changed_at_unix() -> Option<u64> {
+    gate_connect_core::proxy::ca_cert_path()
+        .ok()
+        .and_then(|path| modified_unix(&path))
+}
+
+/// Count running agent processes that missed a change to what they read at
+/// launch ([`agent_needs_reopen`]), i.e. the ones that genuinely need a
+/// restart. Same process set as `running_agents_count`.
+///
+/// `(async)` for the reason on [`running_agents_count`]: this is the probe the
+/// boot path and the `proxy-state-changed` handler both call.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn stale_agents_count() -> u32 {
-    let Some(bound) = routing_bound_unix() else {
-        // No usable bound: degrade to "every running agent counts", the
-        // pre-timestamp behavior, rather than silently claiming freshness.
-        return running_agents_count();
-    };
+    let ca_cert_changed_at = ca_cert_changed_at_unix();
     let mut count = 0u32;
     for_each_agent_process(|process| {
-        if process.start_time() < bound {
+        if agent_needs_reopen(process, ca_cert_changed_at) {
             count += 1;
         }
     });
@@ -1225,10 +1233,10 @@ struct RunningAgent {
     pid: u32,
     /// Process start, Unix seconds. 0 when the platform wouldn't say.
     started_at_unix: u64,
-    /// Started before routing last came up, so it resolved its connection
-    /// pre-Gate and needs a restart to route. Same rule as
-    /// [`stale_agents_count`], via [`routing_bound_unix`].
-    predates_routing: bool,
+    /// Started before the last change to its own configuration or to Gate's
+    /// certificate, so it is still using what it loaded and needs a restart.
+    /// Same rule as [`stale_agents_count`], via [`agent_needs_reopen`].
+    needs_reopen: bool,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1243,7 +1251,7 @@ struct RunningAgentsDto {
 }
 
 /// The running agent processes themselves, not just how many: name, pid, when
-/// each started, and whether it predates routing. Same process set and the
+/// each started, and whether it needs a reopen. Same process set and the
 /// same staleness rule as the two count probes, so the diagnostics report and
 /// the routing takeover can never disagree about what is running.
 ///
@@ -1257,7 +1265,7 @@ struct RunningAgentsDto {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn running_agents() -> RunningAgentsDto {
-    let bound = routing_bound_unix();
+    let ca_cert_changed_at = ca_cert_changed_at_unix();
     let mut agents = Vec::new();
     for_each_agent_process(|process| {
         let started_at_unix = process.start_time();
@@ -1265,12 +1273,10 @@ fn running_agents() -> RunningAgentsDto {
             name: process.name().to_string_lossy().to_string(),
             pid: process.pid().as_u32(),
             started_at_unix,
-            // No usable bound degrades to "everything predates routing", the
-            // same conservative direction `stale_agents_count` takes.
-            predates_routing: bound.map(|b| started_at_unix < b).unwrap_or(true),
+            needs_reopen: agent_needs_reopen(process, ca_cert_changed_at),
         });
     });
-    // Oldest first: the ones that predate routing are the ones being looked
+    // Oldest first: the ones that need a reopen are the ones being looked
     // for, and a stable order keeps two reports from the same machine
     // diffable.
     agents.sort_by_key(|agent| agent.started_at_unix);
@@ -2534,7 +2540,6 @@ pub fn run() {
                                 );
                                 report_backend_error(w.component, format!("{:#}", w.error));
                             }
-                            mark_routing_enabled();
                             // Restore-on-any-launch means this can be the
                             // first thing to route on a machine with no login
                             // item, so it needs the same crash safety net as
@@ -2556,7 +2561,23 @@ pub fn run() {
                             // this one failed), and a false notice nags the
                             // user for nothing.
                             let engine_moved =
-                                prior_port.map(|p| p != state.port).unwrap_or(false);
+                                prior_port.as_ref().map(|p| *p != state.port).unwrap_or(false);
+                            // On macOS and Windows a moved engine usually strands
+                            // nothing: tool configs, the export and the PAC name the
+                            // forwarder, which reads the engine's port per
+                            // connection. Only a config that still names the old
+                            // engine port is left dialing it, so only that one is
+                            // worth the notice. An unknown prior port keeps the
+                            // old answer, since there is nothing to compare.
+                            #[cfg(any(target_os = "macos", target_os = "windows"))]
+                            let engine_moved = engine_moved
+                                && prior_port
+                                    .as_ref()
+                                    .ok()
+                                    .copied()
+                                    .flatten()
+                                    .map(gate_connect_core::provider::managed_tool_names_port)
+                                    .unwrap_or(true);
                             #[cfg(any(target_os = "macos", target_os = "windows"))]
                             let pac_moved =
                                 prior_pac_port.map(|p| p != state.pac_port).unwrap_or(false);

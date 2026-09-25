@@ -269,6 +269,10 @@ impl Integration for OpenCode {
         Mechanism::Relay
     }
 
+    fn config_location(&self) -> Option<PathBuf> {
+        settings_path().ok()
+    }
+
     fn configured_addresses(&self) -> Result<Vec<String>> {
         // Every provider's `baseURL`, not only the ones the sidecar says we
         // wrote: a base URL the user has since repointed is one nothing of

@@ -246,6 +246,10 @@ impl Integration for Codex {
         Mechanism::Relay
     }
 
+    fn config_location(&self) -> Option<PathBuf> {
+        config_path().ok()
+    }
+
     fn configured_addresses(&self) -> Result<Vec<String>> {
         let path = config_path()?;
         if !path.exists() {

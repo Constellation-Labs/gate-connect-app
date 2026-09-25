@@ -148,6 +148,10 @@ impl Integration for ClaudeCode {
         Mechanism::ForwardProxy
     }
 
+    fn config_location(&self) -> Option<PathBuf> {
+        settings_path().ok()
+    }
+
     fn configured_addresses(&self) -> Result<Vec<String>> {
         Ok(load_settings()?
             .and_then(|s| {

@@ -126,9 +126,9 @@ const agents: RunningAgents = {
       name: "claude",
       pid: 12345,
       started_at_unix: NOW_UNIX - (2 * 3600 + 46 * 60),
-      predates_routing: true,
+      needs_reopen: true,
     },
-    { name: "codex", pid: 23456, started_at_unix: NOW_UNIX - 60, predates_routing: false },
+    { name: "codex", pid: 23456, started_at_unix: NOW_UNIX - 60, needs_reopen: false },
   ],
 };
 
@@ -180,14 +180,14 @@ describe("buildDiagnosticsReport", () => {
     expect(report({ analyticsId: { kind: "unavailable" } })).toContain("analytics id    unknown");
   });
 
-  it("names each running tool, how long it has been up, and whether it predates routing", () => {
+  it("names each running tool, how long it has been up, and whether it needs a reopen", () => {
     const text = report();
     expect(text).toContain("[running agents]");
     // The scanned set is what makes an empty result readable, so it is part
     // of the section whether or not anything was found.
     expect(text).toContain("scanned for     claude, codex, opencode");
     expect(text).toContain(
-      "claude          pid 12345, up 2h 46m, started 2026-08-10T09:14:00Z, predates routing",
+      "claude          pid 12345, up 2h 46m, started 2026-08-10T09:14:00Z, needs reopen",
     );
     expect(text).toContain("codex           pid 23456, up 1m, started 2026-08-10T11:59:00Z");
   });
@@ -290,7 +290,7 @@ describe("agentLine", () => {
         name: "Claude",
         pid: 9,
         started_at_unix: NOW_UNIX - (3 * 86400 + 4 * 3600),
-        predates_routing: true,
+        needs_reopen: true,
       },
       NOW,
     );
@@ -299,7 +299,7 @@ describe("agentLine", () => {
 
   it("says so rather than printing an epoch when the platform withheld the start time", () => {
     const line = agentLine(
-      { name: "codex", pid: 9, started_at_unix: 0, predates_routing: false },
+      { name: "codex", pid: 9, started_at_unix: 0, needs_reopen: false },
       NOW,
     );
     expect(line).toContain("start time unavailable");
