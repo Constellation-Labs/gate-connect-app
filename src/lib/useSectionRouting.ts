@@ -37,21 +37,7 @@ export function useSectionRouting({
   /** Clear whatever the last failure put on screen. The click is the moment the
    *  last failure stops being the current answer. */
   onBeforeRoute: () => void;
-  /**
-   * A cascade just put a browser surface behind Gate, with the advice to show
-   * for it.
-   *
-   * The host half of what a section switch does. `offerAfterChange` below
-   * covers the config half and can only ever cover it: closing a program is a
-   * thing Gate can offer to do, and reloading someone's tab is not, so this is
-   * a sentence rather than an action - which is also why it is a callback and
-   * not a stage of this hook. Each shell has its own notice surface and its own
-   * precedence chain to put it in, exactly as `onBeforeRoute` does for failures.
-   *
-   * The COPY is not the caller's: `hostReloadAdvice` composes it here, so the
-   * window and the tray cannot come to say this differently.
-   */
-   /** The per-tool path, for a row that is not a section - a catalog entry no
+  /** The per-tool path, for a row that is not a section - a catalog entry no
    *  section has claimed yet. Keeps the drift gate and the OpenCode env
    *  coupling, which only `setAppRouted` raises. */
   routeApp: (slug: string, next: boolean) => void;

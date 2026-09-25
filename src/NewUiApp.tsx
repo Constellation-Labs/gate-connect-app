@@ -877,9 +877,6 @@ export function NewUiApp() {
     // health check is shared - so this follows the snapshot rather than waiting
     // for something else to ask.
     void refreshVerdicts();
-    // A master-on runs `restore_all`, which is what clears or shortens the
-    // snapshots - so the notice has to be re-read on the same event that
-    // repaints the switches, or it lingers after the work finished.
   }, [refreshVerdicts]);
 
   /**
@@ -1692,48 +1689,6 @@ export function NewUiApp() {
     if (scan.kind === "failed") return { kind: "failed" };
     return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
   }, [apps.length, scan]);
-
-
-  /**
-   * Finish what the interrupted operation left, one entry at a time.
-   *
-   * Entry by entry rather than through `resume_restore`, and the reason is the
-   * progress: AG-570 asks a resume to show progress for each tool, and a single
-   * batch call can only report what is left when the whole thing is over.
-   * `restore_one` has the batch's own semantics narrowed to one slug - a slug
-   * leaves its snapshot only once it is actually back - so this repeats no
-   * completed write and reopens no verified tool, exactly as before.
-   *
-   * The close-and-reopen offer follows, scoped to the entries that came back:
-   * their configs were just rewritten, and a tool that was running through all
-   * of it is still on the route it started with. Scoped, not global, for the
-   * reason `runningAgents`'s own docs give - offering to close Claude when the
-   * resume touched Codex names processes the change never went near.
-   */
-
-  /** One row's Retry, outside a whole-pass resume. */
-
-
-  /**
-   * What is still outstanding, providers and tools together: the user does not
-   * care which snapshot an entry came from.
-   *
-   * The snapshots are not the whole answer. A tool whose write finished but whose
-   * process predates it has left the snapshot and is *not* routing, and AG-570 is
-   * explicit that the notice goes away only once each affected tool reaches a
-   * verified result - so the summary's own unresolved set is unioned in. Names,
-   * deduplicated: the two sources overlap by design.
-   */
-
-  /**
-   * The notice's per-tool rows, against one clock.
-   *
-   * Recomputed when the summary changes rather than on a timer: the ages on these
-   * rows are read while the user is looking at a notice they just opened, and a
-   * ticking "4m ago" would be redrawing the whole list to keep a number honest
-   * that nobody is watching. The review dialog takes its own `new Date()` for the
-   * same reason - it is read once, on open.
-   */
 
   const noop = useCallback(() => {}, []);
 

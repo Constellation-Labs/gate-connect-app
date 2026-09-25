@@ -323,15 +323,21 @@ export function TrayApp() {
    *
    * The tray had no drain, which is the third time this gap has been shipped -
    * `backendErrors.ts` was lifted out of `App.tsx` precisely "so both shells
-   * share one copy", and then only one shell called it. It bit hardest on
-   * "Resume now": `resume_restore` swallows the restore's error on purpose
-   * (`lib.rs`, "Best-effort, like every other caller of this") and still returns
-   * `pending_restore()` as `Ok`, so the frontend `catch` never fires. A resume
-   * that failed for the same reason it failed the first time therefore redrew
-   * an identical card and said nothing - indistinguishable from a dead button,
-   * which is how it was reported. `provider_restore` is already in
-   * `ROUTING_DOWN_CONTEXTS`, so the failure was reaching the buffer all along
-   * and only ever needed reading here.
+   * share one copy", and then only one shell called it.
+   *
+   * What it is for: the routing paths report their failures into the backend's
+   * buffer rather than through the call that provoked them, so a write that
+   * fails on the way down leaves the frontend's own `catch` untouched. Without
+   * a drain the tray redraws an identical surface and says nothing, which is
+   * indistinguishable from a control that does not work - and is how the
+   * original case was reported. `provider_restore` and its neighbours are
+   * already in `ROUTING_DOWN_CONTEXTS`, so those failures reach the buffer
+   * either way and only ever needed reading here.
+   *
+   * That original case was "Resume now" on the recovery card, which was
+   * removed on 2026-09-24 along with `resume_restore`. The gap it exposed is
+   * not specific to it, so the drain stays and the reasoning is stated in
+   * terms of what still uses those contexts.
    */
   useEffect(() => {
     const sweep = () =>
