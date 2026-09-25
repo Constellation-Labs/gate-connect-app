@@ -252,9 +252,10 @@ fronted by the forwarder now, in the section below.
 The forwarder holds the public relay port as well, so a relay tool config
 keeps working after the app is gone (rationale in
 `docs/routing-architecture.md`). The engine's relay binds
-`proxy/relay-engine-port` behind it. Per connection the forwarder either
-splices to the engine's relay or, when nothing there proves itself, serves the
-request itself, straight to the provider.
+`proxy/relay-engine-port` behind it. Per connection the forwarder splices to
+the engine's relay once it proves itself, serves the request itself when
+nothing accepts on that port, and refuses with a 502 when something accepts and
+does not prove itself.
 
 This is the first listener in the forwarder that reads a request and opens
 TLS, so the section above's "it does not read traffic" is no longer true of the
@@ -277,10 +278,39 @@ process as a whole. What bounds it:
 - **It does not hand a request to a stranger.** A process that binds the
   engine's relay port while the app is closed would otherwise be spliced every
   tool request, and relay requests are plaintext carrying the tool's own
-  provider key. So the forwarder asks the engine side for the relay proof
-  (the 0600 token challenge) before every splice, with no cache, and goes
-  direct when it is not answered. The proof authenticates the listener, as it
-  does everywhere else in this document.
+  provider key. So the forwarder asks the engine side for the token proof
+  before every splice, with no cache, on the connection the request then
+  travels over - there is no gap between proof and splice in which the port
+  could change hands - and refuses the request when it is not answered.
+  **The proof binds the path it is asked on** (HMAC-SHA256 keyed by the token,
+  over the path and the challenge), and the forwarder asks on
+  `RELAY_ENGINE_HEALTH_PATH`, which only an engine's relay answers. That matters
+  because the forwarder answers the forwarder and relay health paths for
+  anybody: with one proof for every path, a squatter could relay the
+  forwarder's challenge to one of those answers and replay it. The same
+  engine-only path decides the "another Gate Connect" refusal, so a squatter
+  cannot fake that either. A process running as the owner can read the token
+  and forge any proof; this defends against other local users and sandboxed
+  processes that cannot read Gate's data directory.
+- **Probes are bounded as a whole.** Every proof probe has a 750 ms budget for
+  the whole exchange, not per read, so a listener trickling bytes cannot hold
+  an enable, a quit, or a relay connection. The forwarder's own proof of the
+  engine allows 5 s and then refuses.
+- **Pay-as-you-go requests are refused, not sent bare.** If `account.json`
+  says `billing_mode: payg`, the direct path answers the slugs Gate would bill
+  that way with a 503 saying to open Gate Connect: such tools send no
+  credential of their own, and a bare request to the provider would only earn
+  a 401. Nothing writes that mode in this tree yet.
+- **Its framing is strict.** At most one `Content-Length` and one
+  `Transfer-Encoding`, lengths of digits only, chunk sizes of hex digits only
+  with CRLF line endings; the chunked framing is re-emitted canonically and
+  trailers are dropped. Anything looser is refused rather than passed on for
+  the provider to read differently. A present but unreadable `Host` or `Origin`
+  is refused, as the engine's relay refuses it.
+- **It bounds the slow phases.** The request head has 30 s, the request body
+  5 minutes, the provider's first byte 10 minutes (a non-streaming completion
+  answers only when it is done). Streaming response bodies and spliced
+  connections have no idle limit, as on the engine's relay.
 - **It originates TLS and terminates none.** It verifies providers with
   `rustls-platform-verifier`, the verifier reqwest uses for the relay's own
   direct hop, so it trusts what that hop trusts and nothing extra.
@@ -291,14 +321,25 @@ process as a whole. What bounds it:
 
 What it adds over the state before it: the relay port answers for as long as
 the forwarder runs, including with no Gate process up, and on macOS from login
-through the launch agent. While the app is closed, a same-user process can use
-it to reach the catalog's providers through Gate's process. That is the
+through the launch agent. While the app is closed, any local process - the
+listener has no peer gate, so not only the owner's - can use it to reach the
+catalog's providers through Gate's process. That is the
 capability the parked relay already had for the length of an app session,
 extended in time, with the same catalog constraint - and any local process can
 reach those providers with its own socket anyway. The cross-user gap above is
 unchanged: while the engine is up the forwarder splices a non-owner peer
 straight to the engine's relay, which applies no UID gate on these platforms,
 so the ordering note in the previous section applies to this listener too.
+
+Windows has no socket activation, so nothing holds the public relay port from
+login until the app first starts the forwarder. In that window a process that
+binds the port receives relay tool requests, the tool's own key included,
+exactly as it could before this change whenever the app was closed; after
+that, the forwarder holds it for the rest of the session. Two other transition
+windows exist and are accepted: retiring a forwarder left from an older build
+frees the forwarder's port for a few seconds, once, and the first enable after
+a session whose engine held the public port frees it for up to the
+forwarder's one-second retry.
 
 Decision: accepted, on the same ground as the forwarder itself. The alternative
 is a quit that rewrites every relay tool's config and a crash that strands them.

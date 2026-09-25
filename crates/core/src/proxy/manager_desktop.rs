@@ -128,7 +128,7 @@ impl DesktopOps for OsOps {
         crate::proxy::forwarder::stop()
     }
 
-    fn relay_front(&self, wait: std::time::Duration) -> Option<u16> {
+    fn fronted_relay_port(&self, wait: std::time::Duration) -> Option<u16> {
         crate::proxy::forwarder::fronted_relay_port(wait)
     }
 

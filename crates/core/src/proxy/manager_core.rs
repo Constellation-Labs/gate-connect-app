@@ -97,7 +97,7 @@ pub trait DesktopOps: Send + Sync + 'static {
     /// The relay port the forwarder is holding, if it holds the one relay tool
     /// configs name, waiting up to `wait` for it to take a port that has just
     /// come free. Behind the seam because it probes a live forwarder.
-    fn relay_front(&self, wait: Duration) -> Option<u16>;
+    fn fronted_relay_port(&self, wait: Duration) -> Option<u16>;
     /// Startup sweep: clear any proxy slot still pointed at a dead loopback
     /// listener. Returns what it cleared, for the log line.
     fn clear_stranded_loopback(&self) -> Result<Vec<String>>;
@@ -127,11 +127,11 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
 const FORWARDER_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long an enable waits for the forwarder to take the relay port once it
-/// is free. The forwarder retries on a two second tick, so this is one tick
+/// is free. The forwarder retries on a one second tick, so this is one tick
 /// and a margin; it is only ever spent when the port is free and the forwarder
 /// holds nothing, which is the first enable after a session that was not
 /// fronted.
-const RELAY_CLAIM_WAIT: Duration = Duration::from_millis(2500);
+const RELAY_CLAIM_WAIT: Duration = Duration::from_millis(1500);
 
 /// [`DesktopManager::forwarder_answering`] values: nothing has asked yet.
 const FORWARDER_UNKNOWN: u8 = 0;
@@ -417,17 +417,6 @@ impl<O: DesktopOps> DesktopManager<O> {
         let snapshot = self.ops.snapshot()?;
         self.ops.save_snapshot(&snapshot)?;
 
-        // Release a parked engine now and not earlier. It has to go before the
-        // bind, because it holds exactly the address `preferred_engine_port`
-        // names and `bind_preferred` refuses to shadow a live listener - the
-        // new engine would land on a fresh band port and rewrite the persisted
-        // files under every tool config. And it has to go *after* the exits
-        // above: a failed enable used to release the park on its way to
-        // refusing, so "turn routing on, cancel the admin prompt" left the
-        // already-running tools with neither routing nor passthrough. Nothing
-        // between here and the bind can fail.
-        self.stop_dormant();
-
         // Start the forwarder before anything can fetch the PAC, and hand its
         // port to both channels that outlive this process: the PAC and,
         // unless the user declined, the machine-wide variables. Browsers cache
@@ -445,9 +434,20 @@ impl<O: DesktopOps> DesktopManager<O> {
         // It needs nothing from the system proxy, and it reads the engine's
         // port files per connection rather than at startup, so it can run
         // before the engine exists - and has to, now that it also holds the
-        // relay port the engine's relay binds behind (below). Falling back to the engine's own port if it will not start: that is
-        // exactly what shipped before there was a forwarder, so a forwarder
-        // problem costs the fail-open property and nothing else.
+        // relay port the engine's relay binds behind (below). Falling back to
+        // the engine's own port if it will not start: that is exactly what
+        // shipped before there was a forwarder, so a forwarder problem costs
+        // the fail-open property and nothing else.
+        //
+        // Before the park is released, not after: an ensure can take seconds
+        // (a spawn, or retiring a forwarder left over from an older build), and
+        // the tools the park is serving should not spend them with nothing on
+        // their ports. And before the "another Gate Connect" refusal below, so
+        // an enable that refuses has already started or adopted a forwarder.
+        // That is intended: the forwarder is per-user and shared - another Gate
+        // on this machine uses the same marker and port files - so what this
+        // adopts is the one that Gate already runs, and a forwarder is wanted
+        // for as long as any Gate wants routing.
         let forwarder_port = match self.ops.ensure_env_forwarder() {
             Ok(port) => Some(port),
             Err(e) => {
@@ -468,6 +468,19 @@ impl<O: DesktopOps> DesktopManager<O> {
             },
             Ordering::SeqCst,
         );
+        // Release a parked engine now and not earlier. It has to go before the
+        // bind, because it holds exactly the address `preferred_engine_port`
+        // names and `bind_preferred` refuses to shadow a live listener - the
+        // new engine would land on a fresh band port and rewrite the persisted
+        // files under every tool config. And it has to go *after* the exits
+        // above: a failed enable used to release the park on its way to
+        // refusing, so "turn routing on, cancel the admin prompt" left the
+        // already-running tools with neither routing nor passthrough. The one
+        // exit between here and the bind is the "another Gate Connect" refusal
+        // below, which fires only when another Gate holds these ports - so
+        // there was no park of ours holding them to lose.
+        self.stop_dormant();
+
         // Whether the forwarder holds the relay port every relay config names.
         // When it does, the engine's relay binds behind it and the forwarder
         // hands connections through; when the engine is gone - this process
@@ -481,7 +494,8 @@ impl<O: DesktopOps> DesktopManager<O> {
         // After `stop_dormant`, because a park from a session that was not
         // fronted holds the public port, and the forwarder can only take it
         // once that is released; `RELAY_CLAIM_WAIT` covers its retry tick.
-        let mut fronted = forwarder_port.and_then(|_| self.ops.relay_front(RELAY_CLAIM_WAIT));
+        let mut fronted =
+            forwarder_port.and_then(|_| self.ops.fronted_relay_port(RELAY_CLAIM_WAIT));
 
         // Our own park is gone by now, so a relay still answering belongs to
         // somebody else - and it answers a challenge only Gate can, so this is
@@ -512,15 +526,27 @@ impl<O: DesktopOps> DesktopManager<O> {
         //
         // Behind the forwarder the question moves with the relay: the public
         // port answering is the forwarder itself, so it is the engine's own
-        // relay port that has to be free. And a forwarder that took the public
-        // port in the moment since it was asked is not another Gate either, so
-        // that is asked again before refusing.
-        if fronted.is_none() && crate::proxy::relay_listening() {
-            fronted = self.ops.relay_front(std::time::Duration::ZERO);
+        // relay port that has to be free - asked on the engine-only path,
+        // because the forwarder answers the other two for anybody and a
+        // squatter could relay one of those answers to pass as another Gate.
+        //
+        // And the forwarder holding the public port is not another Gate even
+        // when its own health check said otherwise - it took the port since it
+        // was asked, or its proxy listener would not answer while its relay
+        // listener does. Its relay answer says which it is, so that decides
+        // before anything is refused.
+        if fronted.is_none() {
+            if let Some(report) = crate::proxy::relay_report() {
+                if report.fronted_by_forwarder {
+                    fronted = crate::proxy::relay::load_persisted_port();
+                }
+            }
         }
         let relay_taken = match fronted {
-            Some(_) => crate::proxy::relay::load_engine_port()
-                .is_some_and(|port| crate::proxy::relay_report_at(port).is_some()),
+            Some(_) => crate::proxy::relay::load_engine_port().is_some_and(|port| {
+                crate::proxy::relay_report_at(port, gate_connect_paths::RELAY_ENGINE_HEALTH_PATH)
+                    .is_some()
+            }),
             None => crate::proxy::relay_listening(),
         };
         if relay_taken {
@@ -577,13 +603,21 @@ impl<O: DesktopOps> DesktopManager<O> {
         // Remember the ports for next time (best-effort).
         self.ops.persist_ports(&running);
         // Remember the relay port so the next run rebinds it and baked CLI
-        // configs stay valid (best-effort). Which file it belongs in is asked
-        // again rather than read off `fronted`: if the forwarder took the
-        // public port between that answer and the bind, the engine fell back
-        // to a fresh port, and writing that into `relay-port` would repoint
-        // every tool config at the engine and away from the port the forwarder
-        // is holding. Behind the forwarder it is only the forwarder's to find.
-        if self.ops.relay_front(std::time::Duration::ZERO).is_some() {
+        // configs stay valid (best-effort). Behind the forwarder it goes in
+        // `relay-engine-port`, for the forwarder to find.
+        //
+        // Asked again in exactly one case: the engine was meant to take the
+        // public port and landed somewhere else, because something took the
+        // port between the question and the bind. If that was the forwarder,
+        // writing the engine's fallback into `relay-port` would repoint every
+        // tool config away from the listener that outlives this process. Not
+        // asked when the first answer was yes: a probe that failed on a busy
+        // moment would then do exactly that repointing for no reason.
+        let behind = fronted.is_some()
+            || (forwarder_port.is_some()
+                && Some(running.relay_port()) != crate::proxy::relay::load_persisted_port()
+                && self.ops.fronted_relay_port(Duration::ZERO).is_some());
+        if behind {
             let _ = crate::proxy::relay::save_engine_port(running.relay_port());
         } else {
             let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
@@ -1298,8 +1332,11 @@ mod tests {
         forwarder_busy: bool,
         /// The port `enable_env` was actually told to export.
         exported_port: Option<u16>,
-        /// What `relay_front` reports: the relay port the forwarder holds.
+        /// What `fronted_relay_port` reports: the relay port the forwarder
+        /// holds. `relay_front_answers` is consumed first, one answer per ask,
+        /// to model a forwarder whose claim changes between two questions.
         relay_front: Option<u16>,
+        relay_front_answers: std::collections::VecDeque<Option<u16>>,
     }
 
     struct FakeOps(StdMutex<FakeState>);
@@ -1482,9 +1519,11 @@ mod tests {
                 .push("stop_env_forwarder".into());
         }
 
-        fn relay_front(&self, _wait: Duration) -> Option<u16> {
-            self.record("relay_front");
-            self.0.lock().unwrap().relay_front
+        fn fronted_relay_port(&self, _wait: Duration) -> Option<u16> {
+            self.record("fronted_relay_port");
+            let mut s = self.0.lock().unwrap();
+            let fallback = s.relay_front;
+            s.relay_front_answers.pop_front().unwrap_or(fallback)
         }
 
         fn clear_stranded_loopback(&self) -> Result<Vec<String>> {
@@ -1890,11 +1929,69 @@ mod tests {
             Some(public_port),
             "the port configs name must stay the forwarder's"
         );
+        assert_eq!(
+            mgr.ops.count("fronted_relay_port"),
+            1,
+            "a yes is not asked again: a failed second probe would repoint every config"
+        );
         assert!(
-            mgr.ops.index_of("relay_front") > mgr.ops.index_of("ensure_env_forwarder"),
+            mgr.ops.index_of("fronted_relay_port") > mgr.ops.index_of("ensure_env_forwarder"),
             "fronting is only asked once a forwarder is known to be up"
         );
         mgr.shutdown_engine().expect("shutdown");
+        drop(public);
+    }
+
+    /// The forwarder takes the public port between the enable's question and
+    /// the engine's bind. The engine lands on a fallback port, and the second
+    /// question sends that to `relay-engine-port` rather than into the file
+    /// every relay config names.
+    #[test]
+    fn a_claim_landing_between_question_and_bind_keeps_the_configs_on_the_forwarder() {
+        let _home = TestHome::set();
+        let public = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let public_port = public.local_addr().unwrap().port();
+        crate::proxy::relay::save_persisted_port(public_port).unwrap();
+        let mgr = leak(FakeOps::with(FakeState {
+            relay_front_answers: [None, Some(public_port)].into(),
+            ..FakeState::default()
+        }));
+
+        mgr.enable().expect("enable");
+
+        assert_eq!(mgr.ops.count("fronted_relay_port"), 2);
+        assert_eq!(
+            crate::proxy::relay::load_persisted_port(),
+            Some(public_port)
+        );
+        let engine_relay = crate::proxy::relay::load_engine_port().expect("recorded behind");
+        assert_ne!(engine_relay, public_port);
+        mgr.shutdown_engine().expect("shutdown");
+        drop(public);
+    }
+
+    /// Behind the forwarder, an engine relay of another Gate on the engine's
+    /// port is refused as another Gate - found on the engine-only path.
+    #[test]
+    fn another_gate_behind_the_forwarder_is_refused() {
+        let _home = TestHome::set();
+        let other = crate::proxy::test_relay::TestRelay::start(0);
+        let public = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let public_port = public.local_addr().unwrap().port();
+        crate::proxy::relay::save_persisted_port(public_port).unwrap();
+        crate::proxy::relay::save_engine_port(other.port()).unwrap();
+        let mgr = leak(FakeOps::with(FakeState {
+            relay_front: Some(public_port),
+            ..FakeState::default()
+        }));
+
+        let err = mgr
+            .enable()
+            .expect_err("another Gate holds the engine's relay port");
+        assert!(
+            format!("{err:#}").contains("another Gate Connect"),
+            "{err:#}"
+        );
         drop(public);
     }
 

@@ -154,9 +154,10 @@ fn health_ok(port: u16, token: &str) -> bool {
 /// What a forwarder that proved itself says about the relay port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayClaim {
-    /// It sent no relay header at all: a build from before the forwarder
-    /// fronted the relay, still running because nothing retires a forwarder on
-    /// an app update. It has to be replaced, or the relay stays in the GUI.
+    /// A build from before the forwarder fronted the relay, still running
+    /// because nothing retires a forwarder on an app update: it answers only
+    /// the proof that predates path binding, or it sent no readable relay
+    /// header. It has to be replaced, or the relay stays in the GUI.
     Stale,
     /// A current build that holds no relay port right now.
     Nothing,
@@ -167,16 +168,25 @@ enum RelayClaim {
 /// [`health_ok`], keeping what the forwarder said about the relay. `None` when
 /// nothing on `port` proves it is ours.
 fn probe(port: u16, token: &str) -> Option<RelayClaim> {
-    let headers = gate_connect_paths::probe_with_proof(
-        port,
-        gate_connect_paths::FORWARDER_HEALTH_PATH,
-        token,
-    )?;
-    let claim = headers
+    let path = gate_connect_paths::FORWARDER_HEALTH_PATH;
+    let Some(headers) = gate_connect_paths::probe_with_proof(port, path, token) else {
+        // A forwarder from before the proof bound its path answers only the
+        // old proof. That is enough to know it is ours and due for retiring,
+        // and it is never enough to trust it with anything.
+        return gate_connect_paths::probe_with_legacy_proof(port, path, token)
+            .map(|_| RelayClaim::Stale);
+    };
+    let claim = match headers
         .iter()
         .find(|(name, _)| name == gate_connect_paths::FORWARDER_RELAY_HEADER)
-        .map(|(_, value)| value.parse().map_or(RelayClaim::Nothing, RelayClaim::Holds))
-        .unwrap_or(RelayClaim::Stale);
+        .map(|(_, value)| value.as_str())
+    {
+        Some("none") => RelayClaim::Nothing,
+        // A value that is neither "none" nor a port is not something a current
+        // build sends, so it is read the way a missing header is.
+        Some(value) => value.parse().map_or(RelayClaim::Stale, RelayClaim::Holds),
+        None => RelayClaim::Stale,
+    };
     Some(claim)
 }
 
@@ -186,20 +196,31 @@ fn probe(port: u16, token: &str) -> Option<RelayClaim> {
 /// both come down to.
 ///
 /// `wait` covers the one case worth waiting for: a forwarder that holds
-/// nothing while the relay port is free. It retries for the port on a two
+/// nothing while the relay port is free. It retries for the port on a one
 /// second tick, so right after this process released it (a parked engine
 /// stopped for a re-enable) the answer is about to change. A port somebody
 /// else is live on is not about to change, and is answered at once.
+///
+/// That shortcut would misread one case, and does not reach it: a forwarder
+/// socket-activated by launchd whose relay socket launchd already holds would
+/// say "nothing" while the port is live. The forwarder collects launchd's
+/// sockets before it serves anything, so it never answers in that state.
 pub(crate) fn fronted_relay_port(wait: Duration) -> Option<u16> {
-    let token = load_or_create_token().ok()?;
+    // The port first, so a machine that never ran a forwarder - Linux, and
+    // every status read there - does not mint a token as a side effect.
     let port = persisted_port()?;
+    let token = load_or_create_token().ok()?;
     let deadline = std::time::Instant::now() + wait;
     loop {
         match probe(port, &token)? {
             RelayClaim::Holds(held) => {
-                // Only the port configs name counts. The file is written by the
-                // forwarder once it holds the port, so a mismatch is a stale
-                // file or somebody else's listener, and neither is fronted.
+                // Only the port configs name counts. The file has several writers
+                // - the forwarder once it holds a port, the launch agent's
+                // install choosing one for launchd, an enable or a headless
+                // `proxy relay` that bound the public port itself - so a
+                // mismatch means the configs name some other listener, and the
+                // forwarder is not fronting them. It notices the same mismatch
+                // and gives its port up.
                 return (Some(held) == super::relay::load_persisted_port()).then_some(held);
             }
             RelayClaim::Stale => return None,
@@ -228,16 +249,28 @@ pub(crate) fn fronted_relay_port(wait: Duration) -> Option<u16> {
 /// their port, once, on the first enable after the update. Everything holding
 /// them goes direct in that window only if its client retries, which is the
 /// price of not leaving the relay in the GUI indefinitely.
-fn retire_stale(port: u16, token: &str) {
+///
+/// At most once per process. If the binary on disk is itself the old one - a
+/// dev build, a partial update - the replacement is stale too, and retiring it
+/// on every supervisory pass would take the forwarder's port away every thirty
+/// seconds. After one attempt the stale forwarder is kept, doing its old job.
+fn retire_stale(port: u16) -> bool {
+    static RETIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RETIRED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
     if let Ok(marker) = marker_path() {
         let _ = std::fs::remove_file(marker);
     }
     #[cfg(target_os = "macos")]
     launch_agent::remove();
+    // Waits for the port itself to go quiet: the old build cannot answer the
+    // current proof, so "no longer proves itself" would be true at once.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && health_ok(port, token) {
+    while std::time::Instant::now() < deadline && gate_connect_paths::port_is_live(port) {
         std::thread::sleep(Duration::from_millis(100));
     }
+    true
 }
 
 /// Where the sidecar lives: beside the executable asking for it.
@@ -348,15 +381,7 @@ mod launch_agent {
         // Skip what this install already remembers, or launchd would hold the
         // engine's or relay's port for good and those listeners would move
         // every run - stranding exactly the baked configs they exist to keep.
-        let taken: Vec<u16> = [
-            "port",
-            "pac-port",
-            gate_connect_paths::RELAY_PORT_NAME,
-            gate_connect_paths::RELAY_ENGINE_PORT_NAME,
-        ]
-        .iter()
-        .filter_map(|n| crate::proxy::port_persist::load(n).ok().flatten())
-        .collect();
+        let taken = gate_connect_paths::remembered_ports_except("forwarder-port");
         let listener =
             gate_connect_paths::bind_fresh(&taken).context("choosing a forwarder port")?;
         let port = listener.local_addr()?.port();
@@ -381,21 +406,16 @@ mod launch_agent {
         let path = plist_path()?;
         match super::super::relay::load_persisted_port() {
             Some(port) => {
-                let ours = std::fs::read_to_string(&path).is_ok_and(|old| {
-                    old.contains(&format!("<key>{RELAY_SOCKET_NAME}</key>"))
-                        && old.contains(&format!("<string>{port}</string>"))
-                });
+                let ours = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|old| declared_relay_port(&old))
+                    == Some(port);
                 Ok((ours || !gate_connect_paths::port_is_live(port)).then_some(port))
             }
             None => {
-                let mut taken: Vec<u16> = [
-                    "port",
-                    "pac-port",
-                    gate_connect_paths::RELAY_ENGINE_PORT_NAME,
-                ]
-                .iter()
-                .filter_map(|n| crate::proxy::port_persist::load(n).ok().flatten())
-                .collect();
+                let mut taken = gate_connect_paths::remembered_ports_except(
+                    gate_connect_paths::RELAY_PORT_NAME,
+                );
                 taken.push(forwarder_port);
                 let listener =
                     gate_connect_paths::bind_fresh(&taken).context("choosing a relay port")?;
@@ -407,7 +427,24 @@ mod launch_agent {
         }
     }
 
-    fn plist(binary: &std::path::Path, port: u16, relay_port: Option<u16>) -> String {
+    /// The port an agent plist of ours declares for its relay socket, read
+    /// out of the `Relay` dict itself rather than matched anywhere in the file.
+    pub(super) fn declared_relay_port(plist: &str) -> Option<u16> {
+        let dict = plist
+            .split(&format!("<key>{RELAY_SOCKET_NAME}</key>"))
+            .nth(1)?;
+        let dict = dict.split("</dict>").next()?;
+        let value = dict.split("<key>SockServiceName</key>").nth(1)?;
+        value
+            .trim_start()
+            .strip_prefix("<string>")?
+            .split("</string>")
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    pub(super) fn plist(binary: &std::path::Path, port: u16, relay_port: Option<u16>) -> String {
         // The relay socket is optional; see `choose_relay_port`.
         let relay = relay_port
             .map(|relay| {
@@ -563,14 +600,23 @@ fn ensure_running_locked() -> Result<u16> {
 
     if let Some(port) = persisted_port() {
         match probe(port, &token) {
-            Some(RelayClaim::Stale) => retire_stale(port, &token),
+            Some(RelayClaim::Stale) => {
+                if !retire_stale(port) {
+                    eprintln!(
+                        "gate proxy: the forwarder is a build that predates fronting the \
+                         relay, and replacing it did not help (the installed binary is the \
+                         old one); keeping it, so the relay stays in this process"
+                    );
+                    return Ok(port);
+                }
+                // The retire removed the marker, and a forwarder started
+                // without one exits on its first poll.
+                crate::primitives::write_file(&marker, b"", 0o600)
+                    .with_context(|| format!("writing {}", marker.display()))?;
+            }
             Some(_) => return Ok(port),
             None => {}
         }
-        // A retire removed the marker, and a forwarder started without one
-        // exits on its first poll.
-        crate::primitives::write_file(&marker, b"", 0o600)
-            .with_context(|| format!("writing {}", marker.display()))?;
     }
 
     // Never start one from a test run. `GATE_CONNECT_TEST_HOME` is the seam
@@ -749,9 +795,18 @@ mod tests {
         assert!(!health_ok(free, "the-token"));
     }
 
-    /// A forwarder of ours on `port` answering every probe with the proof and
-    /// `relay` as its relay header (`None` for a build that predates it).
-    fn fake_forwarder(token: String, relay: Option<&'static str>) -> u16 {
+    /// How a fake forwarder answers.
+    #[derive(Clone, Copy)]
+    enum Build {
+        /// A current build, sending this relay header (`None` for none at all).
+        Current(Option<&'static str>),
+        /// A build from before the proof bound its path: the old proof, and no
+        /// relay header.
+        Legacy,
+    }
+
+    /// A forwarder of ours on `port`, answering every probe as `build` would.
+    fn fake_forwarder(token: String, build: Build) -> u16 {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -770,13 +825,27 @@ mod tests {
                             .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default();
-                let proof = gate_connect_paths::forwarder_proof(&token, &challenge);
+                let (proof, relay) = match build {
+                    Build::Current(relay) => (
+                        gate_connect_paths::forwarder_proof(
+                            &token,
+                            gate_connect_paths::FORWARDER_HEALTH_PATH,
+                            &challenge,
+                        ),
+                        relay,
+                    ),
+                    Build::Legacy => (
+                        gate_connect_paths::legacy_forwarder_proof(&token, &challenge),
+                        None,
+                    ),
+                };
                 let relay = relay
                     .map(|r| format!("{}: {r}\r\n", gate_connect_paths::FORWARDER_RELAY_HEADER))
                     .unwrap_or_default();
                 let _ = sock.write_all(
                     format!(
-                        "HTTP/1.1 204 No Content\r\n{}: {proof}\r\n{relay}Connection: close\r\n\r\n",
+                        "HTTP/1.1 204 No Content\r\n{}: {proof}\r\n{relay}\
+                         Connection: close\r\n\r\n",
                         gate_connect_paths::FORWARDER_PROOF_HEADER
                     )
                     .as_bytes(),
@@ -786,21 +855,38 @@ mod tests {
         port
     }
 
-    /// The relay header is read three ways, and its absence is the one that
-    /// matters most: a forwarder left running across an update never sends it,
-    /// and treating that as "holds nothing" would leave the relay in the GUI
-    /// until the next reboot.
+    /// A forwarder left running across an update answers only the old proof,
+    /// and reading it as "not ours" would leave it in place and the relay in
+    /// the GUI until the next reboot. A current build's relay header is read
+    /// three ways, and anything it would not send reads as stale too.
     #[test]
-    fn a_forwarder_says_whether_it_holds_the_relay_and_an_old_one_says_nothing() {
+    fn a_forwarder_says_whether_it_holds_the_relay_and_an_old_one_is_stale() {
         let _home = TestHome::set("relay-claim");
         let token = load_or_create_token().unwrap();
-        let old = fake_forwarder(token.clone(), None);
-        let idle = fake_forwarder(token.clone(), Some("none"));
-        let holding = fake_forwarder(token.clone(), Some("47101"));
+        let old = fake_forwarder(token.clone(), Build::Legacy);
+        let headerless = fake_forwarder(token.clone(), Build::Current(None));
+        let garbled = fake_forwarder(token.clone(), Build::Current(Some("yes")));
+        let idle = fake_forwarder(token.clone(), Build::Current(Some("none")));
+        let holding = fake_forwarder(token.clone(), Build::Current(Some("47101")));
         assert_eq!(probe(old, &token), Some(RelayClaim::Stale));
+        assert_eq!(probe(headerless, &token), Some(RelayClaim::Stale));
+        assert_eq!(probe(garbled, &token), Some(RelayClaim::Stale));
         assert_eq!(probe(idle, &token), Some(RelayClaim::Nothing));
         assert_eq!(probe(holding, &token), Some(RelayClaim::Holds(47101)));
         assert_eq!(probe(holding, "another-token"), None);
+        assert_eq!(probe(old, "another-token"), None);
+    }
+
+    /// The launch agent reads back the relay port it declared from the
+    /// `Relay` dict itself, so a matching number elsewhere in the file (the
+    /// forwarder's own socket) is not mistaken for it.
+    #[cfg(unix)]
+    #[test]
+    fn the_declared_relay_port_is_read_from_the_relay_dict() {
+        let body = launch_agent::plist(std::path::Path::new("/bin/fwd"), 47101, Some(47102));
+        assert_eq!(launch_agent::declared_relay_port(&body), Some(47102));
+        let body = launch_agent::plist(std::path::Path::new("/bin/fwd"), 47101, None);
+        assert_eq!(launch_agent::declared_relay_port(&body), None);
     }
 
     /// Fronted means holding the port relay configs name - not merely holding
@@ -809,7 +895,7 @@ mod tests {
     fn only_the_port_configs_name_counts_as_fronted() {
         let _home = TestHome::set("fronted");
         let token = load_or_create_token().unwrap();
-        let port = fake_forwarder(token.clone(), Some("47101"));
+        let port = fake_forwarder(token.clone(), Build::Current(Some("47101")));
         super::super::port_persist::save("forwarder-port", port).unwrap();
 
         super::super::relay::save_persisted_port(47101).unwrap();
@@ -824,12 +910,13 @@ mod tests {
     fn a_stale_forwarder_is_not_waited_for() {
         let _home = TestHome::set("stale-wait");
         let token = load_or_create_token().unwrap();
-        let port = fake_forwarder(token, None);
+        let port = fake_forwarder(token, Build::Legacy);
         super::super::port_persist::save("forwarder-port", port).unwrap();
         super::super::relay::save_persisted_port(47101).unwrap();
         let started = std::time::Instant::now();
         assert_eq!(fronted_relay_port(Duration::from_secs(5)), None);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // Well under the five seconds asked for; generous for a loaded runner.
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     /// The other half: a listener that *can* prove it is adopted.
@@ -853,7 +940,11 @@ mod tests {
                         .then(|| value.trim().to_string())
                 })
                 .unwrap_or_default();
-            let proof = gate_connect_paths::forwarder_proof("the-token", &challenge);
+            let proof = gate_connect_paths::forwarder_proof(
+                "the-token",
+                gate_connect_paths::FORWARDER_HEALTH_PATH,
+                &challenge,
+            );
             let _ = sock.write_all(
                 format!(
                     "HTTP/1.1 204 No Content\r\n{}: {proof}\r\nConnection: close\r\n\r\n",

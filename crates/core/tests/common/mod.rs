@@ -71,7 +71,9 @@ impl RelayStub {
                         .join("forwarder.token"),
                 )
                 .unwrap_or_default();
-                let proof = gate_connect_paths::forwarder_proof(token.trim(), &challenge);
+                // The proof binds the path it was asked on.
+                let path = head.split_whitespace().nth(1).unwrap_or_default();
+                let proof = gate_connect_paths::forwarder_proof(token.trim(), path, &challenge);
                 let resp = format!(
                     "HTTP/1.1 204 No Content\r\n{}: {proof}\r\n{}: {}\r\n\
                      Content-Length: 0\r\nConnection: close\r\n\r\n",

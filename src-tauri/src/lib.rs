@@ -1818,8 +1818,9 @@ fn reveal_popover(app: tauri::AppHandle) {
 /// process and dies with it, so those tools hard-fail until Gate Connect runs
 /// again - unless the forwarder holds the relay port, which it normally does,
 /// and then those tools reach their own provider directly and are not on the
-/// list (`proxy::address_dies_with_gui`). On Linux the engine lives in a detached helper daemon that outlives
-/// the GUI (see core's `manager_linux`), so the relay port keeps serving
+/// list (`proxy::address_dies_with_gui`). On Linux the engine lives in a
+/// detached helper daemon that outlives the GUI (see core's `manager_linux`),
+/// so the relay port keeps serving
 /// after a quit and there is nothing to warn about - quit plainly. (In OAuth
 /// mode the daemon serves the last-pushed access token, so routing degrades
 /// once it expires; still not the dead-port failure the warning describes.)
@@ -2906,9 +2907,9 @@ pub fn run() {
                 // relay where the forwarder does not hold it - leaving the tools
                 // that name one pointed at a port with nothing behind it, which
                 // is the state the revert exists to prevent. A relay the
-                // forwarder holds survives and is not reverted. Doing it here makes every path safe by default and
-                // leaves the panel to do what it is for, which is offering the
-                // *other* choice.
+                // forwarder holds survives and is not reverted. Doing it here
+                // makes every path safe by default and leaves the panel to do
+                // what it is for, which is offering the *other* choice.
                 //
                 // Before `disable_quiet` below, deliberately: the revert decides
                 // what to put back by comparing each config against the
