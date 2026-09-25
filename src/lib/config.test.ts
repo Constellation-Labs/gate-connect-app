@@ -150,7 +150,7 @@ describe("the tray popover's opener ACL covers what its menu opens", () => {
     expect(patterns.length).toBeGreaterThan(0);
   });
 
-  /** What `TrayMenu` can open: the dashboard root, support, and docs. */
+  /** What `OverflowMenu` can open: the dashboard root, support, and docs. */
   function trayUrlsFor(gatewayBaseUrl: string): [string, string][] {
     const links = dashboardLinks(gatewayBaseUrl);
     const rows: [string, string][] = [["docs", GATE_DOCS_URL]];

@@ -1681,8 +1681,10 @@ New glyphs needed: `shieldBan`, `triangleAlert`, `refreshCw`. `shieldCheck` and
 
 ### Phase 4 - Topbar and window chrome (DONE)
 
-`src/components/gc/Topbar.tsx` - `Topbar`, `TopnavMenu`, `TopnavAction`, plus
-private `WindowControls`, `TrafficLight`, `OutlineIconButton`. Glyphs added:
+`src/components/gc/Topbar.tsx` - `Topbar`, plus private `WindowControls`,
+`TrafficLight`, `OutlineIconButton`. The overflow menu and its `MenuAction`
+moved to `OverflowMenu.tsx` on 2026-09-24, shared with the tray (it was
+`TopnavMenu` / `TopnavAction` here and `TrayMenu` in `Tray.tsx`). Glyphs added:
 `ellipsis`, `minimize2`, `squareArrowOutUpRight`, `headset`, `bookOpenText`.
 Reuses the existing `ConstellationHexMark` at 24px - its aspect ratio (0.8628)
 matches the Figma lockup's 20.708x24 exactly.

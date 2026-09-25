@@ -3,7 +3,7 @@ import { RoutingBanner, UpdateBanner } from "./banners";
 import { Sidebar } from "./Sidebar";
 import type { InventoryState, SidebarGroup, SidebarView } from "./Sidebar";
 import { Topbar } from "./Topbar";
-import type { TopnavAction } from "./Topbar";
+import type { MenuAction } from "./OverflowMenu";
 
 /**
  * The 1024x720 window: chrome, the banner stack, the navigation rail, and
@@ -37,7 +37,7 @@ export function AppShell({
 }: {
   menuOpen: boolean;
   onMenuToggle: () => void;
-  onMenuSelect: (action: TopnavAction) => void;
+  onMenuSelect: (action: MenuAction) => void;
   /** Omit when no update is pending; the banner is not rendered at all. */
   update?: { version: string; onUpdate: () => void; onDismiss: () => void };
   routing: {

@@ -167,7 +167,7 @@ import type {
   SidebarGroup,
   SidebarView,
 } from "./components/gc/Sidebar";
-import type { TopnavAction } from "./components/gc/Topbar";
+import type { MenuAction } from "./components/gc/OverflowMenu";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
 import { setRoutingContext } from "./lib/errorContext";
 import type { SendDiagnosticsState } from "./components/gc/dialogs";
@@ -2437,7 +2437,7 @@ export function NewUiApp() {
         // No `onContactSupport`, so the row is omitted - and this is NOT the
         // same call as the topnav's. No Settings frame draws a Support row, so
         // there is nothing to match here; the menu entry is drawn in two places
-        // and ships (see `TopnavAction`). Draw one and this gets it too.
+        // and ships (see `MenuAction`). Draw one and this gets it too.
         //
         // The address is no longer the reason: support resolved to the
         // dashboard's Overview page on 2026-09-07. This omission is now purely
@@ -2799,7 +2799,7 @@ export function NewUiApp() {
   );
 
   const onMenuSelect = useCallback(
-    (action: TopnavAction) => {
+    (action: MenuAction) => {
       setMenuOpen(false);
       if (action === "dashboard") openDashboard((d) => d.root);
       // Support is the dashboard's Overview page - that is where the support

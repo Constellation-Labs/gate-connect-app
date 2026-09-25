@@ -3,11 +3,11 @@ import type { ReactNode, RefObject } from "react";
 import { BaseSwitch, Skeleton, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
-import type { IconName } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
+import { OverflowMenu } from "./OverflowMenu";
+import type { MenuAction } from "./OverflowMenu";
 import { countsAsRouted, STATUS_TEXT, statusDetail } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
-import { useRovingMenu } from "../../lib/useRovingMenu";
 import { routingState, showsFraction } from "../../lib/routingState";
 
 /**
@@ -60,8 +60,6 @@ import { routingState, showsFraction } from "../../lib/routingState";
  *   menu item present on one surface and absent on the other.
  */
 
-export type TrayMenuAction = "dashboard" | "support" | "docs" | "quit";
-
 export function Tray({
   engine,
   groups,
@@ -113,7 +111,7 @@ export function Tray({
   onExpand: () => void;
   menuOpen: boolean;
   onMenuToggle: () => void;
-  onMenuSelect: (action: TrayMenuAction) => void;
+  onMenuSelect: (action: MenuAction) => void;
   /** An interrupted routing operation that has not finished (AG-570).
    *
    * The tray gets the action, not just the fact: AC 4 requires the recovery to
@@ -248,7 +246,8 @@ export function Tray({
           expanded={menuOpen}
         />
         {menuOpen && (
-          <TrayMenu
+          <OverflowMenu
+            surface="tray"
             onSelect={onMenuSelect}
             onDismiss={onMenuToggle}
             triggerRef={menuTrigger}
@@ -546,85 +545,6 @@ function CliCard({ cli }: { cli: { on: boolean } }) {
         {cli.on ? "On" : "Off"}
       </span>
     </div>
-  );
-}
-
-/** The footer's overflow menu (744:38192), opening upward over the list. Same
- * anatomy as the topbar's, plus the Quit entry the tray owes its users - it is
- * the popover surface, and the drawn menu carries it in destructive ink with
- * no external-link glyph (the rendered frame drops the one its metadata
- * carries: quitting does not leave the app).
- *
- * Keyboard and focus are `useRovingMenu`'s, shared with the topbar's copy: the
- * two menus draw differently and behave identically, and the behaviour has one
- * home so they cannot diverge again. This owns the markup and the scrim. */
-function TrayMenu({
-  onSelect,
-  onDismiss,
-  triggerRef,
-}: {
-  onSelect: (action: TrayMenuAction) => void;
-  /** Close without choosing: Escape, or a click anywhere else. */
-  onDismiss: () => void;
-  /** The button that opened this; focus returns to it on close. See
-   *  `useRovingMenu`. */
-  triggerRef?: RefObject<HTMLButtonElement>;
-}) {
-  const external: { action: TrayMenuAction; icon: IconName; label: string }[] = [
-    { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
-    { action: "support", icon: "headset", label: "Contact support" },
-    { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
-  ];
-  const { panel, current, onKeyDown } = useRovingMenu(triggerRef, onDismiss);
-
-  return (
-    <>
-      {/* An invisible scrim, so a click outside closes the menu *and nothing
-          else happens*. Without it the menu sat over the app list with no
-          dismissal at all: clicking a row still visible beside it toggled that
-          app's routing with the menu open, which is a routing change the user
-          did not ask for while trying to dismiss something. The design draws no
-          scrim, and this one is not a visual change - it paints nothing. */}
-      <div aria-hidden className="fixed inset-0 z-10" onClick={onDismiss} />
-    <div
-      ref={panel}
-      role="menu"
-      // Without a name this announces as a bare "menu". Named for the control
-      // that opens it, so it reads "More, menu".
-      aria-label="More"
-      onKeyDown={onKeyDown}
-      className="absolute bottom-12 right-4 z-20 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-md"
-    >
-      {external.map(({ action, icon, label }, i) => (
-        <button
-          key={action}
-          type="button"
-          role="menuitem"
-          // Roving: only the current item is a tab stop, so Tab leaves the menu
-          // as a unit and the arrows move within it.
-          tabIndex={current === i ? 0 : -1}
-          onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-        >
-          <span className="flex items-center gap-2">
-            <Icon name={icon} size={14} />
-            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
-          </span>
-          <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
-        </button>
-      ))}
-      <button
-        type="button"
-        role="menuitem"
-        tabIndex={current === external.length ? 0 : -1}
-        onClick={() => onSelect("quit")}
-        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <Icon name="logOut" size={14} />
-        <span className="text-base-xs font-medium leading-4">Quit Gate Connect</span>
-      </button>
-    </div>
-    </>
   );
 }
 

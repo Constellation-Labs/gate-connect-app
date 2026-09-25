@@ -4,16 +4,12 @@ import type { KeyboardEvent, RefObject } from "react";
 /**
  * The keyboard and focus behaviour a `role="menu"` panel owes its users.
  *
- * Extracted because the app draws that panel twice - `TrayMenu` in the
- * popover's footer, `TopnavMenu` in the window's topbar - and the two are
- * deliberately NOT one component: they draw different shadows, paddings, glyph
- * sizes and corners off different frames. What is not different is any of this,
- * and the copies proved it by diverging. The topbar's menu shipped with
- * `role="menu"` promising arrow-key navigation it did not have, no dismissal
- * but the button that opened it, and every item in the tab order, while the
- * tray's copy had all three - because the fix was made on one surface and not
- * the other. So the frames win on everything they draw, and the behaviour has
- * one home.
+ * Extracted when the app drew that panel as two components, one in the
+ * popover's footer and one in the window's topbar, and the copies diverged:
+ * the topbar's shipped with `role="menu"` promising arrow-key navigation it
+ * did not have, no dismissal but the button that opened it, and every item in
+ * the tab order, while the tray's had all three - because the fix was made on
+ * one surface and not the other. Both are `OverflowMenu` now.
  *
  * The caller supplies the markup and the scrim; this supplies the panel ref,
  * the roving tab stop and the key handler.
