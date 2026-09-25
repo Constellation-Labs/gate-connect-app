@@ -2080,38 +2080,10 @@ pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: 
         && matches!(decide(domains, host, path), Decision::Rewrite { .. })
 }
 
-/// Does the request target carry a `.` or `..` path segment?
-///
-/// It matters because the relay's `classify` (and [`decide`] for the MITM
-/// engine) decides Rewrite vs Passthrough by
-/// `starts_with` on the raw path, while the URL we send is built by
-/// concatenation and handed to `reqwest`, whose `Url::parse` collapses dot
-/// segments per the WHATWG rules. Those two readings disagree:
-/// `/anthropic/v1/../../x` classifies as Rewrite - it starts with the `/v1/`
-/// prefix - gets the live Gate credential injected, and is then sent to
-/// `<gateway>/x`, a path `classify` would never have credentialed. Rejecting is
-/// preferred over normalizing because it keeps one string all the way through
-/// rather than adding a second one to keep in step.
-///
-/// The encoded spellings count too: the URL parser treats `%2e` as a dot when it
-/// looks for these segments, so a check that only matched the literal form would
-/// be the same bug with an extra step.
-///
-/// Split on `\` as well as `/`: for `http` and `https` URLs the parser treats
-/// a backslash as a path separator, so `/v1/..\..\x` collapses exactly as
-/// `/v1/../../x` does. The relay's `path_survives_parsing` is the backstop behind this
-/// for any spelling neither names.
-pub(crate) fn has_dot_segment(path_and_query: &str) -> bool {
-    let path = path_and_query
-        .split_once('?')
-        .map(|(p, _)| p)
-        .unwrap_or(path_and_query);
-    path.split(['/', '\\']).any(|segment| {
-        [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]
-            .iter()
-            .any(|form| segment.eq_ignore_ascii_case(form))
-    })
-}
+// The dot-segment rule the relay, the engine and the forwarder all apply. One
+// definition, in `gate-connect-paths`, because it is a security boundary and
+// the forwarder cannot link this crate.
+pub(crate) use gate_connect_paths::has_dot_segment;
 
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
     // A path hiding a dot segment is never rewritten: the path classified here

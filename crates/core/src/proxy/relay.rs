@@ -766,7 +766,7 @@ fn resolve_route(
     headers: &HeaderMap,
 ) -> Result<Routed, (StatusCode, String)> {
     // The path we classify has to be the path we send, and it is not if a dot
-    // segment survives to the URL parser - see [`super::has_dot_segment`].
+    // segment survives to the URL parser - see [`gate_connect_paths::has_dot_segment`].
     if super::has_dot_segment(path_and_query) {
         return Err((
             StatusCode::BAD_REQUEST,
