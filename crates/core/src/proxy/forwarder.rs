@@ -34,25 +34,44 @@ fn proxy_file(name: &str) -> Result<PathBuf> {
 /// Marker file whose presence means "the forwarder should be running". A file
 /// rather than a signal: the same on all three platforms, and it cannot
 /// mis-target a recycled PID.
+///
+/// The forwarder reads only whether it exists. Its *content* is for this
+/// module: empty is wanted, [`DRAINING`] is a forwarder left to serve out the
+/// login session after a disconnect ([`drain`]).
 fn marker_path() -> Result<PathBuf> {
     proxy_file("forwarder-wanted")
 }
+
+/// Marker content meaning "keep serving what still holds our address, and ask
+/// nobody to start another". See [`drain`].
+const DRAINING: &[u8] = b"draining";
 
 fn token_path() -> Result<PathBuf> {
     proxy_file("forwarder.token")
 }
 
 /// Whether anything has asked for a forwarder and nothing has since asked for
-/// it to go: the marker is present. [`stop`] is the only thing that removes
-/// it, so a `false` here after an enable means "the user asked Gate to let go
-/// of this machine", which is exactly what a supervisor must not undo.
+/// it to go: the marker is present and not [`DRAINING`]. [`stop`] removes it
+/// and [`drain`] marks it, so a `false` here after an enable means "the user
+/// asked Gate to let go of this machine", which is exactly what a supervisor
+/// must not undo.
 ///
 /// Only ever read under [`ENSURE_LOCK`], by [`ensure_running_supervised`].
 /// Read outside it the answer is worth nothing: a `stop` landing between the
 /// question and the marker write that follows would be overwritten by the
 /// answer.
 fn wanted() -> bool {
-    marker_path().map(|p| p.exists()).unwrap_or(false)
+    marker_body().is_some_and(|body| body != DRAINING)
+}
+
+/// Whether the last word on the forwarder was [`drain`].
+fn draining() -> bool {
+    marker_body().is_some_and(|body| body == DRAINING)
+}
+
+/// The marker's content, `None` when there is no marker.
+fn marker_body() -> Option<Vec<u8>> {
+    std::fs::read(marker_path().ok()?).ok()
 }
 
 /// Serialises every write to the marker, the forwarder process and (on macOS)
@@ -570,6 +589,41 @@ mod launch_agent {
         Ok(port)
     }
 
+    /// Remove the agent's plist and leave the loaded job alone, so launchd
+    /// keeps holding the sockets and starting the forwarder on a connection
+    /// until the login session ends, and loads nothing at the next login.
+    /// Checked on a real launchd by `tests/launchd_plist_removed.rs`.
+    pub(super) fn forget() {
+        if let Ok(path) = plist_path() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Whether launchd has the job loaded, plist or not.
+    fn loaded() -> bool {
+        launchctl(&["print", &format!("{}/{LABEL}", domain())])
+    }
+
+    /// Write back the plist [`forget`] deleted, without touching the loaded
+    /// job. Only when the job is still loaded and the file is gone: a
+    /// forwarder spawned directly after the agent failed has no agent to
+    /// restore, and writing one here would create an agent that never worked.
+    pub(super) fn restore_file(fronting: Option<u16>) {
+        let Ok(path) = plist_path() else { return };
+        if path.exists() || !loaded() {
+            return;
+        }
+        let written = forwarder_binary().and_then(|binary| {
+            let port = choose_port()?;
+            let relay_port = choose_relay_port(port, fronting)?;
+            std::fs::write(&path, plist(&binary, port, relay_port))
+                .with_context(|| format!("writing {}", path.display()))
+        });
+        if let Err(e) = written {
+            eprintln!("gate proxy: could not restore the forwarder launch agent ({e:#})");
+        }
+    }
+
     /// Remove the agent entirely. Used when it did not work, and when the user
     /// asks Gate to let go of the machine.
     pub(super) fn remove() {
@@ -623,6 +677,8 @@ pub(crate) fn ensure_running_supervised() -> Supervision {
 
 /// The body of an ensure. Callers hold [`ENSURE_LOCK`].
 fn ensure_running_locked() -> Result<u16> {
+    // Read before the write below, which is what cancels a drain.
+    let was_draining = draining();
     let marker = marker_path()?;
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -630,6 +686,23 @@ fn ensure_running_locked() -> Result<u16> {
     crate::primitives::write_file(&marker, b"", 0o600)
         .with_context(|| format!("writing {}", marker.display()))?;
     let token = load_or_create_token()?;
+
+    // A drain deleted the agent's plist and left the job loaded, so a
+    // forwarder answering below is still launchd's. Put the file back, or the
+    // probe returns early and the next login loads nothing: relay tools would
+    // find no one on their port until Gate ran again. The file only, because
+    // the loaded job already holds these sockets and a bootstrap would bounce
+    // it.
+    #[cfg(target_os = "macos")]
+    if was_draining {
+        let fronting = persisted_port().and_then(|port| match probe(port, &token) {
+            Some(RelayClaim::Holds(held)) => Some(held),
+            _ => None,
+        });
+        launch_agent::restore_file(fronting);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = was_draining;
 
     if let Some(port) = persisted_port() {
         match probe(port, &token) {
@@ -748,8 +821,8 @@ fn await_health(port: u16, token: &str) -> bool {
 /// Best-effort and promptless. Deliberately *not* called from `disable`: a
 /// forwarder that went away when routing was switched off would strand exactly
 /// the processes it exists to protect. The callers are the explicit "Gate
-/// should let go of this machine" paths - signing out, untrusting the CA, and
-/// the quit that disconnects the tools.
+/// should let go of this machine" paths - signing out and untrusting the CA.
+/// The quit that disconnects the tools used to be one; it [`drain`]s instead.
 ///
 /// Takes [`ENSURE_LOCK`] so it cannot interleave with an ensure, which would
 /// otherwise write the marker back moments after this removed it. That means
@@ -766,6 +839,54 @@ pub fn stop() {
     // keeps re-creating it.
     #[cfg(target_os = "macos")]
     launch_agent::remove();
+}
+
+/// Let go of the machine without breaking what already holds our address.
+///
+/// [`stop`] ends the forwarder at once, so every tool still running with its
+/// address in memory - a proxy URL, a relay base URL, an exported
+/// `HTTPS_PROXY` - gets connection refused until it is reopened, and reopened
+/// again once Gate reconnects it. This leaves the forwarder serving them,
+/// direct as it does after any quit, until the login session ends: every such
+/// process was started in this session and ends with it, so logout is the one
+/// moment nothing can still need it. Nothing starts another at the next login.
+///
+/// - The marker stays, so the running forwarder does not exit, and is marked
+///   [`DRAINING`], so a supervisory pass declines to respawn one. The next
+///   foreground [`ensure_running`] writes it back to wanted.
+/// - macOS: the agent's plist goes and the job stays loaded, so launchd keeps
+///   the sockets and still starts the forwarder on a connection until logout,
+///   and has no file to load at the next login.
+/// - Windows: nothing else to do. The forwarder is a detached process nothing
+///   but Gate starts, and it ends with the session.
+///
+/// Only the quit that disconnects the tools uses this. Signing out, untrusting
+/// the CA and the uninstall still [`stop`].
+pub fn drain() {
+    let _serial = ENSURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Ok(path) = marker_path() else { return };
+    // Only a forwarder that was wanted is drained. With no marker there is
+    // nothing running to keep, and writing one would leave a marker behind
+    // that no forwarder asked for.
+    if !path.exists() {
+        return;
+    }
+    if let Err(e) = crate::primitives::write_file(&path, DRAINING, 0o600) {
+        // A marker that cannot be marked would read as wanted, and a
+        // supervisor would keep the forwarder and its agent alive. Stopping
+        // is the old behaviour and the safe direction.
+        eprintln!(
+            "gate proxy: marking the forwarder as draining failed ({e:#}); stopping it instead"
+        );
+        let _ = std::fs::remove_file(path);
+        #[cfg(target_os = "macos")]
+        launch_agent::remove();
+    } else {
+        #[cfg(target_os = "macos")]
+        launch_agent::forget();
+    }
 }
 
 #[cfg(test)]
@@ -1031,6 +1152,71 @@ mod tests {
         assert_eq!(fronted_relay_port(Duration::from_secs(5)), None);
         // Well under the five seconds asked for; generous for a loaded runner.
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    /// The drain keeps the marker - the forwarder reads only whether it
+    /// exists, so a running one keeps serving - while a supervisory pass reads
+    /// it as not wanted and declines to respawn anything.
+    #[test]
+    fn a_drained_forwarder_keeps_its_marker_and_is_not_supervised() {
+        let _home = TestHome::set("drain");
+        let marker = marker_path().unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        crate::primitives::write_file(&marker, b"", 0o600).unwrap();
+        assert!(wanted());
+
+        drain();
+
+        assert!(
+            marker.exists(),
+            "a drain that removed the marker would stop the forwarder"
+        );
+        assert!(draining());
+        assert!(!wanted());
+        assert!(matches!(
+            ensure_running_supervised(),
+            Supervision::NotWanted
+        ));
+    }
+
+    /// Nothing to drain means nothing is written: a marker no forwarder asked
+    /// for would be left behind for good.
+    #[test]
+    fn draining_with_no_forwarder_writes_nothing() {
+        let _home = TestHome::set("drain-none");
+        drain();
+        assert!(!marker_path().unwrap().exists());
+        assert!(!draining());
+    }
+
+    /// The next start cancels a drain: a foreground ensure finding the drained
+    /// forwarder still answering adopts it and marks it wanted again.
+    #[test]
+    fn an_ensure_after_a_drain_wants_the_forwarder_again() {
+        let _home = TestHome::set("drain-ensure");
+        let token = load_or_create_token().unwrap();
+        let port = fake_forwarder(token, Build::Current(Some("none")));
+        super::super::port_persist::save("forwarder-port", port).unwrap();
+        let marker = marker_path().unwrap();
+        crate::primitives::write_file(&marker, b"", 0o600).unwrap();
+        drain();
+        assert!(draining());
+
+        assert_eq!(ensure_running().unwrap(), port);
+        assert!(wanted());
+        assert!(!draining());
+    }
+
+    /// A stop after a drain still ends it: the marker goes either way.
+    #[test]
+    fn a_stop_after_a_drain_removes_the_marker() {
+        let _home = TestHome::set("drain-stop");
+        let marker = marker_path().unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        crate::primitives::write_file(&marker, b"", 0o600).unwrap();
+        drain();
+        stop();
+        assert!(!marker.exists());
     }
 
     /// The other half: a listener that *can* prove it is adopted.
