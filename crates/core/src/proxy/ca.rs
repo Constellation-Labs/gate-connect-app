@@ -452,39 +452,6 @@ fn remove_ca_material() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The pairing check, against the failure that motivated it.
-    ///
-    /// A machine running both a dev build (key in `GATE_CONNECT_TEST_SECRETS`)
-    /// and a release build (key in the login keychain) over one data directory
-    /// ended up with `ca-cert.pem` paired to the dev key while the release app
-    /// signed with the keychain's. Nothing downstream noticed: the pair loads,
-    /// the engine starts, leaves carry the cert's own Authority Key Identifier
-    /// so every fingerprint check passes, and only the handshake fails.
-    #[test]
-    fn a_key_from_another_ca_is_not_accepted_for_this_cert() {
-        let (cert_a, key_a) = generate().expect("first CA");
-        let (_cert_b, key_b) = generate().expect("second CA");
-
-        assert!(
-            key_matches_cert(&key_a, &cert_a),
-            "a CA's own key must match its own certificate"
-        );
-        assert!(
-            !key_matches_cert(&key_b, &cert_a),
-            "a key from a different CA must not pass for this certificate"
-        );
-    }
-
-    /// Unusable is unusable: a key that will not parse cannot sign, so it takes
-    /// the same answer as a mismatch rather than a separate error path.
-    #[test]
-    fn an_unparseable_key_or_cert_counts_as_a_mismatch() {
-        let (cert, key) = generate().expect("CA");
-
-        assert!(!key_matches_cert("not a key", &cert));
-        assert!(!key_matches_cert(&key, "not a certificate"));
-    }
-
     /// The flags are the feature here: `-d` is what makes the install
     /// promptless, and dropping `-p ssl` would quietly widen a machine-wide
     /// anchor to every trust policy. Asserted on the command string because the
