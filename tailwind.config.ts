@@ -498,7 +498,7 @@ export default {
         // pills that also draw at 12px, and `tracking-heading-16` winning on
         // the card and section headings: `heading/16` is -1%, a different style
         // from the `copy/16` this `base` default is set for.
-        "base-2xs": "0.625rem", // 10px - app row status line
+        "base-2xs": "0.625rem", // 10px - tray app row status line
         "base-xs": ["0.75rem", { letterSpacing: "-0.12px" }], // 12px - label/copy-12
         // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
         // (30px) and 4xl (36px), so it needs a stop of its own.
