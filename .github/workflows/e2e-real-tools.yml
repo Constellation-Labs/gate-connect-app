@@ -73,14 +73,6 @@ jobs:
         run: |
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          # Run it once here, before the proxy is up. A fresh install can leave
-          # an unfinished source update that the launcher completes on its first
-          # invocation - rebuilding the TUI, syncing skills, installing
-          # agent-browser - and when that first invocation was run.sh's timed
-          # api-key check, Hermes spent its turn updating and never sent the
-          # request, so the phase failed with nothing captured while the oauth
-          # phase after it passed. Best-effort: a failure here is not the test.
-          "$HOME/.local/bin/hermes" --version || true
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on

@@ -60,6 +60,19 @@ rm -rf "$WORK"
 CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
+# Hermes keeps its runtime (Python, venv, the checkout) under HERMES_HOME, which
+# defaults to ~/.hermes. The workflow installed it under the runner's real home,
+# so once HOME moves below, a fresh ~/.hermes has no runtime and Hermes' first
+# run bootstraps one - a new venv and tens of MB of downloads - inside the timed
+# api-key check, with the proxy up. It never sent its request, and the phase
+# failed with nothing captured while the oauth run after it passed. Pointing
+# HERMES_HOME at the real install keeps that out of the test. Gate honours the
+# same variable (`env::hermes_config_dir`), so it writes Hermes' config where
+# Hermes reads it. The runner is throwaway, so its real ~/.hermes may be written.
+if [ "$OS" != "Windows" ] && [ -d "$HOME/.hermes" ]; then
+  export HERMES_HOME="$HOME/.hermes"
+fi
+
 # Redirect home so gate-connect AND the tools agree on a throwaway config root.
 export HOME="$WORK/home"
 mkdir -p "$HOME"
@@ -1262,9 +1275,11 @@ run_engine_tools() {
   elif [ -z "$ENGINE_ON" ]; then
     echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
   else
-    mkdir -p "$HOME/.hermes"
+    # HERMES_HOME when set (see where HOME is redirected), as Hermes and Gate read.
+    hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
-      > "$HOME/.hermes/config.yaml"
+      > "$hermes_home/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
     run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
