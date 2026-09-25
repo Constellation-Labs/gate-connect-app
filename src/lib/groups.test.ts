@@ -3,7 +3,6 @@ import type { ClientId, Credential, ProxyDomain, Scope, Tool, Verdict } from "./
 import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
-  PROXY_REOPEN_ADVICE,
   BAND_LABELS,
   isProviderEndpoint,
   SECTIONS,
@@ -12,10 +11,8 @@ import {
   cascadeTargets,
   groupSummary,
   hasBrowserSurface,
-  hostReloadAdvice,
   isSettingsManaged,
   notInstalledSections,
-  proxyReopenAdvice,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -739,29 +736,6 @@ describe("cascadeTargets", () => {
  * other two, which is why it is a function of the platform rather than a
  * sentence somebody could paste into a shared component.
  */
-describe("proxyReopenAdvice", () => {
-  it("is Linux-only, because that is where the environment channel is", () => {
-    // Windows refreshes WinINET after the registry write and macOS's auto-proxy
-    // URL is applied to new connections as it changes, so on both the advice
-    // would be wrong rather than merely cautious.
-    expect(proxyReopenAdvice("proxy", "linux")).toBe(PROXY_REOPEN_ADVICE);
-    expect(proxyReopenAdvice("proxy", "macos")).toBeUndefined();
-    expect(proxyReopenAdvice("proxy", "windows")).toBeUndefined();
-    expect(proxyReopenAdvice("proxy", "unknown")).toBeUndefined();
-  });
-
-  it("says nothing on a config-routed row, on any platform", () => {
-    // Those have a file to re-read and a verdict that measures it. Advice beside
-    // a reading would invite the reader to weigh a guess against a measurement.
-    expect(proxyReopenAdvice("config", "linux")).toBeUndefined();
-  });
-
-  it("says out loud that it is not a reading", () => {
-    // Principle 6 in the other direction: this is the one routing line with
-    // nothing behind it, so it has to admit that in its own words.
-    expect(PROXY_REOPEN_ADVICE.body).toContain("advice rather than a reading");
-  });
-});
 
 /**
  * Which rows a browser tab can be sitting on, and what to say when one is
@@ -800,52 +774,6 @@ describe("hasBrowserSurface", () => {
   });
 });
 
-describe("hostReloadAdvice", () => {
-  const cascade = (...domains: ProxyDomain[]) =>
-    buildGroups([], domains, ON).flatMap((g) => g.members);
-
-  it("names the host, because that is the only part the user can recognise", () => {
-    const advice = hostReloadAdvice(cascade(sessionDomain()));
-    expect(advice?.body).toContain("claude.ai");
-  });
-
-  it("names the host and asks for the reload", () => {
-    // This used to assert "go around Gate", on the argument that a sentence
-    // saying only "reload" reads as housekeeping rather than as traffic
-    // escaping. The copy was shortened on request (2026-09-23): the title
-    // already says pages need reloading, and the middle clause still says the
-    // page keeps its old connection, so the consequence is carried without
-    // spelling out the bypass. The host stays load-bearing - it is the only
-    // part of this the reader can recognise on their own machine.
-    const advice = hostReloadAdvice(cascade(sessionDomain()));
-    expect(advice?.body).toContain("keeps the connection it opened before");
-    expect(advice?.body).toContain("please reload it");
-  });
-
-  it("says nothing when what moved has no browser surface", () => {
-    // A section of config rows, and the subscription row on its own. Both would
-    // otherwise get a notice telling them to reload a page that does not exist.
-    expect(hostReloadAdvice(cascade(domain()))).toBeUndefined();
-    expect(
-      hostReloadAdvice(
-        cascade(sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"] })),
-      ),
-    ).toBeUndefined();
-  });
-
-  it("names one host once when two surfaces share it", () => {
-    // `chatgpt-apps` and `chatgpt` are both chatgpt.com, and a section switch
-    // moves them together. "chatgpt.com, chatgpt.com" reads as a bug in the
-    // sentence rather than as two surfaces.
-    const advice = hostReloadAdvice(
-      cascade(
-        sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
-        sessionDomain({ slug: "chatgpt", hosts: ["chatgpt.com"], client: "chatgpt" }),
-      ),
-    );
-    expect(advice?.body.match(/chatgpt\.com/g)).toHaveLength(1);
-  });
-});
 
 /**
  * The certificate's own restart note, which is a different fact from the proxy

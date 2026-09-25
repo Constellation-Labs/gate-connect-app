@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   Account,
-  PendingRestore,
   ProxyState,
   Tool,
   Verdict,
@@ -12,13 +11,10 @@ import {
   getAccount,
   getAccountKeyPrefix,
   listTools,
-  pendingRestore,
   proxyStatus,
   routingStartupPending,
   pinPopover,
   requestQuit,
-  resumeRestore,
-  requestRecoveryDetails,
   requestSwitchOrg,
   revealMainWindow,
   unpinPopover,
@@ -54,7 +50,7 @@ import { Tray } from "./components/gc/Tray";
 import type { MenuAction } from "./components/gc/OverflowMenu";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
 import { brandMarkFor, brandMarkForSection } from "./components/gc/BrandMark";
-import { ErrorBanner, NoteBanner } from "./components/gc/banners";
+import { ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import {
   reopenSubjects,
@@ -115,10 +111,6 @@ export function TrayApp() {
    * nothing would ever clear. */
   const [starting, setStarting] = useState(false);
   const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
-  /** What an interrupted restore still owes. Empty in the normal case, and the
-   * card is omitted with it. */
-  const [pending, setPending] = useState<PendingRestore | null>(null);
-  const [resuming, setResuming] = useState(false);
   const [account, setAccount] = useState<Account | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -168,11 +160,7 @@ export function TrayApp() {
    * A surface that acts and says nothing is the gap this whole change is about,
    * and it would be a strange fix that closed it in one shell only.
    */
-  const [reloadNote, setReloadNote] = useState<{
-    title: string;
-    body: string;
-  } | null>(null);
-  const platform = usePlatform();
+   const platform = usePlatform();
 
   /** What the last read put on screen, so an unchanged reading is dropped
    * rather than re-rendering the whole popover for it. */
@@ -259,19 +247,6 @@ export function TrayApp() {
   const reopenWaitingRef = useRef(reopenWaiting);
   reopenWaitingRef.current = reopenWaiting;
 
-  /**
-   * What an interrupted routing operation still owes (AG-570).
-   *
-   * Read here as well as in the window because the popover is a surface the
-   * recovery has to stay reachable from, and the two shells do not share state -
-   * a tray that waited for the window to tell it would say nothing on the many
-   * machines where the window is never opened.
-   */
-  const loadRecovery = useCallback(async () => {
-    const p = await pendingRestore().catch(() => null);
-    if (p) setPending(p);
-  }, []);
-
   /** Event-driven re-read: a write landed or the engine changed state, so
    * commit whatever comes back and re-sweep the verdicts. */
   const refresh = useCallback(async () => {
@@ -284,11 +259,7 @@ export function TrayApp() {
     if (px) setProxy(px);
     setStarting(pending);
     void refreshVerdicts();
-    // A master-on runs the restore, which is what shortens the snapshots - so
-    // the card is re-read on the same event that repaints the switches, or it
-    // lingers after the work finished.
-    void loadRecovery();
-  }, [refreshVerdicts, loadRecovery]);
+  }, [refreshVerdicts]);
 
   /** The `tools-changed` variant: drop a re-read that is already in flight
    * rather than stack on it, and drop an unchanged reading rather than commit
@@ -343,25 +314,30 @@ export function TrayApp() {
       setAccountUnread(!acct.read);
       setKeyPrefix(prefix);
       void refreshVerdicts();
-      void loadRecovery();
       setLoaded(true);
     })();
-  }, [refreshVerdicts, loadRecovery]);
+  }, [refreshVerdicts]);
 
   /**
    * Drain the backend's buffered failures, exactly as the window shell does.
    *
    * The tray had no drain, which is the third time this gap has been shipped -
    * `backendErrors.ts` was lifted out of `App.tsx` precisely "so both shells
-   * share one copy", and then only one shell called it. It bit hardest on
-   * "Resume now": `resume_restore` swallows the restore's error on purpose
-   * (`lib.rs`, "Best-effort, like every other caller of this") and still returns
-   * `pending_restore()` as `Ok`, so the frontend `catch` never fires. A resume
-   * that failed for the same reason it failed the first time therefore redrew
-   * an identical card and said nothing - indistinguishable from a dead button,
-   * which is how it was reported. `provider_restore` is already in
-   * `ROUTING_DOWN_CONTEXTS`, so the failure was reaching the buffer all along
-   * and only ever needed reading here.
+   * share one copy", and then only one shell called it.
+   *
+   * What it is for: the routing paths report their failures into the backend's
+   * buffer rather than through the call that provoked them, so a write that
+   * fails on the way down leaves the frontend's own `catch` untouched. Without
+   * a drain the tray redraws an identical surface and says nothing, which is
+   * indistinguishable from a control that does not work - and is how the
+   * original case was reported. `provider_restore` and its neighbours are
+   * already in `ROUTING_DOWN_CONTEXTS`, so those failures reach the buffer
+   * either way and only ever needed reading here.
+   *
+   * That original case was "Resume now" on the recovery card, which was
+   * removed on 2026-09-24 along with `resume_restore`. The gap it exposed is
+   * not specific to it, so the drain stays and the reasoning is stated in
+   * terms of what still uses those contexts.
    */
   useEffect(() => {
     const sweep = () =>
@@ -402,13 +378,6 @@ export function TrayApp() {
         // it was claiming, so carrying it across is how a failure the user
         // already saw comes back undated over an unrelated visit.
         setRoutingError(null);
-        // And the reload advice, which is the same kind of thing in the same
-        // borrowed slot: advice about a click, shown once. This popover is
-        // hidden rather than destroyed, so without this the banner is still
-        // sitting over the rows on a later reveal, describing a flip the person
-        // has long since forgotten - and unlike the window's, it has no
-        // persistent chrome around it to make sense of.
-        setReloadNote(null);
         return;
       }
       void redetect();
@@ -805,9 +774,7 @@ export function TrayApp() {
       setActionError(null);
       // See the window: a routing click retires the previous click's advice,
       // which is what keeps the banner from outliving the claim it makes.
-      setReloadNote(null);
     },
-    onHostsRouted: setReloadNote,
     routeApp: (slug, next) => void routeApp(slug, next),
   });
   const toggleApp = section.toggle;
@@ -916,35 +883,7 @@ export function TrayApp() {
     [dash],
   );
 
-  /** What is still outstanding, providers and tools together: the user does not
-   * care which snapshot an entry came from. */
-  const recoveryNames = useMemo(
-    () =>
-      [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map((e) => e.name),
-    [pending],
-  );
 
-  /**
-   * Finish what the interrupted restore left, as one call.
-   *
-   * The batch, not the window's per-entry walk: the progress the walk exists to
-   * show has nowhere to go in a 400px card, and driving entries one at a time
-   * from a popover that closes when it loses focus would leave a pass half done
-   * with nothing on screen having said so. `restore_all`'s own retry semantics
-   * mean this repeats no completed write either way.
-   */
-  const resumeNow = useCallback(async () => {
-    setResuming(true);
-    setActionError(null);
-    try {
-      setPending(await resumeRestore());
-      await refresh();
-    } catch (e) {
-      setActionError(classifyError(e, "provider_restore"));
-    } finally {
-      setResuming(false);
-    }
-  }, [refresh]);
 
   if (!loaded) {
     // A sub-frame gap before the first read lands, same call as the window
@@ -987,44 +926,6 @@ export function TrayApp() {
       accountUnread={accountUnread}
       onToggleApp={toggleApp}
       onExpand={expand}
-      recovery={
-        recoveryNames.length > 0
-          ? {
-              names: recoveryNames,
-              busy: resuming,
-              onResume: () => void resumeNow(),
-              // The per-tool account lives in the window, so this reveals it
-              // rather than drawing a second, shorter version of the same
-              // operation at 400px - but it has to say what it came for.
-              // `expand` alone was the bug: it surfaced the window on whatever
-              // pane the user was last on and opened nothing, so with the
-              // window already visible behind the popover the only visible
-              // effect was the tray closing.
-              //
-              // Unconditional, unlike the window banner's own `onReviewDetails`
-              // (gated on its cached `summary`). That is not the same fact, and
-              // an earlier version of this comment claimed it was: the backend
-              // answering `Some` says nothing about whether the *window* holds a
-              // summary, and the window is what decides whether anything opens.
-              // The tray cannot see that state, so it does not try to predict
-              // it - the window re-reads the summary for itself on this event.
-              //
-              // Which means the window can also decline: it refuses the request
-              // outright when it is still on setup, or when another dialog holds
-              // the slot, because arming a dialog it cannot draw is what pops one
-              // unprompted later (`NewUiApp.tsx`, the
-              // `recovery-details-requested` listener). So a press here is not a
-              // promise that something opens, and this side must not imply one.
-              // The card stays put either way, which is what makes a refusal
-              // survivable - the user's next press lands on a window that can
-              // answer it.
-              onReview: () =>
-                void requestRecoveryDetails().catch((e) =>
-                  setActionError(classifyError(e, "generic")),
-                ),
-            }
-          : undefined
-      }
       menuOpen={menuOpen}
       onMenuToggle={() => setMenuOpen((v) => !v)}
       onMenuSelect={onMenuSelect}
@@ -1043,18 +944,6 @@ export function TrayApp() {
                   setActionError(null);
                   setRoutingError(null);
                 }}
-              />
-            </div>
-          ) : reloadNote ? (
-            // The same borrowed spot, and never both at once: this window is
-            // 360px of list and two stacked banners would cover the rows the
-            // person came here to flip. A failure outranks advice, which is the
-            // window's precedence too.
-            <div className="absolute inset-x-4 top-20 z-20">
-              <NoteBanner
-                title={reloadNote.title}
-                body={reloadNote.body}
-                onDismiss={() => setReloadNote(null)}
               />
             </div>
           ) : null}

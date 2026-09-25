@@ -130,10 +130,16 @@ export function trayLocationName(p: Platform): string {
  *
  *  Even where it is true, the sentence stops at "follows your desktop proxy
  *  settings" rather than promising every browser, because a browser started
- *  from a shell took the other channel and Gate cannot see which. That
- *  launch-time half is advice with something the user can act on, and it lives
- *  where there is room for it: `groups.ts`' `PROXY_REOPEN_ADVICE` for the proxy
- *  pointer and `browserTrustRestartAdvice` for the trust store.
+ *  from a shell took the other channel and Gate cannot see which.
+ *
+ *  That launch-time half is two separate facts, and only one of them still has
+ *  a note. The **trust store** has `browserTrustRestartAdvice` in `groups.ts`:
+ *  a browser open across the first enable read the old store and cannot see
+ *  the new CA. The **proxy pointer** has nothing any more - `PROXY_REOPEN_ADVICE`
+ *  covered it and went with the other advisory banners on 2026-09-24 - so
+ *  nothing now tells a Linux user that a browser launched from a shell kept
+ *  the environment it started with. Stated because it is a gap rather than a
+ *  relocation.
  *
  *  Empty on `unknown` for the same reason it is empty on Linux, plus one: that
  *  value is the first async tick, and a claim about interception is the last

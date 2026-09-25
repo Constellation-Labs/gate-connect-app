@@ -31,82 +31,14 @@ test.describe("tray popover", () => {
     });
   });
 
-  test("the tray says the open page is still going around Gate, as the window does", async ({
-    boot,
-  }) => {
-    // Same switch, same cascade, same hook - so the same thing left unsaid. The
-    // tray routes claude.ai here exactly as the rail does, and a surface that
-    // acts and says nothing is what this notice exists to stop.
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-    });
-
-    await app.routeTrayApp("Claude");
-
-    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
-    await expect(note).toBeVisible();
-    await expect(note).toContainText("claude.ai");
-  });
-
-  test("the reload notice does not come back on a later reveal", async ({ boot }) => {
-    // The popover is hidden, not destroyed, so anything left in state is still
-    // there the next time the tray is opened - which is why the handler beside
-    // this one clears the routing banner on hide. This notice is advice about
-    // one click, shown once; carried across it sits over the rows somebody came
-    // back to flip, describing a flip they have long since forgotten.
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-    });
-
-    await app.routeTrayApp("Claude");
-    const note = app.page.getByRole("status").filter({ hasText: "Pages already open" });
-    await expect(note).toBeVisible();
-
-    // What the OS does to this window: hidden on blur, shown again later. The
-    // app sees only `visibilitychange`, so that is what the test sends.
-    await app.page.evaluate(() => {
-      Object.defineProperty(document, "hidden", { value: true, configurable: true });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await expect(note).toHaveCount(0);
-
-    await app.page.evaluate(() => {
-      Object.defineProperty(document, "hidden", { value: false, configurable: true });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await expect(note).toHaveCount(0);
-  });
-
+  
+  
   /**
    * AG-570 AC 4: the recovery action stays reachable from Overview, tool detail
    * *and* the tray. The tray gets the action, not just the fact - a surface that
    * reported the problem and offered nothing would be the one place the user
    * could see it and not act.
    */
-  test("an interrupted restore is offered from the tray, not just reported", async ({
-    boot,
-  }) => {
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-      pendingRestore: {
-        providers: [],
-        tools: [{ slug: "opencode", name: "OpenCode" }],
-      },
-    });
-
-    await expect(app.page.getByText("Routing didn’t finish")).toBeVisible();
-    await expect(app.page.getByText(/OpenCode is still waiting/)).toBeVisible();
-
-    await app.page.getByRole("button", { name: "Resume now" }).click();
-
-    // The batch call here, not the window's per-entry walk: a 400px popover has
-    // nowhere to put a progress list, and one that closes on focus loss must not
-    // leave a pass half driven.
-    await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
-  });
 
   /**
    * No reopen card on the tray. The waiting tool still says so on its own row;
@@ -134,27 +66,6 @@ test.describe("tray popover", () => {
     await expect(app.page.getByRole("button", { name: "Close tool" })).toHaveCount(0);
   });
 
-  test("the tray sends the per-tool account to the window", async ({ boot }) => {
-    const app = await boot({
-      windowLabel: "tray",
-      proxy: { running: true, ca_trusted: true },
-      pendingRestore: {
-        providers: [],
-        tools: [{ slug: "opencode", name: "OpenCode" }],
-      },
-    });
-
-    await app.page.getByRole("button", { name: "Review details" }).click();
-
-    // Reveals the window rather than drawing a second, shorter version of the
-    // same operation - but it has to say what it came for. This used to call the
-    // bare `reveal_popover`, which surfaces the window on whatever pane it was
-    // last on and opens nothing, so with the window already visible the only
-    // effect was the tray closing.
-    await expect
-      .poll(() => app.lastCall("request_recovery_details"))
-      .not.toBeNull();
-  });
 
   test("Expand app reveals the main window", async ({ boot }) => {
     const app = await boot({ windowLabel: "tray" });
