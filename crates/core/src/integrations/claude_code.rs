@@ -379,28 +379,6 @@ impl Integration for ClaudeCode {
                     .collect()
             })
             .unwrap_or_default();
-
-        // Already connected with these exact values: leave the file alone.
-        // Rewriting it anyway moves its mtime, which is the bound the reopen
-        // check measures running processes against (`reopen.rs`), so a
-        // reconcile pass that changed nothing would tell the user to restart
-        // every `claude` they have open. Only the keys we write are compared;
-        // the rest of the file belongs to Claude Code and the user.
-        let env_value = |key: &str| settings.get("env").and_then(|env| env.get(key));
-        let env_str = |key: &str| env_value(key).and_then(|v| v.as_str());
-        let ca_cert_value = ca_cert_path.display().to_string();
-        let already_applied = MANAGED_KEYS
-            .iter()
-            .all(|key| old_managed.iter().any(|managed| managed == key))
-            && env_value(KEY_BASE_URL).is_none()
-            && env_value(KEY_CUSTOM_HEADERS).is_none()
-            && env_str(KEY_HTTPS_PROXY) == Some(claude_proxy_url.as_str())
-            && env_str(KEY_NO_PROXY) == Some(NO_PROXY_VALUE)
-            && env_str(KEY_NODE_EXTRA_CA_CERTS) == Some(ca_cert_value.as_str());
-        if already_applied {
-            return Ok(());
-        }
-
         let mut prev = settings
             .get(MARKER_KEY)
             .and_then(|v| v.get("previousEnv"))

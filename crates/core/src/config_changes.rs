@@ -20,6 +20,13 @@
 //! compares the file with what Gate wrote, so a changed proxy reads as Not
 //! protected on the row.
 //!
+//! **Two writers can lose a stamp.** The app and the CLI both write here, and a
+//! stamp is a read, an insert and a write with no lock between them, so two
+//! changes that land at once can keep only one. The one lost is a change a
+//! running process missed with no reopen notice for it: the same "no evidence,
+//! no claim" outcome as a missing record, accepted because overlapping writes
+//! need a CLI connect racing the app's own pass.
+//!
 //! Keyed by the path as displayed, which is the form `config_location` returns.
 
 use std::collections::BTreeMap;
