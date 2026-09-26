@@ -18,13 +18,17 @@
 //! against a machine whose Claude Code config had carried no Gate values for a
 //! week.
 //!
-//! So the bound is the tool's own configuration file, taken from its
-//! last-modified time. It is durable (the filesystem remembers it across
-//! restarts of Gate, reboots and reinstalls), it is per tool (a change to Codex
-//! does not make Claude Code stale), and it is the literal moment the thing the
-//! process reads last changed - by Gate's hand or anybody else's, which is the
-//! right answer either way, because the process missed the change regardless of
-//! who made it.
+//! So the bound is the tool's own configuration file: the moment Gate last
+//! changed it, from [`crate::config_changes`]. It is durable (it is on disk,
+//! across restarts of Gate, reboots and reinstalls) and it is per tool (a
+//! change to Codex does not make Claude Code stale).
+//!
+//! **Gate's changes, not anybody's.** This took the file's mtime until the
+//! tool's own edits were found to move it: Claude Code rewrites
+//! `settings.json` when the user approves a permission, and each approval made
+//! every older `claude` stale with nothing Gate routes by changed. A hand edit
+//! to a routing value is the case this gives up, and the config status still
+//! reports that one.
 //!
 //! **No bound means no claim.** When there is no configuration file to read a
 //! time from, this answers "not pending" rather than degrading to "everything
@@ -53,9 +57,9 @@ pub struct ReopenEvidence<'a> {
     /// when nothing is running, which is the ordinary case and the one where
     /// there is nothing to reopen.
     pub process_starts: &'a [u64],
-    /// Unix seconds at which this tool's configuration file was last modified,
-    /// from the file's own mtime. `None` when the tool has no configuration
-    /// file, or it does not exist, or its time could not be read.
+    /// Unix seconds at which Gate last changed this tool's configuration file,
+    /// from [`crate::config_changes`]. `None` when the tool has no
+    /// configuration file, or Gate has no recorded change to it.
     pub config_changed_at: Option<u64>,
     /// Unix seconds at which Gate's CA certificate was last written.
     ///

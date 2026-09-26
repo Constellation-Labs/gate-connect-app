@@ -449,6 +449,45 @@ fn claude_code_connect_writes_the_ca_and_disconnect_takes_it_away() {
     assert!(restored.get("_gateConnect").is_none());
 }
 
+/// A reconnect with Gate's values already in place must not touch the file.
+///
+/// Its mtime is what the reopen check compares running `claude` processes
+/// against, so a no-op rewrite reads as "restart Claude Code". The file is
+/// reformatted between the two connects: a rewrite would pretty-print it back,
+/// so unchanged bytes prove nothing was written.
+#[test]
+fn claude_code_reconnect_with_our_values_in_place_leaves_the_file_alone() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"model":"opus"}"#).unwrap();
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let connected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let compact = serde_json::to_string(&connected).unwrap();
+    fs::write(&settings, &compact).unwrap();
+
+    claude.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        compact,
+        "nothing Gate writes changed, so the file must not be rewritten"
+    );
+
+    // A different engine port is a real change, and must still be written.
+    claude.connect(&connect_input(9978)).unwrap();
+    assert!(
+        fs::read_to_string(&settings).unwrap().contains(":9978"),
+        "a new proxy address has to reach the file"
+    );
+}
+
 /// No CA on disk, no write at all.
 ///
 /// The pair is what makes this integration work, so half of it is not a
@@ -958,4 +997,109 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
         original,
         "the user's .env must be byte-identical after a refusal"
     );
+}
+
+/// The reopen bound is Gate's record of its own changes, not the file's mtime.
+///
+/// Connect records a change; a reconnect with the values already in place
+/// records nothing; an edit the tool makes to its own keys records nothing;
+/// disconnect records one. Each step is judged against a stamp rewound to 0, so
+/// a same-second write cannot hide a missing one.
+#[test]
+fn only_gates_own_changes_move_the_reopen_bound() {
+    use gate_connect_core::config_changes::changed_at;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"model":"opus"}"#).unwrap();
+    let store = env::app_support_dir().unwrap().join("config-changes.json");
+    let rewind = || {
+        let key = settings.display().to_string();
+        fs::write(&store, serde_json::json!({ key: 0 }).to_string()).unwrap();
+    };
+
+    seed_ca_cert();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    assert_eq!(
+        changed_at(&settings),
+        None,
+        "nothing recorded before connect"
+    );
+
+    claude.connect(&connect_input(9977)).unwrap();
+    assert!(
+        changed_at(&settings).is_some_and(|t| t > 0),
+        "connect is a change"
+    );
+
+    rewind();
+    claude.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        changed_at(&settings),
+        Some(0),
+        "a no-op reconnect is not a change"
+    );
+
+    // Claude Code saving a permission rule: the file changes, Gate's values do not.
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    value["permissions"] = serde_json::json!({ "allow": ["Bash(ls)"] });
+    fs::write(&settings, serde_json::to_string(&value).unwrap()).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        changed_at(&settings),
+        Some(0),
+        "the tool's own edit must not read as a change a running process missed"
+    );
+
+    claude.disconnect().unwrap();
+    assert!(
+        changed_at(&settings).is_some_and(|t| t > 0),
+        "disconnect is a change"
+    );
+}
+
+/// Not only Claude Code: every integration writes through the same record.
+#[test]
+fn opencode_changes_are_recorded_too() {
+    use gate_connect_core::config_changes::changed_at;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{"provider":{"openrouter":{"options":{"apiKey":"k"}}}}"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert!(changed_at(&cfg).is_some_and(|t| t > 0));
+
+    let store = env::app_support_dir().unwrap().join("config-changes.json");
+    let key = cfg.display().to_string();
+    fs::write(&store, serde_json::json!({ key: 0 }).to_string()).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        changed_at(&cfg),
+        Some(0),
+        "a no-op reconnect is not a change"
+    );
+
+    // The tool saving the same values in its own layout: different bytes, the
+    // same config, so still not a change a running process missed.
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    fs::write(&cfg, serde_json::to_string(&value).unwrap()).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert_eq!(changed_at(&cfg), Some(0), "a relayout is not a change");
 }
