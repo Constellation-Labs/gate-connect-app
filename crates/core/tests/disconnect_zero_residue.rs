@@ -959,3 +959,65 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
         "the user's .env must be byte-identical after a refusal"
     );
 }
+
+/// A leftover `~/.config/opencode` is not an install: OpenCode leaves it
+/// behind, empty, and so does Gate's own disconnect. A config file or a login
+/// is, because that is what `connect` routes.
+#[test]
+fn an_empty_opencode_config_dir_is_not_an_install() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let integ = find(ToolId::OpenCode).unwrap();
+    if integ.detect().unwrap() {
+        // A real `opencode` binary on this machine answers first; nothing
+        // below would be measuring the fallback.
+        return;
+    }
+
+    fs::create_dir_all(env::opencode_config_dir().unwrap()).unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "an empty directory is not OpenCode"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+
+    let auth = env::opencode_auth_path().unwrap();
+    fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    fs::write(&auth, "{}").unwrap();
+    assert!(integ.detect().unwrap(), "a login is");
+    fs::remove_file(&auth).unwrap();
+
+    fs::write(env::opencode_config_path().unwrap(), "{}").unwrap();
+    assert!(integ.detect().unwrap(), "a config file is");
+}
+
+/// The `opencode.ai` domain an older build turned on goes off with no OpenCode
+/// on the machine, and stays on while there is one.
+#[test]
+fn the_opencode_domain_is_switched_off_only_without_opencode() {
+    use gate_connect_core::integrations::opencode::switch_off_orphaned_domain;
+    use gate_connect_core::proxy::config;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    if find(ToolId::OpenCode).unwrap().detect().unwrap() {
+        return;
+    }
+    let enabled = || {
+        config::load_domains()
+            .unwrap()
+            .iter()
+            .any(|d| d.slug == "opencode" && d.enabled)
+    };
+
+    fs::create_dir_all(env::opencode_config_dir().unwrap()).unwrap();
+    fs::write(env::opencode_config_path().unwrap(), "{}").unwrap();
+    config::set_enabled("opencode", true).unwrap();
+    assert!(!switch_off_orphaned_domain().unwrap());
+    assert!(enabled(), "installed, so the domain is the user's to keep");
+
+    fs::remove_file(env::opencode_config_path().unwrap()).unwrap();
+    assert!(switch_off_orphaned_domain().unwrap());
+    assert!(!enabled(), "no OpenCode, so nothing rides the domain");
+    assert!(!switch_off_orphaned_domain().unwrap(), "already off");
+}

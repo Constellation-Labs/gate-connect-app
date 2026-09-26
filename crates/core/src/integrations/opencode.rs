@@ -259,6 +259,8 @@ impl Integration for OpenCode {
         let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
         paths.extend(env::opencode_config_dir());
         paths.extend(settings_path());
+        paths.extend(env::opencode_config_dir().map(|dir| dir.join("opencode.jsonc")));
+        paths.extend(env::opencode_auth_path());
         paths
     }
 
@@ -273,7 +275,7 @@ impl Integration for OpenCode {
         if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
-        Ok(env::opencode_config_dir()?.exists())
+        has_routable_setup()
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -876,6 +878,47 @@ fn load_opencode_auth() -> Result<Map<String, Value>> {
 }
 
 use super::json_config::ensure_object;
+
+/// The fallback for an OpenCode whose binary Gate cannot find (a Volta, asdf
+/// or npx install): a config file or a login, which is what `connect` needs to
+/// find a provider to route.
+///
+/// **Not the config directory.** That was the test until a machine with no
+/// OpenCode on it kept an OpenCode row: `~/.config/opencode` survives an
+/// uninstall, empty, and Gate's own disconnect removes `opencode.json` and
+/// leaves the directory. An empty directory is no evidence of an install, and
+/// `connect` refuses one anyway ("No supported OpenCode providers found").
+fn has_routable_setup() -> Result<bool> {
+    let dir = env::opencode_config_dir()?;
+    Ok(settings_path()?.exists()
+        || dir.join("opencode.jsonc").exists()
+        || env::opencode_auth_path()?.exists())
+}
+
+/// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`.
+const DOMAIN_SLUG: &str = "opencode";
+
+/// Switch off the `opencode.ai` domain on a machine without OpenCode.
+///
+/// An older build's OpenCode switch turned the domain on and nothing recorded
+/// it, so it outlives the tool. Nothing else rides that host, and while it is
+/// on the rail draws an OpenCode row for an app that is not there - one with
+/// a routed domain and a switched-off tool, which reads "Partly protected".
+/// Returns whether it switched anything off.
+///
+/// A domain somebody enabled by hand through the CLI on a machine without
+/// OpenCode goes with it. Nothing records who enabled it, and that user is
+/// the one with the CLI to turn it back on.
+pub fn switch_off_orphaned_domain() -> Result<bool> {
+    let enabled = crate::proxy::config::load_domains()?
+        .iter()
+        .any(|d| d.slug == DOMAIN_SLUG && d.enabled);
+    if !enabled || OpenCode.detect()? {
+        return Ok(false);
+    }
+    crate::proxy::manager().set_domain(DOMAIN_SLUG, false)?;
+    Ok(true)
+}
 
 #[cfg(test)]
 mod tests {

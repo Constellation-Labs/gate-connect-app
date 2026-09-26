@@ -5055,6 +5055,15 @@ pub fn run() {
                         gate_connect_core::startup::SessionVerdict::NotOauth => {}
                     }
 
+                    // An `opencode.ai` domain an older build turned on, left
+                    // behind on a machine OpenCode is not on. The emit at the
+                    // end of this thread redraws the rail without its row.
+                    if let Err(e) =
+                        gate_connect_core::integrations::opencode::switch_off_orphaned_domain()
+                    {
+                        eprintln!("switching off the orphaned OpenCode domain failed: {e:#}");
+                    }
+
                     // If a previous session left the system proxy on (unclean
                     // quit / crash), revert it first so HTTPS isn't routed at a
                     // dead loopback port. A clean disable leaves nothing to do.
