@@ -259,7 +259,6 @@ impl Integration for OpenCode {
         let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
         paths.extend(env::opencode_config_dir());
         paths.extend(settings_path());
-        paths.extend(env::opencode_config_dir().map(|dir| dir.join("opencode.jsonc")));
         paths.extend(env::opencode_auth_path());
         paths
     }
@@ -267,10 +266,8 @@ impl Integration for OpenCode {
     fn detect(&self) -> Result<bool> {
         // The packaged paths, then PATH, then the bin directories a login
         // shell adds and a GUI process does not inherit - see
-        // `integrations::binaries`. The old check was the first of those three
-        // alone, which is why a tool installed anywhere else was only found
-        // through the config-directory fallback below, and a tool installed but
-        // never run was not found at all.
+        // `integrations::binaries`. Failing all three, a config file or a
+        // login still counts: see `has_routable_setup`.
         let (well_known, names) = self.binary();
         if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
@@ -880,8 +877,8 @@ fn load_opencode_auth() -> Result<Map<String, Value>> {
 use super::json_config::ensure_object;
 
 /// The fallback for an OpenCode whose binary Gate cannot find (a Volta, asdf
-/// or npx install): a config file or a login, which is what `connect` needs to
-/// find a provider to route.
+/// or npx install): the two files `connect` reads to find a provider to route,
+/// the config and the login store.
 ///
 /// **Not the config directory.** That was the test until a machine with no
 /// OpenCode on it kept an OpenCode row: `~/.config/opencode` survives an
@@ -889,35 +886,58 @@ use super::json_config::ensure_object;
 /// leaves the directory. An empty directory is no evidence of an install, and
 /// `connect` refuses one anyway ("No supported OpenCode providers found").
 fn has_routable_setup() -> Result<bool> {
-    let dir = env::opencode_config_dir()?;
-    Ok(settings_path()?.exists()
-        || dir.join("opencode.jsonc").exists()
-        || env::opencode_auth_path()?.exists())
+    Ok(settings_path()?.exists() || env::opencode_auth_path()?.exists())
 }
 
-/// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`.
+/// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`. The
+/// catalog's slug (`proxy::catalog`); a mismatch makes the cleanup below a
+/// silent no-op, which `the_opencode_domain_is_switched_off_once_without_opencode`
+/// would catch.
 const DOMAIN_SLUG: &str = "opencode";
 
-/// Switch off the `opencode.ai` domain on a machine without OpenCode.
+/// Present once the cleanup below has run on this install.
+const DOMAIN_CLEANUP_MARKER: &str = "opencode-domain-cleaned";
+
+/// Switch off the `opencode.ai` domain an older build left on, once, on a
+/// machine without OpenCode. Returns whether it switched anything off.
 ///
 /// An older build's OpenCode switch turned the domain on and nothing recorded
-/// it, so it outlives the tool. Nothing else rides that host, and while it is
-/// on the rail draws an OpenCode row for an app that is not there - one with
-/// a routed domain and a switched-off tool, which reads "Partly protected".
-/// Returns whether it switched anything off.
+/// it, so it outlives the tool: the rail then draws an OpenCode row with a
+/// routed domain and a switched-off tool, which reads "Not protected" with
+/// "Partly protected: 1 of 2" beneath it.
 ///
-/// A domain somebody enabled by hand through the CLI on a machine without
-/// OpenCode goes with it. Nothing records who enabled it, and that user is
-/// the one with the CLI to turn it back on.
+/// **Once per install, not every launch.** Detection can miss a real install
+/// (a project-level config, credentials in the environment), and a check that
+/// ran every launch would then turn off inspection of that traffic every time,
+/// and undo anybody who turned the domain back on. So the marker is written as
+/// soon as the domain is seen off with OpenCode absent, and a later choice is
+/// never revisited. While OpenCode is detected nothing is decided and the
+/// marker waits.
+///
+/// Writes the flag rather than going through `ProxyManager::set_domain`: this
+/// runs at startup before routing comes up, which reads the flag, and on Linux
+/// `set_domain` adopts a running daemon, which leaves the enable after it with
+/// nothing to do.
 pub fn switch_off_orphaned_domain() -> Result<bool> {
+    let marker = env::app_support_dir()?.join(DOMAIN_CLEANUP_MARKER);
+    if marker.exists() || OpenCode.detect()? {
+        return Ok(false);
+    }
     let enabled = crate::proxy::config::load_domains()?
         .iter()
         .any(|d| d.slug == DOMAIN_SLUG && d.enabled);
-    if !enabled || OpenCode.detect()? {
-        return Ok(false);
+    if enabled {
+        crate::proxy::config::set_enabled(DOMAIN_SLUG, false)?;
+        crate::logging::log(
+            crate::logging::Level::Info,
+            "switched off the opencode.ai domain: OpenCode is not installed",
+        );
+        if let Ok(Some(base_url)) = crate::account::load_base_url() {
+            crate::audit::domain_toggled(&base_url, None, DOMAIN_SLUG, false);
+        }
     }
-    crate::proxy::manager().set_domain(DOMAIN_SLUG, false)?;
-    Ok(true)
+    crate::primitives::write_file(&marker, b"", 0o600)?;
+    Ok(enabled)
 }
 
 #[cfg(test)]

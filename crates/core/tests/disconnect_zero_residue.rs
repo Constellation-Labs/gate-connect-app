@@ -962,24 +962,31 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
 
 /// A leftover `~/.config/opencode` is not an install: OpenCode leaves it
 /// behind, empty, and so does Gate's own disconnect. A config file or a login
-/// is, because that is what `connect` routes.
+/// is, because those are what `connect` routes.
 #[test]
 fn an_empty_opencode_config_dir_is_not_an_install() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     let integ = find(ToolId::OpenCode).unwrap();
     if integ.detect().unwrap() {
-        // A real `opencode` binary on this machine answers first; nothing
-        // below would be measuring the fallback.
+        eprintln!("skipped: an opencode binary on this machine answers before the fallback");
         return;
     }
 
-    fs::create_dir_all(env::opencode_config_dir().unwrap()).unwrap();
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
     assert!(
         !integ.detect().unwrap(),
         "an empty directory is not OpenCode"
     );
     assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+
+    // Nothing Gate reads, so nothing `connect` could route.
+    fs::write(dir.join("opencode.jsonc"), "{}").unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "a .jsonc Gate never reads is not an install"
+    );
 
     let auth = env::opencode_auth_path().unwrap();
     fs::create_dir_all(auth.parent().unwrap()).unwrap();
@@ -991,16 +998,17 @@ fn an_empty_opencode_config_dir_is_not_an_install() {
     assert!(integ.detect().unwrap(), "a config file is");
 }
 
-/// The `opencode.ai` domain an older build turned on goes off with no OpenCode
-/// on the machine, and stays on while there is one.
+/// The `opencode.ai` domain an older build turned on goes off once OpenCode is
+/// gone, and a later choice to turn it back on is left alone.
 #[test]
-fn the_opencode_domain_is_switched_off_only_without_opencode() {
+fn the_opencode_domain_is_switched_off_once_without_opencode() {
     use gate_connect_core::integrations::opencode::switch_off_orphaned_domain;
     use gate_connect_core::proxy::config;
 
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     if find(ToolId::OpenCode).unwrap().detect().unwrap() {
+        eprintln!("skipped: an opencode binary on this machine answers before the fallback");
         return;
     }
     let enabled = || {
@@ -1019,5 +1027,11 @@ fn the_opencode_domain_is_switched_off_only_without_opencode() {
     fs::remove_file(env::opencode_config_path().unwrap()).unwrap();
     assert!(switch_off_orphaned_domain().unwrap());
     assert!(!enabled(), "no OpenCode, so nothing rides the domain");
-    assert!(!switch_off_orphaned_domain().unwrap(), "already off");
+
+    config::set_enabled("opencode", true).unwrap();
+    assert!(!switch_off_orphaned_domain().unwrap());
+    assert!(
+        enabled(),
+        "turned back on after the cleanup ran, so it stays on"
+    );
 }

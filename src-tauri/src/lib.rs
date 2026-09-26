@@ -5056,12 +5056,14 @@ pub fn run() {
                     }
 
                     // An `opencode.ai` domain an older build turned on, left
-                    // behind on a machine OpenCode is not on. The emit at the
-                    // end of this thread redraws the rail without its row.
+                    // behind on a machine OpenCode is not on. Before routing
+                    // comes up, which reads the flag; `StartupEnableSettled`
+                    // emits on every way out of this thread, so the rail
+                    // redraws without the row.
                     if let Err(e) =
                         gate_connect_core::integrations::opencode::switch_off_orphaned_domain()
                     {
-                        eprintln!("switching off the orphaned OpenCode domain failed: {e:#}");
+                        eprintln!("[gate] switching off the orphaned OpenCode domain failed: {e:#}");
                     }
 
                     // If a previous session left the system proxy on (unclean
