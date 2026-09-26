@@ -1035,3 +1035,58 @@ fn the_opencode_domain_is_switched_off_once_without_opencode() {
         "turned back on after the cleanup ran, so it stays on"
     );
 }
+
+/// A sidecar outliving its `opencode.json` describes nothing, and is removed
+/// when Gate sees the file gone. A reinstall then reads Detected rather than
+/// Drifted, and its connect snapshots the new file, so the disconnect after it
+/// restores the new file and not the one that was deleted.
+#[test]
+fn a_reinstalled_opencode_does_not_inherit_the_old_sidecar() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{"provider":{"openrouter":{"options":{"baseURL":"https://old.example.com/v1"}}}}"#,
+    )
+    .unwrap();
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    let sidecar = env::app_support_dir().unwrap().join("opencode-state.json");
+    assert!(sidecar.exists());
+
+    // Uninstalled: the config goes, and the status check the file watch runs
+    // clears the sidecar that described it.
+    fs::remove_file(&cfg).unwrap();
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+    assert!(
+        !sidecar.exists(),
+        "a sidecar without its config describes nothing"
+    );
+
+    // Reinstalled with a config of its own.
+    fs::write(
+        &cfg,
+        r#"{"provider":{"openrouter":{"options":{"baseURL":"https://new.example.com/v1"}}}}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(integ.status().unwrap(), Status::Detected),
+        "a sidecar from before the reinstall is not drift: {:?}",
+        integ.status()
+    );
+
+    integ.connect(&connect_input(9977)).unwrap();
+    integ.disconnect().unwrap();
+    let after = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        after.contains("https://new.example.com/v1") && !after.contains("old.example.com"),
+        "disconnect must restore the reinstalled config, not the deleted one: {after}"
+    );
+    assert!(!sidecar.exists());
+}

@@ -327,6 +327,7 @@ impl Integration for OpenCode {
 
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
+            prune_orphaned_state()?;
             return Ok(Status::NotInstalled);
         }
         // Connected = sidecar state exists AND at least one provider
@@ -844,7 +845,27 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
     super::json_config::write_object(&settings_path()?, settings)
 }
 
+/// Remove a sidecar whose `opencode.json` is gone.
+///
+/// Its snapshots are of that file, so without it they describe nothing: the
+/// user deleted it or uninstalled OpenCode. `disconnect` always read it that
+/// way, but detection no longer counts an empty config directory as an
+/// install, so the sweeps stopped reaching `disconnect` to clear it. Left in
+/// place, a reinstall read Drifted and its first connect kept the deleted
+/// file's snapshots for a later disconnect to restore onto the new one.
+///
+/// Called from `status`, which is what runs when the file disappears
+/// (`watch_paths` names it), and from `load_state`, so no reader can see one.
+/// A config deleted and recreated while Gate is not running is not caught.
+fn prune_orphaned_state() -> Result<()> {
+    if !settings_path()?.exists() {
+        remove_state()?;
+    }
+    Ok(())
+}
+
 fn load_state() -> Result<Option<State>> {
+    prune_orphaned_state()?;
     let path = state_path()?;
     if !path.exists() {
         return Ok(None);
