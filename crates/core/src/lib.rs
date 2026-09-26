@@ -11,6 +11,7 @@
 
 pub mod account;
 pub mod audit;
+pub mod config_changes;
 
 /// Asking the OS to bring us back after a crash, so the exit-time proxy revert
 /// that an abort skips is only missed for seconds rather than until the next

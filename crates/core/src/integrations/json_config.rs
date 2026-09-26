@@ -43,10 +43,26 @@ pub(crate) fn load_object_json5(path: &Path) -> Result<Option<Map<String, Value>
 /// carry other user config; the atomic write keeps a crash mid-write from
 /// corrupting the tool's own file.
 pub(crate) fn write_object(path: &Path, settings: &Map<String, Value>) -> Result<()> {
+    // Equal values are not a change, however the file is laid out. `serde_json`
+    // sorts keys on the way out, so a file the tool itself wrote in another
+    // order would otherwise be rewritten just to reorder it, and that rewrite
+    // would record a change to what the running tool loaded. Writing the
+    // current bytes back still corrects the mode. Plain JSON first, so numbers
+    // parse as `load_object` read them; JSON5 for OpenClaw's files.
+    if let Some(current) = read_raw(path)? {
+        if serde_json::from_str::<Value>(&current)
+            .ok()
+            .or_else(|| json5::from_str::<Value>(&current).ok())
+            .and_then(|value| value.as_object().map(|object| object == settings))
+            .unwrap_or(false)
+        {
+            return crate::primitives::write_file(path, current.as_bytes(), 0o600);
+        }
+    }
     let mut body = serde_json::to_string_pretty(settings)
         .with_context(|| format!("serializing {}", path.display()))?;
     body.push('\n');
-    crate::primitives::write_file(path, body.as_bytes(), 0o600)
+    crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
 
