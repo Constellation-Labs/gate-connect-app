@@ -996,9 +996,9 @@ export function sectionMemberKeys(id: string): readonly string[] {
  * `not_installed` and the ledger drew no row for it. The second half is what
  * keeps Claude and ChatGPT / Codex out on a machine without Claude Code or
  * Codex: their domains still give them a row, so the app is there even though
- * one program inside it is not. Detection is the tool's own, config-directory
- * fallback included, so a leftover `~/.config/opencode` still counts as
- * installed.
+ * one program inside it is not. Detection is the tool's own: for OpenCode
+ * without a binary on the path, a config file or a login counts and an empty
+ * leftover `~/.config/opencode` does not.
  *
  * Takes the same filtered tool list `buildGroups` was given, so a
  * settings-managed member cannot come back here.
