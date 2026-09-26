@@ -242,7 +242,7 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     // 0o600: these files routinely hold the user's API keys.
-    crate::primitives::write_file(path, lines.concat().as_bytes(), 0o600)
+    crate::config_changes::write(path, lines.concat().as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(Applied {
         added,
@@ -266,14 +266,14 @@ pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> R
         .collect();
 
     if file_created && kept.iter().all(|l| l.trim().is_empty()) {
-        return fs::remove_file(path).with_context(|| format!("removing {}", path.display()));
+        return crate::config_changes::remove(path);
     }
 
     let mut body = kept.join("\n");
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
-    crate::primitives::write_file(path, body.as_bytes(), 0o600)
+    crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
 

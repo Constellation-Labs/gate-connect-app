@@ -1100,7 +1100,7 @@ const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 /// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -1108,16 +1108,49 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
         ProcessRefreshKind::nothing().without_tasks(),
     );
     let own_pid = sysinfo::get_current_pid().ok();
-    for (pid, process) in sys.processes() {
-        if Some(*pid) == own_pid {
-            continue;
-        }
-        let name = process.name().to_string_lossy().to_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if AGENT_PROCESS_NAMES.contains(&name) {
-            f(process);
+    let matched: Vec<sysinfo::Pid> = sys
+        .processes()
+        .iter()
+        .filter(|(pid, process)| {
+            let name = process.name().to_string_lossy().to_lowercase();
+            let name = name.strip_suffix(".exe").unwrap_or(&name);
+            Some(**pid) != own_pid && AGENT_PROCESS_NAMES.contains(&name)
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    if matched.is_empty() {
+        return;
+    }
+    // Command lines for the matched processes only, so the full walk above
+    // stays at `stat`. Needed to tell a Claude Code session from the Chrome
+    // bridge that shares its binary (`is_chrome_native_host`).
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&matched),
+        false,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    for pid in matched {
+        if let Some(process) = sys.process(pid) {
+            if !is_chrome_native_host(process.cmd()) {
+                f(process);
+            }
         }
     }
+}
+
+/// Is this `claude` the Claude in Chrome native-messaging host rather than a
+/// Claude Code session?
+///
+/// Chrome launches `claude --chrome-native-host` as the bridge between the
+/// extension and Claude Code, and it carries the CLI's process name, so the
+/// name match counted it as a session. It is started and stopped by Chrome,
+/// not by the user, which made it a Claude Code "reopen" nobody could clear by
+/// reopening Claude Code - and put it in the set `close_running_agents` kills.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter().skip(1).any(|arg| arg == "--chrome-native-host")
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -1169,6 +1202,14 @@ fn modified_unix(path: &std::path::Path) -> Option<u64> {
 /// which the agents are pointed at through `NODE_EXTRA_CA_CERTS`. Either one
 /// written after the process started means the process missed it.
 ///
+/// **The configuration's time is Gate's record, not its mtime.** The mtime
+/// moved on the tool's own edits too - Claude Code rewrites `settings.json` on
+/// every permission approval - and each one made every older process read as
+/// stale with nothing Gate routes by changed.
+/// [`gate_connect_core::config_changes`] is stamped only when Gate's write
+/// actually changed the file. A hand edit to a routing value is what this
+/// gives up, and the config status still reports that one.
+///
 /// **Not "started before routing came up".** That was the rule until the
 /// forwarder fronted both the proxy and the relay, and it asked the wrong
 /// question: a config naming the forwarder or the relay port reaches the engine
@@ -1186,7 +1227,9 @@ fn agent_needs_reopen(process: &sysinfo::Process, ca_cert_changed_at: Option<u64
     let config_changed_at = agent_tool(name)
         .and_then(gate_connect_core::registry::find)
         .and_then(|integ| integ.config_location())
-        .and_then(|path| modified_unix(&path));
+        .and_then(|path| {
+            gate_connect_core::config_changes::changed_at(std::path::Path::new(&path))
+        });
     [config_changed_at, ca_cert_changed_at]
         .into_iter()
         .flatten()
@@ -3698,5 +3741,26 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
         let white: *mut AnyObject = msg_send![class!(NSColor), whiteColor];
         let white_cg: *mut AnyObject = msg_send![white, CGColor];
         let () = msg_send![layer, setBackgroundColor: white_cg];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Chrome bridge shares the CLI's binary and process name, and only its
+    /// arguments tell it apart from a Claude Code session.
+    #[test]
+    fn the_chrome_native_host_is_not_a_claude_code_session() {
+        let cmd = |args: &[&str]| -> Vec<std::ffi::OsString> {
+            args.iter().map(std::ffi::OsString::from).collect()
+        };
+        assert!(is_chrome_native_host(&cmd(&[
+            "/home/u/.local/bin/claude",
+            "--chrome-native-host"
+        ])));
+        assert!(!is_chrome_native_host(&cmd(&["claude"])));
+        assert!(!is_chrome_native_host(&cmd(&["claude", "--resume"])));
+        assert!(!is_chrome_native_host(&cmd(&[])));
     }
 }

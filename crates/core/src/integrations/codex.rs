@@ -61,7 +61,6 @@ use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
 use crate::env;
-use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
 /// File name of the auth-helper script older Gate Connect versions wrote
@@ -608,7 +607,7 @@ impl Integration for Codex {
         if doc.as_table().is_empty() {
             // Nothing of the user's - and no stub to preserve - is left;
             // remove the file rather than leave an empty one behind.
-            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            crate::config_changes::remove(&path)?;
         } else {
             write_doc(&path, &doc)?;
         }
@@ -637,7 +636,7 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     // 0o600 defensively (the file no longer carries the Gate key - the relay
     // injects it - but may hold other user config). Atomic-write protects
     // against partial writes tearing the TOML on crash.
-    primitives::write_file(path, doc.to_string().as_bytes(), 0o600)
+    crate::config_changes::write(path, doc.to_string().as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
 
