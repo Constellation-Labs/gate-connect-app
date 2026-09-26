@@ -1,6 +1,6 @@
 //! When Gate last changed each tool's configuration file.
 //!
-//! [`crate::reopen`] asks whether a running tool started before the last change
+//! The app's reopen check (`agent_needs_reopen` in `src-tauri`) asks whether a running tool started before the last change
 //! to its configuration, because a tool reads that file once, at startup. It
 //! used to take the answer from the file's mtime, and the mtime moves on any
 //! edit to the file - including every edit the tool makes to itself. Claude
@@ -21,6 +21,10 @@
 //! protected on the row.
 //!
 //! Keyed by the path as displayed, which is the form `config_location` returns.
+//!
+//! **Not locked.** The app and the CLI can both connect tools, and two records
+//! racing lose one stamp. That can only drop a reopen notice, never raise a
+//! false one, which is the same failure a missing record already has.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -88,7 +92,13 @@ fn load() -> Result<BTreeMap<String, u64>> {
         return Ok(BTreeMap::new());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+    // An unreadable record starts over rather than failing every later write,
+    // which would stop config changes raising a reopen notice for good. Losing
+    // the old stamps costs the same as having none.
+    Ok(serde_json::from_str(&raw).unwrap_or_else(|e| {
+        eprintln!("[gate] discarding unparsable {}: {e}", path.display());
+        BTreeMap::new()
+    }))
 }
 
 fn store_path() -> Result<PathBuf> {

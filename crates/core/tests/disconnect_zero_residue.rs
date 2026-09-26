@@ -422,10 +422,10 @@ fn claude_code_connect_writes_the_ca_and_disconnect_takes_it_away() {
 
 /// A reconnect with Gate's values already in place must not touch the file.
 ///
-/// Its mtime is what the reopen check compares running `claude` processes
-/// against, so a no-op rewrite reads as "restart Claude Code". The file is
-/// reformatted between the two connects: a rewrite would pretty-print it back,
-/// so unchanged bytes prove nothing was written.
+/// The file belongs to Claude Code, so a reconcile that changes nothing Gate
+/// owns has no business rewriting it. The file is reformatted between the two
+/// connects: a rewrite would pretty-print it back, so unchanged bytes prove
+/// nothing was written.
 #[test]
 fn claude_code_reconnect_with_our_values_in_place_leaves_the_file_alone() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());

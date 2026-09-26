@@ -328,11 +328,10 @@ impl Integration for ClaudeCode {
             .unwrap_or_default();
 
         // Already connected with these exact values: leave the file alone.
-        // Rewriting it anyway moves its mtime, which is the bound the reopen
-        // check measures running processes against (`reopen.rs`), so a
-        // reconcile pass that changed nothing would tell the user to restart
-        // every `claude` they have open. Only the keys we write are compared;
-        // the rest of the file belongs to Claude Code and the user.
+        // `write_object` and `config_changes` would already record nothing for
+        // an unchanged file, so this only spares the rewrite of a file Claude
+        // Code owns. Only the keys we write are compared; the rest of the file
+        // belongs to Claude Code and the user.
         let env_value = |key: &str| settings.get("env").and_then(|env| env.get(key));
         let env_str = |key: &str| env_value(key).and_then(|v| v.as_str());
         let ca_cert_value = ca_cert_path.display().to_string();
