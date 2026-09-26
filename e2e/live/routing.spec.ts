@@ -114,9 +114,18 @@ test.describe("routing, end to end", () => {
       })
       .toMatchObject({ running: true, ca_trusted: true });
 
-    // And Codex's own config on disk now names the relay.
+    // And Codex's own config on disk now names the relay. Polled, not read
+    // once: the connect starts the engine before it writes the tool's config,
+    // so "the engine is running" above can be true while the file is still
+    // being written. Reading it once raced that on the slower Windows runner
+    // and got no base_url at all.
+    await expect
+      .poll(() => codexBaseUrl(harness), {
+        message: "Codex config should name the relay",
+        timeout: 30_000,
+      })
+      .toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
     const baseUrl = codexBaseUrl(harness);
-    expect(baseUrl, "Codex config should name the relay").toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
 
     // The message. This is the assertion the whole harness is for.
     const sent = await sendAsCodex(baseUrl!);

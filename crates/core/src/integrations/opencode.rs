@@ -259,21 +259,20 @@ impl Integration for OpenCode {
         let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
         paths.extend(env::opencode_config_dir());
         paths.extend(settings_path());
+        paths.extend(env::opencode_auth_path());
         paths
     }
 
     fn detect(&self) -> Result<bool> {
         // The packaged paths, then PATH, then the bin directories a login
         // shell adds and a GUI process does not inherit - see
-        // `integrations::binaries`. The old check was the first of those three
-        // alone, which is why a tool installed anywhere else was only found
-        // through the config-directory fallback below, and a tool installed but
-        // never run was not found at all.
+        // `integrations::binaries`. Failing all three, a config file or a
+        // login still counts: see `has_routable_setup`.
         let (well_known, names) = self.binary();
         if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
-        Ok(env::opencode_config_dir()?.exists())
+        has_routable_setup()
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -328,6 +327,7 @@ impl Integration for OpenCode {
 
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
+            prune_orphaned_state()?;
             return Ok(Status::NotInstalled);
         }
         // Connected = sidecar state exists AND at least one provider
@@ -842,7 +842,27 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
     super::json_config::write_object(&settings_path()?, settings)
 }
 
+/// Remove a sidecar whose `opencode.json` is gone.
+///
+/// Its snapshots are of that file, so without it they describe nothing: the
+/// user deleted it or uninstalled OpenCode. `disconnect` always read it that
+/// way, but detection no longer counts an empty config directory as an
+/// install, so the sweeps stopped reaching `disconnect` to clear it. Left in
+/// place, a reinstall read Drifted and its first connect kept the deleted
+/// file's snapshots for a later disconnect to restore onto the new one.
+///
+/// Called from `status`, which is what runs when the file disappears
+/// (`watch_paths` names it), and from `load_state`, so no reader can see one.
+/// A config deleted and recreated while Gate is not running is not caught.
+fn prune_orphaned_state() -> Result<()> {
+    if !settings_path()?.exists() {
+        remove_state()?;
+    }
+    Ok(())
+}
+
 fn load_state() -> Result<Option<State>> {
+    prune_orphaned_state()?;
     let path = state_path()?;
     if !path.exists() {
         return Ok(None);
@@ -873,6 +893,70 @@ fn load_opencode_auth() -> Result<Map<String, Value>> {
 }
 
 use super::json_config::ensure_object;
+
+/// The fallback for an OpenCode whose binary Gate cannot find (a Volta, asdf
+/// or npx install): the two files `connect` reads to find a provider to route,
+/// the config and the login store.
+///
+/// **Not the config directory.** That was the test until a machine with no
+/// OpenCode on it kept an OpenCode row: `~/.config/opencode` survives an
+/// uninstall, empty, and Gate's own disconnect removes `opencode.json` and
+/// leaves the directory. An empty directory is no evidence of an install, and
+/// `connect` refuses one anyway ("No supported OpenCode providers found").
+fn has_routable_setup() -> Result<bool> {
+    Ok(settings_path()?.exists() || env::opencode_auth_path()?.exists())
+}
+
+/// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`. The
+/// catalog's slug (`proxy::catalog`); a mismatch makes the cleanup below a
+/// silent no-op, which `the_opencode_domain_is_switched_off_once_without_opencode`
+/// would catch.
+const DOMAIN_SLUG: &str = "opencode";
+
+/// Present once the cleanup below has run on this install.
+const DOMAIN_CLEANUP_MARKER: &str = "opencode-domain-cleaned";
+
+/// Switch off the `opencode.ai` domain an older build left on, once, on a
+/// machine without OpenCode. Returns whether it switched anything off.
+///
+/// An older build's OpenCode switch turned the domain on and nothing recorded
+/// it, so it outlives the tool: the rail then draws an OpenCode row with a
+/// routed domain and a switched-off tool, which reads "Not protected" with
+/// "Partly protected: 1 of 2" beneath it.
+///
+/// **Once per install, not every launch.** Detection can miss a real install
+/// (a project-level config, credentials in the environment), and a check that
+/// ran every launch would then turn off inspection of that traffic every time,
+/// and undo anybody who turned the domain back on. So the marker is written as
+/// soon as the domain is seen off with OpenCode absent, and a later choice is
+/// never revisited. While OpenCode is detected nothing is decided and the
+/// marker waits.
+///
+/// Writes the flag rather than going through `ProxyManager::set_domain`: this
+/// runs at startup before routing comes up, which reads the flag, and on Linux
+/// `set_domain` adopts a running daemon, which leaves the enable after it with
+/// nothing to do.
+pub fn switch_off_orphaned_domain() -> Result<bool> {
+    let marker = env::app_support_dir()?.join(DOMAIN_CLEANUP_MARKER);
+    if marker.exists() || OpenCode.detect()? {
+        return Ok(false);
+    }
+    let enabled = crate::proxy::config::load_domains()?
+        .iter()
+        .any(|d| d.slug == DOMAIN_SLUG && d.enabled);
+    if enabled {
+        crate::proxy::config::set_enabled(DOMAIN_SLUG, false)?;
+        crate::logging::log(
+            crate::logging::Level::Info,
+            "switched off the opencode.ai domain: OpenCode is not installed",
+        );
+        if let Ok(Some(base_url)) = crate::account::load_base_url() {
+            crate::audit::domain_toggled(&base_url, None, DOMAIN_SLUG, false);
+        }
+    }
+    crate::primitives::write_file(&marker, b"", 0o600)?;
+    Ok(enabled)
+}
 
 #[cfg(test)]
 mod tests {
