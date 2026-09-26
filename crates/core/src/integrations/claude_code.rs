@@ -40,7 +40,6 @@
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
-use std::fs;
 use std::path::PathBuf;
 
 use crate::env;
@@ -457,9 +456,7 @@ impl Integration for ClaudeCode {
         // The file now holds nothing but our additions - remove it rather
         // than leaving a stray `{}` behind (matching Codex's disconnect).
         if settings.is_empty() {
-            if path.exists() {
-                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-            }
+            crate::config_changes::remove(&path)?;
             return Ok(());
         }
         write_settings(&settings)

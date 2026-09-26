@@ -15,6 +15,7 @@ pub mod activity;
 /// The last overview that landed, held on disk so the pane opens on numbers.
 pub mod activity_cache;
 pub mod audit;
+pub mod config_changes;
 pub mod coverage;
 
 /// Asking the OS to bring us back after a crash, so the exit-time proxy revert

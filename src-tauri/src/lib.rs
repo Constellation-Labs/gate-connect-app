@@ -2209,7 +2209,7 @@ fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
 /// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     if names.is_empty() {
         return;
     }
@@ -2220,17 +2220,51 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
         ProcessRefreshKind::nothing().without_tasks(),
     );
     let own_pid = sysinfo::get_current_pid().ok();
-    for (pid, process) in sys.processes() {
-        if Some(*pid) == own_pid {
-            continue;
-        }
-        // Resolved, not just normalised: a `codex` the ChatGPT app ships is
-        // that app, so a walk for the CLI must not yield it and a walk for the
-        // app must (AG-947).
-        if agent_row_of(process).is_some_and(|(_, n, _, _)| names.contains(n)) {
-            f(process);
+    let matched: Vec<sysinfo::Pid> = sys
+        .processes()
+        .iter()
+        .filter(|(pid, process)| {
+            // Resolved, not just normalised: a `codex` the ChatGPT app ships is
+            // that app, so a walk for the CLI must not yield it and a walk for
+            // the app must (AG-947).
+            Some(**pid) != own_pid
+                && agent_row_of(process).is_some_and(|(_, n, _, _)| names.contains(n))
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    if matched.is_empty() {
+        return;
+    }
+    // Command lines for the matched processes only, so the full walk above
+    // stays at `stat`. Needed to tell a Claude Code session from the Chrome
+    // bridge that shares its binary (`is_chrome_native_host`).
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&matched),
+        false,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    for pid in matched {
+        if let Some(process) = sys.process(pid) {
+            if !is_chrome_native_host(process.cmd()) {
+                f(process);
+            }
         }
     }
+}
+
+/// Is this `claude` the Claude in Chrome native-messaging host rather than a
+/// Claude Code session?
+///
+/// Chrome launches `claude --chrome-native-host` as the bridge between the
+/// extension and Claude Code, and it carries the CLI's process name, so the
+/// name match counted it as a session. It is started and stopped by Chrome,
+/// not by the user, which made it a Claude Code "reopen" nobody could clear by
+/// reopening Claude Code - and put it in the set `close_running_agents` kills.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter().skip(1).any(|arg| arg == "--chrome-native-host")
 }
 
 /// A process's name as [`AGENT_PROCESSES`] spells it: any `.exe` stripped, so
@@ -2683,30 +2717,29 @@ fn agent_process_names(slug: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// When this tool's configuration file was last written, in Unix seconds.
+/// When Gate last changed this tool's configuration file, in Unix seconds.
 ///
 /// The durable half of the reopen decision: the file is what the tool reads at
-/// startup, and its mtime survives restarts of Gate, reboots and reinstalls -
+/// startup, and the record survives restarts of Gate, reboots and reinstalls -
 /// which is the whole point, because the timestamps this used to compare
 /// against did not. See [`gate_connect_core::reopen`] for the defect this
 /// replaces.
 ///
+/// **Gate's record, not the file's mtime.** The mtime moved on the tool's own
+/// edits too - Claude Code rewrites `settings.json` on every permission
+/// approval - and each one made every older process read as stale with
+/// nothing Gate routes by changed. [`gate_connect_core::config_changes`] is
+/// stamped only when Gate's write actually changed the file.
+///
 /// `None` for a tool with no configuration file of its own (the environment
-/// channel), for one whose file does not exist yet, and on any filesystem that
-/// will not report a modification time. All three mean the same thing to the
-/// caller: no recorded change, so no claim.
+/// channel) and for one Gate has no recorded change to. Both mean the same
+/// thing to the caller: no recorded change, so no claim.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn config_changed_at_unix(slug: &str) -> Option<u64> {
     let integration = gate_connect_core::registry::ToolId::from_slug(slug)
         .and_then(gate_connect_core::registry::find)?;
     let path = integration.config_location()?;
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
+    gate_connect_core::config_changes::changed_at(std::path::Path::new(&path))
 }
 
 /// When Gate's CA certificate was last written, as Unix seconds.
@@ -6199,6 +6232,22 @@ mod tests {
         assert_eq!(slug_for("claude"), Some("claude-code"));
         assert_eq!(slug_for("Claude"), Some("anthropic"));
         assert_ne!(slug_for("claude"), slug_for("Claude"));
+    }
+
+    /// The Chrome bridge shares the CLI's binary and process name, and only its
+    /// arguments tell it apart from a Claude Code session.
+    #[test]
+    fn the_chrome_native_host_is_not_a_claude_code_session() {
+        let cmd = |args: &[&str]| -> Vec<std::ffi::OsString> {
+            args.iter().map(std::ffi::OsString::from).collect()
+        };
+        assert!(is_chrome_native_host(&cmd(&[
+            "/home/u/.local/bin/claude",
+            "--chrome-native-host"
+        ])));
+        assert!(!is_chrome_native_host(&cmd(&["claude"])));
+        assert!(!is_chrome_native_host(&cmd(&["claude", "--resume"])));
+        assert!(!is_chrome_native_host(&cmd(&[])));
     }
 
     /// The lookup returns *every* name a slug claims, not the first.

@@ -473,11 +473,7 @@ impl Integration for OpenClaw {
             }
 
             if settings.is_empty() {
-                let path = env::openclaw_config_path()?;
-                if path.exists() {
-                    fs::remove_file(&path)
-                        .with_context(|| format!("removing {}", path.display()))?;
-                }
+                crate::config_changes::remove(&env::openclaw_config_path()?)?;
             } else {
                 write_settings(&settings)?;
             }

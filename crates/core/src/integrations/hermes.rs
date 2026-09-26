@@ -799,7 +799,7 @@ fn write_config(path: &std::path::Path, body: &str) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    crate::primitives::write_file(path, body.as_bytes(), 0o600)
+    crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
 
