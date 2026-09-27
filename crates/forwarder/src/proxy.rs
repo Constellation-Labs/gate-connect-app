@@ -48,6 +48,31 @@ pub(crate) const MAX_HEADERS: usize = 128;
 /// `unknown`, which the app takes as "cannot tell" rather than "stale".
 pub static BUILD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
+/// Connections being served right now, across both listeners, so a retiring
+/// forwarder knows when the last one it accepted has finished.
+#[derive(Clone, Default)]
+pub struct InFlight(Arc<std::sync::atomic::AtomicUsize>);
+
+/// One connection counted in [`InFlight`] until it is dropped.
+pub struct Serving(Arc<std::sync::atomic::AtomicUsize>);
+
+impl InFlight {
+    pub fn enter(&self) -> Serving {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Serving(self.0.clone())
+    }
+
+    pub fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// How long a direct tunnel has to sit quiet, once the engine is back, before
 /// it is closed so the client reconnects through the engine.
 ///

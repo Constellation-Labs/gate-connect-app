@@ -67,7 +67,7 @@ use tokio::io::{
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::proxy::{
-    EngineLookup, ENGINE_CONNECT_TIMEOUT, HEAD_READ_TIMEOUT, MAX_HEAD, MAX_HEADERS,
+    EngineLookup, InFlight, ENGINE_CONNECT_TIMEOUT, HEAD_READ_TIMEOUT, MAX_HEAD, MAX_HEADERS,
 };
 
 /// The relay port this forwarder holds, or 0 while it holds none. Reported on
@@ -239,7 +239,17 @@ pub type PaygLookup = Arc<dyn Fn() -> bool + Send + Sync>;
 /// instead: the configs are then repointed at the engine's port, this listener
 /// stops answering on a port nothing names, and it takes the engine's port
 /// over the moment the app lets go of it.
-pub fn start(forwarder_port: u16, token: Arc<str>) {
+///
+/// Once `retiring` turns true it stops listening for good and does not retry,
+/// so the forwarder replacing this one can take the port. Connections already
+/// accepted run on, counted in `in_flight`, which is what the retiring
+/// forwarder waits on before it exits.
+pub fn start(
+    forwarder_port: u16,
+    token: Arc<str>,
+    in_flight: InFlight,
+    mut retiring: tokio::sync::watch::Receiver<bool>,
+) {
     let table: Arc<Vec<Upstream>> = Arc::new(upstreams());
     let backend: EngineLookup = Arc::new(|| gate_connect_paths::load_port(RELAY_ENGINE_PORT_NAME));
     let payg: PaygLookup = Arc::new(account_is_payg);
@@ -251,6 +261,9 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
     tokio::spawn(async move {
         let mut first = true;
         loop {
+            if *retiring.borrow() {
+                return;
+            }
             let bound = match activated.take() {
                 Some(listener) => Some(listener),
                 None => {
@@ -267,13 +280,20 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
                 // configs never names a port nothing answers on.
                 let _ = gate_connect_paths::save_port(RELAY_PORT_NAME, port);
                 HELD_PORT.store(port, Ordering::SeqCst);
+                let mut retired = retiring.clone();
                 let released = async move {
-                    loop {
-                        tokio::time::sleep(CLAIM_RETRY).await;
-                        let named = gate_connect_paths::load_port(RELAY_PORT_NAME);
-                        if named.is_some_and(|named| named != port) {
-                            return;
+                    let renamed = async {
+                        loop {
+                            tokio::time::sleep(CLAIM_RETRY).await;
+                            let named = gate_connect_paths::load_port(RELAY_PORT_NAME);
+                            if named.is_some_and(|named| named != port) {
+                                return;
+                            }
                         }
+                    };
+                    tokio::select! {
+                        () = renamed => {}
+                        _ = retired.wait_for(|retiring| *retiring) => {}
                     }
                 };
                 let services = Services {
@@ -281,11 +301,15 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
                     token: token.clone(),
                     table: table.clone(),
                     payg: payg.clone(),
+                    in_flight: in_flight.clone(),
                 };
                 serve(listener, port, services, released).await;
                 HELD_PORT.store(0, Ordering::SeqCst);
             }
-            tokio::time::sleep(CLAIM_RETRY).await;
+            tokio::select! {
+                () = tokio::time::sleep(CLAIM_RETRY) => {}
+                _ = retiring.wait_for(|retiring| *retiring) => return,
+            }
         }
     });
 }
@@ -322,6 +346,9 @@ pub struct Services {
     pub token: Arc<str>,
     pub table: Arc<Vec<Upstream>>,
     pub payg: PaygLookup,
+    /// Where this connection is counted while it runs, so a retiring
+    /// forwarder waits for it.
+    pub in_flight: InFlight,
 }
 
 /// Accept until `released` completes, serving each connection with
@@ -377,6 +404,7 @@ async fn serve_capped(
         let services = services.clone();
         tokio::spawn(async move {
             let _slot = slot;
+            let _serving = services.in_flight.enter();
             let _ = handle(client, own_port, services).await;
         });
     }

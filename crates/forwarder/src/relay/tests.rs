@@ -345,6 +345,7 @@ fn services(backend: Option<u16>, table: Vec<Upstream>, payg: bool) -> Services 
         token: Arc::from(TOKEN),
         table: Arc::new(table),
         payg: Arc::new(move || payg),
+        in_flight: Default::default(),
     }
 }
 
