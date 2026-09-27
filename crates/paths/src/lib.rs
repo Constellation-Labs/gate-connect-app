@@ -168,6 +168,36 @@ pub const RELAY_ENGINE_PORT_NAME: &str = "relay-engine-port";
 /// running across an update, from a current one that simply lost the port.
 pub const FORWARDER_RELAY_HEADER: &str = "x-gate-forwarder-relay";
 
+/// Header on the forwarder's own health answer naming the build it runs, as
+/// [`binary_identity`] of its executable when it started, or `unknown` when
+/// that could not be read.
+///
+/// The app compares it with the identity of the forwarder binary installed
+/// beside it. Nothing else retires a forwarder across an update - it runs
+/// detached until logout - so without this a fix to the forwarder reached a
+/// machine only at its next login, however many updates had shipped since.
+/// Its absence reads as stale, which is what every build before it looks like.
+pub const FORWARDER_BUILD_HEADER: &str = "x-gate-forwarder-build";
+
+/// Which build a binary on disk is: its length and modification time.
+///
+/// Metadata rather than a content hash, because the app asks on every
+/// supervisory pass and hashing megabytes each time would be waste to answer a
+/// question that only changes when an update replaces the file - which moves
+/// both. Read through the same call on both sides, so the two agree whatever
+/// the filesystem's timestamp resolution. Not a security boundary: the health
+/// proof is what establishes the forwarder is ours; this only says whether it
+/// is current.
+pub fn binary_identity(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!("{}-{}", meta.len(), modified.as_nanos()))
+}
+
 /// Reserved liveness path the relay answers with a bare 204 to anybody.
 pub const RELAY_LIVENESS_PATH: &str = "/__gate/health";
 

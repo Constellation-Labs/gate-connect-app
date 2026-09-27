@@ -1138,10 +1138,10 @@ async fn splice(client: &mut TcpStream, engine: &mut TcpStream, idle: Duration) 
 /// When a connection last moved a byte, shared by the [`Watched`] wrappers on
 /// its streams.
 #[derive(Clone)]
-struct Clock(Arc<Mutex<tokio::time::Instant>>);
+pub(crate) struct Clock(Arc<Mutex<tokio::time::Instant>>);
 
 impl Clock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Clock(Arc::new(Mutex::new(tokio::time::Instant::now())))
     }
 
@@ -1149,19 +1149,19 @@ impl Clock {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
     }
 
-    fn last(&self) -> tokio::time::Instant {
+    pub(crate) fn last(&self) -> tokio::time::Instant {
         *self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
 /// A stream that stamps its [`Clock`] whenever bytes cross it.
-struct Watched<S> {
+pub(crate) struct Watched<S> {
     inner: S,
     clock: Clock,
 }
 
 impl<S> Watched<S> {
-    fn new(inner: S, clock: Clock) -> Self {
+    pub(crate) fn new(inner: S, clock: Clock) -> Self {
         Watched { inner, clock }
     }
 }

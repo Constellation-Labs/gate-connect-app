@@ -173,10 +173,13 @@ fn health_ok(port: u16, token: &str) -> bool {
 /// What a forwarder that proved itself says about the relay port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayClaim {
-    /// A build from before the forwarder fronted the relay, still running
-    /// because nothing retires a forwarder on an app update: it answers only
-    /// the proof that predates path binding, or it sent no readable relay
-    /// header. It has to be replaced, or the relay stays in the GUI.
+    /// A build other than the one installed beside the app, still running
+    /// because a forwarder runs detached until logout and an update does not
+    /// touch it. Either it predates fronting the relay - it answers only the
+    /// proof that predates path binding, or sent no readable relay header - or
+    /// its build header names a different binary than the one on disk. It has
+    /// to be replaced, or the relay stays in the GUI and forwarder fixes wait
+    /// for the next login.
     Stale,
     /// A current build that holds no relay port right now.
     Nothing,
@@ -206,7 +209,34 @@ fn probe(port: u16, token: &str) -> Option<RelayClaim> {
         Some(value) => value.parse().map_or(RelayClaim::Stale, RelayClaim::Holds),
         None => RelayClaim::Stale,
     };
+    let sent_build = headers
+        .iter()
+        .find(|(name, _)| name == gate_connect_paths::FORWARDER_BUILD_HEADER)
+        .map(|(_, value)| value.as_str());
+    let installed = forwarder_binary()
+        .ok()
+        .and_then(|bin| gate_connect_paths::binary_identity(&bin));
+    if is_other_build(sent_build, installed.as_deref()) {
+        return Some(RelayClaim::Stale);
+    }
     Some(claim)
+}
+
+/// Whether a forwarder reporting `sent` is some build other than the one
+/// `installed` beside the app, and so due for replacing.
+///
+/// Only a positive mismatch counts. With no installed binary to compare
+/// against there is nothing to replace it with, and a forwarder that could not
+/// read its own executable (`unknown`) cannot be told apart - retiring either
+/// would cost the exported variables their port on every launch for nothing.
+/// A missing header is a mismatch: it is what every build before the header
+/// sends, and they are exactly the ones an update has left behind.
+fn is_other_build(sent: Option<&str>, installed: Option<&str>) -> bool {
+    match (sent, installed) {
+        (_, None) | (Some("unknown"), _) => false,
+        (None, Some(_)) => true,
+        (Some(sent), Some(installed)) => sent != installed,
+    }
 }
 
 /// The relay port a running forwarder of ours is holding, when it is the one
@@ -255,7 +285,7 @@ pub(crate) fn fronted_relay_port(wait: Duration) -> Option<u16> {
     }
 }
 
-/// Retire a forwarder too old to front the relay, so the ensure after this
+/// Retire a forwarder other than the installed build, so the ensure after this
 /// starts a current one.
 ///
 /// The marker is how every forwarder is asked to go, and it polls it every two
@@ -709,9 +739,9 @@ fn ensure_running_locked() -> Result<u16> {
             Some(RelayClaim::Stale) => {
                 if !retire_stale(port) {
                     eprintln!(
-                        "gate proxy: the forwarder is a build that predates fronting the \
-                         relay, and replacing it did not help (the installed binary is the \
-                         old one); keeping it, so the relay stays in this process"
+                        "gate proxy: the forwarder is not the installed build, and replacing \
+                         it did not help (the binary it runs is the old one, or the \
+                         replacement is stale too); keeping it, so it does its old job"
                     );
                     return Ok(port);
                 }
@@ -1024,6 +1054,25 @@ mod tests {
             }
         });
         port
+    }
+
+    /// A forwarder runs detached until logout, so an update leaves the old one
+    /// serving with a fix sitting unused on disk. Only a positive mismatch may
+    /// retire it: each retire costs the exported variables their port for a
+    /// few seconds, and doing that on every launch for a question with no
+    /// answer would be the fix causing the outage.
+    #[test]
+    fn only_a_forwarder_known_to_be_another_build_is_replaced() {
+        let installed = Some("123-456");
+        assert!(!is_other_build(Some("123-456"), installed));
+        assert!(is_other_build(Some("99-456"), installed));
+        // Every build before the header: exactly the ones left behind.
+        assert!(is_other_build(None, installed));
+        // It could not read its own executable; nothing to go on.
+        assert!(!is_other_build(Some("unknown"), installed));
+        // No installed binary means nothing to replace it with.
+        assert!(!is_other_build(Some("99-456"), None));
+        assert!(!is_other_build(None, None));
     }
 
     /// A forwarder left running across an update answers only the old proof,

@@ -106,6 +106,14 @@ fn run() -> Result<()> {
     if token.is_empty() {
         anyhow::bail!("the forwarder token is empty; refusing to start unidentifiable");
     }
+    // Taken before anything else can happen, and never re-read: the file is
+    // what an update replaces, and the point is to report the build this
+    // process is running, not the one that has since landed on disk.
+    let _ = proxy::BUILD.set(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| gate_connect_paths::binary_identity(&exe)),
+    );
 
     let listener = bind()?;
     let port = listener
@@ -218,6 +226,27 @@ async fn serve(
     own_port: u16,
     token: Arc<str>,
 ) -> Result<()> {
+    serve_with(
+        listener,
+        engine_port,
+        own_port,
+        token,
+        proxy::Reclaim::new(proxy::RECLAIM_IDLE),
+        MARKER_POLL,
+    )
+    .await
+}
+
+/// [`serve`], with how quickly direct tunnels are handed back to a returning
+/// engine left to the caller, so the tests need not wait out the real timings.
+async fn serve_with(
+    listener: TcpListener,
+    engine_port: proxy::EngineLookup,
+    own_port: u16,
+    token: Arc<str>,
+    reclaim: proxy::Reclaim,
+    engine_poll: Duration,
+) -> Result<()> {
     // Built once, outside the loop, and polled in place. A future created
     // inside `select!` is dropped and rebuilt on every iteration, so each
     // accepted connection restarted the marker poll from zero and a forwarder
@@ -234,6 +263,13 @@ async fn serve(
     });
     tokio::pin!(unwanted);
 
+    let watcher = tokio::spawn(watch_engine(
+        reclaim.engine_up.clone(),
+        engine_port.clone(),
+        own_port,
+        engine_poll,
+    ));
+
     // A cap on connections being served at once. Each one costs a task and two
     // descriptors, and without a ceiling a single local process can open
     // sockets until this one runs out of them.
@@ -241,7 +277,10 @@ async fn serve(
 
     loop {
         tokio::select! {
-            _ = &mut unwanted => return Ok(()),
+            _ = &mut unwanted => {
+                watcher.abort();
+                return Ok(());
+            }
             accepted = listener.accept() => {
                 let (client, _) = match accepted {
                     Ok(pair) => pair,
@@ -259,12 +298,48 @@ async fn serve(
                 };
                 let engine_port = engine_port.clone();
                 let token = token.clone();
+                let reclaim = reclaim.clone();
                 tokio::spawn(async move {
                     let _slot = slot;
-                    let _ = proxy::handle(client, engine_port, own_port, token).await;
+                    let _ = proxy::handle(client, engine_port, own_port, token, reclaim).await;
                 });
             }
         }
+    }
+}
+
+/// Keep `engine_up` saying whether the engine accepts connections, for the
+/// direct tunnels waiting to be handed back to it.
+///
+/// Dials only while a direct tunnel is subscribed. With none open there is
+/// nothing to reclaim, and a forwarder that knocked on the engine every couple
+/// of seconds for the whole session would be noise in its accept loop for no
+/// one's benefit. The value drops back to `false` while unwatched, so a tunnel
+/// that subscribes later never acts on an answer from before it existed.
+async fn watch_engine(
+    engine_up: Arc<tokio::sync::watch::Sender<bool>>,
+    engine_port: proxy::EngineLookup,
+    own_port: u16,
+    every: Duration,
+) {
+    loop {
+        tokio::time::sleep(every).await;
+        let up = if engine_up.receiver_count() == 0 {
+            false
+        } else {
+            match engine_port().filter(|port| *port != own_port) {
+                Some(port) => matches!(
+                    tokio::time::timeout(
+                        proxy::ENGINE_CONNECT_TIMEOUT,
+                        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                    )
+                    .await,
+                    Ok(Ok(_))
+                ),
+                None => false,
+            }
+        };
+        engine_up.send_if_modified(|seen| std::mem::replace(seen, up) != up);
     }
 }
 
@@ -631,5 +706,132 @@ mod tests {
         assert!(String::from_utf8(origin_saw.await.unwrap())
             .unwrap()
             .starts_with("ping"));
+    }
+
+    /// A forwarder whose engine can be brought back mid-test, with reclaim
+    /// timings short enough to observe. The marker poll ends `serve` after
+    /// [`MARKER_POLL`] when no app has written the marker, so these tests open
+    /// every connection well inside that; tunnels already open outlive it.
+    async fn start_reclaiming_forwarder(
+        engine: Arc<std::sync::atomic::AtomicU16>,
+        idle: Duration,
+    ) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            serve_with(
+                listener,
+                Arc::new(move || Some(engine.load(std::sync::atomic::Ordering::SeqCst))),
+                port,
+                Arc::from(TOKEN),
+                proxy::Reclaim::new(idle),
+                Duration::from_millis(50),
+            )
+            .await
+        });
+        port
+    }
+
+    /// An origin that echoes every byte back and holds the connection until the
+    /// other side closes it, like a provider holding a keep-alive connection.
+    fn echo_origin() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 256];
+            loop {
+                match sock.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        if sock.write_all(&buf[..n]).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// Open a direct tunnel to `origin` through the forwarder and prove it
+    /// carries bytes.
+    async fn open_direct_tunnel(forwarder: u16, origin: u16) -> TcpStream {
+        let mut client = TcpStream::connect(("127.0.0.1", forwarder)).await.unwrap();
+        client
+            .write_all(format!("CONNECT 127.0.0.1:{origin} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        assert!(read_some(&mut client).await.starts_with("HTTP/1.1 200"));
+        client.write_all(b"ping").await.unwrap();
+        assert_eq!(read_some(&mut client).await, "ping");
+        client
+    }
+
+    /// Whether the forwarder closed `client` within `within`.
+    async fn closed_within(client: &mut TcpStream, within: Duration) -> bool {
+        let mut buf = [0u8; 64];
+        matches!(
+            tokio::time::timeout(within, client.read(&mut buf)).await,
+            Ok(Ok(0) | Err(_))
+        )
+    }
+
+    /// The reported bug. Claude Code opened its connection while the app was
+    /// gone, and its pool kept reusing it after the app came back, so it stayed
+    /// off Gate until it was restarted. Once the engine answers again, a quiet
+    /// direct tunnel has to be closed so the client's next connection reaches
+    /// the engine.
+    #[tokio::test]
+    async fn a_direct_tunnel_is_handed_back_once_the_engine_returns() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
+        let port = start_reclaiming_forwarder(engine.clone(), Duration::from_millis(200)).await;
+        let mut client = open_direct_tunnel(port, echo_origin()).await;
+
+        // With no engine, a quiet tunnel is left alone: closing it would only
+        // send the client back to the same direct path.
+        assert!(
+            !closed_within(&mut client, Duration::from_millis(500)).await,
+            "a direct tunnel must stay open while the engine is still gone"
+        );
+
+        let back = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        engine.store(
+            back.local_addr().unwrap().port(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        assert!(
+            closed_within(&mut client, Duration::from_secs(2)).await,
+            "the tunnel must close once the engine is back and it is idle"
+        );
+    }
+
+    /// Handing a tunnel back must never cut a response in flight: a streaming
+    /// answer that fails halfway is worse than one more request sent direct.
+    #[tokio::test]
+    async fn a_busy_direct_tunnel_is_not_cut_when_the_engine_returns() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
+        let port = start_reclaiming_forwarder(engine.clone(), Duration::from_millis(300)).await;
+        let mut client = open_direct_tunnel(port, echo_origin()).await;
+
+        let back = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        engine.store(
+            back.local_addr().unwrap().port(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        // Keep traffic moving for several idle windows. Every exchange has to
+        // make it across.
+        for _ in 0..15 {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            client.write_all(b"tick").await.unwrap();
+            assert_eq!(read_some(&mut client).await, "tick");
+        }
+        assert!(
+            closed_within(&mut client, Duration::from_secs(2)).await,
+            "and once it goes quiet it is handed back"
+        );
     }
 }

@@ -43,6 +43,65 @@ pub(crate) const MAX_HEAD: usize = 64 * 1024;
 /// Most headers any real client sends on a proxy request.
 pub(crate) const MAX_HEADERS: usize = 128;
 
+/// Which build this process is, as [`gate_connect_paths::binary_identity`] of
+/// its executable at startup. Set once by `main`; unset (tests) reads as
+/// `unknown`, which the app takes as "cannot tell" rather than "stale".
+pub static BUILD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// How long a direct tunnel has to sit quiet, once the engine is back, before
+/// it is closed so the client reconnects through the engine.
+///
+/// Long enough that a response still streaming is never cut: a model pausing
+/// mid-answer sends keep-alive bytes well inside this. Short enough that a tool
+/// is back on Gate within a pause of its next request.
+pub(crate) const RECLAIM_IDLE: Duration = Duration::from_secs(3);
+
+/// How direct tunnels learn the engine is back.
+///
+/// A tunnel opened while the engine was gone is pinned to its origin for the
+/// connection's life, and a tool's pool keeps a warm connection for as long as
+/// it keeps using it - so without this, a Claude Code that was running when the
+/// app went away stayed off Gate until it was restarted, however long ago the
+/// app came back. Each direct tunnel subscribes to `engine_up`, and the watcher
+/// in `main` only dials the engine while one is subscribed.
+#[derive(Clone)]
+pub struct Reclaim {
+    pub engine_up: Arc<tokio::sync::watch::Sender<bool>>,
+    pub idle: Duration,
+}
+
+impl Reclaim {
+    pub fn new(idle: Duration) -> Self {
+        Reclaim {
+            engine_up: Arc::new(tokio::sync::watch::Sender::new(false)),
+            idle,
+        }
+    }
+}
+
+/// Resolve once the engine is up and the tunnel has been quiet for `idle`.
+///
+/// Idle rather than immediate: closing a tunnel under a live response would
+/// turn "back on Gate" into a failed request. An idle keep-alive connection
+/// closing is something every HTTP client already handles by opening another.
+async fn reclaimable(
+    mut engine_up: tokio::sync::watch::Receiver<bool>,
+    clock: &crate::relay::Clock,
+    idle: Duration,
+) {
+    loop {
+        if engine_up.wait_for(|up| *up).await.is_err() {
+            // The watcher is gone, so nothing will ever say the engine is back.
+            return std::future::pending().await;
+        }
+        let deadline = clock.last() + idle;
+        if tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
 /// What the first request line addresses.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Target {
@@ -262,6 +321,7 @@ pub async fn handle(
     engine_port: EngineLookup,
     own_port: u16,
     token: Arc<str>,
+    reclaim: Reclaim,
 ) -> Result<()> {
     let Some(head) = read_head(&mut client, &token).await? else {
         // Not something we can forward. Say so rather than hanging: a client
@@ -280,12 +340,17 @@ pub async fn handle(
             0 => "none".to_string(),
             port => port.to_string(),
         };
+        // And which build this is, so the app can replace a forwarder an
+        // update has left behind.
+        let build = BUILD.get().cloned().flatten();
+        let build = build.as_deref().unwrap_or("unknown");
         let _ = client
             .write_all(
                 format!(
                     "HTTP/1.1 204 No Content\r\n{PROOF_HEADER}: {proof}\r\n\
-                     {}: {relay}\r\nConnection: close\r\n\r\n",
-                    gate_connect_paths::FORWARDER_RELAY_HEADER
+                     {}: {relay}\r\n{}: {build}\r\nConnection: close\r\n\r\n",
+                    gate_connect_paths::FORWARDER_RELAY_HEADER,
+                    gate_connect_paths::FORWARDER_BUILD_HEADER,
                 )
                 .as_bytes(),
             )
@@ -303,13 +368,13 @@ pub async fn handle(
         // produce a connection that recurses until something runs out.
         if port != own_port {
             if let Some(upstream) = connect_engine(port, &head).await {
-                return splice_engine(client, upstream, head).await;
+                return splice_engine(client, upstream, head, reclaim).await;
             }
         }
     }
 
     // No engine: the fail-open path this whole binary exists for.
-    go_direct(client, head).await
+    go_direct(client, head, reclaim).await
 }
 
 /// Connect to the engine and hand it the head, returning the socket only if the
@@ -339,7 +404,12 @@ async fn connect_engine(port: u16, head: &Head) -> Option<TcpStream> {
 /// while connections are being accepted - and without this the client sees a
 /// zero-byte EOF, which is exactly the "it just fails" symptom the forwarder
 /// exists to remove.
-async fn splice_engine(mut client: TcpStream, mut upstream: TcpStream, head: Head) -> Result<()> {
+async fn splice_engine(
+    mut client: TcpStream,
+    mut upstream: TcpStream,
+    head: Head,
+    reclaim: Reclaim,
+) -> Result<()> {
     if matches!(head.target, Target::Tunnel { .. }) {
         let mut first = [0u8; 1024];
         let n = match tokio::time::timeout(ENGINE_FIRST_BYTE_TIMEOUT, upstream.read(&mut first))
@@ -349,10 +419,10 @@ async fn splice_engine(mut client: TcpStream, mut upstream: TcpStream, head: Hea
             // Dead or unresponsive after accepting: fall back rather than
             // passing the failure on. Nothing has been written to the client
             // yet, so the fallback is invisible to it.
-            _ => return go_direct(client, head).await,
+            _ => return go_direct(client, head, reclaim).await,
         };
         if n == 0 {
-            return go_direct(client, head).await;
+            return go_direct(client, head, reclaim).await;
         }
         client.write_all(&first[..n]).await?;
     }
@@ -361,7 +431,7 @@ async fn splice_engine(mut client: TcpStream, mut upstream: TcpStream, head: Hea
 }
 
 /// Connect the client straight to where it was going.
-async fn go_direct(mut client: TcpStream, head: Head) -> Result<()> {
+async fn go_direct(mut client: TcpStream, head: Head, reclaim: Reclaim) -> Result<()> {
     let (host, port) = match &head.target {
         Target::Tunnel { host, port } | Target::Absolute { host, port } => (host.clone(), *port),
         Target::Health { .. } => return Ok(()),
@@ -425,11 +495,21 @@ async fn go_direct(mut client: TcpStream, head: Head) -> Result<()> {
         }
     }
     // Tunnel: the client and the origin own the bytes from here, and there is
-    // exactly one destination for the connection's life.
+    // exactly one destination for the connection's life. That life is cut
+    // short once the engine is back and the tunnel goes quiet, or the client's
+    // pool would keep it off Gate indefinitely - see [`Reclaim`].
     if !head.leftover.is_empty() {
         origin.write_all(&head.leftover).await?;
     }
-    tokio::io::copy_bidirectional(&mut client, &mut origin).await?;
+    let engine_up = reclaim.engine_up.subscribe();
+    let clock = crate::relay::Clock::new();
+    let mut client = crate::relay::Watched::new(client, clock.clone());
+    let mut origin = crate::relay::Watched::new(origin, clock.clone());
+    tokio::select! {
+        done = tokio::io::copy_bidirectional(&mut client, &mut origin) => { done?; }
+        // Dropping both sockets on return closes them.
+        () = reclaimable(engine_up, &clock, reclaim.idle) => {}
+    }
     Ok(())
 }
 
