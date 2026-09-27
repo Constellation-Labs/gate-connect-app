@@ -51,10 +51,18 @@ pub static BUILD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new
 /// How long a direct tunnel has to sit quiet, once the engine is back, before
 /// it is closed so the client reconnects through the engine.
 ///
-/// Long enough that a response still streaming is never cut: a model pausing
-/// mid-answer sends keep-alive bytes well inside this. Short enough that a tool
-/// is back on Gate within a pause of its next request.
-pub(crate) const RECLAIM_IDLE: Duration = Duration::from_secs(3);
+/// Quiet is all this hop can see. The tunnel carries TLS, so a connection
+/// between requests and one whose request is waiting on the server look the
+/// same, and closing the second fails the request. Servers do go silent with a
+/// request in flight: a non-streaming model call writes nothing until the whole
+/// answer is ready, and a long-poll or a WebSocket with sparse heartbeats sits
+/// idle by design - and the exported proxy carries every such client on the
+/// machine, not only the tools Gate manages. So this is set well past what a
+/// server keeps a client waiting in silence, not near a keep-alive interval.
+/// The price is paid only once per outage: a tool that was mid-session when
+/// the app came back returns to Gate at its first pause of this length (a
+/// turn the user is reading, say) rather than within seconds.
+pub(crate) const RECLAIM_IDLE: Duration = Duration::from_secs(60);
 
 /// How direct tunnels learn the engine is back.
 ///
