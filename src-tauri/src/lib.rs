@@ -1815,7 +1815,19 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // when the main thread is busy (wry#583). If a raise turns out to
             // be needed it belongs on the BUILDER, where it costs no runtime
             // dispatch.
-            if !revealed && navigation_challenged && std::time::Instant::now() >= reveal_at {
+            //
+            // And gated on the challenge still BEING there. `navigation_challenged`
+            // stays true once Cloudflare has let the page through, so a
+            // challenge that cleared on its own while hidden would otherwise
+            // be revealed anyway - with a notification asking the user to
+            // accept a screen that is gone, over the origin's error page.
+            // What happens after a pass is the capture check's business below.
+            let passed = gate_connect_core::proxy::cf_navigation_passed_since(started).is_some();
+            if !revealed
+                && navigation_challenged
+                && !passed
+                && std::time::Instant::now() >= reveal_at
+            {
                 eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
                 // Say why a Cloudflare page just appeared over the ChatGPT
                 // app. A system notification rather than a note in the page:
