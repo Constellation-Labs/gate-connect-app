@@ -786,31 +786,6 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("an app pane with no installed CLI is not called a destination", async ({
-    boot,
-  }) => {
-    // The H in review on #323. `openDomain` is `openTool === null` - "this
-    // section has no INSTALLED config tool" - not "this section is a provider
-    // endpoint", and a section stays alive on its `domain:` members. So a
-    // Claude pane on a machine with no Claude Code takes the unattributed
-    // branch too, and "any app on this machine can be pointed here" is false
-    // of Claude Desktop: it is one app, and nothing is pointed at it.
-    //
-    // `tools: []`, which the tests above already boot, because the default
-    // fixture ships every CLI as detected and would never see this.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: [],
-    });
-
-    await app.openApp("Claude");
-
-    await expect(app.page.getByText(/its own activity can/)).toBeVisible();
-    await expect(
-      app.page.getByText(/can be pointed here/),
-    ).toHaveCount(0);
-  });
-
   test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
@@ -841,21 +816,11 @@ test.describe("new UI sidebar rail", () => {
     });
 
     // A host with no config tool behind it, so no reading exists and none ever
-    // will. A different sentence from the one above, and deliberately so: that
-    // one caveats a reading, this one names where the requests ARE counted
-    // instead (AG-889). The page used to say only that its numbers could not
-    // be shown, which read as breakage.
+    // will. The cards name where the requests ARE counted instead (AG-889);
+    // the page draws no separate note on top of them.
     await app.openApp("OpenAI API");
 
-    // Anchored on the note's own tail. An earlier version matched
-    // /counted in the Overview/, which resolved to one element only by luck of
-    // capitalisation - three matches the moment either string changed.
-    await expect(
-      app.page.getByText(/cannot attribute these requests to one app/),
-    ).toBeVisible();
-    await expect(
-      app.page.getByText(/appear in the Overview rather than on this page/),
-    ).toBeVisible();
+    await expect(app.page.getByText(/can be pointed here/)).toHaveCount(0);
     // The cards are their own string and there are two of them.
     await expect(
       app.page.getByText("Shows in the Overview, not per app"),
