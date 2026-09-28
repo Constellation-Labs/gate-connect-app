@@ -99,7 +99,7 @@ import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { machineNotices, memberNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
-import type { ActivityFailure, ActivityView } from "./lib/activity";
+import type { ActivityFailure, ActivityView, FailureCode } from "./lib/activity";
 import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
 import type { GapNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
@@ -477,6 +477,7 @@ export function NewUiApp() {
     current: currentInstallId,
     resolved: installsResolved,
     failure: installsFailure,
+    loading: installsLoading,
     reload: reloadInstalls,
   } = useInstallations(canRead, credential);
   /**
@@ -524,9 +525,10 @@ export function NewUiApp() {
    * that - it means org-wide, which drops the query parameter entirely. So a null
    * id must stop the read rather than widen it: otherwise the pane paints the
    * whole org's traffic under a heading that says one machine, and does it exactly
-   * when this machine is unattributed. It is self-concealing too - the org-wide read succeeds, so nothing
-   * is pending and no gap notice fires - so `unattributedMachine` below stops
-   * the read and the pane draws its empty states instead.
+   * when this machine is unattributed. It is self-concealing too - the org-wide
+   * read succeeds, so nothing is pending and no gap notice fires - so
+   * `unattributedMachine` below stops the read and the pane draws its empty
+   * states instead.
    */
   const machineKnown = installsResolved && currentInstallId !== null;
   /** The gateway answered and does not recognise this machine. Distinct from "not
@@ -536,10 +538,24 @@ export function NewUiApp() {
    *  reading nobody took. */
   const unattributedMachine =
     installsResolved && installsFailure === null && currentInstallId === null;
-  /** The installation failure the user closed the banner on. Held as the object
-   *  so a later, different failure (a retry that failed again) raises it anew. */
-  const [dismissedInstallsFailure, setDismissedInstallsFailure] =
-    useState<ActivityFailure | null>(null);
+  /** The gateway refused the list for this credential. Expected, not a fault:
+   *  it refuses this route outright for a credential with no user on it, since
+   *  the list names every machine the org runs (see `useInstallations`). Such a
+   *  credential has no per-machine reading, ever, while its Overview reads fine,
+   *  so the pane says where its traffic is counted - as for a domain pane - and
+   *  nothing is raised. A red "refused this credential" there sent people to
+   *  rotate a key that works. */
+  const installsRefused = installsFailure?.code === "rejected";
+  /** The list could not be read for a reason the banner reports. */
+  const installsFailed = installsFailure !== null && !installsRefused;
+  /** The failure code the user closed the banner on. By code rather than by the
+   *  failure object: every background refresh re-reads the list, and a new
+   *  object for the same fault raised the banner again within half a minute.
+   *  Forgotten once the list answers, so a later fault is reported afresh. */
+  const [dismissedInstallsCode, setDismissedInstallsCode] = useState<FailureCode | null>(null);
+  useEffect(() => {
+    if (installsResolved && installsFailure === null) setDismissedInstallsCode(null);
+  }, [installsResolved, installsFailure]);
   const toolActivity = useActivity(
     canRead && openTool !== null && machineKnown,
     currentInstallId,
@@ -639,7 +655,18 @@ export function NewUiApp() {
     // not know yet becomes known with its first routed request, and a list that
     // failed may answer now; left alone, both kept the pane on a state that had
     // stopped being true until restart.
-    if (installsFailure !== null || unattributedMachine) reloadInstalls();
+    //
+    // An unknown machine only on a config tool's traffic (or the focus edge,
+    // `tools === null`): attribution comes from a config tool's User-Agent, so a
+    // machine whose traffic is all unattributed surfaces would otherwise re-read
+    // on every report forever. A refusal is not re-read at all; it is permanent
+    // for this credential.
+    if (
+      installsFailed ||
+      (unattributedMachine && (tools === null || tools.some((t) => t !== null)))
+    ) {
+      reloadInstalls();
+    }
     if (openTool !== null && (tools === null || tools.includes(openTool))) {
       toolActivity.reload();
       if (!toolEvents.paged) toolEvents.reload();
@@ -2752,8 +2779,13 @@ export function NewUiApp() {
    * Lifted out of the `AppShell` call so the reload note below can be stacked
    * beside it rather than ranked inside it. Unchanged otherwise.
    */
-  const installsNotice =
-    installsFailure !== null ? failureNotice(installsFailure) : null;
+  /** The installation failure the banner reports, with its gap notice. One
+   *  value, so the banner reads both without re-checking either. */
+  const installsBanner =
+    installsFailure !== null && installsFailed && installsFailure.code !== dismissedInstallsCode
+      ? { failure: installsFailure, notice: failureNotice(installsFailure) }
+      : null;
+  const installsRetry = installsBanner?.notice.actions.find((a) => a.kind === "retry");
   const noticeChain =
     actionError ? (
       <ErrorBanner
@@ -2762,29 +2794,32 @@ export function NewUiApp() {
         raw={actionError.raw}
         onDismiss={() => setActionError(null)}
       />
-    ) : installsNotice &&
-      installsFailure !== dismissedInstallsFailure &&
-      openTool !== null ? (
+    ) : installsBanner && openTool !== null ? (
       // Only on a tool's pane: the machine-scoped reading is the only one the
       // installation list gates, and the Overview's org-wide one is unaffected.
       // The pane's cards say "couldn't be read"; this is the one place that
       // says why, in the gap taxonomy's own sentence.
       <ErrorBanner
         title="Couldn't read this app's activity"
-        hint={installsNotice.cause}
-        raw={installsFailure?.message}
+        hint={installsBanner.notice.cause}
+        raw={installsBanner.failure.message}
         action={
-          installsNotice.actions.some((a) => a.kind === "retry")
-            ? { label: "Try again", onClick: reloadInstalls }
-            : undefined
+          installsRetry && {
+            // The pane's own retry says "Trying…" while it runs, and so does
+            // this; the accessible name tells it from the other "Try again"s.
+            label: installsLoading ? "Trying…" : installsRetry.label,
+            ariaLabel: `${installsRetry.label}: this app's activity`,
+            busy: installsLoading,
+            onClick: reloadInstalls,
+          }
         }
-        onDismiss={() => setDismissedInstallsFailure(installsFailure)}
+        onDismiss={() => setDismissedInstallsCode(installsBanner.failure.code)}
       />
     ) : browserRestart ? (
-      // Bottom of the chain, and neutral where the two above are amber or
-      // red: each of those names something still to be fixed in Gate's own
-      // routing, while this is a step outside the app that the user may
-      // already have taken. It must never displace one of them.
+      // Bottom of the chain, and neutral where the two above are red: each of
+      // those names something that failed in Gate itself, while this is a step
+      // outside the app that the user may already have taken. It must never
+      // displace one of them.
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
@@ -3378,10 +3413,12 @@ export function NewUiApp() {
               !unattributedMachine &&
               (toolActivity.view ? toolActivity.view.missing.chart : true),
             events:
-              !unattributedMachine &&
-              (installsFailure !== null || toolEvents.failure !== null),
+              !unattributedMachine && (installsFailed || toolEvents.failure !== null),
           }}
-          unattributed={openDomain}
+          // A refused installation list joins the domain panes: no per-machine
+          // reading exists for this credential, and its traffic is counted in
+          // the Overview. See `installsRefused`.
+          unattributed={openDomain || installsRefused}
           // A section spans surfaces the gateway attributes differently: its
           // config tool sends a User-Agent `client_tool` recognises, its host
           // surfaces do not. So the counters are the tool's, under a heading

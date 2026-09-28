@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 
 import { useInstallations, type Installation } from "./activity";
 import { activityInstallations as activityInstallationsRaw } from "./api";
@@ -100,5 +100,26 @@ describe("useInstallations", () => {
     answer(JSON.stringify({ installations: [installation({ current: true })], current: INSTALL }));
     await waitFor(() => expect(result.current.current).toBe(INSTALL));
     expect(result.current.failure).toBeNull();
+  });
+  it("still clears when a reload and a change of account land together", async () => {
+    // A reload keeps the held answer only for the account it was asked for.
+    // As a plain flag it let the next effect run keep org 1's failure after a
+    // switch to org 2.
+    activityInstallations.mockRejectedValue('{"code":"offline","message":"down"}');
+    const { result, rerender } = renderHook(
+      ({ credential }: { credential: string }) => useInstallations(true, credential),
+      { initialProps: { credential: "oauth|https://gw|org-1" } },
+    );
+    await waitFor(() => expect(result.current.failure?.code).toBe("offline"));
+
+    activityInstallations.mockReturnValue(new Promise(() => {}));
+    act(() => {
+      result.current.reload();
+      rerender({ credential: "oauth|https://gw|org-2" });
+    });
+
+    expect(result.current.failure).toBeNull();
+    expect(result.current.resolved).toBe(false);
+    expect(result.current.loading).toBe(true);
   });
 });

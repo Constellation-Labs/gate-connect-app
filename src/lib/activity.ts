@@ -588,6 +588,8 @@ export function useInstallations(
    * read.
    */
   failure: ActivityFailure | null;
+  /** A read is in flight, first or re-read. */
+  loading: boolean;
   /** Read the list again, keeping what is on screen until it answers. A no-op
    *  while disabled. */
   reload: () => void;
@@ -596,14 +598,17 @@ export function useInstallations(
   const [current, setCurrent] = useState<string | null>(null);
   const [resolved, setResolved] = useState(false);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
+  const [loading, setLoading] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  /** Set by `reload`, so its re-read keeps the held answer instead of clearing
-   *  it the way a change of account must. */
-  const reloading = useRef(false);
+  const key = `${enabled}|${credential}`;
+  /** The account a pending `reload` was asked for, or null. Keyed rather than a
+   *  flag: a reload and a change of account landing in the same render must
+   *  still clear, and a flag would have let the reload's "keep" win. */
+  const reloadFor = useRef<string | null>(null);
   const reload = useCallback(() => {
-    reloading.current = true;
+    reloadFor.current = key;
     setAttempt((n) => n + 1);
-  }, []);
+  }, [key]);
 
   useEffect(() => {
     // Cleared before the new read, not after it lands: these are one org's
@@ -611,19 +616,28 @@ export function useInstallations(
     // the new reading cannot honour. `resolved` goes with them - until this read
     // answers, nobody may claim to know which machine is this one.
     //
+    // Except for a `reload` of this same account, which keeps what is on screen
+    // until the re-read answers: dropping `resolved` there would flip the pane
+    // back to its skeletons for the length of every retry.
+    //
     // Ahead of the `enabled` guard, not behind it. Behind it, a hook going from
     // enabled to disabled kept the previous org's list, which is the opposite of
     // what this clearing is for - and the ordering looks deliberate precisely
     // because of that promise. Harmless while `canRead` only drops on disconnect,
     // and the kind of thing that stops being harmless quietly.
-    if (!reloading.current) {
+    const keep = reloadFor.current === key;
+    reloadFor.current = null;
+    if (!keep) {
       setInstallations([]);
       setCurrent(null);
       setResolved(false);
       setFailure(null);
     }
-    reloading.current = false;
-    if (!enabled) return;
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     let live = true;
     activityInstallations()
       .then((text) => {
@@ -641,12 +655,15 @@ export function useInstallations(
         // was "we could not find out" rather than "this machine is unknown".
       })
       .finally(() => {
-        if (live) setResolved(true);
+        if (!live) return;
+        setResolved(true);
+        setLoading(false);
       });
     return () => {
       live = false;
     };
-  }, [enabled, credential, attempt]);
+    // `credential` reaches the effect through `key`.
+  }, [key, enabled, attempt]);
 
-  return { installations, current, resolved, failure, reload };
+  return { installations, current, resolved, failure, loading, reload };
 }

@@ -796,10 +796,13 @@ test.describe("new UI sidebar rail", () => {
     // so rather than drawing zeros over Claude Desktop's traffic.
     //
     // `tools: []`, because the default fixture ships every CLI as detected and
-    // would never see this.
+    // would never see this. A machine the gateway KNOWS, so nothing else here
+    // suppresses the per-app reads: if the not-installed filter regressed, they
+    // would fire, fail against the fake, and "couldn't be read" would show.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [],
+      installations: { installations: [], current: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f" },
     });
 
     await app.openApp("Claude");
@@ -807,6 +810,7 @@ test.describe("new UI sidebar rail", () => {
     await expect(
       app.page.getByText("Shows in the Overview, not per app"),
     ).toHaveCount(2);
+    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
   });
 
   test("a machine the gateway has not seen yet reads as empty, not unreadable", async ({
@@ -860,6 +864,96 @@ test.describe("new UI sidebar rail", () => {
     await app.page.getByRole("button", { name: "Try again" }).click();
     await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
     await expect(app.page.getByText("No recent messages")).toBeVisible();
+  });
+
+  test("a credential the gateway refuses the list to reads as counted in the Overview", async ({
+    boot,
+  }) => {
+    // Expected, not a fault: the gateway refuses the installation list to a
+    // credential with no user on it. That credential has no per-machine reading
+    // and its Overview reads fine, so a red "refused this credential" on every
+    // tool pane would send someone to rotate a working key.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        activity_installations: '{"code":"rejected","message":"401 no user on this key"}',
+      },
+    });
+
+    await app.openApp("Claude");
+
+    await expect(
+      app.page.getByText("Shows in the Overview, not per app"),
+    ).toHaveCount(2);
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
+  });
+
+  test("the unreadable-activity banner stays off the Overview and domain panes", async ({
+    boot,
+  }) => {
+    // The list gates the machine-scoped reading only. The Overview's org-wide
+    // reading is unaffected, and a domain pane has no per-app reading at all.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+      failures: {
+        activity_installations: '{"code":"offline","message":"no route to host"}',
+      },
+    });
+
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+    // With no Claude Code installed, the Claude pane is a domain pane.
+    await app.openApp("Claude");
+    await expect(
+      app.page.getByText("Shows in the Overview, not per app"),
+    ).toHaveCount(2);
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+  });
+
+  test("a dismissed unreadable-activity banner stays dismissed across a refresh", async ({
+    boot,
+  }) => {
+    // Every traffic report re-reads the failed list, and each failure is new.
+    // Dismissal is by cause, so the same fault does not come straight back.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        activity_installations: '{"code":"offline","message":"no route to host"}',
+      },
+    });
+
+    await app.openApp("Claude");
+    await expect(app.page.getByText("Couldn't read this app's activity")).toBeVisible();
+    await app.page.getByRole("button", { name: "Dismiss error" }).click();
+
+    const reads = async () =>
+      (await app.calls()).filter((c) => c.cmd === "activity_installations").length;
+    const before = await reads();
+    await app.emit("traffic-observed", ["claude-code"]);
+    await expect.poll(reads).toBeGreaterThan(before);
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+  });
+
+  test("a machine the gateway comes to know is read once its first traffic lands", async ({
+    boot,
+  }) => {
+    // The list used to be read once, at launch. A fresh install then kept
+    // saying "No messages sent" until restart while the Overview counted it.
+    const installId = "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f";
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.openApp("Claude");
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
+    expect(await app.lastCall("activity_tool_events")).toBeNull();
+
+    // The gateway has now seen this machine; the relay reports its traffic.
+    await app.patch({ installations: { installations: [], current: installId } });
+    await app.emit("traffic-observed", ["claude-code"]);
+
+    await expect
+      .poll(async () => (await app.lastCall("activity_tool_events"))?.installId)
+      .toBe(installId);
   });
 
   test("a row with nothing attributable names where its traffic is counted", async ({

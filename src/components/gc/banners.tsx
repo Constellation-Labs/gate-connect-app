@@ -458,9 +458,10 @@ export function ErrorDetails({ raw, title }: { raw?: string; title: string }) {
 }
 
 /**
- * A failed action, stated where the user acted. Deliberately not `AlertBanner`:
- * that one carries a switch because a drifted app can be re-routed from it, and
- * a failure has nothing to toggle.
+ * A failure, stated in the shell's banner slot: an action the user took, or a
+ * read the open pane depends on. Deliberately not `AlertBanner`: that one
+ * carries a switch because a drifted app can be re-routed from it, and a
+ * failure has nothing to toggle.
  */
 export function ErrorBanner({
   title,
@@ -475,7 +476,14 @@ export function ErrorBanner({
   raw?: string;
   /** One way to act on it from here, drawn after the hint. Absent when the
    *  cause is nothing the window can retry. */
-  action?: { label: string; busy?: boolean; onClick: () => void };
+  action?: {
+    label: string;
+    /** The button's accessible name, when the visible label alone does not say
+     *  what it acts on. */
+    ariaLabel?: string;
+    busy?: boolean;
+    onClick: () => void;
+  };
   onDismiss: () => void;
 }) {
   return (
@@ -493,6 +501,7 @@ export function ErrorBanner({
               type="button"
               onClick={action.onClick}
               disabled={action.busy}
+              aria-label={action.ariaLabel}
               className="ml-2 rounded-sm font-medium text-red-900 underline underline-offset-2 transition-colors hover:text-red-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:text-red-900/50"
             >
               {action.label}
