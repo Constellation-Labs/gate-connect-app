@@ -190,11 +190,12 @@ describe("AppPane recent activity", () => {
     );
     const feed = card("Recent activity");
 
-    // The design merged the old Status column into Security, so there is no
-    // second cell to put a transport outcome in and no SUCCESS pill at all.
-    // Which of the two facts a row shows when it has both is the precedence
-    // question, pinned above; what this pins is that it only ever shows one.
-    expect(within(feed).queryByRole("columnheader", { name: "Status" })).toBeNull();
+    // One cell carries both facts. The column is headed "Status" since
+    // 2026-09-28 (it was "Security"), but it is still the single cell the
+    // guardrail verdict and the transport outcome share - so there is no
+    // SUCCESS pill at all. Which of the two a row shows when it has both is
+    // the precedence question pinned above; this pins that it shows one.
+    expect(within(feed).getAllByRole("columnheader").length).toBe(4);
     expect(within(feed).queryByText("success")).toBeNull();
     // Both rows failed, so under the precedence above both wear ERROR: the
     // first displaced its `flagged` into the tooltip, the second never had a
@@ -241,10 +242,13 @@ describe("AppPane recent activity", () => {
     render(pane({ activity: [entry] }));
     const feed = card("Recent activity");
 
-    // `table/recent-activity` on `Flows / App` draws these five, in this order,
-    // across all three frames that carry the card.
-    for (const name of ["Time", "Type", "Security", "Model", "Action"]) {
+    // Four since design redrew the table on 2026-09-28: the guardrail-category
+    // column headed "Type" is gone, and "Security" is now "Status".
+    for (const name of ["Time", "Status", "Model", "Action"]) {
       expect(within(feed).getByRole("columnheader", { name })).toBeTruthy();
+    }
+    for (const gone of ["Type", "Security"]) {
+      expect(within(feed).queryByRole("columnheader", { name: gone })).toBeNull();
     }
     // No Message column: the frame has none, so the prompt and its reference are
     // not on this surface even though the feed still carries both.
@@ -253,11 +257,13 @@ describe("AppPane recent activity", () => {
     expect(within(feed).queryByText("824bd2c0-4123")).toBeNull();
   });
 
-  it("names the guardrail category as the gateway spelled it", () => {
+  it("names the model and its provider", () => {
+    // The guardrail category was asserted here too, until design removed that
+    // column on 2026-09-28.
     render(pane({ activity: [entry] }));
     const feed = card("Recent activity");
 
-    expect(within(feed).getByText("pii")).toBeTruthy();
+    expect(within(feed).queryByText("pii")).toBeNull();
     expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
     expect(within(feed).getByTitle("anthropic")).toBeTruthy();
     // The monogram is decorative, so the provider has to be named in text too -
@@ -265,17 +271,6 @@ describe("AppPane recent activity", () => {
     expect(within(feed).getByText("anthropic")).toBeTruthy();
   });
 
-  it("withholds the category rather than inventing one", () => {
-    // Same split the Security cell makes: the gateway named no category, or the
-    // row is not this caller's to see into. Both draw the dash.
-    render(pane({ activity: [{ ...entry, category: null, categoryIcon: null }] }));
-    const feed = card("Recent activity");
-
-    expect(within(feed).queryByText("pii")).toBeNull();
-    expect(
-      within(feed).getByTitle("No guardrail category recorded, or not your request"),
-    ).toBeTruthy();
-  });
 
   /**
    * Ten rows, then ten more per click (2026-09-23).
@@ -666,24 +661,7 @@ describe("AppPane model selection", () => {
  * model row left the whole suite green. A helper nobody calls is not a fix.
  */
 describe("AppPane draws what the helpers resolve", () => {
-  it("inks the Type glyph with its category's colour", () => {
-    // `661:16450` colours each category; the column drew one ink for all of
-    // them. Asserted on the rendered glyph, not on `categoryTone`'s return.
-    render(pane({ activity: [{ ...entry, category: "pii", categoryIcon: "userRound" }] }));
 
-    const svg = card("Recent activity").querySelector("svg.text-green-600");
-    expect(svg).not.toBeNull();
-  });
-
-  it("gives a guardrail that did not fire no colour at all", () => {
-    // "Regular" is Connect's own word for an examined request that matched
-    // nothing. A colour is what firing looks like.
-    render(pane({ activity: [{ ...entry, category: "Regular", categoryIcon: "shieldCheck" }] }));
-
-    const feed = card("Recent activity");
-    expect(feed.querySelector("svg.text-green-600")).toBeNull();
-    expect(feed.querySelector("svg.text-red-600")).toBeNull();
-  });
 
   it("draws the app vendor's mark in the App-default row when given one", () => {
     // The row took the rail's monochrome mark, built for the header's black

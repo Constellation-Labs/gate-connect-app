@@ -288,10 +288,14 @@ describe("the group rows", () => {
     expect(screen.getByText("Claude Code").getAttribute("title")).toBeNull();
   });
 
-  it("phrases a row as the coloured status plus grey qualifier", () => {
+  it("phrases a row as the coloured status alone", () => {
+    // The grey qualifier after a dash - "- 2m ago", "- Off" - went from the
+    // rail on 2026-09-28 and the tray prints the rail's line, so it went here
+    // too. Design's reasoning: "Off" after "Not routed" only makes sense if
+    // "Protected" also carries an inverse "On", and it does not.
     renderTray();
     expect(screen.getByText("Protected")).toBeTruthy();
-    expect(screen.getByText("- 2m ago")).toBeTruthy();
+    expect(screen.queryByText("- 2m ago")).toBeNull();
   });
 
   it("dispatches the switch from intent, not observed state", () => {

@@ -1,5 +1,6 @@
 import { useCallback, useRef } from "react";
-import { cascadeTargets } from "./groups";
+import { logWarn } from "./log";
+import { cascadeTargets, sectionMemberKeys } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { useRouting } from "./useRouting";
 import type { useRunningApps } from "./useRunningApps";
@@ -149,6 +150,24 @@ export function useSectionRouting({
       onBeforeRoute();
       if (section) {
         void routeSection(section, next);
+        return;
+      }
+      // A section id that built no group is not a tool, and must not be sent
+      // to the per-tool path as if it were.
+      //
+      // `buildGroups` drops a section whose members all filtered out, which is
+      // what happens to `openai-api` once `CLI_ONLY_DOMAINS` hides the
+      // `openai` domain while it is off. A pane open on that section outlives
+      // its row, and its switch landed here: `connect_tool("openai-api")`,
+      // answered by Rust with `unknown tool "openai-api"` because the section
+      // table and `ToolId` are different namespaces. Observed 2026-09-28.
+      //
+      // `NewUiApp` also sends the view back to Overview when a pane's row
+      // disappears, which is the half the user sees. This is the net: the
+      // namespaces can diverge again, and when they do the click should do
+      // nothing rather than name a tool that does not exist.
+      if (sectionMemberKeys(slug).length > 0) {
+        logWarn(`routing: ignored ${slug} -> ${next ? "on" : "off"}, its section has no rows`);
         return;
       }
       routeApp(slug, next);

@@ -303,7 +303,7 @@ export function SecurityEvents({
                       <button
                         type="button"
                         onClick={() => onOpenInDashboard(e)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs text-base-foreground shadow-base-btn-sm"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
                       >
                         View
                         <Icon name="squareArrowOutUpRight" size={16} />
