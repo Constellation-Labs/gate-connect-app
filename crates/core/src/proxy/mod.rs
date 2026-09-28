@@ -3165,8 +3165,16 @@ pub(crate) fn browser_ua_without_product_token(user_agent: &str) -> Option<&str>
 /// Classify a request from its headers.
 ///
 /// `originator` is the primary signal: it is the vendor's own "which front-end
-/// is this" field, it was present on EVERY app request to a routed path in the
-/// captures, and on none of the web ones. The user-agent is the fallback,
+/// is this" field, and it was present on EVERY app request to a routed path in
+/// the captures. It is NOT counted on a browser's own user-agent (`Mozilla/`
+/// first): chatgpt.com in Chrome sends `originator: Codex Browser` too, when
+/// the page runs in its Codex-webview mode (`x-openai-web-frontend:
+/// codex_webview`, observed 2026-09-28 with a Chrome extension present). Read
+/// as App, such a tab lost its `BROWSER_ROUTED` narrowing and had its
+/// Cloudflare challenges swallowed for a solve window that could not open. The
+/// cost is an app shell on a stock webview that also opens with `Mozilla/`: it
+/// would read as Web or Unknown. None is captured; the macOS shell is unknown.
+/// The user-agent is the fallback,
 /// because a build that drops `originator` but still names itself should keep
 /// routing - and because that fallback is load-bearing in a way it was not
 /// when it was written: the Cloudflare handling in `engine` is gated on
@@ -3184,10 +3192,11 @@ pub(crate) fn browser_ua_without_product_token(user_agent: &str) -> Option<&str>
 /// POSITIVELY: `Web` means "this is the website", never "no app signal found".
 /// Anything unrecognised is [`ClientClass::Unknown`] and gets routed.
 ///
-/// The app check runs FIRST and is load-bearing even though `App` and `Unknown`
+/// The app checks run FIRST and are load-bearing even though `App` and `Unknown`
 /// route alike today. If a future app build starts sending one of the web
-/// markers, that check is what stops it being mistaken for the browser and
-/// losing its route.
+/// markers, its `originator` (on a non-browser user-agent) or its product-token
+/// user-agent is what stops it being mistaken for the browser and losing its
+/// route.
 ///
 /// A bare browser-shaped user-agent is deliberately NOT a web signal. Plenty of
 /// agents copy a Chrome user-agent verbatim, so treating it as one would exclude
@@ -3222,10 +3231,13 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
         return ClientClass::App;
     }
 
-    if header("originator").is_some_and(|v| !v.trim().is_empty()) {
+    let ua = header("user-agent").unwrap_or_default();
+    // Never on a browser's own user-agent; see the doc comment.
+    if header("originator").is_some_and(|v| !v.trim().is_empty())
+        && !ua.trim_start().starts_with(BROWSER_UA_PREFIX)
+    {
         return ClientClass::App;
     }
-    let ua = header("user-agent").unwrap_or_default();
     // An app shell wraps an ordinary browser UA in its own product token; the
     // other two are Codex's native agent and its MCP client, neither of which
     // is browser-shaped. See `browser_ua_without_product_token` for why the
@@ -3236,9 +3248,12 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
     {
         return ClientClass::App;
     }
-    // Emitted by the website and never by the app in any capture.
+    // Emitted by the website and never by the app in any capture. `oai-did` is
+    // the same device id under the name chatgpt.com sends in its
+    // Codex-webview mode (observed 2026-09-28).
     if [
         "oai-device-id",
+        "oai-did",
         "oai-client-version",
         "x-openai-target-route",
     ]
@@ -4361,20 +4376,62 @@ mod tests {
     }
     #[test]
     fn the_originator_header_identifies_the_app() {
-        // Present on every app request to a routed path in the captures, and on
-        // none of the web ones.
+        // On every app request to a routed path in the captures. Each case is
+        // App only because of `originator`: neither is an app user-agent.
         assert_eq!(
             classify_client(hdrs(&[
                 ("originator", "Codex Desktop"),
-                ("user-agent", WEB_UA)
+                ("user-agent", "some-agent/1.0")
             ])),
             ClientClass::App,
-            "originator outranks a browser-shaped user-agent"
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("originator", "codex_work_desktop")])),
+            ClientClass::App,
+            "no user-agent at all is not a browser's"
         );
         assert_eq!(
             classify_client(hdrs(&[("originator", "   ")])),
             ClientClass::Unknown,
             "a blank originator is not a claim"
+        );
+    }
+
+    /// chatgpt.com in Chrome sends `originator: Codex Browser` in its
+    /// Codex-webview mode (captured 2026-09-28). Read as App, two users'
+    /// Chrome tabs had every Cloudflare challenge replaced with Gate's message
+    /// and a solve window that could not open, on repeat.
+    #[test]
+    fn originator_on_a_browser_user_agent_is_not_the_app() {
+        // The captured request's identifying headers, minus its credentials.
+        let chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                      (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36";
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Browser"),
+                ("user-agent", chrome),
+                ("oai-did", "7a8a86ae"),
+                ("oai-language", "en-US"),
+                ("x-openai-web-frontend", "codex_webview"),
+            ])),
+            ClientClass::Web,
+        );
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Browser"),
+                ("user-agent", WEB_UA),
+                ("oai-device-id", "d"),
+            ])),
+            ClientClass::Web,
+            "the website's usual marker"
+        );
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Browser"),
+                ("user-agent", WEB_UA)
+            ])),
+            ClientClass::Unknown,
+            "without a marker it is unrecognised, which still routes"
         );
     }
 
