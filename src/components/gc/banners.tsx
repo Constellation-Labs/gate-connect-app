@@ -466,12 +466,16 @@ export function ErrorBanner({
   title,
   hint,
   raw,
+  action,
   onDismiss,
 }: {
   title: string;
   hint: string;
   /** The underlying message; see `ErrorDetails`. */
   raw?: string;
+  /** One way to act on it from here, drawn after the hint. Absent when the
+   *  cause is nothing the window can retry. */
+  action?: { label: string; busy?: boolean; onClick: () => void };
   onDismiss: () => void;
 }) {
   return (
@@ -482,7 +486,19 @@ export function ErrorBanner({
       <StatusTile tone="red" icon="triangleAlert" />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-5 text-red-900">{title}</p>
-        <p className="text-base-xs leading-4 text-red-900/80">{hint}</p>
+        <p className="text-base-xs leading-4 text-red-900/80">
+          {hint}
+          {action && (
+            <button
+              type="button"
+              onClick={action.onClick}
+              disabled={action.busy}
+              className="ml-2 rounded-sm font-medium text-red-900 underline underline-offset-2 transition-colors hover:text-red-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:text-red-900/50"
+            >
+              {action.label}
+            </button>
+          )}
+        </p>
         <ErrorDetails raw={raw} title={title} />
       </div>
       <button

@@ -624,8 +624,8 @@ export const SECTIONS: readonly {
    *  Explicit because no existing field means this. `band` is the closest
    *  thing and is not it - it is a layout choice, it has held these rows
    *  alongside OpenClaw, Hermes, OpenCode and the environment channel, and
-   *  #324 regrouped it by vendor underneath. Two rows today, and the pane's
-   *  copy turns on it - see `isProviderEndpoint`. */
+   *  #324 regrouped it by vendor underneath. One row today - see
+   *  `isProviderEndpoint`. */
   providerEndpoint?: true;
 }[] = [
   {
@@ -1020,17 +1020,15 @@ export function notInstalledSections(
  * Is this section a provider endpoint - a destination other programs are
  * pointed at - rather than an app?
  *
- * The pane's unattributed note turns on this and must not turn on
- * `openDomain`, which is the question it looks like and is not: that one is
- * `openTool === null`, "this section has no INSTALLED config tool". A section
- * stays alive on its `domain:` members, so a Claude pane on a machine without
- * Claude Code is `openDomain` too - and "any app on this machine can be
- * pointed here" is false of Claude Desktop, which is one app that nothing is
- * pointed at.
+ * Not the same question as `NewUiApp`'s `openDomain`, which it looks like:
+ * that one is `openTool === null`, "this section has no INSTALLED config
+ * tool". A section stays alive on its `domain:` members, so a Claude pane on a
+ * machine without Claude Code is `openDomain` too - and Claude Desktop is one
+ * app that nothing is pointed at.
  *
  * Unknown ids answer false. A section this table does not name is a catalog
- * entry that has not been placed yet, and claiming it is an endpoint would put
- * the wrong sentence on it.
+ * entry that has not been placed yet, and claiming it is an endpoint would
+ * misdescribe it.
  */
 export function isProviderEndpoint(id: string): boolean {
   return SECTIONS.find((s) => s.id === id)?.providerEndpoint === true;

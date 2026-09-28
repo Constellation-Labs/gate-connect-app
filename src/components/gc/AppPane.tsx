@@ -197,17 +197,23 @@ export function AppPane({
    *  Not "this app sent nothing": a tool can be routing correctly and still be
    *  unattributed, because the slug is guessed from a User-Agent and an agent the
    *  matcher cannot place is left unlabelled. So an unread section says so, and
-   *  the pane's notice names the cause. Reporting it as an empty state would tell
-   *  a user who has been working all morning that their tool is idle. */
+   *  the cause is named with a retry (in the pane, or in the shell's banner when
+   *  the read never started). Reporting it as an empty state would tell a user
+   *  who has been working all morning that their tool is idle.
+   *
+   *  The one exception is the caller's to make: a machine the gateway has
+   *  answered it does not know has sent it nothing, so there is no reading to
+   *  miss and its sections are empty rather than unread. A list that failed to
+   *  answer is not that, and stays unread. */
   unavailable?: { chart?: boolean; events?: boolean };
   /** This app's traffic is never attributed to it, so neither section has a
    *  reading to show and neither ever will.
    *
    *  Deliberately separate from `unavailable`, which reports a read that failed
    *  and might succeed on a retry. Both were once the same flag, and the result
-   *  was a chat-domain pane whose note explained that per-app activity does not
-   *  exist directly above two cards claiming it could not be read - a fault
-   *  report over a permanent, intended shape of the data. */
+   *  was a chat-domain pane with two cards claiming its per-app activity could
+   *  not be read - a fault report over a permanent, intended shape of the
+   *  data. */
   unattributed?: boolean;
   /** Slot for the `AlertBanner` about this app: drift, a check error, a
    *  whole-machine cause worded for this app, or the reason it is not

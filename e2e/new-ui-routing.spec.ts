@@ -786,18 +786,17 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
-  test("an app pane with no installed CLI is not called a destination", async ({
+  test("an app pane with no installed CLI says where its traffic is counted", async ({
     boot,
   }) => {
-    // The H in review on #323. `openDomain` is `openTool === null` - "this
-    // section has no INSTALLED config tool" - not "this section is a provider
-    // endpoint", and a section stays alive on its `domain:` members. So a
-    // Claude pane on a machine with no Claude Code takes the unattributed
-    // branch too, and "any app on this machine can be pointed here" is false
-    // of Claude Desktop: it is one app, and nothing is pointed at it.
+    // `openDomain` is `openTool === null` - "this section has no INSTALLED
+    // config tool" - not "this section is a provider endpoint", and a section
+    // stays alive on its `domain:` members. So a Claude pane on a machine with
+    // no Claude Code has no per-app reading either, and its cards have to say
+    // so rather than drawing zeros over Claude Desktop's traffic.
     //
-    // `tools: []`, which the tests above already boot, because the default
-    // fixture ships every CLI as detected and would never see this.
+    // `tools: []`, because the default fixture ships every CLI as detected and
+    // would never see this.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [],
@@ -805,10 +804,62 @@ test.describe("new UI sidebar rail", () => {
 
     await app.openApp("Claude");
 
-    await expect(app.page.getByText(/its own activity can/)).toBeVisible();
     await expect(
-      app.page.getByText(/can be pointed here/),
-    ).toHaveCount(0);
+      app.page.getByText("Shows in the Overview, not per app"),
+    ).toHaveCount(2);
+  });
+
+  test("a machine the gateway has not seen yet reads as empty, not unreadable", async ({
+    boot,
+  }) => {
+    // The default `installations` answer: the gateway replied, and this
+    // machine is not on its list - a fresh install before its first attributed
+    // request. No per-machine read is attempted, so none can have failed.
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.openApp("Claude");
+
+    await expect(
+      app.page.getByText("No messages sent in the last 24hrs"),
+    ).toBeVisible();
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
+    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+  });
+
+  test("a failed installation list reads as unreadable, with its cause in the banner", async ({
+    boot,
+  }) => {
+    // The list failing leaves `current` null exactly like the answer above.
+    // Read as that answer, a machine that could not ask showed "No messages
+    // sent" over a tool in use all morning, with nothing to say why.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        activity_installations: '{"code":"offline","message":"no route to host"}',
+      },
+    });
+
+    await app.openApp("Claude");
+
+    await expect(app.page.getByText("Couldn't read this app's activity")).toBeVisible();
+    await expect(
+      app.page.getByText("Gate Connect could not reach the gateway from this machine."),
+    ).toBeVisible();
+    await expect(app.page.getByText(/couldn.t be read/).first()).toBeVisible();
+    await expect(app.page.getByText("No messages sent in the last 24hrs")).toHaveCount(0);
+    await expect(app.page.getByText("No recent messages")).toHaveCount(0);
+
+    // Retry re-reads the list. Answering now lifts the banner and the pane
+    // falls to the answered state.
+    // Deleted rather than patched: `patch` merges one level deep, so an empty
+    // `failures` would keep this key.
+    await app.page.evaluate(() => {
+      delete (window as any).__GATE_E2E__.state.failures.activity_installations;
+    });
+    await app.page.getByRole("button", { name: "Try again" }).click();
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
   });
 
   test("a row with nothing attributable names where its traffic is counted", async ({
@@ -841,21 +892,10 @@ test.describe("new UI sidebar rail", () => {
     });
 
     // A host with no config tool behind it, so no reading exists and none ever
-    // will. A different sentence from the one above, and deliberately so: that
-    // one caveats a reading, this one names where the requests ARE counted
-    // instead (AG-889). The page used to say only that its numbers could not
-    // be shown, which read as breakage.
+    // will. The cards name where the requests ARE counted instead (AG-889);
+    // the page draws no separate note on top of them.
     await app.openApp("OpenAI API");
 
-    // Anchored on the note's own tail. An earlier version matched
-    // /counted in the Overview/, which resolved to one element only by luck of
-    // capitalisation - three matches the moment either string changed.
-    await expect(
-      app.page.getByText(/cannot attribute these requests to one app/),
-    ).toBeVisible();
-    await expect(
-      app.page.getByText(/appear in the Overview rather than on this page/),
-    ).toBeVisible();
     // The cards are their own string and there are two of them.
     await expect(
       app.page.getByText("Shows in the Overview, not per app"),

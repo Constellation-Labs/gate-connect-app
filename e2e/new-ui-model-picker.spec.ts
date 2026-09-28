@@ -472,8 +472,8 @@ test.describe("new UI model card credits", () => {
     await switchToGateModel(app);
 
     // The credits line specifically. A bare "N/A" used to be unambiguous only
-    // because the stat tiles above it were stuck in skeletons: this fixture
-    // stubs no `activity_installations`, so the machine is unattributed, and
+    // because the stat tiles above it were stuck in skeletons: the default
+    // `installations` fixture does not name this machine, so it is unattributed, and
     // those counters now correctly read "n/a" rather than promising a reading
     // that is not coming. Three more matches, none of them what this test is
     // about.
