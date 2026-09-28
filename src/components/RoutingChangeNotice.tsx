@@ -171,22 +171,36 @@ export function RoutingChangeNotice({
   );
 }
 
-const NOTHING_CLOSED: ClosedAgents = { closed: 0, restarted: [], reopen_yourself: [] };
+const NOTHING_CLOSED: ClosedAgents = {
+  closed: 0,
+  restarted: [],
+  reopen_yourself: [],
+  still_running: [],
+};
 
 const LIST = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 
 /** The one line reporting what the restart did: what came back on its own,
  *  then what the user has to start again, by name, so "start them again"
- *  never leaves them guessing which ones. */
-export function closedSummary({ closed, restarted, reopen_yourself }: ClosedAgents): string {
-  if (closed === 0) return "Nothing was running.";
+ *  never leaves them guessing which ones, then what would not quit at all -
+ *  still open, so neither "closed" nor "nothing was running" is true of it. */
+export function closedSummary({
+  closed,
+  restarted,
+  reopen_yourself,
+  still_running,
+}: ClosedAgents): string {
+  if (closed === 0 && still_running.length === 0) return "Nothing was running.";
   const pronoun = reopen_yourself.length === 1 ? "it" : "them";
+  const stuck = still_running.length === 1 ? "it" : "them";
   const parts = [
     restarted.length > 0 && `Restarted ${LIST.format(restarted)}.`,
     reopen_yourself.length > 0 &&
       (restarted.length > 0
         ? `Start ${LIST.format(reopen_yourself)} again when you need ${pronoun}.`
         : `Closed ${LIST.format(reopen_yourself)}. Start ${pronoun} again when you need ${pronoun}.`),
+    still_running.length > 0 &&
+      `${LIST.format(still_running)} didn’t quit. Quit ${stuck} and open ${stuck} again.`,
   ];
   return parts.filter(Boolean).join(" ") || `Closed ${closed} ${closed === 1 ? "app" : "apps"}.`;
 }

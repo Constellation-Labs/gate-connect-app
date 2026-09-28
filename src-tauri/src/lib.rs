@@ -1111,11 +1111,7 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
     let matched: Vec<sysinfo::Pid> = sys
         .processes()
         .iter()
-        .filter(|(pid, process)| {
-            let name = process.name().to_string_lossy().to_lowercase();
-            let name = name.strip_suffix(".exe").unwrap_or(&name);
-            Some(**pid) != own_pid && AGENT_PROCESS_NAMES.contains(&name)
-        })
+        .filter(|(pid, process)| Some(**pid) != own_pid && is_agent_name(process.name()))
         .map(|(pid, _)| *pid)
         .collect();
     if matched.is_empty() {
@@ -1139,6 +1135,15 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
             }
         }
     }
+}
+
+/// Does this process name match [`AGENT_PROCESS_NAMES`]? Case and a `.exe`
+/// suffix do not decide it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_agent_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    AGENT_PROCESS_NAMES.contains(&name)
 }
 
 /// Is this `claude` the Claude in Chrome native-messaging host rather than a
@@ -1166,11 +1171,14 @@ fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
 /// which `cowork-svc` then kept reporting as connected to a host that was gone,
 /// so every Cowork command failed with "VM guest is not connected" until the
 /// service restarted. The helpers belong to the main process and exit with it.
+///
+/// Only the first argument: Chromium puts `--type=` straight after the
+/// executable, and a CLI run with a `--type=` flag of its own further along
+/// is still the CLI.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn is_electron_helper(cmd: &[std::ffi::OsString]) -> bool {
-    cmd.iter()
-        .skip(1)
-        .any(|arg| arg.to_string_lossy().starts_with("--type="))
+    cmd.get(1)
+        .is_some_and(|arg| arg.to_string_lossy().starts_with("--type="))
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -1360,9 +1368,12 @@ struct ClosedAgentsDto {
     restarted: Vec<String>,
     /// Closed and not opened again, by tool name: a terminal tool belongs to
     /// the terminal it ran in, so a copy Gate started would not be the user's;
-    /// and an app that would not quit or could not be relaunched. The user
-    /// opens these again.
+    /// and an app that quit but could not be relaunched. The user opens these
+    /// again.
     reopen_yourself: Vec<String>,
+    /// Asked to quit and still running once Gate stopped waiting, by name.
+    /// Not counted in `closed`: the user has to quit these themselves.
+    still_running: Vec<String>,
 }
 
 /// How long an agent gets to quit on its own before Gate stops waiting. A
@@ -1397,11 +1408,15 @@ struct CloseTarget {
 /// is a quit request; on Windows the request is `taskkill` without `/F`, which
 /// posts `WM_CLOSE` to the app's windows. Only Windows kills what has not quit
 /// by [`AGENT_CLOSE_GRACE`], as it always did; elsewhere a process that
-/// ignores SIGTERM is left running, also as before, and reported.
+/// ignores SIGTERM is left running, also as before, and reported in
+/// `still_running`.
 ///
 /// An agent hosted by another agent (a Claude Code session inside Claude
 /// Desktop) is left to its host: the host stops it in its own cleanup and
 /// starts it again on relaunch, and killing it first is the same damage.
+/// Any agent-named ancestor counts, not only the parent, because the host may
+/// start it from one of its helpers or through a shell (see
+/// [`hosted_by_agent`]).
 ///
 /// `(async)` on top of the walk's own reason: this one blocks on the wait, and
 /// it runs from a button the user is watching.
@@ -1411,7 +1426,7 @@ fn close_running_agents() -> ClosedAgentsDto {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
     // Pick first, signal after: a host can come after its child in the walk.
-    let mut found: Vec<(CloseTarget, Option<Pid>)> = Vec::new();
+    let mut found: Vec<CloseTarget> = Vec::new();
     for_each_agent_process(|process| {
         let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
         let relaunch = exe.as_deref().and_then(app_relaunch);
@@ -1432,27 +1447,33 @@ fn close_running_agents() -> ClosedAgentsDto {
             name,
             relaunch,
         };
-        found.push((target, process.parent()));
+        found.push(target);
     });
-    let agent_pids: std::collections::HashSet<Pid> = found.iter().map(|(t, _)| t.pid).collect();
+    // The whole table, not the walk's filtered set: a host's helpers and the
+    // shells between it and its child are what the ancestor walk climbs.
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
     let targets: Vec<CloseTarget> = found
         .into_iter()
-        .filter(|(_, parent)| !parent.is_some_and(|parent| agent_pids.contains(&parent)))
-        .map(|(target, _)| target)
+        .filter(|target| {
+            !hosted_by_agent(
+                target.pid,
+                |pid| sys.process(pid).and_then(|p| p.parent()),
+                |pid| sys.process(pid).is_some_and(|p| is_agent_name(p.name())),
+            )
+        })
         .collect();
 
     let mut dto = ClosedAgentsDto {
         closed: 0,
         restarted: Vec::new(),
         reopen_yourself: Vec::new(),
+        still_running: Vec::new(),
     };
-    let mut sys = System::new();
-    let pids: Vec<Pid> = targets.iter().map(|t| t.pid).collect();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&pids),
-        true,
-        ProcessRefreshKind::nothing().without_tasks(),
-    );
     let mut waiting: Vec<CloseTarget> = Vec::new();
     for mut target in targets {
         let Some(process) = sys
@@ -1469,14 +1490,9 @@ fn close_running_agents() -> ClosedAgentsDto {
                 if target.relaunch.is_none() && has_windows {
                     target.relaunch = process.exe().map(Relaunch::exe);
                 }
-                if cfg!(target_os = "windows") || target.relaunch.is_some() {
-                    waiting.push(target);
-                } else {
-                    // A terminal tool sent SIGTERM: nothing to relaunch, so
-                    // nothing to wait for.
-                    dto.closed += 1;
-                    dto.reopen_yourself.push(target.name);
-                }
+                // A terminal tool is waited on too: SIGTERM is a request, and
+                // one that ignores it has not closed.
+                waiting.push(target);
             }
             // On Windows a console process has no window to ask and
             // `taskkill` refuses it, so it is killed straight away, as it
@@ -1523,7 +1539,7 @@ fn close_running_agents() -> ClosedAgentsDto {
         if killed {
             gone.push(target);
         } else {
-            dto.reopen_yourself.push(target.name);
+            dto.still_running.push(target.name);
         }
     }
 
@@ -1538,11 +1554,40 @@ fn close_running_agents() -> ClosedAgentsDto {
             None => dto.reopen_yourself.push(target.name),
         }
     }
-    for names in [&mut dto.restarted, &mut dto.reopen_yourself] {
+    for names in [
+        &mut dto.restarted,
+        &mut dto.reopen_yourself,
+        &mut dto.still_running,
+    ] {
         names.sort();
         names.dedup();
     }
     dto
+}
+
+/// Was `pid` started under another agent, at any depth? `parent_of` and
+/// `is_agent` read the process table; they are parameters so the walk can be
+/// tested without one. Bounded, because a table read in pieces can hold a
+/// parent loop, and pid 0/1 or a missing entry ends the chain.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn hosted_by_agent(
+    pid: sysinfo::Pid,
+    parent_of: impl Fn(sysinfo::Pid) -> Option<sysinfo::Pid>,
+    is_agent: impl Fn(sysinfo::Pid) -> bool,
+) -> bool {
+    let mut current = pid;
+    for _ in 0..64 {
+        match parent_of(current) {
+            Some(parent) if parent != current => {
+                if is_agent(parent) {
+                    return true;
+                }
+                current = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// How a quit request landed.
@@ -1619,14 +1664,21 @@ impl Relaunch {
     }
 
     fn spawn(&self) -> bool {
-        // `explorer.exe` exits 1 on success, so only the spawn is checked.
-        std::process::Command::new(self.program)
+        let mut command = std::process::Command::new(self.program);
+        command
             .arg(&self.arg)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
+            .stderr(std::process::Stdio::null());
+        if cfg!(target_os = "windows") {
+            // `explorer.exe` exits 1 on success, so only the spawn is checked.
+            command.spawn().is_ok()
+        } else {
+            // `open` returns once LaunchServices has the request, and waiting
+            // for it reaps it: a dropped `Child` would stay a zombie until
+            // Gate exits.
+            command.status().is_ok_and(|status| status.success())
+        }
     }
 }
 
@@ -4167,6 +4219,39 @@ mod tests {
             "what does --type=renderer do"
         ])));
         assert!(!is_electron_helper(&cmd(&[])));
+        // A CLI's own `--type=` flag, after its first argument, is the CLI.
+        assert!(!is_electron_helper(&cmd(&[
+            "opencode",
+            "run",
+            "--type=json"
+        ])));
+    }
+
+    /// A Claude Code session Claude Desktop started from a helper, or through
+    /// a shell, is still the app's to stop.
+    #[test]
+    fn an_agent_anywhere_up_the_chain_is_the_host() {
+        use sysinfo::Pid;
+        // 100 Claude main -> 101 helper -> 102 cmd.exe -> 103 claude (session);
+        // 200 terminal -> 201 claude; 300 and 301 are each other's parent.
+        let parent = |pid: Pid| -> Option<Pid> {
+            let parent = match pid.as_u32() {
+                101 => 100,
+                102 => 101,
+                103 => 102,
+                100 | 200 => 1,
+                201 => 200,
+                300 => 301,
+                301 => 300,
+                _ => return None,
+            };
+            Some(Pid::from_u32(parent))
+        };
+        let agent = |pid: Pid| matches!(pid.as_u32(), 100 | 101 | 103 | 201);
+        assert!(hosted_by_agent(Pid::from_u32(103), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(100), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(201), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(300), parent, agent));
     }
 
     #[test]

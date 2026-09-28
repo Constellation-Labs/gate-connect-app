@@ -13,10 +13,16 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const result = (closed: number, restarted: string[] = [], reopen_yourself: string[] = []) => ({
+const result = (
+  closed: number,
+  restarted: string[] = [],
+  reopen_yourself: string[] = [],
+  still_running: string[] = [],
+) => ({
   closed,
   restarted,
   reopen_yourself,
+  still_running,
 });
 
 function renderNotice(routingOn: boolean, onDismiss = vi.fn()) {
@@ -181,6 +187,15 @@ describe("closedSummary", () => {
   it("names every tool left to start again", () => {
     expect(closedSummary(result(3, [], ["Claude Code", "Codex", "OpenCode"]))).toBe(
       "Closed Claude Code, Codex, and OpenCode. Start them again when you need them.",
+    );
+  });
+
+  it("says an app that would not quit is still open, not that nothing ran", () => {
+    expect(closedSummary(result(0, [], [], ["Claude"]))).toBe(
+      "Claude didn’t quit. Quit it and open it again.",
+    );
+    expect(closedSummary(result(1, [], ["Codex"], ["Claude", "Claude Code"]))).toBe(
+      "Closed Codex. Start it again when you need it. Claude and Claude Code didn’t quit. Quit them and open them again.",
     );
   });
 

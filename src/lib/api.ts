@@ -314,9 +314,12 @@ export interface ClosedAgents {
   /** Desktop apps that quit and were opened again, by app name ("Claude"). */
   restarted: string[];
   /** Closed and not opened again, by tool name: terminal tools, which belong
-   * to the terminal they ran in, and any app that would not quit or could not
-   * be reopened. The user opens these again. */
+   * to the terminal they ran in, and any app that quit but could not be
+   * reopened. The user opens these again. */
   reopen_yourself: string[];
+  /** Asked to quit and still running when Gate stopped waiting, by name. Not
+   * counted in `closed`; the user quits these themselves. */
+  still_running: string[];
 }
 
 /** Restart running AI tools (agent CLIs and the desktop apps sharing their
