@@ -1514,6 +1514,10 @@ fn solve_advice(outcome: crate::proxy::SolveOutcome) -> Option<&'static str> {
         SolveOutcome::Unsolved => {
             Some("the verification window was not completed - finish the check when it opens")
         }
+        SolveOutcome::Uncaptured => Some(
+            "the check was completed but Gate could not read its result - this needs a fix \
+             in Gate, not another attempt from you",
+        ),
         SolveOutcome::NotChallenged => Some(
             "Cloudflare did not challenge Gate's verification page, so there was nothing \
              to solve - this needs a fix in Gate, not something you can clear",
@@ -3827,6 +3831,7 @@ mod tests {
         assert!(solve_advice(SolveOutcome::Captured).is_none());
         for outcome in [
             SolveOutcome::Unsolved,
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,
@@ -3838,6 +3843,7 @@ mod tests {
         // The Gate-side failures say so, rather than sending the user off to
         // solve something they cannot.
         for outcome in [
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,

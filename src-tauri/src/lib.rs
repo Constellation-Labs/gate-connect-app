@@ -1716,6 +1716,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             .map(|v| v.clone())
             .unwrap_or_default();
         let mut last_names = String::new();
+        let mut last_read_error = String::new();
         let mut reported_unchanged = false;
         // Bounded, because the window can sit on a challenge it will never
         // clear: the poll would otherwise log a jar line every two seconds
@@ -1737,6 +1738,11 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         // whose message just went through fine. Comfortably longer than
         // `reveal_at` so a slow load still gets its chance.
         let no_challenge_at = started + std::time::Duration::from_secs(20);
+        // How long after Cloudflare lets the window's page through a fresh
+        // cookie gets to show up in the jar before the capture is declared
+        // failed. It is set on the very response that lets the page through,
+        // so this only has to cover a few poll ticks.
+        const CAPTURE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
         let mut revealed = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1809,7 +1815,19 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // when the main thread is busy (wry#583). If a raise turns out to
             // be needed it belongs on the BUILDER, where it costs no runtime
             // dispatch.
-            if !revealed && navigation_challenged && std::time::Instant::now() >= reveal_at {
+            //
+            // And gated on the challenge still BEING there. `navigation_challenged`
+            // stays true once Cloudflare has let the page through, so a
+            // challenge that cleared on its own while hidden would otherwise
+            // be revealed anyway - with a notification asking the user to
+            // accept a screen that is gone, over the origin's error page.
+            // What happens after a pass is the capture check's business below.
+            let passed = gate_connect_core::proxy::cf_navigation_passed_since(started).is_some();
+            if !revealed
+                && navigation_challenged
+                && !passed
+                && std::time::Instant::now() >= reveal_at
+            {
                 eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
                 // Say why a Cloudflare page just appeared over the ChatGPT
                 // app. A system notification rather than a note in the page:
@@ -1831,7 +1849,21 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
                 order_front_regardless(&window);
                 revealed = true;
             }
-            let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
+            // A failed read is logged, not flattened into an empty jar: the two
+            // look identical from the window's behaviour, and only one of them
+            // means Cloudflare never minted anything. Said once per distinct
+            // error, like the jar line below.
+            let cookies = match window.cookies_for_url(url.clone()) {
+                Ok(cookies) => cookies,
+                Err(e) => {
+                    let error = format!("{e}");
+                    if error != last_read_error {
+                        eprintln!("[gate] challenge-solve: reading the jar failed: {error}");
+                        last_read_error = error;
+                    }
+                    Vec::new()
+                }
+            };
             // Which cookies the jar holds, by NAME only - the values are
             // session credentials. Without this, the window's behaviour is
             // the only signal, and "Cloudflare never minted a cf_clearance"
@@ -1850,20 +1882,46 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             let captured = cookies
                 .into_iter()
                 .find(|c| c.name() == "cf_clearance")
-                .map(|c| c.value().to_string());
-            let Some(value) = captured else { continue };
-            if value.is_empty() || value == challenged {
+                .map(|c| c.value().to_string())
+                .filter(|value| !value.is_empty());
+            let fresh = match captured {
                 // A cookie identical to the one just challenged is not a
                 // solve; re-feeding it would loop the window open. Said once
                 // - the poll re-reads the same jar until the deadline.
-                if !reported_unchanged {
-                    eprintln!(
-                        "[gate] challenge-solve: cf_clearance present but unchanged, waiting"
-                    );
-                    reported_unchanged = true;
+                Some(value) if value == challenged => {
+                    if !reported_unchanged {
+                        eprintln!(
+                            "[gate] challenge-solve: cf_clearance present but unchanged, waiting"
+                        );
+                        reported_unchanged = true;
+                    }
+                    None
+                }
+                other => other,
+            };
+            let Some(value) = fresh else {
+                // Cloudflare has let the page through, so there is nothing on
+                // screen left to solve - on a `/backend-api/...` path the window
+                // is now showing the origin's `{"detail":"Unauthorized"}` to a
+                // signed-out load. The cookie normally lands with that reload;
+                // past `CAPTURE_GRACE` without one, the capture has failed and
+                // the user cannot help it along, so close rather than leave an
+                // error page up until the deadline. Checked after the jar read,
+                // so the tick that trips this still had its chance to capture.
+                if let Some(passed) = gate_connect_core::proxy::cf_navigation_passed_since(started)
+                {
+                    if passed.elapsed() >= CAPTURE_GRACE {
+                        eprintln!(
+                            "[gate] challenge-solve: Cloudflare let the window through but no new \
+                             cf_clearance appeared - closing"
+                        );
+                        let _ = window.close();
+                        solve.finish(SolveOutcome::Uncaptured);
+                        return;
+                    }
                 }
                 continue;
-            }
+            };
             if let Ok(mut last) = LAST_CF_CLEARANCE.lock() {
                 *last = value.clone();
             }
