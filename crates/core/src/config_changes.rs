@@ -95,7 +95,13 @@ fn load() -> Result<BTreeMap<String, u64>> {
         return Ok(BTreeMap::new());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+    // An unreadable record starts over rather than failing every later write,
+    // which would stop config changes raising a reopen notice for good. Losing
+    // the old stamps costs the same as having none.
+    Ok(serde_json::from_str(&raw).unwrap_or_else(|e| {
+        crate::logging::failure(&format!("discarding unparsable {}: {e}", path.display()));
+        BTreeMap::new()
+    }))
 }
 
 fn store_path() -> Result<PathBuf> {

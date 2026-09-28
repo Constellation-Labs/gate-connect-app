@@ -250,6 +250,75 @@ pub fn cf_navigation_seen_since(since: std::time::Instant) -> bool {
     stamped_since(&CF_NAVIGATION_SEEN_AT, since)
 }
 
+/// When the solve window's page stopped being a challenge: the instant of the
+/// LATEST let-through load (see [`CF_NAVIGATION_LET_THROUGH_AT`]) after a
+/// challenge since `since`, or `None` while the latest challenge is still the
+/// newest thing on screen. Latest, not first: each further load overwrites the
+/// stamp, so the GUI's capture grace counts from the last one.
+///
+/// This is Cloudflare letting the window through. A solved interstitial
+/// reloads the page it stood in front of, and that reload reaches the origin -
+/// which, for the `/backend-api/...` paths the window is sent to, answers a
+/// signed-out load with `{"detail":"Unauthorized"}`. Past this point there is
+/// nothing left on screen to solve, so a window still waiting for a cookie is
+/// waiting on capture, not on the user, and should not sit there showing them
+/// an error page for the rest of its deadline.
+pub fn cf_navigation_passed_since(since: std::time::Instant) -> Option<std::time::Instant> {
+    let read =
+        |cell: &std::sync::Mutex<Option<std::time::Instant>>| cell.lock().ok().and_then(|at| *at);
+    passed_after_challenge(
+        read(&CF_NAVIGATION_LET_THROUGH_AT),
+        read(&CF_NAVIGATION_CHALLENGED_AT),
+        since,
+    )
+}
+
+/// The pure half of [`cf_navigation_passed_since`]. A let-through stamp is
+/// never taken on a challenged response (the engine only records it in the
+/// not-challenged arm), so the challenged load itself cannot read as a pass
+/// whatever order the two stamps are written in.
+fn passed_after_challenge(
+    let_through: Option<std::time::Instant>,
+    challenged: Option<std::time::Instant>,
+    since: std::time::Instant,
+) -> Option<std::time::Instant> {
+    let challenged = challenged.filter(|at| *at >= since)?;
+    let_through.filter(|at| *at > challenged)
+}
+
+/// When the solve window's own page was last let through: a navigation that
+/// was not challenged, carries no Cloudflare mitigation, and answered for the
+/// path the window was sent to. `None` until one is.
+///
+/// Narrower than [`CF_NAVIGATION_SEEN_AT`] on purpose. "Seen" is stamped for
+/// any App-classified chatgpt.com page load, which includes the ChatGPT app's
+/// own shell, so reading it as a pass let an unrelated load hide a real
+/// challenge (never revealed) and then close the window as captured-but-lost.
+/// And a Cloudflare block, a 429 or a 5xx is not the user getting through: it
+/// would tell them "the check was completed" when nothing was.
+static CF_NAVIGATION_LET_THROUGH_AT: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Note that the solve window's own page was let through. Called by the
+/// engine's `handle_response`, only for a navigation it did NOT find
+/// challenged, and only when [`navigation_let_through`] agrees.
+pub(crate) fn record_cf_navigation_let_through() {
+    stamp(&CF_NAVIGATION_LET_THROUGH_AT);
+}
+
+/// Whether a not-challenged navigation counts as Cloudflare letting the solve
+/// window through. `challenged_path` is [`cf_challenged_path`]: the window
+/// loads that path, or the host root when none was recorded, so a load of any
+/// other path is some other page and not the window's.
+pub(crate) fn navigation_let_through(
+    path: &str,
+    challenged_path: Option<&str>,
+    status: u16,
+    cf_mitigated: bool,
+) -> bool {
+    !cf_mitigated && status != 429 && status < 500 && path == challenged_path.unwrap_or("/")
+}
+
 /// Stamp one of the two navigation-evidence cells with "now".
 ///
 /// Shared with [`stamped_since`] so the poison decision - swallow it; this
@@ -446,6 +515,13 @@ pub enum SolveOutcome {
     /// The window showed a challenge and it was never cleared - the user
     /// closed it, or it sat unsolved until the deadline.
     Unsolved,
+    /// The window was challenged and Cloudflare then let its page through,
+    /// but no new `cf_clearance` could be read from its jar. The user did
+    /// their part; the capture is what failed.
+    ///
+    /// Distinct from [`Unsolved`](Self::Unsolved) because that outcome's
+    /// advice tells the user to finish a check they already finished.
+    Uncaptured,
     /// The window's own load reached the engine and was NOT challenged, so
     /// there was nothing on screen to solve. Cloudflare is challenging the
     /// app's API turns but not this navigation.
@@ -3578,12 +3654,75 @@ mod tests {
         assert!(SolveOutcome::Captured.captured());
         for outcome in [
             SolveOutcome::Unsolved,
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,
         ] {
             assert!(!outcome.captured(), "{outcome:?}");
         }
+    }
+
+    /// A pass is a let-through load AFTER this attempt's challenge. A
+    /// challenge still on screen, a challenge from an earlier attempt, and a
+    /// page that was never challenged at all are none of them a pass.
+    #[test]
+    fn only_a_let_through_after_this_attempts_challenge_is_a_pass() {
+        use super::passed_after_challenge;
+        use std::time::{Duration, Instant};
+
+        let since = Instant::now();
+        let challenged = since + Duration::from_secs(1);
+        let reloaded = since + Duration::from_secs(5);
+        // Challenged and nothing let through yet.
+        assert_eq!(passed_after_challenge(None, Some(challenged), since), None);
+        // A let-through from before the challenge does not clear it.
+        assert_eq!(
+            passed_after_challenge(Some(since), Some(challenged), since),
+            None
+        );
+        // Let through.
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(challenged), since),
+            Some(reloaded)
+        );
+        // Re-challenged after the reload: back to waiting.
+        let again = since + Duration::from_secs(9);
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(again), since),
+            None
+        );
+        // Never challenged in this attempt, so nothing was passed.
+        assert_eq!(passed_after_challenge(Some(reloaded), None, since), None);
+        // A previous attempt's challenge, reloaded before this one began.
+        let next_attempt = since + Duration::from_secs(3);
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(challenged), next_attempt),
+            None
+        );
+    }
+
+    /// Only the window's own page, answered by the origin, is a let-through:
+    /// not another path (the app shell's own loads), not a Cloudflare
+    /// mitigation of any kind, not a rate limit or a server error. The
+    /// origin's 401 is exactly what a signed-out window gets, so it counts.
+    #[test]
+    fn only_the_windows_own_page_answered_by_the_origin_is_let_through() {
+        use super::navigation_let_through;
+
+        let window = Some("/backend-api/sentinel/chat-requirements/prepare");
+        let path = "/backend-api/sentinel/chat-requirements/prepare";
+        assert!(navigation_let_through(path, window, 401, false));
+        assert!(navigation_let_through(path, window, 200, false));
+        // Another page: the ChatGPT app's own shell, say.
+        assert!(!navigation_let_through("/c/abc", window, 200, false));
+        // A Cloudflare block is not getting through.
+        assert!(!navigation_let_through(path, window, 403, true));
+        assert!(!navigation_let_through(path, window, 429, false));
+        assert!(!navigation_let_through(path, window, 503, false));
+        // No challenged path recorded: the window loads the host root.
+        assert!(navigation_let_through("/", None, 200, false));
+        assert!(!navigation_let_through("/c/abc", None, 200, false));
     }
 
     /// The four-way selection the two wrong messages came out of: a solve
@@ -3613,6 +3752,7 @@ mod tests {
         // two cannot be read out of step with each other.
         for last in [
             SolveOutcome::Unsolved,
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,
