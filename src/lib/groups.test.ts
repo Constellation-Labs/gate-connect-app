@@ -1001,9 +1001,8 @@ describe("isProviderEndpoint", () => {
   });
 
   it("is false for an id no section names", () => {
-    // A catalog entry with no home yet. Claiming it is an endpoint would put
-    // "any app on this machine can be pointed here" on it, which is the
-    // sentence this flag exists to withhold.
+    // A catalog entry with no home yet, which should not be claimed as an
+    // endpoint.
     expect(isProviderEndpoint("nope")).toBe(false);
   });
 });

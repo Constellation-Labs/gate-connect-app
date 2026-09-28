@@ -786,6 +786,47 @@ test.describe("new UI sidebar rail", () => {
       .toBe(0);
   });
 
+  test("an app pane with no installed CLI says where its traffic is counted", async ({
+    boot,
+  }) => {
+    // `openDomain` is `openTool === null` - "this section has no INSTALLED
+    // config tool" - not "this section is a provider endpoint", and a section
+    // stays alive on its `domain:` members. So a Claude pane on a machine with
+    // no Claude Code has no per-app reading either, and its cards have to say
+    // so rather than drawing zeros over Claude Desktop's traffic.
+    //
+    // `tools: []`, because the default fixture ships every CLI as detected and
+    // would never see this.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+    });
+
+    await app.openApp("Claude");
+
+    await expect(
+      app.page.getByText("Shows in the Overview, not per app"),
+    ).toHaveCount(2);
+    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
+  });
+
+  test("a machine the gateway has not seen yet reads as empty, not unreadable", async ({
+    boot,
+  }) => {
+    // The fixture stubs no `activity_installations`, so the gateway never
+    // names this machine: a fresh install before its first attributed
+    // request. No per-machine read is attempted, so none can have failed.
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.openApp("Claude");
+
+    await expect(
+      app.page.getByText("No messages sent in the last 24hrs"),
+    ).toBeVisible();
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
+    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
+  });
+
   test("a row with nothing attributable names where its traffic is counted", async ({
     boot,
   }) => {
@@ -820,7 +861,6 @@ test.describe("new UI sidebar rail", () => {
     // the page draws no separate note on top of them.
     await app.openApp("OpenAI API");
 
-    await expect(app.page.getByText(/can be pointed here/)).toHaveCount(0);
     // The cards are their own string and there are two of them.
     await expect(
       app.page.getByText("Shows in the Overview, not per app"),

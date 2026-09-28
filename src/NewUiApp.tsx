@@ -524,8 +524,8 @@ export function NewUiApp() {
    * whole org's traffic under a heading that says one machine, and does it exactly
    * when this machine is unattributed, which is the case the pane exists to
    * explain. It is self-concealing too - the org-wide read succeeds, so nothing
-   * is pending and no gap notice fires - so `unattributedMachine` below says it
-   * out loud instead.
+   * is pending and no gap notice fires - so `unattributedMachine` below stops
+   * the read and the pane draws its empty states instead.
    */
   const machineKnown = installsResolved && currentInstallId !== null;
   /** The gateway answered and does not recognise this machine. Distinct from "not
@@ -3327,10 +3327,10 @@ export function NewUiApp() {
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
           // `openDomain` is deliberately NOT folded in here any more. It is not
-          // a read that failed - no read is attempted for a domain - and
-          // reporting it as one put "couldn't be read" directly under the note
-          // explaining that the reading does not exist. It travels as
-          // `unattributed` instead, which the cards draw ahead of this.
+          // a read that failed - no read is attempted for a domain - so
+          // reporting it as one would be a fault report over a reading that
+          // does not exist. It travels as `unattributed` instead, which the
+          // cards draw ahead of this.
           //
           // Nor is `unattributedMachine`: a new install the gateway has not
           // seen traffic from yet has no data, which is the cards' empty

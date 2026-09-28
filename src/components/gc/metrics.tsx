@@ -267,9 +267,9 @@ export function MessagesChart({
    *  have worked and didn't, which is a fault the user might retry. This one is
    *  the permanent shape of the data - chat-domain traffic arrives unattributed
    *  on purpose (see `NewUiApp`'s `openDomain`), so there is nothing to fail.
-   *  Folding the two put "couldn't be read" on a pane whose own note, two
-   *  inches above, explained that the reading does not exist. Takes precedence
-   *  over `unavailable`, which is only ever incidentally true here. */
+   *  Folding the two put "couldn't be read" over a reading that does not
+   *  exist. Takes precedence over `unavailable`, which is only ever
+   *  incidentally true here. */
   unattributed?: boolean;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
@@ -300,7 +300,7 @@ export function MessagesChart({
         <PendingChart />
       ) : unattributed ? (
         // Ahead of `unavailable`: a surface whose traffic is never attributed
-        // has no read to have failed, and the pane's note already says why.
+        // has no read to have failed.
         // Says where the number IS, not only where it is not. AG-889: the
         // page's whole content was three tiles and two cards each reporting an
         // absence, which reads as breakage rather than as the permanent shape

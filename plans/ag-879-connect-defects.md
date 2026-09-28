@@ -94,8 +94,9 @@ and leaves quitting broken the same way.
 **AG-889 and AG-897 are one decision, not two.** Both are about entries that are
 not apps: `api.openai.com` and OpenRouter are hosts any app can be pointed at,
 and Gate cannot attribute their traffic per-entry because `client_tool` comes
-from the caller's User-Agent. So neither page can ever show its own activity,
-and both currently say so and nothing else.
+from the caller's User-Agent. So neither page can ever show its own activity.
+(OpenRouter's row is gone since 2026-09-23; the OpenAI API page now says so
+only through its cards, "Shows in the Overview, not per app".)
 
 **AG-889's suggested fix should not be taken as written.** It proposes folding
 the OpenAI API entry into ChatGPT / Codex. `groups.ts` argues against that in
