@@ -79,10 +79,6 @@ pub enum SessionHealth {
     /// A definite refusal (HTTP 401). The session is dead server-side however
     /// fresh it looks locally.
     Rejected,
-    /// The gateway refused the session and its clock disagrees with ours by
-    /// more than token validation tolerates. Not `Rejected`: signing in again
-    /// mints a token that is judged against the same wrong clock.
-    ClockSkewed,
     /// No verdict: offline, timed out, or an unparseable answer.
     Unknown,
 }
@@ -101,16 +97,14 @@ pub struct Evidence {
     pub reopen_pending: bool,
 }
 
-/// Why a tool is not verifiably routing. Closed set: these are the seven
-/// reasons the product vocabulary allows, and an eighth would need a next action
-/// and a recovery path to go with it.
+/// Why a tool is not verifiably routing. Closed set: these are the six reasons
+/// the product vocabulary allows, and a seventh would need a next action and a
+/// recovery path to go with it.
 ///
 /// It was five until AG-674. The sixth arrived with its action and its recovery
 /// path, which is the price this comment always named: an override is fixed by
 /// editing the layer that wins, so the action points at that file and nothing
-/// Gate can do unattended is offered. The seventh, a wrong system clock, pays
-/// the same way: the recovery is the user setting the clock, and the action is
-/// the check that confirms it worked.
+/// Gate can do unattended is offered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// Routing values are present but not Gate's.
@@ -124,9 +118,6 @@ pub enum Reason {
     ConnectionProblem,
     /// The gateway refused the session.
     AccessProblem,
-    /// The gateway refused the session and the system clock is wrong, which
-    /// is the likelier cause. See [`SessionHealth::ClockSkewed`].
-    ClockSkew,
     /// Nothing is known to be wrong and nothing could be confirmed either.
     VerificationFailed,
 }
@@ -157,7 +148,6 @@ impl Reason {
             Reason::ReopenRequired => NextAction::ReopenTool,
             Reason::ConnectionProblem => NextAction::Reconnect,
             Reason::AccessProblem => NextAction::SignIn,
-            Reason::ClockSkew => NextAction::RetryCheck,
             Reason::VerificationFailed => NextAction::RetryCheck,
         }
     }
@@ -169,7 +159,6 @@ impl Reason {
             Reason::ReopenRequired => "reopen_required",
             Reason::ConnectionProblem => "connection_problem",
             Reason::AccessProblem => "access_problem",
-            Reason::ClockSkew => "clock_skew",
             Reason::VerificationFailed => "verification_failed",
         }
     }
@@ -283,9 +272,6 @@ pub fn verdict_for(ev: &Evidence) -> RoutingVerdict {
     if ev.session == SessionHealth::Rejected {
         return RoutingVerdict::NeedsAttention(Reason::AccessProblem);
     }
-    if ev.session == SessionHealth::ClockSkewed {
-        return RoutingVerdict::NeedsAttention(Reason::ClockSkew);
-    }
     if ev.reopen_pending {
         return RoutingVerdict::NeedsAttention(Reason::ReopenRequired);
     }
@@ -371,28 +357,6 @@ mod tests {
         assert_eq!(
             verdict_for(&ev),
             RoutingVerdict::NeedsAttention(Reason::AccessProblem)
-        );
-    }
-
-    /// Same slot as a refused session, different reason: the card must send
-    /// the user to their clock, because signing in again changes nothing.
-    #[test]
-    fn refused_session_with_a_wrong_clock_is_clock_skew() {
-        let ev = Evidence {
-            session: SessionHealth::ClockSkewed,
-            ..healthy()
-        };
-        assert_eq!(
-            verdict_for(&ev),
-            RoutingVerdict::NeedsAttention(Reason::ClockSkew)
-        );
-        let dead_route = Evidence {
-            route: RouteHealth::Unreachable,
-            ..ev
-        };
-        assert_eq!(
-            verdict_for(&dead_route),
-            RoutingVerdict::NeedsAttention(Reason::ConnectionProblem)
         );
     }
 
@@ -540,7 +504,6 @@ mod tests {
             (Reason::ReopenRequired, NextAction::ReopenTool),
             (Reason::ConnectionProblem, NextAction::Reconnect),
             (Reason::AccessProblem, NextAction::SignIn),
-            (Reason::ClockSkew, NextAction::RetryCheck),
             (Reason::VerificationFailed, NextAction::RetryCheck),
         ] {
             assert_eq!(reason.next_action(), action, "{}", reason.as_str());

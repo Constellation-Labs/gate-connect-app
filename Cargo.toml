@@ -134,8 +134,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # them here lets us reference the exact same types.
 http = "1"
 time = "0.3"
-# Reads the gateway's `Date` header so a refused session can be told apart from
-# a machine whose clock is wrong (`org::clock_skewed`). Already in the
+# Reads the gateway's `Date` header so a refused session can be logged with
+# how far off the local clock was (`org::clock_skew_secs`). Already in the
 # tree via hyper.
 httpdate = "1"
 serde_yaml = "0.9"

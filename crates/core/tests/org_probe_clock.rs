@@ -1,6 +1,5 @@
 //! `org::probe_session` records the gateway's clock from its `Date` header, so
-//! a refused session on a machine with a wrong clock reads as the clock's fault
-//! rather than as "Access problem / Sign in".
+//! a refused session can be logged with how far off the local clock was.
 //!
 //! Its own test binary because the reading is process-wide: the mocks in
 //! `org_probe_e2e.rs` answer without a `Date` header, and running beside them

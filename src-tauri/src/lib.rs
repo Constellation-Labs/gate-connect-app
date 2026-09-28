@@ -2960,12 +2960,11 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
 /// identity provider or an unreadable secret store, and those put "Access
 /// problem / Sign in" on a machine that was only offline.
 ///
-/// A refusal is then checked against the gateway's clock. A local clock that
-/// is wrong keeps a dead token looking fresh, and signing in again mints one
-/// judged against the same clock, so that case reads `ClockSkewed` instead.
-/// The rest go to [`recheck_gate_session`], the forced refresh the data-plane
-/// 401 path already uses, so a token that only the local clock thought was
-/// fresh recovers here too instead of waiting for traffic to fail.
+/// A gateway refusal goes to [`recheck_gate_session`], the forced refresh the
+/// data-plane 401 path already uses. Expiry is stamped and checked against the
+/// local clock, so a constant offset cancels out, but a clock that moved after
+/// the token was stamped keeps a dead token looking fresh. The forced refresh
+/// is what recovers that, here too, instead of waiting for traffic to fail.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
     use gate_connect_core::oauth;
@@ -2986,22 +2985,10 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
         return SessionHealth::Unknown;
     };
     if oauth::session_rejected() {
-        // Recorded by an earlier probe, most often the one at startup. If the
-        // clock was off when it was taken, it may be the clock's refusal and
-        // not the session's, so look again: the stored token is a cached read,
-        // and its 401 carries the gateway's current time.
-        if !org::clock_skewed() {
-            return SessionHealth::Rejected;
-        }
-        if let Ok(Some(tokens)) = oauth::current() {
-            let _ = org::probe_session(&gateway, &tokens.access_token);
-        }
-        if org::clock_skewed() {
-            return SessionHealth::ClockSkewed;
-        }
-        // The clock is right now. The old token is still refused; only a
-        // forced refresh can say whether the session survives.
-        return recheck();
+        // Startup, the data-plane recheck and the org list only record this
+        // after a forced refresh was refused too, so a clock that moved has
+        // already had its chance to recover there.
+        return SessionHealth::Rejected;
     }
     let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
         // An OAuth account in a build that cannot refresh it: nothing will
@@ -3019,7 +3006,6 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
     };
     match org::probe_session(&gateway, &tokens.access_token) {
         SessionProbe::Accepted(_) => SessionHealth::Valid,
-        SessionProbe::Rejected if org::clock_skewed() => SessionHealth::ClockSkewed,
         SessionProbe::Rejected => recheck(),
         // Offline or a non-auth error. Never evidence against the credential -
         // `SessionProbe::Unavailable`'s own docs are explicit about this, and

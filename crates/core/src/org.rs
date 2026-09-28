@@ -205,8 +205,8 @@ pub enum SessionProbe {
 /// so an offline start never signs the user out. Short timeout so it can sit
 /// on the startup path without stalling launch.
 ///
-/// Every answer also records the gateway's clock ([`clock_skewed`]), which is
-/// the only way to tell a dead session from a wrong local clock: both 401.
+/// Every answer also records the gateway's clock ([`clock_skew_secs`]), so the
+/// log can say how far off the local clock was when a session was refused.
 pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe {
     // Control-plane call, same rules as `list`: straight to the gateway,
     // never through the app's own data-plane proxy. A probe misrouted through
@@ -244,9 +244,9 @@ pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe
         .unwrap_or(SessionProbe::Unavailable)
 }
 
-/// How far the local clock may disagree with the gateway's before a refused
-/// session is blamed on the clock. Five minutes is the leeway JWT validators
-/// conventionally allow, so anything inside it cannot be what caused a 401.
+/// How far the local clock may disagree with the gateway's before the log
+/// calls it out. Five minutes is the leeway JWT validators conventionally
+/// allow.
 pub const CLOCK_SKEW_TOLERANCE_SECS: i64 = 300;
 
 /// Sentinel for [`LAST_CLOCK_SKEW_SECS`]: no answer yet, or one without a
@@ -254,21 +254,19 @@ pub const CLOCK_SKEW_TOLERANCE_SECS: i64 = 300;
 const NO_SKEW_READING: i64 = i64::MIN;
 
 /// Gateway time minus local time, in seconds, from the last [`probe_session`]
-/// that got an answer. Process-wide rather than returned, because the probe
-/// that finds a session refused (the startup check, which records it with
-/// [`crate::oauth::mark_session_rejected`]) is not the one that later has to
-/// explain why (the routing sweep).
+/// that got an answer. Process-wide rather than returned, so a refusal can be
+/// logged with it without every caller of [`probe_session`] carrying it.
 static LAST_CLOCK_SKEW_SECS: AtomicI64 = AtomicI64::new(NO_SKEW_READING);
 
 /// Whether the last gateway answer showed the local clock off by more than
 /// [`CLOCK_SKEW_TOLERANCE_SECS`].
 ///
-/// A 401 on its own cannot say *why* a token was refused, and the likeliest
-/// innocent reason is the local clock: token expiry is stamped and checked
-/// against it, so a clock that is wrong, or that moved between the two
-/// readings, keeps a dead token looking fresh. Every HTTP response carries the
-/// server's time, so asking costs nothing, and it turns "Access problem / Sign
-/// in", which signing in cannot fix, into a message about the clock.
+/// Diagnostic only, never a verdict. Token expiry is stamped as
+/// `local_now + expires_in` and checked against `local_now`, so a constant
+/// offset cancels out and the gateway judges `exp` by its own clock: a wrong
+/// clock does not by itself get a token refused. What does is a clock that
+/// *moved* after stamping, which a forced refresh recovers. The reading only
+/// helps a log explain a refusal.
 pub fn clock_skewed() -> bool {
     skew_exceeds_tolerance(LAST_CLOCK_SKEW_SECS.load(Ordering::Relaxed))
 }

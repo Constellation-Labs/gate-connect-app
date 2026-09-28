@@ -53,10 +53,6 @@ export const REASON_DETAIL: Record<VerdictReason, string> = {
   configuration_overridden: "Configuration overridden",
   connection_problem: "Connection problem",
   access_problem: "Access problem",
-  // Not "Access problem": the gateway did refuse the session, but the fix is
-  // the system clock, and "Sign in" would send the user to redo a login that
-  // fails the same way.
-  clock_skew: "System clock is off",
   verification_failed: "Verification failed",
 };
 

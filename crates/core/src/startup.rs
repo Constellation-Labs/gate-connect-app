@@ -55,18 +55,34 @@ pub fn refresh_session() -> SessionVerdict {
     if let (Some(tokens), Ok(Some(gateway))) = (session, account::load_base_url()) {
         match org::probe_session(&gateway, &tokens.access_token) {
             org::SessionProbe::Rejected => {
-                // Still recorded when the clock is off: the token *is* refused.
-                // The routing sweep reads the skew and says so instead of
-                // "Sign in", and recovers once the clock is right.
+                // A 401 alone is not a verdict: a clock that moved after the
+                // token was stamped keeps a dead token looking fresh, and a
+                // forced refresh recovers that. Same path the data-plane 401
+                // takes, so only a refusal that survives it signs anyone out.
                 crate::logging::failure(&match org::clock_skew_secs() {
                     Some(skew) if org::clock_skewed() => format!(
                         "gateway rejected the stored OAuth session; the system clock is \
-                         {skew}s off the gateway's"
+                         {skew}s behind the gateway's (negative: ahead); forcing a refresh"
                     ),
-                    _ => "gateway rejected the stored OAuth session; prompting sign-in".to_string(),
+                    _ => "gateway rejected the stored OAuth session; forcing a refresh".to_string(),
                 });
-                oauth::mark_session_rejected();
-                return SessionVerdict::NeedsSignIn;
+                return match reverify_session() {
+                    // `force_refresh` stored the new bundle, so the engine
+                    // seeds itself from it below like any healthy start.
+                    Recheck::Recovered(_) => SessionVerdict::Healthy,
+                    // Already recorded via `mark_session_rejected`.
+                    Recheck::Dead => {
+                        crate::logging::failure(
+                            "gateway rejected the OAuth session after a forced refresh; \
+                             prompting sign-in",
+                        );
+                        SessionVerdict::NeedsSignIn
+                    }
+                    // Identity provider or gateway unreachable: no verdict, and
+                    // an offline moment must never sign anyone out. The runtime
+                    // 401 paths re-verify once the network is back.
+                    Recheck::Unchanged => SessionVerdict::Healthy,
+                };
             }
             org::SessionProbe::Accepted(orgs) => {
                 // Session is live, but a stored org that dropped out of the
