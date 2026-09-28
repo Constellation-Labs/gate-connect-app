@@ -1260,7 +1260,26 @@ impl HttpHandler for GateHandler {
                 }
                 Some(crate::proxy::notify_cf_challenge_observer())
             }
-            (false, _) => None,
+            // The solve webview's own load, NOT challenged. Recorded as a pass
+            // only here, in the not-challenged arm, so the challenged response
+            // can never stamp one and the order of the two stamps does not
+            // matter. See `proxy::CF_NAVIGATION_LET_THROUGH_AT` for why a load
+            // of another path or a mitigated answer does not count.
+            (false, true) => {
+                if let Some(turn) = turn {
+                    let challenged_path = crate::proxy::cf_challenged_path();
+                    if crate::proxy::navigation_let_through(
+                        &turn.path,
+                        challenged_path.as_deref(),
+                        res.status().as_u16(),
+                        res.headers().contains_key("cf-mitigated"),
+                    ) {
+                        crate::proxy::record_cf_navigation_let_through();
+                    }
+                }
+                None
+            }
+            (false, false) => None,
         };
         // The gateway refused a call we authenticated with the OAuth bearer.
         // Tell the shell so it can re-verify the session; the response is

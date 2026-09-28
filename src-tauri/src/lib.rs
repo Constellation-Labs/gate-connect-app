@@ -1740,17 +1740,29 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         let no_challenge_at = started + std::time::Duration::from_secs(20);
         // How long after Cloudflare lets the window's page through a fresh
         // cookie gets to show up in the jar before the capture is declared
-        // failed. It is set on the very response that lets the page through,
-        // so this only has to cover a few poll ticks.
+        // failed. Counted from the LATEST let-through load, so a page that
+        // keeps reloading restarts it. The cookie is set on the very response
+        // that lets the page through, so this only has to cover a few poll
+        // ticks.
         const CAPTURE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
         let mut revealed = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
-            // Window gone: the user gave up (or the capture below already
-            // closed it). Release the latch, reporting no capture so the
-            // cooldown keeps the next challenge from reopening immediately.
+            // Window gone: the user closed it (or the capture below already
+            // did). Release the latch, reporting no capture so the cooldown
+            // keeps the next challenge from reopening immediately. Closed
+            // AFTER Cloudflare let the page through, the user was looking at
+            // the origin's error page with nothing left to solve, and closing
+            // it is the obvious thing to do: that is a failed capture, not an
+            // unsolved check, and "finish the check" would be the wrong advice.
             let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
-                solve.finish(SolveOutcome::Unsolved);
+                let outcome =
+                    if gate_connect_core::proxy::cf_navigation_passed_since(started).is_some() {
+                        SolveOutcome::Uncaptured
+                    } else {
+                        SolveOutcome::Unsolved
+                    };
+                solve.finish(outcome);
                 return;
             };
             if std::time::Instant::now() >= deadline {
@@ -1853,15 +1865,15 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             // look identical from the window's behaviour, and only one of them
             // means Cloudflare never minted anything. Said once per distinct
             // error, like the jar line below.
-            let cookies = match window.cookies_for_url(url.clone()) {
-                Ok(cookies) => cookies,
+            let (cookies, read_ok) = match window.cookies_for_url(url.clone()) {
+                Ok(cookies) => (cookies, true),
                 Err(e) => {
                     let error = format!("{e}");
                     if error != last_read_error {
                         eprintln!("[gate] challenge-solve: reading the jar failed: {error}");
                         last_read_error = error;
                     }
-                    Vec::new()
+                    (Vec::new(), false)
                 }
             };
             // Which cookies the jar holds, by NAME only - the values are
@@ -1875,7 +1887,9 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
                 .map(|c| c.name())
                 .collect::<Vec<_>>()
                 .join(",");
-            if names != last_names {
+            // Not after a failed read: its empty list would print the same
+            // `jar: []` as a jar Cloudflare minted nothing into.
+            if read_ok && names != last_names {
                 eprintln!("[gate] challenge-solve jar: [{names}]");
                 last_names = names;
             }
