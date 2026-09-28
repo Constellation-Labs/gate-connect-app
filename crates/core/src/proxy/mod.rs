@@ -248,6 +248,39 @@ pub fn cf_navigation_seen_since(since: std::time::Instant) -> bool {
     stamped_since(&CF_NAVIGATION_SEEN_AT, since)
 }
 
+/// When the solve window's page stopped being a challenge: the instant of the
+/// first navigation the engine saw after a challenged one since `since`, or
+/// `None` while the latest navigation is still the challenged one.
+///
+/// This is Cloudflare letting the window through. A solved interstitial
+/// reloads the page it stood in front of, and that reload reaches the origin -
+/// which, for the `/backend-api/...` paths the window is sent to, answers a
+/// signed-out load with `{"detail":"Unauthorized"}`. Past this point there is
+/// nothing left on screen to solve, so a window still waiting for a cookie is
+/// waiting on capture, not on the user, and should not sit there showing them
+/// an error page for the rest of its deadline.
+pub fn cf_navigation_passed_since(since: std::time::Instant) -> Option<std::time::Instant> {
+    let read =
+        |cell: &std::sync::Mutex<Option<std::time::Instant>>| cell.lock().ok().and_then(|at| *at);
+    passed_after_challenge(
+        read(&CF_NAVIGATION_SEEN_AT),
+        read(&CF_NAVIGATION_CHALLENGED_AT),
+        since,
+    )
+}
+
+/// The pure half of [`cf_navigation_passed_since`]. The engine stamps "seen"
+/// before "challenged" for the same response, so the challenged load itself
+/// never reads as a pass; only a later navigation can move "seen" past it.
+fn passed_after_challenge(
+    seen: Option<std::time::Instant>,
+    challenged: Option<std::time::Instant>,
+    since: std::time::Instant,
+) -> Option<std::time::Instant> {
+    let challenged = challenged.filter(|at| *at >= since)?;
+    seen.filter(|at| *at > challenged)
+}
+
 /// Stamp one of the two navigation-evidence cells with "now".
 ///
 /// Shared with [`stamped_since`] so the poison decision - swallow it; this
@@ -444,6 +477,13 @@ pub enum SolveOutcome {
     /// The window showed a challenge and it was never cleared - the user
     /// closed it, or it sat unsolved until the deadline.
     Unsolved,
+    /// The window was challenged and Cloudflare then let its page through,
+    /// but no new `cf_clearance` could be read from its jar. The user did
+    /// their part; the capture is what failed.
+    ///
+    /// Distinct from [`Unsolved`](Self::Unsolved) because that outcome's
+    /// advice tells the user to finish a check they already finished.
+    Uncaptured,
     /// The window's own load reached the engine and was NOT challenged, so
     /// there was nothing on screen to solve. Cloudflare is challenging the
     /// app's API turns but not this navigation.
@@ -2300,12 +2340,55 @@ mod tests {
         assert!(SolveOutcome::Captured.captured());
         for outcome in [
             SolveOutcome::Unsolved,
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,
         ] {
             assert!(!outcome.captured(), "{outcome:?}");
         }
+    }
+
+    /// A pass is a navigation AFTER this attempt's challenge. The challenged
+    /// load itself, a challenge from an earlier attempt, and a page that was
+    /// never challenged at all are none of them a pass.
+    #[test]
+    fn only_a_navigation_after_this_attempts_challenge_is_a_pass() {
+        use super::passed_after_challenge;
+        use std::time::{Duration, Instant};
+
+        let since = Instant::now();
+        let challenged = since + Duration::from_secs(1);
+        let reloaded = since + Duration::from_secs(5);
+        // The challenged load: "seen" was stamped just before "challenged".
+        assert_eq!(
+            passed_after_challenge(Some(since), Some(challenged), since),
+            None
+        );
+        // Still on the challenge.
+        assert_eq!(
+            passed_after_challenge(Some(challenged), Some(challenged), since),
+            None
+        );
+        // Let through.
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(challenged), since),
+            Some(reloaded)
+        );
+        // Re-challenged after the reload: back to waiting.
+        let again = since + Duration::from_secs(9);
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(again), since),
+            None
+        );
+        // Never challenged in this attempt, so nothing was passed.
+        assert_eq!(passed_after_challenge(Some(reloaded), None, since), None);
+        // A previous attempt's challenge, reloaded before this one began.
+        let next_attempt = since + Duration::from_secs(3);
+        assert_eq!(
+            passed_after_challenge(Some(reloaded), Some(challenged), next_attempt),
+            None
+        );
     }
 
     /// The four-way selection the two wrong messages came out of: a solve
@@ -2335,6 +2418,7 @@ mod tests {
         // two cannot be read out of step with each other.
         for last in [
             SolveOutcome::Unsolved,
+            SolveOutcome::Uncaptured,
             SolveOutcome::NotChallenged,
             SolveOutcome::NotProxied,
             SolveOutcome::WindowFailed,

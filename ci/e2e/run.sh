@@ -1280,7 +1280,12 @@ run_engine_tools() {
     mkdir -p "$hermes_home"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$hermes_home/config.yaml"
-    export OPENAI_API_KEY="sk-e2e-dummy"
+    # The key has to be OpenRouter-shaped and in OPENROUTER_API_KEY: against an
+    # openrouter.ai base_url hermes ignores model.api_key, and since upstream
+    # b085de8e3c (2026-09-26) it takes OPENAI_API_KEY only when it starts with
+    # sk-or-. Anything else resolves to "provider 'custom' resolved without
+    # credentials" and hermes exits before sending a request.
+    export OPENROUTER_API_KEY="sk-or-e2e-dummy"
     run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
   fi
