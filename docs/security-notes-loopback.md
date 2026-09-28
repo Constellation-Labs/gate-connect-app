@@ -50,7 +50,13 @@ the terminal services process list where the token cannot be opened
 (`crates/forwarder/src/peer.rs`). A peer that is not proven to run as the
 forwarder's own user never reaches the engine: on the proxy listener it goes
 direct, on the relay listener it is served by the direct path under its own
-credential. This fails closed, and closed here means direct.
+credential. This fails closed, and closed here means direct. That cost is
+silent to the user (the tool works, only not through Gate), so each process
+sent direct is recorded once in `proxy/forwarder-direct.log` with its name and
+the reason. A same-user tool that reaches loopback through a system relay
+rather than its own socket (WSL2 in mirrored networking mode is the likely
+case; not tested) would show up there. Elevated same-user processes and the
+Store-packaged Claude and ChatGPT apps were checked and resolve as the owner.
 
 This is the ordering the forwarder section below asks for: the forwarder is
 gated before the engine, so nothing is laundered. The engine and its relay

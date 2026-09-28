@@ -16,7 +16,10 @@
 //!
 //! Fails **closed**, like `engine::peer_uid_for` on Linux: a peer whose user
 //! cannot be resolved is not the owner. For this hop "closed" means direct,
-//! which costs routing and never exposes the owner's credential.
+//! which costs routing and never exposes the owner's credential. Because that
+//! cost is silent - the tool still works, only not through Gate - every peer
+//! sent direct is recorded once in [`DIRECT_LOG`], with the reason, so "why is
+//! this tool not on Gate" has an answer on disk.
 //!
 //! Windows only. macOS resolves no loopback peer (the accepted gap in the
 //! security notes), and Linux does not run the forwarder, so both treat every
@@ -24,35 +27,117 @@
 
 use std::net::SocketAddr;
 
-/// Whether the process holding the client end of `client` -> `listener` runs
-/// as the same user as this process.
+/// The file under the proxy directory that records peers sent direct.
+pub const DIRECT_LOG: &str = "forwarder-direct.log";
+
+/// Past this size the log starts over, so a machine full of other accounts'
+/// traffic cannot grow it without bound.
+#[cfg(windows)]
+const DIRECT_LOG_LIMIT: u64 = 64 * 1024;
+
+/// What [`verdict`] found out about a peer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Runs as the same user as this process.
+    Owner,
+    /// Not proven to be the owner's. `pid` is the process holding the client
+    /// end, where one was found.
+    NotOwner { pid: Option<u32>, why: &'static str },
+}
+
+/// Who holds the client end of `client` -> `listener`.
 ///
 /// Blocking: it reads the TCP table and may enumerate processes. Call it from
 /// `spawn_blocking`, as [`owner_connected`] does.
 #[cfg(windows)]
-pub fn is_owner(client: SocketAddr, listener: SocketAddr) -> bool {
+pub fn verdict(client: SocketAddr, listener: SocketAddr) -> Verdict {
+    let not = |pid, why| Verdict::NotOwner { pid, why };
+    // Asked first: without it nothing can be proven, and the reason should
+    // say so rather than blame the peer.
     let Some(own) = windows::own_sid() else {
-        return false;
+        return not(None, "this process's own user could not be read");
     };
-    windows::owning_pid(client, listener)
-        .and_then(windows::user_sid)
-        .is_some_and(|sid| sid == *own)
+    let Some(pid) = windows::owning_pid(client, listener) else {
+        return not(None, "no process holds the client end of the connection");
+    };
+    match windows::user_sid(pid) {
+        Some(sid) if sid == own => Verdict::Owner,
+        Some(_) => not(Some(pid), "runs as a different user"),
+        None => not(
+            Some(pid),
+            "its user could not be read (another account or a service)",
+        ),
+    }
 }
 
 #[cfg(not(windows))]
-pub fn is_owner(_client: SocketAddr, _listener: SocketAddr) -> bool {
-    true
+pub fn verdict(_client: SocketAddr, _listener: SocketAddr) -> Verdict {
+    Verdict::Owner
 }
 
-/// [`is_owner`] for an accepted connection, off the async runtime.
+/// Whether an accepted connection is the owner's, resolved off the async
+/// runtime. A peer that is not is recorded in [`DIRECT_LOG`].
 pub async fn owner_connected(client: &tokio::net::TcpStream) -> bool {
     let (Ok(peer), Ok(local)) = (client.peer_addr(), client.local_addr()) else {
         return false;
     };
-    tokio::task::spawn_blocking(move || is_owner(peer, local))
-        .await
-        .unwrap_or(false)
+    tokio::task::spawn_blocking(move || match verdict(peer, local) {
+        Verdict::Owner => true,
+        Verdict::NotOwner { pid, why } => {
+            record(pid, why, local.port());
+            false
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
+
+/// Append one line to [`DIRECT_LOG`] for a peer sent direct, once per process
+/// for the life of this forwarder. Best effort: a log that cannot be written
+/// never changes where the traffic goes.
+#[cfg(windows)]
+fn record(pid: Option<u32>, why: &str, port: u16) {
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    // Keyed on the process, not the connection: a VM makes a connection per
+    // request, and one line says everything the next hundred would.
+    static SEEN: Mutex<Vec<Option<u32>>> = Mutex::new(Vec::new());
+    {
+        let Ok(mut seen) = SEEN.lock() else { return };
+        if seen.contains(&pid) || seen.len() >= 256 {
+            return;
+        }
+        seen.push(pid);
+    }
+    let Ok(path) = gate_connect_paths::proxy_dir().map(|d| d.join(DIRECT_LOG)) else {
+        return;
+    };
+    let restart = std::fs::metadata(&path).is_ok_and(|m| m.len() > DIRECT_LOG_LIMIT);
+    let mut open = std::fs::OpenOptions::new();
+    open.create(true);
+    if restart {
+        open.write(true).truncate(true);
+    } else {
+        open.append(true);
+    }
+    let Ok(mut file) = open.open(&path) else {
+        return;
+    };
+    let when = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let name = pid.and_then(windows::process_name);
+    let _ = writeln!(
+        file,
+        "{when} port={port} pid={} process={} -> direct: {why}",
+        pid.map_or_else(|| "none".to_string(), |p| p.to_string()),
+        name.as_deref().unwrap_or("unknown"),
+    );
+}
+
+#[cfg(not(windows))]
+fn record(_pid: Option<u32>, _why: &str, _port: u16) {}
 
 #[cfg(windows)]
 mod windows {
@@ -78,13 +163,20 @@ mod windows {
     /// `WTS_ANY_SESSION`, which windows-sys does not export.
     const WTS_ANY_SESSION: u32 = 0xFFFF_FFFE;
 
-    /// This process's user SID, as bytes. Resolved once: it cannot change for
-    /// the life of the process.
-    pub fn own_sid() -> Option<&'static Vec<u8>> {
-        static OWN: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+    /// This process's user SID, as bytes.
+    ///
+    /// Kept once read, since it cannot change for the life of the process, but
+    /// a failed read is not kept: it is retried on the next connection. Caching
+    /// the failure would send every connection direct until the forwarder next
+    /// restarted, which could be the end of the login session.
+    pub fn own_sid() -> Option<&'static [u8]> {
+        static OWN: OnceLock<Vec<u8>> = OnceLock::new();
+        if let Some(sid) = OWN.get() {
+            return Some(sid);
+        }
         // SAFETY: the pseudo-handle from GetCurrentProcess needs no closing.
-        OWN.get_or_init(|| token_sid(unsafe { GetCurrentProcess() }))
-            .as_ref()
+        let sid = token_sid(unsafe { GetCurrentProcess() })?;
+        Some(OWN.get_or_init(|| sid))
     }
 
     /// The PID owning the client end of a connection to `listener`: the TCP
@@ -158,12 +250,13 @@ mod windows {
 
     /// The user SID `pid` runs as.
     ///
-    /// From its token where this process may open it. Where it may not - a
-    /// same-user process running elevated, whose token a medium-integrity
-    /// process cannot always query - from the terminal services process list,
-    /// which reports the user of every process in the caller's own account.
-    /// For another account's process, a service's included, both come back
-    /// empty, and that is the answer: not the owner.
+    /// From its token, which this process can read for every process in its
+    /// own account, elevated ones included (checked on Windows 11 against an
+    /// elevated shell and the Store-packaged Claude and ChatGPT apps). Where
+    /// the token cannot be read, from the terminal services process list, a
+    /// fallback for anything in the owner's account that refuses a token
+    /// query. For another account's process, a service's included, both come
+    /// back empty, and that is the answer: not the owner.
     pub fn user_sid(pid: u32) -> Option<Vec<u8>> {
         // SAFETY: a null return is checked; a real handle is closed below.
         let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -175,7 +268,37 @@ mod windows {
                 return sid;
             }
         }
-        wts_sid(pid)
+        wts_find(|p| p.ProcessId == pid, |p| sid_bytes(p.pUserSid))
+    }
+
+    /// `pid`'s image name, for the log. From the terminal services list
+    /// because it names every process, services included, where opening the
+    /// process to ask it would be refused for exactly the ones worth logging.
+    pub fn process_name(pid: u32) -> Option<String> {
+        wts_find(|p| p.ProcessId == pid, name)
+    }
+
+    /// The PID of a running process by image name.
+    #[cfg(test)]
+    pub fn pid_named(image: &str) -> Option<u32> {
+        wts_find(
+            |p| name(p).is_some_and(|n| n.eq_ignore_ascii_case(image)),
+            |p| Some(p.ProcessId),
+        )
+    }
+
+    /// An entry's image name.
+    fn name(p: &WTS_PROCESS_INFO_EXW) -> Option<String> {
+        if p.pProcessName.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null name is a NUL-terminated wide string that lives
+        // as long as the list, which `wts_find` frees only after reading.
+        let len = (0..)
+            .take_while(|&i| unsafe { *p.pProcessName.add(i) } != 0)
+            .count();
+        let wide = unsafe { std::slice::from_raw_parts(p.pProcessName, len) };
+        Some(String::from_utf16_lossy(wide))
     }
 
     /// The user SID on `process`'s token.
@@ -211,8 +334,12 @@ mod windows {
         sid
     }
 
-    /// `pid`'s user SID from the terminal services process list.
-    fn wts_sid(pid: u32) -> Option<Vec<u8>> {
+    /// The first entry in the terminal services process list that `matches`,
+    /// read by `read` while the list is still allocated.
+    fn wts_find<T>(
+        matches: impl Fn(&WTS_PROCESS_INFO_EXW) -> bool,
+        read: impl Fn(&WTS_PROCESS_INFO_EXW) -> Option<T>,
+    ) -> Option<T> {
         let mut level: u32 = 1;
         let mut info: *mut WTS_PROCESS_INFO_EXW = std::ptr::null_mut();
         let mut count: u32 = 0;
@@ -230,13 +357,13 @@ mod windows {
             return None;
         }
         // SAFETY: on success `info` points at `count` level-1 entries.
-        let sid = unsafe { std::slice::from_raw_parts(info, count as usize) }
+        let found = unsafe { std::slice::from_raw_parts(info, count as usize) }
             .iter()
-            .find(|p| p.ProcessId == pid)
-            .and_then(|p| sid_bytes(p.pUserSid));
+            .find(|p| matches(p))
+            .and_then(read);
         // SAFETY: `info` and `count` are what the enumeration returned.
         unsafe { WTSFreeMemoryExW(WTSTypeProcessInfoLevel1, info.cast(), count) };
-        sid
+        found
     }
 
     /// A SID's bytes. Two SIDs are equal exactly when these are, which is what
@@ -259,21 +386,34 @@ mod tests {
     #[tokio::test]
     async fn a_connection_from_this_process_is_the_owners() {
         // The positive half of the gate: this test runs as the owner, so a
-        // connection it opens must be let through to the engine. The negative
-        // half needs a second account and is covered by hand.
+        // connection it opens must be let through to the engine.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
+        assert_eq!(verdict(server.peer_addr().unwrap(), addr), Verdict::Owner);
         assert!(owner_connected(&server).await);
     }
 
     #[cfg(windows)]
     #[test]
     fn a_connection_that_does_not_exist_has_no_owner() {
-        // Fails closed: no row, no owner.
+        // Fails closed: no row, no owner, and the reason says which.
         let nowhere: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let also: SocketAddr = "127.0.0.1:2".parse().unwrap();
-        assert!(!is_owner(nowhere, also));
+        assert!(matches!(
+            verdict(nowhere, also),
+            Verdict::NotOwner { pid: None, .. }
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_service_is_not_the_owner() {
+        // The negative half against a real process in another account: lsass
+        // runs as LocalSystem on every Windows install, as `cowork-svc` does.
+        let lsass = windows::pid_named("lsass.exe").expect("lsass is always running");
+        assert_eq!(windows::user_sid(lsass), None);
+        assert_eq!(windows::process_name(lsass).as_deref(), Some("lsass.exe"));
     }
 }
