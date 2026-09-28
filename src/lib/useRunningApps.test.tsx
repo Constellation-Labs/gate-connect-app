@@ -211,6 +211,41 @@ describe("useRunningApps: when to say anything", () => {
     expect(slugsOf(api)).toEqual(["codex", "claude-code"]);
   });
 
+  it("draws the Code tab and a terminal CLI as two rows, closed as one slug", async () => {
+    // Both are `claude-code`. The reader has two things running and should see
+    // two, but the close is per slug, so it must name that slug once.
+    const codeTab = {
+      ...agent("claude-code", "claude.exe", 21),
+      product_name: "Claude Code in Claude Desktop",
+    };
+    (runningAgents as Mock).mockResolvedValue({
+      scanned_names: ["claude"],
+      agents: [agent("claude-code", "claude", 20), codeTab],
+    });
+    (routingVerdicts as Mock).mockResolvedValue([
+      verdict("claude-code", "needs_attention", "reopen_required"),
+    ]);
+    const { api } = harness();
+    await toConfirm(api);
+
+    expect(api.current!.stage!.tools.map((t) => t.name)).toEqual([
+      "Claude Code",
+      "Claude Code in Claude Desktop",
+    ]);
+
+    // After the close only the Code tab is back: its row is, the CLI's is not.
+    (runningAgents as Mock).mockResolvedValue({
+      scanned_names: ["claude"],
+      agents: [{ ...codeTab, pid: 22, needs_reopen: false }],
+    });
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledWith(["claude-code"]);
+    expect(api.current!.stage!.tools.map((t) => t.running)).toEqual([false, true]);
+  });
+
   it("carries the two routes the verdict established", async () => {
     // "Reopen required" without them does not say what reopening would change.
     (routingVerdicts as Mock).mockResolvedValue([

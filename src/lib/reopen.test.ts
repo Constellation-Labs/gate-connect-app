@@ -39,6 +39,7 @@ const verdict = (over: Partial<Verdict> = {}): Verdict => ({
 });
 
 const tool = (over: Partial<ReopenTool> = {}): ReopenTool => ({
+  key: "codex:Codex",
   slug: "codex",
   name: "Codex",
   canReopen: false,
@@ -56,7 +57,7 @@ describe("reopenTools", () => {
       [
         agent({ pid: 1 }),
         agent({ pid: 2 }),
-        agent({ slug: "claude-code", name: "claude" }),
+        agent({ slug: "claude-code", name: "claude", product_name: "Claude Code" }),
       ],
       new Map([
         ["codex", "Codex"],
@@ -71,6 +72,41 @@ describe("reopenTools", () => {
       ["codex", "Codex"],
       ["claude-code", "Claude Code"],
     ]);
+  });
+
+  it("names a process by what the backend resolved it to, not by its slug", () => {
+    // A Code-tab session is `claude-code`, which the registry calls Claude
+    // Code; the backend knows it runs inside Claude Desktop.
+    const [t] = reopenTools(
+      [
+        agent({
+          slug: "claude-code",
+          name: "claude.exe",
+          product_name: "Claude Code in Claude Desktop",
+        }),
+      ],
+      new Map([["claude-code", "Claude Code"]]),
+      new Map(),
+    );
+    expect(t.name).toBe("Claude Code in Claude Desktop");
+  });
+
+  it("keeps the Code tab and a terminal CLI as two rows of one slug", () => {
+    const codeTab = { slug: "claude-code", product_name: "Claude Code in Claude Desktop" };
+    const tools = reopenTools(
+      [
+        agent({ slug: "claude-code", pid: 1, product_name: "Claude Code" }),
+        agent({ ...codeTab, pid: 2 }),
+        agent({ ...codeTab, pid: 3 }),
+      ],
+      new Map([["claude-code", "Claude Code"]]),
+      new Map(),
+    );
+    expect(tools.map((t) => [t.slug, t.name])).toEqual([
+      ["claude-code", "Claude Code"],
+      ["claude-code", "Claude Code in Claude Desktop"],
+    ]);
+    expect(new Set(tools.map((t) => t.key)).size).toBe(2);
   });
 
   it("carries both routes, or neither", () => {
@@ -260,6 +296,7 @@ describe("what a row offers", () => {
 
 describe("a gone process, and who is putting it back", () => {
   const tool = (canReopen: boolean) => ({
+    key: "anthropic:Claude Desktop",
     slug: "anthropic",
     name: "Claude Desktop",
     canReopen,

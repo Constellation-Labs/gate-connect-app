@@ -11,6 +11,7 @@ afterEach(() => {
 });
 
 const codex: DialogReopenTool = {
+  key: "codex:Codex",
   slug: "codex",
   name: "Codex",
   stage: "reopen_required",
@@ -75,7 +76,7 @@ describe("ApplyChangesDialog route pair", () => {
 
   it("says who reopens once, in the note, not once per row", () => {
     vi.stubEnv("DEV", false);
-    renderOffer([codex, { ...codex, slug: "claude-code", name: "Claude Code" }]);
+    renderOffer([codex, { ...codex, key: "claude-code:Claude Code", slug: "claude-code", name: "Claude Code" }]);
 
     // The frame draws no per-row sentence, and the note below already carries
     // the same `canReopen` split for the whole set. Two rows repeating it cost
@@ -95,7 +96,7 @@ describe("ApplyChangesDialog route pair", () => {
     vi.stubEnv("DEV", false);
     renderOffer([
       codex,
-      { ...codex, slug: "claude-code", name: "Claude Code", canReopen: true },
+      { ...codex, key: "claude-code:Claude Code", slug: "claude-code", name: "Claude Code", canReopen: true },
     ]);
 
     expect(screen.getByText(/Gate Connect will reopen Claude Code/)).toBeTruthy();
