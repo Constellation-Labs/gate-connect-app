@@ -1596,6 +1596,7 @@ dependencies = [
  "gate-connect-paths",
  "http",
  "http-body-util",
+ "httpdate",
  "hudsucker",
  "hyper",
  "hyper-rustls",

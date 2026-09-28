@@ -40,7 +40,10 @@ pub fn refresh_session() -> SessionVerdict {
     let session = match oauth::ensure_fresh(&cfg) {
         Ok(session) => session,
         Err(e) => {
-            eprintln!("[gate] startup OAuth token refresh failed: {e}");
+            // To the log file as well as stderr: a shipped build has no
+            // terminal, and this line was the only record of why a restart
+            // came up signed out.
+            crate::logging::failure(&format!("startup OAuth token refresh failed: {e}"));
             return SessionVerdict::NeedsSignIn;
         }
     };
@@ -52,9 +55,34 @@ pub fn refresh_session() -> SessionVerdict {
     if let (Some(tokens), Ok(Some(gateway))) = (session, account::load_base_url()) {
         match org::probe_session(&gateway, &tokens.access_token) {
             org::SessionProbe::Rejected => {
-                eprintln!("[gate] gateway rejected the stored OAuth session; prompting sign-in");
-                oauth::mark_session_rejected();
-                return SessionVerdict::NeedsSignIn;
+                // A 401 alone is not a verdict: a clock that moved after the
+                // token was stamped keeps a dead token looking fresh, and a
+                // forced refresh recovers that. Same path the data-plane 401
+                // takes, so only a refusal that survives it signs anyone out.
+                crate::logging::failure(&match org::clock_skew_secs() {
+                    Some(skew) if org::clock_skewed() => format!(
+                        "gateway rejected the stored OAuth session; the system clock is \
+                         {skew}s behind the gateway's (negative: ahead); forcing a refresh"
+                    ),
+                    _ => "gateway rejected the stored OAuth session; forcing a refresh".to_string(),
+                });
+                return match reverify_session() {
+                    // `force_refresh` stored the new bundle, so the engine
+                    // seeds itself from it below like any healthy start.
+                    Recheck::Recovered(_) => SessionVerdict::Healthy,
+                    // Already recorded via `mark_session_rejected`.
+                    Recheck::Dead => {
+                        crate::logging::failure(
+                            "gateway rejected the OAuth session after a forced refresh; \
+                             prompting sign-in",
+                        );
+                        SessionVerdict::NeedsSignIn
+                    }
+                    // Identity provider or gateway unreachable: no verdict, and
+                    // an offline moment must never sign anyone out. The runtime
+                    // 401 paths re-verify once the network is back.
+                    Recheck::Unchanged => SessionVerdict::Healthy,
+                };
             }
             org::SessionProbe::Accepted(orgs) => {
                 // Session is live, but a stored org that dropped out of the

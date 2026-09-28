@@ -559,7 +559,21 @@ pub fn access_token_for_injection() -> String {
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
-    refresh_stored(cfg, false).map_err(RefreshError::into_error)
+    ensure_fresh_classified(cfg).map_err(RefreshError::into_error)
+}
+
+/// [`ensure_fresh`], keeping whether a failure was a refusal.
+///
+/// For a caller that reports on the session rather than just using it. A
+/// refresh that could not reach the identity provider, or a secret store that
+/// could not be read, says nothing about the credential, and [`live_session`]'s
+/// `None` cannot tell those apart from a revoked refresh token. Reporting all of
+/// them as refused is what put "Access problem / Sign in" on a machine that was
+/// only offline.
+pub fn ensure_fresh_classified(
+    cfg: &OAuthConfig,
+) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    refresh_stored(cfg, false)
 }
 
 /// Refresh the stored bundle **whatever the local clock says** about its

@@ -724,6 +724,16 @@ impl Drop for GateAuthCheck {
     }
 }
 
+/// Take the re-check latch for a check that did not come through the observer,
+/// or `None` when one is already in flight. Ignores the cooldown: a caller
+/// here asked for this check (the routing sweep, the Linux refusal counter),
+/// where the cooldown exists to damp the engine's per-request 401s. What it
+/// keeps is one check at a time, so two triggers landing together do not each
+/// force a refresh and each rewrite the bundle in the secret store.
+pub fn try_begin_gate_auth_check() -> Option<GateAuthCheck> {
+    (!GATE_AUTH_CHECKING.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(GateAuthCheck)
+}
+
 /// Release the re-check latch and start the cooldown. Called for you by
 /// [`GateAuthCheck`]'s drop; prefer holding the guard to calling this.
 pub fn gate_auth_check_finished() {
@@ -3825,6 +3835,19 @@ mod tests {
             FIRED.load(Ordering::SeqCst),
             1,
             "a refusal inside the cooldown must not re-check"
+        );
+
+        // A check someone asked for (the routing sweep, the Linux refusal
+        // counter) is not damped by the cooldown, only kept to one at a time.
+        let held = super::try_begin_gate_auth_check().expect("the cooldown does not block it");
+        assert!(
+            super::try_begin_gate_auth_check().is_none(),
+            "a second check must not start beside one in flight"
+        );
+        drop(held);
+        assert!(
+            super::try_begin_gate_auth_check().is_some(),
+            "dropping the guard releases the latch"
         );
     }
 

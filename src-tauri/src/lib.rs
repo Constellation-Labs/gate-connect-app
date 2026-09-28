@@ -2953,25 +2953,65 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
 /// An API-key account reports `Valid`: there is no session to probe, and the key
 /// is validated when it is saved. Reporting `Unknown` instead would park every
 /// key-based install on "Verification failed" permanently.
+///
+/// `Rejected` is kept for what signing in actually fixes: a refusal from the
+/// gateway or the identity provider, or no stored session at all. It used to be
+/// whatever `live_session()` returned `None` for, which is also an unreachable
+/// identity provider or an unreadable secret store, and those put "Access
+/// problem / Sign in" on a machine that was only offline.
+///
+/// A gateway refusal goes to [`recheck_gate_session`], the forced refresh the
+/// data-plane 401 path already uses. Expiry is stamped and checked against the
+/// local clock, so a constant offset cancels out, but a clock that moved after
+/// the token was stamped keeps a dead token looking fresh. The forced refresh
+/// is what recovers that, here too, instead of waiting for traffic to fail.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
-    use gate_connect_core::org::SessionProbe;
+    use gate_connect_core::oauth;
+    use gate_connect_core::org::{self, SessionProbe};
     use gate_connect_core::routing_health::SessionHealth;
 
     if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
         return SessionHealth::Valid;
     }
-    let Some(tokens) = gate_connect_core::oauth::live_session() else {
-        // No live session in OAuth mode is a definite negative: the refresh loop
-        // either has no tokens or the gateway already rejected them.
-        return SessionHealth::Rejected;
+    // Set in `setup`, before any webview can ask for a sweep. Without it the
+    // recheck could not push a recovered token or raise the tray signal, so
+    // report the refusal as it stands. A check already in flight gets no
+    // second one beside it: that one is forcing the same refresh, so this
+    // sweep has no verdict of its own and reads "Verification failed" until
+    // the next sweep sees what it decided.
+    let recheck = || match APP_HANDLE.get() {
+        Some(app) => gate_connect_core::proxy::try_begin_gate_auth_check()
+            .map(|_check| recheck_gate_session(app))
+            .unwrap_or(SessionHealth::Unknown),
+        None => SessionHealth::Rejected,
     };
     let Ok(Some(gateway)) = account::load_base_url() else {
         return SessionHealth::Unknown;
     };
-    match gate_connect_core::org::probe_session(&gateway, &tokens.access_token) {
+    if oauth::session_rejected() {
+        // Startup, the data-plane recheck and the org list only record this
+        // after a forced refresh was refused too, so a clock that moved has
+        // already had its chance to recover there.
+        return SessionHealth::Rejected;
+    }
+    let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
+        // An OAuth account in a build that cannot refresh it: nothing will
+        // work until the user signs in to something this build can use.
+        return SessionHealth::Rejected;
+    };
+    let tokens = match oauth::ensure_fresh_classified(&cfg) {
+        Ok(Some(tokens)) => tokens,
+        // OAuth mode with nothing stored: signed out.
+        Ok(None) => return SessionHealth::Rejected,
+        Err(e) if e.is_refusal() => return SessionHealth::Rejected,
+        // Identity provider unreachable, or the secret store would not answer.
+        // Neither is evidence against the credential.
+        Err(_) => return SessionHealth::Unknown,
+    };
+    match org::probe_session(&gateway, &tokens.access_token) {
         SessionProbe::Accepted(_) => SessionHealth::Valid,
-        SessionProbe::Rejected => SessionHealth::Rejected,
+        SessionProbe::Rejected => recheck(),
         // Offline or a non-auth error. Never evidence against the credential -
         // `SessionProbe::Unavailable`'s own docs are explicit about this, and
         // the verdict layer turns it into "Verification failed", not "Access
@@ -3442,10 +3482,18 @@ const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 /// token against the gateway. This only carries out what it decided.
 ///
 /// Does NOT take the [`gate_connect_core::proxy::GateAuthCheck`] debounce
-/// guard: the engine-side latch belongs to whichever process saw the 401, which
-/// on Linux is the daemon, and the observer path takes it at the top of its own
-/// thread so a panic still releases it.
-fn recheck_gate_session(app: &tauri::AppHandle) {
+/// guard; every caller holds one. The observer path takes it at the top of its
+/// own thread so a panic still releases it, and the routing sweep and the Linux
+/// refusal counter take it with
+/// [`gate_connect_core::proxy::try_begin_gate_auth_check`], so two triggers
+/// never force two refreshes at once.
+///
+/// Returns the verdict in the routing sweep's vocabulary, for
+/// [`probe_session_health`]; the refusal-driven callers ignore it.
+fn recheck_gate_session(
+    app: &tauri::AppHandle,
+) -> gate_connect_core::routing_health::SessionHealth {
+    use gate_connect_core::routing_health::SessionHealth;
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
@@ -3460,13 +3508,15 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
                     .unwrap_or(false);
                 update_tray_status(app, running);
             }
+            SessionHealth::Valid
         }
         gate_connect_core::startup::Recheck::Dead => {
             signal_session_dead(app);
+            SessionHealth::Rejected
         }
         // No verdict (offline, or the 401 belonged to the client's own upstream
         // credential rather than to us): change nothing.
-        gate_connect_core::startup::Recheck::Unchanged => {}
+        gate_connect_core::startup::Recheck::Unchanged => SessionHealth::Unknown,
     }
 }
 
@@ -5628,7 +5678,11 @@ pub fn run() {
                                 "[gate] the helper daemon's engine reports the gateway refusing \
                                  our bearer; re-verifying the session"
                             );
-                            recheck_gate_session(&refresh_handle);
+                            // Skipped when a routing sweep is already re-checking:
+                            // it is forcing the same refresh this would.
+                            if let Some(_check) = gate_connect_core::proxy::try_begin_gate_auth_check() {
+                                recheck_gate_session(&refresh_handle);
+                            }
                         }
                     }
                 });
