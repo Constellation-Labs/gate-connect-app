@@ -285,6 +285,9 @@ export function actionsFor(stage: ReopenStage): ReopenAction[] {
 
 /** One tool as every surface of this flow draws it. */
 export interface ReopenTool {
+  /** The row's identity, from [`reopenKey`]. Not the slug: a Code-tab session
+   *  inside Claude Desktop and a terminal `claude` are one slug and two rows. */
+  key: string;
   slug: string;
   name: string;
   /** Can Gate launch it again itself? Straight from the backend, never assumed
@@ -311,19 +314,28 @@ export interface ReopenTool {
 }
 
 /**
+ * Which row a scanned process belongs to: its slug and the product name the
+ * backend resolved it to. Two processes of one tool share a key; a Code-tab
+ * session and a terminal CLI, both `claude-code`, do not.
+ */
+export function reopenKey(agent: RunningAgent): string {
+  return `${agent.slug}:${agent.product_name}`;
+}
+
+/**
  * The tools this flow is about, from the process scan and the last sweep.
  *
  * Built from the scan rather than from the list of slugs that were written,
  * because the flow is about *running* tools: one whose config changed while it
  * was closed has nothing to reopen and never appears here. Two processes of one
  * tool collapse to one row - the person reading has one Codex, and a pid is not
- * something they can act on.
+ * something they can act on. Two products behind one slug stay two rows
+ * ([`reopenKey`]); what a button does is still per slug.
  */
 export function reopenTools(
   agents: RunningAgent[],
-  /** Product name per slug, from `list_tools`. It cannot answer for the two
-   *  desktop-app rows - their slugs are proxy-domain keys, so the registry has
-   *  no entry - and `RunningAgent.product_name` is what covers those. */
+  /** Product name per slug, from `list_tools`. Only the fallback now: the
+   *  backend's `RunningAgent.product_name` is read first. */
   names: Map<string, string>,
   verdicts: Map<string, Verdict>,
   stage: ReopenStage = "reopen_required",
@@ -332,15 +344,19 @@ export function reopenTools(
   const tools: ReopenTool[] = [];
   for (const agent of agents) {
     const slug = agent.slug;
-    if (slug === "" || seen.has(slug)) continue;
-    seen.add(slug);
+    const key = reopenKey(agent);
+    if (slug === "" || seen.has(key)) continue;
+    seen.add(key);
     const verdict = verdicts.get(slug);
     tools.push({
+      key,
       slug,
-      // The backend's product name before the OS's: `list_tools` cannot name a
-      // proxy-domain slug, and falling through to the raw process name drew a
-      // row titled `Claude` for what the user calls Claude Desktop.
-      name: names.get(slug) ?? agent.product_name,
+      // The backend's product name first. It names the process, not just the
+      // slug: `list_tools` cannot name the proxy-domain slugs of the two
+      // desktop apps, and it calls a Code-tab session inside Claude Desktop
+      // "Claude Code", the same as a terminal CLI. The registry name is only
+      // for a scan that did not supply one.
+      name: agent.product_name || (names.get(slug) ?? ""),
       canReopen: agent.can_reopen,
       running: true,
       verifiable: agent.verifiable,

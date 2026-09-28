@@ -504,7 +504,7 @@ export function ApplyChangesDialog({
     >
       {tools.map((tool) => (
         <ModalSubject
-          key={tool.slug}
+          key={tool.key}
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
@@ -574,7 +574,7 @@ export function CloseAppsDialog({
     >
       {tools.map((tool) => (
         <ModalSubject
-          key={tool.slug}
+          key={tool.key}
           icon={toolIcon(tool)}
           title={tool.name}
           description={REOPEN_STAGE_DETAIL.reopen_required}
