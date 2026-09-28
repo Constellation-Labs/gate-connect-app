@@ -2976,9 +2976,14 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
     }
     // Set in `setup`, before any webview can ask for a sweep. Without it the
     // recheck could not push a recovered token or raise the tray signal, so
-    // report the refusal as it stands.
+    // report the refusal as it stands. A check already in flight gets no
+    // second one beside it: that one is forcing the same refresh, so this
+    // sweep has no verdict of its own and reads "Verification failed" until
+    // the next sweep sees what it decided.
     let recheck = || match APP_HANDLE.get() {
-        Some(app) => recheck_gate_session(app),
+        Some(app) => gate_connect_core::proxy::try_begin_gate_auth_check()
+            .map(|_check| recheck_gate_session(app))
+            .unwrap_or(SessionHealth::Unknown),
         None => SessionHealth::Rejected,
     };
     let Ok(Some(gateway)) = account::load_base_url() else {
@@ -3477,9 +3482,11 @@ const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 /// token against the gateway. This only carries out what it decided.
 ///
 /// Does NOT take the [`gate_connect_core::proxy::GateAuthCheck`] debounce
-/// guard: the engine-side latch belongs to whichever process saw the 401, which
-/// on Linux is the daemon, and the observer path takes it at the top of its own
-/// thread so a panic still releases it.
+/// guard; every caller holds one. The observer path takes it at the top of its
+/// own thread so a panic still releases it, and the routing sweep and the Linux
+/// refusal counter take it with
+/// [`gate_connect_core::proxy::try_begin_gate_auth_check`], so two triggers
+/// never force two refreshes at once.
 ///
 /// Returns the verdict in the routing sweep's vocabulary, for
 /// [`probe_session_health`]; the refusal-driven callers ignore it.
@@ -5671,7 +5678,11 @@ pub fn run() {
                                 "[gate] the helper daemon's engine reports the gateway refusing \
                                  our bearer; re-verifying the session"
                             );
-                            recheck_gate_session(&refresh_handle);
+                            // Skipped when a routing sweep is already re-checking:
+                            // it is forcing the same refresh this would.
+                            if let Some(_check) = gate_connect_core::proxy::try_begin_gate_auth_check() {
+                                recheck_gate_session(&refresh_handle);
+                            }
                         }
                     }
                 });
