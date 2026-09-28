@@ -2247,7 +2247,9 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
     );
     for pid in matched {
         if let Some(process) = sys.process(pid) {
-            if !is_chrome_native_host(process.cmd()) {
+            let is_desktop_child = agent_row_of(process).is_some_and(|(_, n, _, _)| *n == "Claude")
+                && is_electron_child(process.cmd());
+            if !is_chrome_native_host(process.cmd()) && !is_desktop_child {
                 f(process);
             }
         }
@@ -2360,6 +2362,89 @@ fn is_chatgpt_bundled_codex(exe: Option<&std::path::Path>) -> bool {
     })
 }
 
+/// Which part of the Claude desktop app a process called `claude` is, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeDesktopPart {
+    /// The app's own executable, from its MSIX package.
+    App,
+    /// The Claude Code binary the app downloads and runs for its Code tab.
+    CodeTab,
+}
+
+/// Whether a process called `claude` belongs to the Claude desktop app, rather
+/// than being a Claude Code CLI the person started in a terminal.
+///
+/// The name cannot tell them apart on Windows, where every one of them is
+/// `claude.exe` in lowercase. Measured 2026-09-28 on Claude 2.9939.2.0 from the
+/// Microsoft Store, through the `sysinfo` this crate links: the app's main
+/// process and all its Electron children report `claude.exe` from
+/// `C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\`,
+/// so the `Claude` row never matched and the app read as the CLI - the same
+/// failure AG-947 fixed for ChatGPT's `codex`, with the name wrong in the other
+/// direction. The Code tab's sessions report `claude.exe` from
+/// `...\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.281\`
+/// (WMI shows the same file un-virtualised, under `AppData\Roaming\Claude`),
+/// and read as a terminal session Gate can never reopen, when quitting and
+/// reopening the app is what restarts them.
+///
+/// **Anchored to the layout, not to the word**, for the reason
+/// [`is_chatgpt_bundled_codex`] gives: promoting a process to [`Surface::App`]
+/// hands it to the kill-and-relaunch machinery. So the app is a component
+/// shaped like the package's full name (`Claude_<version>_<arch>__<publisher
+/// hash>`) directly under `WindowsApps`, and the Code tab is exactly
+/// `Roaming\Claude\claude-code\<version>\claude.exe`. A `claude` installed
+/// with npm, WinGet or the native installer lands in none of these.
+///
+/// **Windows shapes only.** macOS spells the app `Claude`, which the table
+/// already matches, and the Code tab's binary there has not been measured.
+/// The per-user (non-Store) Windows installer has not been measured either.
+fn claude_desktop_part(exe: Option<&std::path::Path>) -> Option<ClaudeDesktopPart> {
+    let exe = exe?;
+    if !normalise_agent_name(&exe.file_name()?.to_string_lossy()).eq_ignore_ascii_case("claude") {
+        return None;
+    }
+    let parts: Vec<String> = exe
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    // The Store's publisher hash for Anthropic, which is the half of the name
+    // no other package can carry.
+    let is_claude_package =
+        |dir: &str| dir.starts_with("claude_") && dir.ends_with("__pzs8sxrjxfjjc");
+    if parts
+        .windows(2)
+        .any(|pair| pair[0] == "windowsapps" && is_claude_package(&pair[1]))
+    {
+        return Some(ClaudeDesktopPart::App);
+    }
+    // `.../Roaming/Claude/claude-code/<version>/claude.exe`: the four
+    // components above the file, read from the end.
+    let n = parts.len();
+    if n >= 5
+        && parts[n - 5] == "roaming"
+        && parts[n - 4] == "claude"
+        && parts[n - 3] == "claude-code"
+    {
+        return Some(ClaudeDesktopPart::CodeTab);
+    }
+    None
+}
+
+/// Is this an Electron child process (renderer, GPU, utility) rather than the
+/// app itself?
+///
+/// On Windows the Claude app's children share its executable and so its name,
+/// and there were thirteen of them beside the one main process in the
+/// measurement [`claude_desktop_part`] cites. Each would be a row, a staleness
+/// count and a kill target of its own. Chromium marks every child with a
+/// `--type=` switch and never the browser process, so that is the test.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_electron_child(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter()
+        .skip(1)
+        .any(|arg| arg.to_string_lossy().starts_with("--type="))
+}
+
 /// The [`AGENT_PROCESSES`] row a running process belongs to, by the same
 /// normalisation the walk filtered on ([`agent_name_of`]).
 ///
@@ -2381,6 +2466,8 @@ fn agent_row_of(
     // Before the name lookup, because the name is the thing that is wrong here.
     let name = if name == "codex" && is_chatgpt_bundled_codex(process.exe()) {
         "ChatGPT"
+    } else if name.eq_ignore_ascii_case("claude") && claude_desktop_part(process.exe()).is_some() {
+        "Claude"
     } else {
         name.as_str()
     };
@@ -3310,6 +3397,16 @@ fn relaunch_target_for(exe: Option<&std::path::Path>, surface: Surface) -> Optio
     // because a platform whose layout has no bundle to walk up to would have
     // spawned the bare Codex binary as "reopen ChatGPT".
     if is_chatgpt_bundled_codex(Some(exe)) {
+        return None;
+    }
+    // The Code tab's `claude` is the same case: the app starts it, so the
+    // app's own relaunch is what brings it back. And the app's own exe, from
+    // its MSIX package, is not launched either: a Store app is started through
+    // its package identity (`shell:AppsFolder\...`), and exec'ing the file
+    // inside `WindowsApps` has not been shown to do that. Reporting
+    // `can_reopen: false` asks the person to reopen it, which is honest; an
+    // unverified launch that failed would claim a reopen that never happened.
+    if claude_desktop_part(Some(exe)).is_some() {
         return None;
     }
     #[cfg(target_os = "macos")]
@@ -6541,6 +6638,96 @@ mod tests {
     #[test]
     fn an_unreadable_path_falls_back_to_the_cli() {
         assert!(!is_chatgpt_bundled_codex(None));
+        assert_eq!(claude_desktop_part(None), None);
+    }
+
+    /// A Windows path with `/` separators, which Windows accepts too, so these
+    /// tests split into the same components on every CI host.
+    fn win(path: &str) -> std::path::PathBuf {
+        path.replace('\\', "/").into()
+    }
+
+    /// The Windows Store app reports itself as lowercase `claude.exe`, so the
+    /// name matched the CLI row. The paths are the ones `sysinfo` returned on a
+    /// real install; see [`claude_desktop_part`].
+    #[test]
+    fn a_claude_inside_the_desktop_app_is_the_app() {
+        assert_eq!(
+            claude_desktop_part(Some(&win(
+                r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\claude.exe"
+            ))),
+            Some(ClaudeDesktopPart::App)
+        );
+        // The Code tab's binary, as `sysinfo` reports it (virtualised) and as
+        // WMI does (not).
+        for path in [
+            r"C:\Users\someone\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.281\claude.exe",
+            r"C:\Users\someone\AppData\Roaming\Claude\claude-code\2.1.281\claude.exe",
+        ] {
+            assert_eq!(
+                claude_desktop_part(Some(&win(path))),
+                Some(ClaudeDesktopPart::CodeTab),
+                "{path}"
+            );
+        }
+    }
+
+    /// A CLI the person installed keeps reading as the CLI: promoting it to the
+    /// app would hand their terminal session to the kill machinery under the
+    /// app's name.
+    #[test]
+    fn a_claude_the_user_installed_is_still_the_cli() {
+        for path in [
+            r"C:\Users\someone\.local\bin\claude.exe",
+            r"C:\Users\someone\AppData\Roaming\npm\claude.cmd",
+            r"C:\Users\someone\AppData\Local\Microsoft\WinGet\Links\claude.exe",
+            // A folder that happens to be named for the layout, not under it.
+            r"C:\Users\someone\code\claude-code\2.1.0\claude.exe",
+            r"C:\Users\someone\Claude\claude-code\2.1.0\claude.exe",
+            // Another publisher's package, or one merely named Claude.
+            r"C:\Program Files\WindowsApps\Claude_1.0.0.0_x64__8wekyb3d8bbwe\claude.exe",
+            // Something else inside the app's package.
+            r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\other.exe",
+            "/opt/homebrew/bin/claude",
+        ] {
+            assert_eq!(
+                claude_desktop_part(Some(&win(path))),
+                None,
+                "{path} should read as the CLI"
+            );
+        }
+    }
+
+    /// Neither half of the desktop app is launched by path: the Code tab comes
+    /// back with the app, and the app is a Store package.
+    #[test]
+    fn the_desktop_app_parts_are_not_relaunched_by_path() {
+        for path in [
+            r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\claude.exe",
+            r"C:\Users\someone\AppData\Roaming\Claude\claude-code\2.1.281\claude.exe",
+        ] {
+            assert_eq!(
+                relaunch_target_for(Some(&win(path)), Surface::App),
+                None,
+                "{path}"
+            );
+        }
+    }
+
+    /// Electron's children carry `--type=`; the app's main process does not.
+    #[test]
+    fn electron_children_are_told_from_the_app() {
+        let cmd = |args: &[&str]| -> Vec<std::ffi::OsString> {
+            args.iter().map(|a| (*a).into()).collect()
+        };
+        assert!(is_electron_child(&cmd(&["claude.exe", "--type=renderer"])));
+        assert!(is_electron_child(&cmd(&[
+            "claude.exe",
+            "--type=gpu-process",
+            "--x"
+        ])));
+        assert!(!is_electron_child(&cmd(&["claude.exe"])));
+        assert!(!is_electron_child(&cmd(&["claude.exe", "--resume"])));
     }
 
     /// The bundled helper is not a thing to launch.
