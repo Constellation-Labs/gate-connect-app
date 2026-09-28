@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { closeRunningAgents } from "../lib/api";
+import { closeRunningAgents, type ClosedAgents } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { Takeover, TAKEOVER_Z } from "./Takeover";
@@ -8,9 +8,10 @@ import { Icon } from "./gc/Icon";
 
 /** Full-popover takeover shown when the user flips routing from the home
  *  screen while tools and apps are running. They keep the connection they
- *  resolved at their own launch, so offer to close them; the user starts them
- *  again when ready. Routing that comes back on its own at startup is NOT
- *  this surface - that's the calm inline hint on Home. Sits under the
+ *  resolved at their own launch, so offer to restart them: desktop apps quit
+ *  and come back, and terminal tools close for the user to start again.
+ *  Routing that comes back on its own at startup is NOT this surface -
+ *  that's the calm inline hint on Home. Sits under the
  *  UpdatePanel takeover (z-20) so an update prompt still wins. */
 export function RoutingChangeNotice({
   routingOn,
@@ -20,23 +21,23 @@ export function RoutingChangeNotice({
 }: {
   routingOn: boolean;
   /** Open directly on the close-agents confirm step - used when the entry
-   * point (the Home banner's "Close agents…") already declared the intent,
+   * point (the Home banner's "Restart them…") already declared the intent,
    * so the informational step would just be a third click. */
   startConfirming?: boolean;
   onDismiss: () => void;
-  /** Fired after a successful close, so a surface that opened this takeover
+  /** Fired after a successful restart, so a surface that opened this takeover
    * (the Home startup banner) can retire advice the user just acted on. */
   onAgentsClosed?: () => void;
 }) {
   const [closing, setClosing] = useState(false);
-  // Clicking "Close running agents" arms this inline confirm step first; the
+  // Clicking "Restart them…" arms this inline confirm step first; the
   // popover never stacks dialogs, so the panel itself swaps its copy/buttons.
   const [confirming, setConfirming] = useState(startConfirming);
-  // Signalled-process count once the close ran; null until then.
-  const [closed, setClosed] = useState<number | null>(null);
+  // What the restart did once it ran; null until then.
+  const [closed, setClosed] = useState<ClosedAgents | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
   // Focus the way out, not the way through: this panel can be reached by
-  // pressing Enter on the Home banner, and its primary is "Close everything".
+  // pressing Enter on the Home banner, and its primary is "Restart them".
   const safeRef = useRef<HTMLButtonElement>(null);
   // `confirming`/`closed` are the step: each swaps the buttons out.
 
@@ -46,9 +47,9 @@ export function RoutingChangeNotice({
     try {
       // `closed === null` is the not-yet-run sentinel, so a nullish resolve
       // would leave the confirm step up with no feedback.
-      const count = (await closeRunningAgents()) ?? 0;
-      setClosed(count);
-      track("agents_closed", { count });
+      const result = (await closeRunningAgents()) ?? NOTHING_CLOSED;
+      setClosed(result);
+      track("agents_closed", { count: result.closed, restarted: result.restarted.length });
       onAgentsClosed?.();
     } catch (e) {
       trackError(e, "close_agents");
@@ -64,7 +65,7 @@ export function RoutingChangeNotice({
       labelledBy="routing-notice-title"
       onEscape={onDismiss}
       initialFocus={safeRef}
-      resetKey={`${confirming}:${closed}`}
+      resetKey={`${confirming}:${closed !== null}`}
     >
       {/* The tile follows the step, not just the routing direction. On the
           confirm step the panel is asking to close the user's running apps and
@@ -95,7 +96,7 @@ export function RoutingChangeNotice({
               three steps, which meant a screen reader entering the confirm
               heard no change at all. */}
           {confirming && closed === null
-            ? "Close the tools and apps that are running?"
+            ? "Restart the tools and apps that are running?"
             : routingOn
               ? "Routing is on"
               : "Routing is off"}
@@ -105,16 +106,15 @@ export function RoutingChangeNotice({
         {closed === null ? (
           <p className="text-gc-body-sm leading-snug text-gc-ink-3">
             {confirming
-              ? // Not "Close everything still running": this closes the agent
-                // process set, so a routed app outside it (ChatGPT desktop,
-                // Cowork) survives and the old wording told the user it had
-                // been handled. The desktop-app warning stays because it is
-                // true and it is the surprising half - the match lowercases the
-                // process name, so macOS Claude Desktop is in scope.
-                "Desktop apps like Claude close too, and anything they’re working on will be interrupted."
+              ? // Not "Restart everything still running": this restarts the
+                // agent process set, so a routed app outside it (ChatGPT
+                // desktop) is untouched and that wording would tell the user it
+                // had been handled. Says which half comes back on its own,
+                // because a terminal tool cannot: it belongs to its terminal.
+                "Desktop apps like Claude quit and open again. Tools running in a terminal close, and you start them again yourself. Anything they’re working on will be interrupted."
               : routingOn
-                ? "Tools and apps that were already open aren’t routing through Gate yet. Close them and they pick Gate up when you open them again."
-                : "Tools and apps that were already open still point at Gate. Close them and they go back to their own settings when you open them again."}
+                ? "Tools and apps that were already open aren’t routing through Gate yet. Restart them and they pick Gate up."
+                : "Tools and apps that were already open still point at Gate. Restart them and they go back to their own settings."}
           </p>
         ) : (
           // The one line that reports the result of a destructive action, and
@@ -122,9 +122,7 @@ export function RoutingChangeNotice({
           // a live region nothing announces it, so a screen-reader user closes
           // every running agent and hears nothing back.
           <p role="status" aria-live="polite" className="text-gc-body-sm leading-snug text-gc-ink-3">
-            {closed > 0
-              ? `Closed ${closed} ${closed === 1 ? "app" : "apps"}. Open them again whenever you need them.`
-              : "Nothing was running."}
+            {closedSummary(closed)}
           </p>
         )}
         {error && <ErrorNote error={error} />}
@@ -139,7 +137,7 @@ export function RoutingChangeNotice({
             {/* Ellipsis, matching Home's banner: same action, different entry
                 point, and both land on the confirm step rather than acting. */}
             <Button variant="secondary" full onClick={() => setConfirming(true)}>
-              Close them…
+              Restart them…
             </Button>
           </>
         )}
@@ -150,7 +148,7 @@ export function RoutingChangeNotice({
                 Same grammar as Settings' Reset. Cancel is a full secondary
                 button, not a text link, so the safe option is its equal. */}
             <Button variant="danger" full disabled={closing} onClick={() => void closeAgents()}>
-              {closing ? "Closing…" : "Close them"}
+              {closing ? "Restarting…" : "Restart them"}
             </Button>
             <Button
               ref={safeRef}
@@ -171,4 +169,24 @@ export function RoutingChangeNotice({
       </div>
     </Takeover>
   );
+}
+
+const NOTHING_CLOSED: ClosedAgents = { closed: 0, restarted: [], reopen_yourself: [] };
+
+const LIST = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+
+/** The one line reporting what the restart did: what came back on its own,
+ *  then what the user has to start again, by name, so "start them again"
+ *  never leaves them guessing which ones. */
+export function closedSummary({ closed, restarted, reopen_yourself }: ClosedAgents): string {
+  if (closed === 0) return "Nothing was running.";
+  const pronoun = reopen_yourself.length === 1 ? "it" : "them";
+  const parts = [
+    restarted.length > 0 && `Restarted ${LIST.format(restarted)}.`,
+    reopen_yourself.length > 0 &&
+      (restarted.length > 0
+        ? `Start ${LIST.format(reopen_yourself)} again when you need ${pronoun}.`
+        : `Closed ${LIST.format(reopen_yourself)}. Start ${pronoun} again when you need ${pronoun}.`),
+  ];
+  return parts.filter(Boolean).join(" ") || `Closed ${closed} ${closed === 1 ? "app" : "apps"}.`;
 }

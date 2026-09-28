@@ -49,8 +49,8 @@ test.describe("routing", () => {
 
     // Two steps: the offer, then the confirm. Closing someone's editor is not
     // a one-click act.
-    await app.page.getByRole("button", { name: "Close them…" }).click();
-    await app.page.getByRole("button", { name: "Close them", exact: true }).click();
+    await app.page.getByRole("button", { name: "Restart them…" }).click();
+    await app.page.getByRole("button", { name: "Restart them", exact: true }).click();
 
     await expect
       .poll(async () => (await app.calls()).some((c) => c.cmd === "close_running_agents"))
@@ -67,7 +67,7 @@ test.describe("routing", () => {
 
     // Nothing to close means no takeover: the popover stays on Home, and the
     // close route is absent because it would close nothing.
-    await expect(app.page.getByRole("button", { name: "Close them…" })).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Restart them…" })).toHaveCount(0);
     await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
 
     // But it is NOT silent, which is what this asserted until the probe stopped
