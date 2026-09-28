@@ -1426,7 +1426,12 @@ fn close_running_agents() -> ClosedAgentsDto {
                     .unwrap_or(lower)
             }
         };
-        let target = CloseTarget { pid: process.pid(), started: process.start_time(), name, relaunch };
+        let target = CloseTarget {
+            pid: process.pid(),
+            started: process.start_time(),
+            name,
+            relaunch,
+        };
         found.push((target, process.parent()));
     });
     let agent_pids: std::collections::HashSet<Pid> = found.iter().map(|(t, _)| t.pid).collect();
@@ -1436,7 +1441,11 @@ fn close_running_agents() -> ClosedAgentsDto {
         .map(|(target, _)| target)
         .collect();
 
-    let mut dto = ClosedAgentsDto { closed: 0, restarted: Vec::new(), reopen_yourself: Vec::new() };
+    let mut dto = ClosedAgentsDto {
+        closed: 0,
+        restarted: Vec::new(),
+        reopen_yourself: Vec::new(),
+    };
     let mut sys = System::new();
     let pids: Vec<Pid> = targets.iter().map(|t| t.pid).collect();
     sys.refresh_processes_specifics(
@@ -1446,7 +1455,10 @@ fn close_running_agents() -> ClosedAgentsDto {
     );
     let mut waiting: Vec<CloseTarget> = Vec::new();
     for mut target in targets {
-        let Some(process) = sys.process(target.pid).filter(|p| p.start_time() == target.started) else {
+        let Some(process) = sys
+            .process(target.pid)
+            .filter(|p| p.start_time() == target.started)
+        else {
             continue; // quit on its own since the walk
         };
         match request_close(process) {
@@ -1488,9 +1500,10 @@ fn close_running_agents() -> ClosedAgentsDto {
             true,
             ProcessRefreshKind::nothing().without_tasks(),
         );
-        let (running, exited): (Vec<_>, Vec<_>) = waiting
-            .into_iter()
-            .partition(|t| sys.process(t.pid).is_some_and(|p| p.start_time() == t.started));
+        let (running, exited): (Vec<_>, Vec<_>) = waiting.into_iter().partition(|t| {
+            sys.process(t.pid)
+                .is_some_and(|p| p.start_time() == t.started)
+        });
         gone.extend(exited);
         waiting = running;
         if waiting.is_empty() || std::time::Instant::now() >= deadline {
@@ -1504,7 +1517,9 @@ fn close_running_agents() -> ClosedAgentsDto {
             target.name, target.pid
         );
         let killed = cfg!(target_os = "windows")
-            && sys.process(target.pid).is_some_and(|process| process.kill());
+            && sys
+                .process(target.pid)
+                .is_some_and(|process| process.kill());
         if killed {
             gone.push(target);
         } else {
@@ -1625,10 +1640,15 @@ impl Relaunch {
 fn app_relaunch(exe: &str) -> Option<Relaunch> {
     if let Some(bundle) = macos_app_bundle(exe) {
         let name = bundle.rsplit('/').next()?.strip_suffix(".app")?.to_string();
-        return Some(Relaunch { name, program: "open", arg: bundle.to_string() });
+        return Some(Relaunch {
+            name,
+            program: "open",
+            arg: bundle.to_string(),
+        });
     }
     let package = windows_store_package(exe)?;
-    let manifest = std::fs::read_to_string(format!("{}\\AppxManifest.xml", package.install_dir)).ok()?;
+    let manifest =
+        std::fs::read_to_string(format!("{}\\AppxManifest.xml", package.install_dir)).ok()?;
     let executable = exe[package.install_dir.len()..].trim_start_matches('\\');
     let app_id = manifest_app_id(&manifest, executable)?;
     Some(Relaunch {
@@ -4126,8 +4146,13 @@ mod tests {
         let cmd = |args: &[&str]| -> Vec<std::ffi::OsString> {
             args.iter().map(std::ffi::OsString::from).collect()
         };
-        let exe = r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
-        assert!(is_electron_helper(&cmd(&[exe, "--type=renderer", "--lang=en-US"])));
+        let exe =
+            r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
+        assert!(is_electron_helper(&cmd(&[
+            exe,
+            "--type=renderer",
+            "--lang=en-US"
+        ])));
         assert!(is_electron_helper(&cmd(&[
             exe,
             "--type=utility",
@@ -4136,7 +4161,11 @@ mod tests {
         assert!(!is_electron_helper(&cmd(&[exe])));
         assert!(!is_electron_helper(&cmd(&["claude", "--resume"])));
         // A prompt mentioning the switch is an argument's value, not the switch.
-        assert!(!is_electron_helper(&cmd(&["claude", "-p", "what does --type=renderer do"])));
+        assert!(!is_electron_helper(&cmd(&[
+            "claude",
+            "-p",
+            "what does --type=renderer do"
+        ])));
         assert!(!is_electron_helper(&cmd(&[])));
     }
 
@@ -4159,11 +4188,13 @@ mod tests {
     /// built on, and the fields the app ID is assembled from.
     #[test]
     fn a_store_package_is_read_from_its_install_path() {
-        let exe = r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
+        let exe =
+            r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
         assert_eq!(
             windows_store_package(exe),
             Some(StorePackage {
-                install_dir: r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc".into(),
+                install_dir: r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc"
+                    .into(),
                 family: "Claude_pzs8sxrjxfjjc".into(),
                 name: "Claude".into(),
             })
@@ -4171,9 +4202,14 @@ mod tests {
         // Case does not decide it; Windows paths are not case-sensitive.
         assert!(windows_store_package(&exe.to_ascii_lowercase()).is_some());
         // Not a package folder: too few fields, or not under WindowsApps.
-        assert_eq!(windows_store_package(r"C:\Program Files\WindowsApps\Claude\Claude.exe"), None);
         assert_eq!(
-            windows_store_package(r"C:\Users\u\AppData\Roaming\Claude\claude-code\2.1.284\claude.exe"),
+            windows_store_package(r"C:\Program Files\WindowsApps\Claude\Claude.exe"),
+            None
+        );
+        assert_eq!(
+            windows_store_package(
+                r"C:\Users\u\AppData\Roaming\Claude\claude-code\2.1.284\claude.exe"
+            ),
             None
         );
     }
@@ -4189,8 +4225,14 @@ mod tests {
   Id="SshAskpass" Executable="app\resources\claude-ssh-askpass.exe" EntryPoint="Windows.FullTrustApplication">
 </Application>
 </Applications></Package>"#;
-        assert_eq!(manifest_app_id(manifest, r"app\Claude.exe").as_deref(), Some("Claude"));
-        assert_eq!(manifest_app_id(manifest, r"APP\claude.exe").as_deref(), Some("Claude"));
+        assert_eq!(
+            manifest_app_id(manifest, r"app\Claude.exe").as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(
+            manifest_app_id(manifest, r"APP\claude.exe").as_deref(),
+            Some("Claude")
+        );
         assert_eq!(
             manifest_app_id(manifest, r"app\resources\claude-ssh-askpass.exe").as_deref(),
             Some("SshAskpass")
