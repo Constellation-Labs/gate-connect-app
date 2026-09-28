@@ -2095,10 +2095,20 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
         return ClientClass::App;
     }
 
-    if header("originator").is_some_and(|v| !v.trim().is_empty()) {
+    let ua = header("user-agent").unwrap_or_default();
+    // Not on a browser's own user-agent. The ChatGPT web frontend sends
+    // `originator: Codex Browser` from Chrome (observed 2026-09-28), so the
+    // header alone no longer tells the app from the website. Read as App, a
+    // Chrome tab lost its `BROWSER_ROUTED` narrowing and had its Cloudflare
+    // challenges swallowed for a solve window that could not open. What still
+    // separates them is the user-agent: the app's shell wraps a browser UA in
+    // a product token and its agents are not browser-shaped, while a browser's
+    // opens with `Mozilla/`. Such a request falls through to the web markers.
+    if header("originator").is_some_and(|v| !v.trim().is_empty())
+        && !ua.trim_start().starts_with(BROWSER_UA_PREFIX)
+    {
         return ClientClass::App;
     }
-    let ua = header("user-agent").unwrap_or_default();
     // An app shell wraps an ordinary browser UA in its own product token; the
     // other two are Codex's native agent and its MCP client, neither of which
     // is browser-shaped. See `browser_ua_without_product_token` for why the
@@ -2960,20 +2970,52 @@ mod tests {
     }
     #[test]
     fn the_originator_header_identifies_the_app() {
-        // Present on every app request to a routed path in the captures, and on
-        // none of the web ones.
+        // On every app request to a routed path in the captures.
+        for ua in [
+            "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+            "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0",
+            "some-agent/1.0",
+        ] {
+            assert_eq!(
+                classify_client(hdrs(&[("originator", "Codex Desktop"), ("user-agent", ua)])),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
         assert_eq!(
-            classify_client(hdrs(&[
-                ("originator", "Codex Desktop"),
-                ("user-agent", WEB_UA)
-            ])),
+            classify_client(hdrs(&[("originator", "codex_work_desktop")])),
             ClientClass::App,
-            "originator outranks a browser-shaped user-agent"
+            "no user-agent at all is not a browser's"
         );
         assert_eq!(
             classify_client(hdrs(&[("originator", "   ")])),
             ClientClass::Unknown,
             "a blank originator is not a claim"
+        );
+    }
+
+    /// The ChatGPT website in Chrome sends `originator: Codex Browser`
+    /// (observed 2026-09-28). Read as App, two users' Chrome tabs had every
+    /// Cloudflare challenge replaced with Gate's message and a solve window
+    /// that could not open, on repeat.
+    #[test]
+    fn originator_on_a_browser_user_agent_is_not_the_app() {
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Browser"),
+                ("user-agent", WEB_UA),
+                ("oai-device-id", "d"),
+            ])),
+            ClientClass::Web,
+            "the website, with its own markers, is Web"
+        );
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Browser"),
+                ("user-agent", WEB_UA)
+            ])),
+            ClientClass::Unknown,
+            "without the markers it is unrecognised, which still routes"
         );
     }
 
