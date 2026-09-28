@@ -8,6 +8,11 @@ name: launchd restart
 # killed outright. Those are properties of launchd, so only a real `launchctl`
 # can settle them, and only on macOS.
 #
+# It also checks how the forwarder meets `launchctl bootout`: SIGTERM starts a
+# short drain instead of killing it, and the drain ends inside launchd's exit
+# timeout so bootout neither hangs its caller nor kills open tunnels. See
+# `crates/forwarder/tests/launchd_sigterm_drain.rs`.
+#
 # Its own workflow rather than a job in ci.yml because it is narrow and not
 # free: it needs a macOS runner (billed at a multiple of Linux) and it waits
 # out the throttle interval the policy sets. So it runs when the code it
@@ -23,6 +28,8 @@ on:
       - "crates/core/src/crash_restart.rs"
       - "crates/core/tests/launchd_restart.rs"
       - "crates/core/tests/launchd_plist_removed.rs"
+      - "crates/forwarder/src/main.rs"
+      - "crates/forwarder/tests/launchd_sigterm_drain.rs"
       - ".github/workflows/launchd-restart.yml"
   push:
     branches: [main]
@@ -30,6 +37,8 @@ on:
       - "crates/core/src/crash_restart.rs"
       - "crates/core/tests/launchd_restart.rs"
       - "crates/core/tests/launchd_plist_removed.rs"
+      - "crates/forwarder/src/main.rs"
+      - "crates/forwarder/tests/launchd_sigterm_drain.rs"
       - ".github/workflows/launchd-restart.yml"
   workflow_dispatch:
 
@@ -66,3 +75,6 @@ jobs:
 
       - name: A loaded socket agent survives its plist being deleted
         run: cargo test -p gate-connect-core --test launchd_plist_removed -- --ignored --nocapture
+
+      - name: A booted-out forwarder drains briefly and exits itself
+        run: cargo test -p gate-connect-forwarder --test launchd_sigterm_drain -- --ignored --nocapture
