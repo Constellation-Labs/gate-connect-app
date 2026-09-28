@@ -80,6 +80,10 @@ const MARKER_POLL: Duration = Duration::from_secs(2);
 /// keeping open, not one carrying a response.
 const DRAIN_LIMIT: Duration = Duration::from_secs(10 * 60);
 
+/// [`DRAIN_LIMIT`] when the ask to stop was SIGTERM, which leaves far less
+/// room - see [`terminated`].
+const SIGTERM_DRAIN_LIMIT: Duration = Duration::from_secs(5);
+
 fn proxy_file(name: &str) -> Result<std::path::PathBuf> {
     Ok(gate_connect_paths::proxy_dir()?.join(name))
 }
@@ -251,10 +255,13 @@ struct Serving {
     reclaim: proxy::Reclaim,
     engine_poll: Duration,
     drain_limit: Duration,
+    sigterm_drain_limit: Duration,
     /// Also retire on SIGTERM. Only the real process asks for it: a handler
     /// installed from a test would swallow the signal meant for the test
     /// runner.
     sigterm: bool,
+    /// Stands in for SIGTERM, for the tests.
+    terminate: Arc<tokio::sync::Notify>,
     /// The marker to watch, when not the real one. Tests point it at a file
     /// they control, so they neither depend on nor disturb a running app.
     marker: Option<std::path::PathBuf>,
@@ -268,7 +275,9 @@ impl Serving {
             reclaim: proxy::Reclaim::new(proxy::RECLAIM_IDLE),
             engine_poll: MARKER_POLL,
             drain_limit: DRAIN_LIMIT,
+            sigterm_drain_limit: SIGTERM_DRAIN_LIMIT,
             sigterm: false,
+            terminate: Arc::new(tokio::sync::Notify::new()),
             marker: None,
         }
     }
@@ -302,8 +311,20 @@ async fn serve_with(
     // accepted connection restarted the marker poll from zero and a forwarder
     // seeing traffic more often than MARKER_POLL would never notice it was no
     // longer wanted - it would run until logout.
-    let unwanted = tokio::spawn(unwanted(serving.marker.clone(), serving.sigterm));
+    let unwanted = tokio::spawn(unwanted(serving.marker.clone()));
     tokio::pin!(unwanted);
+    // Its own task, listened to through the drain as well: the app removes the
+    // marker and boots the agent out back to back, so SIGTERM often lands
+    // after a drain the marker already started.
+    let terminate = serving.terminate.clone();
+    let sigterm = serving.sigterm;
+    let terminated = tokio::spawn(async move {
+        tokio::select! {
+            () = terminated(sigterm) => {}
+            () = terminate.notified() => {}
+        }
+    });
+    tokio::pin!(terminated);
 
     let watcher = tokio::spawn(watch_engine(
         serving.reclaim.engine_up.clone(),
@@ -317,9 +338,14 @@ async fn serve_with(
     // sockets until this one runs out of them.
     let slots = Arc::new(tokio::sync::Semaphore::new(512));
 
+    let mut signalled = false;
     loop {
         tokio::select! {
             _ = &mut unwanted => break,
+            _ = &mut terminated => {
+                signalled = true;
+                break;
+            }
             accepted = listener.accept() => {
                 let (client, _) = match accepted {
                     Ok(pair) => pair,
@@ -353,37 +379,47 @@ async fn serve_with(
     // direct tunnels back to a live engine is also what ends them sooner.
     drop(listener);
     serving.retire.send_replace(true);
-    let deadline = tokio::time::Instant::now() + serving.drain_limit;
+    let started = tokio::time::Instant::now();
+    let mut deadline = started
+        + if signalled {
+            serving.sigterm_drain_limit
+        } else {
+            serving.drain_limit
+        };
     while serving.in_flight.count() > 0 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            _ = &mut terminated, if !signalled => {
+                signalled = true;
+                deadline = deadline.min(tokio::time::Instant::now() + serving.sigterm_drain_limit);
+            }
+        }
     }
     watcher.abort();
     Ok(())
 }
 
-/// Resolve once this forwarder is no longer wanted: its marker is gone, or
-/// (with `sigterm`) it was asked to stop.
-///
-/// SIGTERM is how launchd stops a job it is booting out, which is how the app
-/// replaces a socket-activated forwarder. launchd gives the job its exit
-/// timeout before killing it, so answering it with the same drain lets short
-/// responses finish rather than none.
-async fn unwanted(marker: Option<std::path::PathBuf>, sigterm: bool) {
+/// Resolve once this forwarder's marker is gone.
+async fn unwanted(marker: Option<std::path::PathBuf>) {
     let marker = marker.or_else(|| marker_path().ok());
-    let removed = async {
-        loop {
-            tokio::time::sleep(MARKER_POLL).await;
-            if marker.as_ref().is_some_and(|p| !p.exists()) {
-                return;
-            }
+    loop {
+        tokio::time::sleep(MARKER_POLL).await;
+        if marker.as_ref().is_some_and(|p| !p.exists()) {
+            return;
         }
-    };
-    tokio::select! {
-        () = removed => {}
-        () = terminated(sigterm) => {}
     }
 }
 
+/// Resolve on SIGTERM, when `sigterm` asks for it; never otherwise.
+///
+/// SIGTERM is how launchd stops a job it boots out, which is how the app
+/// replaces or stops a socket-activated forwarder. launchd owns that listening
+/// socket, so the port is handed on only by the bootout itself, and launchd
+/// kills the job once its exit timeout runs out - 20s unless the plist says
+/// otherwise - while `launchctl bootout` waits. So this drain is capped at
+/// [`SIGTERM_DRAIN_LIMIT`]: long enough for a short response to finish, short
+/// enough that the process exits itself instead of being killed, and that the
+/// app thread waiting on the bootout is not held for the whole timeout.
 #[cfg(unix)]
 async fn terminated(sigterm: bool) {
     use tokio::signal::unix::{signal, SignalKind};
@@ -812,7 +848,7 @@ mod tests {
         engine: Arc<std::sync::atomic::AtomicU16>,
         idle: Duration,
     ) -> u16 {
-        let (port, _, _) = start_with(engine, idle, Duration::from_secs(30)).await;
+        let (port, _, _, _) = start_with(engine, idle, Duration::from_secs(30)).await;
         port
     }
 
@@ -834,7 +870,12 @@ mod tests {
         engine: Arc<std::sync::atomic::AtomicU16>,
         idle: Duration,
         drain_limit: Duration,
-    ) -> (u16, std::path::PathBuf, tokio::task::JoinHandle<Result<()>>) {
+    ) -> (
+        u16,
+        std::path::PathBuf,
+        tokio::task::JoinHandle<Result<()>>,
+        Arc<tokio::sync::Notify>,
+    ) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let marker = test_marker();
@@ -843,6 +884,8 @@ mod tests {
         serving.engine_poll = Duration::from_millis(50);
         serving.drain_limit = drain_limit;
         serving.marker = Some(marker.clone());
+        serving.sigterm_drain_limit = Duration::from_millis(300);
+        let terminate = serving.terminate.clone();
         let task = tokio::spawn(async move {
             serve_with(
                 listener,
@@ -853,7 +896,7 @@ mod tests {
             )
             .await
         });
-        (port, marker, task)
+        (port, marker, task, terminate)
     }
 
     /// Retiring is routine now - it is how an update replaces the forwarder -
@@ -863,7 +906,7 @@ mod tests {
     #[tokio::test]
     async fn a_retiring_forwarder_releases_its_port_and_finishes_what_it_has() {
         let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
-        let (port, marker, task) =
+        let (port, marker, task, _) =
             start_with(engine, Duration::from_secs(60), Duration::from_secs(30)).await;
         let mut client = open_direct_tunnel(port, echo_origin()).await;
 
@@ -899,7 +942,7 @@ mod tests {
     #[tokio::test]
     async fn a_retiring_forwarder_stops_waiting_at_the_limit() {
         let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
-        let (port, marker, task) =
+        let (port, marker, task, _) =
             start_with(engine, Duration::from_secs(60), Duration::from_millis(300)).await;
         let _client = open_direct_tunnel(port, echo_origin()).await;
 
@@ -1012,5 +1055,46 @@ mod tests {
             closed_within(&mut client, Duration::from_secs(2)).await,
             "and once it goes quiet it is handed back"
         );
+    }
+
+    /// SIGTERM is launchd booting the job out, and launchd kills it at its
+    /// exit timeout while `launchctl bootout` holds the app thread that asked.
+    /// So a drain the signal starts, or one it lands in, has to be short: the
+    /// long one would outlast the timeout and be killed anyway.
+    #[tokio::test]
+    async fn sigterm_cuts_a_drain_short() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
+        let (port, _marker, task, terminate) =
+            start_with(engine, Duration::from_secs(60), Duration::from_secs(60)).await;
+        let _client = open_direct_tunnel(port, echo_origin()).await;
+
+        terminate.notify_one();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("a SIGTERM drain ends at its own short limit")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// The app removes the marker and then boots the agent out, so the signal
+    /// usually arrives with the long drain already under way.
+    #[tokio::test]
+    async fn sigterm_during_a_marker_drain_shortens_it() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
+        let (port, marker, task, terminate) =
+            start_with(engine, Duration::from_secs(60), Duration::from_secs(60)).await;
+        let _client = open_direct_tunnel(port, echo_origin()).await;
+
+        std::fs::remove_file(&marker).unwrap();
+        // Past the marker poll, so the long drain has begun.
+        tokio::time::sleep(MARKER_POLL + Duration::from_millis(500)).await;
+        assert!(!task.is_finished(), "the marker drain waits for the tunnel");
+
+        terminate.notify_one();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the signal shortens the drain already running")
+            .unwrap()
+            .unwrap();
     }
 }
