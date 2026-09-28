@@ -2258,20 +2258,33 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
         let Some(process) = sys.process(pid) else {
             continue;
         };
-        // Resolved, not just normalised: a `codex` the ChatGPT app ships is
-        // that app, so a walk for the CLI must not yield it and a walk for the
-        // app must (AG-947).
-        let Some(row) = agent_row_of(process) else {
-            continue;
-        };
-        if !names.contains(&row.1) || is_chrome_native_host(process.cmd()) {
-            continue;
-        }
-        let is_desktop_child = row.1 == "Claude" && is_electron_child(process.cmd());
-        if !is_desktop_child {
+        if walk_yields(&agent_name_of(process), process.exe(), process.cmd(), names) {
             f(process);
         }
     }
+}
+
+/// Whether [`for_each_agent_process`] yields a candidate, given the fields the
+/// walk read for it. The half of the walk that is testable without a live
+/// process table.
+///
+/// Resolved, not just normalised: a `codex` the ChatGPT app ships is that app,
+/// so a walk for the CLI must not yield it and a walk for the app must
+/// (AG-947). The Chrome bridge shares Claude Code's binary and is not a
+/// session, and the desktop app's Electron children are the app, not rows of
+/// their own.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn walk_yields(
+    name: &str,
+    exe: Option<&std::path::Path>,
+    cmd: &[std::ffi::OsString],
+    names: &[&str],
+) -> bool {
+    agent_row_for(name, exe).is_some_and(|row| {
+        names.contains(&row.1)
+            && !is_chrome_native_host(cmd)
+            && !(row.1 == "Claude" && is_electron_child(cmd))
+    })
 }
 
 /// Is this `claude` the Claude in Chrome native-messaging host rather than a
@@ -2514,16 +2527,15 @@ fn agent_row_for(
 /// `anthropic` dropped it from every one of those scans, and Gate reported no
 /// restart needed over a session still running without the route.
 ///
-/// What differs from a terminal `claude` is the product name and the surface.
-/// [`Surface::App`], because the app started it and the app is what restarts
-/// it; [`relaunch_target_for`] still returns `None` for it, since the thing to
-/// relaunch is the app and the app's own row carries that.
+/// What differs from a terminal `claude` is the product name. The surface is
+/// [`Surface::Cli`], because Gate may not relaunch it: the thing to relaunch is
+/// the app, and the app's own row carries that.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 static CLAUDE_CODE_TAB: (&str, &str, &str, Surface) = (
     "claude-code",
     "claude",
     "Claude Code in Claude Desktop",
-    Surface::App,
+    Surface::Cli,
 );
 
 /// Which kind of surface a running process is, by the same normalisation the
@@ -3212,8 +3224,10 @@ struct RunningAgent {
     /// close, reopen and verification, and a process name is not a key: `claude`
     /// and `Claude` are one slug and two different programs.
     slug: String,
-    /// Process name as the OS spells it, original case - "Claude" is the
-    /// desktop app, "claude" the CLI, and which one is running matters.
+    /// Process name as the OS spells it, original case. On macOS "Claude" is
+    /// the desktop app and "claude" the CLI; on Windows both are `claude.exe`
+    /// and only the path tells them apart ([`claude_desktop_part`]), so `slug`
+    /// is the key to read, not this.
     name: String,
     /// The tool's product name, from [`AGENT_PROCESSES`]. What a surface should
     /// draw when `list_tools` cannot name the slug, which is every scan that
@@ -3449,11 +3463,6 @@ fn relaunch_target_for(exe: Option<&std::path::Path>, surface: Surface) -> Optio
     // because a platform whose layout has no bundle to walk up to would have
     // spawned the bare Codex binary as "reopen ChatGPT".
     if is_chatgpt_bundled_codex(Some(exe)) {
-        return None;
-    }
-    // The Code tab's `claude` is the same case: the app starts it, so the
-    // app's own relaunch is what brings it back.
-    if claude_desktop_part(Some(exe)) == Some(ClaudeDesktopPart::CodeTab) {
         return None;
     }
     // Nothing from an MSIX package is launched by path, which covers both the
@@ -6740,7 +6749,8 @@ mod tests {
     fn a_claude_the_user_installed_is_still_the_cli() {
         for path in [
             r"C:\Users\someone\.local\bin\claude.exe",
-            r"C:\Users\someone\AppData\Roaming\npm\claude.cmd",
+            // Under `Roaming` like the Code tab, but not `Claude\claude-code`.
+            r"C:\Users\someone\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\claude.exe",
             r"C:\Users\someone\AppData\Local\Microsoft\WinGet\Links\claude.exe",
             // A folder that happens to be named for the layout, not under it.
             r"C:\Users\someone\code\claude-code\2.1.0\claude.exe",
@@ -6759,19 +6769,20 @@ mod tests {
         }
     }
 
-    /// Neither half of the desktop app is launched by path: the Code tab comes
-    /// back with the app, and the app is a Store package.
+    /// Neither half of the desktop app is launched by path: the Code tab is a
+    /// CLI surface, and the app is a Store package. Each is asked with the
+    /// surface its own row gives it, which is what the walk does.
     #[test]
     fn the_desktop_app_parts_are_not_relaunched_by_path() {
         for path in [
             r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\claude.exe",
             r"C:\Users\someone\AppData\Roaming\Claude\claude-code\2.1.281\claude.exe",
         ] {
-            assert_eq!(
-                relaunch_target_for(Some(&win(path)), Surface::App),
-                None,
-                "{path}"
-            );
+            let exe = win(path);
+            let surface = agent_row_for("claude", Some(&exe))
+                .map(|(_, _, _, surface)| *surface)
+                .expect(path);
+            assert_eq!(relaunch_target_for(Some(&exe), surface), None, "{path}");
         }
     }
 
@@ -6797,7 +6808,7 @@ mod tests {
                 "claude",
                 r"C:\Users\someone\AppData\Roaming\Claude\claude-code\2.1.281\claude.exe"
             ),
-            Some(("claude-code", "claude", Surface::App))
+            Some(("claude-code", "claude", Surface::Cli))
         );
         assert_eq!(
             row("claude", r"C:\Users\someone\.local\bin\claude.exe"),
@@ -6838,6 +6849,44 @@ mod tests {
         ])));
         assert!(!is_electron_child(&cmd(&["claude.exe"])));
         assert!(!is_electron_child(&cmd(&["claude.exe", "--resume"])));
+    }
+
+    /// The live Windows measurement [`claude_desktop_part`] cites, as a table:
+    /// the app's main process, twelve Electron children and four Code-tab
+    /// sessions, all `claude`, plus a terminal CLI beside them. The walk must
+    /// yield one app and the Code tab plus the CLI, and each scope only its own.
+    #[test]
+    fn the_walk_yields_one_app_and_the_code_tab_sessions() {
+        let app = win(
+            r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\claude.exe",
+        );
+        let tab = win(
+            r"C:\Users\someone\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.281\claude.exe",
+        );
+        let cli = win(r"C:\Users\someone\.local\bin\claude.exe");
+        let args =
+            |a: &[&str]| -> Vec<std::ffi::OsString> { a.iter().map(|s| (*s).into()).collect() };
+
+        let mut processes = vec![(&app, args(&["claude.exe"]))];
+        for kind in ["renderer", "gpu-process", "utility"] {
+            for _ in 0..4 {
+                processes.push((&app, args(&["claude.exe", &format!("--type={kind}")])));
+            }
+        }
+        for _ in 0..4 {
+            processes.push((&tab, args(&["claude.exe"])));
+        }
+        processes.push((&cli, args(&["claude.exe"])));
+
+        let yielded = |names: &[&str]| {
+            processes
+                .iter()
+                .filter(|(exe, cmd)| walk_yields("claude", Some(exe.as_path()), cmd, names))
+                .count()
+        };
+        assert_eq!(yielded(&agent_names_for(None)), 6);
+        assert_eq!(yielded(&agent_names_for(Some(&["claude-code".into()]))), 5);
+        assert_eq!(yielded(&agent_names_for(Some(&["anthropic".into()]))), 1);
     }
 
     /// The bundled helper is not a thing to launch.
