@@ -2428,7 +2428,9 @@ enum ClaudeDesktopPart {
 ///
 /// **Windows shapes only.** macOS spells the app `Claude`, which the table
 /// already matches, and the Code tab's binary there has not been measured.
-/// The per-user (non-Store) Windows installer has not been measured either.
+/// The installer downloaded from claude.ai is the same MSIX package, in the
+/// same `WindowsApps\Claude_<version>_<arch>__pzs8sxrjxfjjc\` folder, so this
+/// covers it too.
 fn claude_desktop_part(exe: Option<&std::path::Path>) -> Option<ClaudeDesktopPart> {
     let exe = exe?;
     if !normalise_agent_name(&exe.file_name()?.to_string_lossy()).eq_ignore_ascii_case("claude") {
