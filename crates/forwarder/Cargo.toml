@@ -40,3 +40,15 @@ tokio-rustls = "0.26"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Resolves which user a loopback peer runs as (`src/peer.rs`). The version
+# tokio already links on Windows, so this adds bindings, not a new crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+] }

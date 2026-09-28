@@ -429,7 +429,14 @@ enum Engine {
 /// Serve one connection: hand it to the engine's relay if that is up and
 /// proves itself, answer it here if nothing is there, refuse it otherwise.
 pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) -> Result<()> {
-    if let Some(port) = (services.backend)().filter(|p| *p != own_port) {
+    // Another user's request goes direct under its own credential: the engine's
+    // relay would inject the owner's. See [`crate::peer`].
+    let backend = if crate::peer::owner_connected(&client).await {
+        (services.backend)()
+    } else {
+        None
+    };
+    if let Some(port) = backend.filter(|p| *p != own_port) {
         match engine_session(port, &services.token).await {
             Engine::Proved(mut engine) => {
                 splice(

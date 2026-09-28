@@ -399,6 +399,12 @@ pub async fn handle(
         return Ok(());
     }
 
+    // Another user's connection never reaches the engine, which would treat it
+    // as the owner's: it sees only this hop. See [`crate::peer`].
+    if !crate::peer::owner_connected(&client).await {
+        return go_direct(client, head, reclaim, HandBack::Never).await;
+    }
+
     // Engine first, always: it is the one that can route, and while it is up
     // this is a transparent extra hop. The head crosses verbatim, including the
     // `Proxy-Authorization` selector, which the engine reads to force a route
@@ -490,6 +496,9 @@ enum HandBack {
     /// the tunnel back would close it every quiet minute and make each new
     /// connection wait out [`ENGINE_FIRST_BYTE_TIMEOUT`] before going direct
     /// again, for as long as the engine stays that way.
+    ///
+    /// Also a connection that is not the owner's, which the engine is never
+    /// the right place for.
     Never,
 }
 
