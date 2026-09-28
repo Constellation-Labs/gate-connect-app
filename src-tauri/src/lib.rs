@@ -2173,7 +2173,7 @@ const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
 /// it defensible in the first place: Gate is not ending their session, it is
 /// restarting an application so it picks up the route.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Cli,
     App,
@@ -2220,38 +2220,56 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
         ProcessRefreshKind::nothing().without_tasks(),
     );
     let own_pid = sysinfo::get_current_pid().ok();
-    let matched: Vec<sysinfo::Pid> = sys
+    // Candidates by name alone, in any case. The row a process belongs to can
+    // depend on its executable path (`agent_row_of`), and the walk above does
+    // not read it: on Windows `sysinfo` fills `exe` only when asked, so
+    // resolving rows here saw `None` for every process, and a Claude desktop
+    // app on Windows - which reports itself as `claude.exe` - read as the CLI.
+    // Case-folded so `Claude` and `claude` both survive to be told apart below.
+    let candidates: Vec<sysinfo::Pid> = sys
         .processes()
         .iter()
         .filter(|(pid, process)| {
-            // Resolved, not just normalised: a `codex` the ChatGPT app ships is
-            // that app, so a walk for the CLI must not yield it and a walk for
-            // the app must (AG-947).
+            let name = agent_name_of(process);
             Some(**pid) != own_pid
-                && agent_row_of(process).is_some_and(|(_, n, _, _)| names.contains(n))
+                && AGENT_PROCESSES
+                    .iter()
+                    .any(|(_, n, _, _)| n.eq_ignore_ascii_case(&name))
         })
         .map(|(pid, _)| *pid)
         .collect();
-    if matched.is_empty() {
+    if candidates.is_empty() {
         return;
     }
-    // Command lines for the matched processes only, so the full walk above
-    // stays at `stat`. Needed to tell a Claude Code session from the Chrome
-    // bridge that shares its binary (`is_chrome_native_host`).
+    // Executable paths and command lines for the candidates only, so the full
+    // walk above stays at `stat`. The path decides which row a process is
+    // (AG-947, `claude_desktop_part`); the command line tells a Claude Code
+    // session from the Chrome bridge that shares its binary
+    // (`is_chrome_native_host`) and the desktop app from its Electron children.
     sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&matched),
+        ProcessesToUpdate::Some(&candidates),
         false,
         ProcessRefreshKind::nothing()
             .without_tasks()
+            .with_exe(UpdateKind::OnlyIfNotSet)
             .with_cmd(UpdateKind::OnlyIfNotSet),
     );
-    for pid in matched {
-        if let Some(process) = sys.process(pid) {
-            let is_desktop_child = agent_row_of(process).is_some_and(|(_, n, _, _)| *n == "Claude")
-                && is_electron_child(process.cmd());
-            if !is_chrome_native_host(process.cmd()) && !is_desktop_child {
-                f(process);
-            }
+    for pid in candidates {
+        let Some(process) = sys.process(pid) else {
+            continue;
+        };
+        // Resolved, not just normalised: a `codex` the ChatGPT app ships is
+        // that app, so a walk for the CLI must not yield it and a walk for the
+        // app must (AG-947).
+        let Some(row) = agent_row_of(process) else {
+            continue;
+        };
+        if !names.contains(&row.1) || is_chrome_native_host(process.cmd()) {
+            continue;
+        }
+        let is_desktop_child = row.1 == "Claude" && is_electron_child(process.cmd());
+        if !is_desktop_child {
+            f(process);
         }
     }
 }
@@ -2462,17 +2480,51 @@ fn is_electron_child(cmd: &[std::ffi::OsString]) -> bool {
 fn agent_row_of(
     process: &sysinfo::Process,
 ) -> Option<&'static (&'static str, &'static str, &'static str, Surface)> {
-    let name = agent_name_of(process);
+    agent_row_for(&agent_name_of(process), process.exe())
+}
+
+/// The half of [`agent_row_of`] that is testable without a live process table.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_row_for(
+    name: &str,
+    exe: Option<&std::path::Path>,
+) -> Option<&'static (&'static str, &'static str, &'static str, Surface)> {
     // Before the name lookup, because the name is the thing that is wrong here.
-    let name = if name == "codex" && is_chatgpt_bundled_codex(process.exe()) {
+    let name = if name == "codex" && is_chatgpt_bundled_codex(exe) {
         "ChatGPT"
-    } else if name.eq_ignore_ascii_case("claude") && claude_desktop_part(process.exe()).is_some() {
-        "Claude"
+    } else if name.eq_ignore_ascii_case("claude") {
+        match claude_desktop_part(exe) {
+            Some(ClaudeDesktopPart::App) => "Claude",
+            Some(ClaudeDesktopPart::CodeTab) => return Some(&CLAUDE_CODE_TAB),
+            None => name,
+        }
     } else {
-        name.as_str()
+        name
     };
     AGENT_PROCESSES.iter().find(|(_, n, _, _)| *n == name)
 }
+
+/// The row for a Claude Code session the desktop app's Code tab started.
+///
+/// **Still `claude-code`, and still named `claude`**, because it is Claude
+/// Code: it reads the `~/.claude/settings.json` the claude-code integration
+/// rewrites, so a scan asking which `claude-code` processes are stale must find
+/// it, and it goes stale on that file's changes rather than on the desktop
+/// app's (`config_changed_at_unix` is keyed by this slug). Filing it under
+/// `anthropic` dropped it from every one of those scans, and Gate reported no
+/// restart needed over a session still running without the route.
+///
+/// What differs from a terminal `claude` is the product name and the surface.
+/// [`Surface::App`], because the app started it and the app is what restarts
+/// it; [`relaunch_target_for`] still returns `None` for it, since the thing to
+/// relaunch is the app and the app's own row carries that.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static CLAUDE_CODE_TAB: (&str, &str, &str, Surface) = (
+    "claude-code",
+    "claude",
+    "Claude Code in Claude Desktop",
+    Surface::App,
+);
 
 /// Which kind of surface a running process is, by the same normalisation the
 /// walk filtered on. `None` for a process no row claims.
@@ -3400,13 +3452,22 @@ fn relaunch_target_for(exe: Option<&std::path::Path>, surface: Surface) -> Optio
         return None;
     }
     // The Code tab's `claude` is the same case: the app starts it, so the
-    // app's own relaunch is what brings it back. And the app's own exe, from
-    // its MSIX package, is not launched either: a Store app is started through
-    // its package identity (`shell:AppsFolder\...`), and exec'ing the file
-    // inside `WindowsApps` has not been shown to do that. Reporting
-    // `can_reopen: false` asks the person to reopen it, which is honest; an
-    // unverified launch that failed would claim a reopen that never happened.
-    if claude_desktop_part(Some(exe)).is_some() {
+    // app's own relaunch is what brings it back.
+    if claude_desktop_part(Some(exe)) == Some(ClaudeDesktopPart::CodeTab) {
+        return None;
+    }
+    // Nothing from an MSIX package is launched by path, which covers both the
+    // Claude and ChatGPT Store apps. A Store app is started through its package
+    // identity (`shell:AppsFolder\...`), and exec'ing the file inside
+    // `WindowsApps` has not been shown to do that. Reporting `can_reopen:
+    // false` asks the person to reopen it, which is honest; an unverified
+    // launch that failed would claim a reopen that never happened. This became
+    // reachable when the walk started reading `exe` on Windows: until then the
+    // path was always `None` here.
+    if exe
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case("WindowsApps"))
+    {
         return None;
     }
     #[cfg(target_os = "macos")]
@@ -6712,6 +6773,55 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    /// Which row each `claude` resolves to, which is what every scan keys on.
+    ///
+    /// The Code tab is the case that was wrong in review: it is Claude Code
+    /// reading `~/.claude/settings.json`, so it must stay on the `claude-code`
+    /// slug and name, or a Claude Code config change stops asking it to restart.
+    #[test]
+    fn each_claude_resolves_to_its_row() {
+        let row = |name: &str, path: &str| {
+            agent_row_for(name, Some(&win(path))).map(|(slug, n, _, surface)| (*slug, *n, *surface))
+        };
+        assert_eq!(
+            row(
+                "claude",
+                r"C:\Program Files\WindowsApps\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\app\claude.exe"
+            ),
+            Some(("anthropic", "Claude", Surface::App))
+        );
+        assert_eq!(
+            row(
+                "claude",
+                r"C:\Users\someone\AppData\Roaming\Claude\claude-code\2.1.281\claude.exe"
+            ),
+            Some(("claude-code", "claude", Surface::App))
+        );
+        assert_eq!(
+            row("claude", r"C:\Users\someone\.local\bin\claude.exe"),
+            Some(("claude-code", "claude", Surface::Cli))
+        );
+        // macOS spells the app with a capital, and no path is needed.
+        assert_eq!(
+            agent_row_for("Claude", None).map(|(slug, _, _, _)| *slug),
+            Some("anthropic")
+        );
+    }
+
+    /// No Store app is launched by path, whoever's it is.
+    #[test]
+    fn nothing_in_windows_apps_is_relaunched_by_path() {
+        assert_eq!(
+            relaunch_target_for(
+                Some(&win(
+                    r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2025.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"
+                )),
+                Surface::App
+            ),
+            None
+        );
     }
 
     /// Electron's children carry `--type=`; the app's main process does not.
