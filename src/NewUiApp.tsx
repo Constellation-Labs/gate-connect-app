@@ -3331,11 +3331,15 @@ export function NewUiApp() {
           // reporting it as one put "couldn't be read" directly under the note
           // explaining that the reading does not exist. It travels as
           // `unattributed` instead, which the cards draw ahead of this.
+          //
+          // Nor is `unattributedMachine`: a new install the gateway has not
+          // seen traffic from yet has no data, which is the cards' empty
+          // state, not a read that failed.
           unavailable={{
             chart:
-              unattributedMachine ||
+              !unattributedMachine &&
               (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events: unattributedMachine || toolEvents.failure !== null,
+            events: !unattributedMachine && toolEvents.failure !== null,
           }}
           unattributed={openDomain}
           // A section spans surfaces the gateway attributes differently: its
@@ -3391,8 +3395,8 @@ export function NewUiApp() {
               {openDomain || unattributedMachine ? null : (
                 // A domain pane has no per-app reading (the gateway attributes
                 // requests to config tools only), and an unattributed machine
-                // has no per-machine one. Neither is a failure, so neither gets
-                // the failure notices below.
+                // has no per-machine one yet. Neither is a failure, so neither
+                // gets the failure notices below.
                 <>
                   {/* The same notices the Overview shows, from the same builder, so
                       the two panes cannot describe one gateway failure two
