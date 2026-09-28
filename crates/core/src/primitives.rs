@@ -615,21 +615,49 @@ mod tests {
     ///
     /// The regression this pins: a flat 50ms first poll is a floor on every
     /// call, and `gsettings_capture` makes six of them in a row on the enable
-    /// path. `sh -c :` exits in single-digit milliseconds, so anything near
-    /// 50ms here means the backoff went back to starting at its ceiling.
+    /// path.
+    ///
+    /// Measured against the same command run through `Command::output`, which
+    /// does not poll, rather than against a fixed budget. A fixed 40ms assumed
+    /// `sh -c :` exits in single-digit milliseconds, and on a loaded macOS
+    /// runner it takes ~35ms: the doubling backoff's next wake is then ~63ms and
+    /// the test failed at ~80ms with the code working as intended (3 of 60 CI
+    /// runs, 2026-09-25..28). The backoff sleeps 1, 2, 4... ms, so it notices an
+    /// exit by twice the child's run time at worst, and `2 * baseline + 15ms`
+    /// holds on any runner. Starting at the 50ms ceiling still fails it whenever
+    /// `sh` itself takes under ~17ms. Each side is the fastest of a few runs, so
+    /// one scheduling hiccup is not the measurement.
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn a_quick_command_is_not_held_for_a_poll_gap() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", ":"]);
-        let started = std::time::Instant::now();
-        output_bounded(cmd, std::time::Duration::from_secs(5))
-            .expect("spawn")
-            .expect("not a timeout");
-        let waited = started.elapsed();
+        let quick = || {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", ":"]);
+            cmd
+        };
+        let fastest = |run: &dyn Fn()| {
+            (0..5)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    run();
+                    started.elapsed()
+                })
+                .min()
+                .expect("five runs")
+        };
+        let baseline = fastest(&|| {
+            quick().output().expect("spawn");
+        });
+        let waited = fastest(&|| {
+            output_bounded(quick(), std::time::Duration::from_secs(5))
+                .expect("spawn")
+                .expect("not a timeout");
+        });
+        let budget = baseline * 2 + std::time::Duration::from_millis(15);
         assert!(
-            waited < std::time::Duration::from_millis(40),
-            "waited {waited:?} for a command that exits immediately"
+            waited < budget,
+            "waited {waited:?} for a command that exits immediately \
+             (unpolled baseline {baseline:?}, budget {budget:?})"
         );
     }
 
