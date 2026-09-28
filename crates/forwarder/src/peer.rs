@@ -28,6 +28,7 @@
 use std::net::SocketAddr;
 
 /// The file under the proxy directory that records peers sent direct.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const DIRECT_LOG: &str = "forwarder-direct.log";
 
 /// Past this size the log starts over, so a machine full of other accounts'
@@ -36,6 +37,9 @@ pub const DIRECT_LOG: &str = "forwarder-direct.log";
 const DIRECT_LOG_LIMIT: u64 = 64 * 1024;
 
 /// What [`verdict`] found out about a peer.
+///
+/// Only Windows ever finds a peer that is not the owner's.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Runs as the same user as this process.
@@ -412,8 +416,12 @@ mod tests {
     fn a_service_is_not_the_owner() {
         // The negative half against a real process in another account: lsass
         // runs as LocalSystem on every Windows install, as `cowork-svc` does.
+        // Whether its user can be *read* depends on who asks: a standard user
+        // cannot, an administrator (a CI runner) reads SYSTEM. Either way it is
+        // not the owner, which is the only thing the gate relies on.
         let lsass = windows::pid_named("lsass.exe").expect("lsass is always running");
-        assert_eq!(windows::user_sid(lsass), None);
+        let own = windows::own_sid().expect("own user");
+        assert_ne!(windows::user_sid(lsass).as_deref(), Some(own));
         assert_eq!(windows::process_name(lsass).as_deref(), Some("lsass.exe"));
     }
 }
