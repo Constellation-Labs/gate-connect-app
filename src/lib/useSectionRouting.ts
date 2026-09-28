@@ -1,6 +1,6 @@
 import { useCallback, useRef } from "react";
 import { logWarn } from "./log";
-import { cascadeTargets, sectionMemberKeys } from "./groups";
+import { cascadeTargets, isDeclaredSection } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { useRouting } from "./useRouting";
 import type { useRunningApps } from "./useRunningApps";
@@ -166,7 +166,11 @@ export function useSectionRouting({
       // disappears, which is the half the user sees. This is the net: the
       // namespaces can diverge again, and when they do the click should do
       // nothing rather than name a tool that does not exist.
-      if (sectionMemberKeys(slug).length > 0) {
+      // `isDeclaredSection`, not `sectionMemberKeys(...).length`: that helper
+      // answers `[id]` for an id no section owns, so the length test was true
+      // for everything and made the per-tool path below unreachable. Caught in
+      // review on #375.
+      if (isDeclaredSection(slug)) {
         logWarn(`routing: ignored ${slug} -> ${next ? "on" : "off"}, its section has no rows`);
         return;
       }

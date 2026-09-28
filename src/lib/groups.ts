@@ -975,9 +975,14 @@ export function appForMember(key: string): { id: string; name: string } | null {
   return section ? { id: section.id, name: section.name } : null;
 }
 
-/** The member keys a section claims, in draw order, or empty for an id no
- *  section owns - which is a section `buildGroups` synthesised for an unplaced
- *  member, whose id IS its member key.
+/** The member keys a section claims, in draw order, or **`[id]` itself** for
+ *  an id no section owns - which is a section `buildGroups` synthesised for an
+ *  unplaced member, whose id IS its member key.
+ *
+ *  **Never empty**, which is easy to misread: this said "or empty" while
+ *  returning `[id]`, and a caller testing `.length > 0` to mean "is a declared
+ *  section" got true for everything. Use {@link isDeclaredSection} for that
+ *  question.
  *
  *  Exported so a caller that has an id but not a built ledger can still resolve
  *  it. `NewUiApp` needs exactly that: the open pane's activity read is set up
@@ -986,6 +991,16 @@ export function appForMember(key: string): { id: string; name: string } | null {
  */
 export function sectionMemberKeys(id: string): readonly string[] {
   return SECTIONS.find((s) => s.id === id)?.members ?? [id];
+}
+
+/** Whether {@link SECTIONS} declares this id - as opposed to it being a member
+ *  key that `buildGroups` will synthesise a one-row section for.
+ *
+ *  The distinction `sectionMemberKeys` cannot make, because it answers `[id]`
+ *  for both. A section id is not a `ToolId`, so anything that reaches the
+ *  per-tool commands with one gets `unknown tool "..."` from Rust. */
+export function isDeclaredSection(id: string): boolean {
+  return SECTIONS.some((s) => s.id === id);
 }
 
 /**

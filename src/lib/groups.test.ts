@@ -4,15 +4,17 @@ import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
   BAND_LABELS,
-  isProviderEndpoint,
   SECTIONS,
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
   groupSummary,
   hasBrowserSurface,
+  isDeclaredSection,
+  isProviderEndpoint,
   isSettingsManaged,
   notInstalledSections,
+  sectionMemberKeys,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -985,6 +987,36 @@ describe("settings-managed members", () => {
  * longer share a group, because OpenAI has a vendor group to belong to and
  * OpenRouter does not. That is a real loss of a distinction, made knowingly.
  */
+/**
+ * The distinction `sectionMemberKeys` cannot make, and a guard on #375 got
+ * wrong: that helper answers `[id]` for an id no section owns, so a
+ * `.length > 0` test read true for everything and made the per-tool routing
+ * path unreachable. A section id is not a `ToolId`, so sending one to the
+ * per-tool commands gets `unknown tool "..."` back from Rust - but sending a
+ * real tool slug there is the normal case and must keep working.
+ */
+describe("isDeclaredSection", () => {
+  it("is true for an id SECTIONS declares", () => {
+    expect(isDeclaredSection("claude")).toBe(true);
+    expect(isDeclaredSection("openai-api")).toBe(true);
+  });
+
+  it("is false for a member key no section declares", () => {
+    // The case that matters: `buildGroups` synthesises a one-row section for
+    // an unplaced member, and that row's switch has to reach the per-tool
+    // path. `sectionMemberKeys` answers `["acme-router"]` here, which is why
+    // it cannot be used to ask this.
+    expect(isDeclaredSection("acme-router")).toBe(false);
+    expect(sectionMemberKeys("acme-router")).toEqual(["acme-router"]);
+  });
+
+  it("never answers empty from sectionMemberKeys, for either", () => {
+    // Pinning the shape the misreading came from.
+    expect(sectionMemberKeys("claude").length).toBeGreaterThan(0);
+    expect(sectionMemberKeys("nothing-owns-this").length).toBeGreaterThan(0);
+  });
+});
+
 describe("isProviderEndpoint", () => {
   // Nothing covered this, so the unknown-id branch its doc argues for was
   // unpinned. Raised in review on #323.
