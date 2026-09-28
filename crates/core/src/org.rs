@@ -12,6 +12,8 @@
 //! header the gateway uses for inference (NOT the standard `Authorization`
 //! slot, which is reserved for `sk-gw-*` keys) and needs no org header itself.
 
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -202,6 +204,9 @@ pub enum SessionProbe {
 /// a rejection; anything short of a verdict is [`SessionProbe::Unavailable`]
 /// so an offline start never signs the user out. Short timeout so it can sit
 /// on the startup path without stalling launch.
+///
+/// Every answer also records the gateway's clock ([`clock_skewed`]), which is
+/// the only way to tell a dead session from a wrong local clock: both 401.
 pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe {
     // Control-plane call, same rules as `list`: straight to the gateway,
     // never through the app's own data-plane proxy. A probe misrouted through
@@ -220,6 +225,12 @@ pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe
     else {
         return SessionProbe::Unavailable;
     };
+    let skew = resp
+        .headers()
+        .get(reqwest::header::DATE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| clock_skew_from_date(v, std::time::SystemTime::now()));
+    LAST_CLOCK_SKEW_SECS.store(skew.unwrap_or(NO_SKEW_READING), Ordering::Relaxed);
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         return SessionProbe::Rejected;
     }
@@ -233,9 +244,78 @@ pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe
         .unwrap_or(SessionProbe::Unavailable)
 }
 
+/// How far the local clock may disagree with the gateway's before a refused
+/// session is blamed on the clock. Five minutes is the leeway JWT validators
+/// conventionally allow, so anything inside it cannot be what caused a 401.
+pub const CLOCK_SKEW_TOLERANCE_SECS: i64 = 300;
+
+/// Sentinel for [`LAST_CLOCK_SKEW_SECS`]: no answer yet, or one without a
+/// usable `Date` header.
+const NO_SKEW_READING: i64 = i64::MIN;
+
+/// Gateway time minus local time, in seconds, from the last [`probe_session`]
+/// that got an answer. Process-wide rather than returned, because the probe
+/// that finds a session refused (the startup check, which records it with
+/// [`crate::oauth::mark_session_rejected`]) is not the one that later has to
+/// explain why (the routing sweep).
+static LAST_CLOCK_SKEW_SECS: AtomicI64 = AtomicI64::new(NO_SKEW_READING);
+
+/// Whether the last gateway answer showed the local clock off by more than
+/// [`CLOCK_SKEW_TOLERANCE_SECS`].
+///
+/// A 401 on its own cannot say *why* a token was refused, and the likeliest
+/// innocent reason is the local clock: token expiry is stamped and checked
+/// against it, so a clock that is wrong, or that moved between the two
+/// readings, keeps a dead token looking fresh. Every HTTP response carries the
+/// server's time, so asking costs nothing, and it turns "Access problem / Sign
+/// in", which signing in cannot fix, into a message about the clock.
+pub fn clock_skewed() -> bool {
+    skew_exceeds_tolerance(LAST_CLOCK_SKEW_SECS.load(Ordering::Relaxed))
+}
+
+/// The last recorded skew, for logging. `None` when there is no reading.
+pub fn clock_skew_secs() -> Option<i64> {
+    let s = LAST_CLOCK_SKEW_SECS.load(Ordering::Relaxed);
+    (s != NO_SKEW_READING).then_some(s)
+}
+
+fn skew_exceeds_tolerance(skew: i64) -> bool {
+    skew != NO_SKEW_READING && skew.unsigned_abs() > CLOCK_SKEW_TOLERANCE_SECS as u64
+}
+
+/// Gateway time minus `local_now` in whole seconds, from an HTTP `Date` value.
+fn clock_skew_from_date(date: &str, local_now: std::time::SystemTime) -> Option<i64> {
+    let server = httpdate::parse_http_date(date).ok()?;
+    Some(match server.duration_since(local_now) {
+        Ok(ahead) => ahead.as_secs() as i64,
+        Err(behind) => -(behind.duration().as_secs() as i64),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_skew_reads_the_date_header_in_both_directions() {
+        const DATE: &str = "Sun, 06 Nov 1994 08:49:37 GMT";
+        let server = httpdate::parse_http_date(DATE).unwrap();
+        let hour = std::time::Duration::from_secs(3600);
+        // Local clock two hours behind the gateway: positive.
+        assert_eq!(clock_skew_from_date(DATE, server - 2 * hour), Some(7200));
+        assert_eq!(clock_skew_from_date(DATE, server + hour), Some(-3600));
+        assert_eq!(clock_skew_from_date("yesterday", server), None);
+    }
+
+    #[test]
+    fn tolerance_is_symmetric_and_ignores_a_missing_reading() {
+        assert!(!skew_exceeds_tolerance(0));
+        assert!(!skew_exceeds_tolerance(CLOCK_SKEW_TOLERANCE_SECS));
+        assert!(!skew_exceeds_tolerance(-CLOCK_SKEW_TOLERANCE_SECS));
+        assert!(skew_exceeds_tolerance(CLOCK_SKEW_TOLERANCE_SECS + 1));
+        assert!(skew_exceeds_tolerance(-7200));
+        assert!(!skew_exceeds_tolerance(NO_SKEW_READING));
+    }
 
     #[test]
     fn parses_orgs_response_mapping_org_id() {

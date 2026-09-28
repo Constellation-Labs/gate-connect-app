@@ -609,7 +609,7 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
 /** Why a tool is not verifiably routing. Closed set, mirroring
- * `routing_health::Reason` - a seventh value would need a next action and a
+ * `routing_health::Reason` - an eighth value would need a next action and a
  * recovery path to go with it. */
 export type VerdictReason =
   | "configuration_changed"
@@ -617,6 +617,7 @@ export type VerdictReason =
   | "reopen_required"
   | "connection_problem"
   | "access_problem"
+  | "clock_skew"
   | "verification_failed";
 
 /** The one action offered for a reason. One-to-one with {@link VerdictReason};

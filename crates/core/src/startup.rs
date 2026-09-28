@@ -40,7 +40,10 @@ pub fn refresh_session() -> SessionVerdict {
     let session = match oauth::ensure_fresh(&cfg) {
         Ok(session) => session,
         Err(e) => {
-            eprintln!("[gate] startup OAuth token refresh failed: {e}");
+            // To the log file as well as stderr: a shipped build has no
+            // terminal, and this line was the only record of why a restart
+            // came up signed out.
+            crate::logging::failure(&format!("startup OAuth token refresh failed: {e}"));
             return SessionVerdict::NeedsSignIn;
         }
     };
@@ -52,7 +55,16 @@ pub fn refresh_session() -> SessionVerdict {
     if let (Some(tokens), Ok(Some(gateway))) = (session, account::load_base_url()) {
         match org::probe_session(&gateway, &tokens.access_token) {
             org::SessionProbe::Rejected => {
-                eprintln!("[gate] gateway rejected the stored OAuth session; prompting sign-in");
+                // Still recorded when the clock is off: the token *is* refused.
+                // The routing sweep reads the skew and says so instead of
+                // "Sign in", and recovers once the clock is right.
+                crate::logging::failure(&match org::clock_skew_secs() {
+                    Some(skew) if org::clock_skewed() => format!(
+                        "gateway rejected the stored OAuth session; the system clock is \
+                         {skew}s off the gateway's"
+                    ),
+                    _ => "gateway rejected the stored OAuth session; prompting sign-in".to_string(),
+                });
                 oauth::mark_session_rejected();
                 return SessionVerdict::NeedsSignIn;
             }

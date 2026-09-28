@@ -47,6 +47,7 @@ describe("verdictStatus", () => {
     ["configuration_overridden", "Configuration overridden"],
     ["connection_problem", "Connection problem"],
     ["access_problem", "Access problem"],
+    ["clock_skew", "System clock is off"],
     ["verification_failed", "Verification failed"],
   ])("carries %s into the grey suffix", (reason, detail) => {
     expect(verdictStatus(verdict({ state: "needs_attention", reason }))).toEqual({

@@ -2953,25 +2953,74 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
 /// An API-key account reports `Valid`: there is no session to probe, and the key
 /// is validated when it is saved. Reporting `Unknown` instead would park every
 /// key-based install on "Verification failed" permanently.
+///
+/// `Rejected` is kept for what signing in actually fixes: a refusal from the
+/// gateway or the identity provider, or no stored session at all. It used to be
+/// whatever `live_session()` returned `None` for, which is also an unreachable
+/// identity provider or an unreadable secret store, and those put "Access
+/// problem / Sign in" on a machine that was only offline.
+///
+/// A refusal is then checked against the gateway's clock. A local clock that
+/// is wrong keeps a dead token looking fresh, and signing in again mints one
+/// judged against the same clock, so that case reads `ClockSkewed` instead.
+/// The rest go to [`recheck_gate_session`], the forced refresh the data-plane
+/// 401 path already uses, so a token that only the local clock thought was
+/// fresh recovers here too instead of waiting for traffic to fail.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
-    use gate_connect_core::org::SessionProbe;
+    use gate_connect_core::oauth;
+    use gate_connect_core::org::{self, SessionProbe};
     use gate_connect_core::routing_health::SessionHealth;
 
     if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
         return SessionHealth::Valid;
     }
-    let Some(tokens) = gate_connect_core::oauth::live_session() else {
-        // No live session in OAuth mode is a definite negative: the refresh loop
-        // either has no tokens or the gateway already rejected them.
-        return SessionHealth::Rejected;
+    // Set in `setup`, before any webview can ask for a sweep. Without it the
+    // recheck could not push a recovered token or raise the tray signal, so
+    // report the refusal as it stands.
+    let recheck = || match APP_HANDLE.get() {
+        Some(app) => recheck_gate_session(app),
+        None => SessionHealth::Rejected,
     };
     let Ok(Some(gateway)) = account::load_base_url() else {
         return SessionHealth::Unknown;
     };
-    match gate_connect_core::org::probe_session(&gateway, &tokens.access_token) {
+    if oauth::session_rejected() {
+        // Recorded by an earlier probe, most often the one at startup. If the
+        // clock was off when it was taken, it may be the clock's refusal and
+        // not the session's, so look again: the stored token is a cached read,
+        // and its 401 carries the gateway's current time.
+        if !org::clock_skewed() {
+            return SessionHealth::Rejected;
+        }
+        if let Ok(Some(tokens)) = oauth::current() {
+            let _ = org::probe_session(&gateway, &tokens.access_token);
+        }
+        if org::clock_skewed() {
+            return SessionHealth::ClockSkewed;
+        }
+        // The clock is right now. The old token is still refused; only a
+        // forced refresh can say whether the session survives.
+        return recheck();
+    }
+    let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
+        // An OAuth account in a build that cannot refresh it: nothing will
+        // work until the user signs in to something this build can use.
+        return SessionHealth::Rejected;
+    };
+    let tokens = match oauth::ensure_fresh_classified(&cfg) {
+        Ok(Some(tokens)) => tokens,
+        // OAuth mode with nothing stored: signed out.
+        Ok(None) => return SessionHealth::Rejected,
+        Err(e) if e.is_refusal() => return SessionHealth::Rejected,
+        // Identity provider unreachable, or the secret store would not answer.
+        // Neither is evidence against the credential.
+        Err(_) => return SessionHealth::Unknown,
+    };
+    match org::probe_session(&gateway, &tokens.access_token) {
         SessionProbe::Accepted(_) => SessionHealth::Valid,
-        SessionProbe::Rejected => SessionHealth::Rejected,
+        SessionProbe::Rejected if org::clock_skewed() => SessionHealth::ClockSkewed,
+        SessionProbe::Rejected => recheck(),
         // Offline or a non-auth error. Never evidence against the credential -
         // `SessionProbe::Unavailable`'s own docs are explicit about this, and
         // the verdict layer turns it into "Verification failed", not "Access
@@ -3445,7 +3494,13 @@ const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 /// guard: the engine-side latch belongs to whichever process saw the 401, which
 /// on Linux is the daemon, and the observer path takes it at the top of its own
 /// thread so a panic still releases it.
-fn recheck_gate_session(app: &tauri::AppHandle) {
+///
+/// Returns the verdict in the routing sweep's vocabulary, for
+/// [`probe_session_health`]; the refusal-driven callers ignore it.
+fn recheck_gate_session(
+    app: &tauri::AppHandle,
+) -> gate_connect_core::routing_health::SessionHealth {
+    use gate_connect_core::routing_health::SessionHealth;
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
@@ -3460,13 +3515,15 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
                     .unwrap_or(false);
                 update_tray_status(app, running);
             }
+            SessionHealth::Valid
         }
         gate_connect_core::startup::Recheck::Dead => {
             signal_session_dead(app);
+            SessionHealth::Rejected
         }
         // No verdict (offline, or the 401 belonged to the client's own upstream
         // credential rather than to us): change nothing.
-        gate_connect_core::startup::Recheck::Unchanged => {}
+        gate_connect_core::startup::Recheck::Unchanged => SessionHealth::Unknown,
     }
 }
 
