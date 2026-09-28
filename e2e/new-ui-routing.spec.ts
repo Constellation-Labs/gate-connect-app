@@ -1057,7 +1057,10 @@ test.describe("new UI: a pane whose row disappears", () => {
     ).toHaveCount(0);
 
     // And nothing was ever sent to the per-tool path under the section's id.
+    // `callsFor` is typed to the one field every call shares, so the args are
+    // read off `lastCall`, which carries them.
     const connects = await callsFor(app.page, "connect_tool");
-    expect(connects.map((c) => c.slug)).not.toContain("openai-api");
+    expect(connects).toHaveLength(0);
+    expect(await app.lastCall("connect_tool")).toBeNull();
   });
 });
