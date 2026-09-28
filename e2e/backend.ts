@@ -331,6 +331,12 @@ export interface BackendState {
   /** The machine's hostname, which `device_name` falls back to when the user has
    *  not renamed anything - the resolution the real command does in Rust. */
   hostName: string;
+  /** What `activity_installations` answers: the account's machines and which
+   *  one is this. The default is a machine the gateway has not seen yet (`current`
+   *  null), a fresh install's answer. Before this existed the command was
+   *  unhandled, so every spec booted with the list FAILING, which the app used
+   *  to read as that same unknown machine. To fail it now, use `failures`. */
+  installations: { installations: unknown[]; current: string | null };
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -671,6 +677,7 @@ export function defaultState(): BackendState {
     },
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
     hostName: "e2e-macbook",
+    installations: { installations: [], current: null },
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
     windowLabel: "main",

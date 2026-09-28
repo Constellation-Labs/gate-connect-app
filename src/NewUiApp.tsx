@@ -473,10 +473,12 @@ export function NewUiApp() {
   /** The 24-hour read has not answered yet, either way. Drives the Overview's
    *  skeletons. */
   const activityPending = activity.view === null && activity.failure === null;
-  const { current: currentInstallId, resolved: installsResolved } = useInstallations(
-    canRead,
-    credential,
-  );
+  const {
+    current: currentInstallId,
+    resolved: installsResolved,
+    failure: installsFailure,
+    reload: reloadInstalls,
+  } = useInstallations(canRead, credential);
   /**
    * The one config tool in the open section, if it has one.
    *
@@ -522,15 +524,22 @@ export function NewUiApp() {
    * that - it means org-wide, which drops the query parameter entirely. So a null
    * id must stop the read rather than widen it: otherwise the pane paints the
    * whole org's traffic under a heading that says one machine, and does it exactly
-   * when this machine is unattributed, which is the case the pane exists to
-   * explain. It is self-concealing too - the org-wide read succeeds, so nothing
+   * when this machine is unattributed. It is self-concealing too - the org-wide read succeeds, so nothing
    * is pending and no gap notice fires - so `unattributedMachine` below stops
    * the read and the pane draws its empty states instead.
    */
   const machineKnown = installsResolved && currentInstallId !== null;
   /** The gateway answered and does not recognise this machine. Distinct from "not
-   *  asked yet", which is why `useInstallations` reports `resolved`. */
-  const unattributedMachine = installsResolved && currentInstallId === null;
+   *  asked yet", which is why `useInstallations` reports `resolved`, and from
+   *  "could not ask", which is why it reports `failure`: a failed list leaves
+   *  `current` null too, and read as this, it painted "No messages sent" over a
+   *  reading nobody took. */
+  const unattributedMachine =
+    installsResolved && installsFailure === null && currentInstallId === null;
+  /** The installation failure the user closed the banner on. Held as the object
+   *  so a later, different failure (a retry that failed again) raises it anew. */
+  const [dismissedInstallsFailure, setDismissedInstallsFailure] =
+    useState<ActivityFailure | null>(null);
   const toolActivity = useActivity(
     canRead && openTool !== null && machineKnown,
     currentInstallId,
@@ -626,6 +635,11 @@ export function NewUiApp() {
   const refreshActivity = (tools: (string | null)[] | null) => {
     activityReadAt.current = Date.now();
     activity.reload();
+    // The installation list is otherwise read once. A machine the gateway did
+    // not know yet becomes known with its first routed request, and a list that
+    // failed may answer now; left alone, both kept the pane on a state that had
+    // stopped being true until restart.
+    if (installsFailure !== null || unattributedMachine) reloadInstalls();
     if (openTool !== null && (tools === null || tools.includes(openTool))) {
       toolActivity.reload();
       if (!toolEvents.paged) toolEvents.reload();
@@ -2724,8 +2738,8 @@ export function NewUiApp() {
   }
 
   /**
-   * The one notice the shell draws, ranked: a failed action, then an
-   * interrupted restore, then the certificate's browser note.
+   * The one notice the shell draws, ranked: a failed action, then an app
+   * pane's unreadable activity, then the certificate's browser note.
    *
    * A pending reopen is not on it. It is one tool's fact, and it belongs on
    * that tool's pane, where `ReopenAlert` names both routes rather than listing
@@ -2738,6 +2752,8 @@ export function NewUiApp() {
    * Lifted out of the `AppShell` call so the reload note below can be stacked
    * beside it rather than ranked inside it. Unchanged otherwise.
    */
+  const installsNotice =
+    installsFailure !== null ? failureNotice(installsFailure) : null;
   const noticeChain =
     actionError ? (
       <ErrorBanner
@@ -2745,6 +2761,24 @@ export function NewUiApp() {
         hint={actionError.hint}
         raw={actionError.raw}
         onDismiss={() => setActionError(null)}
+      />
+    ) : installsNotice &&
+      installsFailure !== dismissedInstallsFailure &&
+      openTool !== null ? (
+      // Only on a tool's pane: the machine-scoped reading is the only one the
+      // installation list gates, and the Overview's org-wide one is unaffected.
+      // The pane's cards say "couldn't be read"; this is the one place that
+      // says why, in the gap taxonomy's own sentence.
+      <ErrorBanner
+        title="Couldn't read this app's activity"
+        hint={installsNotice.cause}
+        raw={installsFailure?.message}
+        action={
+          installsNotice.actions.some((a) => a.kind === "retry")
+            ? { label: "Try again", onClick: reloadInstalls }
+            : undefined
+        }
+        onDismiss={() => setDismissedInstallsFailure(installsFailure)}
       />
     ) : browserRestart ? (
       // Bottom of the chain, and neutral where the two above are amber or
@@ -3200,13 +3234,14 @@ export function NewUiApp() {
           // the gateway answering "I do not know this machine" the read never
           // fires and view and failure both stay null forever. This expression
           // read that as loading, so the counters span a skeleton for as long as
-          // the pane is open while the notice beside them says the reading is
-          // not coming. `unavailable` below already excluded it; this did not.
-          // With the flag off, `EMPTY_STATS` renders `n/a` - a reading nobody
-          // gave, said in the vocabulary principle 6 asks for.
+          // the pane is open. With the flag off, `EMPTY_STATS` renders `n/a` -
+          // a reading nobody gave, said in the vocabulary principle 6 asks for.
+          // A failed installation list is the same shape (no read will fire)
+          // and is excluded for the same reason; its cause is in the banner.
           pending={
             !openDomain &&
             !unattributedMachine &&
+            installsFailure === null &&
             (!installsResolved ||
               (toolActivity.view === null && toolActivity.failure === null))
           }
@@ -3315,6 +3350,7 @@ export function NewUiApp() {
           eventsPending={
             !openDomain &&
             !unattributedMachine &&
+            installsFailure === null &&
             (!installsResolved ||
               (toolEvents.view === null && toolEvents.failure === null))
           }
@@ -3334,12 +3370,16 @@ export function NewUiApp() {
           //
           // Nor is `unattributedMachine`: a new install the gateway has not
           // seen traffic from yet has no data, which is the cards' empty
-          // state, not a read that failed.
+          // state, not a read that failed. A failed installation list IS one,
+          // for both halves: neither read fires, so the feed's own failure
+          // stays null and would otherwise draw "No recent messages".
           unavailable={{
             chart:
               !unattributedMachine &&
               (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events: !unattributedMachine && toolEvents.failure !== null,
+            events:
+              !unattributedMachine &&
+              (installsFailure !== null || toolEvents.failure !== null),
           }}
           unattributed={openDomain}
           // A section spans surfaces the gateway attributes differently: its

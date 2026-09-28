@@ -298,6 +298,10 @@ export function installFakeTauri(state: BackendState): void {
       return t.status;
     },
 
+    // ---- activity: the installation list (`useInstallations`). A JSON string,
+    // like the real command, which hands the gateway's body through untouched.
+    activity_installations: () => JSON.stringify(state.installations),
+
     // ---- model selection (AG-588)
     // The choice is a local file, so these commands are file reads and writes,
     // not gateway calls. The fake enforces the one rule the real setter has -

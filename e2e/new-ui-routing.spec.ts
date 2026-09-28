@@ -807,14 +807,13 @@ test.describe("new UI sidebar rail", () => {
     await expect(
       app.page.getByText("Shows in the Overview, not per app"),
     ).toHaveCount(2);
-    await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
   });
 
   test("a machine the gateway has not seen yet reads as empty, not unreadable", async ({
     boot,
   }) => {
-    // The fixture stubs no `activity_installations`, so the gateway never
-    // names this machine: a fresh install before its first attributed
+    // The default `installations` answer: the gateway replied, and this
+    // machine is not on its list - a fresh install before its first attributed
     // request. No per-machine read is attempted, so none can have failed.
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
@@ -825,6 +824,42 @@ test.describe("new UI sidebar rail", () => {
     ).toBeVisible();
     await expect(app.page.getByText("No recent messages")).toBeVisible();
     await expect(app.page.getByText(/couldn.t be read/)).toHaveCount(0);
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+  });
+
+  test("a failed installation list reads as unreadable, with its cause in the banner", async ({
+    boot,
+  }) => {
+    // The list failing leaves `current` null exactly like the answer above.
+    // Read as that answer, a machine that could not ask showed "No messages
+    // sent" over a tool in use all morning, with nothing to say why.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        activity_installations: '{"code":"offline","message":"no route to host"}',
+      },
+    });
+
+    await app.openApp("Claude");
+
+    await expect(app.page.getByText("Couldn't read this app's activity")).toBeVisible();
+    await expect(
+      app.page.getByText("Gate Connect could not reach the gateway from this machine."),
+    ).toBeVisible();
+    await expect(app.page.getByText(/couldn.t be read/).first()).toBeVisible();
+    await expect(app.page.getByText("No messages sent in the last 24hrs")).toHaveCount(0);
+    await expect(app.page.getByText("No recent messages")).toHaveCount(0);
+
+    // Retry re-reads the list. Answering now lifts the banner and the pane
+    // falls to the answered state.
+    // Deleted rather than patched: `patch` merges one level deep, so an empty
+    // `failures` would keep this key.
+    await app.page.evaluate(() => {
+      delete (window as any).__GATE_E2E__.state.failures.activity_installations;
+    });
+    await app.page.getByRole("button", { name: "Try again" }).click();
+    await expect(app.page.getByText("Couldn't read this app's activity")).toHaveCount(0);
+    await expect(app.page.getByText("No recent messages")).toBeVisible();
   });
 
   test("a row with nothing attributable names where its traffic is counted", async ({

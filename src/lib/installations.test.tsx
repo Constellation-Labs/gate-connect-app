@@ -64,4 +64,41 @@ describe("useInstallations", () => {
     expect(result.current.installations).toEqual([]);
     expect(activityInstallations).toHaveBeenCalledTimes(2);
   });
+
+  it("tells a failed read apart from an answer that does not name this machine", async () => {
+    // Both end resolved with `current` null. Only `failure` separates "the
+    // gateway does not know this machine" from "we could not ask", and the app
+    // pane draws an empty state for the first and "couldn't be read" for the
+    // second.
+    activityInstallations.mockResolvedValue(JSON.stringify({ installations: [], current: null }));
+    const answered = renderHook(() => useInstallations(true, "oauth|https://gw|org-1"));
+    await waitFor(() => expect(answered.result.current.resolved).toBe(true));
+    expect(answered.result.current.current).toBeNull();
+    expect(answered.result.current.failure).toBeNull();
+
+    activityInstallations.mockRejectedValue('{"code":"offline","message":"no route to host"}');
+    const failed = renderHook(() => useInstallations(true, "oauth|https://gw|org-1"));
+    await waitFor(() => expect(failed.result.current.resolved).toBe(true));
+    expect(failed.result.current.current).toBeNull();
+    expect(failed.result.current.failure).toEqual({ code: "offline", message: "no route to host" });
+  });
+
+  it("reload re-reads and keeps the held answer until the new one lands", async () => {
+    activityInstallations.mockRejectedValue('{"code":"offline","message":"down"}');
+    const { result } = renderHook(() => useInstallations(true, "oauth|https://gw|org-1"));
+    await waitFor(() => expect(result.current.failure?.code).toBe("offline"));
+
+    // Held, not cleared: a retry that is still in flight must not flip the pane
+    // back to "not asked yet" and a skeleton.
+    let answer!: (text: string) => void;
+    activityInstallations.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    result.current.reload();
+    await waitFor(() => expect(activityInstallations).toHaveBeenCalledTimes(2));
+    expect(result.current.resolved).toBe(true);
+    expect(result.current.failure?.code).toBe("offline");
+
+    answer(JSON.stringify({ installations: [installation({ current: true })], current: INSTALL }));
+    await waitFor(() => expect(result.current.current).toBe(INSTALL));
+    expect(result.current.failure).toBeNull();
+  });
 });

@@ -549,9 +549,9 @@ interface RawInstallations {
 /**
  * Load the installations this account has sent traffic from.
  *
- * A failure is not surfaced as a code the way the overview's is. This list only
- * populates a picker, and the pane it sits on has its own reading to show; an
- * empty picker degrades to the org-wide view, which is the default anyway.
+ * A failure is reported as a code, like the overview's, but only the app pane
+ * acts on it: there it means the machine-scoped reading could not be taken. A
+ * picker degrades to the org-wide view, which is the default anyway.
  *
  * One failure is expected rather than exceptional: the gateway refuses this route
  * outright for a credential with no user on it, because the list names every
@@ -579,10 +579,31 @@ export function useInstallations(
    * failed list is also an answer about what we know.
    */
   resolved: boolean;
+  /**
+   * Why the last read failed, or `null` when it answered (or has not yet).
+   *
+   * What separates "the gateway does not know this machine" from "we could not
+   * ask": both leave `current` null once `resolved`. A machine-scoped caller that
+   * reads the failure as the first shows an empty state over traffic it never
+   * read.
+   */
+  failure: ActivityFailure | null;
+  /** Read the list again, keeping what is on screen until it answers. A no-op
+   *  while disabled. */
+  reload: () => void;
 } {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [resolved, setResolved] = useState(false);
+  const [failure, setFailure] = useState<ActivityFailure | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  /** Set by `reload`, so its re-read keeps the held answer instead of clearing
+   *  it the way a change of account must. */
+  const reloading = useRef(false);
+  const reload = useCallback(() => {
+    reloading.current = true;
+    setAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     // Cleared before the new read, not after it lands: these are one org's
@@ -595,9 +616,13 @@ export function useInstallations(
     // what this clearing is for - and the ordering looks deliberate precisely
     // because of that promise. Harmless while `canRead` only drops on disconnect,
     // and the kind of thing that stops being harmless quietly.
-    setInstallations([]);
-    setCurrent(null);
-    setResolved(false);
+    if (!reloading.current) {
+      setInstallations([]);
+      setCurrent(null);
+      setResolved(false);
+      setFailure(null);
+    }
+    reloading.current = false;
     if (!enabled) return;
     let live = true;
     activityInstallations()
@@ -606,12 +631,14 @@ export function useInstallations(
         const raw = JSON.parse(text) as RawInstallations;
         setInstallations(raw.installations ?? []);
         setCurrent(raw.current ?? null);
+        setFailure(null);
       })
-      .catch(() => {
+      .catch((e) => {
+        if (live) setFailure(toFailure(e));
         // Nothing to say for the picker: no list means no picker, and the
         // org-wide reading the Overview shows is still correct. A machine-scoped
-        // caller is a different matter - `resolved` below is what tells it the
-        // answer was "we could not find out" rather than "not yet".
+        // caller is a different matter - `failure` is what tells it the answer
+        // was "we could not find out" rather than "this machine is unknown".
       })
       .finally(() => {
         if (live) setResolved(true);
@@ -619,7 +646,7 @@ export function useInstallations(
     return () => {
       live = false;
     };
-  }, [enabled, credential]);
+  }, [enabled, credential, attempt]);
 
-  return { installations, current, resolved };
+  return { installations, current, resolved, failure, reload };
 }
