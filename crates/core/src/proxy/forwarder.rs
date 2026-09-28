@@ -174,9 +174,11 @@ fn health_ok(port: u16, token: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayClaim {
     /// A build from before the forwarder fronted the relay, still running
-    /// because nothing retires a forwarder on an app update: it answers only
-    /// the proof that predates path binding, or it sent no readable relay
-    /// header. It has to be replaced, or the relay stays in the GUI.
+    /// because a forwarder runs detached until logout and an update does not
+    /// touch it: it answers only the proof that predates path binding, or it
+    /// sent no readable relay header. It has to be replaced, or the relay stays
+    /// in the GUI. A newer build that is merely not the installed one is not
+    /// this - see [`Probed::other_build`].
     Stale,
     /// A current build that holds no relay port right now.
     Nothing,
@@ -187,13 +189,45 @@ enum RelayClaim {
 /// [`health_ok`], keeping what the forwarder said about the relay. `None` when
 /// nothing on `port` proves it is ours.
 fn probe(port: u16, token: &str) -> Option<RelayClaim> {
+    probe_build(port, token).map(|probed| probed.claim)
+}
+
+/// What a forwarder that proved itself said, in full.
+struct Probed {
+    claim: RelayClaim,
+    /// It runs a build other than the one installed beside the app.
+    ///
+    /// Kept apart from `claim` on purpose. Being out of date is a reason to
+    /// replace the forwarder, which only [`ensure`] does, and says nothing
+    /// about whether it holds the relay port: an out-of-date build that holds
+    /// it still fronts every relay config. Folding it into
+    /// [`RelayClaim::Stale`] made every relay question answer "not fronted"
+    /// whenever the replacement did not happen - `retire_stale` runs once per
+    /// process - and the app then repointed `relay-port` away from the
+    /// listener that outlives it, costing a restart of every relay tool.
+    other_build: bool,
+}
+
+/// [`probe`], plus whether the forwarder is the installed build.
+fn probe_build(port: u16, token: &str) -> Option<Probed> {
+    let installed = forwarder_binary()
+        .ok()
+        .and_then(|bin| gate_connect_paths::binary_identity(&bin));
+    probe_against(port, token, installed.as_deref())
+}
+
+/// [`probe_build`] against a given installed build, so the tests can supply
+/// one without a forwarder binary beside the test executable.
+fn probe_against(port: u16, token: &str, installed: Option<&str>) -> Option<Probed> {
     let path = gate_connect_paths::FORWARDER_HEALTH_PATH;
     let Some(headers) = gate_connect_paths::probe_with_proof(port, path, token) else {
         // A forwarder from before the proof bound its path answers only the
         // old proof. That is enough to know it is ours and due for retiring,
         // and it is never enough to trust it with anything.
-        return gate_connect_paths::probe_with_legacy_proof(port, path, token)
-            .map(|_| RelayClaim::Stale);
+        return gate_connect_paths::probe_with_legacy_proof(port, path, token).map(|_| Probed {
+            claim: RelayClaim::Stale,
+            other_build: true,
+        });
     };
     let claim = match headers
         .iter()
@@ -206,7 +240,31 @@ fn probe(port: u16, token: &str) -> Option<RelayClaim> {
         Some(value) => value.parse().map_or(RelayClaim::Stale, RelayClaim::Holds),
         None => RelayClaim::Stale,
     };
-    Some(claim)
+    let sent_build = headers
+        .iter()
+        .find(|(name, _)| name == gate_connect_paths::FORWARDER_BUILD_HEADER)
+        .map(|(_, value)| value.as_str());
+    Some(Probed {
+        claim,
+        other_build: is_other_build(sent_build, installed),
+    })
+}
+
+/// Whether a forwarder reporting `sent` is some build other than the one
+/// `installed` beside the app, and so due for replacing.
+///
+/// Only a positive mismatch counts. With no installed binary to compare
+/// against there is nothing to replace it with, and a forwarder that could not
+/// read its own executable (`unknown`) cannot be told apart - retiring either
+/// would cost the exported variables their port on every launch for nothing.
+/// A missing header is a mismatch: it is what every build before the header
+/// sends, and they are exactly the ones an update has left behind.
+fn is_other_build(sent: Option<&str>, installed: Option<&str>) -> bool {
+    match (sent, installed) {
+        (_, None) | (Some("unknown"), _) => false,
+        (None, Some(_)) => true,
+        (Some(sent), Some(installed)) => sent != installed,
+    }
 }
 
 /// The relay port a running forwarder of ours is holding, when it is the one
@@ -255,7 +313,7 @@ pub(crate) fn fronted_relay_port(wait: Duration) -> Option<u16> {
     }
 }
 
-/// Retire a forwarder too old to front the relay, so the ensure after this
+/// Retire a forwarder other than the installed build, so the ensure after this
 /// starts a current one.
 ///
 /// The marker is how every forwarder is asked to go, and it polls it every two
@@ -705,13 +763,22 @@ fn ensure_running_locked() -> Result<u16> {
     let _ = was_draining;
 
     if let Some(port) = persisted_port() {
-        match probe(port, &token) {
+        // The one place being out of date counts: replace it. Everywhere else
+        // asks only what it holds - see [`Probed::other_build`].
+        let claim = probe_build(port, &token).map(|probed| {
+            if probed.other_build {
+                RelayClaim::Stale
+            } else {
+                probed.claim
+            }
+        });
+        match claim {
             Some(RelayClaim::Stale) => {
                 if !retire_stale(port) {
                     eprintln!(
-                        "gate proxy: the forwarder is a build that predates fronting the \
-                         relay, and replacing it did not help (the installed binary is the \
-                         old one); keeping it, so the relay stays in this process"
+                        "gate proxy: the forwarder is not the installed build, and replacing \
+                         it did not help (the binary it runs is the old one, or the \
+                         replacement is stale too); keeping it, so it does its old job"
                     );
                     return Ok(port);
                 }
@@ -1024,6 +1091,41 @@ mod tests {
             }
         });
         port
+    }
+
+    /// A forwarder runs detached until logout, so an update leaves the old one
+    /// serving with a fix sitting unused on disk. Only a positive mismatch may
+    /// retire it: each retire costs the exported variables their port for a
+    /// few seconds, and doing that on every launch for a question with no
+    /// answer would be the fix causing the outage.
+    #[test]
+    fn only_a_forwarder_known_to_be_another_build_is_replaced() {
+        let installed = Some("123-456");
+        assert!(!is_other_build(Some("123-456"), installed));
+        assert!(is_other_build(Some("99-456"), installed));
+        // Every build before the header: exactly the ones left behind.
+        assert!(is_other_build(None, installed));
+        // It could not read its own executable; nothing to go on.
+        assert!(!is_other_build(Some("unknown"), installed));
+        // No installed binary means nothing to replace it with.
+        assert!(!is_other_build(Some("99-456"), None));
+        assert!(!is_other_build(None, None));
+    }
+
+    /// Being out of date is a reason to replace the forwarder and nothing
+    /// else. A forwarder that holds the relay port still fronts every relay
+    /// config while it runs, and reading it as "not fronted" - which is what
+    /// the relay questions do with a stale claim - repoints `relay-port` away
+    /// from it whenever the replacement does not happen.
+    #[test]
+    fn an_out_of_date_forwarder_still_reports_the_relay_it_holds() {
+        let _home = TestHome::set("relay-claim-other-build");
+        let token = load_or_create_token().unwrap();
+        // Sends no build header: every build before it, so another build.
+        let holding = fake_forwarder(token.clone(), Build::Current(Some("47101")));
+        let probed = probe_against(holding, &token, Some("123-456")).unwrap();
+        assert!(probed.other_build);
+        assert_eq!(probed.claim, RelayClaim::Holds(47101));
     }
 
     /// A forwarder left running across an update answers only the old proof,

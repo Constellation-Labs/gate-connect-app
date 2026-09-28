@@ -67,7 +67,7 @@ use tokio::io::{
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::proxy::{
-    EngineLookup, ENGINE_CONNECT_TIMEOUT, HEAD_READ_TIMEOUT, MAX_HEAD, MAX_HEADERS,
+    EngineLookup, InFlight, ENGINE_CONNECT_TIMEOUT, HEAD_READ_TIMEOUT, MAX_HEAD, MAX_HEADERS,
 };
 
 /// The relay port this forwarder holds, or 0 while it holds none. Reported on
@@ -239,7 +239,17 @@ pub type PaygLookup = Arc<dyn Fn() -> bool + Send + Sync>;
 /// instead: the configs are then repointed at the engine's port, this listener
 /// stops answering on a port nothing names, and it takes the engine's port
 /// over the moment the app lets go of it.
-pub fn start(forwarder_port: u16, token: Arc<str>) {
+///
+/// Once `retiring` turns true it stops listening for good and does not retry,
+/// so the forwarder replacing this one can take the port. Connections already
+/// accepted run on, counted in `in_flight`, which is what the retiring
+/// forwarder waits on before it exits.
+pub fn start(
+    forwarder_port: u16,
+    token: Arc<str>,
+    in_flight: InFlight,
+    mut retiring: tokio::sync::watch::Receiver<bool>,
+) {
     let table: Arc<Vec<Upstream>> = Arc::new(upstreams());
     let backend: EngineLookup = Arc::new(|| gate_connect_paths::load_port(RELAY_ENGINE_PORT_NAME));
     let payg: PaygLookup = Arc::new(account_is_payg);
@@ -251,6 +261,9 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
     tokio::spawn(async move {
         let mut first = true;
         loop {
+            if *retiring.borrow() {
+                return;
+            }
             let bound = match activated.take() {
                 Some(listener) => Some(listener),
                 None => {
@@ -267,13 +280,20 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
                 // configs never names a port nothing answers on.
                 let _ = gate_connect_paths::save_port(RELAY_PORT_NAME, port);
                 HELD_PORT.store(port, Ordering::SeqCst);
+                let mut retired = retiring.clone();
                 let released = async move {
-                    loop {
-                        tokio::time::sleep(CLAIM_RETRY).await;
-                        let named = gate_connect_paths::load_port(RELAY_PORT_NAME);
-                        if named.is_some_and(|named| named != port) {
-                            return;
+                    let renamed = async {
+                        loop {
+                            tokio::time::sleep(CLAIM_RETRY).await;
+                            let named = gate_connect_paths::load_port(RELAY_PORT_NAME);
+                            if named.is_some_and(|named| named != port) {
+                                return;
+                            }
                         }
+                    };
+                    tokio::select! {
+                        () = renamed => {}
+                        _ = retired.wait_for(|retiring| *retiring) => {}
                     }
                 };
                 let services = Services {
@@ -281,11 +301,16 @@ pub fn start(forwarder_port: u16, token: Arc<str>) {
                     token: token.clone(),
                     table: table.clone(),
                     payg: payg.clone(),
+                    in_flight: in_flight.clone(),
+                    retiring: retiring.clone(),
                 };
                 serve(listener, port, services, released).await;
                 HELD_PORT.store(0, Ordering::SeqCst);
             }
-            tokio::time::sleep(CLAIM_RETRY).await;
+            tokio::select! {
+                () = tokio::time::sleep(CLAIM_RETRY) => {}
+                _ = retiring.wait_for(|retiring| *retiring) => return,
+            }
         }
     });
 }
@@ -322,6 +347,12 @@ pub struct Services {
     pub token: Arc<str>,
     pub table: Arc<Vec<Upstream>>,
     pub payg: PaygLookup,
+    /// Where this connection is counted while it runs, so a retiring
+    /// forwarder waits for it.
+    pub in_flight: InFlight,
+    /// True once this forwarder is retiring, which ends a quiet engine session
+    /// early - see [`crate::proxy::Reclaim`].
+    pub retiring: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Accept until `released` completes, serving each connection with
@@ -377,6 +408,7 @@ async fn serve_capped(
         let services = services.clone();
         tokio::spawn(async move {
             let _slot = slot;
+            let _serving = services.in_flight.enter();
             let _ = handle(client, own_port, services).await;
         });
     }
@@ -400,7 +432,13 @@ pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) ->
     if let Some(port) = (services.backend)().filter(|p| *p != own_port) {
         match engine_session(port, &services.token).await {
             Engine::Proved(mut engine) => {
-                splice(&mut client, &mut engine, IDLE_TIMEOUT).await?;
+                splice(
+                    &mut client,
+                    &mut engine,
+                    IDLE_TIMEOUT,
+                    services.retiring.clone(),
+                )
+                .await?;
                 return Ok(());
             }
             Engine::Absent => {}
@@ -1123,25 +1161,34 @@ where
 }
 
 /// Carry a proven engine connection both ways, until either side closes or
-/// nothing moves for `idle`.
-async fn splice(client: &mut TcpStream, engine: &mut TcpStream, idle: Duration) -> Result<()> {
+/// nothing moves for `idle` - or, once `retiring` is set, for
+/// [`crate::proxy::RECLAIM_IDLE`], so a retired forwarder is not kept alive by
+/// a pooled connection its replacement could carry.
+async fn splice(
+    client: &mut TcpStream,
+    engine: &mut TcpStream,
+    idle: Duration,
+    retiring: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let clock = Clock::new();
     let mut a = Watched::new(client, clock.clone());
     let mut b = Watched::new(engine, clock.clone());
-    until_idle(&clock, idle, async {
-        tokio::io::copy_bidirectional(&mut a, &mut b).await?;
-        Ok(())
-    })
-    .await
+    tokio::select! {
+        done = until_idle(&clock, idle, async {
+            tokio::io::copy_bidirectional(&mut a, &mut b).await?;
+            Ok(())
+        }) => done,
+        () = crate::proxy::reclaimable(retiring, &clock, crate::proxy::RECLAIM_IDLE) => Ok(()),
+    }
 }
 
 /// When a connection last moved a byte, shared by the [`Watched`] wrappers on
 /// its streams.
 #[derive(Clone)]
-struct Clock(Arc<Mutex<tokio::time::Instant>>);
+pub(crate) struct Clock(Arc<Mutex<tokio::time::Instant>>);
 
 impl Clock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Clock(Arc::new(Mutex::new(tokio::time::Instant::now())))
     }
 
@@ -1149,19 +1196,19 @@ impl Clock {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
     }
 
-    fn last(&self) -> tokio::time::Instant {
+    pub(crate) fn last(&self) -> tokio::time::Instant {
         *self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
 /// A stream that stamps its [`Clock`] whenever bytes cross it.
-struct Watched<S> {
+pub(crate) struct Watched<S> {
     inner: S,
     clock: Clock,
 }
 
 impl<S> Watched<S> {
-    fn new(inner: S, clock: Clock) -> Self {
+    pub(crate) fn new(inner: S, clock: Clock) -> Self {
         Watched { inner, clock }
     }
 }
