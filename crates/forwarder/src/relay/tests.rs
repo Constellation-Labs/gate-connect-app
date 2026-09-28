@@ -346,7 +346,13 @@ fn services(backend: Option<u16>, table: Vec<Upstream>, payg: bool) -> Services 
         table: Arc::new(table),
         payg: Arc::new(move || payg),
         in_flight: Default::default(),
+        retiring: not_retiring(),
     }
+}
+
+/// A retiring flag nothing will ever set.
+fn not_retiring() -> tokio::sync::watch::Receiver<bool> {
+    tokio::sync::watch::channel(false).1
 }
 
 async fn start_relay(backend: Option<u16>, table: Vec<Upstream>) -> u16 {
@@ -965,7 +971,7 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
     let (mut client, _tool) = pair().await;
     let (mut engine, _gate) = pair().await;
     let started = std::time::Instant::now();
-    let quiet = splice(&mut client, &mut engine, idle).await;
+    let quiet = splice(&mut client, &mut engine, idle, not_retiring()).await;
     assert!(quiet.is_err(), "an idle splice ends");
     assert!(started.elapsed() < Duration::from_secs(5));
 
@@ -982,7 +988,7 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
         drop(tool);
         drop(gate);
     });
-    splice(&mut client, &mut engine, idle)
+    splice(&mut client, &mut engine, idle, not_retiring())
         .await
         .expect("a splice that keeps moving runs to its close");
     talk.await.unwrap();

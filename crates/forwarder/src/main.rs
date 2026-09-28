@@ -84,6 +84,16 @@ const DRAIN_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// room - see [`terminated`].
 const SIGTERM_DRAIN_LIMIT: Duration = Duration::from_secs(5);
 
+/// How often the engine watcher dials once the engine has answered.
+///
+/// Only a return needs catching quickly. After that the watcher is looking for
+/// the engine going away again, and a tunnel that never goes quiet - a
+/// WebSocket with frequent heartbeats, a long stream - would otherwise have it
+/// dialing every [`MARKER_POLL`] for that tunnel's whole life. Kept well under
+/// [`proxy::RECLAIM_IDLE`]: a tunnel that opens on a stale "up" is not closed
+/// before a later check has corrected it.
+const ENGINE_POLL_WHILE_UP: Duration = Duration::from_secs(30);
+
 fn proxy_file(name: &str) -> Result<std::path::PathBuf> {
     Ok(gate_connect_paths::proxy_dir()?.join(name))
 }
@@ -254,6 +264,7 @@ struct Serving {
     retire: Arc<tokio::sync::watch::Sender<bool>>,
     reclaim: proxy::Reclaim,
     engine_poll: Duration,
+    engine_poll_while_up: Duration,
     drain_limit: Duration,
     sigterm_drain_limit: Duration,
     /// Also retire on SIGTERM. Only the real process asks for it: a handler
@@ -269,11 +280,13 @@ struct Serving {
 
 impl Serving {
     fn new() -> Self {
+        let retire = Arc::new(tokio::sync::watch::Sender::new(false));
         Serving {
             in_flight: proxy::InFlight::default(),
-            retire: Arc::new(tokio::sync::watch::Sender::new(false)),
-            reclaim: proxy::Reclaim::new(proxy::RECLAIM_IDLE),
+            reclaim: proxy::Reclaim::new(proxy::RECLAIM_IDLE, retire.clone()),
+            retire,
             engine_poll: MARKER_POLL,
+            engine_poll_while_up: ENGINE_POLL_WHILE_UP,
             drain_limit: DRAIN_LIMIT,
             sigterm_drain_limit: SIGTERM_DRAIN_LIMIT,
             sigterm: false,
@@ -331,6 +344,7 @@ async fn serve_with(
         engine_port.clone(),
         own_port,
         serving.engine_poll,
+        serving.engine_poll_while_up,
     ));
 
     // A cap on connections being served at once. Each one costs a task and two
@@ -448,15 +462,17 @@ async fn terminated(_sigterm: bool) {
 /// nothing to reclaim, and a forwarder that knocked on the engine every couple
 /// of seconds for the whole session would be noise in its accept loop for no
 /// one's benefit. The value drops back to `false` while unwatched, so a tunnel
-/// that subscribes later never acts on an answer from before it existed.
+/// that subscribes later never acts on an answer from before it existed. Once
+/// the engine has answered it dials only every `while_up`.
 async fn watch_engine(
     engine_up: Arc<tokio::sync::watch::Sender<bool>>,
     engine_port: proxy::EngineLookup,
     own_port: u16,
     every: Duration,
+    while_up: Duration,
 ) {
     loop {
-        tokio::time::sleep(every).await;
+        tokio::time::sleep(if *engine_up.borrow() { while_up } else { every }).await;
         let up = if engine_up.receiver_count() == 0 {
             false
         } else {
@@ -880,8 +896,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let marker = test_marker();
         let mut serving = Serving::new();
-        serving.reclaim = proxy::Reclaim::new(idle);
+        serving.reclaim.idle = idle;
         serving.engine_poll = Duration::from_millis(50);
+        serving.engine_poll_while_up = Duration::from_millis(100);
         serving.drain_limit = drain_limit;
         serving.marker = Some(marker.clone());
         serving.sigterm_drain_limit = Duration::from_millis(300);
@@ -1036,7 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn a_busy_direct_tunnel_is_not_cut_when_the_engine_returns() {
         let engine = Arc::new(std::sync::atomic::AtomicU16::new(dead_port()));
-        let port = start_reclaiming_forwarder(engine.clone(), Duration::from_millis(300)).await;
+        let port = start_reclaiming_forwarder(engine.clone(), Duration::from_secs(1)).await;
         let mut client = open_direct_tunnel(port, echo_origin()).await;
 
         let back = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1046,15 +1063,104 @@ mod tests {
         );
         // Keep traffic moving for several idle windows. Every exchange has to
         // make it across.
-        for _ in 0..15 {
+        for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(80)).await;
             client.write_all(b"tick").await.unwrap();
             assert_eq!(read_some(&mut client).await, "tick");
         }
         assert!(
-            closed_within(&mut client, Duration::from_secs(2)).await,
+            closed_within(&mut client, Duration::from_secs(3)).await,
             "and once it goes quiet it is handed back"
         );
+    }
+
+    /// Accept every connection and close it at once: an engine that answers a
+    /// connect and then fails whatever it is given.
+    fn engine_that_drops_everything() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                drop(sock);
+            }
+        });
+        port
+    }
+
+    /// A tunnel that went direct because the engine took it and failed it is
+    /// not handed back. The watcher sees that engine as up, since it accepts,
+    /// so handing back would close the tunnel at every quiet moment and send
+    /// the client straight into the same failure, and the wait before it goes
+    /// direct again.
+    #[tokio::test]
+    async fn a_tunnel_the_engine_failed_is_not_handed_back_to_it() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(
+            engine_that_drops_everything(),
+        ));
+        let port = start_reclaiming_forwarder(engine, Duration::from_millis(200)).await;
+        let mut client = open_direct_tunnel(port, echo_origin()).await;
+
+        assert!(
+            !closed_within(&mut client, Duration::from_secs(1)).await,
+            "a tunnel the engine failed must stay open while that engine answers connects"
+        );
+    }
+
+    /// An engine that answers a CONNECT and then echoes, holding the
+    /// connection until the other side closes it.
+    fn engine_tunnel() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if sock.read(&mut byte).unwrap_or(0) == 0 {
+                    return;
+                }
+                head.push(byte[0]);
+            }
+            if sock.write_all(b"HTTP/1.1 200 OK\r\n\r\n").is_err() {
+                return;
+            }
+            let mut buf = [0u8; 256];
+            loop {
+                match sock.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        if sock.write_all(&buf[..n]).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// A retiring forwarder closes quiet connections through the engine too.
+    /// Reclaim never ends those - the engine is up - so without this a pooled
+    /// engine connection holds a retired forwarder for the whole drain limit
+    /// and is then cut wherever it happens to be.
+    #[tokio::test]
+    async fn a_retiring_forwarder_closes_a_quiet_engine_connection() {
+        let engine = Arc::new(std::sync::atomic::AtomicU16::new(engine_tunnel()));
+        let (port, marker, task, _) =
+            start_with(engine, Duration::from_millis(300), Duration::from_secs(30)).await;
+        // Through the engine this time: it answers the CONNECT and echoes.
+        let mut client = open_direct_tunnel(port, dead_port()).await;
+
+        std::fs::remove_file(&marker).unwrap();
+        tokio::time::timeout(MARKER_POLL * 3, task)
+            .await
+            .expect("the drain ends once the engine connection goes quiet")
+            .unwrap()
+            .unwrap();
+        assert!(closed_within(&mut client, Duration::from_secs(1)).await);
     }
 
     /// SIGTERM is launchd booting the job out, and launchd kills it at its

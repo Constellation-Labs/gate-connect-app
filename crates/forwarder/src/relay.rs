@@ -302,6 +302,7 @@ pub fn start(
                     table: table.clone(),
                     payg: payg.clone(),
                     in_flight: in_flight.clone(),
+                    retiring: retiring.clone(),
                 };
                 serve(listener, port, services, released).await;
                 HELD_PORT.store(0, Ordering::SeqCst);
@@ -349,6 +350,9 @@ pub struct Services {
     /// Where this connection is counted while it runs, so a retiring
     /// forwarder waits for it.
     pub in_flight: InFlight,
+    /// True once this forwarder is retiring, which ends a quiet engine session
+    /// early - see [`crate::proxy::Reclaim`].
+    pub retiring: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Accept until `released` completes, serving each connection with
@@ -428,7 +432,13 @@ pub async fn handle(mut client: TcpStream, own_port: u16, services: Services) ->
     if let Some(port) = (services.backend)().filter(|p| *p != own_port) {
         match engine_session(port, &services.token).await {
             Engine::Proved(mut engine) => {
-                splice(&mut client, &mut engine, IDLE_TIMEOUT).await?;
+                splice(
+                    &mut client,
+                    &mut engine,
+                    IDLE_TIMEOUT,
+                    services.retiring.clone(),
+                )
+                .await?;
                 return Ok(());
             }
             Engine::Absent => {}
@@ -1151,16 +1161,25 @@ where
 }
 
 /// Carry a proven engine connection both ways, until either side closes or
-/// nothing moves for `idle`.
-async fn splice(client: &mut TcpStream, engine: &mut TcpStream, idle: Duration) -> Result<()> {
+/// nothing moves for `idle` - or, once `retiring` is set, for
+/// [`crate::proxy::RECLAIM_IDLE`], so a retired forwarder is not kept alive by
+/// a pooled connection its replacement could carry.
+async fn splice(
+    client: &mut TcpStream,
+    engine: &mut TcpStream,
+    idle: Duration,
+    retiring: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let clock = Clock::new();
     let mut a = Watched::new(client, clock.clone());
     let mut b = Watched::new(engine, clock.clone());
-    until_idle(&clock, idle, async {
-        tokio::io::copy_bidirectional(&mut a, &mut b).await?;
-        Ok(())
-    })
-    .await
+    tokio::select! {
+        done = until_idle(&clock, idle, async {
+            tokio::io::copy_bidirectional(&mut a, &mut b).await?;
+            Ok(())
+        }) => done,
+        () = crate::proxy::reclaimable(retiring, &clock, crate::proxy::RECLAIM_IDLE) => Ok(()),
+    }
 }
 
 /// When a connection last moved a byte, shared by the [`Watched`] wrappers on
