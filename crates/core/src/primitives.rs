@@ -13,6 +13,29 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// First gap between `try_wait` polls, doubling to [`POLL_MAX`] through [`next_poll`].
+///
+/// A flat 50ms - the value the `ca_*` copies used - is a floor on every
+/// call, because a freshly spawned child has essentially never exited by
+/// the first `try_wait`. That is paid six times over on `gsettings_capture`
+/// and once per database per enable on `certutil`, all on a path where
+/// somebody is waiting on a switch. Starting short and backing off costs a
+/// few extra wakeups on a call that was going to be slow anyway, and
+/// nothing on the ones that answer in single-digit milliseconds - which is
+/// every one of them on a healthy machine. `integrations::binaries` polled
+/// at 10ms flat for the same reason before it moved here.
+const POLL_FIRST: std::time::Duration = std::time::Duration::from_millis(1);
+/// Ceiling for the backoff, so a genuinely stuck child is not spun on.
+const POLL_MAX: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The gap after `poll`: doubled, up to [`POLL_MAX`]. Split out of
+/// [`output_bounded`] so the schedule can be pinned without a clock - the timing
+/// test beside it can only say "not much slower than the child", and only on a
+/// runner where the child itself is quick.
+fn next_poll(poll: std::time::Duration) -> std::time::Duration {
+    (poll * 2).min(POLL_MAX)
+}
+
 /// Run a command to completion, or kill it once `timeout` has passed.
 ///
 /// `Ok(None)` is the timeout: the child was signalled and reaped, and the caller
@@ -56,21 +79,6 @@ pub fn output_bounded(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<Option<std::process::Output>> {
-    /// First gap between `try_wait` polls, doubling to [`POLL_MAX`].
-    ///
-    /// A flat 50ms - the value the `ca_*` copies used - is a floor on every
-    /// call, because a freshly spawned child has essentially never exited by
-    /// the first `try_wait`. That is paid six times over on `gsettings_capture`
-    /// and once per database per enable on `certutil`, all on a path where
-    /// somebody is waiting on a switch. Starting short and backing off costs a
-    /// few extra wakeups on a call that was going to be slow anyway, and
-    /// nothing on the ones that answer in single-digit milliseconds - which is
-    /// every one of them on a healthy machine. `integrations::binaries` polled
-    /// at 10ms flat for the same reason before it moved here.
-    const POLL_FIRST: std::time::Duration = std::time::Duration::from_millis(1);
-    /// Ceiling for the backoff, so a genuinely stuck child is not spun on.
-    const POLL_MAX: std::time::Duration = std::time::Duration::from_millis(50);
-
     let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -98,7 +106,7 @@ pub fn output_bounded(
             return Ok(None);
         }
         std::thread::sleep(poll);
-        poll = (poll * 2).min(POLL_MAX);
+        poll = next_poll(poll);
     }
     child.wait_with_output().map(Some)
 }
@@ -611,49 +619,84 @@ mod tests {
         );
     }
 
-    /// A command that answers quickly is not held up by the poll gap.
+    /// The poll schedule starts short and backs off to its ceiling.
     ///
     /// The regression this pins: a flat 50ms first poll is a floor on every
     /// call, and `gsettings_capture` makes six of them in a row on the enable
-    /// path.
+    /// path. Pinned here as values rather than by timing, because a clock can
+    /// only catch a slow start on a runner where the child itself is quick (see
+    /// the test below), and a partial regression - a 10ms start - on none.
+    #[test]
+    fn the_poll_schedule_starts_at_a_millisecond_and_doubles_to_its_ceiling() {
+        let ms = std::time::Duration::from_millis;
+        let schedule: Vec<_> = std::iter::successors(Some(POLL_FIRST), |&p| Some(next_poll(p)))
+            .take(9)
+            .collect();
+        assert_eq!(
+            schedule,
+            [
+                ms(1),
+                ms(2),
+                ms(4),
+                ms(8),
+                ms(16),
+                ms(32),
+                ms(50),
+                ms(50),
+                ms(50)
+            ]
+        );
+    }
+
+    /// A command that answers quickly is not held up by the poll gap.
     ///
-    /// Measured against the same command run through `Command::output`, which
-    /// does not poll, rather than against a fixed budget. A fixed 40ms assumed
-    /// `sh -c :` exits in single-digit milliseconds, and on a loaded macOS
-    /// runner it takes ~35ms: the doubling backoff's next wake is then ~63ms and
-    /// the test failed at ~80ms with the code working as intended (3 of 60 CI
-    /// runs, 2026-09-25..28). The backoff sleeps 1, 2, 4... ms, so it notices an
-    /// exit by twice the child's run time at worst, and `2 * baseline + 15ms`
-    /// holds on any runner. Starting at the 50ms ceiling still fails it whenever
-    /// `sh` itself takes under ~17ms. Each side is the fastest of a few runs, so
-    /// one scheduling hiccup is not the measurement.
+    /// The schedule is pinned above; this is the check that `output_bounded`
+    /// actually runs it, against the same command through `Command::output`,
+    /// which does not poll and sets up the same piped stdio - so the wait
+    /// strategy is the only difference. The backoff notices an exit by twice
+    /// the child's run time at worst, so `2 * baseline + SLACK` holds on any
+    /// runner. `SLACK` covers one late wakeup and the pipe drain, neither of
+    /// which scales with the child.
+    ///
+    /// A fixed 40ms used to stand here, assuming `sh -c :` exits in
+    /// single-digit milliseconds. On a loaded macOS runner it takes ~35ms, the
+    /// backoff's next wake is then ~63ms, and the test failed at ~80ms with the
+    /// code working as intended (3 of 60 CI runs, 2026-09-25..28).
+    ///
+    /// Sampled in pairs, baseline then polled, and each side is its fastest of
+    /// five: a load step between two back-to-back batches could otherwise
+    /// inflate one side only and fail correct code.
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn a_quick_command_is_not_held_for_a_poll_gap() {
-        let quick = || {
+        const SLACK: std::time::Duration = std::time::Duration::from_millis(15);
+        fn quick() -> Command {
             let mut cmd = Command::new("sh");
             cmd.args(["-c", ":"]);
             cmd
-        };
-        let fastest = |run: &dyn Fn()| {
-            (0..5)
-                .map(|_| {
-                    let started = std::time::Instant::now();
-                    run();
-                    started.elapsed()
-                })
-                .min()
-                .expect("five runs")
-        };
-        let baseline = fastest(&|| {
-            quick().output().expect("spawn");
-        });
-        let waited = fastest(&|| {
-            output_bounded(quick(), std::time::Duration::from_secs(5))
-                .expect("spawn")
-                .expect("not a timeout");
-        });
-        let budget = baseline * 2 + std::time::Duration::from_millis(15);
+        }
+        fn timed(run: impl FnOnce()) -> std::time::Duration {
+            let started = std::time::Instant::now();
+            run();
+            started.elapsed()
+        }
+        let (baseline, waited) = (0..5)
+            .map(|_| {
+                let baseline = timed(|| {
+                    quick().output().expect("spawn");
+                });
+                let waited = timed(|| {
+                    output_bounded(quick(), std::time::Duration::from_secs(5))
+                        .expect("spawn")
+                        .expect("not a timeout");
+                });
+                (baseline, waited)
+            })
+            .fold(
+                (std::time::Duration::MAX, std::time::Duration::MAX),
+                |(b, w), (nb, nw)| (b.min(nb), w.min(nw)),
+            );
+        let budget = baseline * 2 + SLACK;
         assert!(
             waited < budget,
             "waited {waited:?} for a command that exits immediately \
