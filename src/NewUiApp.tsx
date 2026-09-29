@@ -1646,6 +1646,29 @@ export function NewUiApp() {
   );
 
   /**
+   * A pane whose row is no longer listed goes back to Overview.
+   *
+   * `buildGroups` drops a section whose members all filtered out - which is
+   * what happens to `openai-api` the moment `CLI_ONLY_DOMAINS` hides the
+   * `openai` domain, i.e. as soon as the person switches it off from that very
+   * pane. The rail row vanished and the pane stayed, drawing its own slug as a
+   * title (`appFor(...)?.name ?? view.slug`) with a switch that could no longer
+   * resolve a group. Clicking it sent the SECTION id down the per-tool path and
+   * Rust answered `unknown tool "openai-api"`. Observed 2026-09-28.
+   *
+   * Gated on `proxy`, not on `railApps` alone: the rail is empty until the
+   * first status lands, and reacting to that would bounce anyone who opened
+   * the window on an app pane straight back to Overview before the ledger was
+   * read. `proxy` going non-null is what says the domains have been read, and
+   * the tools arrive on the same refresh.
+   */
+  useEffect(() => {
+    if (view.kind !== "app" || proxy === null) return;
+    if (appFor(railApps, view.slug)) return;
+    setView({ kind: "overview" });
+  }, [view, proxy, railApps]);
+
+  /**
    * What a page open across a section's flip cannot know yet.
    *
    * `lib/useSectionRouting.ts` raises it and composes the sentence; this holds

@@ -66,13 +66,16 @@ export function Topbar({
 
   return (
     <header className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4">
-      {/* Mirrors the width of the button cluster opposite so the lockup sits
-       * dead centre. The design places it at 504px of 1024 rather than 512,
-       * but only because it had a second button on the right; with that gone,
-       * centred is what the design was approximating. macOS paints its traffic
-       * lights over this empty span, which is why nothing else goes here. */}
-      <span aria-hidden className="w-8 shrink-0" />
-
+      {/* Left-aligned, not centred (design, 2026-09-28).
+       *
+       * A `w-8` spacer used to sit here to mirror the button cluster opposite
+       * and hold the lockup dead centre, on the stated grounds that "macOS
+       * paints its traffic lights over this empty span". That was wrong: the
+       * main window is `decorations: true` in `tauri.conf.json`, so macOS
+       * draws its own title bar with the traffic lights ABOVE this 48px bar
+       * and nothing is ever painted over it. The spacer reserved room for
+       * something that was never there, and the lockup floated centre for no
+       * reason. */}
       <span className="flex items-center gap-2">
         <ConstellationHexMark size={24} />
         <span className="text-base font-semibold leading-6 tracking-[-0.16px]">

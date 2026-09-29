@@ -43,12 +43,14 @@ export type SidebarView =
  * cut back to the drawn three then, with the reason moved to the pane.
  */
 export type AppStatus =
-  | { kind: "protected"; since?: string }
+  | { kind: "protected" }
   /** `detail` carries the reason ("Connection problem", "Config drifted",
    * "Reopen to finish"), which is what turns an amber phrase into something the
    * user can act on. See `lib/verdict.ts`. */
   | { kind: "not-protected"; detail?: string }
-  | { kind: "not-routed"; detail?: string }
+  /** No `detail`: the rail drew "Off" after the dash until 2026-09-28, and the
+   *  label says it alone now. */
+  | { kind: "not-routed" }
   /**
    * Detection did not find the app on this machine. Drawn only under the
    * rail's "Not installed" group, on a row that opens nothing - there is no
@@ -232,20 +234,6 @@ export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: 
  */
 export function countsAsProtected(status: AppStatus): boolean {
   return status.kind === "protected";
-}
-
-/**
- * The grey suffix a rail row draws: "2m ago", "Off" - the short ones the design
- * draws inside 250px.
- *
- * A `not-protected` detail is deliberately not among them. It is the reason
- * ("Configuration update failed", "Reopen to finish"), and the app pane draws it
- * as a card rather than as a suffix. The tray prints the same line as the rail.
- */
-export function statusSuffix(status: AppStatus): string | undefined {
-  if (status.kind === "protected") return status.since;
-  if (status.kind === "not-routed") return status.detail;
-  return undefined;
 }
 
 /**
@@ -559,7 +547,6 @@ function AppRow({
   onSelect?: (slug: string) => void;
 }) {
   const status = STATUS_TEXT[app.status.kind];
-  const suffix = statusSuffix(app.status);
   const content = (
     <>
       <span
@@ -587,9 +574,13 @@ function AppRow({
         >
           {app.name}
         </span>
+        {/* The status label alone. A rail row drew a grey qualifier after a
+          * dash - "Not routed - Off", "Protected - 2m ago" - and design
+          * removed it on 2026-09-28: "Off" after "Not routed" only makes
+          * sense if "Protected" also carries an inverse "On", and it does
+          * not. The four labels say it by themselves. */}
         <span className="truncate text-base-xs font-medium leading-4 tracking-label-12">
           <span className={status.className}>{status.label}</span>
-          {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
         </span>
       </span>
     </>

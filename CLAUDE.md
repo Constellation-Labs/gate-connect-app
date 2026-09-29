@@ -366,7 +366,9 @@ deliberate reversal of an earlier "no dashboard" rule.
    outcome:
    - **Protected** (green) - switch on, and it works.
    - **Not protected** (amber) - switch on, and something is wrong.
-   - **Not routed** (grey) - switch off, qualified "Off" in grey after a dash.
+   - **Not routed** (grey) - switch off. Printed alone: the grey "Off" after a
+     dash went on 2026-09-28, with every other qualifier, because "Off" only
+     makes sense if "Protected" also carries an "On" (design's reasoning).
 
    Every way of being on and not working is "Not protected": a drifted config,
    a process that has to be reopened, a provider Gate does not inspect, a

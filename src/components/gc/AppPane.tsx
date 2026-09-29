@@ -3,10 +3,9 @@ import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
-import { categoryTone } from "../../lib/toolEvents";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
-import { STATUS_TEXT, statusSuffix } from "./Sidebar";
+import { STATUS_TEXT } from "./Sidebar";
 import type { AppStatus } from "./Sidebar";
 
 /**
@@ -62,7 +61,6 @@ export function AppPane({
   name,
   isProtected,
   status,
-  since,
   logo,
   appVendorMark,
   appFallbackMark,
@@ -99,9 +97,6 @@ export function AppPane({
    * line: "Protected" or "Not protected", with no reason behind it.
    */
   status?: AppStatus;
-  /** Relative age of the current status ("2m ago"). Ignored when `status`
-   *  carries its own suffix. */
-  since?: string;
   /** 16px brand mark for the header tile. */
   logo?: ReactNode;
   /**
@@ -253,7 +248,7 @@ export function AppPane({
               a section on also routes that host for every client on the
               machine. Deliberate, not missing. See the note above `SECTIONS`
               in `lib/groups.ts`. */}
-          <AppStatusLine isProtected={isProtected} status={status} since={since} />
+          <AppStatusLine isProtected={isProtected} status={status} />
         </div>
         <span className="flex shrink-0 items-center gap-2">
           <span className="text-sm font-medium leading-5 text-base-foreground">
@@ -347,31 +342,32 @@ export function AppPane({
 }
 
 /**
- * The header's status line: the rail's coloured phrase and suffix, the same
- * line the rail draws. A `not-protected` reason is not printed here; the pane
- * draws it as a card in the `alert` slot.
+ * The header's status line: the rail's coloured phrase, and only that.
+ *
+ * A `not-protected` reason is not printed here - the pane draws it as a card
+ * in the `alert` slot - and neither is the age of the status, which went with
+ * the rail's qualifier on 2026-09-28.
  */
 function AppStatusLine({
   isProtected,
   status,
-  since,
 }: {
   isProtected: boolean;
   status?: AppStatus;
-  since?: string;
 }) {
   const text = status
     ? STATUS_TEXT[status.kind]
     : isProtected
       ? STATUS_TEXT.protected
       : STATUS_TEXT["not-protected"];
-  const detail = status ? statusSuffix(status) : since;
 
   return (
     // `label/16` (408:25101): `copy/16`'s size, leading and -2% at Medium.
+    // The phrase alone, as the rail draws it. The grey qualifier after a dash
+    // went on 2026-09-28 with the rail's; a reason belongs in the pane's own
+    // note, not appended to the status it is explaining.
     <p className="text-base font-medium leading-6">
       <span className={text.className}>{text.label}</span>
-      {detail && <span className="text-neutral-500"> - {detail}</span>}
     </p>
   );
 }
@@ -906,28 +902,26 @@ function RecentActivity({
         <table className="mt-5 w-full">
           <thead>
             <tr className="text-base-xs text-base-muted-foreground">
-              {/* Column shares taken off `table/recent-activity`, whose body cells
-                sit at 0/148/288/408 and whose Action button starts at 620 inside
-                688 - so 148, 140, 120, 212 and 68 wide once each 16px gutter is
-                counted in, which is the 21.5/20.5/17.5/30.5/10 below. Shares
-                rather than pixel counts, so they hold at both window sizes. */}
-              <th scope="col" className="w-[21.5%] pb-3 text-left font-normal">
+              {/* Four columns since 2026-09-28, redrawn by design: Time,
+                Status, Model, Action. The guardrail-category column headed
+                "Type" is gone, and "Security" is now "Status" - the same
+                column, renamed, still merging a failed request (ERROR) with
+                what the guardrails did.
+                Shares taken off `table/recent-activity` (1370:4990), whose body
+                cells sit at 0/180/352/596 inside 688 - so 180, 172, 244 and 92
+                wide once each 16px gutter is counted in, which is the
+                26/25/35.5/13.5 below. Shares rather than pixel counts, so they
+                hold at both window sizes. */}
+              <th scope="col" className="w-[26%] pb-3 text-left font-normal">
                 Time
               </th>
-              {/* The frame's second column, drawn with a 20px glyph beside it. */}
-              <th scope="col" className="w-[20.5%] pb-3 text-left font-normal">
-                Type
+              <th scope="col" className="w-[25%] pb-3 text-left font-normal">
+                Status
               </th>
-              {/* One column, not two: the design merged status into security, so a
-                failed request reads ERROR and every other row reads what the
-                guardrails did. */}
-              <th scope="col" className="w-[17.5%] pb-3 text-left font-normal">
-                Security
-              </th>
-              <th scope="col" className="w-[30.5%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[35.5%] pb-3 text-left font-normal">
                 Model
               </th>
-              <th scope="col" className="w-[10%] pb-3 text-right font-normal">
+              <th scope="col" className="w-[13.5%] pb-3 text-right font-normal">
                 Action
               </th>
             </tr>
@@ -937,51 +931,6 @@ function RecentActivity({
               <tr key={entry.id} className="border-t border-base-border">
                 <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
-                </td>
-                {/* Type. The frame draws a 20px glyph 8px from the label, and the
-                  two take DIFFERENT inks: the label is `base/foreground`, the
-                  glyph is its category's colour (see `categoryTone`).
-                  This comment used to claim both were `base/foreground`, citing
-                  "the downloaded asset's own stroke is #030712" - which is what
-                  an *export* carries, not what the frame renders. Sampling the
-                  asset instead of the frame is how one ink ended up on five
-                  categories.
-                  Spelled as the gateway spelled it, like `SecurityEvents` does
-                  with the same field: a display vocabulary for values only the
-                  gateway knows would be invented here. */}
-                <td className="py-[1.125rem] pr-4">
-                  {entry.category ? (
-                    <span
-                      className="flex items-center gap-2 text-sm leading-5 text-base-foreground"
-                      // Only "Regular" carries one; see `ActivityEntry.categoryTitle`.
-                      title={entry.categoryTitle ?? undefined}
-                    >
-                      {entry.categoryIcon && (
-                        // Coloured per category (`661:16450`), not inked from
-                        // the span: the frame draws Injection red, PII green
-                        // and Credential purple, and one ink for all of them
-                        // was what this column shipped. See `categoryTone`.
-                        <Icon
-                          name={entry.categoryIcon}
-                          size={20}
-                          className={`shrink-0 ${categoryTone(entry.category)}`}
-                        />
-                      )}
-                      <span className="truncate">{entry.category}</span>
-                    </span>
-                  ) : (
-                    // Reached only when the gateway recorded no security action
-                    // at all - a row it did not examine, or one that is not this
-                    // caller's to see into. A request that WAS examined and
-                    // matched nothing says "Regular" instead (`toolEvents.ts`);
-                    // this is the case where we genuinely have no reading.
-                    <span
-                      className="text-sm leading-5 text-base-muted-foreground"
-                      title="No guardrail category recorded, or not your request"
-                    >
-                      -
-                    </span>
-                  )}
                 </td>
                 <td className="py-[1.125rem] pr-4">
                   {/* Error outranks the guardrail verdict, which is the design's

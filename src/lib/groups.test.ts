@@ -4,15 +4,17 @@ import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
   BAND_LABELS,
-  isProviderEndpoint,
   SECTIONS,
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
   groupSummary,
   hasBrowserSurface,
+  isDeclaredSection,
+  isProviderEndpoint,
   isSettingsManaged,
   notInstalledSections,
+  sectionMemberKeys,
 } from "./groups";
 
 /** A tool row as the backend ships one.
@@ -400,9 +402,9 @@ describe("sectionStatus", () => {
     });
   });
 
-  it("reads a switched-off domain as Not routed - Off", () => {
+  it("reads a switched-off domain as Not routed", () => {
     const [claude] = buildGroups([], [domain({ enabled: false })], ON);
-    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed", detail: "Off" });
+    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed" });
   });
 
   it("does not read off as off because a session surface is off", () => {
@@ -972,19 +974,35 @@ describe("settings-managed members", () => {
 });
 
 /**
- * Which group a section draws under.
- *
- * **This describe used to pin the opposite** and the history is worth keeping.
- * AG-897 split the rail into two bands asking different questions - an app the
- * user launches, or a mechanism they opt into - and filed both provider
- * endpoints together under Tools on that reasoning.
- *
- * The Figma sidebar (`440:1593`) groups by vendor instead, and design confirmed
- * it on 2026-09-22, so the file wins per CLAUDE.md. The casualty is AG-897's
- * precedent: `openai` and `openrouter` are both provider endpoints and no
- * longer share a group, because OpenAI has a vendor group to belong to and
- * OpenRouter does not. That is a real loss of a distinction, made knowingly.
+ * The distinction `sectionMemberKeys` cannot make, and a guard on #375 got
+ * wrong: that helper answers `[id]` for an id no section owns, so a
+ * `.length > 0` test read true for everything and made the per-tool routing
+ * path unreachable. A section id is not a `ToolId`, so sending one to the
+ * per-tool commands gets `unknown tool "..."` back from Rust - but sending a
+ * real tool slug there is the normal case and must keep working.
  */
+describe("isDeclaredSection", () => {
+  it("is true for an id SECTIONS declares", () => {
+    expect(isDeclaredSection("claude")).toBe(true);
+    expect(isDeclaredSection("openai-api")).toBe(true);
+  });
+
+  it("is false for a member key no section declares", () => {
+    // The case that matters: `buildGroups` synthesises a one-row section for
+    // an unplaced member, and that row's switch has to reach the per-tool
+    // path. `sectionMemberKeys` answers `["acme-router"]` here, which is why
+    // it cannot be used to ask this.
+    expect(isDeclaredSection("acme-router")).toBe(false);
+    expect(sectionMemberKeys("acme-router")).toEqual(["acme-router"]);
+  });
+
+  it("never answers empty from sectionMemberKeys, for either", () => {
+    // Pinning the shape the misreading came from.
+    expect(sectionMemberKeys("claude").length).toBeGreaterThan(0);
+    expect(sectionMemberKeys("nothing-owns-this").length).toBeGreaterThan(0);
+  });
+});
+
 describe("isProviderEndpoint", () => {
   // Nothing covered this, so the unknown-id branch its doc argues for was
   // unpinned. Raised in review on #323.
@@ -1007,6 +1025,20 @@ describe("isProviderEndpoint", () => {
   });
 });
 
+/**
+ * Which group a section draws under.
+ *
+ * **This describe used to pin the opposite** and the history is worth keeping.
+ * AG-897 split the rail into two bands asking different questions - an app the
+ * user launches, or a mechanism they opt into - and filed both provider
+ * endpoints together under Tools on that reasoning.
+ *
+ * The Figma sidebar (`440:1593`) groups by vendor instead, and design confirmed
+ * it on 2026-09-22, so the file wins per CLAUDE.md. The casualty is AG-897's
+ * precedent: `openai` and `openrouter` are both provider endpoints and no
+ * longer share a group, because OpenAI has a vendor group to belong to and
+ * OpenRouter does not. That is a real loss of a distinction, made knowingly.
+ */
 describe("which group a section draws under", () => {
   // `any-app`, which is what both provider-endpoint rows are: neither is one
   // program's surface.

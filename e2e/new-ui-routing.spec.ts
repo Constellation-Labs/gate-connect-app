@@ -999,3 +999,68 @@ test.describe("new UI sidebar rail", () => {
     }
   });
 });
+
+/**
+ * A pane can outlive the row that opened it, and used to route by the wrong id.
+ *
+ * `CLI_ONLY_DOMAINS` draws the OpenAI API row only while the domain is ON, so
+ * switching it off from its own pane deletes the row under the reader's feet.
+ * `buildGroups` then drops the whole `openai-api` section - it has no other
+ * member - and the pane, which titles itself `appFor(...)?.name ?? view.slug`,
+ * carried on with a switch that could no longer resolve a group. The next
+ * click sent the SECTION id down the per-tool path, and Rust answered
+ * `unknown tool "openai-api"`: the section table and `ToolId` are different
+ * namespaces and nothing had been checking that.
+ *
+ * Reported from a build log on 2026-09-28.
+ */
+test.describe("new UI: a pane whose row disappears", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("returns to Overview, and never routes by the section id", async ({ boot }) => {
+    const app = await boot({
+      proxy: {
+        running: true,
+        ca_trusted: true,
+        domains: [
+          {
+            slug: "openai",
+            display_name: "OpenAI API",
+            client: "any-app",
+            credential: "brokered",
+            scope: "host",
+            hosts: ["api.openai.com"],
+            upstream_url: "https://api.openai.com",
+            rewrite_prefixes: ["/v1/"],
+            passthrough_prefixes: [],
+            // On, which is the only state that draws the row at all.
+            enabled: true,
+            supported: true,
+          },
+        ],
+      },
+    });
+
+    await (await app.appSwitch("OpenAI API")).click();
+
+    // The domain goes off, so the row - and its whole section - goes with it.
+    await expect
+      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "openai")?.enabled)
+      .toBe(false);
+
+    // The pane cannot stay: there is no row behind it any more.
+    await expect(app.page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(
+      app.page.getByRole("switch", { name: "Route OpenAI API", exact: true }),
+    ).toHaveCount(0);
+
+    // And nothing was ever sent to the per-tool path under the section's id.
+    // `callsFor` is typed to the one field every call shares, so the args are
+    // read off `lastCall`, which carries them.
+    const connects = await callsFor(app.page, "connect_tool");
+    expect(connects).toHaveLength(0);
+    expect(await app.lastCall("connect_tool")).toBeNull();
+  });
+});

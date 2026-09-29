@@ -104,8 +104,7 @@ export function verdictStatus(
       return { kind: "protected" };
     }
     case "off":
-      // The design draws this one with its suffix already: "Not routed - Off".
-      return { kind: "not-routed", detail: "Off" };
+      return { kind: "not-routed" };
     case "needs_attention":
       return {
         kind: "not-protected",
@@ -167,7 +166,7 @@ export function proxyMemberStatus(m: GroupMember): AppStatus {
     ? { kind: "protected" }
     : m.desired
       ? { kind: "not-protected", detail: "Blocked" }
-      : { kind: "not-routed", detail: "Off" };
+      : { kind: "not-routed" };
 }
 
 /**
@@ -231,5 +230,5 @@ export function sectionStatus(
     };
   return group.switchDesired > 0
     ? { kind: "not-protected", detail: "Blocked" }
-    : { kind: "not-routed", detail: "Off" };
+    : { kind: "not-routed" };
 }

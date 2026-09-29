@@ -6,7 +6,7 @@ import { Icon } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
 import { OverflowMenu } from "./OverflowMenu";
 import type { MenuAction } from "./OverflowMenu";
-import { countsAsProtected, STATUS_TEXT, statusSuffix } from "./Sidebar";
+import { countsAsProtected, STATUS_TEXT } from "./Sidebar";
 import type { RowCount, SidebarGroup } from "./Sidebar";
 import { routingState, showsFraction } from "../../lib/routingState";
 
@@ -402,17 +402,17 @@ function TrayGroup({
   );
 }
 
-/** The coloured phrase plus grey qualifier, in the tray's own type. The rail's
- * line, without the reason: a `not-protected` reason ("Config drifted", "Partly
- * protected: 1 of 2") printed after "Not protected -" reads as a second status
- * contradicting the first, and the window's app pane is where it is read. */
+/** The coloured phrase, in the tray's own type - the rail's line exactly.
+ *
+ * No reason and no qualifier. The reason ("Config drifted", "Partly protected:
+ * 1 of 2") printed after "Not protected -" reads as a second status
+ * contradicting the first, and the window's app pane is where it is read. The
+ * qualifier went with the rail's on 2026-09-28. */
 function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
   const status = STATUS_TEXT[app.status.kind];
-  const suffix = statusSuffix(app.status);
   return (
     <span className="truncate text-base-2xs font-medium leading-4">
       <span className={status.className}>{status.label}</span>
-      {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
     </span>
   );
 }
