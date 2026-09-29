@@ -273,8 +273,10 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
 
 /** Running agent processes started *before* routing last came up - the ones
  * that genuinely need a restart to route. Drives the startup hint, so a
- * healthy restored session (agents launched after routing) stays quiet. */
-export const staleAgentsCount = () => invoke<number>("stale_agents_count");
+ * healthy restored session (agents launched after routing) stays quiet.
+ * `since` (Unix seconds) counts only changes Gate made at or after it. */
+export const staleAgentsCount = (since?: number) =>
+  invoke<number>("stale_agents_count", { since });
 
 /** One running AI tool. No command line by design: argv on these routinely
  * holds prompts, paths and occasionally a key, and this list is built to be
