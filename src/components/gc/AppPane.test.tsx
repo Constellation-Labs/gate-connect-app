@@ -18,6 +18,7 @@ const entry: ActivityEntry = {
   status: "success",
   security: "flagged",
   model: "claude-opus-4",
+  modelId: "claude-opus-4",
   provider: "anthropic",
   vendor: "anthropic",
   title: "Update our data-model.md",
@@ -263,6 +264,22 @@ describe("AppPane recent activity", () => {
     // The monogram is decorative, so the provider has to be named in text too -
     // otherwise the one-letter glyph is all a screen reader gets.
     expect(within(feed).getByText("anthropic")).toBeTruthy();
+  });
+
+  it("keeps the model id on hover when the cell draws the gateway's label", () => {
+    // AG-951: the label can be a prettified id, so the id stays reachable.
+    render(
+      pane({
+        activity: [
+          { ...entry, model: "Claude Opus 4 5", modelId: "anthropic/claude-opus-4-5" },
+        ],
+      }),
+    );
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByText("Claude Opus 4 5").getAttribute("title")).toBe(
+      "anthropic/claude-opus-4-5",
+    );
   });
 
   it("withholds the category rather than inventing one", () => {

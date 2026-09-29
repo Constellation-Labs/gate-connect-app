@@ -59,6 +59,51 @@ describe("adaptEvents", () => {
     expect(view.entries[0].security).toBeNull();
   });
 
+  /**
+   * AG-951. Design asked the table for "the same model labels we used in Gate
+   * currently"; those live in the gateway's catalogue, not in the id this row
+   * carries, so the gateway sends the label and the client prints it.
+   */
+  it("prefers the gateway's display name over the id", () => {
+    const view = adaptEvents(
+      envelope([raw({ model: "anthropic/claude-opus-5", modelName: "Claude Opus 5" })]),
+    );
+
+    expect(view.entries[0].model).toBe("Claude Opus 5");
+    // The id is kept alongside, so the cell can still say which model it was.
+    expect(view.entries[0].modelId).toBe("anthropic/claude-opus-5");
+  });
+
+  it("prints the label exactly as the gateway spells it", () => {
+    // Including the uneven ones. The catalogue currently holds "Claude Opus 4
+    // 5" beside "Claude Opus 4.1", and names carrying a vendor prefix - and
+    // the client must not tidy either, or it becomes a second opinion about a
+    // field the gateway owns. Fixing the values is the gateway-side half of
+    // AG-951; this pins that the client does not paper over them.
+    const view = adaptEvents(
+      envelope([
+        raw({ model: "anthropic/claude-opus-4-5", modelName: "Claude Opus 4 5" }),
+        raw({ requestId: "r2", model: "aion-labs/aion-2-0", modelName: "AionLabs: Aion-2.0" }),
+      ]),
+    );
+
+    expect(view.entries[0].model).toBe("Claude Opus 4 5");
+    expect(view.entries[1].model).toBe("AionLabs: Aion-2.0");
+  });
+
+  it("falls back to the id while the gateway sends no label", () => {
+    // Which is every row today: the field does not exist upstream yet. An id
+    // is honest and searchable, which is why it is the fallback rather than
+    // something this side composes.
+    const withNothing = adaptEvents(envelope([raw({ model: "openai/gpt-6-luna" })]));
+    const withNull = adaptEvents(
+      envelope([raw({ model: "openai/gpt-6-luna", modelName: null })]),
+    );
+
+    expect(withNothing.entries[0].model).toBe("openai/gpt-6-luna");
+    expect(withNull.entries[0].model).toBe("openai/gpt-6-luna");
+  });
+
   it("says a model was not attributed rather than naming one", () => {
     const view = adaptEvents(envelope([raw({ model: null })]));
 
