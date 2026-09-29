@@ -402,9 +402,9 @@ describe("sectionStatus", () => {
     });
   });
 
-  it("reads a switched-off domain as Not routed - Off", () => {
+  it("reads a switched-off domain as Not routed", () => {
     const [claude] = buildGroups([], [domain({ enabled: false })], ON);
-    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed", detail: "Off" });
+    expect(sectionStatus(claude, new Map())).toEqual({ kind: "not-routed" });
   });
 
   it("does not read off as off because a session surface is off", () => {
@@ -974,20 +974,6 @@ describe("settings-managed members", () => {
 });
 
 /**
- * Which group a section draws under.
- *
- * **This describe used to pin the opposite** and the history is worth keeping.
- * AG-897 split the rail into two bands asking different questions - an app the
- * user launches, or a mechanism they opt into - and filed both provider
- * endpoints together under Tools on that reasoning.
- *
- * The Figma sidebar (`440:1593`) groups by vendor instead, and design confirmed
- * it on 2026-09-22, so the file wins per CLAUDE.md. The casualty is AG-897's
- * precedent: `openai` and `openrouter` are both provider endpoints and no
- * longer share a group, because OpenAI has a vendor group to belong to and
- * OpenRouter does not. That is a real loss of a distinction, made knowingly.
- */
-/**
  * The distinction `sectionMemberKeys` cannot make, and a guard on #375 got
  * wrong: that helper answers `[id]` for an id no section owns, so a
  * `.length > 0` test read true for everything and made the per-tool routing
@@ -1039,6 +1025,20 @@ describe("isProviderEndpoint", () => {
   });
 });
 
+/**
+ * Which group a section draws under.
+ *
+ * **This describe used to pin the opposite** and the history is worth keeping.
+ * AG-897 split the rail into two bands asking different questions - an app the
+ * user launches, or a mechanism they opt into - and filed both provider
+ * endpoints together under Tools on that reasoning.
+ *
+ * The Figma sidebar (`440:1593`) groups by vendor instead, and design confirmed
+ * it on 2026-09-22, so the file wins per CLAUDE.md. The casualty is AG-897's
+ * precedent: `openai` and `openrouter` are both provider endpoints and no
+ * longer share a group, because OpenAI has a vendor group to belong to and
+ * OpenRouter does not. That is a real loss of a distinction, made knowingly.
+ */
 describe("which group a section draws under", () => {
   // `any-app`, which is what both provider-endpoint rows are: neither is one
   // program's surface.

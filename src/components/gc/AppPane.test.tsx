@@ -271,7 +271,6 @@ describe("AppPane recent activity", () => {
     expect(within(feed).getByText("anthropic")).toBeTruthy();
   });
 
-
   /**
    * Ten rows, then ten more per click (2026-09-23).
    *
@@ -653,16 +652,13 @@ describe("AppPane model selection", () => {
 });
 
 /**
- * The two fixes that are only visible at their call sites.
+ * A fix that is only visible at its call site.
  *
- * Both shipped tested in isolation - `categoryTone` and `appProviderMarkFor`
- * each have their own suites - and untested where they are used, so deleting
- * the `className` from the Type glyph or the `appVendorMark` prop from the
- * model row left the whole suite green. A helper nobody calls is not a fix.
+ * `appProviderMarkFor` shipped tested in isolation and untested where it is
+ * used, so deleting the `appVendorMark` prop from the model row left the whole
+ * suite green. A helper nobody calls is not a fix.
  */
 describe("AppPane draws what the helpers resolve", () => {
-
-
   it("draws the app vendor's mark in the App-default row when given one", () => {
     // The row took the rail's monochrome mark, built for the header's black
     // tile. This asserts the prop reaches the row at all - the colour itself is

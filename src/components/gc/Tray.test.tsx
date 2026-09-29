@@ -13,13 +13,13 @@ const GROUPS: SidebarGroup[] = [
       {
         slug: "claude-code",
         name: "Claude Code",
-        status: { kind: "protected", since: "2m ago" },
+        status: { kind: "protected" },
         on: true,
       },
       {
         slug: "claude-web",
         name: "Claude Desktop",
-        status: { kind: "not-routed", detail: "Off" },
+        status: { kind: "not-routed" },
         on: false,
       },
     ],
@@ -293,9 +293,10 @@ describe("the group rows", () => {
     // rail on 2026-09-28 and the tray prints the rail's line, so it went here
     // too. Design's reasoning: "Off" after "Not routed" only makes sense if
     // "Protected" also carries an inverse "On", and it does not.
+    // The whole line, since `AppStatus` no longer carries a suffix to omit.
     renderTray();
-    expect(screen.getByText("Protected")).toBeTruthy();
-    expect(screen.queryByText("- 2m ago")).toBeNull();
+    expect(screen.getByText("Protected").parentElement?.textContent).toBe("Protected");
+    expect(screen.getByText("Not routed").parentElement?.textContent).toBe("Not routed");
   });
 
   it("dispatches the switch from intent, not observed state", () => {

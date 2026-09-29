@@ -25,11 +25,8 @@ describe("verdictStatus", () => {
     expect(verdictStatus(verdict({ state: "on" }))).toEqual({ kind: "protected" });
   });
 
-  it("renders Off with the suffix the design already draws", () => {
-    expect(verdictStatus(verdict({ state: "off" }))).toEqual({
-      kind: "not-routed",
-      detail: "Off",
-    });
+  it("renders Off as Not routed, with no qualifier", () => {
+    expect(verdictStatus(verdict({ state: "off" }))).toEqual({ kind: "not-routed" });
   });
 
   it("maps a changed configuration onto Not protected, with drift as the reason", () => {
@@ -193,7 +190,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     const uninspected = coverage({ unknown: ["api.groq.com"] });
     expect(
       verdictStatus(verdict({ state: "off" }), { coverage: uninspected }),
-    ).toEqual({ kind: "not-routed", detail: "Off" });
+    ).toEqual({ kind: "not-routed" });
     expect(
       verdictStatus(
         verdict({ state: "needs_attention", reason: "configuration_changed" }),
@@ -211,7 +208,7 @@ describe("verdictStatus and upstream coverage (AG-932)", () => {
     expect(countsAsProtected(status)).toBe(false);
     // And the rest, because four counters read this one predicate.
     expect(countsAsProtected({ kind: "protected" })).toBe(true);
-    expect(countsAsProtected({ kind: "not-routed", detail: "Off" })).toBe(false);
+    expect(countsAsProtected({ kind: "not-routed" })).toBe(false);
     expect(countsAsProtected({ kind: "not-protected", detail: "Config drifted" })).toBe(false);
   });
 

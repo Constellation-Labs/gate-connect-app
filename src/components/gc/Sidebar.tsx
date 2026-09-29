@@ -43,12 +43,14 @@ export type SidebarView =
  * cut back to the drawn three then, with the reason moved to the pane.
  */
 export type AppStatus =
-  | { kind: "protected"; since?: string }
+  | { kind: "protected" }
   /** `detail` carries the reason ("Connection problem", "Config drifted",
    * "Reopen to finish"), which is what turns an amber phrase into something the
    * user can act on. See `lib/verdict.ts`. */
   | { kind: "not-protected"; detail?: string }
-  | { kind: "not-routed"; detail?: string }
+  /** No `detail`: the rail drew "Off" after the dash until 2026-09-28, and the
+   *  label says it alone now. */
+  | { kind: "not-routed" }
   /**
    * Detection did not find the app on this machine. Drawn only under the
    * rail's "Not installed" group, on a row that opens nothing - there is no
