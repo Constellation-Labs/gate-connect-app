@@ -1111,11 +1111,7 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
     let matched: Vec<sysinfo::Pid> = sys
         .processes()
         .iter()
-        .filter(|(pid, process)| {
-            let name = process.name().to_string_lossy().to_lowercase();
-            let name = name.strip_suffix(".exe").unwrap_or(&name);
-            Some(**pid) != own_pid && AGENT_PROCESS_NAMES.contains(&name)
-        })
+        .filter(|(pid, process)| Some(**pid) != own_pid && is_agent_name(process.name()))
         .map(|(pid, _)| *pid)
         .collect();
     if matched.is_empty() {
@@ -1123,7 +1119,8 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
     }
     // Command lines for the matched processes only, so the full walk above
     // stays at `stat`. Needed to tell a Claude Code session from the Chrome
-    // bridge that shares its binary (`is_chrome_native_host`).
+    // bridge that shares its binary (`is_chrome_native_host`), and an app from
+    // its own helpers (`is_electron_helper`).
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(&matched),
         false,
@@ -1133,11 +1130,20 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
     );
     for pid in matched {
         if let Some(process) = sys.process(pid) {
-            if !is_chrome_native_host(process.cmd()) {
+            if !is_chrome_native_host(process.cmd()) && !is_electron_helper(process.cmd()) {
                 f(process);
             }
         }
     }
+}
+
+/// Does this process name match [`AGENT_PROCESS_NAMES`]? Case and a `.exe`
+/// suffix do not decide it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_agent_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    AGENT_PROCESS_NAMES.contains(&name)
 }
 
 /// Is this `claude` the Claude in Chrome native-messaging host rather than a
@@ -1151,6 +1157,28 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
     cmd.iter().skip(1).any(|arg| arg == "--chrome-native-host")
+}
+
+/// Is this `claude` one of Claude Desktop's Electron helpers (renderer, GPU,
+/// network service, utility) rather than the app itself?
+///
+/// On Windows every helper runs the app's own `Claude.exe` with a `--type=`
+/// switch, so one open Claude Desktop matched as a dozen processes: counted as
+/// a dozen apps, and each one killed on its own by `close_running_agents`.
+/// Killing the network service out from under a live main process is how
+/// Claude's log reads "Network Service process gone (reason=killed) outside
+/// app quit", and the app never ran its quit cleanup - Cowork's VM included,
+/// which `cowork-svc` then kept reporting as connected to a host that was gone,
+/// so every Cowork command failed with "VM guest is not connected" until the
+/// service restarted. The helpers belong to the main process and exit with it.
+///
+/// Only the first argument: Chromium puts `--type=` straight after the
+/// executable, and a CLI run with a `--type=` flag of its own further along
+/// is still the CLI.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_electron_helper(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.get(1)
+        .is_some_and(|arg| arg.to_string_lossy().starts_with("--type="))
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -1329,32 +1357,431 @@ fn running_agents() -> RunningAgentsDto {
     }
 }
 
-/// Terminate running agent processes (CLIs and desktop apps, see
-/// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
-/// Graceful where the platform allows it (SIGTERM on
-/// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
-/// Returns how many processes were signalled - 0 means none were running.
-/// Best-effort: processes we can't signal (another user's, already gone) are
-/// skipped, not errors.
+/// What [`close_running_agents`] did, for the popover to report back.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct ClosedAgentsDto {
+    /// Processes that were closed, the restarted ones included. 0 means none
+    /// were running.
+    closed: u32,
+    /// Desktop apps that quit and were opened again, by name ("Claude").
+    restarted: Vec<String>,
+    /// Closed and not opened again, by tool name: a terminal tool belongs to
+    /// the terminal it ran in, so a copy Gate started would not be the user's;
+    /// and an app that quit but could not be relaunched. The user opens these
+    /// again.
+    reopen_yourself: Vec<String>,
+    /// Asked to quit and still running once Gate stopped waiting, by name.
+    /// Not counted in `closed`: the user has to quit these themselves.
+    still_running: Vec<String>,
+}
+
+/// How long an agent gets to quit on its own before Gate stops waiting. A
+/// restart has to see the app gone before it relaunches it, or the launch just
+/// brings the old one forward. Claude Desktop's quit cleanup, Cowork's VM
+/// shutdown included, runs in about a second; the rest is margin for a machine
+/// under load.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const AGENT_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One agent picked for closing, and how to open it again if it is an app.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct CloseTarget {
+    pid: sysinfo::Pid,
+    /// With the pid, because Windows reuses pids quickly and a wait of seconds
+    /// must not end in killing or counting whatever took over the number.
+    started: u64,
+    /// App name for an app, tool name for a terminal tool.
+    name: String,
+    relaunch: Option<Relaunch>,
+}
+
+/// Restart running agents (CLIs and desktop apps, see [`AGENT_PROCESS_NAMES`])
+/// so they pick up the routing change: each is asked to quit, desktop apps are
+/// opened again once they have, and terminal tools are left for the user to
+/// reopen, since they belong to a terminal Gate cannot start them in.
 ///
-/// `(async)` on top of the walk's own reason: this one also blocks on
-/// signalling every match, and it runs from a button the user is watching.
+/// Asking first matters most on Windows, where the only step used to be the
+/// hard kill. Claude Desktop never ran its quit cleanup, so Cowork's VM was
+/// left running with nothing on the host end and the next launch could not
+/// reach it (see [`is_electron_helper`]). SIGTERM on macOS and Linux already
+/// is a quit request; on Windows the request is `taskkill` without `/F`, which
+/// posts `WM_CLOSE` to the app's windows. Only Windows kills what has not quit
+/// by [`AGENT_CLOSE_GRACE`], as it always did; elsewhere a process that
+/// ignores SIGTERM is left running, also as before, and reported in
+/// `still_running`.
+///
+/// An agent hosted by another agent (a Claude Code session inside Claude
+/// Desktop) is left to its host: the host stops it in its own cleanup and
+/// starts it again on relaunch, and killing it first is the same damage.
+/// Any agent-named ancestor counts, not only the parent, because the host may
+/// start it from one of its helpers or through a shell (see
+/// [`hosted_by_agent`]).
+///
+/// `(async)` on top of the walk's own reason: this one blocks on the wait, and
+/// it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn close_running_agents() -> u32 {
-    use sysinfo::Signal;
-    let mut closed = 0u32;
+fn close_running_agents() -> ClosedAgentsDto {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    // Pick first, signal after: a host can come after its child in the walk.
+    let mut found: Vec<CloseTarget> = Vec::new();
     for_each_agent_process(|process| {
-        // kill_with(Term) is None on platforms without signal support
-        // (Windows); fall back to the hard kill there.
-        let signalled = process
-            .kill_with(Signal::Term)
-            .unwrap_or_else(|| process.kill());
-        if signalled {
-            closed += 1;
-        }
+        let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
+        let relaunch = exe.as_deref().and_then(app_relaunch);
+        let name = match &relaunch {
+            Some(relaunch) => relaunch.name.clone(),
+            None => {
+                let lower = process.name().to_string_lossy().to_lowercase();
+                let lower = lower.strip_suffix(".exe").unwrap_or(&lower).to_string();
+                agent_tool(&lower)
+                    .and_then(registry::find)
+                    .map(|integ| integ.display_name().to_string())
+                    .unwrap_or(lower)
+            }
+        };
+        let target = CloseTarget {
+            pid: process.pid(),
+            started: process.start_time(),
+            name,
+            relaunch,
+        };
+        found.push(target);
     });
-    closed
+    // The whole table, not the walk's filtered set: a host's helpers and the
+    // shells between it and its child are what the ancestor walk climbs.
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    let targets: Vec<CloseTarget> = found
+        .into_iter()
+        .filter(|target| {
+            !hosted_by_agent(
+                target.pid,
+                |pid| sys.process(pid).and_then(|p| p.parent()),
+                |pid| sys.process(pid).is_some_and(|p| is_agent_name(p.name())),
+            )
+        })
+        .collect();
+
+    let mut dto = ClosedAgentsDto {
+        closed: 0,
+        restarted: Vec::new(),
+        reopen_yourself: Vec::new(),
+        still_running: Vec::new(),
+    };
+    let mut waiting: Vec<CloseTarget> = Vec::new();
+    for mut target in targets {
+        let Some(process) = sys
+            .process(target.pid)
+            .filter(|p| p.start_time() == target.started)
+        else {
+            continue; // quit on its own since the walk
+        };
+        match request_close(process) {
+            CloseRequest::Asked { has_windows } => {
+                // A Windows app outside the Store still earns a relaunch by
+                // its own path: it had windows to close, so it is not a
+                // terminal tool.
+                if target.relaunch.is_none() && has_windows {
+                    target.relaunch = process.exe().map(Relaunch::exe);
+                }
+                // A terminal tool is waited on too: SIGTERM is a request, and
+                // one that ignores it has not closed.
+                waiting.push(target);
+            }
+            // On Windows a console process has no window to ask and
+            // `taskkill` refuses it, so it is killed straight away, as it
+            // always was. Elsewhere a failed SIGTERM means the kill fails
+            // too (another user's process, or already gone).
+            CloseRequest::NotAsked => {
+                if process.kill() {
+                    dto.closed += 1;
+                    dto.reopen_yourself.push(target.name);
+                }
+            }
+        }
+    }
+
+    let deadline = std::time::Instant::now() + AGENT_CLOSE_GRACE;
+    let mut gone: Vec<CloseTarget> = Vec::new();
+    loop {
+        let pids: Vec<Pid> = waiting.iter().map(|t| t.pid).collect();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&pids),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        let (running, exited): (Vec<_>, Vec<_>) = waiting.into_iter().partition(|t| {
+            sys.process(t.pid)
+                .is_some_and(|p| p.start_time() == t.started)
+        });
+        gone.extend(exited);
+        waiting = running;
+        if waiting.is_empty() || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    for target in waiting {
+        eprintln!(
+            "[gate] close agents: {} (pid {}) did not quit within {AGENT_CLOSE_GRACE:?}",
+            target.name, target.pid
+        );
+        let killed = cfg!(target_os = "windows")
+            && sys
+                .process(target.pid)
+                .is_some_and(|process| process.kill());
+        if killed {
+            gone.push(target);
+        } else {
+            dto.still_running.push(target.name);
+        }
+    }
+
+    for target in gone {
+        dto.closed += 1;
+        match &target.relaunch {
+            Some(relaunch) if relaunch.spawn() => dto.restarted.push(target.name),
+            Some(_) => {
+                eprintln!("[gate] close agents: could not reopen {}", target.name);
+                dto.reopen_yourself.push(target.name);
+            }
+            None => dto.reopen_yourself.push(target.name),
+        }
+    }
+    for names in [
+        &mut dto.restarted,
+        &mut dto.reopen_yourself,
+        &mut dto.still_running,
+    ] {
+        names.sort();
+        names.dedup();
+    }
+    dto
+}
+
+/// Was `pid` started under another agent, at any depth? `parent_of` and
+/// `is_agent` read the process table; they are parameters so the walk can be
+/// tested without one. Bounded, because a table read in pieces can hold a
+/// parent loop, and pid 0/1 or a missing entry ends the chain.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn hosted_by_agent(
+    pid: sysinfo::Pid,
+    parent_of: impl Fn(sysinfo::Pid) -> Option<sysinfo::Pid>,
+    is_agent: impl Fn(sysinfo::Pid) -> bool,
+) -> bool {
+    let mut current = pid;
+    for _ in 0..64 {
+        match parent_of(current) {
+            Some(parent) if parent != current => {
+                if is_agent(parent) {
+                    return true;
+                }
+                current = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// How a quit request landed.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+enum CloseRequest {
+    /// Delivered. `has_windows` says it went to the app's own windows, which
+    /// only Windows can tell, and which marks a GUI app rather than a
+    /// terminal tool.
+    Asked { has_windows: bool },
+    /// Not delivered. On Windows: no window of its own to ask, so a hard kill
+    /// is the only way. Elsewhere: it could not be signalled at all.
+    NotAsked,
+}
+
+/// Ask a process to quit: SIGTERM on macOS and Linux, and on Windows what its
+/// own window's close button would send.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn request_close(process: &sysinfo::Process) -> CloseRequest {
+    if process.kill_with(sysinfo::Signal::Term).unwrap_or(false) {
+        CloseRequest::Asked { has_windows: false }
+    } else {
+        CloseRequest::NotAsked
+    }
+}
+
+/// `taskkill` *without* `/F` posts `WM_CLOSE` to the process's top-level
+/// windows and succeeds only if it had some. That is not the process agreeing
+/// to exit - [`close_running_agents`] waits to find that out.
+#[cfg(target_os = "windows")]
+fn request_close(process: &sysinfo::Process) -> CloseRequest {
+    use std::os::windows::process::CommandExt;
+    let asked = std::process::Command::new("taskkill")
+        .args(["/PID", &process.pid().to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if asked {
+        CloseRequest::Asked { has_windows: true }
+    } else {
+        CloseRequest::NotAsked
+    }
+}
+
+/// `CREATE_NO_WINDOW`: no console flash per `taskkill`, as with `certutil` in
+/// `ca_windows`.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// How to open a desktop app again after it quit.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Debug, PartialEq)]
+struct Relaunch {
+    /// The app's own name, for the popover: "Claude", not "Claude Code".
+    name: String,
+    program: &'static str,
+    arg: String,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl Relaunch {
+    /// Through the shell, never as Gate's child: the app gets the user's
+    /// environment rather than Gate's, and outlives Gate.
+    fn exe(path: &std::path::Path) -> Self {
+        Relaunch {
+            name: path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            program: "explorer.exe",
+            arg: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn spawn(&self) -> bool {
+        let mut command = std::process::Command::new(self.program);
+        command
+            .arg(&self.arg)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if cfg!(target_os = "windows") {
+            // `explorer.exe` exits 1 on success, so only the spawn is checked.
+            command.spawn().is_ok()
+        } else {
+            // `open` returns once LaunchServices has the request, and waiting
+            // for it reaps it: a dropped `Child` would stay a zombie until
+            // Gate exits.
+            command.status().is_ok_and(|status| status.success())
+        }
+    }
+}
+
+/// The relaunch for a process whose executable is a desktop app: a macOS
+/// `.app` bundle, reopened with `open`, or a Windows Store package, reopened
+/// by its app ID. A Store app cannot be started from its `.exe` under
+/// `WindowsApps`; the shell has to activate the package. Anything else is a
+/// terminal tool as far as this can tell, and Windows gets one more chance in
+/// [`close_running_agents`] from whether it had windows.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn app_relaunch(exe: &str) -> Option<Relaunch> {
+    if let Some(bundle) = macos_app_bundle(exe) {
+        let name = bundle.rsplit('/').next()?.strip_suffix(".app")?.to_string();
+        return Some(Relaunch {
+            name,
+            program: "open",
+            arg: bundle.to_string(),
+        });
+    }
+    let package = windows_store_package(exe)?;
+    let manifest =
+        std::fs::read_to_string(format!("{}\\AppxManifest.xml", package.install_dir)).ok()?;
+    let executable = exe[package.install_dir.len()..].trim_start_matches('\\');
+    let app_id = manifest_app_id(&manifest, executable)?;
+    Some(Relaunch {
+        name: package.name,
+        program: "explorer.exe",
+        arg: format!("shell:AppsFolder\\{}!{app_id}", package.family),
+    })
+}
+
+/// `/Applications/Claude.app/Contents/MacOS/Claude` -> `/Applications/Claude.app`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn macos_app_bundle(exe: &str) -> Option<&str> {
+    let end = exe.find(".app/Contents/MacOS/")? + ".app".len();
+    Some(&exe[..end])
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Debug, PartialEq)]
+struct StorePackage {
+    install_dir: String,
+    /// `Claude_pzs8sxrjxfjjc`: the package name plus its publisher ID.
+    family: String,
+    name: String,
+}
+
+/// Read a Store package out of an executable path under `WindowsApps`. The
+/// folder is the package's full name, `Name_Version_Arch_ResourceId_PublisherId`:
+/// five fields, the resource ID usually empty. A package name cannot hold an
+/// underscore, so splitting on it is exact.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn windows_store_package(exe: &str) -> Option<StorePackage> {
+    const MARKER: &str = "\\windowsapps\\";
+    let start = exe.to_ascii_lowercase().find(MARKER)? + MARKER.len();
+    let full_name = exe[start..].split('\\').next()?;
+    let fields: Vec<&str> = full_name.split('_').collect();
+    let [name, _version, _arch, _resource, publisher] = fields[..] else {
+        return None;
+    };
+    if name.is_empty() || publisher.is_empty() {
+        return None;
+    }
+    Some(StorePackage {
+        install_dir: exe[..start + full_name.len()].to_string(),
+        family: format!("{name}_{publisher}"),
+        name: name.to_string(),
+    })
+}
+
+/// The `Id` of the `<Application>` in an `AppxManifest.xml` whose `Executable`
+/// is the one that was running (relative to the package, `app\Claude.exe`). By
+/// executable, not first match: Claude's package declares a second
+/// application, its SSH askpass helper, and a package is free to list them in
+/// any order.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn manifest_app_id(manifest: &str, executable: &str) -> Option<String> {
+    manifest
+        .split("<Application")
+        .skip(1)
+        // `<Applications>` is the list around them, not one of them.
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .filter_map(|rest| rest.split('>').next())
+        .find(|tag| xml_attr(tag, "Executable").is_some_and(|e| e.eq_ignore_ascii_case(executable)))
+        .and_then(|tag| xml_attr(tag, "Id"))
+        .map(str::to_string)
+}
+
+/// An attribute's value inside one start tag, `name="value"`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn xml_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let mut search = tag;
+    loop {
+        let at = search.find(&needle)?;
+        // Whole attribute names only: `Id` must not match inside `AppId`.
+        let whole = search[..at].ends_with(char::is_whitespace);
+        let value = &search[at + needle.len()..];
+        if whole {
+            return value.split('"').next();
+        }
+        search = value;
+    }
 }
 
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
@@ -3834,5 +4261,141 @@ mod tests {
         assert!(!is_chrome_native_host(&cmd(&["claude"])));
         assert!(!is_chrome_native_host(&cmd(&["claude", "--resume"])));
         assert!(!is_chrome_native_host(&cmd(&[])));
+    }
+
+    /// Claude Desktop on Windows is one main process and a dozen helpers that
+    /// all run `Claude.exe`; only the switch tells them apart.
+    #[test]
+    fn electron_helpers_are_not_the_app() {
+        let cmd = |args: &[&str]| -> Vec<std::ffi::OsString> {
+            args.iter().map(std::ffi::OsString::from).collect()
+        };
+        let exe =
+            r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
+        assert!(is_electron_helper(&cmd(&[
+            exe,
+            "--type=renderer",
+            "--lang=en-US"
+        ])));
+        assert!(is_electron_helper(&cmd(&[
+            exe,
+            "--type=utility",
+            "--utility-sub-type=network.mojom.NetworkService"
+        ])));
+        assert!(!is_electron_helper(&cmd(&[exe])));
+        assert!(!is_electron_helper(&cmd(&["claude", "--resume"])));
+        // A prompt mentioning the switch is an argument's value, not the switch.
+        assert!(!is_electron_helper(&cmd(&[
+            "claude",
+            "-p",
+            "what does --type=renderer do"
+        ])));
+        assert!(!is_electron_helper(&cmd(&[])));
+        // A CLI's own `--type=` flag, after its first argument, is the CLI.
+        assert!(!is_electron_helper(&cmd(&[
+            "opencode",
+            "run",
+            "--type=json"
+        ])));
+    }
+
+    /// A Claude Code session Claude Desktop started from a helper, or through
+    /// a shell, is still the app's to stop.
+    #[test]
+    fn an_agent_anywhere_up_the_chain_is_the_host() {
+        use sysinfo::Pid;
+        // 100 Claude main -> 101 helper -> 102 cmd.exe -> 103 claude (session);
+        // 200 terminal -> 201 claude; 300 and 301 are each other's parent.
+        let parent = |pid: Pid| -> Option<Pid> {
+            let parent = match pid.as_u32() {
+                101 => 100,
+                102 => 101,
+                103 => 102,
+                100 | 200 => 1,
+                201 => 200,
+                300 => 301,
+                301 => 300,
+                _ => return None,
+            };
+            Some(Pid::from_u32(parent))
+        };
+        let agent = |pid: Pid| matches!(pid.as_u32(), 100 | 101 | 103 | 201);
+        assert!(hosted_by_agent(Pid::from_u32(103), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(100), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(201), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(300), parent, agent));
+    }
+
+    #[test]
+    fn a_macos_app_is_reopened_by_its_bundle() {
+        assert_eq!(
+            app_relaunch("/Applications/Claude.app/Contents/MacOS/Claude"),
+            Some(Relaunch {
+                name: "Claude".into(),
+                program: "open",
+                arg: "/Applications/Claude.app".into(),
+            })
+        );
+        // A terminal tool is not an app, wherever it is installed.
+        assert_eq!(app_relaunch("/Users/u/.local/bin/claude"), None);
+        assert_eq!(app_relaunch("/opt/homebrew/bin/codex"), None);
+    }
+
+    /// The path Claude Desktop runs from on the Windows machine the restart was
+    /// built on, and the fields the app ID is assembled from.
+    #[test]
+    fn a_store_package_is_read_from_its_install_path() {
+        let exe =
+            r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
+        assert_eq!(
+            windows_store_package(exe),
+            Some(StorePackage {
+                install_dir: r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc"
+                    .into(),
+                family: "Claude_pzs8sxrjxfjjc".into(),
+                name: "Claude".into(),
+            })
+        );
+        // Case does not decide it; Windows paths are not case-sensitive.
+        assert!(windows_store_package(&exe.to_ascii_lowercase()).is_some());
+        // Not a package folder: too few fields, or not under WindowsApps.
+        assert_eq!(
+            windows_store_package(r"C:\Program Files\WindowsApps\Claude\Claude.exe"),
+            None
+        );
+        assert_eq!(
+            windows_store_package(
+                r"C:\Users\u\AppData\Roaming\Claude\claude-code\2.1.284\claude.exe"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_app_id_is_the_application_that_was_running() {
+        // Trimmed from Claude's own AppxManifest.xml: the helper is a second
+        // application, and the list element shares the tag's prefix.
+        let manifest = r#"<Package><Applications>
+<Application Id="Claude" Executable="app\Claude.exe" EntryPoint="Windows.FullTrustApplication">
+</Application>
+<Application
+  Id="SshAskpass" Executable="app\resources\claude-ssh-askpass.exe" EntryPoint="Windows.FullTrustApplication">
+</Application>
+</Applications></Package>"#;
+        assert_eq!(
+            manifest_app_id(manifest, r"app\Claude.exe").as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(
+            manifest_app_id(manifest, r"APP\claude.exe").as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(
+            manifest_app_id(manifest, r"app\resources\claude-ssh-askpass.exe").as_deref(),
+            Some("SshAskpass")
+        );
+        assert_eq!(manifest_app_id(manifest, r"app\other.exe"), None);
+        // `Id` is a whole attribute name, not the tail of another one.
+        assert_eq!(xml_attr(r#" AppId="x" Id="y""#, "Id"), Some("y"));
     }
 }

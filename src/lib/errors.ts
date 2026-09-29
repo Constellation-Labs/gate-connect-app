@@ -256,7 +256,7 @@ export function classifyError(
     forget: "Couldn’t reset Gate Connect",
     save_api_key: "Couldn’t save the API key",
     update: "Couldn’t install the update",
-    close_agents: "Couldn’t close the running tools and apps",
+    close_agents: "Couldn’t restart the running tools and apps",
     quit_disable: "Couldn’t disconnect the tools",
     proxy_toggle: "Couldn’t toggle routing",
     provider_toggle: "Couldn’t change that app’s routing",

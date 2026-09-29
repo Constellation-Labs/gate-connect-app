@@ -259,7 +259,7 @@ export function installFakeTauri(state: BackendState): void {
       const n = state.runningAgents;
       state.runningAgents = 0;
       state.staleAgents = 0;
-      return n;
+      return { closed: n, restarted: [], reopen_yourself: [], still_running: [] };
     },
     quit_app: () => null,
     pending_quit_tools: () => {

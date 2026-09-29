@@ -304,7 +304,7 @@ export function App() {
 
   // Set when routing flips on/off in a way worth a full-popover takeover: the
   // user toggled the proxy from the home screen while tools were running, or
-  // asked for it from the Home banner's "Close them…" action (which opens
+  // asked for it from the Home banner's "Restart them…" action (which opens
   // straight on the confirm step - the banner click already declared the
   // intent). Shown until dismissed. Routing that comes up on its own at
   // startup gets the calm inline `changeNotice` banner on Home instead (and
@@ -1332,7 +1332,7 @@ export function App() {
         // Carries the banner's direction so the takeover doesn't announce
         // "Routing is on" over a switch the user just turned off.
         // "pending" can never reach here: that banner offers Turn on routing,
-        // not Close them, because nothing is running to close.
+        // not Restart them, because nothing is running to restart.
         onCloseAgents={() =>
           setRoutingNotice({
             dir: changeNotice === "off" ? "off" : "on",
