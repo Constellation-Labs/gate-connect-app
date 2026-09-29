@@ -907,18 +907,21 @@ function RecentActivity({
                 "Type" is gone, and "Security" is now "Status" - the same
                 column, renamed, still merging a failed request (ERROR) with
                 what the guardrails did.
-                Shares rather than pixel counts, so they hold at both window
-                sizes; taken off the proportions the redrawn table draws. */}
+                Shares taken off `table/recent-activity` (1370:4990), whose body
+                cells sit at 0/180/352/596 inside 688 - so 180, 172, 244 and 92
+                wide once each 16px gutter is counted in, which is the
+                26/25/35.5/13.5 below. Shares rather than pixel counts, so they
+                hold at both window sizes. */}
               <th scope="col" className="w-[26%] pb-3 text-left font-normal">
                 Time
               </th>
-              <th scope="col" className="w-[24.5%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[25%] pb-3 text-left font-normal">
                 Status
               </th>
-              <th scope="col" className="w-[39.5%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[35.5%] pb-3 text-left font-normal">
                 Model
               </th>
-              <th scope="col" className="w-[10%] pb-3 text-right font-normal">
+              <th scope="col" className="w-[13.5%] pb-3 text-right font-normal">
                 Action
               </th>
             </tr>
