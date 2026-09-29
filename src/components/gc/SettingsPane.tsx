@@ -478,9 +478,9 @@ export function buildSettingsSections({
         // One row, and one switch over nearly every native notification the
         // app can fire: blocked and flagged requests from the live security
         // feed (AG-578), plus the routing ones - an expired session, and what a
-        // quit put back or could not. The one it does not silence is a plain
-        // quit's "could not be put back", which is the last word before the
-        // process is gone (`quit_notice_bodies` in `src-tauri/src/lib.rs`). A
+        // quit put back or could not. The one it does not silence is a quit's
+        // "could not be put back", which is the last word before the process
+        // is gone (`quit_notice_body` in `src-tauri/src/lib.rs`). A
         // previous build split it into three rows because AG-594's acceptance
         // criteria names a switch each. The Figma
         // draws one (`116:29086`) with the description below, and the frame wins

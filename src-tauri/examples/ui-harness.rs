@@ -105,7 +105,6 @@ const EVENTS: &[&str] = &[
     "security-feed-history",
     "security-event",
     "recovery-details-requested",
-    "quit-requested",
     "cf-challenge-required",
     "backend-error-pending",
 ];

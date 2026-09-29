@@ -46,7 +46,7 @@ answers IPC with no window and no plugins, on every platform. So `ui-e2e` in
   WebKitGTK. This proves interaction and wiring; how any of it paints is
   covered by nothing, same as the popover suite.
 - **The tray, window lifecycle, OS trust dialogs, the updater.** No window
-  exists. `quit-requested` and friends can still be exercised, because the
+  exists. `session-changed` and friends can still be exercised, because the
   backend emits them and `/events` replays them.
 - **The keychain.** `GATE_CONNECT_TEST_SECRETS` is set, for the reason
   CLAUDE.md gives: a real keychain read would prompt per rebuild on macOS.

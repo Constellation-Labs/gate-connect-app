@@ -1716,9 +1716,8 @@ static DECOR_SAVED_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// The principled repair is still to build this window at runtime the way
 /// `open_onboarding_window` does, so it is never shown-after-hidden and none of
 /// this exists. That is larger because a `--silent` session keeps the hidden
-/// webview alive on purpose - detection polling, the `quit-requested` listener
-/// and the backend-error drain all live in it - so it cannot simply be created
-/// on demand.
+/// webview alive on purpose - detection polling and the backend-error drain
+/// both live in it - so it cannot simply be created on demand.
 #[cfg(target_os = "linux")]
 fn map_maximized_for_decorations<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     // A reveal of a window that is already up needs nothing, and toggling its
@@ -2699,16 +2698,14 @@ fn set_device_name(name: String) -> Result<(), String> {
 }
 
 /// Turn native notifications on or off. One switch, because Settings draws one
-/// row: a request blocked or flagged by the security feed (AG-578); both
-/// notices of [`disconnect_tools_for_quit`], tools back on their own settings
-/// or a tool that could not be put back; the notice of a plain [`quit_app`]
-/// that put tools back as promised; and the session-expired notice from either
-/// of its two paths (the refresh loop and [`signal_session_dead`]).
+/// row: a request blocked or flagged by the security feed (AG-578); the notice
+/// of a [`quit_app`] that put every tool back on its own settings; and the
+/// session-expired notice from either of its two paths (the refresh loop and
+/// [`signal_session_dead`]).
 ///
-/// One exception: a plain quit's notice that a tool could *not* be put back is
-/// shown regardless. The disconnect path can let the switch silence its own
-/// failure because the window lists it too; a plain quit has nothing else left
-/// to say it (see `quit_notice_bodies`).
+/// One exception: a quit's notice that a tool could *not* be put back is shown
+/// regardless, because nothing else is left running to say it (see
+/// `quit_notice_body`).
 #[tauri::command]
 fn set_notifications(enabled: bool) -> Result<(), String> {
     gate_connect_core::preferences::set_notifications(enabled).map_err(|e| format!("{e:#}"))
@@ -4890,184 +4887,52 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
     let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
-/// Tray "Quit": exit immediately unless config-routed CLI tools are still
-/// managed (Connected, or Drifted - either way their configs point at the
-/// loopback relay). macOS / Windows only: there the relay lives in this
-/// process and dies with it, so those tools hard-fail until Gate Connect runs
-/// again - unless the forwarder holds the relay port, which it normally does,
-/// and then those tools reach their own provider directly and are not on the
-/// list (`proxy::address_dies_with_gui`). On Linux the engine lives in a
-/// detached helper daemon that outlives the GUI (see core's `manager_linux`),
-/// so the relay port keeps serving
-/// after a quit and there is nothing to warn about - quit plainly. (In OAuth
-/// mode the daemon serves the last-pushed access token, so routing degrades
-/// once it expires; still not the dead-port failure the warning describes.)
-/// Instead of quitting blind, reveal the popover and let the frontend ask
-/// whether to turn the integrations off first; it finishes the quit via
-/// [`quit_app`]. The tool names are buffered (not just emitted): a Quit
-/// clicked before the webview's listener is up would otherwise be silently
-/// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
-/// each `quit-requested` nudge (mirrors the backend-error seam).
+/// Tray "Quit": the same quit as [`quit_app`], with no question in front of it.
+///
+/// There used to be one. On macOS and Windows this revealed the window and let
+/// the frontend ask whether to disconnect the tools first; since the "quit
+/// without disconnecting" row went, the question had one answer, and every
+/// quit now gives it.
 fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    // **Linux exits outright, and that is correct.** It looks like the flow
-    // being skipped on one platform, and it is not: there the engine is a
-    // DETACHED helper daemon that outlives this process (see the note at
-    // `LAUNCH_AT_LOGIN`-adjacent code, "on Linux the engine lives in a
-    // detached helper daemon", and "Linux has no exit-time safe point - the
-    // RunEvent::Exit handler is macOS/Windows-only"). Quitting the GUI there
-    // stops nothing: routing continues, no config is left aimed at a dead
-    // relay, and so there is no question to ask. Asking would be worse than
-    // silent - the "disconnect and quit" branch would tear down routing the
-    // user never needed to lose.
-    //
-    // I removed this gate once, reasoning from the docstring above and from
-    // AG-596, and it was a regression. Do not remove it again.
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    app.exit(0);
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        let app = app.clone();
-        // Off the main thread: the status probe reads tool config files.
-        tauri::async_runtime::spawn_blocking(move || {
-            let connected: Vec<String> = registry::registry()
-                .iter()
-                .filter(|integ| {
-                    matches!(
-                        integ.status(),
-                        Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
-                    )
-                })
-                .map(|integ| integ.display_name().to_string())
-                .collect();
-            if connected.is_empty() {
-                app.exit(0);
-                return;
-            }
-            if let Ok(mut pending) = PENDING_QUIT_TOOLS.lock() {
-                *pending = Some(PendingQuit {
-                    reverting: gate_connect_core::provider::tools_stranded_by_quit(),
-                    tools: connected,
-                });
-            }
-            reveal_popover_window(&app);
-            let _ = app.emit("quit-requested", ());
-        });
-    }
+    tauri::async_runtime::spawn(quit_app(app.clone()));
 }
 
-/// Quit request buffered by [`request_quit`] for the frontend to sweep, or
-/// `None` when no quit is pending.
-///
-/// What the deferred quit would do, for the dialog to say before the user
-/// chooses. `tools` still route through Gate; `reverting` is the subset whose
-/// configuration names an address that dies with this process and will be put
-/// back on its own settings on the way out - the same predicate `quit_app`
-/// applies, so the dialog names what gets rewritten (up to a forwarder that
-/// takes or loses the relay port in between; `proxy::QuitAddresses` says why
-/// that fails safe).
-#[derive(Clone, serde::Serialize)]
-struct PendingQuit {
-    tools: Vec<String>,
-    reverting: Vec<String>,
-}
-
-static PENDING_QUIT_TOOLS: Mutex<Option<PendingQuit>> = Mutex::new(None);
-
-/// Hand the buffered quit request (connected tool names) to the frontend and
-/// clear it.
+/// The tray popover's own Quit entry: the same quit the tray menu's item runs.
 #[tauri::command]
-fn pending_quit_tools() -> Option<PendingQuit> {
-    PENDING_QUIT_TOOLS.lock().ok().and_then(|mut p| p.take())
+fn request_app_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    request_quit(&app);
 }
 
-/// The tools a plain quit would put back on their own settings, asked directly
-/// rather than drained from a buffer.
+/// Quit, putting every tool back on its own settings on the way out.
 ///
-/// [`pending_quit_tools`] answers this for a quit the **tray** raised, because
-/// [`request_quit`] filled the buffer on the way. The window's own menu entry
-/// raises the flow itself with nothing buffered, and it can derive the routed
-/// list from the rows it already has - but not this one: which address a
-/// config holds is per install, and `proxy::address_dies_with_gui` is the one
-/// place that decides whether it survives the exit. A frontend guess here would
-/// be a second copy of that policy, and the dialog's whole job is to name what
-/// `quit_app` will actually rewrite.
+/// **Linux exits outright, and that is correct.** It looks like the teardown
+/// being skipped on one platform, and it is not: there the engine is a
+/// DETACHED helper daemon that outlives this process (see the note at
+/// `LAUNCH_AT_LOGIN`-adjacent code, "on Linux the engine lives in a detached
+/// helper daemon", and "Linux has no exit-time safe point - the RunEvent::Exit
+/// handler is macOS/Windows-only"). Quitting the GUI there stops nothing:
+/// routing continues and no config is left aimed at a dead relay. Tearing it
+/// down would take away routing the user never asked to lose. A gate like this
+/// was removed once, reasoning from AG-596, and it was a regression. Do not
+/// remove it again.
 ///
-/// Off the main thread, like [`request_quit`]'s own sweep: it reads tool config
-/// files. `None` when the read could not complete, so the dialog can say it
-/// does not know rather than naming no tool: an empty list is the ordinary
-/// answer for an install whose configs all name the forwarder, and a failure
-/// read as that answer told the user their configs stay put when the exit was
-/// about to rewrite them.
-///
-/// Empty on Linux without asking, where the engine is a daemon that outlives
-/// this window and [`quit_app`] reverts nothing. The provider function reads
-/// the addresses without the platform so the rule can be tested on any CI
-/// runner; whether this GUI is the engine's process is the caller's question
-/// here, exactly as it is in [`quit_app`] and [`request_quit`].
-#[tauri::command]
-async fn tools_stranded_by_quit() -> Option<Vec<String>> {
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Some(Vec::new())
-    }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        tauri::async_runtime::spawn_blocking(gate_connect_core::provider::tools_stranded_by_quit)
-            .await
-            .ok()
-    }
-}
-
-/// Finish a quit that [`request_quit`] deferred to the popover: the "quit
-/// without disconnecting" choice. The `RunEvent::Exit` handler still reverts
-/// the system proxy.
-///
-/// One thing is reverted here that the exit handler does not touch. On macOS
-/// and Windows the relay and the engine both live in this process, so a config
-/// naming either - a relay base URL, or the engine's own proxy port on an
-/// install the forwarder repoint did not reach - names a port about to stop
-/// answering, and the tool then
-/// fails with an error about a loopback address until Gate runs again.
-/// `provider::revert_stranded_configs_for_quit` puts exactly those tools back on
-/// their own settings and records them for the startup restore. Everything
-/// naming the forwarder is left alone: that process keeps running and forwards
-/// direct, which is the whole reason it exists. Linux skips it; the relay is a
-/// daemon there and keeps answering.
-///
-/// Off the main thread, like `disconnect_tools_for_quit`: it is config-file
-/// I/O. A notification rather than silence, because a rewrite of somebody's
-/// config file is worth a sentence and the popover is gone before it lands.
-/// The notifications switch can silence that sentence, but not the one saying
-/// a tool could not be put back - see `quit_notice_bodies`.
+/// On macOS and Windows the sweep runs here, before the exit, rather than only
+/// in the `RunEvent::Exit` handler: this side can still fire a notification,
+/// and a rewrite of somebody's config file is worth a sentence. The exit
+/// handler runs the same sweep for the exits that never reach this command
+/// (Cmd+Q, a logout, a shutdown), and after this one it finds nothing left.
 #[tauri::command]
 async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         use tauri_plugin_notification::NotificationExt;
-        // What the dialog named a moment ago, read again on this side of the
-        // revert: `promised` is the same predicate the revert applies, so a
-        // tool in it and not in the answer is one the user was told would be
-        // put back and was not.
-        let (promised, reverted) = tauri::async_runtime::spawn_blocking(|| {
-            let promised = gate_connect_core::provider::tools_stranded_by_quit();
-            let reverted = gate_connect_core::provider::revert_stranded_configs_for_quit()
-                .map_err(|e| format!("{e:#}"));
-            (promised, reverted)
-        })
-        .await
-        .unwrap_or_else(|e| (Vec::new(), Err(format!("join error: {e}"))));
-        let put_back = match reverted {
-            Ok(names) => names,
-            Err(e) => {
-                eprintln!("[gate] putting stranded tools back for quit failed: {e}");
-                Vec::new()
-            }
-        };
-        let missed: Vec<String> = promised
-            .into_iter()
-            .filter(|p| !put_back.contains(p))
-            .collect();
-        for body in quit_notice_bodies(&put_back, &missed, || {
+        let outcome = tauri::async_runtime::spawn_blocking(disconnect_tools_for_quit)
+            .await
+            .unwrap_or_else(|e| Err(format!("join error: {e}")));
+        if let Err(e) = &outcome {
+            eprintln!("[gate] putting tools back for quit failed: {e}");
+        }
+        if let Some(body) = quit_notice_body(&outcome, || {
             gate_connect_core::preferences::load().notifications
         }) {
             let _ = app
@@ -5081,174 +4946,68 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     app.exit(0);
 }
 
-/// What [`quit_app`] says on its way out, in the order it says it: tools put
-/// back as promised, then tools that were promised and missed. Split out of
-/// the command, which only runs on macOS and Windows, so the one rule that
-/// matters here is pinned by a test on every platform.
-///
-/// `notifications` is asked only when there is something put back to report,
-/// so a quit with nothing to say reads no preferences file.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn quit_notice_bodies(
-    put_back: &[String],
-    missed: &[String],
-    notifications: impl FnOnce() -> bool,
-) -> Vec<String> {
-    let mut bodies = Vec::new();
-    // Gated on the notifications preference: a rewrite that went as promised
-    // is information, and a switch the user turned off has to stop it. The
-    // broken-promise notice below is not gated - see there.
-    if !put_back.is_empty() && notifications() {
-        // Both shapes spelled out, as `disconnect_tools_for_quit` does, rather
-        // than assembled from plural conditionals. The Codex sentence is added
-        // only when Codex is in the list: it is the one tool where "reconnects
-        // when it starts again" is per conversation rather than per process -
-        // a conversation pins its provider when it starts, measured in
-        // `integrations::codex`.
-        let mut body = if put_back.len() == 1 {
-            format!(
-                "{} is back on its own settings while Gate Connect is closed, and \
-                 reconnects when it starts again.",
-                put_back[0]
-            )
-        } else {
-            format!(
-                "{} are back on their own settings while Gate Connect is closed, and \
-                 reconnect when it starts again.",
-                join_names(put_back)
-            )
-        };
-        if put_back.iter().any(|n| n == "Codex") {
-            body.push_str(
-                " Codex conversations already open keep the route they started with \
-                 until you resume them.",
-            );
-        }
-        bodies.push(body);
-    }
-    // The dialog promised these by name and this is the last message before
-    // the process is gone, so a broken promise is said rather than logged: the
-    // whole list when the revert could not run at all (another routing
-    // operation held the guard), or the one tool whose rewrite failed and was
-    // logged out of the answer.
-    //
-    // Deliberately not gated on the notifications switch. The window, the tray
-    // and the process are all gone by the time it lands, so it is the only way
-    // the user learns a tool is now pointed at a dead port; silencing it would
-    // leave that tool failing with no explanation. `disconnect_tools_for_quit`
-    // can gate its own failure notice because the window also shows that list.
-    if !missed.is_empty() {
-        bodies.push(if missed.len() == 1 {
-            format!(
-                "{} could not be put back on its own settings before Gate Connect closed. \
-                 It stays pointed at Gate and cannot reach its provider until Gate Connect \
-                 runs again.",
-                missed[0]
-            )
-        } else {
-            format!(
-                "{} could not be put back on their own settings before Gate Connect closed. \
-                 They stay pointed at Gate and cannot reach their providers until Gate \
-                 Connect runs again.",
-                join_names(missed)
-            )
-        });
-    }
-    bodies
-}
-
-/// The tray popover's own Quit entry: the same three-way quit the tray menu's
-/// item runs, so both entrances exit outright or defer to the main window's
-/// dialog when config-routed tools would be left pointing at a dead relay.
-#[tauri::command]
-fn request_app_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    request_quit(&app);
-}
-
-/// Quit-time integration teardown (the "turn off integrations" quit choice):
-/// snapshot + disconnect every enabled provider AND the managed standalone
-/// tools no provider maps, so all the CLI tools fall back to their original
-/// settings while Gate Connect is closed, WITHOUT touching the routing
-/// intent - the startup restore reapplies both snapshots the next time the
-/// app runs with routing intended on. Fires a system notification (the
-/// popover dies with the process) saying so.
+/// Quit-time teardown: snapshot + disconnect every enabled provider AND the
+/// managed standalone tools no provider maps, so all the CLI tools fall back
+/// to their original settings while Gate Connect is closed, WITHOUT touching
+/// the routing intent - the startup restore reapplies both snapshots the next
+/// time the app runs.
 ///
 /// Returns the display names of any tools it could **not** return to their own
-/// settings. Empty means the teardown was clean. A non-empty list is not an
-/// error - the rest of the sweep still ran - but the caller must not report the
-/// quit as tidy, and must not quit without saying so.
-#[tauri::command]
-async fn disconnect_tools_for_quit<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<Vec<String>, String> {
-    // Off the main thread: disconnect does config-file I/O.
-    let failed: Vec<String> = tauri::async_runtime::spawn_blocking(|| {
-        let failed = gate_connect_core::provider::snapshot_and_disable_everything()
-            .map_err(|e| format!("{e:#}"))?;
-        // This is a disconnect, not a routing-off: the user asked Gate out of
-        // the path, so nothing starts the passthrough listener again. It is
-        // drained rather than stopped, because a tool already running still
-        // holds its address and would otherwise fail until reopened - see
-        // `proxy::forwarder::drain`.
-        gate_connect_core::proxy::forwarder::drain();
-        Ok::<_, String>(failed)
-    })
-    .await
-    .map_err(|e| format!("disconnect join error: {e}"))??;
-    // Gated on the notifications preference, the one switch Settings draws: a
-    // switch the user turned off has to actually stop something or it was never
-    // a switch. The list is still returned either way - suppressing the
-    // notification must not suppress the *result*.
-    if gate_connect_core::preferences::load().notifications {
-        use tauri_plugin_notification::NotificationExt;
-        // The clean-teardown wording is only true when the teardown was clean.
-        // With a tool left on Gate's settings, telling the user everything is
-        // back is worse than saying nothing: their next request goes to a relay
-        // that died with this process, and the notification told them it would
-        // not.
-        let body = if failed.is_empty() {
-            // "Your tools", not "Integrations": that word reaches the user
-            // nowhere else in the product, and this notification arrives
-            // seconds after a panel that called them tools. The rest of the
-            // wording is shared with QuitConfirm on purpose.
-            //
-            // No restart to ask for: the forwarder keeps serving whatever
-            // already holds its address until the session ends, so a session
-            // that was working a moment ago keeps working.
-            "Your tools are back on their own settings while Gate Connect is \
-             closed. Anything already open keeps working, and everything \
-             reconnects when Gate Connect starts again."
-                .to_string()
-        } else {
-            // Actionable over explanatory: what the tool does next depends on
-            // whether the session has ended since (the drained forwarder keeps
-            // serving it until then), and the fix is the same either way.
-            if failed.len() == 1 {
-                format!(
-                    "{} could not be put back on its own settings. It still points \
-                     at Gate; update its config by hand.",
-                    failed[0]
-                )
-            } else {
-                format!(
-                    "{} could not be put back on their own settings. They still \
-                     point at Gate; update their config by hand.",
-                    join_names(&failed)
-                )
-            }
-        };
-        let _ = app
-            .notification()
-            .builder()
-            .title("Gate Connect")
-            .body(body)
-            .show();
-    }
+/// settings. Empty means the teardown was clean. `Err` means it could not run
+/// at all (another routing operation held the guard), so nothing was put back.
+///
+/// Shared with the `RunEvent::Exit` handler, so a quit means one thing however
+/// it arrives.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn disconnect_tools_for_quit() -> Result<Vec<String>, String> {
+    let failed = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+        .map_err(|e| format!("{e:#}"))?;
+    // This is a disconnect, not a routing-off: the user asked Gate out of
+    // the path, so nothing starts the passthrough listener again. It is
+    // drained rather than stopped, because a tool already running still
+    // holds its address and would otherwise fail until reopened - see
+    // `proxy::forwarder::drain`.
+    gate_connect_core::proxy::forwarder::drain();
     Ok(failed)
+}
+
+/// What [`quit_app`] says on its way out, if anything. Split out of the
+/// command, which only runs on macOS and Windows, so the one rule that matters
+/// here is pinned by a test on every platform.
+///
+/// A clean teardown is information, gated on the notifications preference: a
+/// switch the user turned off has to actually stop something. A teardown that
+/// left tools on Gate's settings is **not** gated. The window, the tray and the
+/// process are all gone by the time it lands, so it is the only way the user
+/// learns a tool still points at Gate. `notifications` is asked only on the
+/// clean branch, so a failed quit reads no preferences file.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn quit_notice_body(
+    outcome: &Result<Vec<String>, String>,
+    notifications: impl FnOnce() -> bool,
+) -> Option<String> {
+    match outcome {
+        Ok(failed) if failed.is_empty() => {
+            notifications().then(|| "Gate removed from tool configs".to_string())
+        }
+        // Actionable over explanatory: what the tool does next depends on
+        // whether the session has ended since (the drained forwarder keeps
+        // serving it until then), and the fix is the same either way.
+        Ok(failed) if failed.len() == 1 => Some(format!(
+            "Failed to remove Gate from the {} config. Edit it by hand.",
+            failed[0]
+        )),
+        Ok(failed) => Some(format!(
+            "Failed to remove Gate from the {} configs. Edit them by hand.",
+            join_names(failed)
+        )),
+        Err(_) => Some("Failed to remove Gate from tool configs. Edit them by hand.".to_string()),
+    }
 }
 
 /// "A", "A and B", "A, B and C" - the list is read by a person, and a bare
 /// comma-join reads as a fragment at two items.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn join_names(names: &[String]) -> String {
     match names {
         [] => String::new(),
@@ -5320,10 +5079,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             reveal_popover,
             request_switch_org,
             quit_app,
-            pending_quit_tools,
-            tools_stranded_by_quit,
             request_app_quit,
-            disconnect_tools_for_quit,
             list_providers,
             proxy_status,
             proxy_browser_store,
@@ -5404,10 +5160,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             reveal_popover,
             request_switch_org,
             quit_app,
-            pending_quit_tools,
-            tools_stranded_by_quit,
             request_app_quit,
-            disconnect_tools_for_quit,
             list_providers,
             set_updater_relaunching,
             get_preferences,
@@ -6437,29 +6190,26 @@ pub fn run() {
             // is promptless and leaves the CA trusted.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
-                // Put stranded tools back on *every* exit, not only the one
-                // that goes through the quit panel.
+                // Put every tool back on its own settings on *every* exit, not
+                // only the one that goes through `quit_app`: the same teardown
+                // (`disconnect_tools_for_quit`), so a quit means one thing
+                // however it arrives.
                 //
-                // `quit_app` is reached by the tray's Quit and by the crash
-                // screen's, and by nothing else: macOS Cmd+Q comes from Tauri's
-                // default app menu, and a logout or a shutdown comes from the
-                // OS, and both land here having touched none of our own code.
-                // Those exits take the engine down with the process, and with it
-                // any address only the engine serves - its own port, and the
-                // relay where the forwarder does not hold it - leaving the tools
-                // that name one pointed at a port with nothing behind it, which
-                // is the state the revert exists to prevent. A relay the
-                // forwarder holds survives and is not reverted. Doing it here
-                // makes every path safe by default and leaves the panel to do
-                // what it is for, which is offering the *other* choice.
+                // `quit_app` is reached by the tray's Quit, the window menu's
+                // and the crash screen's, and by nothing else: macOS Cmd+Q
+                // comes from Tauri's default app menu, and a logout or a
+                // shutdown comes from the OS, and both land here having touched
+                // none of our own code. This used to revert only the tools
+                // whose address dies with this process, leaving the forwarder's
+                // tools pointed at Gate and working with nothing reading their
+                // traffic. After `quit_app` nothing is left connected and this
+                // is a no-op.
                 //
-                // Before `disable_quiet` below, deliberately: the revert decides
-                // what to put back by comparing each config against the
-                // persisted port files, and that reasoning should not race a
-                // teardown running beside it.
+                // Before `disable_quiet` below, deliberately: the provider half
+                // turns domains off in the engine, which has to still be up.
                 //
                 // Not on an updater relaunch: the app is coming straight back,
-                // so reverting would rewrite every relay tool's config and the
+                // so the sweep would rewrite every tool's config and the
                 // restore would undo it, costing each of them a restart for
                 // nothing.
                 //
@@ -6469,36 +6219,22 @@ pub fn run() {
                 // same panel the tray raises. It is not, because that event
                 // also carries a logout and a shutdown, and an app that puts a
                 // dialog in front of those is an app that hangs the user's
-                // logout. Cmd+Q means "quit without disconnecting" now, which
-                // is the safe half of the panel anyway.
+                // logout. For the same reason the sweep gives up rather than
+                // waiting on another routing operation.
                 //
                 // No notification either. `quit_app` can fire one because it
                 // runs before the exit; by the time this runs the process is
                 // going away and a notification would be a promise we cannot
                 // keep.
-                //
-                // At the end of the login session on Windows the relay is put
-                // back even where the forwarder holds it: the forwarder goes
-                // with the session and nothing but Gate starts it again, so a
-                // tool that starts before Gate after the next login would find
-                // nothing on the relay port. The startup restore reconnects
-                // them, as it does after any revert. `session_ending` is
-                // always false on macOS, where launchd holds the port from
-                // login.
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
-                    let revert = if gate_connect_core::proxy::session_ending() {
-                        gate_connect_core::provider::revert_stranded_configs_relay_unfronted
-                    } else {
-                        gate_connect_core::provider::revert_stranded_configs_for_quit
-                    };
-                    match revert() {
-                        Ok(names) if !names.is_empty() => eprintln!(
-                            "[gate] put {} back on their own settings on exit",
-                            join_names(&names)
+                    match disconnect_tools_for_quit() {
+                        Ok(failed) if failed.is_empty() => {}
+                        Ok(failed) => eprintln!(
+                            "[gate] {} could not be put back on their own settings on exit",
+                            join_names(&failed)
                         ),
-                        Ok(_) => {}
                         Err(e) => {
-                            eprintln!("[gate] putting stranded tools back on exit failed: {e:#}")
+                            eprintln!("[gate] putting tools back on exit failed: {e}")
                         }
                     }
                 }
@@ -7120,46 +6856,49 @@ mod tests {
     }
 
     /// The rule the notifications switch has an exception for: a tool the quit
-    /// dialog promised to put back and did not is said with the switch off,
-    /// because nothing else is left running to say it.
+    /// could not put back is said with the switch off, because nothing else is
+    /// left running to say it.
     #[test]
-    fn quit_says_a_broken_promise_with_notifications_off() {
-        let bodies = quit_notice_bodies(&names(&["Codex"]), &names(&["Hermes"]), || false);
-        assert_eq!(bodies.len(), 1, "{bodies:?}");
+    fn quit_says_a_left_behind_tool_with_notifications_off() {
+        let body = quit_notice_body(&Ok(names(&["Hermes"])), || false);
         assert!(
-            bodies[0].starts_with("Hermes could not be put back"),
-            "{bodies:?}"
+            body.as_deref().is_some_and(
+                |b| b == "Failed to remove Gate from the Hermes config. Edit it by hand."
+            ),
+            "{body:?}"
         );
     }
 
     #[test]
-    fn quit_says_both_with_notifications_on() {
-        let bodies = quit_notice_bodies(&names(&["Codex"]), &names(&["Hermes"]), || true);
-        assert_eq!(bodies.len(), 2, "{bodies:?}");
-        assert!(bodies[0].starts_with("Codex is back"), "{bodies:?}");
+    fn quit_says_a_clean_teardown_only_with_notifications_on() {
+        let on = quit_notice_body(&Ok(Vec::new()), || true);
         assert!(
-            bodies[1].starts_with("Hermes could not be put back"),
-            "{bodies:?}"
+            on.as_deref()
+                .is_some_and(|b| b == "Gate removed from tool configs"),
+            "{on:?}"
         );
+        assert_eq!(quit_notice_body(&Ok(Vec::new()), || false), None);
     }
 
-    /// Nothing put back means nothing to gate, so the preference is not read.
+    /// The failure notices do not depend on the preference at all, not only on
+    /// it reading false: a refactor that read the switch up front would panic
+    /// here.
     #[test]
-    fn quit_reads_the_switch_only_with_something_put_back() {
-        let bodies = quit_notice_bodies(&[], &[], || panic!("preference read"));
-        assert!(bodies.is_empty(), "{bodies:?}");
-    }
-
-    /// The broken-promise notice does not depend on the preference at all, not
-    /// only on it reading false: a refactor that read the switch up front would
-    /// panic here.
-    #[test]
-    fn quit_says_a_broken_promise_without_reading_the_switch() {
-        let bodies = quit_notice_bodies(&[], &names(&["Hermes"]), || panic!("preference read"));
-        assert_eq!(bodies.len(), 1, "{bodies:?}");
+    fn quit_says_a_failure_without_reading_the_switch() {
+        let left = quit_notice_body(&Ok(names(&["Codex", "Hermes"])), || {
+            panic!("preference read")
+        });
         assert!(
-            bodies[0].starts_with("Hermes could not be put back"),
-            "{bodies:?}"
+            left.as_deref().is_some_and(|b| b
+                == "Failed to remove Gate from the Codex and Hermes configs. Edit them by hand."),
+            "{left:?}"
+        );
+        let blocked = quit_notice_body(&Err("guard held".into()), || panic!("preference read"));
+        assert!(
+            blocked
+                .as_deref()
+                .is_some_and(|b| b == "Failed to remove Gate from tool configs. Edit them by hand."),
+            "{blocked:?}"
         );
     }
 

@@ -2,68 +2,10 @@ import { test, expect } from "./fixtures";
 
 /** Events pushed from the backend. The popover webview outlives every tray
  *  hide/show, so these are the only way state that changed while the window
- *  was closed - a quit request, a token that expired, an engine that moved -
+ *  was closed - a token that expired, an engine that moved -
  *  ever reaches the screen. Nothing below is reachable from a unit test:
  *  each one starts in Rust and ends in a repaint. */
 test.describe("backend events", () => {
-  test("a deferred quit surfaces the takeover, and disconnecting reverts the tools", async ({
-    boot,
-  }) => {
-    // Buffered by the tray before the listener existed: App sweeps once at
-    // mount, so a Quit clicked before the webview was ready isn't lost.
-    const app = await boot({
-      pendingQuitTools: { tools: ["Claude Code", "Codex"], reverting: ["Codex"] },
-    });
-
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
-    await expect(app.page.getByText(/Claude Code and Codex still route/)).toBeVisible();
-    // The plain quit does two different things to these two, and the dialog
-    // has to say which by name: the backend decided Codex's address dies with
-    // the app, Claude Code's does not.
-    await expect(
-      app.page.getByText(/Codex goes back to its own settings .* Claude Code keeps working/),
-    ).toBeVisible();
-
-    await app.page.getByRole("button", { name: "Disconnect tools and quit" }).click();
-
-    await expect
-      .poll(async () => {
-        const cmds = (await app.calls()).map((c) => c.cmd);
-        return cmds.includes("disconnect_tools_for_quit") && cmds.includes("quit_app");
-      })
-      .toBe(true);
-  });
-
-  test("a quit-requested nudge raises the takeover mid-session", async ({ boot }) => {
-    const app = await boot();
-    await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
-
-    await app.patch({ pendingQuitTools: { tools: ["Claude Code"], reverting: [] } });
-    await app.emit("quit-requested");
-
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
-    // Cancel is the focused control: Enter on an unread panel must not decide
-    // how to quit.
-    await app.page.getByRole("button", { name: "Cancel" }).click();
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toHaveCount(0);
-    expect((await app.calls()).some((c) => c.cmd === "quit_app")).toBe(false);
-  });
-
-  test("a failed disconnect keeps the takeover up instead of quitting", async ({ boot }) => {
-    const app = await boot({
-      pendingQuitTools: { tools: ["Claude Code"], reverting: [] },
-      failures: { disconnect_tools_for_quit: "failed to restore ~/.codex/config.toml" },
-    });
-
-    await app.page.getByRole("button", { name: "Disconnect tools and quit" }).click();
-
-    await expect(app.page.getByText(/couldn|failed|restore/i).first()).toBeVisible();
-    // Quitting with tool configs half-reverted is the one outcome this panel
-    // exists to prevent.
-    expect((await app.calls()).some((c) => c.cmd === "quit_app")).toBe(false);
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
-  });
-
   test("proxy-state-changed repaints Home from the engine, not from a click", async ({ boot }) => {
     const app = await boot();
     await expect(app.page.getByText("Didn’t start")).toBeVisible();

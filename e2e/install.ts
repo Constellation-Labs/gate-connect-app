@@ -15,7 +15,7 @@
  *
  * And for the tests: `window.__GATE_E2E__` with the live state, the recorded
  * call log, and `emit`, which delivers a backend event the way the Rust side
- * does (`quit-requested`, `proxy-state-changed`, `backend-error-pending`).
+ * does (`session-changed`, `proxy-state-changed`, `backend-error-pending`).
  */
 import type { BackendState } from "./backend";
 
@@ -708,24 +708,6 @@ export function installFakeTauri(state: BackendState): void {
     // tray's "Review details" used the bare reveal and so opened nothing, and a
     // spec can only tell the two apart if the fake backend can.
     request_app_quit: () => null,
-    pending_quit_tools: () => {
-      const pending = state.pendingQuitTools;
-      state.pendingQuitTools = null;
-      return pending;
-    },
-    // Not drained, unlike the buffer above: the menu entry asks this every time
-    // it raises the flow.
-    tools_stranded_by_quit: () => state.strandedByQuit,
-    disconnect_tools_for_quit: () => {
-      // A tool the teardown could not put back stays connected, which is what
-      // leaves it pointing at a relay about to die.
-      for (const t of state.tools) {
-        if (t.status.kind === "connected" && !state.quitLeftBehind.includes(t.name)) {
-          t.status = { kind: "detected" };
-        }
-      }
-      return state.quitLeftBehind;
-    },
 
     // ---- analytics seam
     // Drains, like the real buffer: a second call returns nothing.

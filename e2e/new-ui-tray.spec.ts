@@ -85,8 +85,8 @@ test.describe("tray popover", () => {
     await app.page.getByRole("button", { name: "More" }).click();
     await app.page.getByRole("menuitem", { name: "Quit Gate Connect" }).click();
 
-    // `request_app_quit` defers to the main window's three-way dialog when
-    // config-routed tools are still managed; the tray never raises its own.
+    // `request_app_quit` runs the same quit as the window's menu; the tray
+    // never raises a dialog of its own.
     await expect.poll(() => app.lastCall("request_app_quit")).not.toBeNull();
   });
 

@@ -66,7 +66,7 @@ test("turning routing on trusts the CA in the same step", async ({ boot }) => {
 
 - `app.state()` - the backend's state after whatever the UI just did.
 - `app.calls()` / `app.lastCall(cmd)` - what the frontend invoked, with args.
-- `app.emit(event, payload)` - push a backend event (`quit-requested`,
+- `app.emit(event, payload)` - push a backend event (`session-changed`,
   `proxy-state-changed`, `tauri://focus`) the way Rust does.
 - `app.patch(...)` - change backend state out of band, for what moves while
   the popover is closed: a token expiring, the CLI enabling routing.

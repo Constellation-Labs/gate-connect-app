@@ -222,22 +222,6 @@ export interface BackendState {
       spec that cares about the close-apps sequence sets it. */
   runningAgentNames: string[];
   staleAgents: number;
-  /** What `pending_quit_tools` hands the quit dialog: every tool still routed
-   *  through Gate, and the subset a plain quit will put back on its own
-   *  settings because the address its config names dies with the app. Mirrors
-   *  `PendingQuit` in `src/lib/api.ts`. */
-  pendingQuitTools: { tools: string[]; reverting: string[] } | null;
-  /** What `tools_stranded_by_quit` answers: the same subset as
-   *  `pendingQuitTools.reverting`, for the window's own Quit entry, which
-   *  raises the flow itself and so has no buffer to drain. Separate here
-   *  because the buffer is consumed on read and this is not; in Rust both come
-   *  from one predicate over the configured address. `null` is the read
-   *  failing, which the dialog words differently from an empty list. */
-  strandedByQuit: string[] | null;
-  /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
-      Empty = a clean teardown. A spec that cares about the partial-teardown
-      result sets it; the teardown itself still succeeds, which is the point. */
-  quitLeftBehind: string[];
   /** Failures the Rust side has buffered for the frontend to drain. Emptied by
       `drain_backend_errors`, like the real buffer. A spec sets this to check that
       a failure predating the webview - the startup auto-enable runs before either
@@ -357,7 +341,7 @@ const CLAUDE_CODE: ToolFixture = {
   // "CLI", not "Claude Code": `list_tools` sends `row_label`, and every row sits
   // under a family heading that already names the vendor, so the label separates
   // the surfaces inside it - App / Web / CLI. The product name is `display_name`,
-  // which is what the quit takeover's `pendingQuitTools` carries.
+  // which is what the backend names tools by in its notices.
   name: "CLI",
   displayName: "Claude Code",
   upstream_provider_name: "Anthropic",
@@ -653,9 +637,6 @@ export function defaultState(): BackendState {
     runningAgents: 0,
     runningAgentNames: [],
     staleAgents: 0,
-    pendingQuitTools: null,
-    strandedByQuit: [],
-    quitLeftBehind: [],
     backendErrors: [],
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
