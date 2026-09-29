@@ -983,7 +983,11 @@ function RecentActivity({
                     pixel count, so it holds at every size above that. */}
                   <span className="flex items-center gap-2">
                     <VendorMark provider={entry.provider} vendor={entry.vendor} />
-                    <span className="truncate text-sm leading-5 text-base-foreground">
+                    {/* The id on hover: `model` may be the gateway's label. */}
+                    <span
+                      className="truncate text-sm leading-5 text-base-foreground"
+                      title={entry.modelId ?? undefined}
+                    >
                       {entry.model}
                     </span>
                   </span>

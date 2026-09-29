@@ -134,6 +134,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # them here lets us reference the exact same types.
 http = "1"
 time = "0.3"
+# Reads the gateway's `Date` header so a refused session can be logged with
+# how far off the local clock was (`org::clock_skew_secs`). Already in the
+# tree via hyper.
+httpdate = "1"
 serde_yaml = "0.9"
 gate-connect-core = { path = "crates/core" }
 # OAuth (Cognito) support in the shipped binary. `reqwest` (blocking, rustls,

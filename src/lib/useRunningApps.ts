@@ -12,6 +12,7 @@ import {
   isResting,
   nextStage,
   REOPEN_IDLE_WATCH_MS,
+  reopenKey,
   reopenTools,
   type ReopenPresence,
   type ReopenStage,
@@ -234,7 +235,9 @@ export function useRunningApps({
 
   const markStage = useCallback(
     (slug: string, next: ReopenStage, error?: string) => {
-      waited.current.set(slug, 0);
+      for (const t of stageRef.current?.tools ?? []) {
+        if (t.slug === slug) waited.current.set(t.key, 0);
+      }
       commitTools((t) => (t.slug === slug ? { ...t, stage: next, error } : t));
     },
     [commitTools],
@@ -251,16 +254,18 @@ export function useRunningApps({
   const tick = useCallback(async () => {
     const current = stageRef.current;
     if (current?.kind !== "work") return;
-    const slugs = current.tools.map((t) => t.slug);
+    const slugs = [...new Set(current.tools.map((t) => t.slug))];
     let presence = new Map<string, ReopenPresence>();
     try {
       const { agents } = await runningAgents(slugs);
+      // Per row, not per slug: with the Code tab and a terminal `claude` both
+      // on screen, one coming back must not read as the other having come back.
       presence = new Map(
-        slugs.map((slug) => {
-          const mine = agents.filter((a) => a.slug === slug);
-          if (mine.length === 0) return [slug, "gone" as ReopenPresence];
+        current.tools.map(({ key }) => {
+          const mine = agents.filter((a) => reopenKey(a) === key);
+          if (mine.length === 0) return [key, "gone" as ReopenPresence];
           return [
-            slug,
+            key,
             mine.some((a) => a.needs_reopen) ? "stale" : "fresh",
           ] as [string, ReopenPresence];
         }),
@@ -274,20 +279,20 @@ export function useRunningApps({
     }
     const verdicts = await verdictMap();
     commitTools((tool) => {
-      const at = (waited.current.get(tool.slug) ?? 0) + 1;
-      waited.current.set(tool.slug, at);
+      const at = (waited.current.get(tool.key) ?? 0) + 1;
+      waited.current.set(tool.key, at);
       const verdict = verdicts.get(tool.slug);
       const stage = nextStage(
         tool,
         verdict,
-        presence.get(tool.slug) ?? "gone",
+        presence.get(tool.key) ?? "gone",
         at,
       );
-      if (stage !== tool.stage) waited.current.set(tool.slug, 0);
+      if (stage !== tool.stage) waited.current.set(tool.key, 0);
       return {
         ...tool,
         stage,
-        running: presence.get(tool.slug) !== "gone",
+        running: presence.get(tool.key) !== "gone",
         // Kept current: the routes move as the tool comes back, and a card still
         // naming the pre-close pair would describe a moment that has passed.
         routeInUse: verdict?.route_in_use ?? tool.routeInUse,
@@ -331,7 +336,7 @@ export function useRunningApps({
       // The same filter the offer was built from, narrowed to the rows on
       // screen. Killing a wider set than the one the user agreed to would
       // signal processes they were never shown.
-      const closed = await closeRunningAgents(tools.map((t) => t.slug));
+      const closed = await closeRunningAgents([...new Set(tools.map((t) => t.slug))]);
       track("agents_closed", { count: closed });
       // Not "done": the signal was sent, and whether the process went, came
       // back and routes is what the watch is for. The rows Gate can relaunch go
@@ -344,7 +349,9 @@ export function useRunningApps({
       // set of CLIs makes no call at all rather than one that returns 0. The
       // backend waits for the old instances to exit before launching, which is
       // why this is awaited and not fired alongside the close.
-      const reopenable = tools.filter((t) => t.canReopen).map((t) => t.slug);
+      const reopenable = [
+        ...new Set(tools.filter((t) => t.canReopen).map((t) => t.slug)),
+      ];
       if (reopenable.length > 0) {
         // Failing to put an app back is not a failed close: the close already
         // happened, the routing change already landed, and the row's own watch

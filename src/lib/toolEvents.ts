@@ -33,6 +33,29 @@ interface RawEvent {
   securityAction: "allow" | "flag" | "redact" | "block" | null;
   securityCategory: string | null;
   model: string | null;
+  /**
+   * The model's display name, as the gateway spells it (AG-951).
+   *
+   * Optional because the gateway does not send it yet. When it does, it is
+   * what the Recent activity table draws: design asked for "the same model
+   * labels we used in Gate currently", and those live in the catalogue the
+   * gateway owns, not in the id this row already carries.
+   *
+   * **Rendered verbatim, whatever it says.** The catalogue's names are
+   * currently uneven - "Claude Opus 4.1" beside "Claude Opus 4 5", and some
+   * carrying a vendor prefix - and the client deliberately does not tidy
+   * them: the gateway is the source of truth for this string, so a client
+   * that stripped prefixes or restored punctuation would be a second,
+   * disagreeing opinion about the same field. Fixing those values is the
+   * gateway-side half of AG-951.
+   *
+   * Absent falls back to the id, which is what shipped before this. After
+   * the gateway sends the field, it is null only when `model` is, so a model
+   * the catalogue does not name arrives as a prettified id ("Claude Opus 4 5")
+   * rather than as the id itself. That is expected, not a bug here; the id is
+   * kept on the entry as `modelId` for the cell's hover.
+   */
+  modelName?: string | null;
   provider: string | null;
   sessionRef: string | null;
   /** The user's own prompt, shortened and per-row gated upstream. Null when there
@@ -263,7 +286,10 @@ function toEntry(raw: RawEvent): ActivityEntry {
         : null,
     categoryTitle:
       !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
-    model: raw.model ?? NO_MODEL,
+    // The gateway's label when it sends one, the id when it does not. Never a
+    // label this side invented - see `RawEvent.modelName`.
+    model: raw.modelName ?? raw.model ?? NO_MODEL,
+    modelId: raw.model,
     provider: raw.provider,
     vendor: raw.provider ?? vendorFromModelId(raw.model),
     title: raw.conversationTitle,

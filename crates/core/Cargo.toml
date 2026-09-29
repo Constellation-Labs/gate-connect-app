@@ -34,6 +34,7 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 http.workspace = true
 time.workspace = true
+httpdate.workspace = true
 
 # Cognito OAuth (`oauth` module) for the app's own gateway auth. `reqwest`
 # (blocking, rustls) calls the Cognito token endpoint; `sha2` + `base64`
