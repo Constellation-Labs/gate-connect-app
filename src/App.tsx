@@ -891,6 +891,10 @@ export function App() {
       setProxyBusy(true);
       setProviderError(null);
       try {
+        // Before the trust step, which may mint a fresh CA: that is a change
+        // this toggle made, and a stamp earlier than `since` would drop it.
+        // Whole seconds, the unit Gate stamps its changes in.
+        const since = Math.floor(Date.now() / 1000);
         // Turning on is the path that trusts the CA; disable never prompts.
         if (!proxy?.running) await ensureCaTrusted();
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
@@ -913,10 +917,14 @@ export function App() {
         // host. The count decides the remedy, not whether to speak: with
         // nothing stale the hint carries the reload advice alone. A failed
         // probe defaults to showing.
+        //
+        // Only changes this toggle made count. An agent that missed an earlier
+        // connect was already told so then, and an off-and-on that kept every
+        // config rewrote nothing it could have missed.
         if (!next.running) {
           setChangeNotice(null);
         } else {
-          const agents = await staleAgentsCount().catch(() => 1);
+          const agents = await staleAgentsCount(since).catch(() => 1);
           setNothingToClose(agents === 0);
           setChangeNotice("on");
         }
@@ -992,6 +1000,8 @@ export function App() {
       // `finally` below runs on that path too and its notice would announce a
       // connection that was never attempted.
       let declined = false;
+      // Before the trust step; see `toggleProxy`.
+      const since = Math.floor(Date.now() / 1000);
       setProxyBusy(true);
       try {
         if (routed) {
@@ -1021,7 +1031,15 @@ export function App() {
         throw e;
       } finally {
         const running = await resyncLedger();
-        if (!declined) setChangeNotice(noticeFor(routed, running, wasRunning));
+        if (!declined) {
+          const notice = noticeFor(routed, running, wasRunning);
+          // Same probe as the master toggle, so the remedy follows this
+          // change rather than whatever the last toggle found.
+          if (notice && notice !== "pending") {
+            setNothingToClose((await staleAgentsCount(since).catch(() => 1)) === 0);
+          }
+          setChangeNotice(notice);
+        }
         proxyBusyRef.current = false;
         setProxyBusy(false);
       }
@@ -1048,6 +1066,8 @@ export function App() {
       }).find((g) => g.id === id);
       if (!group) return;
       const wasRunning = proxy?.running ?? false;
+      // Before the trust step; see `toggleProxy`.
+      const since = Math.floor(Date.now() / 1000);
       proxyBusyRef.current = true;
       setProxyBusy(true);
       setProviderError(null);
@@ -1119,7 +1139,11 @@ export function App() {
         });
       }
       const running = await resyncLedger();
-      setChangeNotice(noticeFor(on, running, wasRunning));
+      const notice = noticeFor(on, running, wasRunning);
+      if (notice && notice !== "pending") {
+        setNothingToClose((await staleAgentsCount(since).catch(() => 1)) === 0);
+      }
+      setChangeNotice(notice);
       proxyBusyRef.current = false;
       setProxyBusy(false);
     },

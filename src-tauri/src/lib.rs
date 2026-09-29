@@ -2604,18 +2604,34 @@ fn running_agents_count() -> u32 {
 ///
 /// A desktop app has no configuration file of its own, so only the certificate
 /// can make it stale here; a process with no slug makes no claim.
+///
+/// `since` narrows the question to changes stamped at or after it. A routing
+/// toggle asks only about what it changed itself: an agent that missed the
+/// first connect stays behind that stamp for good, and without the bound
+/// every later off-and-on repeated the notice for a change it did not make.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn agent_needs_reopen(process: &sysinfo::Process) -> bool {
+fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
     agent_slug_of(process)
         .map(|slug| {
             gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
                 process_names_known: true,
                 process_starts: &[process.start_time()],
-                config_changed_at: config_changed_at_unix(slug),
-                ca_cert_changed_at: ca_cert_changed_at_unix(),
+                config_changed_at: at_or_after(config_changed_at_unix(slug), since),
+                ca_cert_changed_at: at_or_after(ca_cert_changed_at_unix(), since),
             })
         })
         .unwrap_or(false)
+}
+
+/// A change stamp, kept only when it is at or after `since`, so the decision in
+/// [`agent_needs_reopen`] sees only the changes a toggle made itself. All Unix
+/// seconds.
+///
+/// `>=` because both sides are whole seconds: a change stamped in the same
+/// second the toggle began was made by it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
+    changed_at.filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
 }
 
 /// Count running agent processes that missed a change to what they read at
@@ -2624,12 +2640,15 @@ fn agent_needs_reopen(process: &sysinfo::Process) -> bool {
 ///
 /// `(async)` for the reason on [`running_agents_count`]: this is the probe the
 /// boot path and the `proxy-state-changed` handler both call.
+///
+/// `since` (Unix seconds) counts only changes made at or after it; see
+/// [`agent_needs_reopen`].
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn stale_agents_count() -> u32 {
+fn stale_agents_count(since: Option<u64>) -> u32 {
     let mut count = 0u32;
     for_each_agent_process(&agent_names_for(None), |process| {
-        if agent_needs_reopen(process) {
+        if agent_needs_reopen(process, since) {
             count += 1;
         }
     });
@@ -3387,7 +3406,7 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
                 .is_some(),
             pid: process.pid().as_u32(),
             started_at_unix,
-            needs_reopen: agent_needs_reopen(process),
+            needs_reopen: agent_needs_reopen(process, None),
         });
     });
     // Oldest first: the ones that need a reopen are the ones being looked
@@ -6944,6 +6963,34 @@ mod tests {
         assert_eq!(slug_for("claude"), Some("claude-code"));
         assert_eq!(slug_for("Claude"), Some("anthropic"));
         assert_ne!(slug_for("claude"), slug_for("Claude"));
+    }
+
+    /// The toggle's bound. An agent behind an old change stays stale with no
+    /// bound, and drops out once the toggle asks only about its own changes -
+    /// unless it made one, including a CA it minted in the same second it
+    /// began, which is why `since` is taken before the trust step.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn reopen_counts_only_changes_since_the_bound() {
+        let missed = |started: u64, config: Option<u64>, ca: Option<u64>, since: Option<u64>| {
+            gate_connect_core::reopen::reopen_pending(&gate_connect_core::reopen::ReopenEvidence {
+                process_names_known: true,
+                process_starts: &[started],
+                config_changed_at: at_or_after(config, since),
+                ca_cert_changed_at: at_or_after(ca, since),
+            })
+        };
+        let started = 100;
+        // Missed a connect at 200, no bound: stale, as the boot probe reports.
+        assert!(missed(started, Some(200), None, None));
+        // Same agent, a toggle at 300 that rewrote nothing: not its news.
+        assert!(!missed(started, Some(200), None, Some(300)));
+        // That toggle minted a CA in its own first second: counted.
+        assert!(missed(started, Some(200), Some(300), Some(300)));
+        // Started after the latest change: never stale.
+        assert!(!missed(400, Some(200), Some(300), None));
+        // Nothing recorded: no claim.
+        assert!(!missed(started, None, None, None));
     }
 
     /// The Chrome bridge shares the CLI's binary and process name, and only its
