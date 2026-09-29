@@ -111,7 +111,7 @@ import {
   ChangeReadyDialog,
   CloseAppsDialog,
   ModelPickerDialog,
-  QuitLeftBehindDialog,
+  TeardownLeftBehindDialog,
   UseGateModelDialog,
 } from "./components/gc/dialogs";
 import {
@@ -2549,7 +2549,7 @@ export function NewUiApp() {
           * Rendered inside the layout rather than beside it because `Modal`
           * positions itself over whatever is behind it. */}
         {teardown && (
-          <QuitLeftBehindDialog
+          <TeardownLeftBehindDialog
             tools={teardown.map((t) => t.name)}
             busy={teardownBusy}
             onRetry={() => void retryTeardown()}
@@ -2871,7 +2871,7 @@ export function NewUiApp() {
           // After the review, before the incidental dialogs: a teardown that
           // left tools behind is the newest thing that happened, and the user
           // asked for the operation that produced it.
-<QuitLeftBehindDialog
+          <TeardownLeftBehindDialog
             tools={teardown.map((t) => t.name)}
             busy={teardownBusy}
             onRetry={() => void retryTeardown()}

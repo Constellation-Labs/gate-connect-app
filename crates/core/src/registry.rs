@@ -123,15 +123,15 @@ pub enum Mechanism {
     /// The config carries a loopback **base URL** for the reverse-proxy relay.
     /// On macOS and Windows the forwarder normally holds that port, handing
     /// connections to the engine's relay while it runs and serving them
-    /// straight to the provider once it is gone, so a plain quit leaves the
-    /// address answering. Where the forwarder does not hold it, the engine's
-    /// relay does, in the GUI process, and a plain quit takes it down;
+    /// straight to the provider once it is gone, so the address outlives the
+    /// GUI. Where the forwarder does not hold it, the engine's relay does, in
+    /// the GUI process, and the GUI's exit takes it down;
     /// `proxy::address_dies_with_gui` is what tells the two apart.
     Relay,
     /// The config carries a **proxy address**: the forwarder's, since tool
     /// configs moved off the engine's own port. The forwarder is a separate
     /// process that outlives the GUI on purpose, so this address keeps
-    /// answering across a plain quit and forwards direct.
+    /// answering after the GUI exits and forwards direct.
     ForwardProxy,
     /// Not a config at all: the machine-wide exported variables, which also
     /// name the forwarder and reach only processes started after the export.
@@ -142,7 +142,8 @@ pub trait Integration: Send + Sync {
     fn id(&self) -> ToolId;
 
     /// What this tool is called where nothing else names it: the CLI's output,
-    /// log lines, error contexts, the quit takeover's list of what still routes.
+    /// log lines, error contexts, the quit notice's list of what it could not
+    /// put back.
     /// The product - "Claude Code", not "CLI".
     ///
     /// Distinct from [`Integration::row_label`] on purpose. This one was doing
@@ -254,7 +255,8 @@ pub trait Integration: Send + Sync {
     /// reaching Gate, read from the file as it is now. Empty when the tool is
     /// not installed or carries no Gate values.
     ///
-    /// The raw material for the one question a plain quit asks: does the
+    /// The raw material for the one question the stranded-tool revert asks
+    /// (the Windows uninstall hook's, since every quit now reverts everything): does the
     /// address this config names die with the process? That is decided by
     /// `proxy::address_dies_with_gui`, per address, not per tool - because
     /// which address a config holds is per install (an engine-port fallback,
@@ -503,7 +505,7 @@ mod tests {
     /// The regression this pins: `display_name` was made the ledger's row label
     /// ("CLI"), which is legible under a heading naming the vendor and nowhere
     /// else. Four integrations then answered "CLI", and the surfaces with no
-    /// heading rendered them identically - the quit takeover said "CLI and CLI
+    /// heading rendered them identically - the quit takeover (since removed) said "CLI and CLI
     /// still route", naming two tools the user cannot tell apart at the moment
     /// they decide whether to close them, and `gate-connect list` printed three
     /// such rows. Row labels collide by design and live on `row_label`.

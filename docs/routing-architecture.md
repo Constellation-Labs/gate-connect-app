@@ -180,24 +180,19 @@ that would be handed the tool's own key. The slug table is
 
 What follows from it:
 
-- **A plain exit no longer rewrites a relay config.** `QuitAddresses` records a
- fronted relay origin as absent, so `revert_stranded_configs_for_quit` and the
- quit dialog skip it. It is read once per sweep, so one sweep cannot disagree
- with itself about a tool; the dialog and the revert are two sweeps, and a
- forwarder that takes or loses the port between them makes them differ in the
- safe direction (`proxy::QuitAddresses` says how). Codex and OpenCode go
- direct while Gate is closed and route again on the next start without being
- touched, and a crash leaves them working too.
+- **A fronted relay port answers after Gate exits.** A tool still holding the
+ relay origin keeps working, direct, and a crash - which runs no teardown -
+ leaves relay tools working too. (Every quit now takes Gate out of every
+ config regardless; this is what makes that safe for tools already running,
+ and what `QuitAddresses` records as a fronted origin for the uninstall rule
+ below.)
 - **Except on Windows when the forwarder goes too.** It is a plain detached
- process there, and nothing but Gate starts it again. So at the end of the
- login session (`proxy::session_ending`, Windows' `SM_SHUTTINGDOWN`) the exit
- handler reverts relay configs whether the forwarder holds the port or not
- (`provider::revert_stranded_configs_relay_unfronted`), and the startup
- restore reconnects them; otherwise a tool that started before Gate after the
- next login would find nothing on the relay port. The uninstaller does the
- same through the app binary (`--revert-relay-configs`, from
- `installer-hooks.nsh`) before it kills the forwarder, and skips it on an
- update. macOS needs neither: launchd holds the relay port from login. A drag
+ process there, and nothing but Gate starts it again. The end of a login
+ session is covered by the quit, which reverts every config. The uninstaller
+ reverts relay configs whether the forwarder holds the port or not
+ (`provider::revert_stranded_configs_relay_unfronted`) through the app
+ binary (`--revert-relay-configs`, from `installer-hooks.nsh`) before it kills
+ the forwarder, and skips it on an update. macOS has no such step. A drag
  to the Trash runs no code of ours and can leave the launch agent naming a
  binary that is gone; that is not addressed here.
 - **A clean exit forgets `relay-engine-port`.** The forwarder dials that port
@@ -280,9 +275,9 @@ moves no traffic and costs a restart of every running tool, because a tool
 reads its configuration once and the file's mtime is what says it missed a
 change.
 
-`snapshot_and_disable_everything` is the full sweep, and the quit-and-disconnect
-choice still runs it. Signing out and Reset are on the same side of that line,
-which is where `forwarder::stop` already sat.
+`snapshot_and_disable_everything` is the full sweep, and every quit runs it
+(`snapshot_and_disable_everything_for_exit`). Signing out and Reset are on the
+same side of that line.
 
 Keeping the configs makes the switch **live**: a `codex` running before the
 toggle passes through while parked and routes again when the engine unparks,
@@ -665,31 +660,27 @@ first table.
 
 | event | Gate |
 | --- | --- |
-| **Start** (after a plain quit) | Ensures the forwarder first (including when the machine-wide export is declined, since tool configs may name it), then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects whatever the previous quit put back on its own settings; every other config is already right, so nothing is written to it - and behind the forwarder the quit put back no relay config. |
+| **Start** (after a quit) | Ensures the forwarder first - before the restore, so a relay config the restore rewrites names a live port even when the engine enable then fails - then rebinds the engine on its persisted port and the relay behind the forwarder, re-exports the PAC and the env vars. Reconnects every tool the quit put back on its own settings, which is every tool that named Gate. |
 | **Routing off** | Parks the engine (ports stay bound, forwarding straight through), reverts the PAC and the env export, records which providers were on. **Touches no tool config** (`provider::snapshot_and_park_everything`). |
 | **Routing on** | Unparks (the engine intercepts again), re-exports the PAC and the env, restores the providers. The reconnect writes are byte-identical, so no file is touched (`primitives::write_file`). |
-| **Any exit** (tray Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Reverts the PAC and the env, stops the engine and the relay; the forwarder keeps running. **Reverts a config if and only if an address it names dies with the process**, decided per configured address (`proxy::address_dies_with_gui`): a base URL under the relay origin where the forwarder does not hold the relay port, or the engine's own proxy port (a pre-forwarder install, or a forwarder that would not start), is put back on its own settings and recorded for the startup restore (`provider::revert_stranded_configs_for_quit`). A config naming the forwarder, a relay config the forwarder fronts, or one the user repointed by hand, is untouched. On Windows at the end of the login session, relay configs are reverted even where the forwarder holds the port, because it goes with the session (`provider::revert_stranded_configs_relay_unfronted`). The quit dialog names the same list before the user chooses, and the revert runs again from `RunEvent::Exit` so the paths that never reach the dialog - Cmd+Q, a logout, a shutdown - are safe by default; the second run is a no-op. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
-| **Disconnect and quit** | Restores every config to the tool's own settings, stops the engine, the relay **and the forwarder** (`snapshot_and_disable_everything`, `forwarder::stop`). |
+| **Any exit** (tray Quit, the window menu's Quit, macOS Cmd+Q, the crash screen, a logout or shutdown) | Puts **every** tool that names Gate back on its own settings and records each one, before its write, for the startup restore (`provider::snapshot_and_disable_everything_for_exit`). Then drains the forwarder, reverts the PAC and the env, and stops the engine and the relay. Runs once per process: `quit_app` runs it and fires the notification, and `RunEvent::Exit` runs it for the exits that never reach `quit_app`. Gives up after 5s if another routing operation holds the lock, rather than hang a logout. Not on an updater relaunch, which is coming straight back. Linux reverts none; its engine is a daemon. |
 
 **What the user does:**
 
-| tool | start | routing off | routing on | any exit | disconnect and quit |
-| --- | --- | --- | --- | --- | --- |
-| **Claude Code** | nothing | nothing | nothing | nothing, works unrouted | restart a running session |
-| **Codex** | nothing | nothing | nothing, open conversations route again | nothing, works unrouted | resume open conversations |
-| **OpenCode** | nothing | nothing | nothing | nothing, works unrouted | restart |
-| **OpenClaw** | nothing | nothing | nothing | nothing, works unrouted | `openclaw gateway restart` |
-| **Hermes** | nothing | nothing | nothing | nothing, works unrouted | restart |
-| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted | new terminal |
+| tool | start | routing off | routing on | any exit |
+| --- | --- | --- | --- | --- |
+| **Claude Code** | restart a running session to route again | nothing | nothing | nothing, works unrouted |
+| **Codex** | resume open conversations to route again | nothing | nothing, open conversations route again | nothing, works unrouted |
+| **OpenCode** | restart to route again | nothing | nothing | nothing, works unrouted |
+| **OpenClaw** | `openclaw gateway restart` to route again | nothing | nothing | nothing, works unrouted |
+| **Hermes** | restart to route again | nothing | nothing | nothing, works unrouted |
+| **Terminal tools** (env vars) | nothing | nothing | **new terminal**, for a shell opened while routing was off | nothing, works unrouted |
 
-Starting Gate *after* a disconnect-and-quit is the start that costs the most:
-`restore_all` rewrites every config, so the last column applies again in
-reverse. A start after a plain quit rewrites nothing where the forwarder holds
-the relay port. Where it does not, the quit put the two relay configs back and
-the start rewrites them, and the Codex and OpenCode cells are the ones this
-table carried before the forwarder fronted the relay: a conversation or an
-OpenCode opened while Gate was closed keeps its direct route until resumed or
-restarted, and the exit column says the same of running ones.
+Every start after a quit is the one that costs: the quit rewrote every config,
+and `restore_all` rewrites them back, so a tool that was running across the
+quit keeps working unrouted through the drained forwarder until the login
+session ends, and routes again only once it is reopened. A tool opened while
+Gate was closed read its own settings and is in the same position.
 
 Three things to read off this:
 
@@ -698,34 +689,20 @@ Three things to read off this:
  cannot reach it. That is inherent to environment variables and holds on every
  platform; a shell that was already open keeps the forwarder address the whole
  way through and needs nothing.
-- **Every exit reverts by one rule: does the address die with the process.**
- Every exit, not only the one that goes through the panel: `quit_app` is
- reached by the tray's Quit and the crash screen's and by nothing else, while
- Cmd+Q comes from Tauri's default menu and a logout comes from the OS. Both
- land in `RunEvent::Exit` having touched none of our own code, so the revert
- runs there too. It deliberately does not *veto* the exit - `ExitRequested`
- can be prevented, but the same event carries a logout, and an app that puts a
- dialog in front of a logout is an app that hangs it. Cmd+Q therefore means
- "quit without disconnecting", the safe half of the panel.
- Decided per *configured address*, not per tool, because which address a
- config holds is per install: Codex and OpenCode name the relay origin, and a
- Claude Code, OpenClaw or Hermes install written before the forwarder repoint
- (or whose forwarder would not start) still names the engine's own port. All
- of those live in the GUI process on macOS and Windows, go back to their own
- settings on the way out, and come back at the next start - except the relay
- origin where the forwarder holds its port, which survives the exit and is
- left alone. A config naming
- the forwarder keeps working, because that process is left running on
- purpose; one the user repointed by hand names nothing of ours and is not
- touched. Before this rule the stranded ones were simply broken until Gate
- ran again, with an error naming a loopback port, which reads as the tool
- being broken rather than Gate being off. The quit dialog names which tools
- will be put back and which keep working, from the same predicate, and a
- notification repeats what was rewritten.
-- **Disconnect and quit is deliberately the harsh column.** Stopping the
- forwarder is what makes it "Gate is out of the path", and it means a process
- that inherited the forwarder address fails closed rather than falling back.
- That is the existing design, now visible as the only column with real work.
+- **Every exit takes Gate out of every config.** Every exit, not only the ones
+ that reach `quit_app` (the tray's Quit, the window menu's, the crash
+ screen's): Cmd+Q comes from Tauri's default menu and a logout comes from the
+ OS, and both land in `RunEvent::Exit` having touched none of our own code, so
+ the sweep runs there too, once. It deliberately does not *veto* the exit -
+ `ExitRequested` can be prevented, but the same event carries a logout, and an
+ app that puts a dialog in front of a logout is an app that hangs it.
+ This replaced a narrower rule, which put back only the configs whose address
+ died with the process and left the forwarder's tools pointed at Gate,
+ working, with nothing reading their traffic. That rule survives only as the
+ Windows uninstall hook's (`provider::revert_stranded_configs_relay_unfronted`).
+- **The forwarder is drained, not stopped.** A process that already holds the
+ forwarder address keeps working, direct, until the login session ends, so
+ nothing running breaks at the quit. What it costs is the start column.
 
 Confidence: the two routing columns rest on the park keeping its ports and on
 the master-cycle mtime test, verified separately, not on a live toggle with a

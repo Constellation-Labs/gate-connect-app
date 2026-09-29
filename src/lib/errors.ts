@@ -18,7 +18,6 @@ export type ErrorContext =
   | "save_api_key"
   | "update"
   | "close_agents"
-  | "quit_disable"
   | "proxy_toggle"
   | "provider_toggle"
   | "trust_ca"
@@ -233,7 +232,7 @@ export function classifyError(
               "Trust"
             : context === "untrust_ca"
               ? "Remove"
-              : context === "close_agents" || context === "quit_disable"
+              : context === "close_agents"
                 ? "Close everything"
                 : "Connect";
     return {
@@ -326,7 +325,6 @@ export function classifyError(
     save_api_key: "Couldn’t save the API key",
     update: "Couldn’t install the update",
     close_agents: "Couldn’t restart the running tools and apps",
-    quit_disable: "Couldn’t disconnect the tools",
     proxy_toggle: "Couldn’t toggle routing",
     provider_toggle: "Couldn’t change that app’s routing",
     trust_ca: "Couldn’t trust the certificate",

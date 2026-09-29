@@ -294,6 +294,22 @@ impl<O: DesktopOps> DesktopManager<O> {
             .unwrap_or(false)
     }
 
+    /// Whether an engine is serving, from this process or another: the
+    /// `running` half of [`status`](Self::status) without the rest.
+    ///
+    /// Without `ca_is_trusted` in particular, which is the point. That probe
+    /// shells out (`certutil` on Windows, `security verify-cert` on macOS), and
+    /// the provider sweep asks this question several times per provider - on
+    /// the quit path too, where [`disable_quiet`](Self::disable_quiet) already
+    /// explains why a child process is the one thing not to spawn.
+    pub fn is_running(&self) -> bool {
+        self.engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .is_some()
+            || self.ops.engine_hosted_elsewhere().is_some()
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let (port, pac_port) = self
@@ -840,6 +856,14 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// Toggle a domain. If the engine is running, the new rules are pushed
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
+        self.set_domain_quiet(slug, enabled)?;
+        self.status()
+    }
+
+    /// [`set_domain`](Self::set_domain) without the status it returns, for a
+    /// caller that would discard it: computing one runs the trust probe
+    /// [`is_running`](Self::is_running) exists to avoid.
+    pub fn set_domain_quiet(&self, slug: &str, enabled: bool) -> Result<()> {
         let domains = config::set_enabled(slug, enabled)?;
         if let Some(running) = self
             .engine
@@ -849,7 +873,7 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             running.update_domains(&domains);
         }
-        self.status()
+        Ok(())
     }
 
     /// Push a rotated Gate API key into the running engine, if any - the
@@ -2040,6 +2064,10 @@ mod tests {
 
         mgr.set_detached(true); // no-op by contract
         assert!(!mgr.list_domains().expect("domains").is_empty());
+        // `is_running` is `status().running` without the trust probe, so the
+        // two must agree on either side of an enable.
+        assert!(!mgr.is_running());
+        assert_eq!(mgr.is_running(), mgr.status().expect("status").running);
 
         mgr.trust_ca().expect("trust");
         mgr.trust_ca_system().expect("system trust");
@@ -2048,6 +2076,9 @@ mod tests {
         // Live updates against a running engine: push-only, must not error
         // or take the engine down.
         mgr.set_domain("anthropic", true).expect("set_domain");
+        mgr.set_domain_quiet("anthropic", false)
+            .expect("set_domain_quiet");
+        assert!(mgr.is_running());
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
         mgr.refresh_org("org-uuid-2");

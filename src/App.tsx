@@ -1565,8 +1565,8 @@ export function App() {
       {/* Renders the startup takeover as an absolute overlay, or (on reopen)
           the slim update banner in-flow at the top of the popover - hence its
           placement above the body. The takeover defers while another one is up,
-          so it can never mount under one (z-20 vs the quit takeover's z-30 /
-          over the routing notice's z-10) and trap focus in a hidden panel. The
+          so it can never mount under one (z-20 over the routing notice's z-10)
+          and trap focus in a hidden panel. The
           certificate pre-flight shares its z-20 and is deferred to for a second
           reason: an operation is suspended waiting on that panel's answer. */}
       <UpdatePanel

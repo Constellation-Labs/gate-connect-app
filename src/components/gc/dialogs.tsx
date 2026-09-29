@@ -2141,49 +2141,31 @@ function joinNames(names: string[]): string {
 }
 
 /**
- * What the quit teardown could not finish.
+ * What a teardown could not finish: Disconnect, Reset and sign-out raise it
+ * when a tool is still pointing at Gate afterwards.
  *
  * AG-596 is explicit that Gate Connect "does not claim cleanup completed", so a
- * partial teardown gets its own dialog rather than a silent exit: the named tools
- * are still pointed at a relay that dies with this process. Retrying is the
- * primary; quitting anyway stays available, because refusing to let someone quit
- * their own app is worse than letting them quit informed.
- *
- * Also what Disconnect, Reset and sign-out raise when a tool is still pointing
- * at Gate afterwards. Without `onQuitAnyway` nobody is quitting, so the escape is
- * Close and the body says what the tool is pointing at now.
+ * partial teardown is named rather than passed over. Retrying is the primary,
+ * and only retouches the tools still on Gate.
  */
-export function QuitLeftBehindDialog({
+export function TeardownLeftBehindDialog({
   tools,
   busy,
   onRetry,
-  onQuitAnyway,
   onCancel,
 }: {
   tools: string[];
   busy?: boolean;
   onRetry: () => void;
-  /** Omitted outside a quit. */
-  onQuitAnyway?: () => void;
   onCancel: () => void;
 }) {
   const plural = tools.length > 1;
-  const quitting = onQuitAnyway !== undefined;
   return (
     <Modal
       tone="warning"
       icon="triangleAlert"
       title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
-      secondary={{
-        label: quitting ? "Cancel" : "Close",
-        onClick: onCancel,
-        disabled: busy,
-      }}
-      middle={
-        quitting
-          ? { label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }
-          : undefined
-      }
+      secondary={{ label: "Close", onClick: onCancel, disabled: busy }}
       primary={{
         label: busy ? "Working…" : "Try again",
         onClick: onRetry,
@@ -2194,17 +2176,9 @@ export function QuitLeftBehindDialog({
       <p className="text-sm leading-5 text-neutral-600">
         Couldn’t put {joinNames(tools)} back on{" "}
         {plural ? "their own settings" : "its own settings"}.{" "}
-        {plural ? "They still point" : "It still points"} at Gate,{" "}
-        {quitting
-          ? "and won’t reach a model until Gate Connect runs again."
-          : `which has no session behind ${plural ? "them" : "it"} now.`}
+        {plural ? "They still point" : "It still points"} at Gate, which has no
+        session behind {plural ? "them" : "it"} now.
       </p>
-      {quitting && (
-        <ModalNote>
-          Everything else was put back. Trying again only retouches the{" "}
-          {plural ? "tools" : "tool"} above.
-        </ModalNote>
-      )}
     </Modal>
   );
 }

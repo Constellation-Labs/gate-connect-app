@@ -194,7 +194,7 @@ export interface BackendState {
   };
   preferences: {
     /** The one switch Settings draws, over native notifications (all but a
-        plain quit's "could not be put back"). Default on, like every other
+        quit's "Failed to remove Gate"). Default on, like every other
         preference. */
     notifications: boolean;
     security_notification_sound: boolean;

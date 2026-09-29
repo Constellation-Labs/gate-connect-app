@@ -104,9 +104,9 @@ enum ProxyCmd {
     ///
     /// On macOS and Windows the engine lives in this process, so the command
     /// stays in the foreground hosting it. Stopping it (Ctrl-C, closing the
-    /// terminal, or SIGTERM on macOS) puts tools whose config names this
-    /// process's relay or engine back on their own settings, then stops
-    /// routing and restores the prior system-proxy state. Returning instead
+    /// terminal, or SIGTERM on macOS) removes Gate from every tool's config, as
+    /// quitting the app does, then stops routing and restores the prior
+    /// system-proxy state. The next enable reconnects the tools. Returning instead
     /// would take the engine down with the process and leave the system proxy
     /// pointed at a port nothing answers.
     Enable {
@@ -484,7 +484,7 @@ fn cmd_connect(tool: &str) -> Result<()> {
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         // `tool_proxy_url`, not the engine's own address: a config written here
         // has to name what the GUI writes, or the two disagree about the same
-        // install and a plain quit reverts whatever this wrote.
+        // install and this one names a port that stops answering with its host.
         engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
     };
     integ.connect(&input)?;
@@ -621,9 +621,8 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 );
                 #[cfg(not(target_os = "linux"))]
                 println!(
-                    "Hosting the proxy engine. Press Ctrl-C to stop: tools pointed at this \
-                     process go back on their own settings, and the previous system-proxy \
-                     settings are restored."
+                    "Hosting the proxy engine. Press Ctrl-C to stop: Gate is removed from \
+                     tool configs, and the previous system-proxy settings are restored."
                 );
                 proxy::wait_for_shutdown().context(
                     "waiting for a stop signal failed with routing still on; run \
@@ -637,22 +636,29 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 // `routing::disable` alone parks the engine so configs naming
                 // its relay keep answering, which only helps a process that
                 // stays alive; on macOS and Windows the relay lives here and
-                // goes with us. So first put those tools back on their own
-                // settings, as the app's quit does (`quit_app`); the next
-                // enable or app launch reconnects them. Linux skips it, as the
-                // app does: the daemon outlives us and keeps answering.
+                // goes with us. So first take Gate out of every tool's config
+                // and drain the forwarder, exactly as the app's quit does
+                // (`quit_app`); the next enable or app launch reconnects them.
+                // Linux skips it, as the app does: the daemon outlives us and
+                // keeps answering.
                 #[cfg(not(target_os = "linux"))]
-                match gate_connect_core::provider::revert_stranded_configs_for_quit() {
-                    Ok(names) if names.len() == 1 => println!(
-                        "Put {} back on its own settings; it reconnects the next time routing is enabled.",
-                        names[0]
+                match gate_connect_core::provider::snapshot_and_disable_everything_for_exit() {
+                    Ok(teardown) => {
+                        gate_connect_core::proxy::forwarder::drain();
+                        if !teardown.failed.is_empty() {
+                            eprintln!(
+                                "note: failed to remove Gate from the {} config(s); edit them by hand.",
+                                teardown.failed.join(", ")
+                            );
+                        } else if teardown.managed > 0 {
+                            println!(
+                                "Removed Gate from tool configs; they reconnect the next time routing is enabled."
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "note: failed to remove Gate from tool configs ({e:#}); edit them by hand."
                     ),
-                    Ok(names) if !names.is_empty() => println!(
-                        "Put {} back on their own settings; they reconnect the next time routing is enabled.",
-                        names.join(", ")
-                    ),
-                    Ok(_) => {}
-                    Err(e) => eprintln!("note: putting tools back on their own settings failed: {e:#}"),
                 }
                 disable_routing().context(
                     "restoring the system proxy failed; run `gate-connect proxy disable` to \

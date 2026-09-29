@@ -292,12 +292,13 @@ fn enable_plan(facts: PlanFacts) -> EnablePlan {
 
 /// Is the system proxy currently running? Always false on platforms without
 /// the proxy subsystem.
+///
+/// `is_running` rather than `status().running`: a full status runs the CA
+/// trust probe, which spawns a process, and every provider asks this more than
+/// once - the quit sweep included.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn proxy_running() -> bool {
-    crate::proxy::manager()
-        .status()
-        .map(|s| s.running)
-        .unwrap_or(false)
+    crate::proxy::manager().is_running()
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn proxy_running() -> bool {
@@ -315,10 +316,11 @@ fn proxy_domains_enabled(p: &Provider) -> bool {
     if cascaded.is_empty() {
         return false;
     }
+    // The domain list alone, for the reason [`proxy_running`] gives.
     crate::proxy::manager()
-        .status()
-        .map(|s| {
-            s.domains
+        .list_domains()
+        .map(|domains| {
+            domains
                 .iter()
                 .any(|d| d.enabled && cascaded.contains(&d.slug.as_str()))
         })
@@ -553,7 +555,7 @@ fn enable_inner(slug: &str, skip: &[String], request: Request) -> Result<(Applie
     for domain in routable {
         if plan.enable_domain {
             crate::proxy::manager()
-                .set_domain(domain, true)
+                .set_domain_quiet(domain, true)
                 .with_context(|| format!("enabling proxy domain {domain:?}"))?;
         } else {
             crate::proxy::config::set_enabled(domain, true)
@@ -602,8 +604,8 @@ pub enum ToolConfigs {
     Kept,
     /// Put each tool back on its own settings.
     ///
-    /// For the explicit "Gate should let go of this machine" actions - the
-    /// quit-and-disconnect choice, signing out, Reset. The same line
+    /// For the "Gate should let go of this machine" actions - every quit,
+    /// signing out, Reset. The same line
     /// `proxy::forwarder::stop` is on, and drawn in the same place.
     Reverted,
 }
@@ -647,9 +649,7 @@ fn disable_inner(slug: &str, audit: bool, configs: ToolConfigs) -> Result<Provid
     for domain in cascade_domains(&p) {
         // Best-effort: an already-off or unknown domain isn't an error.
         let _ = if proxy_running() {
-            crate::proxy::manager()
-                .set_domain(domain, false)
-                .map(|_| ())
+            crate::proxy::manager().set_domain_quiet(domain, false)
         } else {
             crate::proxy::config::set_enabled(domain, false).map(|_| ())
         };
@@ -922,6 +922,10 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// How long a quit waits for another routing operation before giving up on its
+/// teardown. Shared by both quit-time sweeps so they cannot drift apart.
+const QUIT_GUARD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// [`master_flow_guard`] that gives up after `wait`, for the one caller that
 /// must not block indefinitely: the quit path. A restore or a toggle mid-flight
 /// when the user quits is unlikely and short, but "the app will not close" is
@@ -1042,41 +1046,70 @@ fn snapshot_and_disable_all_locked(configs: ToolConfigs) -> Result<()> {
 /// reconnects them alongside the providers. Best-effort per tool, mirroring
 /// the provider pass.
 ///
-/// Both master-off paths use this: the routing switch and the quit-time "turn
-/// off integrations and quit" choice. They are the same event as far as the
-/// user's tools are concerned - the relay stops either way - and using the
-/// narrower [`snapshot_and_disable_all`] for the switch left the harnesses
-/// pointed at a dead port while the UI reported "not routing".
+/// The app's quit runs this, through [`snapshot_and_disable_everything_for_exit`]:
+/// every quit takes Gate out of every tool's configuration, and the next
+/// launch's [`restore_all`] puts it back. The routing switch used to as well;
+/// it parks now ([`snapshot_and_park_everything`]), because the engine's ports
+/// stay up.
 ///
 /// Returns the **display names of the tools it could not return to their own
-/// settings**, empty when everything came back. Best-effort still means the call
-/// succeeds when one tool fails, because the sweep must not abandon the remaining
-/// tools; the difference is that the failure is now the caller's to report rather
-/// than a line on stderr. A quit that leaves a config pointing at a relay about
-/// to die is exactly what the user needs told, and the old signature could not
-/// say it.
+/// settings**, empty when everything came back. Best-effort means the call
+/// succeeds when one tool fails, because the sweep must not abandon the
+/// remaining tools; the failure is the caller's to report rather than a line
+/// on stderr.
 pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let _guard = master_flow_guard();
-    snapshot_and_disable_everything_locked()
+    Ok(snapshot_and_disable_everything_locked().failed)
+}
+
+/// What a quit's teardown found and did, for the sentence the app says about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuitTeardown {
+    /// Tools whose configuration named Gate when the sweep started. Zero means
+    /// there was nothing to take out, and nothing worth announcing.
+    pub managed: usize,
+    /// Display names of the tools that still name Gate afterwards.
+    pub failed: Vec<String>,
 }
 
 /// [`snapshot_and_disable_everything`] for the app's exit, which gives up
 /// rather than waiting on another routing operation: the exit also carries a
 /// logout and a shutdown, and "the app will not close" is the worst outcome
-/// there. Same wait as [`revert_stranded_configs`], for the same reason.
-pub fn snapshot_and_disable_everything_for_exit() -> Result<Vec<String>> {
-    let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
+/// there. Waits [`QUIT_GUARD_WAIT`], as [`revert_stranded_configs`] does.
+pub fn snapshot_and_disable_everything_for_exit() -> Result<QuitTeardown> {
+    snapshot_and_disable_everything_within(QUIT_GUARD_WAIT)
+}
+
+fn snapshot_and_disable_everything_within(wait: std::time::Duration) -> Result<QuitTeardown> {
+    let Some(_guard) = try_master_flow_guard(wait) else {
         anyhow::bail!(
             "another routing operation is still running; quitting without putting tools \
              back on their own settings"
         );
     };
-    snapshot_and_disable_everything_locked()
+    Ok(snapshot_and_disable_everything_locked())
 }
 
-fn snapshot_and_disable_everything_locked() -> Result<Vec<String>> {
-    snapshot_and_disable_all_locked(ToolConfigs::Reverted)?;
-    let mut disconnected = Vec::new();
+fn snapshot_and_disable_everything_locked() -> QuitTeardown {
+    let managed = registry::registry()
+        .iter()
+        .filter(|integ| {
+            matches!(
+                integ.status(),
+                Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+            )
+        })
+        .count();
+    // The provider half is best-effort here. It used to end the sweep with a
+    // `?` on its snapshot files, before any tool was touched, so one unreadable
+    // file left every tool's config naming Gate - and holding the Gate key. The
+    // registry pass below reaches every tool the provider half would have, and
+    // records each one for the restore, so going on loses nothing it could keep.
+    if let Err(e) = snapshot_and_disable_all_locked(ToolConfigs::Reverted) {
+        crate::logging::failure(&format!(
+            "recording and disabling providers during quit failed: {e:#}"
+        ));
+    }
     let mut failed = Vec::new();
     for integ in registry::registry() {
         if !matches!(
@@ -1085,22 +1118,29 @@ fn snapshot_and_disable_everything_locked() -> Result<Vec<String>> {
         ) {
             continue;
         }
-        match integ.disconnect() {
-            Ok(()) => disconnected.push(integ.id().slug().to_string()),
-            Err(e) => {
-                // Kept on stderr for the log, *and* returned. It used to be only
-                // the former, which meant a tool left pointing at a dead relay
-                // was invisible to the caller and the quit reported success.
-                crate::logging::failure(&format!(
-                    "disconnecting {} during quit failed: {e:#}",
-                    integ.display_name()
-                ));
-                failed.push(integ.display_name().to_string());
-            }
+        // Recorded before the write rather than after the loop. On a logout
+        // or a shutdown the OS can end this process partway through, and a
+        // tool disconnected but not yet recorded is one nothing reconnects. The
+        // other order costs nothing: a tool recorded and still connected is
+        // restored by a `connect` that finds it already right.
+        let slug = integ.id().slug().to_string();
+        if let Err(e) = record_swept(vec![slug]) {
+            crate::logging::failure(&format!(
+                "recording {} for the next start failed: {e:#}; it will need reconnecting by hand",
+                integ.display_name()
+            ));
+        }
+        if let Err(e) = integ.disconnect() {
+            // Kept on stderr for the log, *and* returned, so a tool left
+            // pointing at Gate is the caller's to report.
+            crate::logging::failure(&format!(
+                "disconnecting {} during quit failed: {e:#}",
+                integ.display_name()
+            ));
+            failed.push(integ.display_name().to_string());
         }
     }
-    record_swept(disconnected)?;
-    Ok(failed)
+    QuitTeardown { managed, failed }
 }
 
 /// Add `slugs` to the swept-tools snapshot so the startup restore reconnects
@@ -1185,8 +1225,8 @@ pub fn pending_restore() -> Result<PendingRestore> {
 /// Master OFF via the routing switch: record what was on and turn the domains
 /// off, and **leave every tool's configuration alone**.
 ///
-/// The counterpart of [`snapshot_and_disable_everything`], which is what the
-/// quit-and-disconnect choice still runs. The two used to be one function,
+/// The counterpart of [`snapshot_and_disable_everything`], which is what every
+/// quit runs. The two used to be one function,
 /// because they used to be the same event: the engine stopped either way, so a
 /// config naming the loopback relay was about to point at nothing, and putting
 /// it back was the only way to leave the tool working.
@@ -1228,20 +1268,6 @@ fn stranded_by_quit(integ: &dyn registry::Integration, ours: &crate::proxy::Quit
         .any(|a| ours.dies(a))
 }
 
-/// Display names of the tools a plain quit would put back on their own
-/// settings. Read-only, for the quit dialog: the same predicate the revert
-/// applies, so the dialog names what gets rewritten - unless the forwarder
-/// takes or loses the relay port between the two reads, which fails safe
-/// (`proxy::QuitAddresses` says how).
-pub fn tools_stranded_by_quit() -> Vec<String> {
-    let ours = crate::proxy::QuitAddresses::current();
-    registry::registry()
-        .into_iter()
-        .filter(|i| stranded_by_quit(i.as_ref(), &ours))
-        .map(|i| i.display_name().to_string())
-        .collect()
-}
-
 /// Does any managed tool's configuration name the loopback proxy on `port`?
 ///
 /// Asked about the engine's previous port when it comes back on a new one. On
@@ -1262,38 +1288,24 @@ pub fn managed_tool_names_port(port: u16) -> bool {
     })
 }
 
-/// Plain quit's teardown, on the platforms where the engine lives in the GUI.
+/// Put back only the tools an exit strands, on the platforms where the engine
+/// lives in the GUI: a config is reverted **if and only if an address it names
+/// dies with this process** ([`stranded_by_quit`]). Everything naming the
+/// forwarder is left alone, because the forwarder is a separate process and
+/// keeps answering. Reverted tools are recorded in [`SWEPT_TOOLS_SNAPSHOT`] so
+/// the startup restore brings them back. No provider is snapshotted, because
+/// no provider was turned off.
 ///
-/// [`ToolConfigs::Kept`] is the routing toggle's rule: leave a config alone,
-/// because the address it names keeps answering. A plain quit breaks that
-/// premise for some addresses and not others, and the line between them is
-/// not a tool boundary. Everything naming the forwarder keeps working, because
-/// the forwarder is a separate process and is deliberately left running
-/// (`proxy::forwarder::stop` is not called here). That now includes the relay
-/// on most installs: the forwarder holds the relay port too and serves relay
-/// requests straight to the provider once the engine is gone. A config naming
-/// the engine's own port, or the relay where the forwarder does not hold it,
-/// names a listener inside this process, and nothing fronts it: the tool cannot
-/// connect until Gate runs again, with an error about a loopback port the user
-/// has never heard of.
+/// **No quit runs this any more.** Every quit, the app's and a foreground
+/// `gate-connect proxy enable`'s, takes Gate out of every config instead
+/// ([`snapshot_and_disable_everything_for_exit`]), which is a superset of this.
+/// It stays because it is the predicate [`revert_stranded_configs_relay_unfronted`]
+/// applies for the Windows uninstall hook, and the integration tests pin that
+/// predicate through here.
 ///
-/// So this reverts a config **if and only if an address it names dies with
-/// this process** - [`stranded_by_quit`], which is also what the quit dialog
-/// used to name these tools a moment ago. Reverted tools are recorded in
-/// [`SWEPT_TOOLS_SNAPSHOT`] so the startup restore brings them back exactly as
-/// it brings back the quit-and-disconnect sweep. No provider is snapshotted,
-/// because no provider was turned off.
-///
-/// Not called on Linux, where the engine is a daemon and the GUI hosts none of
-/// these addresses; the caller gates on platform. Not called from
-/// `RunEvent::Exit` either, which also runs on an updater relaunch and a crash
-/// restart, neither of which is the user choosing to leave Gate off.
-///
-/// Returns the display names of what it reverted, for the notification the
-/// caller fires: the popover is gone by then, and a rewrite of somebody's
-/// config file is worth a sentence. A failure to *record* what was reverted is
-/// logged and does not hide the names - that is the one case the sentence
-/// matters most, since nothing will restore those tools on the next start.
+/// Returns the display names of what it reverted. A failure to *record* what
+/// was reverted is logged and does not hide the names, since nothing will
+/// restore those tools on the next start.
 pub fn revert_stranded_configs_for_quit() -> Result<Vec<String>> {
     revert_stranded_configs(crate::proxy::QuitAddresses::current)
 }
@@ -1307,7 +1319,7 @@ pub fn revert_stranded_configs_relay_unfronted() -> Result<Vec<String>> {
 }
 
 fn revert_stranded_configs(read: fn() -> crate::proxy::QuitAddresses) -> Result<Vec<String>> {
-    let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
+    let Some(_guard) = try_master_flow_guard(QUIT_GUARD_WAIT) else {
         anyhow::bail!(
             "another routing operation is still running; quitting without putting relay \
              tools back on their own settings"
@@ -1767,6 +1779,25 @@ fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exit sweep's whole reason to exist: a quit must not wait on another
+    /// routing operation, because the same path carries a logout. It gives up
+    /// with an error the caller turns into "Failed to remove Gate", and touches
+    /// nothing on the way.
+    #[test]
+    fn the_exit_sweep_gives_up_while_another_routing_operation_runs() {
+        let _held = master_flow_guard();
+        let err = std::thread::spawn(|| {
+            snapshot_and_disable_everything_within(std::time::Duration::from_millis(50))
+        })
+        .join()
+        .expect("sweep thread")
+        .expect_err("the guard is held, so the sweep must not run");
+        assert!(
+            format!("{err}").contains("another routing operation"),
+            "{err}"
+        );
+    }
 
     /// A slug the registry no longer knows - a provider or tool uninstalled between
     /// the snapshot and now - still gets named, because dropping it silently would

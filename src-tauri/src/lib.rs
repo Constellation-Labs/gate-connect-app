@@ -159,7 +159,7 @@ fn list_tools() -> Vec<ToolDto> {
             slug: integ.id().to_string(),
             // The row label, not the product name: this feeds the ledger, whose
             // rows sit under a heading that names the vendor. Every other reader
-            // of a tool's name - the CLI, the logs, the quit takeover - wants
+            // of a tool's name - the CLI, the logs, the quit notice - wants
             // `display_name`, which is why the two are separate.
             name: integ.row_label().to_string(),
             // And the product name beside it, for the readers that are a flat
@@ -1891,7 +1891,7 @@ fn poll_restore_after_repair<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 /// Whether the coming exit is an updater-driven relaunch rather than a user
 /// quit. The exit handler completes a pending launch-at-login opt-out on a
-/// plain quit, but an update install relaunches us immediately, and the
+/// user's quit, but an update install relaunches us immediately, and the
 /// relaunched session would just re-arm the safety net it lost - so the
 /// pending marker and login item ride through the relaunch untouched. Set by
 /// the frontend after the update download completes, right before it kicks
@@ -4897,12 +4897,6 @@ fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     tauri::async_runtime::spawn(quit_app(app.clone()));
 }
 
-/// The tray popover's own Quit entry: the same quit the tray menu's item runs.
-#[tauri::command]
-fn request_app_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    request_quit(&app);
-}
-
 /// Quit, putting every tool back on its own settings on the way out.
 ///
 /// **Linux exits outright, and that is correct.** It looks like the teardown
@@ -4920,12 +4914,21 @@ fn request_app_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 /// in the `RunEvent::Exit` handler: this side can still fire a notification,
 /// and a rewrite of somebody's config file is worth a sentence. The exit
 /// handler runs the same sweep for the exits that never reach this command
-/// (Cmd+Q, a logout, a shutdown), and after this one it finds nothing left.
+/// (Cmd+Q, a logout, a shutdown), and skips it after this one.
+///
+/// **Once per process** ([`claim_quit_teardown`]). A second Quit while the
+/// first is sweeping returns without doing anything, because the first is
+/// about to exit. Running it anyway waited out the first one's guard, reported
+/// "Failed to remove Gate" over a quit that was succeeding, and exited in the
+/// middle of the first one's writes.
 #[tauri::command]
 async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         use tauri_plugin_notification::NotificationExt;
+        if !claim_quit_teardown() {
+            return;
+        }
         let outcome = tauri::async_runtime::spawn_blocking(disconnect_tools_for_quit)
             .await
             .unwrap_or_else(|e| Err(format!("join error: {e}")));
@@ -4952,23 +4955,40 @@ async fn quit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 /// the routing intent - the startup restore reapplies both snapshots the next
 /// time the app runs.
 ///
-/// Returns the display names of any tools it could **not** return to their own
-/// settings. Empty means the teardown was clean. `Err` means it could not run
-/// at all (another routing operation held the guard), so nothing was put back.
+/// Returns what it found and what it could **not** return to its own settings.
+/// `Err` means it could not run at all (another routing operation held the
+/// guard), so nothing was put back.
 ///
 /// Shared with the `RunEvent::Exit` handler, so a quit means one thing however
-/// it arrives.
+/// it arrives. Callers go through [`claim_quit_teardown`] first.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn disconnect_tools_for_quit() -> Result<Vec<String>, String> {
-    let failed = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
+fn disconnect_tools_for_quit() -> Result<gate_connect_core::provider::QuitTeardown, String> {
+    let teardown = gate_connect_core::provider::snapshot_and_disable_everything_for_exit()
         .map_err(|e| format!("{e:#}"))?;
-    // This is a disconnect, not a routing-off: the user asked Gate out of
+    // This is a disconnect, not a routing-off: every exit takes Gate out of
     // the path, so nothing starts the passthrough listener again. It is
     // drained rather than stopped, because a tool already running still
     // holds its address and would otherwise fail until reopened - see
     // `proxy::forwarder::drain`.
     gate_connect_core::proxy::forwarder::drain();
-    Ok(failed)
+    Ok(teardown)
+}
+
+/// Whether the quit teardown has been claimed by anyone in this process yet.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static QUIT_TEARDOWN_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// Claim the quit teardown: `true` exactly once per process, for whichever of
+/// [`quit_app`] and the `RunEvent::Exit` handler gets there first.
+///
+/// Once is not an optimisation. A second sweep after a partial first one is not
+/// a no-op: the first leaves a provider it could not finish reading as enabled,
+/// and the second then records the members the first just disconnected as
+/// members that were already off, so the next launch leaves them off. It is
+/// also a second round of trust probes on the logout path.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn claim_quit_teardown() -> bool {
+    !QUIT_TEARDOWN_CLAIMED.swap(true, Ordering::AcqRel)
 }
 
 /// What [`quit_app`] says on its way out, if anything. Split out of the
@@ -4977,27 +4997,26 @@ fn disconnect_tools_for_quit() -> Result<Vec<String>, String> {
 ///
 /// A clean teardown is information, gated on the notifications preference: a
 /// switch the user turned off has to actually stop something. A teardown that
-/// left tools on Gate's settings is **not** gated. The window, the tray and the
-/// process are all gone by the time it lands, so it is the only way the user
-/// learns a tool still points at Gate. `notifications` is asked only on the
-/// clean branch, so a failed quit reads no preferences file.
+/// found no tool naming Gate says nothing at all, because nothing was removed.
+/// A teardown that left tools on Gate's settings is **not** gated. The window,
+/// the tray and the process are all gone by the time it lands, so it is the only
+/// way the user learns a tool still points at Gate. `notifications` is asked
+/// only on the clean branch with something removed, so every other quit reads
+/// no preferences file.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn quit_notice_body(
-    outcome: &Result<Vec<String>, String>,
+    outcome: &Result<gate_connect_core::provider::QuitTeardown, String>,
     notifications: impl FnOnce() -> bool,
 ) -> Option<String> {
-    match outcome {
-        Ok(failed) if failed.is_empty() => {
-            notifications().then(|| "Gate removed from tool configs".to_string())
-        }
-        // Actionable over explanatory: what the tool does next depends on
-        // whether the session has ended since (the drained forwarder keeps
-        // serving it until then), and the fix is the same either way.
-        Ok(failed) if failed.len() == 1 => Some(format!(
-            "Failed to remove Gate from the {} config. Edit it by hand.",
-            failed[0]
+    match outcome.as_ref().map(|t| (t.managed, t.failed.as_slice())) {
+        Ok((0, [])) => None,
+        Ok((_, [])) => notifications().then(|| "Gate removed from tool configs".to_string()),
+        // Actionable over explanatory: the fix is the same whatever the tool
+        // does next.
+        Ok((_, [one])) => Some(format!(
+            "Failed to remove Gate from the {one} config. Edit it by hand."
         )),
-        Ok(failed) => Some(format!(
+        Ok((_, failed)) => Some(format!(
             "Failed to remove Gate from the {} configs. Edit them by hand.",
             join_names(failed)
         )),
@@ -5079,7 +5098,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             reveal_popover,
             request_switch_org,
             quit_app,
-            request_app_quit,
             list_providers,
             proxy_status,
             proxy_browser_store,
@@ -5160,7 +5178,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             reveal_popover,
             request_switch_org,
             quit_app,
-            request_app_quit,
             list_providers,
             set_updater_relaunching,
             get_preferences,
@@ -5637,9 +5654,9 @@ pub fn run() {
                     // as exactly that, and diagnostics reports it.
                     //
                     // The way off is the exit, which is where it already was:
-                    // `RunEvent::Exit` reverts the configs whose address dies
-                    // with this process and then `disable_quiet`s the system
-                    // proxy. This change is only about the way *on* no longer
+                    // every quit takes Gate out of every tool's config
+                    // (`disconnect_tools_for_quit`) and `RunEvent::Exit` then
+                    // `disable_quiet`s the system proxy. This change is only about the way *on* no longer
                     // being a thing the user sets.
                     //
                     // A launch that cannot complete the enable unattended (a
@@ -6202,8 +6219,9 @@ pub fn run() {
                 // none of our own code. This used to revert only the tools
                 // whose address dies with this process, leaving the forwarder's
                 // tools pointed at Gate and working with nothing reading their
-                // traffic. After `quit_app` nothing is left connected and this
-                // is a no-op.
+                // traffic. After `quit_app` it is skipped: the teardown runs
+                // once per process (`claim_quit_teardown`), because a second
+                // pass after a partial first one is not a no-op.
                 //
                 // Before `disable_quiet` below, deliberately: the provider half
                 // turns domains off in the engine, which has to still be up.
@@ -6215,27 +6233,32 @@ pub fn run() {
                 //
                 // Deliberately does not *veto* the exit. `ExitRequested` can be
                 // prevented - `code` is `None` exactly when something outside
-                // our own code asked to quit, so Cmd+Q could be routed into the
-                // same panel the tray raises. It is not, because that event
-                // also carries a logout and a shutdown, and an app that puts a
-                // dialog in front of those is an app that hangs the user's
-                // logout. For the same reason the sweep gives up rather than
-                // waiting on another routing operation.
+                // our own code asked to quit, so Cmd+Q could be routed into a
+                // dialog. It is not, because that event also carries a logout
+                // and a shutdown, and an app that puts a dialog in front of
+                // those is an app that hangs the user's logout. For the same
+                // reason the sweep gives up rather than waiting on another
+                // routing operation.
+                //
+                // Unwound rather than trusted not to panic: everything below it
+                // has to run, `disable_quiet` above all, and the sweep is the
+                // largest block on this path.
                 //
                 // No notification either. `quit_app` can fire one because it
                 // runs before the exit; by the time this runs the process is
                 // going away and a notification would be a promise we cannot
                 // keep.
-                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
-                    match disconnect_tools_for_quit() {
-                        Ok(failed) if failed.is_empty() => {}
-                        Ok(failed) => eprintln!(
+                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) && claim_quit_teardown() {
+                    match std::panic::catch_unwind(disconnect_tools_for_quit) {
+                        Ok(Ok(teardown)) if teardown.failed.is_empty() => {}
+                        Ok(Ok(teardown)) => eprintln!(
                             "[gate] {} could not be put back on their own settings on exit",
-                            join_names(&failed)
+                            join_names(&teardown.failed)
                         ),
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             eprintln!("[gate] putting tools back on exit failed: {e}")
                         }
+                        Err(_) => eprintln!("[gate] putting tools back on exit panicked"),
                     }
                 }
                 // Reaching this event at all is what
@@ -6535,9 +6558,10 @@ fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
 /// any thread, the two messages below go straight to the NSWindow on the
 /// calling thread, and AppKit traps window ordering off the main thread
 /// ("Must only be used from the main thread", SIGILL). `request_quit` hit
-/// exactly that: it probes tool configs on a blocking thread and revealed the
-/// quit dialog from the same thread, so quitting with a connected tool crashed
-/// the app before `RunEvent::Exit` could revert the system proxy. The hop is a
+/// exactly that when it still raised a quit dialog: it probed tool configs on a
+/// blocking thread and revealed the dialog from the same thread, so quitting
+/// with a connected tool crashed the app before `RunEvent::Exit` could revert
+/// the system proxy. The hop is a
 /// post rather than a wait, so it never blocks the thread that called it, and
 /// it can only fail once the event loop has shut down - which is why the `Err`
 /// is dropped: by then there is no window left to raise.
@@ -6855,29 +6879,44 @@ mod tests {
         list.iter().map(|n| n.to_string()).collect()
     }
 
+    fn teardown(
+        managed: usize,
+        failed: &[&str],
+    ) -> Result<gate_connect_core::provider::QuitTeardown, String> {
+        Ok(gate_connect_core::provider::QuitTeardown {
+            managed,
+            failed: names(failed),
+        })
+    }
+
     /// The rule the notifications switch has an exception for: a tool the quit
     /// could not put back is said with the switch off, because nothing else is
     /// left running to say it.
     #[test]
     fn quit_says_a_left_behind_tool_with_notifications_off() {
-        let body = quit_notice_body(&Ok(names(&["Hermes"])), || false);
-        assert!(
-            body.as_deref().is_some_and(
-                |b| b == "Failed to remove Gate from the Hermes config. Edit it by hand."
-            ),
-            "{body:?}"
+        assert_eq!(
+            quit_notice_body(&teardown(2, &["Hermes"]), || false).as_deref(),
+            Some("Failed to remove Gate from the Hermes config. Edit it by hand.")
         );
     }
 
     #[test]
     fn quit_says_a_clean_teardown_only_with_notifications_on() {
-        let on = quit_notice_body(&Ok(Vec::new()), || true);
-        assert!(
-            on.as_deref()
-                .is_some_and(|b| b == "Gate removed from tool configs"),
-            "{on:?}"
+        assert_eq!(
+            quit_notice_body(&teardown(2, &[]), || true).as_deref(),
+            Some("Gate removed from tool configs")
         );
-        assert_eq!(quit_notice_body(&Ok(Vec::new()), || false), None);
+        assert_eq!(quit_notice_body(&teardown(2, &[]), || false), None);
+    }
+
+    /// Nothing named Gate, so nothing was removed and there is nothing to say -
+    /// not even to a user with notifications on.
+    #[test]
+    fn quit_says_nothing_when_no_tool_named_gate() {
+        assert_eq!(
+            quit_notice_body(&teardown(0, &[]), || panic!("preference read")),
+            None
+        );
     }
 
     /// The failure notices do not depend on the preference at all, not only on
@@ -6885,20 +6924,16 @@ mod tests {
     /// here.
     #[test]
     fn quit_says_a_failure_without_reading_the_switch() {
-        let left = quit_notice_body(&Ok(names(&["Codex", "Hermes"])), || {
-            panic!("preference read")
-        });
-        assert!(
-            left.as_deref().is_some_and(|b| b
-                == "Failed to remove Gate from the Codex and Hermes configs. Edit them by hand."),
-            "{left:?}"
+        assert_eq!(
+            quit_notice_body(&teardown(3, &["Codex", "Hermes"]), || {
+                panic!("preference read")
+            })
+            .as_deref(),
+            Some("Failed to remove Gate from the Codex and Hermes configs. Edit them by hand.")
         );
-        let blocked = quit_notice_body(&Err("guard held".into()), || panic!("preference read"));
-        assert!(
-            blocked
-                .as_deref()
-                .is_some_and(|b| b == "Failed to remove Gate from tool configs. Edit them by hand."),
-            "{blocked:?}"
+        assert_eq!(
+            quit_notice_body(&Err("guard held".into()), || panic!("preference read")).as_deref(),
+            Some("Failed to remove Gate from tool configs. Edit them by hand.")
         );
     }
 

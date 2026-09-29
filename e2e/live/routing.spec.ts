@@ -178,9 +178,9 @@ test.describe("routing, end to end", () => {
     // the harness - Playwright owns that process, and killing it would end the
     // run rather than test it.
     //
-    // The teardown path itself (`snapshot_and_disable_everything` on quit) is
-    // only reachable from the UI on macOS and Windows: on Linux `request_quit`
-    // exits outright, because the engine is a detached helper daemon that
+    // The teardown path itself (`snapshot_and_disable_everything_for_exit` on
+    // quit) is only reachable from the UI on macOS and Windows: on Linux
+    // `quit_app` exits outright, because the engine is a detached helper daemon that
     // outlives the GUI and routing is meant to continue. So what is common to
     // all three - and what the person actually cares about - is that the config
     // Gate leaves behind is one the tool can still use.

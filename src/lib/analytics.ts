@@ -42,10 +42,8 @@ export type AnalyticsEvent =
   | "agents_closed"
   | "stale_agents_shown"
   | "routing_notice_shown"
-  | "quit_warning_shown"
   | "oauth_offer_shown"
   | "oauth_offer_accepted"
-  | "quit_confirmed"
   | "launch_at_login_toggled"
   | "error_shown";
 
@@ -72,8 +70,6 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "source",
   "count",
   "step",
-  "tool_count",
-  "integrations_disabled",
   // The error context (`lib/errorContext.ts`), which rides `trackError` and
   // `captureException` and no other event. Listed here rather than waved past
   // `sanitize` because the allowlist is the backstop, and a context object is

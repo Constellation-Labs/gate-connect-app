@@ -23,8 +23,8 @@ export const TOUR_SEEN_EVENT = "gc:tour-seen";
 
 /** Where the tray icon lives, in this OS's own vocabulary.
  *
- *  The location noun is `trayLocationName`'s now, shared with the quit chooser,
- *  which had been hardcoding "menu bar" on every platform. Only the corner
+ *  The location noun is `trayLocationName`'s, pulled out when the quit chooser
+ *  (since removed) was hardcoding "menu bar" on every platform. Only the corner
  *  differs here: Windows puts its tray at the bottom right, the other two at
  *  the top right. */
 function whereItLives(platform: Platform): string {
