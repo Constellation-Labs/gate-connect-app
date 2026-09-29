@@ -408,6 +408,14 @@ pub async fn handle(
         // by different processes, and a stale or crossed pair would otherwise
         // produce a connection that recurses until something runs out.
         if port != own_port {
+            // Another user's connection never reaches the engine, which would
+            // treat it as the owner's: it sees only this hop. Asked only here,
+            // with an engine to keep it from: with none, every connection goes
+            // direct anyway, and the exported proxy carries the whole machine's
+            // traffic. See [`crate::peer`].
+            if !crate::peer::owner_connected(&client).await {
+                return go_direct(client, head, reclaim, HandBack::Never).await;
+            }
             if let Some(upstream) = connect_engine(port, &head).await {
                 return splice_engine(client, upstream, head, reclaim).await;
             }
@@ -490,6 +498,9 @@ enum HandBack {
     /// the tunnel back would close it every quiet minute and make each new
     /// connection wait out [`ENGINE_FIRST_BYTE_TIMEOUT`] before going direct
     /// again, for as long as the engine stays that way.
+    ///
+    /// Also a connection that is not the owner's, which the engine is never
+    /// the right place for.
     Never,
 }
 
