@@ -87,10 +87,8 @@ test.describe("new UI engine controls", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByRole("heading", { name: "One tool stayed on Gate" })).toBeVisible();
     await expect(dialog.getByText("Claude Code")).toBeVisible();
-    // Nobody is quitting, so the quit's own escape is not offered.
     await expect(dialog.getByRole("button", { name: "Try again" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Quit anyway" })).toHaveCount(0);
   });
 
   test("a chat domain starts the engine rather than routing nothing", async ({ boot }) => {

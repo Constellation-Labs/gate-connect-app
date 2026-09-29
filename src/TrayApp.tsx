@@ -14,7 +14,7 @@ import {
   proxyStatus,
   routingStartupPending,
   pinPopover,
-  requestQuit,
+  quitApp,
   requestSwitchOrg,
   revealMainWindow,
   unpinPopover,
@@ -95,9 +95,8 @@ function messageFigure(
  * switch in the window cannot disagree about what a toggle does.
  *
  * What it deliberately does not own: setup (a signed-out tray hands over to
- * the main window, where the panes live), the quit dialog (`request_quit`
- * reveals the main window and defers there, same as the tray menu's Quit),
- * and the per-app panes (nothing here navigates).
+ * the main window, where the panes live) and the per-app panes (nothing here
+ * navigates).
  */
 export function TrayApp() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -869,10 +868,10 @@ export function TrayApp() {
         if (err) setActionError(err);
       });
       else if (action === "quit") {
-        // The same path as the tray menu's Quit: exits outright, or reveals
-        // the main window and raises the three-way dialog there when
-        // config-routed tools would be left pointing at a dead relay.
-        void requestQuit().catch(() => {});
+        // The same quit as the tray menu's and the window's: `quit_app` takes
+        // Gate out of every tool's config and exits. Not awaited, because it
+        // does not come back.
+        void quitApp().catch(() => {});
         try {
           void getCurrentWindow().hide();
         } catch {

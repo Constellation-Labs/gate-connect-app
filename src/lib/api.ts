@@ -777,10 +777,6 @@ export const restartRunningAgents = () => invoke<ClosedAgents>("restart_running_
  * and a notification says so. On Linux the daemon keeps routing. */
 export const quitApp = () => invoke<void>("quit_app");
 
-/** Ask to quit the way the tray menu's Quit does: the same quit as `quitApp`.
- * The tray popover's own Quit entry goes through this. */
-export const requestQuit = () => invoke<void>("request_app_quit");
-
 /** Reveal (or refocus) the main window, wherever the user left it. The tray
  * popover's "Expand app" is the caller; the command is the same one the
  * onboarding window's close handler uses. */

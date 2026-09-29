@@ -1777,8 +1777,8 @@ pub fn tool_proxy_identity_urls() -> Vec<String> {
 /// Does `configured` name a loopback listener hosted **inside the engine's
 /// process**, so that it stops answering when that process exits?
 ///
-/// The question a plain quit asks of each address a tool's configuration
-/// names. Three addresses are ours, and they die differently:
+/// The question the stranded-tool revert asks of each address a tool's
+/// configuration names (see `provider::revert_stranded_configs_for_quit`). Three addresses are ours, and they die differently:
 ///
 /// - the **relay** origin (a base URL under it): hosted in the engine unless
 ///   the forwarder holds it. On macOS and Windows the forwarder normally does
@@ -1815,13 +1815,6 @@ pub fn address_dies_with_gui(configured: &str) -> bool {
 /// and a sweep that could answer differently for two tools if the forwarder's
 /// claim changed halfway. One read per sweep keeps a sweep consistent with
 /// itself.
-///
-/// It does not make the quit dialog and the revert that follows it one read:
-/// each is its own sweep, seconds apart, and a forwarder that took or lost the
-/// relay port in between makes them differ. The difference fails safe. A
-/// forwarder that lost the port between the two means the revert puts back a
-/// tool the dialog did not name, which is the old quit's behaviour; one that
-/// took it means a tool the dialog named is left alone, and keeps working.
 #[derive(Debug, Clone)]
 pub struct QuitAddresses {
     relay_origin: Option<String>,
@@ -1846,14 +1839,13 @@ impl QuitAddresses {
     /// Read them for an exit the forwarder does not outlive either, so the
     /// relay origin dies whether the forwarder holds it right now or not.
     ///
-    /// Two exits are like that, both on Windows, where the forwarder is a
-    /// plain detached process with nothing to start it again except Gate
-    /// itself: the end of the login session (a logout or a shutdown, see
-    /// [`session_ending`]), after which a tool that starts before Gate would
-    /// find nothing on the relay port; and an uninstall, whose hook kills the
-    /// forwarder and leaves no Gate at all to repair the configs. macOS needs
-    /// neither: launchd holds the relay port from login, and a drag to the
-    /// Trash runs no code of ours.
+    /// One exit is like that: an uninstall on Windows, whose hook kills the
+    /// forwarder and leaves no Gate at all to repair the configs. There the
+    /// forwarder is a plain detached process with nothing to start it again
+    /// except Gate itself. macOS needs nothing of the kind: a drag to the Trash
+    /// runs no code of ours. (The end of a Windows login session used to be the
+    /// second such exit; every quit now takes Gate out of every config, which
+    /// covers it.)
     ///
     /// The forwarder's own address is still read as surviving. What names it
     /// is the proxy half, which dies with the forwarder in both cases too, but
@@ -1875,31 +1867,6 @@ impl QuitAddresses {
             self.engine_url.as_deref(),
             self.forwarder_url.as_deref(),
         )
-    }
-}
-
-/// Whether the login session is ending: a logout, a restart or a shutdown,
-/// as opposed to the user quitting Gate. Windows only, where it decides
-/// whether the forwarder outlives this exit (see
-/// [`QuitAddresses::relay_unfronted`]); `false` everywhere else.
-///
-/// `SM_SHUTTINGDOWN` is set for the whole of the end-session sequence, which
-/// is when an exit handler that runs at all during a logout runs.
-pub fn session_ending() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetSystemMetrics(index: i32) -> i32;
-        }
-        const SM_SHUTTINGDOWN: i32 = 0x2000;
-        // SAFETY: takes an integer, returns an integer, touches no memory of
-        // ours.
-        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
     }
 }
 

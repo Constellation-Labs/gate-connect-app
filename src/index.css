@@ -215,10 +215,9 @@
 
    Every control in the popover draws its ring with `:focus-visible`, and a
    browser will not match that pseudo-class for focus it did not observe the
-   user request. So the takeovers that deliberately land focus on the safe
-   option - RoutingChangeNotice's Got it, and QuitConfirm's Cancel before it
-   went - painted no ring on it: the panel pointed at a control the user could not see was
-   selected, in the exact place DESIGN.md says the safe option must be the
+   user request. So the takeover that deliberately lands focus on the safe
+   option - RoutingChangeNotice's Got it - painted no ring on it: the panel
+   pointed at a control the user could not see was selected, in the exact place DESIGN.md says the safe option must be the
    equal of the buttons it sits with.
 
    `useFocusTrap` sets `data-initial-focus` on whatever it focused and clears it

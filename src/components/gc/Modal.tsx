@@ -100,10 +100,6 @@ const WIDTH_STYLES: Record<ModalWidth, string> = {
 const TILE_SIZES = {
   /** 480px Settings dialogs: rename, replace key, disconnect. */
   sm: { box: "size-8 rounded-sm", glyph: 16 as const },
-  /** The quit dialogs, which draw the same 32px box on a 20px glyph
-   * (`694:33004`). Same box as `sm`, one step up on the glyph, which is the
-   * clearest case there is of the glyph not tracking the box. */
-  sm20: { box: "size-8 rounded-sm", glyph: 20 as const },
   /** Undrawn dialogs, and what the 2026-08-26 read recorded as "neutral". */
   md: { box: "size-10 rounded-md", glyph: 20 as const },
   /** 600px dialogs, toned or not: the drift review, the diagnostics report. */
@@ -119,7 +115,6 @@ export function Modal({
   subtitle,
   children,
   secondary,
-  middle,
   primary,
   closeButton,
   onDismiss,
@@ -132,18 +127,12 @@ export function Modal({
   tone?: ModalTone;
   icon: IconName;
   title: string;
-  /** ReactNode, not a string: the quit chooser's subtitle sets its count in
-   * Medium inside an otherwise regular sentence (`694:32278`). */
+  /** ReactNode, not a string, so a subtitle can set part of itself in another
+   * weight - the drawn dialogs set a count in Medium inside an otherwise
+   * regular sentence. */
   subtitle?: ReactNode;
   children?: ReactNode;
   secondary?: ModalButton;
-  /** A third action, between the safe one and the primary, for the rare dialog
-   * with three genuinely different outcomes rather than yes/no. The quit dialog
-   * is the only one: disconnect-and-quit, quit-anyway and cancel are three
-   * different things to do, and collapsing any two of them would hide a
-   * consequence. Styled as an outline button so the row still reads
-   * safe → middle → primary left to right. */
-  middle?: ModalButton;
   primary?: ModalButton;
   /** Draw a close X in the top-right corner (Figma 139:66759).
    *
@@ -298,7 +287,7 @@ export function Modal({
           </div>
         )}
 
-        {(secondary || middle || primary) && (
+        {(secondary || primary) && (
           // `flex-wrap`, with `whitespace-nowrap` on each button below. The row
           // never wrapped, so at tray width the two labels were squeezed and
           // wrapped *inside* their own fixed `h-9` boxes, which clipped them to
@@ -333,24 +322,6 @@ export function Modal({
                 }`}
               >
                 {secondary.label}
-              </button>
-            )}
-            {middle && (
-              <button
-                type="button"
-                onClick={middle.disabled ? undefined : middle.onClick}
-                aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
-                  middle.disabled
-                    ? "cursor-not-allowed opacity-45"
-                    : "hover:bg-gray-50"
-                } ${
-                  middle.destructive
-                    ? "text-red-600 focus-visible:outline-red-600"
-                    : "text-base-foreground focus-visible:outline-base-primary"
-                }`}
-              >
-                {middle.label}
               </button>
             )}
             {primary && (
@@ -469,38 +440,13 @@ export function ModalSubject({
 }
 
 /**
- * The tinted block explaining what the action will actually do.
- *
- * Three tones, all drawn. `muted` is the original gray-50 block the Settings
- * and reset dialogs carry. The quit flow adds two, both on the same bordered
- * 12px box at radius 8: `info` is `blue-ribbon/50` under `blue-ribbon/900` ink
- * for the aside about closing the window (`694:32290`), and `neutral` is
- * `base/background` under full-foreground ink for the confirmation's report of
- * what happened (`694:33020`). The two new ones state facts rather than
- * qualify an action, which is why neither is muted.
+ * The tinted block explaining what the action will actually do: the gray-50
+ * block the Settings and reset dialogs carry. The quit flow drew two more
+ * tones (`694:32290`, `694:33020`), which went with its dialogs.
  */
-export function ModalNote({
-  children,
-  tone = "muted",
-}: {
-  children: ReactNode;
-  tone?: "muted" | "info" | "neutral";
-}) {
-  if (tone === "muted") {
-    return (
-      <div className="rounded-md bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
-        {children}
-      </div>
-    );
-  }
+export function ModalNote({ children }: { children: ReactNode }) {
   return (
-    <div
-      className={`rounded-md border border-base-border p-3 text-sm leading-5 ${
-        tone === "info"
-          ? "bg-blue-ribbon-50 text-blue-ribbon-900"
-          : "bg-base-background text-base-foreground"
-      }`}
-    >
+    <div className="rounded-md bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
       {children}
     </div>
   );

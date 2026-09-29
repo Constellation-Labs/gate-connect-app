@@ -707,9 +707,9 @@ stop_engine() {
   ENGINE_ON=""
 }
 
-# The macOS/Windows foreground host's stop puts tools whose config names its
-# relay back on their own settings (`revert_stranded_configs_for_quit`), so they
-# do not dial a dead loopback port afterwards. Nothing else here can see that:
+# The macOS/Windows foreground host's stop takes Gate out of every tool's
+# config (`snapshot_and_disable_everything_for_exit`, as the app's quit does),
+# so none of them dials a dead loopback port afterwards. Nothing else here can see that:
 # run_tool disconnects every tool before stop_engine. So leave one relay-routed
 # tool connected across the stop and check it came back unrouted.
 #

@@ -4,8 +4,9 @@ import { useFocusTrap } from "../lib/useFocusTrap";
 
 /** Stacking order for the full-popover takeovers. The popover never stacks
  *  dialogs, but more than one can be *pending* at once, and the priority is
- *  fixed: a quit decision the user just asked for outranks a routing notice,
- *  which outranks an update prompt, which outranks an offer nobody requested.
+ *  fixed: a routing notice outranks an update prompt, which outranks an offer
+ *  nobody requested. (A quit decision used to sit above all three; quitting
+ *  no longer asks.)
  *
  *  `trust` is the one that must never be buried: an operation is suspended on
  *  its answer (App's `ensureCaTrusted` awaits the click), so a takeover hiding
@@ -17,7 +18,6 @@ export const TAKEOVER_Z = {
   routing: "z-10",
   update: "z-20",
   trust: "z-20",
-  quit: "z-30",
 } as const;
 
 /** The full-popover takeover shell: the panel slides over the room, traps

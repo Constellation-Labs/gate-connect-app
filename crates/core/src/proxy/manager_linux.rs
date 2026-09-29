@@ -65,6 +65,14 @@ impl ProxyManager {
         self.client.try_lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
+    /// Whether the daemon is intercepting. Asked through [`status`](Self::status)
+    /// here, unlike the other platforms: the answer is a daemon round-trip
+    /// either way, and this is not on a quit path, since quitting the GUI
+    /// leaves the daemon running.
+    pub fn is_running(&self) -> bool {
+        self.status().map(|s| s.running).unwrap_or(false)
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
@@ -360,6 +368,13 @@ impl ProxyManager {
     /// Toggle a domain. If the proxy is on, push the new rule set to the daemon
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
+        self.set_domain_quiet(slug, enabled)?;
+        self.status()
+    }
+
+    /// [`set_domain`](Self::set_domain) without the status it returns, for a
+    /// caller that would discard it.
+    pub fn set_domain_quiet(&self, slug: &str, enabled: bool) -> Result<()> {
         let domains = config::set_enabled(slug, enabled)?;
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         // Adopt a running daemon when this process has no connection of its
@@ -382,9 +397,7 @@ impl ProxyManager {
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
-        // Released before `status`, which takes the same lock.
-        drop(guard);
-        self.status()
+        Ok(())
     }
 
     /// Push a rotated Gate API key into the running daemon, if any - it

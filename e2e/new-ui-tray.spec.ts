@@ -85,9 +85,9 @@ test.describe("tray popover", () => {
     await app.page.getByRole("button", { name: "More" }).click();
     await app.page.getByRole("menuitem", { name: "Quit Gate Connect" }).click();
 
-    // `request_app_quit` runs the same quit as the window's menu; the tray
-    // never raises a dialog of its own.
-    await expect.poll(() => app.lastCall("request_app_quit")).not.toBeNull();
+    // The same `quit_app` the window's menu calls; the tray never raises a
+    // dialog of its own.
+    await expect.poll(() => app.lastCall("quit_app")).not.toBeNull();
   });
 
   test("signed out, it hands over instead of painting empty groups", async ({ boot }) => {
