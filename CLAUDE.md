@@ -84,10 +84,13 @@ enable has nothing to point the relay at, fails every time, and reports
 asked for an account yet. The setup flow's own "Turn on routing" step is what
 enables it the first time.
 
-The way off was already there and is untouched: `RunEvent::Exit` reverts the
-configs whose address dies with this process (`revert_stranded_configs_for_quit`,
-keyed on `address_dies_with_gui`) and then `disable_quiet`s the system proxy,
-on every exit including Cmd+Q, logout and shutdown. **Linux is still outside
+The way off: `RunEvent::Exit` puts every tool back on its own settings
+(`snapshot_and_disable_everything_for_exit`, the quit panel's disconnect sweep),
+drains the forwarder and then `disable_quiet`s the system proxy, on every exit
+including Cmd+Q, logout and shutdown; the next launch's `restore_all` reconnects
+them. It used to revert only the configs whose address dies with this process
+(`revert_stranded_configs_for_quit`), which left forwarder tools pointed at Gate
+and uninspected while it was closed. **Linux is still outside
 that arm**, for the reason `record_start` gives: its engine is a detached
 helper daemon that outlives the GUI, so a GUI death strands nothing and
 `reconcile_on_startup` there re-honors the leftover snapshot rather than
@@ -185,6 +188,11 @@ A third was found, raised and decided on 2026-09-10, so it joins them:
  Connect starts again"), so the frame contradicted the app and the app's next
  message both. Verified by relaunching, not only by reading. Frames `694:33002`
  and `694:33340`; question 22 in `docs/figma-questions-for-design.md`.
+ **The quit dialog itself is gone since 2026-09-29**, by the user's decision:
+ every quit disconnects, so the chooser had one answer and the confirmation
+ nothing to confirm. `quit_app`'s notification says what the dialog said. That
+ is a deviation from the whole `overview-quit` flow, not only from its copy;
+ raise it with design, and do not redraw it back from the frames.
 
 If you find a fourth of these, raise it rather than deciding it.
 

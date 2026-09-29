@@ -39,9 +39,7 @@ import {
   routedClientsStale,
   routingVerdicts,
   staleAgentsCount,
-  pendingQuitTools,
   getPreferences,
-  type PendingQuit,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
@@ -52,7 +50,6 @@ import { Diagnostics } from "./screens/Diagnostics";
 import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
-import { QuitConfirm } from "./components/QuitConfirm";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
@@ -288,28 +285,6 @@ export function App() {
   // Whether the one-time OAuth offer is up. Armed on load, never re-armed.
   const [oauthOffer, setOAuthOffer] = useState(false);
 
-  // The tray Quit defers to the popover when config-routed CLI tools are
-  // still managed (their configs point at the loopback relay, which dies
-  // with the app). Holds the connected tool names; non-null shows the quit
-  // takeover. The names are swept from a backend buffer (once at mount, then
-  // on each nudge) rather than carried on the event, so a Quit clicked
-  // before this listener registered isn't lost.
-  const [quitTools, setQuitTools] = useState<PendingQuit | null>(null);
-  useEffect(() => {
-    const sweep = () => {
-      pendingQuitTools()
-        .then((pending) => {
-          if (pending && pending.tools.length > 0) setQuitTools(pending);
-        })
-        .catch(() => {});
-    };
-    sweep();
-    const unlisten = listen("quit-requested", sweep);
-    return () => {
-      void unlisten.then((f) => f()).catch(() => {});
-    };
-  }, []);
-
   // App version, stamped into the bundle at release time. Shown in Settings
   // under Help rather than the popover footer: the footer strip carries two
   // items at 360px and the credential line and the dashboard link both earn
@@ -538,9 +513,6 @@ export function App() {
       track("routing_notice_shown", { enabled: routingNotice.dir === "on" });
     }
   }, [routingNotice]);
-  useEffect(() => {
-    if (quitTools !== null) track("quit_warning_shown", { tool_count: quitTools.tools.length });
-  }, [quitTools]);
 
   // The popover webview persists across tray hide/show, so the initial-load
   // effect doesn't re-run when the user reopens the popover. Re-check the OAuth
@@ -650,7 +622,7 @@ export function App() {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-      if (quitTools !== null || routingNotice !== null) return;
+      if (routingNotice !== null) return;
       // Diagnostics pops to Settings, not to Home: it is one level deeper, and
       // Escape should undo the last step rather than the last two.
       if (screen === "diagnostics") {
@@ -664,7 +636,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [screen, quitTools, routingNotice]);
+  }, [screen, routingNotice]);
 
   // OAuth sign-out: forget the stored tokens but keep the account, so the
   // popover returns to the sign-in prompt (not first-run) and routing config /
@@ -1545,7 +1517,6 @@ export function App() {
   // Any full-popover takeover is up, so the room behind it is not the user's
   // to read or click.
   const obscured =
-    quitTools !== null ||
     routingNotice !== null ||
     updateTakeoverVisible ||
     oauthOffer ||
@@ -1600,7 +1571,6 @@ export function App() {
           reason: an operation is suspended waiting on that panel's answer. */}
       <UpdatePanel
         suppressTakeover={
-          quitTools !== null ||
           routingNotice !== null ||
           oauthOffer ||
           trustAsk ||
@@ -1615,9 +1585,6 @@ export function App() {
           onDismiss={() => setRoutingNotice(null)}
           onAgentsClosed={() => setChangeNotice(null)}
         />
-      )}
-      {quitTools !== null && (
-        <QuitConfirm pending={quitTools} onCancel={() => setQuitTools(null)} />
       )}
       {/* The pre-flight for the OS certificate dialog. Not gated on a screen:
           the master switch, a tool row and a family switch can all reach it, and
@@ -1646,7 +1613,6 @@ export function App() {
           seen whichever way they leave, so it never returns. */}
       {oauthOffer &&
         screen === "home" &&
-        quitTools === null &&
         routingNotice === null &&
         !trustAsk &&
         hermesAsk === null &&

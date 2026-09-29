@@ -35,10 +35,7 @@ import {
   toolVersions,
   routingVerdicts,
   runningAgents as fetchRunningAgents,
-  pendingQuitTools,
-  toolsStrandedByQuit,
   disconnectTool,
-  disconnectToolsForQuit,
   quitApp,
   teardownReport,
   getPreferences,
@@ -114,9 +111,7 @@ import {
   ChangeReadyDialog,
   CloseAppsDialog,
   ModelPickerDialog,
-  QuitDialog,
   QuitLeftBehindDialog,
-  QuitSafeToCloseDialog,
   UseGateModelDialog,
 } from "./components/gc/dialogs";
 import {
@@ -395,27 +390,6 @@ export function NewUiApp() {
    *  not change them"), and no code we could branch on carries which rule
    *  refused. */
   const [modelError, setModelError] = useState<string | null>(null);
-  /**
-   * A quit the tray deferred to this window, and where it has got to.
-   *
-   * One union rather than three flags, because the stages are mutually
-   * exclusive and the drawn flow moves between them: `choose` offers the two
-   * outcomes (`quit-requested` carries the config-routed tools still pointed at
-   * Gate), `confirm` reports what the chosen one did and holds the button that
-   * actually exits, and `left-behind` is the failure branch AG-596 requires -
-   * tools a teardown could not put back, named rather than quietly exited past.
-   *
-   * The names are swept from a backend buffer (at mount, then on each nudge)
-   * rather than carried on the event, so a Quit clicked before this listener
-   * registered is not lost - the same reasoning as `App.tsx`.
-   */
-  const [quit, setQuit] = useState<
-    | { kind: "choose"; tools: string[] }
-    | { kind: "confirm"; disconnected: boolean; reverting: string[] | null }
-    | { kind: "left-behind"; tools: string[] }
-    | null
-  >(null);
-  const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
@@ -986,39 +960,6 @@ export function NewUiApp() {
     };
   }, [redetect]);
 
-  useEffect(() => {
-    const sweep = () => {
-      pendingQuitTools()
-        .then((pending) => {
-          // Only ever opens the chooser: a sweep landing mid-flow must not
-          // throw the user back to step one of a quit they are already past.
-          if (pending && pending.tools.length > 0)
-            setQuit(
-              (q) =>
-                q ?? {
-                  kind: "choose",
-                  tools: pending.tools,
-                  // The subset a plain quit puts back on its own settings,
-                  // because the address its config names dies with this
-                  // process. The dialogs below say which tools those are, so
-                  // neither branch describes the other's outcome. Narrowed to
-                  // the rows the dialog lists: the backend walks the whole
-                  // registry, including tools hidden from the UI, and the
-                  // dialog's "keeps working" half is `tools` minus this list.
-                  reverting: pending.reverting.filter((r) => pending.tools.includes(r)),
-                  choice: "disconnect",
-                },
-            );
-        })
-        .catch(() => {});
-    };
-    sweep();
-    const unlisten = listen("quit-requested", sweep);
-    return () => {
-      void unlisten.then((f) => f()).catch(() => {});
-    };
-  }, []);
-
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
   // stale switch on screen until the next click.
@@ -1172,61 +1113,6 @@ export function NewUiApp() {
     };
   }, []);
 
-  /**
-   * Put the tools back, and move to whichever step the result earns: the
-   * confirmation when the teardown was clean, the left-behind dialog when it
-   * was not. Shared by the chooser's primary and that dialog's Try again, which
-   * are the same operation reached from two places.
-   *
-   * Quitting on a partial teardown would strand a config pointing at a relay
-   * that dies with this process, and reporting "their previous settings are
-   * restored" over it would be the claim AG-596 forbids.
-   */
-  const runDisconnect = useCallback(async () => {
-    setQuitBusy(true);
-    setActionError(null);
-    try {
-      const failed = await disconnectToolsForQuit();
-      setQuit(
-        failed.length > 0
-          ? { kind: "left-behind", tools: failed }
-          : // A clean teardown already put every config back, so the exit has
-            // nothing left to revert and the report says so on its own branch.
-            { kind: "confirm", disconnected: true, reverting: [] },
-      );
-    } catch (e) {
-      setActionError(classifyError(e, "quit_disable"));
-    } finally {
-      setQuitBusy(false);
-    }
-  }, []);
-
-  /**
-   * Carry out the chosen way to quit, then report it - the drawn flow's step
-   * one to step two. Neither branch exits here: the confirmation's own button
-   * does that, which is what lets it speak in the past tense.
-   */
-  const continueQuit = useCallback(() => {
-    if (quit?.kind !== "choose") return;
-    // One branch since 2026-09-24. There was a second - "quit without
-    // disconnecting", which ran no teardown and let `quit_app` revert only the
-    // stranded configs on the way out - and it was removed rather than
-    // rewritten: it left the user choosing between protected and
-    // looks-protected. The exit path it used still exists, because Cmd+Q from
-    // outside this flow, a logout and a shutdown all take it.
-    void runDisconnect();
-  }, [quit, runDisconnect]);
-
-  const finishQuit = useCallback(async () => {
-    setQuitBusy(true);
-    await quitApp().catch(() => {});
-  }, []);
-
-  const cancelQuit = useCallback(() => {
-    setQuit(null);
-    setQuitBusy(false);
-  }, []);
-
   const routing = useRouting({
     tools,
     proxy,
@@ -1262,28 +1148,6 @@ export function NewUiApp() {
     },
   });
   const routingBusy = routing.busy;
-
-  /**
-   * A quit decision takes the dialog slot from an open routing question, so
-   * answer the question first.
-   *
-   * The precedence itself is right and stays: the user asked to leave, and a
-   * routing prompt must not sit on top of that. What it cannot do is unmount a
-   * prompt that a suspended write is awaiting. `ask`'s promise is settled only
-   * by the dialog's own buttons, so a prompt that disappears unanswered leaves
-   * `busy` stuck on for the life of the window - and `BaseSwitch` drops clicks
-   * while busy, so every switch in the app stops responding with no error
-   * anywhere. Exactly the failure `settle`'s ordering was written for, reached
-   * by a different road.
-   *
-   * Declined rather than confirmed, because it is the answer that writes
-   * nothing: the person is leaving, and a question they never saw must not be
-   * taken for a yes.
-   */
-  const { prompt: routingPrompt, resolvePrompt } = routing;
-  useEffect(() => {
-    if (quit !== null && routingPrompt !== null) resolvePrompt(false);
-  }, [quit, routingPrompt, resolvePrompt]);
 
   /** Name the tools a teardown left on Gate, read back off their configs.
    *
@@ -1817,7 +1681,7 @@ export function NewUiApp() {
    * resubscribing listener drops this event. Reading these off a ref is how it
    * stays subscribed and still sees the current shell.
    *
-   * `slotBusy` is conservative: any pending quit, routing prompt, running-apps
+   * `slotBusy` is conservative: any routing prompt, running-apps
    * dialog or model overlay counts, including a state that draws no arm. A
    * reopen still running with nothing on screen does not, because a CLI can
    * wait there for as long as its user leaves it closed. Being
@@ -1828,7 +1692,7 @@ export function NewUiApp() {
   detailsGate.current = {
     ready: setup.stage.kind === "ready",
     slotBusy: Boolean(
-      quit || routing.prompt || reopenDialogShown || modelOverlay,
+      routing.prompt || reopenDialogShown || modelOverlay,
     ),
   };
 
@@ -2515,37 +2379,6 @@ export function NewUiApp() {
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
   }, [view, reopenAlert, paneNotice, railApps]);
 
-  /**
-   * The config-routed tools a quit would strand: connected or drifted, either
-   * way their configs point at the loopback relay that dies with this process.
-   *
-   * The same set Rust's `request_quit` computes from the registry before it
-   * defers to this window. Derived here rather than asked for, because the menu
-   * entry raises the flow directly and the backend only buffers a list when the
-   * *tray* asked.
-   */
-  const routedForQuit = useMemo(
-    () =>
-      tools
-        .filter(
-          (t) =>
-            t.status.kind === "connected" ||
-            t.status.kind === "drifted" ||
-            // Gate's configuration is still in this tool's file even though
-            // something outranks it, so quitting still leaves it behind - which
-            // is the whole subject of the takeover. Mirrors `request_quit`.
-            t.status.kind === "overridden",
-        )
-        // The product name, not the row label: `name` is the ledger's one-word
-        // label under a vendor heading ("CLI"), and two tools share it, so the
-        // chooser read "CLI and CLI". The backend names these same tools by
-        // display name in `request_quit` and `tools_stranded_by_quit`, and the
-        // dialog's "keeps working" half is this list minus that one - it has
-        // to be the same vocabulary or nothing ever matches.
-        .map((t) => t.product_name),
-    [tools],
-  );
-
   const onMenuSelect = useCallback(
     (action: MenuAction) => {
       setMenuOpen(false);
@@ -2557,44 +2390,11 @@ export function NewUiApp() {
       // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
       // the Settings row opens.
       else if (action === "docs") openLink(GATE_DOCS_URL);
-      else if (action === "quit") {
-        // Nothing routed means nothing to put back, so there is no choice to
-        // offer - which is the rule the tray's own Quit already follows, where
-        // Rust exits outright on an empty list. Asking "how?" about a teardown
-        // with no work in it would be a dialog for its own sake.
-        //
-        // Linux exits outright too, as the tray's Quit does in `request_quit`:
-        // the engine there is a detached daemon that outlives this window, so
-        // quitting strands nothing and there is no question to ask. Offering
-        // the chooser anyway is worse than silence - its first row tears down
-        // routing the user never needed to lose, and its second promised a
-        // revert `quit_app` skips on that platform.
-        if (platform === "linux" || routedForQuit.length === 0)
-          void quitApp().catch(() => {});
-        else
-          // Which of them a plain quit puts back is the one half this shell
-          // cannot derive - it depends on the address each config holds, not on
-          // the tool - so it is asked for rather than guessed. A read that did
-          // not complete arrives as `null` and the dialog says so; reading it
-          // as "nothing reverts" told the user their configs stay put on an
-          // exit about to rewrite them. Narrowed to the rows on screen for the
-          // reason the tray path gives.
-          void toolsStrandedByQuit()
-            .catch(() => null)
-            .then((reverting) =>
-              setQuit((q) =>
-                q ?? {
-                  kind: "choose",
-                  tools: routedForQuit,
-                  reverting:
-                    reverting?.filter((r) => routedForQuit.includes(r)) ?? null,
-                  choice: "disconnect",
-                },
-              ),
-            );
-      }
+      // No question first: the quit puts every tool back on its own settings
+      // itself (`quit_app`), and on Linux it leaves the daemon routing.
+      else if (action === "quit") void quitApp().catch(() => {});
     },
-    [openLink, openDashboard, routedForQuit, platform],
+    [openLink, openDashboard],
   );
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
@@ -2888,33 +2688,7 @@ export function NewUiApp() {
       inventory={inventory}
       notice={noticeStack}
       dialog={
-        // A pending quit decision outranks every other overlay: the user asked
-        // to leave, and an update prompt or routing notice must not sit on top
-        // of the question. Same precedence the popover gives it (TAKEOVER_Z.quit).
-        quit?.kind === "left-behind" ? (
-          <QuitLeftBehindDialog
-            tools={quit.tools}
-            busy={quitBusy}
-            onRetry={() => void runDisconnect()}
-            onQuitAnyway={() => void finishQuit()}
-            onCancel={cancelQuit}
-          />
-        ) : quit?.kind === "confirm" ? (
-          <QuitSafeToCloseDialog
-            disconnected={quit.disconnected}
-            reverting={quit.reverting}
-            busy={quitBusy}
-            onClose={() => void finishQuit()}
-            onCancel={cancelQuit}
-          />
-        ) : quit?.kind === "choose" ? (
-          <QuitDialog
-            tools={quit.tools}
-            busy={quitBusy}
-            onContinue={continueQuit}
-            onCancel={cancelQuit}
-          />
-        ) : routing.prompt?.kind === "drift" ? (
+        routing.prompt?.kind === "drift" ? (
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}

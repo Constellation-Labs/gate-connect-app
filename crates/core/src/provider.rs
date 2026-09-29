@@ -1057,6 +1057,24 @@ fn snapshot_and_disable_all_locked(configs: ToolConfigs) -> Result<()> {
 /// say it.
 pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let _guard = master_flow_guard();
+    snapshot_and_disable_everything_locked()
+}
+
+/// [`snapshot_and_disable_everything`] for the app's exit, which gives up
+/// rather than waiting on another routing operation: the exit also carries a
+/// logout and a shutdown, and "the app will not close" is the worst outcome
+/// there. Same wait as [`revert_stranded_configs`], for the same reason.
+pub fn snapshot_and_disable_everything_for_exit() -> Result<Vec<String>> {
+    let Some(_guard) = try_master_flow_guard(std::time::Duration::from_secs(5)) else {
+        anyhow::bail!(
+            "another routing operation is still running; quitting without putting tools \
+             back on their own settings"
+        );
+    };
+    snapshot_and_disable_everything_locked()
+}
+
+fn snapshot_and_disable_everything_locked() -> Result<Vec<String>> {
     snapshot_and_disable_all_locked(ToolConfigs::Reverted)?;
     let mut disconnected = Vec::new();
     let mut failed = Vec::new();

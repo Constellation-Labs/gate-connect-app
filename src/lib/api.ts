@@ -773,63 +773,18 @@ export interface ClosedAgents {
  * have, and terminal tools are left for the user to reopen. */
 export const restartRunningAgents = () => invoke<ClosedAgents>("restart_running_agents");
 
-/** Finish a quit the tray deferred to the popover: the backend buffers the
- * connected tool names and emits a `quit-requested` nudge instead of exiting
- * when config-routed tools would be left pointing at the dead relay. */
+/** Quit: every tool goes back on its own settings first (macOS and Windows),
+ * and a notification says so. On Linux the daemon keeps routing. */
 export const quitApp = () => invoke<void>("quit_app");
 
-/** Ask to quit the way the tray menu's Quit does: exit outright unless
- * config-routed tools are still managed, in which case the backend reveals the
- * main window and defers the decision there via `quit-requested`. The tray
- * popover's own Quit entry goes through this so both entrances raise the same
- * three-way dialog. */
+/** Ask to quit the way the tray menu's Quit does: the same quit as `quitApp`.
+ * The tray popover's own Quit entry goes through this. */
 export const requestQuit = () => invoke<void>("request_app_quit");
 
 /** Reveal (or refocus) the main window, wherever the user left it. The tray
  * popover's "Expand app" is the caller; the command is the same one the
  * onboarding window's close handler uses. */
 export const revealMainWindow = () => invoke<void>("reveal_popover");
-
-/** Hand over (and clear) the buffered quit request: the connected tool names
- * to show in the quit takeover, or null when no quit is pending. Swept once
- * at mount and again on each `quit-requested` nudge, so a Quit clicked
- * before the listener registered isn't lost. */
-/** What a pending quit would do. `tools` still route through Gate; `reverting`
- * is the subset whose config names an address that dies with the app and will
- * be put back on its own settings on the way out - the rest keep working
- * without Gate through an address that outlives it. Same predicate as the
- * quit itself, so the dialog names exactly what gets rewritten. */
-export interface PendingQuit {
-  tools: string[];
-  reverting: string[];
-}
-export const pendingQuitTools = () => invoke<PendingQuit | null>("pending_quit_tools");
-
-/** [`PendingQuit.reverting`] on its own, for the window's own Quit entry.
- *
- * `pendingQuitTools` drains a buffer only a tray-raised quit fills. The menu
- * entry raises the flow itself and knows which tools are routed from the rows
- * on screen, but not which of them a plain quit puts back: that depends on the
- * address each config holds, which is per install and decided in one place in
- * Rust.
- *
- * `null` when the read could not complete. Not `[]`: that is the ordinary
- * answer for an install whose configs all name the forwarder, and the dialog
- * words the two differently - one says the configs stay put, the other says it
- * could not check. Empty on Linux, where a quit reverts nothing. */
-export const toolsStrandedByQuit = () =>
-  invoke<string[] | null>("tools_stranded_by_quit");
-
-/** Quit-time teardown: snapshot + disconnect every enabled integration so the
- * CLI tools fall back to their original settings, leaving the routing intent
- * untouched so the next startup restore reapplies them. Fires the "restart
- * your CLI agents" system notification.
- *
- * Returns the display names of any tools it could **not** return to their own
- * settings; empty means the teardown was clean. A non-empty list is not a
- * rejection - the rest of the sweep ran - but the caller must not quit while
- * claiming the cleanup finished. */
-export const disconnectToolsForQuit = () => invoke<string[]>("disconnect_tools_for_quit");
 
 /** What the live security-event feed says about its *own* connection (AG-578).
  *

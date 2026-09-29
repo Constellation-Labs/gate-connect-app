@@ -33,17 +33,6 @@ test.describe("navigation", () => {
     await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
   });
 
-  test("a takeover owns Escape - it cancels the quit, it doesn't navigate", async ({ boot }) => {
-    const app = await boot({ pendingQuitTools: { tools: ["Claude Code"], reverting: [] } });
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
-
-    await app.page.keyboard.press("Escape");
-
-    await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toHaveCount(0);
-    await expect(app.page.getByRole("heading", { name: "Routing" })).toBeVisible();
-    expect((await app.calls()).some((c) => c.cmd === "quit_app")).toBe(false);
-  });
-
   test("the header and the credential footer stay put while the body scrolls", async ({ boot }) => {
     // Enough families to overflow 520px.
     const app = await boot({
