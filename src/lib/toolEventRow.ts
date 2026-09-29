@@ -52,6 +52,14 @@ export interface ActivityEntry {
   categoryTitle?: string | null;
   /** The model that served the request, or copy saying none was attributed. */
   model: string;
+  /** The raw id behind {@link model}, for the cell's hover. Null when the row
+   *  names no model.
+   *
+   *  Once the gateway sends a label, `model` stops being the id, and the label
+   *  can be a prettified guess ("Claude Opus 4 5" for
+   *  `anthropic/claude-opus-4-5`). The id is what the reader can search for, so
+   *  it stays one hover away rather than leaving the table. */
+  modelId: string | null;
   /** Which upstream served it (`anthropic`, `openai`). Null when the request
    *  never reached one - which the gateway reports honestly and often.
    *

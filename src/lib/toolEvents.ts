@@ -49,8 +49,11 @@ interface RawEvent {
    * disagreeing opinion about the same field. Fixing those values is the
    * gateway-side half of AG-951.
    *
-   * Null or absent falls back to the id, which is what shipped before this
-   * and is honest: an id is a thing the reader can search for.
+   * Absent falls back to the id, which is what shipped before this. After
+   * the gateway sends the field, it is null only when `model` is, so a model
+   * the catalogue does not name arrives as a prettified id ("Claude Opus 4 5")
+   * rather than as the id itself. That is expected, not a bug here; the id is
+   * kept on the entry as `modelId` for the cell's hover.
    */
   modelName?: string | null;
   provider: string | null;
@@ -286,6 +289,7 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // The gateway's label when it sends one, the id when it does not. Never a
     // label this side invented - see `RawEvent.modelName`.
     model: raw.modelName ?? raw.model ?? NO_MODEL,
+    modelId: raw.model,
     provider: raw.provider,
     vendor: raw.provider ?? vendorFromModelId(raw.model),
     title: raw.conversationTitle,

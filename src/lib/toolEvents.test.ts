@@ -70,6 +70,8 @@ describe("adaptEvents", () => {
     );
 
     expect(view.entries[0].model).toBe("Claude Opus 5");
+    // The id is kept alongside, so the cell can still say which model it was.
+    expect(view.entries[0].modelId).toBe("anthropic/claude-opus-5");
   });
 
   it("prints the label exactly as the gateway spells it", () => {
