@@ -242,8 +242,13 @@ pub(crate) fn add_vars(path: &Path, vars: &[(&str, String)], ours: &[Owned]) -> 
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     // 0o600: these files routinely hold the user's API keys.
-    crate::config_changes::write(path, lines.concat().as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))?;
+    crate::config_changes::write(
+        path,
+        lines.concat().as_bytes(),
+        0o600,
+        crate::config_changes::Change::Applied,
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
     Ok(Applied {
         added,
         refreshed,
@@ -273,8 +278,13 @@ pub(crate) fn remove_vars(path: &Path, keys: &[String], file_created: bool) -> R
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
-    crate::config_changes::write(path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
+    crate::config_changes::write(
+        path,
+        body.as_bytes(),
+        0o600,
+        crate::config_changes::Change::Reverted,
+    )
+    .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The value assigned to `key`, if the file defines it. Surrounding quotes are

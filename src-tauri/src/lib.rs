@@ -1248,8 +1248,17 @@ fn modified_unix(path: &std::path::Path) -> Option<u64> {
 ///
 /// No file to read means no claim, not "stale": nothing on disk says the
 /// process missed anything.
+///
+/// `since` narrows the question to changes stamped at or after it. A routing
+/// toggle asks only about what it changed itself: an agent that missed the
+/// first connect stays behind that stamp for good, and without the bound
+/// every later off-and-on repeated the notice for a change it did not make.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn agent_needs_reopen(process: &sysinfo::Process, ca_cert_changed_at: Option<u64>) -> bool {
+fn agent_needs_reopen(
+    process: &sysinfo::Process,
+    ca_cert_changed_at: Option<u64>,
+    since: Option<u64>,
+) -> bool {
     let name = process.name().to_string_lossy().to_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     let config_changed_at = agent_tool(name)
@@ -1262,6 +1271,7 @@ fn agent_needs_reopen(process: &sysinfo::Process, ca_cert_changed_at: Option<u64
         .into_iter()
         .flatten()
         .max()
+        .filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
         .map(|changed_at| process.start_time() < changed_at)
         .unwrap_or(false)
 }
@@ -1281,13 +1291,16 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 ///
 /// `(async)` for the reason on [`running_agents_count`]: this is the probe the
 /// boot path and the `proxy-state-changed` handler both call.
+///
+/// `since` (Unix seconds) counts only changes made at or after it; see
+/// [`agent_needs_reopen`].
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn stale_agents_count() -> u32 {
+fn stale_agents_count(since: Option<u64>) -> u32 {
     let ca_cert_changed_at = ca_cert_changed_at_unix();
     let mut count = 0u32;
     for_each_agent_process(|process| {
-        if agent_needs_reopen(process, ca_cert_changed_at) {
+        if agent_needs_reopen(process, ca_cert_changed_at, since) {
             count += 1;
         }
     });
@@ -1344,7 +1357,7 @@ fn running_agents() -> RunningAgentsDto {
             name: process.name().to_string_lossy().to_string(),
             pid: process.pid().as_u32(),
             started_at_unix,
-            needs_reopen: agent_needs_reopen(process, ca_cert_changed_at),
+            needs_reopen: agent_needs_reopen(process, ca_cert_changed_at, None),
         });
     });
     // Oldest first: the ones that need a reopen are the ones being looked

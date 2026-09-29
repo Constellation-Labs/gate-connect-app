@@ -60,6 +60,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
+use crate::config_changes::Change;
 use crate::env;
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
@@ -511,7 +512,7 @@ impl Integration for Codex {
         // No Gate-managed provider list is recorded; the marker above is
         // sufficient.
 
-        write_doc(&path, &doc)?;
+        write_doc(&path, &doc, Change::Applied)?;
 
         // What the user has to know, and the only tool in the registry where
         // it is about conversations rather than processes. See the module docs
@@ -609,7 +610,7 @@ impl Integration for Codex {
             // remove the file rather than leave an empty one behind.
             crate::config_changes::remove(&path)?;
         } else {
-            write_doc(&path, &doc)?;
+            write_doc(&path, &doc, Change::Reverted)?;
         }
 
         // Remove the legacy auth-helper script if an older Gate Connect
@@ -632,11 +633,11 @@ fn read_doc(path: &Path) -> Result<DocumentMut> {
         .with_context(|| format!("parsing {} as TOML", path.display()))
 }
 
-fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
+fn write_doc(path: &Path, doc: &DocumentMut, change: Change) -> Result<()> {
     // 0o600 defensively (the file no longer carries the Gate key - the relay
     // injects it - but may hold other user config). Atomic-write protects
     // against partial writes tearing the TOML on crash.
-    crate::config_changes::write(path, doc.to_string().as_bytes(), 0o600)
+    crate::config_changes::write(path, doc.to_string().as_bytes(), 0o600, change)
         .with_context(|| format!("writing {}", path.display()))
 }
 

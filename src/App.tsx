@@ -172,17 +172,19 @@ function markRoutingTakeoverSeen(): void {
 /** `trusted` is the one member that is not about routing: the explicit Trust
  *  buttons (Home's certificate card, the family panel's banner) never pass the
  *  certificate pre-flight, so its browser advice lands here on their success. */
-export type ChangeNotice = "on" | "off" | "started" | "pending" | "trusted" | null;
+export type ChangeNotice = "on" | "started" | "pending" | "trusted" | null;
 
 /** Which change notice a member/group toggle earned, from the engine state
  * that actually resulted rather than from the direction of the click.
  *
- * `on`/`off` both mean traffic is flowing, so the close-your-apps advice
- * applies and only the wording differs. `pending` is the case the old
- * two-value notice had no room for: the user switched something on, the engine
- * is down, nothing routes, and telling them to close their apps would be
- * false. Turning something off while the engine is already down changed
- * nothing observable, so it earns no notice at all. */
+ * `on` means traffic is flowing, so the close-your-apps advice applies.
+ * `pending` is the case the old two-value notice had no room for: the user
+ * switched something on, the engine is down, nothing routes, and telling them
+ * to close their apps would be false. Turning something off earns no notice,
+ * engine up or down: a tool already open keeps the address it loaded, and the
+ * forwarder behind it sends the traffic straight to the provider once Gate is
+ * no longer routing that host, so there is nothing to restart. Same rule as
+ * the master off. */
 function noticeFor(
   turnedOn: boolean,
   engineRunning: boolean,
@@ -194,8 +196,8 @@ function noticeFor(
   // is do it and say so, so a side-effect start gets its own notice rather
   // than hiding inside the generic "Routing is on".
   if (engineRunning && !engineWasRunning && turnedOn) return "started";
-  if (engineRunning) return turnedOn ? "on" : "off";
-  return turnedOn ? "pending" : null;
+  if (!turnedOn) return null;
+  return engineRunning ? "on" : "pending";
 }
 
 /** Whether the account is fully usable right now: a stored key in legacy mode,
@@ -810,6 +812,8 @@ export function App() {
       try {
         // Turning on is the path that trusts the CA; disable never prompts.
         if (!proxy?.running) await ensureCaTrusted();
+        // Whole seconds, the unit Gate stamps its config changes in.
+        const since = Math.floor(Date.now() / 1000);
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
@@ -831,10 +835,14 @@ export function App() {
         // something to close, the takeover (or, once acknowledged, the inline
         // hint) offers to close it; with nothing, the inline hint carries the
         // reload advice alone. A failed probe defaults to showing.
+        //
+        // Only changes this toggle made count. An agent that missed an earlier
+        // connect was already told so then, and an off-and-on that kept every
+        // config rewrote nothing it could have missed.
         if (!next.running) {
           setChangeNotice(null);
         } else {
-          const agents = await staleAgentsCount().catch(() => 1);
+          const agents = await staleAgentsCount(since).catch(() => 1);
           setNothingToClose(agents === 0);
           if (takeover && agents > 0 && !hasSeenRoutingTakeover()) {
             markRoutingTakeoverSeen();
@@ -1329,16 +1337,10 @@ export function App() {
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click
         // already declared the intent, land directly on the confirm step.
-        // Carries the banner's direction so the takeover doesn't announce
-        // "Routing is on" over a switch the user just turned off.
-        // "pending" can never reach here: that banner offers Turn on routing,
-        // not Restart them, because nothing is running to restart.
-        onCloseAgents={() =>
-          setRoutingNotice({
-            dir: changeNotice === "off" ? "off" : "on",
-            confirming: true,
-          })
-        }
+        // Only the "on" banner offers this: "pending" offers Turn on routing,
+        // because nothing is running to restart, and a switch turned off
+        // raises no banner at all.
+        onCloseAgents={() => setRoutingNotice({ dir: "on", confirming: true })}
         onEnableRouting={() => void toggleProxy(false)}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}

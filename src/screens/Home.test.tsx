@@ -545,19 +545,9 @@ describe("Home ledger rows", () => {
 });
 
 describe("Home routing-change notice", () => {
-  it("words the same notice by direction", () => {
-    renderHome({ changeNotice: "on", domains: [makeDomain()] });
-    expect(screen.getByText(/Routing is on\./)).toBeTruthy();
-    cleanup();
-
-    renderHome({ changeNotice: "off", domains: [makeDomain()] });
-    expect(screen.getByText(/Routing is off\./)).toBeTruthy();
-    expect(screen.queryByText(/Routing is on\./)).toBeNull();
-  });
-
-  it("offers to close the running tools in both directions, not just at startup", () => {
+  it("offers to close the running tools, not just at startup", () => {
     const onCloseAgents = vi.fn();
-    renderHome({ changeNotice: "off", onCloseAgents, domains: [makeDomain()] });
+    renderHome({ changeNotice: "on", onCloseAgents, domains: [makeDomain()] });
     fireEvent.click(screen.getByRole("button", { name: "Restart them…" }));
     expect(onCloseAgents).toHaveBeenCalled();
   });
@@ -610,10 +600,10 @@ describe("Home routing-change notice", () => {
   it("shows one notice at a time, so a fast flip can't stack them", () => {
     // The regression this replaced: three independent hint booleans, so the
     // "on" notice stayed up over the "off" one after an on/off flip.
-    renderHome({ changeNotice: "off", staleAgentsHint: true, domains: [makeDomain()] });
+    renderHome({ changeNotice: "on", staleAgentsHint: true, domains: [makeDomain()] });
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.getByText(/local address changed/)).toBeTruthy();
-    expect(screen.queryByText(/Routing is off\./)).toBeNull();
+    expect(screen.queryByText(/Routing is on\./)).toBeNull();
   });
 });
 
