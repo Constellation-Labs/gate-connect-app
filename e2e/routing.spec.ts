@@ -75,11 +75,11 @@ test.describe("routing", () => {
 
     // Two steps: the offer, then the confirm. Closing someone's editor is not
     // a one-click act.
-    await app.page.getByRole("button", { name: "Close them…" }).click();
-    await app.page.getByRole("button", { name: "Close them", exact: true }).click();
+    await app.page.getByRole("button", { name: "Restart them…" }).click();
+    await app.page.getByRole("button", { name: "Restart them", exact: true }).click();
 
     await expect
-      .poll(async () => (await app.calls()).some((c) => c.cmd === "close_running_agents"))
+      .poll(async () => (await app.calls()).some((c) => c.cmd === "restart_running_agents"))
       .toBe(true);
   });
 

@@ -3412,43 +3412,203 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
     }
 }
 
-/// Terminate running agent processes (CLIs and desktop apps, see
-/// [`AGENT_PROCESSES`]) so their next launch picks up the routing change.
-/// Graceful where the platform allows it (SIGTERM on
-/// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
-/// Returns how many processes were signalled - 0 means none were running.
-/// Best-effort: processes we can't signal (another user's, already gone) are
-/// skipped, not errors.
+/// What [`restart_running_agents`] did, for the popover to report back.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct ClosedAgentsDto {
+    /// Processes that were closed, the restarted ones included. 0 means none
+    /// were running.
+    closed: u32,
+    /// Desktop apps that quit and were opened again, by name ("Claude").
+    restarted: Vec<String>,
+    /// Closed and not opened again, by tool name: a terminal tool belongs to
+    /// the terminal it ran in, so a copy Gate started would not be the user's;
+    /// and an app that quit but could not be relaunched. The user opens these
+    /// again.
+    reopen_yourself: Vec<String>,
+    /// Asked to quit and still running once Gate stopped waiting, by name.
+    /// Not counted in `closed`: the user has to quit these themselves.
+    still_running: Vec<String>,
+}
+
+/// How long an agent gets to quit on its own before Gate stops waiting. A
+/// restart has to see the app gone before it relaunches it, or the launch just
+/// brings the old one forward. Claude Desktop's quit cleanup, Cowork's VM
+/// shutdown included, runs in about a second; the rest is margin for a machine
+/// under load.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const AGENT_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One agent picked for closing, captured before it is asked to quit, because
+/// afterwards there is no process left to ask where it came from.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct CloseTarget {
+    pid: sysinfo::Pid,
+    /// With the pid, because Windows reuses pids quickly and a wait of seconds
+    /// must not end in killing or counting whatever took over the number.
+    started: u64,
+    /// The [`AGENT_PROCESSES`] row's slug, which the reopen queue is keyed by.
+    slug: Option<&'static str>,
+    /// The row's product name, for the popover.
+    name: String,
+    surface: Option<Surface>,
+    /// `None` for a CLI, which is the whole point of `Surface` - see
+    /// [`relaunch_target`].
+    relaunch: Option<Relaunch>,
+}
+
+/// Close running agents (CLIs and desktop apps, see [`AGENT_PROCESSES`]) and
+/// wait for them to go. Shared by [`close_running_agents`] and
+/// [`restart_running_agents`], which differ only in what happens after.
+///
+/// Asking first matters most on Windows, where the only step used to be the
+/// hard kill. Claude Desktop never ran its quit cleanup, so Cowork's VM was
+/// left running with nothing on the host end and the next launch could not
+/// reach it. SIGTERM on macOS and Linux already is a quit request; on Windows
+/// the request is `taskkill` without `/F`, which posts `WM_CLOSE` to the app's
+/// windows. Only Windows kills what has not quit by [`AGENT_CLOSE_GRACE`], as
+/// it always did; elsewhere a process that ignores SIGTERM is left running,
+/// also as before, and reported in `still_running`.
+///
+/// An agent hosted by a desktop app that is being closed too (a Claude Code
+/// session in Claude Desktop's Code tab) is left to that app: the app stops it
+/// in its own cleanup and starts it again on relaunch, and killing it first is
+/// the same damage. Any ancestor counts, not only the parent, because the app
+/// may start it from one of its helpers or through a shell (see
+/// [`hosted_by_agent`]). A session whose app is NOT in the set is closed like
+/// any other, or a scoped close of Claude Code would leave it stale.
 ///
 /// `only` carries the same tool-slug filter as [`running_agents`], and callers
-/// are expected to pass back exactly what they offered: this signals processes,
-/// so the set it kills must be the set the user was shown and agreed to.
+/// are expected to pass back exactly what they offered: this closes processes,
+/// so the set it closes must be the set the user was shown and agreed to.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    // Pick first, signal after: a host can come after its child in the walk.
+    let mut found: Vec<CloseTarget> = Vec::new();
+    for_each_agent_process(&agent_names_for(only), |process| {
+        let surface = surface_of(process);
+        found.push(CloseTarget {
+            pid: process.pid(),
+            started: process.start_time(),
+            slug: agent_slug_of(process),
+            name: agent_product_name_of(process)
+                .map(str::to_string)
+                .unwrap_or_else(|| process.name().to_string_lossy().into_owned()),
+            surface,
+            relaunch: surface.and_then(|s| relaunch_target(process, s)),
+        });
+    });
+    // The whole table, not the walk's filtered set: an app's helpers and the
+    // shells between it and its child are what the ancestor walk climbs.
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    let closing_apps: std::collections::HashSet<Pid> = found
+        .iter()
+        .filter(|t| t.surface == Some(Surface::App))
+        .map(|t| t.pid)
+        .collect();
+    let targets: Vec<CloseTarget> = found
+        .into_iter()
+        .filter(|target| {
+            !hosted_by_agent(
+                target.pid,
+                |pid| sys.process(pid).and_then(|p| p.parent()),
+                |pid| closing_apps.contains(&pid),
+            )
+        })
+        .collect();
+
+    let mut closed: Vec<CloseTarget> = Vec::new();
+    let mut still_running: Vec<String> = Vec::new();
+    let mut waiting: Vec<CloseTarget> = Vec::new();
+    for target in targets {
+        let Some(process) = sys
+            .process(target.pid)
+            .filter(|p| p.start_time() == target.started)
+        else {
+            continue; // quit on its own since the walk
+        };
+        match request_close(process) {
+            // A terminal tool is waited on too: SIGTERM is a request, and one
+            // that ignores it has not closed.
+            CloseRequest::Asked => waiting.push(target),
+            // On Windows a console process has no window to ask and `taskkill`
+            // refuses it, so it is killed straight away, as it always was.
+            // Elsewhere a failed SIGTERM means the kill fails too (another
+            // user's process, or already gone).
+            CloseRequest::NotAsked => {
+                if process.kill() {
+                    closed.push(target);
+                }
+            }
+        }
+    }
+
+    let deadline = std::time::Instant::now() + AGENT_CLOSE_GRACE;
+    loop {
+        let pids: Vec<Pid> = waiting.iter().map(|t| t.pid).collect();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&pids),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        let (running, exited): (Vec<_>, Vec<_>) = waiting.into_iter().partition(|t| {
+            sys.process(t.pid)
+                .is_some_and(|p| p.start_time() == t.started)
+        });
+        closed.extend(exited);
+        waiting = running;
+        if waiting.is_empty() || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    for target in waiting {
+        eprintln!(
+            "[gate] close agents: {} (pid {}) did not quit within {AGENT_CLOSE_GRACE:?}",
+            target.name, target.pid
+        );
+        let killed = cfg!(target_os = "windows")
+            && sys
+                .process(target.pid)
+                .is_some_and(|process| process.kill());
+        if killed {
+            closed.push(target);
+        } else {
+            still_running.push(target.name);
+        }
+    }
+    still_running.sort();
+    still_running.dedup();
+    (closed, still_running)
+}
+
+/// Close running agents so their next launch picks up the routing change, and
+/// queue the apps among them for [`reopen_running_agents`]. Returns how many
+/// processes closed - 0 means none were running. One still running when Gate
+/// stopped waiting is not counted. See [`close_agents`] for how each is asked.
 ///
-/// `(async)` on top of the walk's own reason: this one also blocks on
-/// signalling every match, and it runs from a button the user is watching.
+/// `(async)` on top of the walk's own reason: this one blocks on the wait, and
+/// it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
-    use sysinfo::Signal;
-    let mut closed = 0u32;
-    let mut reopen: Vec<(String, PathBuf)> = Vec::new();
-    for_each_agent_process(&agent_names_for(only.as_deref()), |process| {
-        // Captured BEFORE the kill, because afterwards there is no process left
-        // to ask where it came from. `None` for a CLI, which is the whole point
-        // of `Surface` - see `relaunch_target`.
-        let target = surface_of(process).and_then(|s| relaunch_target(process, s));
-        // kill_with(Term) is None on platforms without signal support
-        // (Windows); fall back to the hard kill there.
-        let signalled = process
-            .kill_with(Signal::Term)
-            .unwrap_or_else(|| process.kill());
-        if signalled {
-            closed += 1;
-            if let (Some(slug), Some(path)) = (agent_slug_of(process), target) {
-                reopen.push((slug.to_string(), path));
+    let (closed, _) = close_agents(only.as_deref());
+    let mut reopen: Vec<(String, Relaunch)> = Vec::new();
+    for target in &closed {
+        if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
+            // One launch per app, however many of its processes were closed.
+            if !reopen.iter().any(|(s, _)| s == slug) {
+                reopen.push((slug.to_string(), relaunch.clone()));
             }
         }
-    });
+    }
     if !reopen.is_empty() {
         let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
         // Replace rather than append for the slugs in hand: a second close of
@@ -3456,7 +3616,240 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
         guard.retain(|(slug, _)| !reopen.iter().any(|(s, _)| s == slug));
         guard.extend(reopen);
     }
-    closed
+    closed.len() as u32
+}
+
+/// Restart every running agent in one step, for the Home banner: close them
+/// all ([`close_agents`]), open the desktop apps again once they have quit,
+/// and name the terminal tools for the user to start again, since they belong
+/// to a terminal Gate cannot start them in.
+///
+/// `(async)` for the same reason as [`close_running_agents`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn restart_running_agents() -> ClosedAgentsDto {
+    let (closed, still_running) = close_agents(None);
+    let mut dto = ClosedAgentsDto {
+        closed: closed.len() as u32,
+        restarted: Vec::new(),
+        reopen_yourself: Vec::new(),
+        still_running,
+    };
+    let mut launched: Vec<&'static str> = Vec::new();
+    for target in closed {
+        match (&target.relaunch, target.slug) {
+            // Already launched for another of this app's processes.
+            (Some(_), Some(slug)) if launched.contains(&slug) => {}
+            (Some(relaunch), slug) => {
+                if relaunch.spawn() {
+                    launched.extend(slug);
+                    dto.restarted.push(target.name);
+                } else {
+                    eprintln!("[gate] close agents: could not reopen {}", target.name);
+                    dto.reopen_yourself.push(target.name);
+                }
+            }
+            (None, _) => dto.reopen_yourself.push(target.name),
+        }
+    }
+    // The ChatGPT app's bundled `codex` has no relaunch of its own and shares
+    // the app's name; relaunching the app is what brings it back.
+    dto.reopen_yourself
+        .retain(|name| !dto.restarted.contains(name));
+    for names in [
+        &mut dto.restarted,
+        &mut dto.reopen_yourself,
+        &mut dto.still_running,
+    ] {
+        names.sort();
+        names.dedup();
+    }
+    dto
+}
+
+/// Was `pid` started under another agent, at any depth? `parent_of` and
+/// `is_agent` read the process table; they are parameters so the walk can be
+/// tested without one. Bounded, because a table read in pieces can hold a
+/// parent loop, and pid 0/1 or a missing entry ends the chain.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn hosted_by_agent(
+    pid: sysinfo::Pid,
+    parent_of: impl Fn(sysinfo::Pid) -> Option<sysinfo::Pid>,
+    is_agent: impl Fn(sysinfo::Pid) -> bool,
+) -> bool {
+    let mut current = pid;
+    for _ in 0..64 {
+        match parent_of(current) {
+            Some(parent) if parent != current => {
+                if is_agent(parent) {
+                    return true;
+                }
+                current = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// How a quit request landed.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+enum CloseRequest {
+    /// Delivered: SIGTERM, or on Windows a `WM_CLOSE` to the app's own
+    /// windows.
+    Asked,
+    /// Not delivered. On Windows: no window of its own to ask, so a hard kill
+    /// is the only way. Elsewhere: it could not be signalled at all.
+    NotAsked,
+}
+
+/// Ask a process to quit: SIGTERM on macOS and Linux, and on Windows what its
+/// own window's close button would send.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn request_close(process: &sysinfo::Process) -> CloseRequest {
+    if process.kill_with(sysinfo::Signal::Term).unwrap_or(false) {
+        CloseRequest::Asked
+    } else {
+        CloseRequest::NotAsked
+    }
+}
+
+/// `taskkill` *without* `/F` posts `WM_CLOSE` to the process's top-level
+/// windows and succeeds only if it had some. That is not the process agreeing
+/// to exit - [`close_agents`] waits to find that out.
+#[cfg(target_os = "windows")]
+fn request_close(process: &sysinfo::Process) -> CloseRequest {
+    use std::os::windows::process::CommandExt;
+    let asked = std::process::Command::new("taskkill")
+        .args(["/PID", &process.pid().to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if asked {
+        CloseRequest::Asked
+    } else {
+        CloseRequest::NotAsked
+    }
+}
+
+/// `CREATE_NO_WINDOW`: no console flash per `taskkill`, as with `certutil` in
+/// `ca_windows`.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// How to open a desktop app again after it quit.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Debug, Clone, PartialEq)]
+enum Relaunch {
+    /// A macOS `.app` bundle, handed to `open`, or an executable elsewhere.
+    /// See [`relaunch_target_for`].
+    Path(PathBuf),
+    /// A Windows Store app, by its application user model ID
+    /// (`Claude_pzs8sxrjxfjjc!Claude`). See [`store_app_relaunch`].
+    StoreApp(String),
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl Relaunch {
+    fn spawn(&self) -> bool {
+        match self {
+            Relaunch::Path(path) => launch(path),
+            // Through the shell, never as Gate's child: the app gets the
+            // user's environment rather than Gate's, and outlives Gate.
+            // `explorer.exe` exits 1 on success, so only the spawn is checked.
+            Relaunch::StoreApp(aumid) => std::process::Command::new("explorer.exe")
+                .arg(format!("shell:AppsFolder\\{aumid}"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok(),
+        }
+    }
+}
+
+/// The relaunch for a process whose executable is inside a Windows Store
+/// package, by its app ID. A Store app cannot be started from its `.exe` under
+/// `WindowsApps` (which is why [`relaunch_target_for`] refuses those paths);
+/// the shell has to activate the package, and the ID it takes is read from the
+/// package's own `AppxManifest.xml`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn store_app_relaunch(exe: &str) -> Option<Relaunch> {
+    let package = windows_store_package(exe)?;
+    let manifest =
+        std::fs::read_to_string(format!("{}\\AppxManifest.xml", package.install_dir)).ok()?;
+    let executable = exe[package.install_dir.len()..].trim_start_matches('\\');
+    let app_id = manifest_app_id(&manifest, executable)?;
+    Some(Relaunch::StoreApp(format!("{}!{app_id}", package.family)))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Debug, PartialEq)]
+struct StorePackage {
+    install_dir: String,
+    /// `Claude_pzs8sxrjxfjjc`: the package name plus its publisher ID.
+    family: String,
+    name: String,
+}
+
+/// Read a Store package out of an executable path under `WindowsApps`. The
+/// folder is the package's full name, `Name_Version_Arch_ResourceId_PublisherId`:
+/// five fields, the resource ID usually empty. A package name cannot hold an
+/// underscore, so splitting on it is exact.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn windows_store_package(exe: &str) -> Option<StorePackage> {
+    const MARKER: &str = "\\windowsapps\\";
+    let start = exe.to_ascii_lowercase().find(MARKER)? + MARKER.len();
+    let full_name = exe[start..].split('\\').next()?;
+    let fields: Vec<&str> = full_name.split('_').collect();
+    let [name, _version, _arch, _resource, publisher] = fields[..] else {
+        return None;
+    };
+    if name.is_empty() || publisher.is_empty() {
+        return None;
+    }
+    Some(StorePackage {
+        install_dir: exe[..start + full_name.len()].to_string(),
+        family: format!("{name}_{publisher}"),
+        name: name.to_string(),
+    })
+}
+
+/// The `Id` of the `<Application>` in an `AppxManifest.xml` whose `Executable`
+/// is the one that was running (relative to the package, `app\Claude.exe`). By
+/// executable, not first match: Claude's package declares a second
+/// application, its SSH askpass helper, and a package is free to list them in
+/// any order.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn manifest_app_id(manifest: &str, executable: &str) -> Option<String> {
+    manifest
+        .split("<Application")
+        .skip(1)
+        // `<Applications>` is the list around them, not one of them.
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .filter_map(|rest| rest.split('>').next())
+        .find(|tag| xml_attr(tag, "Executable").is_some_and(|e| e.eq_ignore_ascii_case(executable)))
+        .and_then(|tag| xml_attr(tag, "Id"))
+        .map(str::to_string)
+}
+
+/// An attribute's value inside one start tag, `name="value"`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn xml_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let mut search = tag;
+    loop {
+        let at = search.find(&needle)?;
+        // Whole attribute names only: `Id` must not match inside `AppId`.
+        let whole = search[..at].ends_with(char::is_whitespace);
+        let value = &search[at + needle.len()..];
+        if whole {
+            return value.split('"').next();
+        }
+        search = value;
+    }
 }
 
 /// What Gate closed and intends to put back, captured before the kill.
@@ -3470,16 +3863,27 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
 ///
 /// Cleared as it is consumed, so a second reopen cannot launch a second copy.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-static PENDING_REOPEN: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+static PENDING_REOPEN: Mutex<Vec<(String, Relaunch)>> = Mutex::new(Vec::new());
 
-/// Where an app would be launched from again, or `None` if Gate should not try.
+/// How an app would be launched again, or `None` if Gate should not try.
 ///
 /// `None` for a CLI even though its executable path is perfectly resolvable -
 /// see [`Surface`]. Being able to spawn something is not the same as being able
 /// to reopen it.
+///
+/// A Store app is reopened by its package identity ([`store_app_relaunch`]),
+/// and anything else by path ([`relaunch_target_for`], which refuses
+/// `WindowsApps` paths for exactly that reason). The bundled helper rule
+/// applies to both: it is the app's process that gets relaunched.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn relaunch_target(process: &sysinfo::Process, surface: Surface) -> Option<PathBuf> {
-    relaunch_target_for(process.exe(), surface)
+fn relaunch_target(process: &sysinfo::Process, surface: Surface) -> Option<Relaunch> {
+    let exe = process.exe();
+    if surface == Surface::App && !is_chatgpt_bundled_codex(exe) {
+        if let Some(store) = exe.and_then(|e| store_app_relaunch(&e.to_string_lossy())) {
+            return Some(store);
+        }
+    }
+    relaunch_target_for(exe, surface).map(Relaunch::Path)
 }
 
 /// The half of [`relaunch_target`] that is testable without a live process
@@ -3569,7 +3973,8 @@ fn launch(target: &std::path::Path) -> bool {
 /// draws (`closing` -> `reopening`), and so a user who declines the reopen just
 /// never calls this.
 ///
-/// Waits for the processes to actually be gone first, bounded. Relaunching an
+/// Waits for the processes to actually be gone first, bounded: the close waited
+/// already, but one may have ignored the request. Relaunching an
 /// app whose old instance is still shutting down is how you get the single-
 /// instance logic to focus the dying window and then exit with it, which looks
 /// exactly like "Gate closed my app and did not reopen it".
@@ -3580,7 +3985,7 @@ fn launch(target: &std::path::Path) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
-    let pending: Vec<(String, PathBuf)> = {
+    let pending: Vec<(String, Relaunch)> = {
         let mut guard = PENDING_REOPEN.lock().unwrap_or_else(|e| e.into_inner());
         let (take, keep): (Vec<_>, Vec<_>) = guard.drain(..).partition(|(slug, _)| {
             only.as_deref()
@@ -3611,7 +4016,10 @@ fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
-    pending.iter().filter(|(_, path)| launch(path)).count() as u32
+    pending
+        .iter()
+        .filter(|(_, relaunch)| relaunch.spawn())
+        .count() as u32
 }
 
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
@@ -4928,6 +5336,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
             running_agents,
             close_running_agents,
             reopen_running_agents,
+            restart_running_agents,
             drain_backend_errors,
             security_feed_state,
             security_feed_history_ok,
@@ -6989,5 +7398,89 @@ mod tests {
             relaunch_target_for(Some(Path::new("/opt/homebrew/bin/codex")), Surface::Cli),
             None
         );
+    }
+
+    /// A Claude Code session Claude Desktop started from a helper, or through
+    /// a shell, is still the app's to stop.
+    #[test]
+    fn an_agent_anywhere_up_the_chain_is_the_host() {
+        use sysinfo::Pid;
+        // 100 Claude main -> 101 helper -> 102 cmd.exe -> 103 claude (session);
+        // 200 terminal -> 201 claude; 300 and 301 are each other's parent.
+        let parent = |pid: Pid| -> Option<Pid> {
+            let parent = match pid.as_u32() {
+                101 => 100,
+                102 => 101,
+                103 => 102,
+                100 | 200 => 1,
+                201 => 200,
+                300 => 301,
+                301 => 300,
+                _ => return None,
+            };
+            Some(Pid::from_u32(parent))
+        };
+        let agent = |pid: Pid| matches!(pid.as_u32(), 100 | 101 | 103 | 201);
+        assert!(hosted_by_agent(Pid::from_u32(103), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(100), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(201), parent, agent));
+        assert!(!hosted_by_agent(Pid::from_u32(300), parent, agent));
+    }
+    /// The path Claude Desktop runs from on the Windows machine the restart was
+    /// built on, and the fields the app ID is assembled from.
+    #[test]
+    fn a_store_package_is_read_from_its_install_path() {
+        let exe =
+            r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc\app\Claude.exe";
+        assert_eq!(
+            windows_store_package(exe),
+            Some(StorePackage {
+                install_dir: r"C:\Program Files\WindowsApps\Claude_2.9939.4.0_x64__pzs8sxrjxfjjc"
+                    .into(),
+                family: "Claude_pzs8sxrjxfjjc".into(),
+                name: "Claude".into(),
+            })
+        );
+        // Case does not decide it; Windows paths are not case-sensitive.
+        assert!(windows_store_package(&exe.to_ascii_lowercase()).is_some());
+        // Not a package folder: too few fields, or not under WindowsApps.
+        assert_eq!(
+            windows_store_package(r"C:\Program Files\WindowsApps\Claude\Claude.exe"),
+            None
+        );
+        assert_eq!(
+            windows_store_package(
+                r"C:\Users\u\AppData\Roaming\Claude\claude-code\2.1.284\claude.exe"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_app_id_is_the_application_that_was_running() {
+        // Trimmed from Claude's own AppxManifest.xml: the helper is a second
+        // application, and the list element shares the tag's prefix.
+        let manifest = r#"<Package><Applications>
+<Application Id="Claude" Executable="app\Claude.exe" EntryPoint="Windows.FullTrustApplication">
+</Application>
+<Application
+  Id="SshAskpass" Executable="app\resources\claude-ssh-askpass.exe" EntryPoint="Windows.FullTrustApplication">
+</Application>
+</Applications></Package>"#;
+        assert_eq!(
+            manifest_app_id(manifest, r"app\Claude.exe").as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(
+            manifest_app_id(manifest, r"APP\claude.exe").as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(
+            manifest_app_id(manifest, r"app\resources\claude-ssh-askpass.exe").as_deref(),
+            Some("SshAskpass")
+        );
+        assert_eq!(manifest_app_id(manifest, r"app\other.exe"), None);
+        // `Id` is a whole attribute name, not the tail of another one.
+        assert_eq!(xml_attr(r#" AppId="x" Id="y""#, "Id"), Some("y"));
     }
 }

@@ -690,6 +690,15 @@ export function installFakeTauri(state: BackendState): void {
       }
       return n;
     },
+    // The Home banner's restart: close everything, then report what came back.
+    // Nothing is modelled as reopening, so every closed tool is the user's.
+    restart_running_agents: () => {
+      const n = state.runningAgentNames.length || state.runningAgents;
+      state.runningAgentNames = [];
+      state.runningAgents = 0;
+      state.staleAgents = 0;
+      return { closed: n, restarted: [], reopen_yourself: [], still_running: [] };
+    },
     quit_app: () => null,
     // Window choreography the tray popover invokes: revealing the main window
     // and requesting the tray-menu quit are Rust-side effects with nothing to

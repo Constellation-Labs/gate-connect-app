@@ -48,6 +48,7 @@
 //! makes no routing decision beyond "is the engine there". Its security posture
 //! is recorded in `docs/security-notes-loopback.md`.
 
+mod peer;
 mod proxy;
 mod relay;
 

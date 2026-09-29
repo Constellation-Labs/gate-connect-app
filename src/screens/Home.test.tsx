@@ -574,7 +574,7 @@ describe("Home routing-change notice", () => {
   it("offers to close the running tools in both directions, not just at startup", () => {
     const onCloseAgents = vi.fn();
     renderHome({ changeNotice: "off", onCloseAgents, domains: [makeDomain()] });
-    fireEvent.click(screen.getByRole("button", { name: "Close them…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart them…" }));
     expect(onCloseAgents).toHaveBeenCalled();
   });
 
@@ -597,7 +597,7 @@ describe("Home routing-change notice", () => {
     // Nothing missed a change, so a running tool is already routed through the
     // forwarder and the banner must not say otherwise.
     expect(screen.queryByText(/Anything already open/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
     expect(onCloseAgents).not.toHaveBeenCalled();
   });
 
@@ -605,7 +605,7 @@ describe("Home routing-change notice", () => {
     // The default, and the path every existing caller takes: an absent
     // `canCloseAgents` must read exactly as it did before the prop existed.
     renderHome({ changeNotice: "on", domains: [makeDomain()] });
-    expect(screen.getByRole("button", { name: "Close them…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart them…" })).toBeTruthy();
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
   });
 
@@ -618,7 +618,7 @@ describe("Home routing-change notice", () => {
     const onCloseAgents = vi.fn();
     renderHome({ changeNotice: "trusted", onCloseAgents, domains: [makeDomain()] });
     expect(screen.getByText(/Certificate trusted\. Restart any open browser/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
     expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
   });
@@ -653,7 +653,7 @@ describe("Home pending notice", () => {
       onCloseAgents,
       domains: [makeDomain()],
     });
-    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Turn on routing" }));
     expect(onEnableRouting).toHaveBeenCalledTimes(1);
     expect(onCloseAgents).not.toHaveBeenCalled();

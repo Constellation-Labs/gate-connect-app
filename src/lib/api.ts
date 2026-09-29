@@ -722,10 +722,11 @@ export interface RunningAgents {
 export const runningAgents = (only?: string[]) =>
   invoke<RunningAgents>("running_agents", { only: only ?? null });
 
-/** Terminate running AI tools (agent CLIs and the desktop apps sharing their
+/** Close running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
- * the routing change. Resolves to how many processes were signalled; 0 means
- * none were running.
+ * the routing change. Each is asked to quit first and waited on. Resolves to
+ * how many processes closed; 0 means none were running, and one still running
+ * when Gate stopped waiting is not counted.
  *
  * `only` is the same filter {@link runningAgents} takes, and the caller is
  * expected to pass back exactly what it offered: this signals processes, so the
@@ -747,6 +748,28 @@ export const closeRunningAgents = (only?: string[]) =>
  * filter the close took. */
 export const reopenRunningAgents = (only?: string[]) =>
   invoke<number>("reopen_running_agents", { only: only ?? null });
+
+/** What a restart of the running AI tools did. */
+export interface ClosedAgents {
+  /** Processes closed, the restarted ones included. 0 means none were
+   * running. */
+  closed: number;
+  /** Desktop apps that quit and were opened again, by app name ("Claude"). */
+  restarted: string[];
+  /** Closed and not opened again, by tool name: terminal tools, which belong
+   * to the terminal they ran in, and any app that quit but could not be
+   * reopened. The user opens these again. */
+  reopen_yourself: string[];
+  /** Asked to quit and still running when Gate stopped waiting, by name. Not
+   * counted in `closed`; the user quits these themselves. */
+  still_running: string[];
+}
+
+/** Restart every running AI tool (agent CLIs and the desktop apps sharing their
+ * binary name, e.g. Claude Desktop's `Claude`) so they pick up the routing
+ * change: each is asked to quit, desktop apps are opened again once they
+ * have, and terminal tools are left for the user to reopen. */
+export const restartRunningAgents = () => invoke<ClosedAgents>("restart_running_agents");
 
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting

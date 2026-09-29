@@ -42,6 +42,31 @@ The engine and relay resolve the loopback peer's UID and fail closed unless
 it matches the daemon owner (`owner_uid`, `engine::peer_uid_for`). A second
 account on the machine cannot spend the owner's credential.
 
+## Defended at the forwarder: other local users (Windows)
+
+The forwarder resolves each peer's owning process from the TCP table
+(`GetExtendedTcpTable`) and its user from the process token, falling back to
+the terminal services process list where the token cannot be opened
+(`crates/forwarder/src/peer.rs`). A peer that is not proven to run as the
+forwarder's own user never reaches the engine: on the proxy listener it goes
+direct, on the relay listener it is served by the direct path under its own
+credential. This fails closed, and closed here means direct. That cost is
+silent to the user (the tool works, only not through Gate), so each process
+sent direct is recorded once in `proxy/forwarder-direct.log` with its name and
+the reason. A same-user tool that reaches loopback through a system relay
+rather than its own socket (WSL2 in mirrored networking mode is the likely
+case; not tested) would show up there. Elevated same-user processes and the
+Store-packaged Claude and ChatGPT apps were checked and resolve as the owner.
+
+This is the ordering the forwarder section below asks for: the forwarder is
+gated before the engine, so nothing is laundered. The engine and its relay
+still apply no UID gate on Windows, so a non-owner that dials the engine's own
+ports rather than the forwarder's is the gap described in the next section.
+What prompted it: Claude Desktop's Cowork VM reaches the host through
+`cowork-svc.exe`, running as LocalSystem, which applies the host's PAC; its
+traffic to Gate's hosts was intercepted and failed on a certificate the VM
+does not trust.
+
 ## Accepted: local processes on macOS and Windows
 
 On macOS and Windows `owner_uid` is `None`: TCP loopback peers are not

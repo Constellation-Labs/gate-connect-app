@@ -664,8 +664,8 @@ export function Home({
               )}
             </div>
             {/* Pending has a different remedy: there is nothing running to
-                close, so offering "Close them…" would be busywork. The
-                ellipsis on the close action signals more steps follow.
+                restart, so offering "Restart them…" would be busywork. The
+                ellipsis on the restart action signals more steps follow.
 
                 `-my-1.5 py-1.5`: the remedy in a banner about broken routing
                 measured 18px tall, under the 24px target minimum, and the
@@ -684,7 +684,7 @@ export function Home({
                 onClick={onCloseAgents}
                 className="-my-1.5 shrink-0 py-1.5 text-gc-caption-lg font-medium text-gc-accent transition hover:text-gc-accent-ink"
               >
-                Close them…
+                Restart them…
               </button>
             )}
             <IconButton
