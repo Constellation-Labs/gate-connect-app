@@ -621,11 +621,10 @@ export function Home({
           </div>
         )}
 
-        {/* One notice for every routing change that can leave something open
-            behind. Turning something off raises none: a tool already open
-            keeps the forwarder's address, which goes straight to the provider
-            once Gate stops routing its host, so there is nothing to close. The
-            close route is offered here and not only at startup.
+        {/* One notice for every routing change, worded by direction. On and off
+            carry the same remedy - close what's already open - so both offer
+            the same action, rather than the close route existing only for the
+            notice raised at startup.
 
             The remedy, not the notice, is what varies. `pending` swaps it for
             "Turn on routing", and `canCloseAgents === false` moves it into the
@@ -644,12 +643,14 @@ export function Home({
                   ? "Certificate trusted. Restart any open browser so it trusts it too."
                   : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
-                  : canCloseAgents
-                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
-                    : // Nothing missed a change, so a running tool is already
-                      // routed; only a page that kept an earlier connection is
-                      // not, and the reload advice below is the whole remedy.
-                      "Routing is on."}
+                  : changeNotice === "on"
+                    ? canCloseAgents
+                      ? "Routing is on. Anything already open isn’t routing through Gate yet."
+                      : // Nothing missed a change, so a running tool is already
+                        // routed; only a page that kept an earlier connection is
+                        // not, and the reload advice below is the whole remedy.
+                        "Routing is on."
+                    : "Routing is off. Anything already open still points at Gate."}
               {/* The remedy moves into the sentence when there is no button to
                   carry it. A page is the thing that is stale in this case, and
                   reloading is the whole fix - the banner would otherwise state

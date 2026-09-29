@@ -42,11 +42,7 @@ pub(crate) fn load_object_json5(path: &Path) -> Result<Option<Map<String, Value>
 /// Gate credential any more (the relay injects it per request) but they may
 /// carry other user config; the atomic write keeps a crash mid-write from
 /// corrupting the tool's own file.
-pub(crate) fn write_object(
-    path: &Path,
-    settings: &Map<String, Value>,
-    change: crate::config_changes::Change,
-) -> Result<()> {
+pub(crate) fn write_object(path: &Path, settings: &Map<String, Value>) -> Result<()> {
     // Equal values are not a change, however the file is laid out. `serde_json`
     // sorts keys on the way out, so a file the tool itself wrote in another
     // order would otherwise be rewritten just to reorder it, and that rewrite
@@ -66,7 +62,7 @@ pub(crate) fn write_object(
     let mut body = serde_json::to_string_pretty(settings)
         .with_context(|| format!("serializing {}", path.display()))?;
     body.push('\n');
-    crate::config_changes::write(path, body.as_bytes(), 0o600, change)
+    crate::config_changes::write(path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
 

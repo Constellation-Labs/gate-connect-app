@@ -15,14 +15,6 @@
 //! moment Gate's values in that file last changed, which is the moment a
 //! process that predates it stopped being trustworthy.
 //!
-//! **Only Gate's values going in are recorded, never coming out.** A tool
-//! still running after a disconnect keeps the address it loaded, and that
-//! address is the forwarder's, which sends the traffic straight to the
-//! provider once Gate stops routing the host. Nothing it loaded went bad, so a
-//! revert is no reason to tell the user to reopen it. The writes and removals
-//! of a disconnect still go through here, as [`Change::Reverted`] and
-//! [`remove`], so the file handling stays one path.
-//!
 //! **A hand edit to a routing value is not recorded.** That is the price of
 //! ignoring the tool's own edits, and the status check still reports it: it
 //! compares the file with what Gate wrote, so a changed proxy reads as Not
@@ -43,36 +35,28 @@ use anyhow::{Context, Result};
 
 const FILE_NAME: &str = "config-changes.json";
 
-/// Which way a write moves Gate's values in a tool configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Change {
-    /// A connect: Gate's values going in. Recorded.
-    Applied,
-    /// A disconnect: Gate's values coming out. Not recorded; see the module
-    /// docs.
-    Reverted,
-}
-
-/// Write a tool configuration, recording an [`Change::Applied`] change when the
-/// bytes differ from what is on disk. Identical bytes still go through
+/// Write a tool configuration, recording the change when the bytes differ from
+/// what is on disk. Identical bytes still go through
 /// [`crate::primitives::write_file`], which leaves the content alone and only
 /// corrects the mode.
-pub(crate) fn write(path: &Path, bytes: &[u8], mode: u32, change: Change) -> Result<()> {
+pub(crate) fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let changed = fs::read(path).map_or(true, |current| current != bytes);
     crate::primitives::write_file(path, bytes, mode)?;
-    if changed && change == Change::Applied {
+    if changed {
         record(path);
     }
     Ok(())
 }
 
-/// Remove a tool configuration. Never recorded: removing the file is always a
-/// disconnect taking Gate's values out.
+/// Remove a tool configuration, recording the change when there was one to
+/// remove.
 pub(crate) fn remove(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    fs::remove_file(path).with_context(|| format!("removing {}", path.display()))
+    fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    record(path);
+    Ok(())
 }
 
 /// Unix seconds at which Gate last changed the file at `path`, or `None` when

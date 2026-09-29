@@ -172,19 +172,17 @@ function markRoutingTakeoverSeen(): void {
 /** `trusted` is the one member that is not about routing: the explicit Trust
  *  buttons (Home's certificate card, the family panel's banner) never pass the
  *  certificate pre-flight, so its browser advice lands here on their success. */
-export type ChangeNotice = "on" | "started" | "pending" | "trusted" | null;
+export type ChangeNotice = "on" | "off" | "started" | "pending" | "trusted" | null;
 
 /** Which change notice a member/group toggle earned, from the engine state
  * that actually resulted rather than from the direction of the click.
  *
- * `on` means traffic is flowing, so the close-your-apps advice applies.
- * `pending` is the case the old two-value notice had no room for: the user
- * switched something on, the engine is down, nothing routes, and telling them
- * to close their apps would be false. Turning something off earns no notice,
- * engine up or down: a tool already open keeps the address it loaded, and the
- * forwarder behind it sends the traffic straight to the provider once Gate is
- * no longer routing that host, so there is nothing to restart. Same rule as
- * the master off. */
+ * `on`/`off` both mean traffic is flowing, so the close-your-apps advice
+ * applies and only the wording differs. `pending` is the case the old
+ * two-value notice had no room for: the user switched something on, the engine
+ * is down, nothing routes, and telling them to close their apps would be
+ * false. Turning something off while the engine is already down changed
+ * nothing observable, so it earns no notice at all. */
 function noticeFor(
   turnedOn: boolean,
   engineRunning: boolean,
@@ -196,8 +194,8 @@ function noticeFor(
   // is do it and say so, so a side-effect start gets its own notice rather
   // than hiding inside the generic "Routing is on".
   if (engineRunning && !engineWasRunning && turnedOn) return "started";
-  if (!turnedOn) return null;
-  return engineRunning ? "on" : "pending";
+  if (engineRunning) return turnedOn ? "on" : "off";
+  return turnedOn ? "pending" : null;
 }
 
 /** Whether the account is fully usable right now: a stored key in legacy mode,
@@ -810,10 +808,12 @@ export function App() {
       setProxyBusy(true);
       setProviderError(null);
       try {
+        // Before the trust step, which may mint a fresh CA: that is a change
+        // this toggle made, and a stamp earlier than `since` would drop it.
+        // Whole seconds, the unit Gate stamps its changes in.
+        const since = Math.floor(Date.now() / 1000);
         // Turning on is the path that trusts the CA; disable never prompts.
         if (!proxy?.running) await ensureCaTrusted();
-        // Whole seconds, the unit Gate stamps its config changes in.
-        const since = Math.floor(Date.now() / 1000);
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
@@ -923,6 +923,8 @@ export function App() {
       // `finally` below runs on that path too and its notice would announce a
       // connection that was never attempted.
       let declined = false;
+      // Before the trust step; see `toggleProxy`.
+      const since = Math.floor(Date.now() / 1000);
       setProxyBusy(true);
       try {
         if (routed) {
@@ -946,7 +948,15 @@ export function App() {
         throw e;
       } finally {
         const running = await resyncLedger();
-        if (!declined) setChangeNotice(noticeFor(routed, running, wasRunning));
+        if (!declined) {
+          const notice = noticeFor(routed, running, wasRunning);
+          // Same probe as the master toggle, so the remedy follows this
+          // change rather than whatever the last toggle found.
+          if (notice && notice !== "pending") {
+            setNothingToClose((await staleAgentsCount(since).catch(() => 1)) === 0);
+          }
+          setChangeNotice(notice);
+        }
         proxyBusyRef.current = false;
         setProxyBusy(false);
       }
@@ -972,6 +982,8 @@ export function App() {
       }).find((g) => g.id === id);
       if (!group) return;
       const wasRunning = proxy?.running ?? false;
+      // Before the trust step; see `toggleProxy`.
+      const since = Math.floor(Date.now() / 1000);
       proxyBusyRef.current = true;
       setProxyBusy(true);
       setProviderError(null);
@@ -1036,7 +1048,11 @@ export function App() {
         });
       }
       const running = await resyncLedger();
-      setChangeNotice(noticeFor(on, running, wasRunning));
+      const notice = noticeFor(on, running, wasRunning);
+      if (notice && notice !== "pending") {
+        setNothingToClose((await staleAgentsCount(since).catch(() => 1)) === 0);
+      }
+      setChangeNotice(notice);
       proxyBusyRef.current = false;
       setProxyBusy(false);
     },
@@ -1337,10 +1353,16 @@ export function App() {
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click
         // already declared the intent, land directly on the confirm step.
-        // Only the "on" banner offers this: "pending" offers Turn on routing,
-        // because nothing is running to restart, and a switch turned off
-        // raises no banner at all.
-        onCloseAgents={() => setRoutingNotice({ dir: "on", confirming: true })}
+        // Carries the banner's direction so the takeover doesn't announce
+        // "Routing is on" over a switch the user just turned off.
+        // "pending" can never reach here: that banner offers Turn on routing,
+        // not Restart them, because nothing is running to restart.
+        onCloseAgents={() =>
+          setRoutingNotice({
+            dir: changeNotice === "off" ? "off" : "on",
+            confirming: true,
+          })
+        }
         onEnableRouting={() => void toggleProxy(false)}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}

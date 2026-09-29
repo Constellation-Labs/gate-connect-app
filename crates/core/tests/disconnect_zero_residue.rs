@@ -959,8 +959,7 @@ fn hermes_leaves_a_user_owned_proxy_alone() {
 ///
 /// Connect records a change; a reconnect with the values already in place
 /// records nothing; an edit the tool makes to its own keys records nothing;
-/// disconnect records nothing either, because a process still running keeps
-/// the forwarder's address and loses nothing by missing it. Each step is judged against a stamp rewound to 0, so
+/// disconnect records one. Each step is judged against a stamp rewound to 0, so
 /// a same-second write cannot hide a missing one.
 #[test]
 fn only_gates_own_changes_move_the_reopen_bound() {
@@ -1012,18 +1011,16 @@ fn only_gates_own_changes_move_the_reopen_bound() {
         "the tool's own edit must not read as a change a running process missed"
     );
 
-    rewind();
     claude.disconnect().unwrap();
-    assert_eq!(
-        changed_at(&settings),
-        Some(0),
-        "taking Gate's values out must not ask a running process to reopen"
+    assert!(
+        changed_at(&settings).is_some_and(|t| t > 0),
+        "disconnect is a change"
     );
 }
 
 /// Not only Claude Code: every integration writes through the same record.
 ///
-/// Connect records, disconnect does not. A reconnect over OpenCode's own config is
+/// Connect and disconnect only. A reconnect over OpenCode's own config is
 /// refused on this branch - `looks_local` reads the relay base URL it wrote as
 /// a private endpoint - so the no-op and relayout cases the Claude Code test
 /// covers cannot be driven through OpenCode here.
@@ -1056,9 +1053,8 @@ fn opencode_changes_are_recorded_too() {
     let key = cfg.display().to_string();
     fs::write(&store, serde_json::json!({ key: 0 }).to_string()).unwrap();
     integ.disconnect().unwrap();
-    assert_eq!(
-        changed_at(&cfg),
-        Some(0),
-        "taking Gate's values out must not ask a running process to reopen"
+    assert!(
+        changed_at(&cfg).is_some_and(|t| t > 0),
+        "disconnect is a change"
     );
 }

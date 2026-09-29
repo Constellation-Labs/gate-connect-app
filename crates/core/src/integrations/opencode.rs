@@ -72,7 +72,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config_changes::Change;
 use crate::env;
 use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
 
@@ -500,7 +499,7 @@ impl Integration for OpenCode {
         }
 
         save_state(&state)?;
-        write_settings(&settings, Change::Applied)
+        write_settings(&settings)
     }
 
     fn disconnect(&self) -> Result<()> {
@@ -526,7 +525,7 @@ impl Integration for OpenCode {
             remove_state()?;
             return Ok(());
         }
-        write_settings(&settings, Change::Reverted)?;
+        write_settings(&settings)?;
         // Only drop the sidecar once the restored config is on disk: losing
         // it before a failed write would leave Gate headers in opencode.json
         // while status reports the tool as clean and re-disconnect no-ops.
@@ -680,8 +679,8 @@ fn load_settings() -> Result<Option<Map<String, Value>>> {
     super::json_config::load_object(&settings_path()?)
 }
 
-fn write_settings(settings: &Map<String, Value>, change: Change) -> Result<()> {
-    super::json_config::write_object(&settings_path()?, settings, change)
+fn write_settings(settings: &Map<String, Value>) -> Result<()> {
+    super::json_config::write_object(&settings_path()?, settings)
 }
 
 fn load_state() -> Result<Option<State>> {

@@ -1267,13 +1267,27 @@ fn agent_needs_reopen(
         .and_then(|path| {
             gate_connect_core::config_changes::changed_at(std::path::Path::new(&path))
         });
-    [config_changed_at, ca_cert_changed_at]
+    missed_change(
+        process.start_time(),
+        [config_changed_at, ca_cert_changed_at],
+        since,
+    )
+}
+
+/// The decision inside [`agent_needs_reopen`], apart from the process table so
+/// it can be tested: did a process that started at `started_at` miss the latest
+/// of `changes`, counting only a change at or after `since`? All Unix seconds.
+///
+/// `>=` on `since` because both sides are whole seconds: a change stamped in the
+/// same second the toggle began was made by it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn missed_change(started_at: u64, changes: [Option<u64>; 2], since: Option<u64>) -> bool {
+    changes
         .into_iter()
         .flatten()
         .max()
         .filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
-        .map(|changed_at| process.start_time() < changed_at)
-        .unwrap_or(false)
+        .is_some_and(|changed_at| started_at < changed_at)
 }
 
 /// When Gate's CA certificate was last written, read once per scan: every
@@ -4259,6 +4273,26 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toggle's bound. An agent behind an old change stays stale with no
+    /// bound, and drops out once the toggle asks only about its own changes -
+    /// unless it made one, including a CA it minted in the same second it
+    /// began, which is why `since` is taken before the trust step.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn missed_change_counts_only_changes_since_the_bound() {
+        let started = 100;
+        // Missed a connect at 200, no bound: stale, as the boot probe reports.
+        assert!(missed_change(started, [Some(200), None], None));
+        // Same agent, a toggle at 300 that rewrote nothing: not its news.
+        assert!(!missed_change(started, [Some(200), None], Some(300)));
+        // That toggle minted a CA in its own first second: counted.
+        assert!(missed_change(started, [Some(200), Some(300)], Some(300)));
+        // Started after the latest change: never stale.
+        assert!(!missed_change(400, [Some(200), Some(300)], None));
+        // Nothing recorded: no claim.
+        assert!(!missed_change(started, [None, None], None));
+    }
 
     /// The Chrome bridge shares the CLI's binary and process name, and only its
     /// arguments tell it apart from a Claude Code session.
