@@ -41,7 +41,7 @@ use futures_util::TryStreamExt;
 use http::Uri;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
-use hyper::header::{HeaderMap, HeaderName, HOST, ORIGIN};
+use hyper::header::{HeaderMap, HeaderName, CONTENT_TYPE, HOST, ORIGIN};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -690,25 +690,35 @@ async fn proxy(
         Route::Rewrite => {
             // Watch the token from before it is read, so a replacement that
             // lands while this request is out is seen by the wait in
-            // `recovered_token` rather than missed. `mark_unchanged` first: a
-            // cloned receiver may otherwise report a change this request
-            // already carries.
+            // `recovered_token` rather than missed: `borrow_and_update` marks
+            // the value this request carries as seen, and only a later push
+            // wakes the wait.
             let mut token_rx = state.token.clone();
-            token_rx.mark_unchanged();
-            let token: Arc<str> = token_rx.borrow().clone();
+            let token: Arc<str> = token_rx.borrow_and_update().clone();
+            // Refused before anything is sent: see `lacks_gate_credential`.
+            // The relay's other errors are bare sentences; this one is the
+            // body a tool is meant to parse and search, so it is typed.
+            let api_key: Arc<str> = state.api_key.borrow().clone();
+            if super::lacks_gate_credential(&headers, &api_key, &token) {
+                return Ok(json_response(
+                    StatusCode::UNAUTHORIZED,
+                    super::signed_out_body(),
+                ));
+            }
             let mut attempt = headers.clone();
-            let sent_bearer = rewrite_headers(&mut attempt, state, &token, &routed.upstream_url)?;
+            let sent_ours = rewrite_headers(&mut attempt, state, &token, &routed.upstream_url)?;
             let resp = send(attempt).await.map_err(forwarding_failed)?;
-            match sent_bearer.filter(|_| resp.status() == StatusCode::UNAUTHORIZED) {
-                None => resp,
-                Some(sent) => match recovered_token(&mut token_rx, &sent).await {
+            if !(sent_ours && resp.status() == StatusCode::UNAUTHORIZED) {
+                resp
+            } else {
+                match recovered_token(&mut token_rx, &token).await {
                     None => resp,
                     Some(fresh) => {
-                        let mut attempt = headers.clone();
+                        let mut attempt = headers;
                         rewrite_headers(&mut attempt, state, &fresh, &routed.upstream_url)?;
                         send(attempt).await.map_err(forwarding_failed)?
                     }
-                },
+                }
             }
         }
     };
@@ -741,34 +751,24 @@ async fn proxy(
 /// answer can be compared against exactly what went out. The credential
 /// follows the rule shared with the MITM engine ([`inject_gate_credential`]):
 /// a caller-supplied `x-gate-api-key` is left untouched, otherwise an OAuth
-/// token wins over the legacy key. Returns the bearer when it was ours, and
-/// `None` for either of those other cases - a refused key is a different
-/// problem with a different fix, and a caller's own credential is not ours to
-/// recover.
+/// token wins over the legacy key. Returns whether the bearer that went on was
+/// ours; `false` for either of those other cases, which a refusal must not
+/// retry - a refused key is a different problem with a different fix, and a
+/// caller's own credential is not ours to recover.
 ///
-/// Refused outright, before anything is sent, when there is no credential at
-/// all: an OAuth account whose session is dead has no key to fall back to
-/// (see [`crate::account::load`]), and a request sent bare would come back as
-/// the gateway's complaint about a missing API key, which names a credential
-/// this account never had. The tool sees a 401 that says what to do instead.
-/// A caller that brought its own Gate key is not refused: the shared rule
-/// serves that key untouched, and the app's session has no bearing on it.
+/// The caller has already refused a request with no credential at all
+/// (`lacks_gate_credential`), so the error from [`inject_gate_credential`] on
+/// that state is a guard, not a path.
 fn rewrite_headers(
     headers: &mut HeaderMap,
     state: &RelayState,
-    token: &Arc<str>,
+    token: &str,
     upstream_url: &str,
-) -> Result<Option<Arc<str>>, (StatusCode, String)> {
+) -> Result<bool, (StatusCode, String)> {
     // Clone the values out of the watch guards so no lock is held.
     let api_key: Arc<str> = state.api_key.borrow().clone();
     let org: Arc<str> = state.org.borrow().clone();
-    if token.is_empty() && api_key.is_empty() && !headers.contains_key(GATE_KEY_HEADER) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            super::SIGNED_OUT_MESSAGE.to_string(),
-        ));
-    }
-    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+    let oauth_token = (!token.is_empty()).then_some(token);
     let org_id = (!org.is_empty()).then(|| org.as_ref());
     let injected = inject_gate_credential(headers, &api_key, oauth_token, org_id).map_err(|e| {
         (
@@ -785,15 +785,17 @@ fn rewrite_headers(
             format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
         )
     })?;
-    Ok(injected.then(|| Arc::clone(token)))
+    Ok(injected)
 }
 
-/// How long a refused request waits for the session re-check to push a
-/// replacement bearer before the 401 goes back to the tool unchanged. The
-/// re-check is one Cognito round trip and one gateway probe, normally a
-/// second or two, and a dead session ends the wait early: the re-check pushes
-/// the empty token on that verdict, and any change ends it.
-const RECOVERED_TOKEN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a refused request waits for the session re-check's verdict before
+/// the 401 goes back to the tool unchanged. The re-check is one Cognito round
+/// trip and one gateway probe, normally a second or two, and both of its
+/// verdicts end the wait as soon as they land: a recovered token, or the empty
+/// token the shell pushes for a dead session. The wait runs out only when the
+/// re-check reaches no verdict (the identity provider or the gateway could not
+/// be reached), which pushes nothing.
+const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
 
 /// A replacement for `sent`, the bearer the gateway has just refused, if the
 /// session re-check produces one in time.
@@ -811,22 +813,55 @@ const RECOVERED_TOKEN_WAIT: std::time::Duration = std::time::Duration::from_secs
 /// The watch is read before the observer is asked: the previous refusal's
 /// re-check, or the 30s tick, may already have replaced the bearer between
 /// this request's read and the gateway's answer, and a re-check is not owed
-/// twice. On Linux the observer is the helper daemon's counter and the push
-/// comes from the GUI's next poll, so this mostly runs out the wait there; the
-/// retry is a macOS and Windows recovery first.
+/// twice. The wait then loops rather than taking the first wake-up, because a
+/// push bumps the watch whether or not the value moved and the 30s tick
+/// re-pushes an unchanged token every tick: a tick inside the re-check window
+/// must not hand the 401 to the tool moments before the recovered token lands.
+///
+/// No wait at all when the observer says no verdict is coming: the Linux
+/// helper daemon's observer only counts, and the GUI's re-check reaches its
+/// relay one or two ticks later, so a request refused there has nothing to
+/// wait for.
 async fn recovered_token(token_rx: &mut watch::Receiver<Arc<str>>, sent: &str) -> Option<Arc<str>> {
-    fn replacement(token_rx: &mut watch::Receiver<Arc<str>>, sent: &str) -> Option<Arc<str>> {
-        let now: Arc<str> = token_rx.borrow_and_update().clone();
-        (!now.is_empty() && now.as_ref() != sent).then_some(now)
+    enum Verdict {
+        /// A token other than the refused one: retry under it.
+        Retry(Arc<str>),
+        /// The empty token: the session is dead, and the 401 stands.
+        Dead,
+        /// The refused token again: nothing has been decided yet.
+        Pending,
     }
-    if let Some(fresh) = replacement(token_rx, sent) {
-        return Some(fresh);
+    fn verdict(token_rx: &mut watch::Receiver<Arc<str>>, sent: &str) -> Verdict {
+        let now: Arc<str> = token_rx.borrow_and_update().clone();
+        if now.is_empty() {
+            Verdict::Dead
+        } else if now.as_ref() == sent {
+            Verdict::Pending
+        } else {
+            Verdict::Retry(now)
+        }
+    }
+    match verdict(token_rx, sent) {
+        Verdict::Retry(fresh) => return Some(fresh),
+        Verdict::Dead => return None,
+        Verdict::Pending => {}
     }
     if !super::notify_gate_auth_observer() {
         return None;
     }
-    let _ = tokio::time::timeout(RECOVERED_TOKEN_WAIT, token_rx.changed()).await;
-    replacement(token_rx, sent)
+    let deadline = tokio::time::Instant::now() + RECOVERED_TOKEN_WAIT;
+    loop {
+        // `Err` is the deadline, or a sender that is gone because the engine
+        // is stopping; either way the 401 stands.
+        let Ok(Ok(())) = tokio::time::timeout_at(deadline, token_rx.changed()).await else {
+            return None;
+        };
+        match verdict(token_rx, sent) {
+            Verdict::Retry(fresh) => return Some(fresh),
+            Verdict::Dead => return None,
+            Verdict::Pending => {}
+        }
+    }
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -1009,6 +1044,20 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in names {
         headers.remove(&name);
     }
+}
+
+/// A local answer with a JSON body, for the one refusal a tool is meant to
+/// parse and search ([`signed_out_body`](super::signed_out_body)). Every other
+/// relay error is a bare sentence from [`error_response`].
+fn json_response(status: StatusCode, body: String) -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::from(body))
+        .map_err(|never| match never {})
+        .boxed();
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json")
+        .body(body)
+        .expect("building relay json response")
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {

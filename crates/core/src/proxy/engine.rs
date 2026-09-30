@@ -1048,19 +1048,10 @@ impl HttpHandler for GateHandler {
                 } else {
                     let api_key = self.api_key.borrow().clone();
                     let token = self.token.borrow().clone();
-                    if token.is_empty()
-                        && api_key.is_empty()
-                        && !req.headers().contains_key(super::GATE_KEY_HEADER)
-                    {
-                        // No live session and no key to fall back to - an
-                        // OAuth account holds none (`account::load`). Sent
-                        // bare, the request would come back as the gateway's
-                        // complaint about a missing API key, a credential this
-                        // account never had; answered here, it says what to
-                        // do. The dead session itself was already raised by
-                        // the refresh loop when it pushed the empty token. A
-                        // caller carrying its own Gate key is served as the
-                        // shared rule says, session or no session.
+                    if super::lacks_gate_credential(req.headers(), &api_key, &token) {
+                        // See `lacks_gate_credential`. The dead session itself
+                        // was already raised by the refresh loop when it
+                        // pushed the empty token; this only answers the tool.
                         if debug_log() {
                             eprintln!("[gate-proxy] {path} -> refused: signed out");
                         }
@@ -1446,11 +1437,10 @@ fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
         .expect("static decline response builds")
 }
 
-/// The response a routed request gets when there is no Gate credential to send
-/// it under: an OAuth account whose session is dead. Shaped like
-/// [`decline_upgrade_response`], and for the same reason; typed
-/// `gate_signed_out` so a client log can be searched for it. The sentence is
-/// [`crate::proxy::SIGNED_OUT_MESSAGE`], the one the relay's 401 carries.
+/// The response a routed request gets when
+/// [`lacks_gate_credential`](crate::proxy::lacks_gate_credential) holds.
+/// Shaped like [`decline_upgrade_response`], and for the same reason; the body
+/// is [`crate::proxy::signed_out_body`], the one the relay's 401 carries.
 fn signed_out_response() -> hudsucker::hyper::Response<Body> {
     hudsucker::hyper::Response::builder()
         .status(hudsucker::hyper::StatusCode::UNAUTHORIZED)
@@ -1458,12 +1448,9 @@ fn signed_out_response() -> hudsucker::hyper::Response<Body> {
             hudsucker::hyper::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )
-        .body(Body::from(format!(
-            r#"{{"error":{{"message":"{}","type":"gate_signed_out"}}}}"#,
-            crate::proxy::SIGNED_OUT_MESSAGE
-        )))
-        // Infallible: every part is a static, pre-validated value.
-        .expect("static signed-out response builds")
+        .body(Body::from(crate::proxy::signed_out_body()))
+        // Infallible: the status and header are static, the body is a String.
+        .expect("signed-out response builds")
 }
 
 /// The response the app gets in place of a Cloudflare interstitial, once

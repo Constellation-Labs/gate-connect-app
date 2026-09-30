@@ -1879,6 +1879,10 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
             }
         }
         gate_connect_core::startup::Recheck::Dead => {
+            // Push the empty token now rather than on the next tick: the
+            // engine then refuses routed requests as signed out at once, and
+            // a relay request waiting on this verdict stops waiting.
+            gate_connect_core::proxy::manager().refresh_token("");
             signal_session_dead(app);
         }
         // No verdict (offline, or the 401 belonged to the client's own upstream
@@ -2941,6 +2945,11 @@ pub fn run() {
                     let _release = gate_connect_core::proxy::GateAuthCheck;
                     recheck_gate_session(&handle);
                 });
+                // Both verdicts reach the token watch: `Recovered` pushes the
+                // new token, `Dead` pushes the empty one. `Unchanged` pushes
+                // nothing, and a relay request waiting on it runs out its
+                // wait.
+                true
             });
 
             // Hide the dock icon - Gate Connect lives in the menu bar.
