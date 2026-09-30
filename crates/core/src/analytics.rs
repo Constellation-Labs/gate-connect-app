@@ -433,13 +433,23 @@ fn clean_id(v: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
 }
 
-/// The stored identity, or the default for a missing or unreadable file. A
-/// corrupt record reads as "never identified on the install id", which at worst
-/// costs one `$identify` that PostHog then declines to merge twice.
+/// The stored identity.
+///
+/// A missing file is a fresh install and reads as the default: never
+/// identified, install id unspent. A file that exists but cannot be read or
+/// parsed **fails closed**: it reads as an install whose id is retired, because
+/// nothing about who it belonged to can be recovered, and assuming "nobody"
+/// would bootstrap an install id that may already be a person's. The cost is
+/// that such an install files under a fresh anonymous id from then on.
 pub fn load_identity_in(support: &Path) -> Identity {
-    fs::read_to_string(support.join(IDENTITY_FILE))
+    let path = support.join(IDENTITY_FILE);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Identity::default(),
+        Err(_) => return Identity::fail_closed(),
+    };
+    serde_json::from_str::<Identity>(&raw)
         .ok()
-        .and_then(|raw| serde_json::from_str::<Identity>(&raw).ok())
         .map(|i| Identity {
             identified_sub: clean_id(i.identified_sub),
             org_id: clean_id(i.org_id),
@@ -448,7 +458,18 @@ pub fn load_identity_in(support: &Path) -> Identity {
             api_key_org: clean_id(i.api_key_org),
             install_id_retired: i.install_id_retired,
         })
-        .unwrap_or_default()
+        .unwrap_or_else(Identity::fail_closed)
+}
+
+impl Identity {
+    /// What an unreadable record stands for: see [`load_identity_in`].
+    fn fail_closed() -> Self {
+        Identity {
+            ever_identified: true,
+            install_id_retired: true,
+            ..Identity::default()
+        }
+    }
 }
 
 /// Store `next`, keeping the sticky facts sticky: `ever_identified` (implied
@@ -456,13 +477,27 @@ pub fn load_identity_in(support: &Path) -> Identity {
 pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
     let prev = load_identity_in(support);
     let identified_sub = clean_id(next.identified_sub);
+    // The core decides when an API-key account spends the install id, and when
+    // it moves on, from the org the sign-in window reports (which for an API
+    // key is only ever the gateway's own answer). The window's own claims about
+    // `api_key_org` are not trusted.
+    let reported_org = clean_id(next.org_id.clone());
+    let is_key = clean_id(next.auth_mode.clone()).as_deref() == Some("api_key");
+    let api_key_org =
+        prev.api_key_org
+            .clone()
+            .or_else(|| if is_key { reported_org.clone() } else { None });
+    let org_moved = is_key
+        && prev.api_key_org.is_some()
+        && reported_org.is_some()
+        && reported_org != prev.api_key_org;
     let stored = Identity {
         ever_identified: prev.ever_identified || next.ever_identified || identified_sub.is_some(),
         identified_sub,
         org_id: clean_id(next.org_id),
         auth_mode: clean_id(next.auth_mode),
-        api_key_org: prev.api_key_org.or(clean_id(next.api_key_org)),
-        install_id_retired: prev.install_id_retired || next.install_id_retired,
+        api_key_org: api_key_org.clone(),
+        install_id_retired: prev.install_id_retired || next.install_id_retired || org_moved,
     };
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
     let body = serde_json::to_vec_pretty(&stored).context("serializing analytics identity")?;
@@ -925,7 +960,11 @@ mod tests {
     fn a_corrupt_or_hostile_identity_reads_as_default_values() {
         let dir = scratch("identity-bad");
         fs::write(dir.join(IDENTITY_FILE), "{not json").unwrap();
-        assert_eq!(load_identity_in(&dir), Identity::default());
+        // Fails closed: nothing can say whose the install id was.
+        let got = load_identity_in(&dir);
+        assert!(got.install_id_retired && got.ever_identified);
+        assert_eq!(got.identified_sub, None);
+        fs::remove_file(dir.join(IDENTITY_FILE)).unwrap();
         save_identity_in(
             &dir,
             Identity {
@@ -978,7 +1017,8 @@ mod tests {
         save_identity_in(
             &dir,
             Identity {
-                api_key_org: Some("org-a".into()),
+                org_id: Some("org-a".into()),
+                auth_mode: Some("api_key".into()),
                 ..Identity::default()
             },
         )
@@ -1035,5 +1075,62 @@ mod tests {
         let at = account.find("pub fn save(").expect("account::save");
         let body = &account[at..at + account[at..].find("\n}\n").expect("end of save")];
         assert!(body.contains("crate::analytics::retire_spent_install_id()"));
+    }
+
+    #[test]
+    fn a_missing_identity_is_a_fresh_install_and_a_corrupt_one_fails_closed() {
+        let dir = scratch("identity-fail-closed");
+        assert_eq!(load_identity_in(&dir), Identity::default());
+        fs::write(dir.join(IDENTITY_FILE), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(load_identity_in(&dir).install_id_retired);
+    }
+
+    /// Round 4: the core records the org an API-key account spends the install
+    /// id on, and retires it when the key resolves to another org, whatever the
+    /// window claims.
+    #[test]
+    fn the_core_spends_and_retires_from_the_reported_org() {
+        let dir = scratch("org-moved");
+        let key = |org: &str| Identity {
+            org_id: Some(org.into()),
+            auth_mode: Some("api_key".into()),
+            ..Identity::default()
+        };
+        save_identity_in(&dir, key("org-a")).unwrap();
+        let got = load_identity_in(&dir);
+        assert_eq!(got.api_key_org.as_deref(), Some("org-a"));
+        assert!(!got.install_id_retired);
+
+        // The same org again, and an OAuth report, change nothing.
+        save_identity_in(&dir, key("org-a")).unwrap();
+        save_identity_in(
+            &dir,
+            Identity {
+                org_id: Some("org-z".into()),
+                auth_mode: Some("oauth".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        assert!(!load_identity_in(&dir).install_id_retired);
+
+        save_identity_in(&dir, key("org-b")).unwrap();
+        assert!(load_identity_in(&dir).install_id_retired);
+    }
+
+    /// A window's own `api_key_org` or a report with no org spends nothing.
+    #[test]
+    fn a_window_cannot_spend_the_install_id_on_its_own_say_so() {
+        let dir = scratch("no-self-spend");
+        save_identity_in(
+            &dir,
+            Identity {
+                api_key_org: Some("org-a".into()),
+                auth_mode: Some("api_key".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(load_identity_in(&dir).api_key_org, None);
     }
 }

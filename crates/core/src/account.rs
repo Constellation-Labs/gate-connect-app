@@ -298,10 +298,12 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
             let _ = crate::activity_cache::clear();
             // A different key may belong to a different person, and the install
             // id may already be aliased to the previous key's owner (AG-960).
-            // Only a replacement: the first key saved spends nothing.
-            if old_prefix.is_some() {
-                let _ = crate::analytics::retire_spent_install_id();
-            }
+            // Retires only an install id an API-key account has spent, so the
+            // first key saved on a fresh install changes nothing. A legacy
+            // account with no recorded prefix cannot say whether this is the
+            // same key, so it counts as a replacement: fail closed. A rotation
+            // to a new key of the same owner retires too, by the same rule.
+            let _ = crate::analytics::retire_spent_install_id();
         }
     }
     Ok(())
