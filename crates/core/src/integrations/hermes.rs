@@ -158,6 +158,11 @@ struct State {
     /// `None` is Hermes on its own model as far as Gate is concerned.
     #[serde(default)]
     gate_models: Option<GateModels>,
+    /// How `model:` looked before Gate models, kept after they were taken out
+    /// when the tool header still held the block open: the header's removal
+    /// on disconnect is then what puts it back (a fresh install's `model: ""`).
+    #[serde(default)]
+    model_shape_before_gate_models: Option<yaml_block::ParentShape>,
 }
 
 /// The record behind Gate models in `config.yaml`: what Gate wrote, and what it
@@ -362,6 +367,28 @@ impl Integration for Hermes {
             }
         }
 
+        // Gate models are settled before anything is written. Drift first: a
+        // config the user moved off them is theirs, so no Gate models apply.
+        // Then the two things that can refuse - no relay, a config shape the
+        // editor will not touch - are found out now, while refusing still
+        // leaves nothing behind (review on #382).
+        if let Some(gm) = &state.gate_models {
+            if drifted(gm) {
+                crate::preferences::fall_back_to_tool_model(ToolId::Hermes.slug())?;
+            }
+        }
+        let gate_ids = crate::preferences::gate_models_for(ToolId::Hermes.slug());
+        let gate_relay = match &gate_ids {
+            Some(ids) => {
+                let relay = input.relay_base_url.clone().context(
+                    "the Gate relay is not running -- Hermes reaches Gate models through it",
+                )?;
+                plan_gate_models(&state, ids, &relay, &read_config_body()?)?;
+                Some(relay)
+            }
+            None => None,
+        };
+
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
@@ -410,6 +437,16 @@ impl Integration for Hermes {
         // no write permission, costs the attribution and nothing else - the
         // routing above is what makes Hermes work, and refusing to connect over
         // a label would be the wrong trade. `status` reports it.
+        // Recorded at once: from here on `.env` holds variables of ours, and a
+        // failure below must not leave them without a sidecar that owns them.
+        if state.added_vars.is_empty() {
+            state.version = 2;
+            state.added_vars = applied.added.clone();
+            state.env_file_created = applied.file_created;
+        }
+        state.written_vars = applied.owned_values.clone().into_iter().collect();
+        save_state(&state)?;
+
         let header_created = write_tool_header()
             .map_err(|e| {
                 eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
@@ -431,33 +468,17 @@ impl Integration for Hermes {
         // best-effort - the user asked for these models, and a config Gate
         // could not write them into has to say so rather than leave Hermes on
         // a model the pane claims it is not on.
-        if let Some(gm) = &state.gate_models {
-            if drifted(gm) {
-                crate::preferences::fall_back_to_tool_model(ToolId::Hermes.slug())?;
-            }
-        }
-        match crate::preferences::gate_models_for(ToolId::Hermes.slug()) {
-            Some(ids) => {
-                let relay = input.relay_base_url.as_deref().context(
-                    "the Gate relay is not running -- Hermes reaches Gate models through it",
-                )?;
-                apply_gate_models(&mut state, &ids, relay)?;
-            }
-            None => revert_gate_models(&mut state)?,
+        match (&gate_ids, &gate_relay) {
+            (Some(ids), Some(relay)) => apply_gate_models(&mut state, ids, relay)?,
+            _ => revert_gate_models(&mut state)?,
         }
 
         // Preserve the ORIGINAL record across re-connects: a second connect
         // must not claim credit for variables the first one added.
-        if state.added_vars.is_empty() {
-            state.version = 2;
-            state.added_vars = applied.added;
-            state.env_file_created = applied.file_created;
-        }
-        // The values, unlike the list above, are replaced every time: they are
+        // The values, unlike `added_vars`, are replaced every time: they are
         // what the file holds now, not who put it there. Recorded even when
         // nothing changed, so a sidecar that predates the field stops relying
         // on ownership by key after a single connect.
-        state.written_vars = applied.owned_values.into_iter().collect();
         save_state(&state)?;
 
         // Naming what moved matters more on a repair than on a first connect.
@@ -492,20 +513,30 @@ impl Integration for Hermes {
         let Some(mut state) = load_state()? else {
             return Ok(());
         };
-        // Hermes' own model back first, while the sidecar still says what it
-        // was. Saved at once, so a failure below cannot leave a sidecar that
-        // claims Gate models are still applied over a restored config.
+        // The tool header comes out FIRST: it sits inside `model:`, and while it
+        // is there the Gate models revert cannot tell that the block is back to
+        // nothing of the user's - a fresh install's `model: ""` would come back
+        // as a bare `model:`. Only if we wrote one; a `None` is a connect that
+        // predates the header or one whose write was refused.
+        if let Some(created) = state.header_created.take() {
+            remove_tool_header(created)?;
+            save_state(&state)?;
+        }
+        // Then Hermes' own model, while the sidecar still says what it was.
+        // Saved at once, so a failure below cannot leave a sidecar that claims
+        // Gate models are still applied over a restored config.
         if state.gate_models.is_some() {
             revert_gate_models(&mut state)?;
             save_state(&state)?;
         }
-        dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
-        // Only if we wrote one. A `None` here is a connect that predates the
-        // header or one whose write was refused, and in both cases the config
-        // is the user's untouched.
-        if let Some(created) = state.header_created {
-            remove_tool_header(created)?;
+        if let Some(shape) = state.model_shape_before_gate_models.take() {
+            let before = read_config_body()?;
+            let after = yaml_block::tidy_parent(&before, "model", &shape);
+            if after != before {
+                write_config(&crate::env::hermes_config_path()?, &after)?;
+            }
         }
+        dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
         // Only drop the sidecar once the file is back: losing it first would
         // leave our variables in place while status reports the tool clean.
         clear_state()
@@ -969,32 +1000,61 @@ fn provider_block(relay: &str, ids: &[String]) -> Vec<String> {
 /// picker, and a reconnect must not take it back.
 fn apply_gate_models(state: &mut State, ids: &[String], relay: &str) -> Result<()> {
     let before = read_config_body()?;
+    let (body, gm) = plan_gate_models(state, ids, relay, &before)?;
+    if body != before {
+        write_config(&crate::env::hermes_config_path()?, &body)?;
+    }
+    state.gate_models = Some(gm);
+    // Folded into the record now; see `State::model_shape_before_gate_models`.
+    state.model_shape_before_gate_models = None;
+    Ok(())
+}
+
+/// What [`apply_gate_models`] would write, without writing it: the new body and
+/// the record. Pure, so `connect` can find out BEFORE touching `.env` whether
+/// this config is one Gate can edit - a refusal after the `.env` write used to
+/// leave proxy variables in place with no sidecar owning them.
+fn plan_gate_models(
+    state: &State,
+    ids: &[String],
+    relay: &str,
+    before: &str,
+) -> Result<(String, GateModels)> {
     let first = ids.first().context("a Gate model set cannot be empty")?;
-    let current = yaml_block::get_child(&before, "model", "default")
+    let current = yaml_block::get_child(before, "model", "default")
         .map_err(|e| refused("model.default", e))?;
     let default = match (&state.gate_models, &current) {
         (Some(gm), Some(c)) if gm.written.as_slice() == ids && ids.contains(c) => c.clone(),
         _ => first.clone(),
     };
 
-    if state.gate_models.is_none() {
-        let mut previous = BTreeMap::new();
-        for key in MODEL_KEYS {
-            let value = yaml_block::get_child(&before, "model", key)
-                .map_err(|e| refused(&format!("model.{key}"), e))?;
-            previous.insert((*key).to_string(), value);
+    let mut gm = match &state.gate_models {
+        Some(gm) => gm.clone(),
+        None => {
+            let mut previous = BTreeMap::new();
+            for key in MODEL_KEYS {
+                let value = yaml_block::get_child(before, "model", key)
+                    .map_err(|e| refused(&format!("model.{key}"), e))?;
+                previous.insert((*key).to_string(), value);
+            }
+            // A shape an earlier App default could not put back (the header
+            // was still there) is the one to restore, not today's `model:`.
+            let model_shape = match &state.model_shape_before_gate_models {
+                Some(shape) => shape.clone(),
+                None => yaml_block::parent_shape(before, "model")
+                    .map_err(|e| refused("model", e))?,
+            };
+            GateModels {
+                written: Vec::new(),
+                previous,
+                model_shape,
+                providers_shape: yaml_block::parent_shape(before, "providers")
+                    .map_err(|e| refused("providers", e))?,
+            }
         }
-        state.gate_models = Some(GateModels {
-            written: Vec::new(),
-            previous,
-            model_shape: yaml_block::parent_shape(&before, "model")
-                .map_err(|e| refused("model", e))?,
-            providers_shape: yaml_block::parent_shape(&before, "providers")
-                .map_err(|e| refused("providers", e))?,
-        });
-    }
+    };
 
-    let mut body = before.clone();
+    let mut body = before.to_string();
     body = yaml_block::set_child(&body, "model", "provider", Some(GATE_PROVIDER))
         .map_err(|e| refused("model.provider", e))?;
     body = yaml_block::set_child(&body, "model", "default", Some(&default))
@@ -1015,13 +1075,8 @@ fn apply_gate_models(state: &mut State, ids: &[String], relay: &str) -> Result<(
         Some(&provider_block(relay, ids)),
     )
     .map_err(|e| refused("providers", e))?;
-    if body != before {
-        write_config(&crate::env::hermes_config_path()?, &body)?;
-    }
-    if let Some(gm) = state.gate_models.as_mut() {
-        gm.written = ids.to_vec();
-    }
-    Ok(())
+    gm.written = ids.to_vec();
+    Ok((body, gm))
 }
 
 /// Put Hermes' own model back, if Gate models were applied.
@@ -1059,6 +1114,15 @@ fn revert_gate_models(state: &mut State) -> Result<()> {
             .map_err(|e| refused(&format!("model.{key}"), e))?;
     }
     body = yaml_block::tidy_parent(&body, "model", &gm.model_shape);
+    // Still a block (the tool header lives in it) although it was empty or
+    // absent before Gate models: nothing here can put it back yet. Keep the
+    // shape so the header's removal on disconnect can, and so a later Gate
+    // models apply snapshots the original rather than this `model:`.
+    if gm.model_shape != yaml_block::ParentShape::Block
+        && yaml_block::parent_shape(&body, "model").ok() == Some(yaml_block::ParentShape::Block)
+    {
+        state.model_shape_before_gate_models = Some(gm.model_shape.clone());
+    }
     body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
         .map_err(|e| refused("providers", e))?;
     body = yaml_block::tidy_parent(&body, "providers", &gm.providers_shape);

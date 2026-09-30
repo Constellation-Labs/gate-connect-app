@@ -336,3 +336,80 @@ fn a_reconnect_keeps_hermes_on_gate_models() {
     );
     assert_eq!(preferences::load().tool_models["hermes"].source, ModelSource::Gate);
 }
+
+fn env_file() -> String {
+    fs::read_to_string(env::hermes_config_dir().unwrap().join(".env")).unwrap_or_default()
+}
+
+/// A config shape the editor refuses must fail the first connect BEFORE
+/// `.env` is touched: a refusal after the write left proxy variables with no
+/// sidecar owning them, so no later connect or disconnect could clean them up
+/// (review on #382).
+#[test]
+fn a_refused_config_on_first_connect_leaves_nothing_behind() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // An anchor on the model: a shape the surgical editor will not touch.
+    let refused = "model:\n  default: &m z-ai/glm-5.2\n  provider: openrouter\n";
+    let _home = setup(refused);
+    let hermes = find(ToolId::Hermes).unwrap();
+    choose_gate(&[LUNA]);
+
+    let err = hermes.connect(&input()).unwrap_err();
+    assert!(format!("{err:#}").contains("will not edit safely"), "{err:#}");
+    assert!(!env_file().contains("HTTPS_PROXY"), "no proxy left in .env: {}", env_file());
+    assert_eq!(config(), refused, "config.yaml untouched");
+
+    // Fixed by hand, the next connect works and disconnect cleans up fully.
+    write_config(ORIGINAL);
+    hermes.connect(&input()).unwrap();
+    assert!(env_file().contains("HTTPS_PROXY"));
+    hermes.disconnect().unwrap();
+    assert!(!env_file().contains("HTTPS_PROXY"));
+    assert_eq!(config(), ORIGINAL);
+}
+
+/// A fresh install's `model: ""` must come back after more than one connect:
+/// the second connect writes the tool header into the block Gate models
+/// opened, and disconnect used to restore the model before removing the
+/// header, leaving a bare `model:` (review on #382).
+#[test]
+fn a_fresh_install_survives_reconnects_and_app_default() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let fresh = "model: \"\"\n_config_version: 45\n";
+
+    {
+        let _home = setup(fresh);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        hermes.connect(&input()).unwrap();
+        hermes.connect(&input()).unwrap();
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), fresh, "connect x3 then disconnect");
+    }
+    {
+        let _home = setup(fresh);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        hermes.connect(&input()).unwrap();
+        choose_tool();
+        hermes.connect(&input()).unwrap();
+        hermes.connect(&input()).unwrap();
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), fresh, "App default then disconnect");
+    }
+    {
+        let _home = setup(fresh);
+        let hermes = find(ToolId::Hermes).unwrap();
+        choose_gate(&[LUNA]);
+        hermes.connect(&input()).unwrap();
+        hermes.connect(&input()).unwrap();
+        choose_tool();
+        hermes.connect(&input()).unwrap();
+        choose_gate(&[OPUS]);
+        hermes.connect(&input()).unwrap();
+        hermes.disconnect().unwrap();
+        assert_eq!(config(), fresh, "Gate, App default, Gate again, disconnect");
+    }
+}

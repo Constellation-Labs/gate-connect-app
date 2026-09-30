@@ -49,6 +49,10 @@ pub(crate) enum Refusal {
     /// The key is present but the line is not a plain `key: value` we can read
     /// back - an anchor, a multi-line scalar, a flow collection.
     ValueNotPlain,
+    /// The key appears twice at the same level. PyYAML keeps the LAST one, so
+    /// editing the first would change nothing Hermes reads - refused rather
+    /// than guessed at.
+    DuplicateKey,
 }
 
 /// Is `line` the block opener `name:` at exactly `indent` spaces?
@@ -108,7 +112,11 @@ pub(crate) fn set_nested(
 ) -> Result<(String, Edit), Refusal> {
     let lines: Vec<&str> = body.lines().collect();
     let trailing_newline = body.is_empty() || body.ends_with('\n');
+    let eol = eol_of(body);
 
+    if lines.iter().filter(|l| opens_block(l, parent, 0).is_some()).count() > 1 {
+        return Err(Refusal::DuplicateKey);
+    }
     let parent_open = lines
         .iter()
         .position(|l| opens_block(l, parent, 0) == Some(true));
@@ -127,9 +135,9 @@ pub(crate) fn set_nested(
         // which makes this the safest branch rather than the most complex.
         let mut out = String::from(body);
         if !out.is_empty() && !trailing_newline {
-            out.push('\n');
+            out.push_str(eol);
         }
-        out.push_str(&format!("{parent}:\n  {child}:\n    {key}: {value}\n"));
+        out.push_str(&format!("{parent}:\n  {child}:\n    {key}: {value}\n").replace('\n', eol));
         return Ok((
             out,
             Edit::Inserted(Created {
@@ -168,7 +176,7 @@ pub(crate) fn set_nested(
             ),
         );
         return Ok((
-            join(out, trailing_newline),
+            join(out, trailing_newline, eol),
             Edit::Inserted(Created {
                 parent: false,
                 child: true,
@@ -196,8 +204,9 @@ pub(crate) fn set_nested(
         if current.trim_matches(['"', '\'']) == value {
             return Ok((body.to_string(), Edit::Unchanged));
         }
-        out[child_open + 1 + i] = format!("{}{key}: {value}", " ".repeat(key_indent));
-        return Ok((join(out, trailing_newline), Edit::Refreshed));
+        let comment = trailing_comment(rest).unwrap_or("");
+        out[child_open + 1 + i] = format!("{}{key}: {value}{comment}", " ".repeat(key_indent));
+        return Ok((join(out, trailing_newline, eol), Edit::Refreshed));
     }
 
     out.insert(
@@ -205,7 +214,7 @@ pub(crate) fn set_nested(
         format!("{}{key}: {value}", " ".repeat(key_indent)),
     );
     Ok((
-        join(out, trailing_newline),
+        join(out, trailing_newline, eol),
         Edit::Inserted(Created::default()),
     ))
 }
@@ -220,6 +229,7 @@ pub(crate) fn remove_nested(
 ) -> String {
     let lines: Vec<&str> = body.lines().collect();
     let trailing_newline = body.is_empty() || body.ends_with('\n');
+    let eol = eol_of(body);
     let Some(parent_open) = lines
         .iter()
         .position(|l| opens_block(l, parent, 0) == Some(true))
@@ -262,7 +272,7 @@ pub(crate) fn remove_nested(
         .filter(|(i, _)| !drop.contains(i))
         .map(|(_, l)| (*l).to_string())
         .collect();
-    join(kept, trailing_newline)
+    join(kept, trailing_newline, eol)
 }
 
 /// How a top-level key sits in the document before an edit, so the edit can be
@@ -286,6 +296,16 @@ const EMPTY_INLINE: &[&str] = &["{}", "\"\"", "''", "~", "null"];
 /// The shape of `<parent>` in `body`, or a refusal for an inline value this
 /// module will not edit into (`model: {a: 1}`, `model: gpt-4o`).
 pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refusal> {
+    let top_level = body
+        .lines()
+        .filter(|l| {
+            let (lead, rest) = split_indent(l);
+            lead == 0 && rest.strip_prefix(parent).is_some_and(|r| r.starts_with(':'))
+        })
+        .count();
+    if top_level > 1 {
+        return Err(Refusal::DuplicateKey);
+    }
     for line in body.lines() {
         let (lead, rest) = split_indent(line);
         if lead != 0 {
@@ -389,6 +409,9 @@ pub(crate) fn get_child(body: &str, parent: &str, key: &str) -> Result<Option<St
     else {
         return Ok(None);
     };
+    if child_count(&lines, open, key) > 1 {
+        return Err(Refusal::DuplicateKey);
+    }
     let (at, _, _) = find_child(&lines, open, key);
     let Some(at) = at else {
         return Ok(None);
@@ -414,6 +437,7 @@ pub(crate) fn set_child(
     value: Option<&str>,
 ) -> Result<String, Refusal> {
     let trailing_newline = body.is_empty() || body.ends_with('\n');
+    let eol = eol_of(body);
     let shape = parent_shape(body, parent)?;
     if value.is_none() && shape != ParentShape::Block {
         return Ok(body.to_string());
@@ -421,7 +445,11 @@ pub(crate) fn set_child(
     let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
     let open = ensure_parent(&mut lines, parent, &shape);
     let view: Vec<&str> = lines.iter().map(String::as_str).collect();
+    if child_count(&view, open, key) > 1 {
+        return Err(Refusal::DuplicateKey);
+    }
     let (at, _, indent) = find_child(&view, open, key);
+    let mut comment = String::new();
     if let Some(at) = at {
         let (_, rest) = split_indent(view[at]);
         let raw = rest[key.len() + 1..].trim();
@@ -429,9 +457,12 @@ pub(crate) fn set_child(
             return Err(Refusal::ValueNotPlain);
         }
         plain_value(raw)?;
+        comment = trailing_comment(raw).unwrap_or("").to_string();
     }
     match (at, value) {
-        (Some(at), Some(v)) => lines[at] = format!("{}{key}: {}", " ".repeat(indent), scalar(v)),
+        (Some(at), Some(v)) => {
+            lines[at] = format!("{}{key}: {}{comment}", " ".repeat(indent), scalar(v))
+        }
         (None, Some(v)) => lines.insert(
             open + 1,
             format!("{}{key}: {}", " ".repeat(indent), scalar(v)),
@@ -441,7 +472,7 @@ pub(crate) fn set_child(
         }
         (None, None) => {}
     }
-    Ok(join(lines, trailing_newline))
+    Ok(join(lines, trailing_newline, eol))
 }
 
 /// Replace the whole `<parent>.<key>` subtree with `block`, or remove it with
@@ -459,6 +490,7 @@ pub(crate) fn set_block(
     block: Option<&[String]>,
 ) -> Result<String, Refusal> {
     let trailing_newline = body.is_empty() || body.ends_with('\n');
+    let eol = eol_of(body);
     let shape = parent_shape(body, parent)?;
     if block.is_none() && shape != ParentShape::Block {
         return Ok(body.to_string());
@@ -466,6 +498,9 @@ pub(crate) fn set_block(
     let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
     let open = ensure_parent(&mut lines, parent, &shape);
     let view: Vec<&str> = lines.iter().map(String::as_str).collect();
+    if child_count(&view, open, key) > 1 {
+        return Err(Refusal::DuplicateKey);
+    }
     let (at, _, indent) = find_child(&view, open, key);
     // The existing subtree: the key line and everything indented past it.
     let span = at.map(|at| {
@@ -493,7 +528,7 @@ pub(crate) fn set_block(
         }
         (None, None) => {}
     }
-    Ok(join(lines, trailing_newline))
+    Ok(join(lines, trailing_newline, eol))
 }
 
 /// Put `<parent>` back to how it was before Gate edited under it, if Gate's
@@ -505,6 +540,7 @@ pub(crate) fn tidy_parent(body: &str, parent: &str, before: &ParentShape) -> Str
         return body.to_string();
     }
     let trailing_newline = body.is_empty() || body.ends_with('\n');
+    let eol = eol_of(body);
     let lines: Vec<&str> = body.lines().collect();
     let Some(open) = lines
         .iter()
@@ -524,7 +560,7 @@ pub(crate) fn tidy_parent(body: &str, parent: &str, before: &ParentShape) -> Str
         ParentShape::Empty(original) => out[open] = original.clone(),
         ParentShape::Block => {}
     }
-    join(out, trailing_newline)
+    join(out, trailing_newline, eol)
 }
 
 /// A scalar as YAML will read it back unchanged: bare when that is safe, double
@@ -546,12 +582,57 @@ fn scalar(v: &str) -> String {
     }
 }
 
-fn join(lines: Vec<String>, trailing_newline: bool) -> String {
-    let mut out = lines.join("\n");
+/// The file's own line ending. `str::lines` strips a `\r` before each `\n`,
+/// so an edit that joined on `\n` alone turned a CRLF file into an LF one.
+fn eol_of(body: &str) -> &'static str {
+    if body.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn join(lines: Vec<String>, trailing_newline: bool, eol: &str) -> String {
+    // An inserted entry may carry its own `\n`s (a new block and its key in one
+    // element); they take the file's ending too.
+    let lines: Vec<String> = if eol == "\n" {
+        lines
+    } else {
+        lines.into_iter().map(|l| l.replace('\n', eol)).collect()
+    };
+    let mut out = lines.join(eol);
     if trailing_newline && !out.is_empty() {
-        out.push('\n');
+        out.push_str(eol);
     }
     out
+}
+
+/// A value's trailing ` # comment`, if it has one, so a refresh can keep it.
+/// Quoted values are skipped past their closing quote first: a `#` inside the
+/// quotes is part of the value.
+fn trailing_comment(raw: &str) -> Option<&str> {
+    let raw = raw.trim_end();
+    let start = match raw.chars().next() {
+        Some(q @ ('"' | '\'')) => raw[1..].find(q).map(|i| i + 2)?,
+        _ => 0,
+    };
+    let hash = raw[start..].find(" #").map(|i| start + i + 1)?;
+    // Back to the start of the whitespace run, so `  # note` keeps its gap.
+    let from = raw[..hash].trim_end().len();
+    Some(&raw[from..])
+}
+
+/// How many times `<key>:` appears directly under the block opened at `open`.
+fn child_count(lines: &[&str], open: usize, key: &str) -> usize {
+    let (end, child_indent) = block_extent(lines, open, 0);
+    let indent = child_indent.unwrap_or(2);
+    lines[open + 1..end]
+        .iter()
+        .filter(|l| {
+            let (lead, rest) = split_indent(l);
+            lead == indent && rest.strip_prefix(key).is_some_and(|r| r.starts_with(':'))
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -808,4 +889,46 @@ model:
         assert_eq!(scalar("true"), "\"true\"");
         assert_eq!(scalar(""), "\"\"");
     }
+
+    #[test]
+    fn a_crlf_file_stays_crlf() {
+        let before = "model:\r\n  default: a/b\r\n  provider: x\r\nother: 1\r\n";
+        let after = set_child(before, "model", "default", Some("c/d")).unwrap();
+        assert_eq!(after, "model:\r\n  default: c/d\r\n  provider: x\r\nother: 1\r\n");
+        let (nested, _) = set_nested(before, "model", "extra_headers", "k", "v").unwrap();
+        assert!(!nested.replace("\r\n", "").contains('\n'), "{nested:?}");
+    }
+
+    #[test]
+    fn a_duplicated_key_is_refused_not_half_edited() {
+        let dup_parent = "model:\n  default: a/b\nmodel:\n  default: c/d\n";
+        assert_eq!(parent_shape(dup_parent, "model"), Err(Refusal::DuplicateKey));
+        assert_eq!(
+            set_child(dup_parent, "model", "default", Some("x/y")),
+            Err(Refusal::DuplicateKey)
+        );
+        assert_eq!(
+            set_nested(dup_parent, "model", "extra_headers", "k", "v").map(|_| ()),
+            Err(Refusal::DuplicateKey)
+        );
+        let dup_child = "model:\n  default: a/b\n  default: c/d\n";
+        assert_eq!(get_child(dup_child, "model", "default"), Err(Refusal::DuplicateKey));
+        assert_eq!(
+            set_child(dup_child, "model", "default", Some("x/y")),
+            Err(Refusal::DuplicateKey)
+        );
+    }
+
+    #[test]
+    fn a_refreshed_value_keeps_its_comment() {
+        let before = "model:\n  default: a/b  # my pick\n  provider: \"x # y\"\n";
+        let after = set_child(before, "model", "default", Some("c/d")).unwrap();
+        assert_eq!(after, "model:\n  default: c/d  # my pick\n  provider: \"x # y\"\n");
+        let after = set_child(before, "model", "provider", Some("z")).unwrap();
+        assert!(after.contains("  provider: z\n"), "a # inside quotes is not a comment: {after}");
+        let nested = "model:\n  extra_headers:\n    k: old  # keep\n";
+        let (after, _) = set_nested(nested, "model", "extra_headers", "k", "new").unwrap();
+        assert_eq!(after, "model:\n  extra_headers:\n    k: new  # keep\n");
+    }
 }
+
