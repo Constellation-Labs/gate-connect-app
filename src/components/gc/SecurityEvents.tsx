@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
-import { BADGE_STYLES, Card, CardHeader, EmptyNote, Pill, Skeleton } from "./base";
+import { BADGE_STYLES, Card, CardHeader, EmptyNote, GUARDRAIL_INK, OutlineButton, Pill, Skeleton } from "./base";
 import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
 
@@ -80,19 +80,23 @@ function eventTime(at: string): string {
  * policy's other half, and `other` is printed as a word with no glyph rather
  * than given one by eye. A category outside the five is printed as received.
  */
-const CATEGORY: Record<string, { label: string; icon?: IconName; ink?: string }> = {
-  pii: { label: "PII", icon: "userRound", ink: "text-green-700" },
-  phi: { label: "PHI", icon: "userRound", ink: "text-green-700" },
-  injection: { label: "Injection", icon: "shieldAlert", ink: "text-red-700" },
-  credential: { label: "Credential", icon: "key", ink: "text-[#1d4ed8]" },
+const CATEGORY: Record<string, { label: string; icon?: IconName }> = {
+  pii: { label: "PII", icon: "userRound" },
+  phi: { label: "PHI", icon: "userRound" },
+  injection: { label: "Injection", icon: "shieldAlert" },
+  credential: { label: "Credential", icon: "key" },
   other: { label: "Other" },
 };
 
 function Category({ value }: { value: string }) {
-  const c = CATEGORY[value] ?? { label: value };
+  // `hasOwn`, not a bare index: the value is the gateway's string, and a plain
+  // object answers "constructor" or "toString" with a function, which would
+  // render as a blank cell rather than the string received. `lib/toolEvents.ts`
+  // guards its own tables the same way.
+  const c = Object.hasOwn(CATEGORY, value) ? CATEGORY[value] : { label: value };
   return (
     <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
-      {c.icon && <Icon name={c.icon} size={20} className={c.ink} />}
+      {c.icon && <Icon name={c.icon} size={20} className={GUARDRAIL_INK[c.icon]} />}
       {c.label}
     </span>
   );
@@ -111,7 +115,7 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return (
     <th
       scope="col"
-      className={`py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground last:pr-4 ${className}`}
+      className={`py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
@@ -128,7 +132,8 @@ function PendingRows() {
     <>
       {[0, 1, 2].map((i) => (
         <tr key={i} className="h-14 border-t border-base-border">
-          {[0, 1, 2, 3, 4].map((c) => (
+          {/* Six cells under six columns, the last one the View button's. */}
+          {[0, 1, 2, 3, 4, 5].map((c) => (
             <td key={c} className="pl-4 last:pr-4">
               <Skeleton className="h-4 w-full" />
             </td>
@@ -342,16 +347,11 @@ export function SecurityEvents({
                           that step on 2026-09-23. The external-link icon was
                           always here and was misleading while it opened a
                           dialog; it is accurate now. */}
-                      <button
-                        type="button"
-                        onClick={() => onOpenInDashboard(e)}
-                        // The `xs` Outline variant (`1402:18021`, h24 at 10/4 with
-                        // a 14px glyph), not the `sm` the header button takes.
-                        className="inline-flex h-6 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-2.5 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                      >
+                      {/* The `xs` Outline variant (`1402:18021`), not the `sm`
+                          the header button takes. */}
+                      <OutlineButton size="xs" onClick={() => onOpenInDashboard(e)} external>
                         View
-                        <Icon name="squareArrowOutUpRight" size={14} />
-                      </button>
+                      </OutlineButton>
                     </td>
                   </tr>
                 );
@@ -367,13 +367,9 @@ export function SecurityEvents({
           * against. */}
         {more > 0 && (
           <div className="flex justify-center border-t border-base-border px-4 py-4">
-            <button
-              type="button"
-              onClick={() => setVisible((n) => n + PAGE)}
-              className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-            >
+            <OutlineButton size="sm" onClick={() => setVisible((n) => n + PAGE)}>
               Load more
-            </button>
+            </OutlineButton>
           </div>
         )}
       </Card>

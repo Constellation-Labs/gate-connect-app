@@ -83,7 +83,7 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate Connect is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("2 of 2 tools on")).toBeTruthy();
+    expect(screen.getByText("2 of 2 tools")).toBeTruthy();
   });
 
   it("reads partially routed when only some rows the user asked for are", () => {
@@ -108,7 +108,7 @@ describe("the routing status card", () => {
     // Both rows are ON, so the fraction is 2 of 2 even though only one is
     // routed. The fraction counts intent over availability; the HEADING is
     // what reports that one of them is not routed.
-    expect(screen.getByText("2 of 2 tools on")).toBeTruthy();
+    expect(screen.getByText("1 of 2 tools")).toBeTruthy();
   });
 
   /**
@@ -123,7 +123,7 @@ describe("the routing status card", () => {
    * this goes back to "Partially routed".
    *
    * The FRACTION does count it, and that is the 2026-09-23 change: it reads
-   * "1 of 2 tools on", one switched on out of two available. Only the state
+   * "1 of 2 tools", one routed out of two available. Only the state
    * is judged on intent.
    */
   it("does not count a row the user never switched on", () => {
@@ -131,7 +131,7 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate Connect is protecting you" }),
     ).toBeTruthy();
-    expect(screen.getByText("1 of 2 tools on")).toBeTruthy();
+    expect(screen.getByText("1 of 2 tools")).toBeTruthy();
   });
 
   it("reads not protected with nothing routing, and says the engine didn’t start", () => {
@@ -154,7 +154,7 @@ describe("the routing status card", () => {
     expect(
       screen.getByRole("heading", { name: "Gate Connect is not routing your apps" }),
     ).toBeTruthy();
-    expect(screen.getByText("Didn’t start · 1 of 1 tools on")).toBeTruthy();
+    expect(screen.getByText("Didn’t start · 0 of 1 tools")).toBeTruthy();
   });
 
   /**
@@ -189,6 +189,12 @@ describe("the routing status card", () => {
     expect(screen.queryByText("Off")).toBeNull();
     expect(screen.queryByText(/0 of 0/)).toBeNull();
     expect(screen.queryByRole("heading", { name: /Not protected/ })).toBeNull();
+    // The drawn grey none state, framed grey: a green/amber ternary used to put
+    // this tile in an amber border.
+    const card = screen.getByRole("heading", { name: "No apps are routed" })
+      .parentElement?.parentElement;
+    expect(card?.className).toContain("border-gray-300");
+    expect(card?.className).not.toContain("border-amber-300");
   });
 
   /**
@@ -216,7 +222,7 @@ describe("the routing status card", () => {
     // With a fraction beside it now: the rail has one app and none of it is
     // on, which "0 of 1" states and the suppressed ratio used to hide. Still
     // never "Off" - the enable happens at launch with no control behind it.
-    expect(screen.getByText("Didn’t start · 0 of 1 tools on")).toBeTruthy();
+    expect(screen.getByText("Didn’t start · 0 of 1 tools")).toBeTruthy();
     expect(screen.queryByText("Off")).toBeNull();
   });
 
@@ -238,7 +244,7 @@ describe("the routing status card", () => {
         },
       ],
     });
-    expect(screen.getByText("Starting… · 1 of 1 tools on")).toBeTruthy();
+    expect(screen.getByText("Starting… · 0 of 1 tools")).toBeTruthy();
     expect(screen.queryByText(/Didn’t start/)).toBeNull();
   });
 

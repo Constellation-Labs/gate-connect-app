@@ -185,6 +185,18 @@ export default {
           950: "#101738",
         },
 
+        // The three guardrail inks the redrawn Overview draws on its Policies
+        // rows and the feed's Category cell (sampled off `1390:13599`,
+        // 2026-09-30): Tailwind's red-700, green-700 and blue-700. Named for the
+        // guardrail, not the hue, because `blue` is REDEFINED as an OKLCH ramp
+        // further up this file and `text-blue-700` would render the wrong
+        // colour; `GUARDRAIL_INK` in `gc/base.tsx` is the one map onto them.
+        guardrail: {
+          injection: "#b91c1c", // tailwind red/700, Icon / ShieldAlert
+          pii: "#15803d", // tailwind green/700, Icon / UserRound
+          credential: "#1d4ed8", // tailwind blue/700, Icon / KeyRound
+        },
+
         // Messages chart series (Figma legend swatches, sampled individually).
         // Named for the series rather than the hue for two reasons: the meaning
         // is what call sites care about, and three of the four are Tailwind

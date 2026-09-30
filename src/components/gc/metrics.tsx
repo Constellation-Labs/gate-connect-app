@@ -215,6 +215,9 @@ function Stat({
   return (
     <Tag
       {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
+      // The cell divider is a 12% black line, not `base.border`
+      // (`card/kpi-card` 1390:13632 draws `rgba(0,0,0,0.12)` on its right edge).
+      // An arbitrary value rather than a token: no Figma variable names it.
       className={`flex-1 p-4 text-left ${divided ? "border-l border-black/[0.12]" : ""}${
         onSelect ? " transition hover:bg-gray-50" : ""
       }`}

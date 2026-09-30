@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Card, CardHeader, EmptyNote, Skeleton } from "./base";
+import { Card, CardHeader, EmptyNote, GUARDRAIL_INK, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -8,9 +8,10 @@ import { SecurityEvents } from "./SecurityEvents";
 import type { SecurityEventsProps } from "./SecurityEvents";
 
 /**
- * The Overview pane (Figma `Flows / Overview`): a 24-hour summary of what Gate
- * actually did with the user's traffic. Sits right of the sidebar in the
- * 1024x720 window, on a gray/100 ground, and scrolls internally.
+ * The Overview pane (Figma `Overview/none-routed` 1390:13599 and its
+ * siblings): a 24-hour summary of what Gate actually did with the user's
+ * traffic. Sits right of the sidebar in the 1280x800 window as a 976px pane on
+ * the `base.background` ground, and scrolls internally.
  *
  * Presentational. The 24-hour backend is still being built, so every number
  * arrives as a prop and nothing here talks to `lib/api`.
@@ -83,22 +84,6 @@ const ACTION_STYLES: Record<PolicyAction, string> = {
   // rather than a fourth colour: `allow` is the one that does nothing, and
   // giving it a hue would read as a severity it does not have.
   allow: "bg-neutral-100 text-base-foreground",
-};
-
-/**
- * The Policies rows draw their glyphs in colour, one per guardrail, sampled off
- * the render of `Overview/none-routed` (1390:13599) on 2026-09-30: `ShieldAlert`
- * red-700, `UserRound` green-700, `KeyRound` blue-700. The Token savings rows
- * beside them keep `base/muted-foreground`, so this is keyed by glyph rather
- * than applied to every row. `#1d4ed8` is Tailwind's blue-700 spelled out,
- * because this repo redefines `blue` and `text-blue-700` would render the
- * wrong colour. A policy whose glyph is not one of the three (the `shieldCheck`
- * fallback in `lib/activity.ts`) stays muted.
- */
-const POLICY_INK: Partial<Record<IconName, string>> = {
-  shieldAlert: "text-red-700",
-  userRound: "text-green-700",
-  key: "text-[#1d4ed8]",
 };
 
 export function Overview({
@@ -297,7 +282,9 @@ function PolicyTable({
                     <Icon
                       name={policy.icon}
                       size={24}
-                      className={POLICY_INK[policy.icon] ?? "text-base-muted-foreground"}
+                      // In colour, one per guardrail (`1402:18151` and its two
+                      // siblings); the savings rows below stay muted.
+                      className={GUARDRAIL_INK[policy.icon] ?? "text-base-muted-foreground"}
                     />
                     {policy.name}
                   </span>

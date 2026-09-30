@@ -123,10 +123,10 @@ export function RoutingBanner({
   totalCount,
   availableCount,
 }: {
-  /** Routed, among the apps the user switched on. Judges the tone. */
-  protectedCount: number;
-  /** Switched on. The denominator the TONE is judged against, and the
+  /** Routed, among the apps the user switched on. Judges the tone, and is the
    *  numerator the fraction prints. */
+  protectedCount: number;
+  /** Switched on. The denominator the TONE is judged against. */
   totalCount: number;
   /** Every app on the rail, switched on or not. The fraction's denominator -
    *  see `showsFraction`. */
@@ -156,20 +156,19 @@ export function RoutingBanner({
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
-        {/* Switched on, out of every app on the rail - coverage, not outcome.
-          * The numerator changed to intent on 2026-09-23 and an "on" suffix
-          * went with it, so the ratio could not be read as routed-of-available
-          * beside a "Routed" pill. Design answered on 2026-09-30 that the words
-          * are "N of M" as the frames draw them (`1390:14031`, "0 of 6 Apps"),
-          * so the suffix goes. The label beside it now says Protected / Not
-          * protected / Not routed, which carries the outcome the suffix used to
-          * keep the digits from implying. The numerator is still intent, and
-          * still does not match the rail's group counters. */}
+        {/* Routed, out of every app on the rail. The numerator was the
+          * switched-on count from 2026-09-23, with an "on" suffix so the ratio
+          * could not be read as routed-of-available. Design answered on
+          * 2026-09-30 that the words are "N of M" as the frames draw them
+          * (`1390:14031`, "0 of 6 Apps"); without the suffix, "3 of 8 Apps"
+          * beside "Not protected" counted neither the protected nor the
+          * unprotected apps, so the numerator became the routed count in the
+          * same review. `routingState` carries the history. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>
             <span className="text-base-muted-foreground">
-              {totalCount} of {availableCount} Apps
+              {protectedCount} of {availableCount} Apps
             </span>
           </>
         )}

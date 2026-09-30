@@ -143,6 +143,38 @@ describe("what a row shows, and what it must not", () => {
     expect(screen.getByText("claude-opus-4")).toBeTruthy();
   });
 
+  it("labels the categories the frame draws, and the two it does not", () => {
+    // `phi` is the PII/PHI scanner's other half and takes its glyph; `other`
+    // is a word with no glyph rather than one chosen by eye.
+    render(
+      section({
+        events: [
+          { ...blocked, id: "01A", category: "phi" },
+          { ...blocked, id: "01B", category: "other" },
+        ],
+      }),
+    );
+    const phi = screen.getByText("PHI");
+    expect(phi.querySelector("svg")).toBeTruthy();
+    const other = screen.getByText("Other");
+    expect(other.querySelector("svg")).toBeNull();
+  });
+
+  it("prints a category it does not know as received, including prototype names", () => {
+    // The value is the gateway's string. A bare object index would answer
+    // "constructor" with a function and render nothing.
+    render(
+      section({
+        events: [
+          { ...blocked, id: "01A", category: "constructor" },
+          { ...blocked, id: "01B", category: "jailbreak" },
+        ],
+      }),
+    );
+    expect(screen.getByText("constructor")).toBeTruthy();
+    expect(screen.getByText("jailbreak")).toBeTruthy();
+  });
+
   it("draws a flagged event as Flagged, not Blocked", () => {
     render(section({ events: [{ ...blocked, id: "01B", action: "flag" }] }));
     expect(screen.getByText("Flagged")).toBeTruthy();

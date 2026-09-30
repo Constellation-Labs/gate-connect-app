@@ -3593,6 +3593,10 @@ a question for design:
 
 Answered the same day, and applied: the banner label is the rail's vocabulary
 (Protected / Not protected / Not routed, question 2), and the fraction reads
-"N of M Apps" with no "on" suffix (question 3). The numerator is still the
-switched-on count and still disagrees with the rail's group counters, which
-question 3 asked about and the answer did not reach.
+"N of M Apps" with no "on" suffix (question 3). The review of the branch then
+found that without the suffix the switched-on numerator counted neither the
+protected nor the unprotected apps beside a "Not protected" label, so the
+numerator became the routed count, on both the banner and the tray's card
+(user's decision, 2026-09-30). The fraction now agrees with the rail's group
+eyebrows on both halves. That is a deviation from the numerator the frames'
+fixtures imply nothing about, and is owed to design with the rest.

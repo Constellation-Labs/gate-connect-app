@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, Pill, Skeleton } from "./base";
+import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, OutlineButton, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -1009,16 +1009,10 @@ function RecentActivity({
                 </td>
                 <td className="pl-4 pr-4 text-right">
                   {entry.onView ? (
-                    <button
-                      type="button"
-                      onClick={entry.onView}
-                      // The `xs` Outline variant (`1410:28190`, h24 at 10/4 with
-                      // a 14px glyph); it was `sm`.
-                      className="inline-flex h-6 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-2.5 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                    >
+                    // The `xs` Outline variant (`1410:28190`); it was `sm`.
+                    <OutlineButton size="xs" onClick={entry.onView} external>
                       View
-                      <Icon name="squareArrowOutUpRight" size={14} />
-                    </button>
+                    </OutlineButton>
                   ) : null}
                 </td>
               </tr>
@@ -1029,8 +1023,8 @@ function RecentActivity({
 
       {more && (
         <div className="flex justify-center border-t border-base-border px-4 py-4">
-          <button
-            type="button"
+          <OutlineButton
+            size="sm"
             onClick={() => {
               // Reveal first, fetch only when the reveal has run out of held
               // rows. Fetching on every click would pull pages the person
@@ -1038,10 +1032,9 @@ function RecentActivity({
               setVisible((n) => n + PAGE);
               if (activity.length <= visible + PAGE) onLoadMore?.();
             }}
-            className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
-          </button>
+          </OutlineButton>
         </div>
       )}
     </Card>

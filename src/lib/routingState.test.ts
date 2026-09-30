@@ -44,6 +44,16 @@ describe("routingState", () => {
     }
   });
 
+  it("labels every state with one of the rail's three status words", () => {
+    // Design's answer of 2026-09-30: the banner shares `status-label`'s
+    // vocabulary, so the topbar cannot call protected what a row calls not
+    // protected, and nothing prints a fourth phrase.
+    expect(routingState(3, 3).label).toBe("Protected");
+    expect(routingState(1, 3).label).toBe("Not protected");
+    expect(routingState(0, 3).label).toBe("Not protected");
+    expect(routingState(0, 0).label).toBe("Not routed");
+  });
+
   it("is green only when routed, amber for a failure, grey for nothing asked", () => {
     expect(routingState(3, 3).tone).toBe("green");
     // Switched on and not (fully) routing: something is wrong, and the tile
@@ -67,7 +77,7 @@ describe("routingState", () => {
    * said "Gate" for that reason until the 2026-09-29 redraw put "Gate Connect"
    * on every window banner; the longest of them, "Gate Connect is partly
    * routing your apps", measures 269px at 14px Medium (`1404:18358`) and the
-   * card has 280 beside its tile, so the bound moved with the copy rather
+   * card has 296 beside its tile, so the bound moved with the copy rather
    * than the copy being cut to the bound.
    */
   it("keeps every headline short enough for the narrow surface", () => {

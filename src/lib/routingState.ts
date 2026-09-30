@@ -22,22 +22,16 @@
  * banner that can never go green is decoration rather than a status, so the
  * tone and the headline keep that denominator.
  *
- * The printed fraction does not. It reads "N of M tools on": apps switched
- * ON, over every app on the rail (2026-09-23).
- *
- * **It is coverage, not outcome, and it does NOT match the group eyebrow
- * counters.** Those read routed-over-group (`Tray.tsx`, `Sidebar.tsx`), which
- * is what `Components / Sidenav` draws. So the card and the eyebrows measure
- * two different things on one screen, and moving the denominator to
- * availability fixed only half of that: with two apps on and one routed, the
- * card reads "2 of 8 tools on" over groups reading "1 of 3" and "0 of 5" - the
- * denominators now add up and the numerators do not.
- *
- * That is deliberate rather than settled. The word "on" is the whole of what
- * marks the difference, which is thin, and whether the eyebrows should count
- * intent too is a design question rather than something to decide here - it
- * would deviate from the drawn counter. Raised with the deviation this file
- * already owes them.
+ * The printed fraction does not. It reads "N of M Apps" (the tray: "N of M
+ * tools"): apps ROUTED, over every app on the rail. The numerator was the
+ * switched-on count from 2026-09-23, with an "on" suffix to say so; when design
+ * dropped the suffix on 2026-09-30 the digits beside a "Not protected" label
+ * counted neither the protected nor the unprotected apps, so the numerator
+ * became the routed count the same day (review of `feat/figma-overview-sync`).
+ * It now matches the group eyebrow counters, which read routed-over-group
+ * (`Tray.tsx`, `Sidebar.tsx`, what `Components / Sidenav` draws), on both
+ * halves: with two apps on and one routed, the banner reads "1 of 8 Apps" over
+ * groups reading "1 of 3" and "0 of 5".
  *
  * What the split buys: the fraction answers a question the headline does not -
  * how much of this machine is routed at all - rather than restating the
@@ -102,7 +96,7 @@ const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
     icon: "shieldBan",
   },
   "none-requested": {
-    label: "None routed",
+    label: "Not routed",
     // No fault is claimed: the user switched everything off, which is an
     // answer rather than a gap. A fraction DOES go beside it - "0 of 8 Apps" -
     // since the denominator became availability and stopped being the

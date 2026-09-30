@@ -16,6 +16,60 @@ import { Icon } from "./Icon";
  * Shared with the Settings pane, which uses the same shape per section.
  */
 /**
+ * The guardrail glyphs' inks, keyed by the glyph the row draws so the Policies
+ * table (`Overview.tsx`) and the feed's Category cell (`SecurityEvents.tsx`)
+ * cannot colour the same guardrail two ways. Sampled off the render of
+ * `Overview/none-routed` (1390:13599) on 2026-09-30; the values are the
+ * `guardrail.*` tokens in `tailwind.config.ts`. A glyph outside the three (the
+ * `shieldCheck` fallback in `lib/activity.ts`, the savings rows) is not here,
+ * and stays `base/muted-foreground`.
+ */
+export const GUARDRAIL_INK: Partial<Record<IconName, string>> = {
+  shieldAlert: "text-guardrail-injection",
+  userRound: "text-guardrail-pii",
+  key: "text-guardrail-credential",
+};
+
+/**
+ * The Outline button in its two pane sizes, from the `Button` set's instances
+ * (`sm` `1402:17919`: h32, 12/8, 16px glyph; `xs` `1402:18021`: h24, 10/4,
+ * 14px glyph). Both 4px on `base.border` in `base.primary`, each with its own
+ * moulded elevation - `sm` and `xs` do NOT share one, see CLAUDE.md. A literal
+ * class string per size, because Tailwind's scanner cannot see an
+ * interpolated one. Dialog buttons are `Modal`'s and are not this.
+ */
+const OUTLINE = {
+  sm: "h-8 gap-1.5 px-3 shadow-base-btn-sm",
+  xs: "h-6 gap-1.5 px-2.5 shadow-base-btn-xs",
+} as const;
+
+export function OutlineButton({
+  size,
+  onClick,
+  external,
+  className = "",
+  children,
+}: {
+  size: keyof typeof OUTLINE;
+  onClick: () => void;
+  /** Opens outside the app, so the label carries the external-link glyph. */
+  external?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center rounded-control border border-base-border bg-base-card text-base-xs font-medium leading-4 tracking-button-xs text-base-primary transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${OUTLINE[size]} ${className}`}
+    >
+      {children}
+      {external && <Icon name="squareArrowOutUpRight" size={size === "sm" ? 16 : 14} />}
+    </button>
+  );
+}
+
+/**
  * A card's header row: `heading/18` title at left, an optional Outline `sm`
  * action at right, 16/12 padding, and a `base/border` rule spanning the card.
  *
@@ -37,15 +91,11 @@ export function CardHeader({
       <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">
         {title}
       </h2>
+      {/* Both destinations today open the web dashboard, hence the glyph. */}
       {action && (
-        <button
-          type="button"
-          onClick={action.onClick}
-          className="flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-        >
+        <OutlineButton size="sm" onClick={action.onClick} external>
           {action.label}
-          <Icon name="squareArrowOutUpRight" size={16} />
-        </button>
+        </OutlineButton>
       )}
     </div>
   );

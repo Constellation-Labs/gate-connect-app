@@ -81,35 +81,40 @@ describe("ReopenAlert", () => {
  * decision someone made on purpose.
  */
 describe("RoutingBanner's fraction", () => {
-  it("counts apps switched on, out of apps available", () => {
-    // Two on and both routed, on a rail of eight. The old ratio said "2 of 2".
+  it("counts apps routed, out of apps available", () => {
+    // Two on and both routed, on a rail of eight.
     render(
       <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
     );
     expect(screen.getByText("Gate Connect is protecting you")).toBeTruthy();
+    expect(screen.getByText("Protected")).toBeTruthy();
     expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
   });
 
-  it("keeps counting intent while the state reports the failure", () => {
-    // Two on, one routed. The digits do not move - they are coverage, not
-    // outcome - and the pill and headline are what say something is wrong.
-    // This is the case where the fraction disagrees with the rail's group
-    // counters on the numerator; see `routingState`.
+  it("counts outcome, so the digits agree with the label beside them", () => {
+    // Two on, one routed. The numerator moved from switched-on to routed on
+    // 2026-09-30, when the "on" suffix went: "2 of 8 Apps" beside "Not
+    // protected" counted neither the protected nor the unprotected apps.
     render(
       <RoutingBanner protectedCount={1} totalCount={2} availableCount={8} />,
     );
     expect(screen.getByText("Gate Connect is partly routing your apps")).toBeTruthy();
     expect(screen.getByText("Not protected")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
+    expect(screen.getByText("1 of 8 Apps")).toBeTruthy();
+    expect(screen.queryByText(/Apps on/)).toBeNull();
   });
 
-  it("prints 0 of M with nothing switched on, where it used to print nothing", () => {
+  it("prints 0 of M with nothing switched on, in the grey none state", () => {
     // The reading a full rail with nothing on most needs, and the one the old
-    // `showsFraction` suppressed along with the meaningless "0 of 0".
+    // `showsFraction` suppressed along with the meaningless "0 of 0". The
+    // state is the drawn grey one (`1390:14024`): a muted label, not amber.
     render(
       <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
     );
     expect(screen.getByText("No apps are routed")).toBeTruthy();
+    const label = screen.getByText("Not routed");
+    expect(label.className).toContain("text-base-muted-foreground");
+    expect(label.className).not.toContain("text-amber-600");
     expect(screen.getByText("0 of 8 Apps")).toBeTruthy();
   });
 
@@ -121,18 +126,5 @@ describe("RoutingBanner's fraction", () => {
     );
     expect(screen.getByText("No apps are routed")).toBeTruthy();
     expect(screen.queryByText(/of 0 Apps/)).toBeNull();
-  });
-
-  it("prints the frame's 'N of M Apps' with no suffix, beside the rail's status word", () => {
-    // The "on" suffix that kept "2 of 8 Apps" from reading as two-of-eight
-    // routed went on 2026-09-30, by design's answer; the label beside the
-    // digits now says Protected / Not protected / Not routed and carries the
-    // outcome the suffix used to guard.
-    render(
-      <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
-    );
-    expect(screen.getByText("Protected")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
-    expect(screen.queryByText(/Apps on/)).toBeNull();
   });
 });
