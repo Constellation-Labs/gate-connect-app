@@ -309,3 +309,27 @@ describe("an unfinished browser sign-in", () => {
     expect(c.title).not.toMatch(/reach the gateway/i);
   });
 });
+
+describe("classifyError: a loopback port held by another process (AG-960)", () => {
+  // The relay refuses to move off its persisted port, so "try again" - the
+  // generic fallback's advice - could never help. Each spelling that reaches the
+  // webview: the relay's own sentence, the engine's synthetic AddrInUse, and the
+  // OS's words on each platform.
+  for (const raw of [
+    "starting the relay: the relay port 45981 is already in use. Another relay host is likely running",
+    "address in use",
+    "Address already in use (os error 48)",
+    "Address already in use (os error 98)",
+    "Only one usage of each socket address (protocol/network address/port) is normally permitted. (os error 10048)",
+  ]) {
+    it(`names the taken port for "${raw.slice(0, 32)}..."`, () => {
+      const c = classifyError(raw, "proxy_toggle");
+      expect(c.title).toBe("Gate’s local port is already in use");
+      expect(c.hint).not.toContain(String.fromCharCode(0x2014));
+    });
+  }
+
+  it("does not claim an unrelated failure", () => {
+    expect(classifyError("connection refused", "connect").title).toBe("Couldn’t reach the gateway");
+  });
+});

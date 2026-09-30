@@ -14,7 +14,7 @@ import type { Account, OAuthStatus, Org, ProxyState } from "./api";
 import { DEFAULT_GATEWAY_BASE_URL } from "./config";
 import { isSignedIn, needsOrg } from "./session";
 import { markOAuthOfferSeen } from "./oauthOffer";
-import { track, trackError } from "./analytics";
+import { noteOrgChoices, track, trackError } from "./analytics";
 
 /**
  * First run for the new window UI: sign in, pick an organization, confirm.
@@ -273,6 +273,7 @@ export function useSetup({
     setError(null);
     try {
       const list = await oauthListOrgs();
+      noteOrgChoices(list.length);
       setOrgs(list);
       setSelectedOrgId(list[0]?.orgId);
       if (list.length === 1) {

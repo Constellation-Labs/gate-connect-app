@@ -1822,9 +1822,11 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       // Four lists now, and the subtitle can only generalise over them by
       // understating one. The first is gated on the diagnostics toggle; the
       // second rides every routed request whatever it says; the fourth is sent
-      // only on an explicit Send and is the one that is NOT anonymous. So the
-      // subtitle says where the line is rather than claiming one rule.
-      subtitle="Automatic collection is anonymous. A report you send yourself carries more, and is listed last."
+      // only on an explicit Send. So the subtitle says where the line is rather
+      // than claiming one rule. It said "Automatic collection is anonymous"
+      // until AG-960 tied events to the account id after sign-in, which made
+      // that untrue; it now says what is and is not in it.
+      subtitle="Automatic collection never includes your name, email or keys. A report you send yourself carries more, and is listed last."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
@@ -1875,14 +1877,21 @@ export function CollectedDataLists({
       <Wrapper>
         <p className="font-medium text-base-foreground">Sent</p>
         <ul className="mt-1 list-disc pl-4">
+          {/* AG-960. The install id is the PostHog distinct id from the first
+              event; a Constellation sign-in joins it to the account's opaque
+              id (the Cognito sub the dashboard already uses) and pairing adds
+              the organization id, so setup can be measured from download to
+              first request. Neither is a name or an email. */}
           <li>
-            An anonymous device id, generated locally. No name, email, or
-            account identifier.
+            A device id generated on this machine. Once you sign in, your
+            account id and organization id too, so setup can be measured from
+            download to first request. Never your name or email.
           </li>
           <li>App version and operating system.</li>
           <li>
             Which action happened, from a fixed list - routing turned on or off,
-            an update installed, a dialog shown. Never free text.
+            an app connected, a setup step completed or failed, an update
+            installed. Never free text.
           </li>
           <li>
             A short label for each action: which app or provider it concerned,
@@ -1893,10 +1902,9 @@ export function CollectedDataLists({
             denied&rdquo;. The underlying message stays on this machine.
           </li>
           {/* Errors only, and it says so: this rides a failure and no other
-              event. Anonymous throughout - the two fields that would not be
-              (the device name, the organization id) are deliberately left out
-              of the error context, which is what lets the bullet above still
-              promise no name and no account identifier. */}
+              event. The device name is deliberately left out of the error
+              context, and the organization id rides only as the group named
+              in the first bullet, never as a field here. */}
           <li>
             When something fails, the state Gate was in: your operating system
             version, which tools are installed, whether routing was on, and
@@ -1916,9 +1924,8 @@ export function CollectedDataLists({
         </p>
         <ul className="mt-1 list-disc pl-4">
           <li>
-            The same anonymous device id, so your activity view can group
-            requests by machine. It identifies nothing else and authorizes
-            nothing.
+            The same device id, so your activity view can group requests by
+            machine. It identifies nothing else and authorizes nothing.
           </li>
           <li>
             Which app made the request, when Gate can tell from the request
@@ -1937,7 +1944,7 @@ export function CollectedDataLists({
         </ul>
       </Wrapper>
       {/* The fourth list, and the reason the three above could stay short.
-          Automatic collection is anonymous and carries no paths; a report the
+          Automatic collection carries no name, email or paths; a report the
           user sends from Settings carries both, because a support thread that
           cannot see the gateway address or find the account is a thread that
           cannot answer the question. Listing it here rather than only in the

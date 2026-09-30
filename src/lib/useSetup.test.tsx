@@ -17,7 +17,12 @@ vi.mock("./api", () => ({
   setDeviceName: vi.fn(),
   setOrg: vi.fn(),
 }));
-vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
+vi.mock("./analytics", () => ({
+  track: vi.fn(),
+  trackError: vi.fn(),
+  noteOrgChoices: vi.fn(),
+  noteToolConnected: vi.fn(),
+}));
 vi.mock("./oauthOffer", () => ({ markOAuthOfferSeen: vi.fn() }));
 
 import {

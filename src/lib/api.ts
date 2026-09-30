@@ -128,6 +128,11 @@ export interface Org {
 export interface OAuthStatus {
   signed_in: boolean;
   email: string | null;
+  /** The id token's Cognito `sub`, the id the dashboard's PostHog person is
+   *  keyed on. Read by the analytics seam only, to join this install to that
+   *  person at sign-in (AG-960); never shown. Optional because an older backend
+   *  does not send it. */
+  sub?: string | null;
   /** Access-token expiry as a Unix timestamp; 0 when signed out. */
   expires_at_unix: number;
 }
@@ -953,6 +958,17 @@ export const readAutoEnabledDomains = (tool: string) =>
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
 
+/** Claim a once-per-install analytics milestone. Resolves true exactly once per
+ *  install across every window and process (a marker file, `create_new`), false
+ *  after that; rejects when the store cannot answer. See `core::analytics`. */
+export const analyticsMilestoneClaim = (name: string) =>
+  invoke<boolean>("analytics_milestone_claim", { name });
+
+/** Which Claude Desktop setting keeps local Cowork off on this machine, or null.
+ *  `"user"`, `"org_cloud_only"` or `"enterprise"`; see
+ *  `core::analytics::cowork_setting_missing` for what each reads. */
+export const coworkSettingCheck = () => invoke<string | null>("cowork_setting_check");
+
 
 export const setSecurityNotificationSound = (enabled: boolean) =>
   invoke<void>("set_security_notification_sound", { enabled });
@@ -1105,6 +1121,9 @@ export const teardownReport = () => invoke<TeardownReport>("teardown_report");
 export interface BackendError {
   context: string;
   message: string;
+  /** The connection-failure reason the backend decided from the error's type,
+   *  when it had one (`analytics::failure_reason`). Absent otherwise. */
+  reason?: string;
 }
 
 /** Hand over (and clear) **the calling window's** buffered backend errors.

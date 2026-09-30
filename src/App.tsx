@@ -57,7 +57,13 @@ import { HermesProviderNotice } from "./components/HermesProviderNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
-import { track, trackError } from "./lib/analytics";
+import {
+  noteSession,
+  noteToolConnected,
+  noteTrafficObserved,
+  track,
+  trackError,
+} from "./lib/analytics";
 import {
   classifyError,
   ProviderDeclined,
@@ -192,6 +198,30 @@ export function App() {
   }
   const [account, setAccount] = useState<Account | null>(null);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+
+  // Who is signed in, for the install funnel (AG-960): identity and org group
+  // once paired. The popover has no org id for an API-key account (it never
+  // reads the activity overview that carries one), so that case stays
+  // ungrouped here; the window shell covers it.
+  useEffect(() => {
+    noteSession({
+      signedIn: isSignedIn(account, oauth),
+      authMode: account?.auth_mode ?? null,
+      sub: oauth?.sub ?? null,
+      orgId: account?.org_id ?? null,
+    });
+  }, [account, oauth]);
+
+  // Routed traffic left for the gateway: the first report is the funnel's
+  // `first_request_proxied`. The window shell listens for the same event.
+  useEffect(() => {
+    const unlisten = listen<(string | null)[]>("traffic-observed", (e) =>
+      noteTrafficObserved(e.payload),
+    );
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
   /** Whether the last sign-out was one the user asked for, rather than a session
    *  that died. Only meaningful on the sign-in screen, which is the one place
    *  that has to describe how the session ended. */
@@ -940,6 +970,7 @@ export function App() {
       try {
         setProxy(await proxySetDomain(slug, enabled));
         track("domain_toggled", { domain: slug, enabled });
+        if (enabled) noteToolConnected(slug, "domain");
       } catch (e) {
         trackError(e, "provider_toggle", { domain: slug, enabled });
         // Re-sync the switch to its true state after a failed toggle.
@@ -991,6 +1022,7 @@ export function App() {
           await disconnectTool(slug);
         }
         track("tool_toggled", { tool: slug, routed });
+        if (routed) noteToolConnected(slug, "config");
       } catch (e) {
         // Not a failure and not the caller's problem: the user answered Not now
         // or Cancel on our own screen, so this resolves quietly rather than
@@ -1089,8 +1121,10 @@ export function App() {
           if (member.kind === "config" && member.tool) {
             await (on ? connectTool(member.key) : disconnectTool(member.key));
             if (member.key === HERMES_SLUG) hermesConnected = on;
+            if (on) noteToolConnected(member.key, "config");
           } else if (member.domain) {
             await proxySetDomain(member.key, on);
+            if (on) noteToolConnected(member.key, "domain");
           }
         } catch (e) {
           failed.push(member.name);

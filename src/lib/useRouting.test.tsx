@@ -20,7 +20,12 @@ vi.mock("./api", () => ({
   recordAutoEnabledDomains: vi.fn(),
   readAutoEnabledDomains: vi.fn(),
 }));
-vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
+vi.mock("./analytics", () => ({
+  track: vi.fn(),
+  trackError: vi.fn(),
+  noteOrgChoices: vi.fn(),
+  noteToolConnected: vi.fn(),
+}));
 // The log lines are the only trace some of these paths leave, so a test has
 // to be able to see them. `describe` stays real.
 vi.mock("./log", async (importOriginal) => ({
@@ -45,6 +50,7 @@ import {
   hermesUpstreamCoverage,
 } from "./api";
 import { logInfo, logWarn } from "./log";
+import { noteToolConnected } from "./analytics";
 
 const tool = (slug: string, status: Status): Tool => ({
   slug,
@@ -1065,3 +1071,41 @@ const governing = (members: GroupMember[]): GroupMember[] => {
 };
 /** `intended`'s rule: asked for, or drifted while asked for. */
 const isIntended = (m: GroupMember): boolean => m.desired || m.attention === "drifted";
+
+describe("useRouting: the install funnel's tool_connected (AG-960)", () => {
+  it("reports a config tool connected only once the connect succeeded", async () => {
+    (connectTool as Mock).mockResolvedValue(undefined);
+    const { api } = harness([tool("codex", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+
+    expect(noteToolConnected).toHaveBeenCalledWith("codex", "config");
+  });
+
+  it("does not report a failed connect, or a disconnect", async () => {
+    (connectTool as Mock).mockRejectedValue("write failed");
+    (disconnectTool as Mock).mockResolvedValue(undefined);
+    const { api } = harness([tool("codex", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+    await act(async () => {
+      await api.current!.setAppRouted("codex", false);
+    });
+
+    expect(noteToolConnected).not.toHaveBeenCalled();
+  });
+
+  it("reports a routed domain as a domain", async () => {
+    const { api } = harness([], proxyState());
+
+    await act(async () => {
+      await api.current!.setDomainRouted("anthropic", true);
+    });
+
+    expect(noteToolConnected).toHaveBeenCalledWith("anthropic", "domain");
+  });
+});

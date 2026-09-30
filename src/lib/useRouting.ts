@@ -14,7 +14,7 @@ import {
   proxyTrustCa,
   proxyUntrustCa,
 } from "./api";
-import { track, trackError } from "./analytics";
+import { noteToolConnected, track, trackError } from "./analytics";
 import { describe, logInfo, logWarn } from "./log";
 import { TOOL_MANAGED_DOMAINS, cascadeTargets } from "./groups";
 import type { Group } from "./groups";
@@ -533,6 +533,7 @@ export function useRouting({
           await disableProviderDomains(providerDomains);
         }
         track("tool_toggled", { tool: slug, routed });
+        if (routed) noteToolConnected(slug, "config");
         changed = true;
         setWriteFailures((prev) => {
           if (!prev.has(slug)) return prev;
@@ -626,8 +627,10 @@ export function useRouting({
             if (member.kind === "config" && member.tool) {
               await (routed ? connectTool(member.key) : disconnectTool(member.key));
               if (member.key === HERMES_SLUG) hermesTouched = true;
+              if (routed) noteToolConnected(member.key, "config");
             } else if (member.domain) {
               await proxySetDomain(member.key, routed);
+              if (routed) noteToolConnected(member.key, "domain");
             }
             changed = true;
           } catch (e) {
@@ -693,6 +696,7 @@ export function useRouting({
         await proxySetDomain(slug, routed);
         changed = true;
         track("domain_toggled", { domain: slug, routed });
+        if (routed) noteToolConnected(slug, "domain");
       } catch (e) {
         if (e instanceof Declined) return false;
         trackError(e, "provider_toggle", { domain: slug, routed });

@@ -51,6 +51,11 @@ vi.mock("./api", () => ({
     share_diagnostics_recorded: true,
     device_name: null,
   })),
+  installId: vi.fn(async () => "install-1"),
+  // Every milestone already claimed, so the boot's `app_first_launched` does
+  // not land among the captures these tests count.
+  analyticsMilestoneClaim: vi.fn(async () => false),
+  coworkSettingCheck: vi.fn(async () => null),
 }));
 
 /** Every argument PostHog received, flattened to one string, so a test can

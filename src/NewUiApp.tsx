@@ -46,6 +46,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { isSignedIn } from "./lib/session";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -166,6 +167,10 @@ import {
 } from "./lib/diagnosticsUpload";
 import {
   analyticsId,
+  noteGatewayAttributed,
+  noteGatewayFailure,
+  noteSession,
+  noteTrafficObserved,
   setAnalyticsConsent,
   track,
   trackError,
@@ -514,6 +519,40 @@ export function NewUiApp() {
    *  so a later, different failure (a retry that failed again) raises it anew. */
   const [dismissedInstallsFailure, setDismissedInstallsFailure] =
     useState<ActivityFailure | null>(null);
+  /**
+   * The install funnel's view of this session (AG-960): who is signed in and
+   * for which org, so events carry the org group and a Constellation sign-in
+   * joins this install to the account's person.
+   *
+   * The org is the account's own for OAuth. An API-key account stores none -
+   * the org is whatever the gateway resolves the key to - so it is read off the
+   * Overview's reading, which is also the first moment the gateway has accepted
+   * the key: that is when an API-key install counts as paired.
+   */
+  const sessionOrgId =
+    account?.org_id ?? (account?.auth_mode === "api_key" ? (activity.view?.orgId ?? null) : null);
+  const signedInNow = isSignedIn(account, oauth);
+  const sessionSub = oauth?.sub ?? null;
+  const sessionAuthMode = account?.auth_mode ?? null;
+  useEffect(() => {
+    noteSession({
+      signedIn: signedInNow,
+      authMode: sessionAuthMode,
+      sub: sessionSub,
+      orgId: sessionOrgId,
+    });
+  }, [signedInNow, sessionAuthMode, sessionSub, sessionOrgId]);
+  // The gateway names this machine once a request from it has arrived: the
+  // `first_request_proxied` signal where the relay cannot report (Linux).
+  useEffect(() => {
+    if (installsResolved && currentInstallId !== null) noteGatewayAttributed();
+  }, [installsResolved, currentInstallId]);
+  // The gateway refused the credential or could not be reached: the connection
+  // step's `auth_rejected` and `offline`, from the typed code rather than prose.
+  const activityFailureCode = activity.failure?.code ?? null;
+  useEffect(() => {
+    if (activityFailureCode) noteGatewayFailure(activityFailureCode);
+  }, [activityFailureCode]);
   const toolActivity = useActivity(
     canRead && openTool !== null && machineKnown,
     currentInstallId,
@@ -641,6 +680,9 @@ export function NewUiApp() {
   // counts as hidden, and that terminal is where the traffic comes from.
   useEffect(() => {
     const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
+      // Whether or not anyone is looking: the first report is the funnel's
+      // `first_request_proxied` (AG-960), and a hidden window still counts it.
+      noteTrafficObserved(e.payload);
       if (document.hidden) {
         missedWhileHidden.current = [...(missedWhileHidden.current ?? []), ...e.payload];
         return;
@@ -999,6 +1041,17 @@ export function NewUiApp() {
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
+      // The per-launch counterpart of `app_first_launched`, and the popover's
+      // own launch event: this shell never sent it, so a launch of the default
+      // UI was invisible, and a funnel had no denominator for returning users.
+      // Only the props the first read already answered; the popover's
+      // provider and drift dimensions describe a surface this shell does not
+      // draw.
+      track("app_launched", {
+        has_account: acct !== null,
+        proxy_available: px !== null,
+        routing_on: px?.running ?? false,
+      });
     })();
   }, []);
 
@@ -2035,7 +2088,7 @@ export function NewUiApp() {
           // opt-out that only takes effect after a restart is not an opt-out, and
           // this happens before the write so a failed write cannot leave the
           // client sending after the user said no.
-          setAnalyticsConsent(next);
+          void setAnalyticsConsent(next, "settings");
           void setShareDiagnostics(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
@@ -2514,7 +2567,7 @@ export function NewUiApp() {
               // since the stage is derived from the stored flag.
               const share = prefs?.share_diagnostics ?? true;
               setDiagnosticsError(null);
-              setAnalyticsConsent(share);
+              void setAnalyticsConsent(share, "onboarding");
               void setShareDiagnostics(share)
                 .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
@@ -2524,7 +2577,7 @@ export function NewUiApp() {
               // off, not left unanswered, or the step would ask again next
               // launch and a skipped default-on would keep collecting.
               setDiagnosticsError(null);
-              setAnalyticsConsent(false);
+              void setAnalyticsConsent(false, "onboarding_skip");
               void setShareDiagnostics(false)
                 .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());

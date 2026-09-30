@@ -1,5 +1,10 @@
 import { drainBackendErrors } from "./api";
-import { backendErrorContext, classifyError, type ClassifiedError } from "./errors";
+import {
+  backendErrorContext,
+  classifyError,
+  knownConnectionFailureReason,
+  type ClassifiedError,
+} from "./errors";
 import { trackError } from "./analytics";
 
 /**
@@ -58,7 +63,11 @@ export async function forwardBackendErrors({
   let surfaced: ClassifiedError | null = null;
   for (const e of errs) {
     const context = backendErrorContext(e.context);
-    if (reportToAnalytics) trackError(e.message, context);
+    // The backend's typed reason, where it had the error value in hand, wins over
+    // reading one back out of the message.
+    if (reportToAnalytics) {
+      trackError(e.message, context, undefined, knownConnectionFailureReason(e.reason));
+    }
     if (!surfaced && ROUTING_DOWN_CONTEXTS.has(e.context)) {
       surfaced = classifyError(e.message, context);
     }

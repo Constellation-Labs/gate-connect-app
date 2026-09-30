@@ -520,6 +520,14 @@ export function installFakeTauri(state: BackendState): void {
     // applies when this command is unavailable.
     security_feed_history_ok: () => state.securityFeed.historyOk ?? true,
     security_feed_retry: () => null,
+    // The once-per-install marker, with the real store's one property: a name
+    // is won exactly once.
+    analytics_milestone_claim: ({ name }) => {
+      if (state.milestones.includes(name as string)) return false;
+      state.milestones.push(name as string);
+      return true;
+    },
+    cowork_setting_check: () => state.coworkSetting,
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;
       // Answering is what the real command records too, and it is what dismisses

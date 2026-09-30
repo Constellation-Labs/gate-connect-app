@@ -111,6 +111,9 @@ export interface ActivityView {
   /** The org the gateway resolved from the credential. The only way an API-key
    *  account learns its own org name: those accounts store no org locally. */
   orgName: string | null;
+  /** That org's id, for the same reason: an API-key account's analytics group
+   *  comes from here (AG-960), since the account file holds no org for it. */
+  orgId: string | null;
   stats: UsageStats;
   buckets: MessagesBucket[];
   policies: Policy[];
@@ -324,6 +327,7 @@ export function adapt(raw: RawOverview): ActivityView {
   const takenAt = clockTime(generatedAt);
   return {
     orgName: raw.org.name,
+    orgId: raw.org.orgId || null,
     stats: {
       // Null, not zero, for a counter the gateway declined: `UsageStats` says
       // why. A counter that answered `0` is a real reading and stays a zero.

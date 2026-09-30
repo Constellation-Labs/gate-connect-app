@@ -11,8 +11,9 @@ import type { Status, Tool, Verdict } from "./api";
 // The context exists to make a failure readable, and its constraint is that it
 // stays anonymous: the two fields AG-603 lists that would identify someone -
 // the installation NAME and the selected organization id - must never appear
-// here, or `analytics.ts`'s anonymous-only posture and the disclosure's "no
-// name, email, or account identifier" both become false.
+// here. The org id reaches PostHog only as the `organization` group once the
+// app is paired (AG-960), which the disclosure names; as a context field it
+// would ride every failure, paired or not, and the device name never leaves.
 
 vi.mock("./api", () => ({
   installId: vi.fn(async () => "gc_a1b2c3d4"),

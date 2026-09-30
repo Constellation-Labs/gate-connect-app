@@ -155,6 +155,8 @@ export interface AccountFixture {
 export interface OAuthFixture {
   signed_in: boolean;
   email: string | null;
+  /** The id token's Cognito `sub`, which the analytics seam identifies with. */
+  sub?: string | null;
   expires_at_unix: number;
 }
 
@@ -312,6 +314,12 @@ export interface BackendState {
   /** This install's stable id, as `install_id` reports it. A fixed string rather
    *  than a generated uuid so a spec can assert on what the row shows. */
   installId: string;
+  /** Analytics milestones already claimed, as the Rust marker store holds them
+   *  (`analytics_milestone_claim`). Starts empty: a fresh install. */
+  milestones: string[];
+  /** What `cowork_setting_check` answers: which Claude setting keeps local
+   *  Cowork off, or null. */
+  coworkSetting: string | null;
   /** The machine's hostname, which `device_name` falls back to when the user has
    *  not renamed anything - the resolution the real command does in Rust. */
   hostName: string;
@@ -565,6 +573,7 @@ export function defaultState(): BackendState {
     oauth: {
       signed_in: true,
       email: "dev@constellationnetwork.io",
+      sub: "0b8c1f2e-1111-4222-8333-944455556666",
       expires_at_unix: 4102444800,
     },
     orgs: [
@@ -657,6 +666,8 @@ export function defaultState(): BackendState {
       },
     },
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
+    milestones: [],
+    coworkSetting: null,
     hostName: "e2e-macbook",
     installations: { installations: [], current: null },
     failures: {},
