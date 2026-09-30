@@ -935,6 +935,29 @@ test.describe("new UI Gate models in the tool's config", () => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
+  test("the card leads with the model the tool's config starts on, and saves keep the stored order", async ({
+    boot,
+  }) => {
+    // The user picked the SECOND model of the set in Codex's own picker. The card
+    // shows that one first, but the stored order is the user's and every save
+    // keeps it: reordering would move the default model, rewrite the config and
+    // restart Codex's daemon with no choice made (review on #382).
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: { ...onGate, configuredModel: { codex: set[1] } },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await expect(app.page.getByText(set[1]).first()).toBeVisible();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "codex",
+      source: "tool",
+      modelIds: set,
+    });
+  });
+
   test("App default keeps the whole set, not only its first model", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },

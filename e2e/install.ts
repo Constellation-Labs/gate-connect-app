@@ -338,7 +338,9 @@ export function installFakeTauri(state: BackendState): void {
         const applied = choice?.source === "gate" && gateManaged(slug);
         configured[slug] = {
           state: applied ? "applied" : "not_applied",
-          model: applied ? (choice?.model_ids[0] ?? null) : null,
+          model: applied
+            ? (state.toolModels.configuredModel?.[slug] ?? choice?.model_ids[0] ?? null)
+            : null,
           left_gate_models: slug in left,
           left_to_model: slug in left ? left[slug] : null,
         };

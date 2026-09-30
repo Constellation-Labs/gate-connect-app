@@ -591,20 +591,26 @@ export function NewUiApp() {
    * shows the first and says how many more there are, which keeps the card the
    * height the Figma draws whether one model is enabled or six.
    */
-  const storedModelIds = openPref?.modelIds ?? [];
+  /**
+   * The stored set, in the user's order - what every save and the picker use.
+   * Reordering it would be a choice nobody made: saving it back moves the first
+   * model, rewrites the tool's config and restarts Codex's daemon (review on
+   * #382).
+   */
+  const openModelIds = openPref?.modelIds ?? [];
   /**
    * What the tool's own config says, when the backend reported it. The config
-   * is the source of truth for what the tool will run (R3), so the card leads
-   * with the model it actually starts on: a user who picked the second model of
-   * the set in the tool's own picker sees that one, not the first they chose.
+   * is the source of truth for what the tool will run (R3), so the CARD - and
+   * only the card - leads with the model it actually starts on: a user who
+   * picked the second model of the set in the tool's own picker sees that one.
    */
   const openConfigured = openTool ? toolModels.view?.configured.get(openTool) : undefined;
   const configuredModel =
     openConfigured?.state === "applied" ? openConfigured.model : null;
-  const openModelIds =
-    configuredModel && storedModelIds.includes(configuredModel)
-      ? [configuredModel, ...storedModelIds.filter((id) => id !== configuredModel)]
-      : storedModelIds;
+  const cardModelIds =
+    configuredModel && openModelIds.includes(configuredModel)
+      ? [configuredModel, ...openModelIds.filter((id) => id !== configuredModel)]
+      : openModelIds;
   /** The primary - what a single-model reading of the same state would show. */
   const openModelId = openModelIds[0] ?? null;
 
@@ -3132,11 +3138,11 @@ export function NewUiApp() {
                     // id. AG-592 is where a selected model gets looked up and
                     // told it is gone.
                     {
-                      vendor: openModelId.split("/")[0],
+                      vendor: cardModelIds[0].split("/")[0],
                       // The whole set: the card lists it rather than naming the
                       // first and counting the rest in a heading nobody can
-                      // expand.
-                      ids: openModelIds,
+                      // expand. Configured-first, for display only.
+                      ids: cardModelIds,
                     }
                   : null,
                 onChangeModel: () =>
