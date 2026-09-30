@@ -591,7 +591,20 @@ export function NewUiApp() {
    * shows the first and says how many more there are, which keeps the card the
    * height the Figma draws whether one model is enabled or six.
    */
-  const openModelIds = openPref?.modelIds ?? [];
+  const storedModelIds = openPref?.modelIds ?? [];
+  /**
+   * What the tool's own config says, when the backend reported it. The config
+   * is the source of truth for what the tool will run (R3), so the card leads
+   * with the model it actually starts on: a user who picked the second model of
+   * the set in the tool's own picker sees that one, not the first they chose.
+   */
+  const openConfigured = openTool ? toolModels.view?.configured.get(openTool) : undefined;
+  const configuredModel =
+    openConfigured?.state === "applied" ? openConfigured.model : null;
+  const openModelIds =
+    configuredModel && storedModelIds.includes(configuredModel)
+      ? [configuredModel, ...storedModelIds.filter((id) => id !== configuredModel)]
+      : storedModelIds;
   /** The primary - what a single-model reading of the same state would show. */
   const openModelId = openModelIds[0] ?? null;
 
@@ -3067,7 +3080,12 @@ export function NewUiApp() {
                 // AG-592. Null while anything it depends on is unread - an
                 // unchecked model is not a healthy one, and saying nothing is
                 // the honest state.
+                // A config that could not be read, or a tool that could not be
+                // put back on its own model, outranks every other warning: the
+                // stored choice and what the tool runs disagree, and the second
+                // case refuses every request.
                 modelAttention:
+                  openConfigured?.problem ??
                   modelAttention({
                     choice: openPref,
                     catalogue: gateModels.models,

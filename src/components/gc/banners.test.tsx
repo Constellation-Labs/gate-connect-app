@@ -87,7 +87,7 @@ describe("RoutingBanner's fraction", () => {
       <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
     );
     expect(screen.getByText("Gate is protecting you")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("2 of 8 apps")).toBeTruthy();
   });
 
   it("keeps counting intent while the state reports the failure", () => {
@@ -100,7 +100,7 @@ describe("RoutingBanner's fraction", () => {
     );
     expect(screen.getByText("Gate is partly routing your apps")).toBeTruthy();
     expect(screen.getByText("Partly routed")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("2 of 8 apps")).toBeTruthy();
   });
 
   it("prints 0 of M with nothing switched on, where it used to print nothing", () => {
@@ -110,7 +110,7 @@ describe("RoutingBanner's fraction", () => {
       <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
     );
     expect(screen.getByText("No apps are set to route")).toBeTruthy();
-    expect(screen.getByText("0 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("0 of 8 apps")).toBeTruthy();
   });
 
   it("says nothing about a ratio when the rail is empty", () => {

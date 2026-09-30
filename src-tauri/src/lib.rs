@@ -926,6 +926,9 @@ struct ConfiguredModelDto {
     left_gate_models: bool,
     /// With `left_gate_models`: the model the tool's config names now, if any.
     left_to_model: Option<String>,
+    /// Why the card cannot trust this reading: the config was unreadable, or
+    /// the tool could not be put back on its own model. Null when all is well.
+    problem: Option<String>,
 }
 
 impl From<gate_connect_core::tool_models::ToolModelView> for ConfiguredModelDto {
@@ -941,6 +944,7 @@ impl From<gate_connect_core::tool_models::ToolModelView> for ConfiguredModelDto 
             model,
             left_gate_models: v.left_gate_models.is_some(),
             left_to_model: v.left_gate_models.flatten(),
+            problem: v.problem,
         }
     }
 }
@@ -1043,7 +1047,8 @@ async fn set_tool_model(
             let mut open_sessions = 0u32;
             for_each_agent_process(&["codex"], |_| open_sessions += 1);
             if open_sessions == 0 {
-                if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon() {
+                if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon()
+                {
                     eprintln!("[gate] set model: could not restart the Codex app server: {e:#}");
                 }
             }
@@ -6745,8 +6750,19 @@ mod tests {
         );
         // Both of the daemon's processes, as `ps` shows them on macOS.
         for args in [
-            cmd(&[daemon_exe.to_str().unwrap(), "app-server", "daemon", "pid-update-loop"]),
-            cmd(&[daemon_exe.to_str().unwrap(), "app-server", "--listen", "unix://", "--managed-daemon"]),
+            cmd(&[
+                daemon_exe.to_str().unwrap(),
+                "app-server",
+                "daemon",
+                "pid-update-loop",
+            ]),
+            cmd(&[
+                daemon_exe.to_str().unwrap(),
+                "app-server",
+                "--listen",
+                "unix://",
+                "--managed-daemon",
+            ]),
         ] {
             assert!(
                 !walk_yields("codex", Some(daemon_exe), &args, &["codex"]),
@@ -6754,7 +6770,12 @@ mod tests {
             );
         }
         // A real session still counts, including one whose prompt says app-server.
-        assert!(walk_yields("codex", Some(daemon_exe), &cmd(&["codex"]), &["codex"]));
+        assert!(walk_yields(
+            "codex",
+            Some(daemon_exe),
+            &cmd(&["codex"]),
+            &["codex"]
+        ));
         assert!(walk_yields(
             "codex",
             Some(daemon_exe),

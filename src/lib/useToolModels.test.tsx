@@ -260,4 +260,32 @@ describe("useToolModels", () => {
     expect(h.latest().leftGateModels.has("codex")).toBe(false);
     expect(h.latest().leftGateModels.has("hermes")).toBe(true);
   });
+
+  it("keeps a drift report from a read that a newer one overtook", async () => {
+    // Two reads in flight - a quick double focus. The FIRST carries the one
+    // report of Codex leaving Gate models; the second, which resolves first
+    // and wins the view, does not (review on #382).
+    let resolveFirst: (v: unknown) => void = () => undefined;
+    readCall
+      .mockResolvedValueOnce(payload("gate", ["openai/gpt-5"], 1))
+      .mockImplementationOnce(() => new Promise((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce(payload("tool", ["openai/gpt-5"], 1));
+    const h = harness();
+    await flush();
+
+    act(() => {
+      h.latest().reload();
+      h.latest().reload();
+    });
+    await flush();
+    expect(h.latest().view?.byTool.get("codex")?.source).toBe("tool");
+
+    await act(async () => {
+      resolveFirst(payload("tool", ["openai/gpt-5"], 1, leftTo("gpt-6-sol")));
+    });
+    expect(h.latest().leftGateModels.get("codex")).toBe("gpt-6-sol");
+    // And the stale view did not replace the newer one.
+    expect(h.latest().view?.configured.get("codex")).toBeUndefined();
+  });
 });
+

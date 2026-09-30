@@ -55,10 +55,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  * gets the card. OpenCode, OpenClaw, the environment channel and the chat
  * domains have no config Gate writes a model into, so they do not.
  *
- * Codex and Hermes are the two the backend writes today
- * (`Integration::supports_gate_models`). Claude Code keeps the card it has
- * always had; a save for it is stored and `set_tool_model` answers `false`,
- * so nothing on disk moves until its integration supports the write.
+ * All three are written by the backend (`Integration::supports_gate_models`):
+ * Codex's `config.toml` and model catalog, Hermes' `config.yaml`, Claude
+ * Code's `settings.json`.
  */
 export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set(["codex", "hermes", "claude-code"]);
 
@@ -108,6 +107,13 @@ export interface ConfiguredModel {
   leftGateModels: boolean;
   /** With `leftGateModels`: the model its config names now, if any. */
   leftToModel: string | null;
+  /**
+   * Why this reading cannot be trusted, in words the card shows: the config
+   * could not be read, or the tool could not be put back on its own model after
+   * it drifted - which leaves it pointed at the Gate models route with every
+   * request refused. Null when all is well.
+   */
+  problem: string | null;
 }
 
 /**
@@ -128,6 +134,7 @@ function adaptConfigured(raw: RawConfiguredModel | undefined): ConfiguredModel |
     model: str(raw.model),
     leftGateModels,
     leftToModel: leftGateModels ? str(raw.left_to_model) : null,
+    problem: str(raw.problem),
   };
 }
 
@@ -373,11 +380,13 @@ export function useToolModels(
     setLoading(true);
     toolModelPreferences()
       .then((payload) => {
-        if (mine !== attempt.current) return;
         const next = adaptPreferences(payload);
-        setView(next);
-        setFailure(null);
-        // Added to, never replaced: the report arrives on one read only.
+        // Merged from EVERY response, before the staleness guard below. The
+        // backend reports a tool leaving Gate models once, on the read that
+        // folded it, and a newer read in flight (a quick double focus, the
+        // reload inside `save`) would otherwise drop that one report with the
+        // stale view: the card flips to App default and never says why. Added
+        // to, never replaced.
         const left = [...next.configured].filter(([, c]) => c.leftGateModels);
         if (left.length > 0) {
           setLeftGateModels((held) => {
@@ -386,6 +395,9 @@ export function useToolModels(
             return merged;
           });
         }
+        if (mine !== attempt.current) return;
+        setView(next);
+        setFailure(null);
       })
       .catch((e) => {
         if (mine !== attempt.current) return;

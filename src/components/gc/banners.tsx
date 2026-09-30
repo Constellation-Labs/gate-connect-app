@@ -154,13 +154,15 @@ export function RoutingBanner({
           * Changed on request 2026-09-23, so it deviates from the frame and is
           * owed to design, along with the fact that it does not match the
           * rail's group counters on the numerator. `routingState` carries both.
-          * "on" is load-bearing in the words: without it "2 of 8 Apps" beside a
-          * "Routed" pill reads as two routed out of eight. */}
+          * The trailing "on" went on 2026-09-30, from staging QA ("2 of 4 apps"
+          * only), which is also the frame's own wording. It had been kept so the
+          * ratio could not read as routed-of-available beside a "Routed" pill;
+          * that risk is accepted with it. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>
             <span className="text-base-muted-foreground">
-              {totalCount} of {availableCount} Apps on
+              {totalCount} of {availableCount} apps
             </span>
           </>
         )}

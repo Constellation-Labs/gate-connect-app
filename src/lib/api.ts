@@ -275,6 +275,9 @@ export interface ConfiguredModel {
   left_gate_models: boolean;
   /** With `left_gate_models`: the model the tool's config names now, if any. */
   left_to_model: string | null;
+  /** Why this reading cannot be trusted: the config was unreadable, or the
+   *  tool could not be put back on its own model. Null when all is well. */
+  problem?: string | null;
 }
 
 export interface ToolModels {

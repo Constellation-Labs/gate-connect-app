@@ -108,6 +108,7 @@ describe("adaptPreferences: what each tool's config says", () => {
       model: "openai/gpt-5",
       leftGateModels: false,
       leftToModel: null,
+      problem: null,
     });
   });
 
@@ -433,3 +434,25 @@ describe("stepForChoice", () => {
     expect(stepForChoice("app", [])).toEqual({ kind: "remember", modelIds: [] });
   });
 });
+
+describe("configured problems", () => {
+  it("carries a problem the card must show, and nothing when there is none", () => {
+    const view = adaptPreferences({
+      tools: {},
+      paid_ack_unix: null,
+      configured: {
+        codex: {
+          state: "drifted",
+          model: null,
+          left_gate_models: false,
+          left_to_model: null,
+          problem: "Codex could not be put back on its own model: disk full",
+        },
+        hermes: { state: "applied", model: "a/b", left_gate_models: false, left_to_model: null },
+      },
+    });
+    expect(view.configured.get("codex")?.problem).toMatch(/could not be put back/);
+    expect(view.configured.get("hermes")?.problem).toBeNull();
+  });
+});
+

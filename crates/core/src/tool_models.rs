@@ -52,6 +52,11 @@ pub struct ToolModelView {
     /// Set when this read found the tool moved off Gate models from inside it,
     /// and put it back on its own model. The model it names now, if any.
     pub left_gate_models: Option<Option<String>>,
+    /// Set when the tool's config could not be read, or the tool could not be
+    /// put back on its own model after it drifted. Either way the card must
+    /// say so: a stored App default over a config still on the Gate models
+    /// route means every request is refused (review on #382).
+    pub problem: Option<String>,
 }
 
 /// Store one tool's model choice and write it into the tool's config.
@@ -115,13 +120,21 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
         if !integ.supports_gate_models() {
             continue;
         }
-        let state = integ
-            .gate_model_state()
-            .unwrap_or(GateModelState::NotApplied);
+        let (state, problem) = match integ.gate_model_state() {
+            Ok(state) => (state, None),
+            Err(e) => (
+                GateModelState::NotApplied,
+                Some(format!(
+                    "{}'s config could not be read: {e:#}",
+                    integ.display_name()
+                )),
+            ),
+        };
         let mut view = ToolModelView {
             supported: true,
             state: state.clone(),
             left_gate_models: None,
+            problem,
         };
         if let GateModelState::Drifted { model } = state {
             match leave_gate_models(tool) {
@@ -131,10 +144,17 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
                         .unwrap_or(GateModelState::NotApplied);
                     view.left_gate_models = Some(model);
                 }
-                Err(e) => crate::logging::failure(&format!(
-                    "putting {} back on its own model failed: {e:#}",
-                    integ.display_name()
-                )),
+                Err(e) => {
+                    crate::logging::failure(&format!(
+                        "putting {} back on its own model failed: {e:#}",
+                        integ.display_name()
+                    ));
+                    view.problem = Some(format!(
+                        "{} was moved off its Gate models, and Gate Connect could not put it \
+                         back on its own model: {e:#}",
+                        integ.display_name()
+                    ));
+                }
             }
         }
         out.insert(tool.slug(), view);
