@@ -484,3 +484,38 @@ fn a_reconnect_keeps_codex_on_gate_models() {
     );
     assert_eq!(preferences::load().tool_models["codex"].source, ModelSource::Gate);
 }
+
+/// The user moved Codex off its Gate models in Codex, and nothing has read the
+/// config since. Choosing Gate models again in Gate Connect must apply them,
+/// not be folded back to App default by the old record (review on #382).
+#[test]
+fn an_explicit_choice_is_not_undone_by_unread_drift() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, stub) = setup();
+    let codex = find(ToolId::Codex).unwrap();
+    choose_gate(&[LUNA]);
+    codex.connect(&input(&stub)).unwrap();
+    let edited = config().replace(&format!("model = \"{LUNA}\""), "model = \"gpt-6-sol\"");
+    fs::write(env::codex_config_toml_path().unwrap(), edited).unwrap();
+
+    let applied = tool_models::choose(
+        ToolId::Codex,
+        ModelSource::Gate,
+        vec![OPUS.to_string(), LUNA.to_string()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    assert!(applied);
+    assert_eq!(preferences::load().tool_models["codex"].source, ModelSource::Gate);
+    assert_eq!(
+        codex.gate_model_state().unwrap(),
+        GateModelState::Applied { model: OPUS.into() },
+        "{}",
+        config()
+    );
+    // And the snapshot is the user's own model from before that choice.
+    let d = doc();
+    assert_eq!(d["_gate_connect"]["previous_model"].as_str(), Some("gpt-6-sol"));
+}
+

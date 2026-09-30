@@ -27,6 +27,20 @@ use std::collections::BTreeMap;
 use crate::preferences::{self, GateModelMeta, ModelSource};
 use crate::registry::{self, GateModelState, ToolId};
 
+/// Serialises [`choose`] and [`states`] with each other.
+///
+/// Both read a tool's config, decide, and write the stored choice and the
+/// config back, and the window runs them in separate blocking tasks: a focus
+/// re-read folding drift while a save is in flight must not interleave with
+/// it. Taken before the master-flow lock (`provider::reapply_tool_config`,
+/// `provider::leave_gate_models`), never after, and nothing under that lock
+/// calls back in here.
+static FLOW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn flow_guard() -> std::sync::MutexGuard<'static, ()> {
+    FLOW_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// What one tool's Gate model card should show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolModelView {
@@ -55,8 +69,21 @@ pub fn choose(
     acknowledge_paid_use: bool,
     meta: Vec<(String, GateModelMeta)>,
 ) -> Result<bool> {
+    let _guard = flow_guard();
+    let integ = registry::find(tool);
+    let supported = integ.as_ref().is_some_and(|i| i.supports_gate_models());
+    // Settle drift left by the PREVIOUS choice before storing this one. A config
+    // the user moved off Gate models that no read has folded yet (CLI use, a
+    // window that never lost focus, a fix-up that failed) would otherwise be
+    // folded by the `connect` below, against the new choice: `connect` sees the
+    // old record drifted and falls back to App default, undoing what the user
+    // just picked while this call reported success (review on #382).
+    if let Some(integ) = integ.as_ref().filter(|_| supported) {
+        if matches!(integ.gate_model_state(), Ok(GateModelState::Drifted { .. })) {
+            leave_gate_models(tool)?;
+        }
+    }
     preferences::set_tool_model(tool.slug(), source, model_ids, acknowledge_paid_use, meta)?;
-    let supported = registry::find(tool).is_some_and(|i| i.supports_gate_models());
     if !supported {
         return Ok(false);
     }
@@ -81,6 +108,7 @@ pub fn choose(
 /// the pane opening, the window regaining focus. See the module doc for why it
 /// is stored and not only shown.
 pub fn states() -> BTreeMap<&'static str, ToolModelView> {
+    let _guard = flow_guard();
     let mut out = BTreeMap::new();
     for integ in registry::registry() {
         let tool = integ.id();
