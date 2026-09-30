@@ -261,6 +261,22 @@ export interface ToolModelChoice {
   model_ids: string[];
 }
 
+/** What one tool's own config says about Gate models. The config, not the
+ *  stored choice, is what the tool will actually run. */
+export interface ConfiguredModel {
+  /** `"drifted"` means the config left the Gate models Gate wrote and putting
+   *  the tool back on its own model failed; a drift that was put right reads as
+   *  `"not_applied"` with `left_gate_models` set. */
+  state: "applied" | "not_applied" | "drifted";
+  /** The model the config starts the tool on, when it is on Gate models. */
+  model: string | null;
+  /** This read found the tool moved off Gate models from inside itself, and put
+   *  it back on its own model. Reported once, on the read that found it. */
+  left_gate_models: boolean;
+  /** With `left_gate_models`: the model the tool's config names now, if any. */
+  left_to_model: string | null;
+}
+
 export interface ToolModels {
   /** Keyed by tool slug. A tool with no entry is on its own default; an absent
    *  key is the answer, not a gap. */
@@ -268,6 +284,9 @@ export interface ToolModels {
   /** Unix seconds when this install first accepted paid Gate model use, or null
    *  if it never has. */
   paid_ack_unix: number | null;
+  /** Keyed by tool slug, for the tools whose config can hold Gate models.
+   *  Optional on the type because an older binary does not send it. */
+  configured?: Record<string, ConfiguredModel>;
 }
 
 /** This install's per-tool model choices (AG-588).
@@ -286,13 +305,18 @@ export const toolModelPreferences = () => invoke<ToolModels>("tool_model_prefere
  *
  * `acknowledgePaidUse` is honoured only when moving to `"gate"` - remembering a
  * model under the tool's own default spends nothing, so it must not record
- * consent to spend. */
+ * consent to spend.
+ *
+ * Resolves `true` when the choice was written into the tool's own config, which
+ * the tool reads on its next session - the cue to offer the restart notice.
+ * `false` is not a failure: Gate does not manage that tool's config right now,
+ * so the choice is stored and applied on its next connect. */
 export const setToolModel = (
   tool: string,
   source: "tool" | "gate",
   modelIds: string[],
   acknowledgePaidUse = false,
-) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
+) => invoke<boolean>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
 
 /** This organization's Gate credit balance and plan, as raw JSON text
  * (AG-588/590/592).

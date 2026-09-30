@@ -77,6 +77,9 @@ const NEEDS: Record<string, ToolNeeds> = {
   codex: { tools: true, freeformTools: true },
   // Claude Code sends ordinary tool definitions.
   "claude-code": { tools: true, freeformTools: false },
+  // Hermes is an agent and sends ordinary tool definitions on its turns, so a
+  // model with no tool use cannot drive it.
+  hermes: { tools: true, freeformTools: false },
 };
 
 export function needsOf(slug: string | null | undefined): ToolNeeds {

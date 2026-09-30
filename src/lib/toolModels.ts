@@ -4,6 +4,7 @@ import {
   gateModelCatalogue,
   setToolModel,
   toolModelPreferences,
+  type ConfiguredModel as RawConfiguredModel,
   type ToolModels,
 } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
@@ -31,9 +32,35 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  * live is the conflation CLAUDE.md's principle 2 forbids, so {@link ToolModelChoice}
  * keeps the two apart rather than collapsing them into one "current model".
  *
+ * **3. The tool's own config is the source of truth.** A Gate model choice is
+ * written into the tool's config (Codex's `config.toml`, Hermes's
+ * `config.yaml`), and the user can change the model from inside the tool. The
+ * backend reads every config on `tool_model_preferences`, puts a tool that has
+ * moved off its Gate models back on App default, and says so once through
+ * `configured[slug].left_gate_models`. That report is held here until it is
+ * dismissed or the next save for that tool, because the read that carries it
+ * may be followed by another before anyone looks.
+ *
  * The catalogue behind the picker is still a network read - see
  * {@link useGateModels} - because only the gateway knows what it can serve.
  */
+
+/**
+ * The tools whose pane draws the Gate model card.
+ *
+ * An explicit list rather than the rail's `coversAllProviders`, which answers a
+ * different question - whether a row has one upstream host to name. Hermes
+ * talks to several providers and so is multi-provider on the rail, yet its
+ * `config.yaml` holds a provider entry Gate can write the chosen set into, so it
+ * gets the card. OpenCode, OpenClaw, the environment channel and the chat
+ * domains have no config Gate writes a model into, so they do not.
+ *
+ * Codex and Hermes are the two the backend writes today
+ * (`Integration::supports_gate_models`). Claude Code keeps the card it has
+ * always had; a save for it is stored and `set_tool_model` answers `false`,
+ * so nothing on disk moves until its integration supports the write.
+ */
+export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set(["codex", "hermes", "claude-code"]);
 
 /** What Gate serves for one platform. Mirrors the gateway's `source`. */
 export type ModelSource = "tool" | "gate";
@@ -63,6 +90,45 @@ export interface ToolModelsView {
    * choice exists.
    */
   paidAckUnix: number | null;
+  /**
+   * What each supporting tool's own config says, keyed by slug. Only tools
+   * whose config can hold Gate models appear; an absent key is "not reported",
+   * which a binary that predates the field also yields.
+   */
+  configured: Map<string, ConfiguredModel>;
+}
+
+/** One tool's config, as {@link ToolModelsView.configured} holds it. */
+export interface ConfiguredModel {
+  state: "applied" | "not_applied" | "drifted";
+  /** The model the config starts the tool on, when it is on Gate models. */
+  model: string | null;
+  /** The tool was moved off Gate models from inside itself, found on this
+   *  read. */
+  leftGateModels: boolean;
+  /** With `leftGateModels`: the model its config names now, if any. */
+  leftToModel: string | null;
+}
+
+/**
+ * Read one `configured` entry, or null when it cannot be read.
+ *
+ * An unrecognised `state` drops the entry, for the reason `source` is dropped
+ * below: guessing "applied" would claim the config holds a Gate model it may
+ * not, and guessing "not_applied" would hide a paid one.
+ */
+function adaptConfigured(raw: RawConfiguredModel | undefined): ConfiguredModel | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const { state } = raw;
+  if (state !== "applied" && state !== "not_applied" && state !== "drifted") return null;
+  const str = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
+  const leftGateModels = raw.left_gate_models === true;
+  return {
+    state,
+    model: str(raw.model),
+    leftGateModels,
+    leftToModel: leftGateModels ? str(raw.left_to_model) : null,
+  };
 }
 
 /**
@@ -88,10 +154,63 @@ export function adaptPreferences(raw: ToolModels): ToolModelsView {
         : [],
     });
   }
+  const configured = new Map<string, ConfiguredModel>();
+  const rawConfigured = raw?.configured;
+  if (typeof rawConfigured === "object" && rawConfigured !== null && !Array.isArray(rawConfigured)) {
+    for (const [slug, entry] of Object.entries(rawConfigured)) {
+      const view = adaptConfigured(entry);
+      if (view) configured.set(slug, view);
+    }
+  }
   return {
     byTool,
     paidAckUnix: typeof raw?.paid_ack_unix === "number" ? raw.paid_ack_unix : null,
+    configured,
   };
+}
+
+/**
+ * The sentence for a tool the backend found moved off Gate models from inside
+ * itself (R3). Says who did it, where, and what the card shows as a result, so
+ * the radio having moved to App default is not a mystery.
+ *
+ * `toModel` is the model the tool's config names now; null when it names none,
+ * which the sentence covers without inventing one.
+ */
+export function leftGateModelsNotice(appName: string, toModel: string | null): string {
+  return `You switched ${appName} to ${toModel ?? "another model"} in ${appName}, so it is back on App default.`;
+}
+
+/** What a click on one of the card's two radios should do. */
+export type ModelChoiceStep =
+  /** Hand the app to Gate for this set, confirming billing first if needed. */
+  | { kind: "activate"; modelIds: string[] }
+  /** Gate model with nothing enabled yet: the picker comes first. */
+  | { kind: "pick" }
+  /** App default, remembering this set for the Gate radio to name. */
+  | { kind: "remember"; modelIds: string[] };
+
+/**
+ * The step behind a radio click, given the app's remembered set.
+ *
+ * App default keeps the WHOLE set. It kept only the first until AG-590's sets
+ * made that a loss: a round trip through App default dropped every model after
+ * the first, and the Gate radio then named one where the user had enabled six.
+ */
+export function stepForChoice(choice: "app" | "gate", modelIds: string[]): ModelChoiceStep {
+  if (choice === "app") return { kind: "remember", modelIds: [...modelIds] };
+  // Gate cannot serve a model nobody enabled.
+  return modelIds.length > 0 ? { kind: "activate", modelIds: [...modelIds] } : { kind: "pick" };
+}
+
+/** The outcome of one {@link useToolModels} save. */
+export interface ToolModelSave {
+  /** Null when the choice was stored. */
+  failure: ActivityFailure | null;
+  /** The tool's own config was rewritten, so a running copy needs a restart to
+   *  pick it up. False on a failure, and when Gate does not manage the tool's
+   *  config right now (the choice is stored and applied on its next connect). */
+  applied: boolean;
 }
 
 /** One model the gateway offers. */
@@ -209,7 +328,19 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
  * different org is a moment when the pane rebuilds anyway, and re-reading a
  * cheap local file then costs nothing and keeps one fewer special case.
  *
- * `save` resolves to the failure rather than throwing, so the caller can branch.
+ * `save` resolves to the failure rather than throwing, so the caller can branch,
+ * and says whether the tool's config was rewritten, so the caller can offer the
+ * restart notice.
+ *
+ * `leftGateModels` holds each tool the backend reported as moved off Gate
+ * models from inside itself, with the model it moved to (null when its config
+ * names none). The backend says it once, so it is kept here until
+ * `dismissLeft` or the next save for that tool - a focus re-read a second later
+ * would otherwise wipe the only account of why the card changed.
+ *
+ * Re-read when the window regains focus, as `useCredits` does and for the same
+ * kind of reason: the user changes the model inside the tool, in another
+ * window, and the pane has to show what the tool's config says on the way back.
  */
 export function useToolModels(
   enabled: boolean,
@@ -224,11 +355,16 @@ export function useToolModels(
     source: ModelSource,
     modelIds: string[],
     acknowledgePaidUse?: boolean,
-  ) => Promise<ActivityFailure | null>;
+  ) => Promise<ToolModelSave>;
+  leftGateModels: ReadonlyMap<string, string | null>;
+  dismissLeft: (tool: string) => void;
 } {
   const [view, setView] = useState<ToolModelsView | null>(null);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
   const [loading, setLoading] = useState(false);
+  const [leftGateModels, setLeftGateModels] = useState<ReadonlyMap<string, string | null>>(
+    () => new Map(),
+  );
   const attempt = useRef(0);
 
   const reload = useCallback(() => {
@@ -238,8 +374,18 @@ export function useToolModels(
     toolModelPreferences()
       .then((payload) => {
         if (mine !== attempt.current) return;
-        setView(adaptPreferences(payload));
+        const next = adaptPreferences(payload);
+        setView(next);
         setFailure(null);
+        // Added to, never replaced: the report arrives on one read only.
+        const left = [...next.configured].filter(([, c]) => c.leftGateModels);
+        if (left.length > 0) {
+          setLeftGateModels((held) => {
+            const merged = new Map(held);
+            for (const [slug, c] of left) merged.set(slug, c.leftToModel);
+            return merged;
+          });
+        }
       })
       .catch((e) => {
         if (mine !== attempt.current) return;
@@ -258,28 +404,73 @@ export function useToolModels(
   useEffect(() => {
     setView(null);
     setFailure(null);
+    setLeftGateModels(new Map());
   }, [credential]);
 
   useEffect(reload, [reload]);
 
+  useEffect(() => {
+    if (!enabled) return;
+    // Window focus, with the blur latch, exactly as `useCredits` does it: the
+    // case is alt-tabbing to the tool, changing its model there, and coming
+    // back, which never hides the document.
+    let blurred = false;
+    let cancelled = false;
+    const pending = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      if (blurred) {
+        blurred = false;
+        reload();
+      }
+    });
+    return () => {
+      cancelled = true;
+      void pending.then((unlisten) => {
+        if (cancelled) unlisten();
+      });
+    };
+  }, [enabled, reload]);
+
+  const dismissLeft = useCallback((tool: string) => {
+    setLeftGateModels((held) => {
+      if (!held.has(tool)) return held;
+      const next = new Map(held);
+      next.delete(tool);
+      return next;
+    });
+  }, []);
+
   const save = useCallback(
-    async (tool: string, source: ModelSource, modelIds: string[], acknowledgePaidUse = false) => {
+    async (
+      tool: string,
+      source: ModelSource,
+      modelIds: string[],
+      acknowledgePaidUse = false,
+    ): Promise<ToolModelSave> => {
       try {
-        await setToolModel(tool, source, modelIds, acknowledgePaidUse);
+        const applied = await setToolModel(tool, source, modelIds, acknowledgePaidUse);
+        // A new choice supersedes the report of the old one leaving.
+        dismissLeft(tool);
         // Re-read rather than patching the local map. The write can change
         // something it was not asked to - the acknowledgement stamp - and the
         // file is shared with the CLI, so what landed is worth reading back
         // rather than assumed.
         reload();
-        return null;
+        // Strictly `true`: an older binary resolved nothing, and offering to
+        // close a running app on a guess is the thing `offerAfterChange` is
+        // careful never to do.
+        return { failure: null, applied: applied === true };
       } catch (e) {
-        return toFailure(e);
+        return { failure: toFailure(e), applied: false };
       }
     },
-    [reload],
+    [reload, dismissLeft],
   );
 
-  return { view, failure, loading, reload, save };
+  return { view, failure, loading, reload, save, leftGateModels, dismissLeft };
 }
 
 /**

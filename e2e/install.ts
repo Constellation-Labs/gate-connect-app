@@ -96,7 +96,8 @@ export function installFakeTauri(state: BackendState): void {
 
   /** Rust's `AGENT_PROCESSES`: tool slug to the process name it runs under.
 
-      The last two are the desktop apps, and their slugs are proxy-domain keys
+      The last two are the desktop apps (Hermes, a Python program, is found by
+      its script in Rust; here it is a name like the others), and their slugs are proxy-domain keys
       rather than registry tool ids - Gate routes them through the system proxy
       instead of rewriting a config. They were missing here, which is why no
       spec could reach AG-900: the harness could not model a Claude desktop app
@@ -109,6 +110,7 @@ export function installFakeTauri(state: BackendState): void {
     ["claude-code", "claude"],
     ["codex", "codex"],
     ["opencode", "opencode"],
+    ["hermes", "hermes"],
     ["anthropic", "Claude"],
     ["chatgpt", "ChatGPT"],
   ];
@@ -118,6 +120,18 @@ export function installFakeTauri(state: BackendState): void {
   function agentNamesFor(only: string[] | null | undefined): string[] {
     return AGENT_PROCESSES.filter(([slug]) => only == null || only.includes(slug)).map(
       ([, name]) => name,
+    );
+  }
+
+  /** Rust's `Integration::supports_gate_models`: the tools whose own config
+      Gate writes a model set into. */
+  const GATE_MODEL_SLUGS = ["codex", "hermes", "claude-code"];
+
+  /** Whether a model write would rewrite this tool's config right now. */
+  function gateManaged(slug: string): boolean {
+    return (
+      GATE_MODEL_SLUGS.includes(slug) &&
+      state.tools.find((t) => t.slug === slug)?.status.kind === "connected"
     );
   }
 
@@ -307,10 +321,34 @@ export function installFakeTauri(state: BackendState): void {
     // not gateway calls. The fake enforces the one rule the real setter has -
     // consent is recorded only when moving to `gate` - because a mock that
     // accepted everything would let the confirmation flow rot unnoticed.
-    tool_model_preferences: () => ({
-      tools: state.toolModels.choices,
-      paid_ack_unix: state.toolModels.paidAckUnix,
-    }),
+    //
+    // `configured` mirrors `tool_models::states`: only the tools whose config
+    // can hold Gate models, applied when the choice is Gate and the tool is
+    // connected, and a one-shot `left_gate_models` for a tool the spec moved
+    // off Gate models "from inside" it - stored back as App default here, as
+    // the real read does.
+    tool_model_preferences: () => {
+      const left = state.toolModels.left ?? {};
+      state.toolModels.left = {};
+      const configured: Record<string, unknown> = {};
+      for (const slug of GATE_MODEL_SLUGS) {
+        if (!state.tools.some((t) => t.slug === slug)) continue;
+        const choice = state.toolModels.choices[slug];
+        if (slug in left && choice) choice.source = "tool";
+        const applied = choice?.source === "gate" && gateManaged(slug);
+        configured[slug] = {
+          state: applied ? "applied" : "not_applied",
+          model: applied ? (choice?.model_ids[0] ?? null) : null,
+          left_gate_models: slug in left,
+          left_to_model: slug in left ? left[slug] : null,
+        };
+      }
+      return {
+        tools: state.toolModels.choices,
+        paid_ack_unix: state.toolModels.paidAckUnix,
+        configured,
+      };
+    },
     set_tool_model: ({ tool, source, modelIds, acknowledgePaidUse }) => {
       const slug = String(tool);
       if (!state.tools.some((t) => t.slug === slug)) throw `unknown tool slug "${slug}"`;
@@ -322,7 +360,10 @@ export function installFakeTauri(state: BackendState): void {
         source,
         model_ids: (modelIds as string[]) ?? [],
       };
-      return null;
+      // Rust's `tool_models::choose`: `true` only when the tool's config was
+      // rewritten, which needs a tool whose integration writes Gate models and
+      // that Gate currently manages.
+      return gateManaged(slug);
     },
     gate_credits: () =>
       JSON.stringify({

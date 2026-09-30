@@ -489,7 +489,7 @@ export function ApplyChangesDialog({
       tone="warning"
       icon="triangleAlert"
       title="Apply changes to running apps?"
-      subtitle="Your configuration is saved. One final step makes the new route active"
+      subtitle="Your configuration is saved. One final step makes the change active"
       // `destructive` on the SECONDARY changes nothing about how it looks -
       // it moves initial focus onto the primary, which is the safe choice
       // here. Without it the trap fell to the first focusable and that is
@@ -599,7 +599,7 @@ export function CloseAppsDialog({
             <>
               You reopen {joinNames(yours.map((t) => t.name))} yourself
               {mine.length > 0 ? "" : ` - Gate Connect cannot start ${label} for you`}
-              . The new Gate route is active on launch.
+              . The change takes effect on launch.
             </>
           )}
         </p>
@@ -621,9 +621,11 @@ export function CloseAppsDialog({
  * and the user still has an app to open, and the drawn instruction asked for a
  * step they had already finished.
  *
- * "the new route" rather than "the new Gate route": `not_routed` lands in the
+ * "the change" rather than "the new Gate route": `not_routed` lands in the
  * same bucket, and that is the verdict when the change being applied was
- * routing *off*. Naming Gate there would claim a path the tool is not on.
+ * routing *off*. Naming Gate there would claim a path the tool is not on. And
+ * not "the new route" either, since a Gate model write stamps `config_changes`
+ * and raises this flow too, where what changed is the tool's model.
  */
 export function ChangeReadyDialog({
   app,
@@ -641,14 +643,14 @@ export function ChangeReadyDialog({
       tone="success"
       icon="circleCheck"
       title="Change is ready"
-      subtitle={`${app.name} ${plural ? "are" : "is"} back on the new route`}
+      subtitle={`${app.name} ${plural ? "are" : "is"} back with the change applied`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
       width={512}
     >
       <ModalNote>
         <p className="font-medium text-base-foreground">
-          The new route is active and in use.
+          The change is active and in use.
         </p>
         <p className="mt-1">
           Gate verified the route after the restart, so there is nothing left to
@@ -1184,30 +1186,31 @@ export function ModelPickerDialog({
             * The dialog offered a checkbox per model and never explained the
             * rule, so the reasonable reading was the one the ticket reached:
             * "the app takes one model, so anything past the first is
-            * ignored". It is not. The set is an ALLOW-LIST (AG-746,
-            * `gateway-proxy`'s `applyUserModelChoice`): a request for a model
-            * in it is served as the model the tool asked for, and only a
-            * request for something outside it is rewritten, onto the first
-            * entry. That is what makes several Codex sessions on several
+            * ignored". It is not. The set is written into the tool's own
+            * config (`tool_models.rs`): it becomes the list the tool's own
+            * model picker offers, and the first entry is the model the tool
+            * starts on. That is what lets several Codex sessions on several
             * models keep their own choices instead of collapsing onto one.
             *
-            * So this sentence carries the two facts the checkboxes cannot: the
-            * tool's own choice survives, and there is a fallback for everything
-            * else.
+            * So this sentence carries the two facts the checkboxes cannot:
+            * where the set shows up, and which model the app starts on. It
+            * also says what happens to anything outside the set, because the
+            * answer changed: the Gate route (`gate_served.rs`) refuses it
+            * rather than rewriting it onto the first entry.
             *
-            * It does **not** call the fallback "the first in the list". `draft`
-            * is selection order - `choose` appends - and the rows render in
-            * catalogue order inside their vendor groups, so `draft[0]` is
-            * routinely not the first row on screen: check GPT-5 and then a
-            * Claude model and the list draws Claude on top while the fallback
-            * is GPT-5. The value is right, the phrase pointed at an ordering
-            * this dialog never shows and offers no way to change, so it names
-            * the model and stops. */}
+            * It does **not** call the starting model "the first in the list".
+            * `draft` is selection order - `choose` appends - and the rows
+            * render in catalogue order inside their vendor groups, so
+            * `draft[0]` is routinely not the first row on screen: check GPT-5
+            * and then a Claude model and the list draws Claude on top while
+            * the app starts on GPT-5. The value is right, the phrase pointed at
+            * an ordering this dialog never shows and offers no way to change,
+            * so it names the model and stops. */}
           {multiple && draft.length > 1 && (
             <p className="text-base-xs leading-4 text-base-muted-foreground">
-              {appName} keeps its own model whenever it asks for one of these.
-              Anything else it asks for is served as{" "}
+              {appName}&apos;s own model picker lists exactly these, starting on{" "}
               <span className="font-medium text-base-foreground">{draft[0]}</span>.
+              Gate refuses a request for any other model.
             </p>
           )}
 
@@ -1333,7 +1336,7 @@ export function ModelPickerDialog({
                 </>
               ) : (
                 <p>
-                  Eligible requests may use any model enabled here and consume Gate credits.
+                  Requests for the models enabled here consume Gate credits.
                   Gate never uses a model you have not enabled.
                 </p>
               )}
@@ -1379,7 +1382,10 @@ export function UseGateModelDialog({
       icon="layers"
       tile="lg"
       title={`Use a Gate model for ${app.name}?`}
-      subtitle="Your next requests will use Constellation Gate PAYG credits"
+      // Drawn as "Your next requests will use..." (130:48278). The write lands
+      // in the app's config, which it reads when it starts, so the requests
+      // that spend are its next session's rather than the next ones.
+      subtitle={`${app.name}'s next session will use Constellation Gate PAYG credits`}
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
@@ -1438,8 +1444,8 @@ export function UseGateModelDialog({
           </p>
         </div>
         <p className="mt-3 text-sm leading-5 text-neutral-600">
-          {app.name}&apos;s own model preference is not changed. You can return
-          to App default at any time.
+          Gate sets {app.name}&apos;s model to these in its own config. Return to
+          App default at any time to restore your previous model.
         </p>
       </div>
     </Modal>

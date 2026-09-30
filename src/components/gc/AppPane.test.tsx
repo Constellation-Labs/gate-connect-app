@@ -494,13 +494,13 @@ describe("AppPane model selection", () => {
   });
 
   it("does not report a current Gate model under App default", () => {
-    // A section headed "Current Gate model" while the app runs its own is a
-    // sentence about nothing current. The remembered model is still named - by
+    // A section headed "Gate model in Claude Code's config" while the app runs
+    // its own is a sentence about nothing current. The remembered model is still named - by
     // the radio, which is the control that would put it to use.
     render(pane({ modelChoice: "app", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).queryByText(/Current Gate model/i)).toBeNull();
+    expect(within(card_).queryByText(/^Gate models? in .*config/)).toBeNull();
     expect(within(card_).queryByRole("button", { name: "Change model" })).toBeNull();
     expect(within(card_).getByText(`Use ${model.ids[0]}`)).toBeTruthy();
   });
@@ -509,13 +509,17 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "gate", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).getByText(/Current Gate model/i)).toBeTruthy();
+    // What the app's own config holds, and when that takes effect: the write
+    // lands in the config, which the app reads when it starts.
+    expect(
+      within(card_).getByText("Gate model in Claude Code's config, from its next session"),
+    ).toBeTruthy();
     expect(within(card_).getByText(model.ids[0])).toBeTruthy();
   });
 
   it("lists every enabled model, not the first of them", () => {
     // Reported from the running app: six models chosen, one drawn, and a heading
-    // reading "Current Gate models" above it. A plural heading over a single row
+    // reading "Current Gate models" (as it was then) above it. A plural heading over a single row
     // is indistinguishable from the card having lost the other five.
     const ids = [
       "openai/gpt-5-6-terra",
@@ -529,9 +533,40 @@ describe("AppPane model selection", () => {
     const card_ = card("Model selection");
 
     for (const id of ids) expect(within(card_).getByText(id)).toBeTruthy();
-    expect(within(card_).getByText("Current Gate models")).toBeTruthy();
+    expect(
+      within(card_).getByText("Gate models in Claude Code's config, from its next session"),
+    ).toBeTruthy();
     // One action for the set, not one per row.
     expect(within(card_).getAllByRole("button", { name: "Change model" })).toHaveLength(1);
+  });
+
+  it("says why the card moved to App default when the app left its Gate models", () => {
+    // R3: the user picked another model inside the app, so its config no longer
+    // holds a Gate model and the radio moved without anyone touching it here.
+    // The notice is the only account of why.
+    const onDismissModelNotice = vi.fn();
+    render(
+      pane({
+        modelChoice: "app",
+        modelNotice: "You switched Codex to gpt-6-sol in Codex, so it is back on App default.",
+        onDismissModelNotice,
+      }),
+    );
+    const card_ = card("Model selection");
+
+    const status = within(card_)
+      .getAllByRole("status")
+      .find((el) => /gpt-6-sol/.test(el.textContent ?? ""));
+    expect(status).toBeTruthy();
+    expect(status?.textContent).toContain("so it is back on App default.");
+
+    fireEvent.click(within(status!).getByRole("button", { name: "Dismiss" }));
+    expect(onDismissModelNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws no notice when there is nothing to report", () => {
+    render(pane({ modelChoice: "app", modelNotice: null }));
+    expect(within(card("Model selection")).queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 
   it("names the size of the set on the radio rather than one of its members", () => {

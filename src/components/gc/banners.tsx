@@ -222,7 +222,7 @@ export function ReopenAlert({
           </p>
           <p className="text-base-xs leading-4 text-gray-600">
             It was already running when its configuration changed, so it is still
-            using the route it started with.
+            using the settings it started with.
           </p>
           {routeInUse && requestedRoute && (
             // Sans, weighted rather than set in mono: identifier *values* are

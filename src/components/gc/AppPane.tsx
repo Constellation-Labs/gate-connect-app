@@ -74,6 +74,8 @@ export function AppPane({
   onChangeModel,
   modelBusy,
   modelAttention,
+  modelNotice,
+  onDismissModelNotice,
   modelPending,
   credits,
   plan,
@@ -132,13 +134,13 @@ export function AppPane({
    *  So null disables the choice and says why.
    *
    *  Omitting it and `onChooseModel` together is a third thing again: the card
-   *  is withheld entirely. A multi-provider tool gets that. OpenCode, OpenClaw
-   *  and Hermes route whichever of their configured providers Gate covers -
-   *  `lib/groups.ts` calls them "tools that talk to several providers, not one
-   *  model family" - so "what does this app use on Gate model" has no single
-   *  answer for them, and `main` never poses the question at all. Per the house
-   *  rule the Settings pane states: an omitted handler omits its control. No
-   *  `onChooseModel`, no card. */
+   *  is withheld entirely. A tool whose config Gate cannot write a model into
+   *  gets that - OpenCode, OpenClaw, the environment channel and the chat
+   *  domains; `GATE_MODEL_TOOLS` in `lib/toolModels` is the list that does get
+   *  it. Hermes is multi-provider on the rail and still gets the card, because
+   *  its config holds a provider entry Gate writes the chosen set into. Per the
+   *  house rule the Settings pane states: an omitted handler omits its control.
+   *  No `onChooseModel`, no card. */
   modelChoice?: ModelChoice | null;
   onChooseModel?: (choice: ModelChoice) => void;
   /** The remembered model, or `null` when none has been chosen.
@@ -157,6 +159,12 @@ export function AppPane({
    *  nothing to say - which is not the same as "all clear", since an unread
    *  catalogue or balance also yields null. See `modelAttention`. */
   modelAttention?: string | null;
+  /** Something that already happened to this app's model setting, said once:
+   *  today, that the user moved the app off its Gate models from inside the
+   *  app, so the card is back on App default. Unlike `modelAttention` it is not
+   *  re-derived on every render, so it carries its own dismiss. */
+  modelNotice?: string | null;
+  onDismissModelNotice?: () => void;
   /** The model *preference* read has not landed.
    *
    *  Its own flag rather than the pane's `pending`, which tracks the activity
@@ -314,6 +322,8 @@ export function AppPane({
           pending={modelPending}
           busy={modelBusy}
           attention={modelAttention}
+          notice={modelNotice}
+          onDismissNotice={onDismissModelNotice}
           onChoose={onChooseModel}
           gateModel={gateModel ?? null}
           onChangeModel={onChangeModel}
@@ -437,8 +447,9 @@ function VendorMark({
  * routing: the control renders one way, and clicking it turns off the setting the
  * user was trying to turn on.
  *
- * **It does not imply that a remembered model is a live one.** "Current Gate
- * model" is drawn only while Gate is the source. It once stayed visible under App
+ * **It does not imply that a remembered model is a live one.** The row naming
+ * what the app's config holds ("Gate model in Codex's config", once "Current
+ * Gate model") is drawn only while Gate is the source. It once stayed visible under App
  * default, dimmed and labelled "not in use", so the user could see what they would
  * be switching to - but a section headed "Current" that describes nothing current
  * has to be read twice to learn it does not apply, and it sat directly under the
@@ -459,6 +470,8 @@ function ModelSelection({
   pending,
   busy,
   attention,
+  notice,
+  onDismissNotice,
   onChoose,
   gateModel,
   onChangeModel,
@@ -490,6 +503,8 @@ function ModelSelection({
   pending?: boolean;
   busy?: boolean;
   attention?: string | null;
+  notice?: string | null;
+  onDismissNotice?: () => void;
   onChoose: (choice: ModelChoice) => void;
   gateModel: GateModel | null;
   onChangeModel: () => void;
@@ -514,7 +529,7 @@ function ModelSelection({
         Model selection
       </h2>
       <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
-        Choose whether {appName} or Gate selects the AI model for requests
+        Choose whether {appName} uses its own model or Gate models you enable
       </p>
 
       {pending ? (
@@ -584,6 +599,30 @@ function ModelSelection({
         </p>
       )}
 
+      {notice && (
+        // The same in-card highlight, for a change the app made rather than one
+        // it needs: the radios above already moved, and this is the only
+        // account of why. Dismissible, with the control `NoteBanner` draws,
+        // because the user is the only one who knows when they have read it.
+        <p
+          role="status"
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-5 text-amber-900"
+        >
+          <Icon name="info" size={16} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">{notice}</span>
+          {onDismissNotice && (
+            <button
+              type="button"
+              onClick={onDismissNotice}
+              aria-label="Dismiss"
+              className="shrink-0 text-amber-900 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          )}
+        </p>
+      )}
+
       {/* The App-default branch's own row (`408:25491`), below the divider the
         * frame draws at `408:25490`. The card had nothing here at all: choosing
         * App default left the radios and then the credits row, so the branch
@@ -634,13 +673,15 @@ function ModelSelection({
       {gateActive && (
         <>
           <p className="mt-4 text-base-xs text-base-muted-foreground">
-            {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
+            {(gateModel?.ids.length ?? 0) > 1
+              ? `Gate models in ${appName}'s config, from its next session`
+              : `Gate model in ${appName}'s config, from its next session`}
           </p>
 
           <div className="mt-2">
             {gateModel === null ? (
               <EmptyNote icon="cube">
-                No Gate model chosen yet. Choose one to see what Gate would serve.
+                No Gate model chosen yet. Choose one to write it into {appName}&apos;s config.
               </EmptyNote>
             ) : (
               <InfoRow

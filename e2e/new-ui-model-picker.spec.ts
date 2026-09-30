@@ -48,6 +48,12 @@ const catalogue = [
 
 const base = { proxy: { running: true, ca_trusted: true }, tools };
 
+/** The card's heading over what the app's config holds. It said "Current Gate
+ *  model" while the gateway rewrote each request; the choice is written into
+ *  the app's own config now, which the app reads when it next starts. */
+const GATE_MODEL_HEADING = /^Gate models? in .+ config, from its next session$/;
+const GATE_MODELS_HEADING = /^Gate models in .+ config, from its next session$/;
+
 /**
  * Open one app's pane, which is where model selection lives.
  *
@@ -87,7 +93,7 @@ test.describe("new UI model picker", () => {
     // Under App default there is no current Gate model to report, so the section
     // is absent rather than empty - and with it the control that would change a
     // model this app is not using.
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
     await expect(app.page.getByRole("button", { name: "Change model" })).toHaveCount(0);
   });
 
@@ -141,7 +147,7 @@ test.describe("new UI model picker", () => {
       "true",
     );
     // Served, so the section reports it.
-    await expect(app.page.getByText("Current Gate model")).toBeVisible();
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toBeVisible();
     await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
   });
 
@@ -164,7 +170,7 @@ test.describe("new UI model picker", () => {
     // Kept, and named by the radio that would put it to use. The "Current Gate
     // model" section stays away: nothing about it is current under App default.
     await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
   });
 
   test("does not re-ask once this install has accepted", async ({ boot }) => {
@@ -238,7 +244,7 @@ test.describe("new UI model picker", () => {
     // Remembered, and still named - by the radio, not by a section claiming it is
     // current.
     await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
   });
 
   test("offers no choice at all when the setting could not be read", async ({ boot }) => {
@@ -367,7 +373,7 @@ test.describe("new UI model picker search and set", () => {
     // The card keeps the single row Figma 228:89517 draws; only the heading
     // turns plural, which is the minimum that stops it naming one model when
     // two are enabled.
-    await expect(app.page.getByText("Current Gate models")).toBeVisible();
+    await expect(app.page.getByText(GATE_MODELS_HEADING)).toBeVisible();
   });
 
   test("refuses to save an empty set, which is where the last model is held", async ({ boot }) => {
@@ -583,7 +589,7 @@ test.describe("new UI Gate model confirmation", () => {
     await expect(confirm.getByText(/Also enabled/)).toHaveCount(0);
   });
 
-  test("says the tool's own preference is untouched", async ({ boot }) => {
+  test("says Gate writes the models into the tool's own config", async ({ boot }) => {
     const app = await boot({ ...base, toolModels: { catalogue } });
     await openApp(app);
 
@@ -592,8 +598,14 @@ test.describe("new UI Gate model confirmation", () => {
     await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
     await dialog.getByRole("button", { name: "Apply selections" }).click();
 
+    // It said the app's own model preference was not changed, which stopped
+    // being true once the choice was written into the app's config.
+    await expect(app.page.getByText(/own model preference is not changed/)).toHaveCount(0);
     await expect(
-      app.page.getByText(/own model preference is not changed/),
+      app.page.getByText(/Gate sets CLI's model to these in its own config/),
+    ).toBeVisible();
+    await expect(
+      app.page.getByText(/restore your previous model/),
     ).toBeVisible();
   });
 });
@@ -888,3 +900,130 @@ test.describe("new UI model picker compatibility", () => {
   });
 
     });
+
+/**
+ * Gate models live in the tool's own config now (Codex's `config.toml`,
+ * Hermes's `config.yaml`), not on each request. Three consequences the card
+ * has to get right: a write that changed a running tool's config offers the
+ * same restart notice a routing write does; a tool moved off its Gate models
+ * from inside itself is put back on App default, and the card says why; and
+ * Hermes, multi-provider on the rail, gets the card because its config can
+ * hold the set.
+ */
+test.describe("new UI Gate models in the tool's config", () => {
+  const CODEX = {
+    slug: "codex",
+    name: "Codex",
+    upstream_provider_name: "OpenAI",
+    default_upstream_url: "https://gw.example/codex",
+    requires_upstream_credential: false,
+    status: { kind: "connected" as const },
+  };
+  const set = ["openai/gpt-5.6-terra", "mistralai/mistral-large"];
+  const codexCatalogue = [
+    { id: set[0], owned_by: "openai", name: "GPT-5.6 Terra", tags: ["tool-use"] },
+    { id: set[1], owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
+  ];
+  const onGate = {
+    catalogue: codexCatalogue,
+    paidAckUnix: 1787740800,
+    choices: { codex: { source: "gate" as const, model_ids: set } },
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("App default keeps the whole set, not only its first model", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "codex",
+      source: "tool",
+      modelIds: set,
+    });
+    await expect(app.page.getByText("Use any of 2 Gate models")).toBeVisible();
+  });
+
+  test("offers to restart a running app after a model change rewrites its config", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+      runningAgentNames: ["codex"],
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+    // Worded for any change, since a model write raises it too.
+    await expect(
+      app.page.getByText("Your configuration is saved. One final step makes the change active"),
+    ).toBeVisible();
+  });
+
+  test("stays silent after a model change when the app is not running", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect.poll(() => app.lastCall("set_tool_model")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("says so when the app was moved off its Gate models from inside it", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: { ...onGate, left: { codex: "gpt-6-sol" } },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    const notice = app.page
+      .getByRole("status")
+      .filter({ hasText: "You switched Codex to gpt-6-sol in Codex, so it is back on App default." });
+    await expect(notice).toBeVisible();
+    await expect(app.page.getByRole("radio", { name: /App default/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test("draws the model card for Hermes", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          slug: "hermes",
+          name: "Hermes",
+          upstream_provider_name: "Hermes",
+          default_upstream_url: "https://gw.example/hermes",
+          status: { kind: "connected" as const },
+        },
+      ],
+    });
+    await app.page.getByRole("button", { name: /^Hermes/ }).first().click();
+
+    await expect(app.page.getByRole("heading", { name: "Model selection" })).toBeVisible();
+  });
+});
