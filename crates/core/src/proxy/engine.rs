@@ -44,11 +44,14 @@ pub struct EngineConfig {
     /// Gate gateway base URL - the rewrite target authority.
     pub gateway_base_url: String,
     /// Gate API key, injected as `X-Gate-Api-Key` when no OAuth token is set
-    /// (the legacy credential).
+    /// (the legacy credential). Empty for an OAuth account
+    /// (`account::load`), where a request with no live token is refused here
+    /// ([`signed_out_response`]) rather than sent under a key.
     pub api_key: String,
     /// Cognito access token. When non-empty it's injected as
     /// `X-Gate-Authorization: Bearer <token>` *instead of* the API key;
-    /// empty means fall back to `api_key`. Hot-swappable via
+    /// empty means no live session: fall back to `api_key` when there is one,
+    /// else refuse the request. Hot-swappable via
     /// [`RunningEngine::update_token`].
     pub oauth_token: String,
     /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
@@ -500,7 +503,7 @@ struct GateHandler {
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
     /// Live-updatable Cognito access token. Empty string means "unset" -
-    /// fall back to `api_key`.
+    /// fall back to `api_key`, or refuse the request when that is empty too.
     token: watch::Receiver<Arc<str>>,
     /// Live-updatable selected org UUID. Empty string means "none selected";
     /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
@@ -1045,6 +1048,24 @@ impl HttpHandler for GateHandler {
                 } else {
                     let api_key = self.api_key.borrow().clone();
                     let token = self.token.borrow().clone();
+                    if token.is_empty()
+                        && api_key.is_empty()
+                        && !req.headers().contains_key(super::GATE_KEY_HEADER)
+                    {
+                        // No live session and no key to fall back to - an
+                        // OAuth account holds none (`account::load`). Sent
+                        // bare, the request would come back as the gateway's
+                        // complaint about a missing API key, a credential this
+                        // account never had; answered here, it says what to
+                        // do. The dead session itself was already raised by
+                        // the refresh loop when it pushed the empty token. A
+                        // caller carrying its own Gate key is served as the
+                        // shared rule says, session or no session.
+                        if debug_log() {
+                            eprintln!("[gate-proxy] {path} -> refused: signed out");
+                        }
+                        return RequestOrResponse::Response(signed_out_response());
+                    }
                     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
                     let org = self.org.borrow().clone();
                     let org_id = (!org.is_empty()).then(|| org.as_ref());
@@ -1423,6 +1444,26 @@ fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
         ))
         // Infallible: every part is a static, pre-validated value.
         .expect("static decline response builds")
+}
+
+/// The response a routed request gets when there is no Gate credential to send
+/// it under: an OAuth account whose session is dead. Shaped like
+/// [`decline_upgrade_response`], and for the same reason; typed
+/// `gate_signed_out` so a client log can be searched for it. The sentence is
+/// [`crate::proxy::SIGNED_OUT_MESSAGE`], the one the relay's 401 carries.
+fn signed_out_response() -> hudsucker::hyper::Response<Body> {
+    hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::UNAUTHORIZED)
+        .header(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(format!(
+            r#"{{"error":{{"message":"{}","type":"gate_signed_out"}}}}"#,
+            crate::proxy::SIGNED_OUT_MESSAGE
+        )))
+        // Infallible: every part is a static, pre-validated value.
+        .expect("static signed-out response builds")
 }
 
 /// The response the app gets in place of a Cloudflare interstitial, once

@@ -853,7 +853,9 @@ impl<O: DesktopOps> DesktopManager<O> {
     }
 
     /// Push a refreshed OAuth access token into the running engine, if any.
-    /// Empty string reverts to the API key. Used by the silent-refresh loop
+    /// Empty string means no live session: the engine falls back to the API
+    /// key in legacy mode, and refuses routed requests as signed out on an
+    /// OAuth account, which holds no key. Used by the silent-refresh loop
     /// so a renewed token reaches in-flight routing without a restart.
     pub fn refresh_token(&self, oauth_token: &str) {
         if let Some(running) = self

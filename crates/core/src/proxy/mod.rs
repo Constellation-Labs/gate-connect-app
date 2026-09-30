@@ -680,9 +680,14 @@ pub fn set_gate_auth_observer(observer: impl Fn() + Send + Sync + 'static) {
 /// Invoke the registered gateway-auth observer, if any, unless a check is
 /// already in flight or the last one's cooldown is still running. Called by
 /// the engine's `handle_response` on a 401 to a request we authenticated.
-pub(crate) fn notify_gate_auth_observer() {
+///
+/// Returns whether a re-check is now running, or was already: `true` means a
+/// verdict may follow on the token watch, which is what the relay's retry waits
+/// on; `false` (no observer, or the cooldown) means nothing will change and a
+/// caller holding a refusal should pass it on now.
+pub(crate) fn notify_gate_auth_observer() -> bool {
     let Some(observer) = GATE_AUTH_OBSERVER.get() else {
-        return;
+        return false;
     };
     let cooling = GATE_AUTH_NEXT_ALLOWED
         .lock()
@@ -696,7 +701,7 @@ pub(crate) fn notify_gate_auth_observer() {
                  session re-check's cooldown is still running"
             );
         }
-        return;
+        return false;
     }
     if GATE_AUTH_CHECKING.swap(true, std::sync::atomic::Ordering::AcqRel) {
         if engine::debug_log() {
@@ -704,9 +709,10 @@ pub(crate) fn notify_gate_auth_observer() {
                 "[gate-proxy] gateway rejected our bearer while a session re-check is in flight"
             );
         }
-        return;
+        return true;
     }
     observer();
+    true
 }
 
 /// Holds the re-check latch for the life of one check and releases it on
@@ -1660,7 +1666,8 @@ pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
 /// can't ride alongside the credential we inject) and the live credential is
 /// added: a non-empty `oauth_token` wins - `X-Gate-Authorization: Bearer
 /// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
-/// `X-Gate-Api-Key`.
+/// `X-Gate-Api-Key`, and an error when there is neither (the `None` arm says
+/// why an empty key is not a credential).
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
@@ -1692,6 +1699,14 @@ pub(crate) fn inject_gate_credential(
             return Ok(true);
         }
         None => {
+            // Nothing to fall back to: an OAuth account whose session is dead
+            // holds no key (`account::load`). An empty header would go out as
+            // a credential and be refused as one, so this is an error. Both
+            // callers test for this state before the send and answer the tool
+            // themselves; this is the guard for a path that did not.
+            if api_key.is_empty() {
+                anyhow::bail!("no Gate credential to inject: no live OAuth session and no API key");
+            }
             headers.insert(
                 HeaderName::from_static(GATE_KEY_HEADER),
                 HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
@@ -1700,6 +1715,15 @@ pub(crate) fn inject_gate_credential(
     }
     Ok(false)
 }
+
+/// What a routed request is told when there is no Gate credential to send it
+/// under: an OAuth account whose session is dead. The relay answers with it as
+/// the body of a 401 and the MITM engine puts it inside its JSON envelope, so a
+/// tool prints the same sentence whichever path it took. It names the fix; the
+/// gateway's answer to a bare request would name a missing API key, a
+/// credential this account never had.
+pub(crate) const SIGNED_OUT_MESSAGE: &str =
+    "Gate Connect is signed out; open Gate Connect and sign in to keep routing through Gate";
 
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,
@@ -4008,5 +4032,20 @@ mod refusal_edge_tests {
     fn a_restarted_daemon_is_read_from_zero() {
         assert!(!refused_since_last_look(Some(9), 0));
         assert!(refused_since_last_look(Some(9), 1));
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    /// No token and no key is not "an empty key": the header would go out as
+    /// a credential and be refused as one, so it is an error instead.
+    #[test]
+    fn injecting_with_no_credential_is_an_error() {
+        let mut headers = HeaderMap::new();
+        let err = inject_gate_credential(&mut headers, "", None, None).unwrap_err();
+        assert!(err.to_string().contains("no Gate credential"), "{err:#}");
+        assert!(headers.get(GATE_KEY_HEADER).is_none());
     }
 }

@@ -633,24 +633,11 @@ async fn proxy(
     strip_hop_by_hop(&mut headers);
     headers.remove(HOST);
     let target = match route {
-        Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("injecting Gate credential: {e:#}"),
-                )
-            })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
-            format!("{}{}", state.gateway_base, routed.path_and_query)
-        }
+        // The credential and the upstream hint go on per attempt, below: a
+        // 401 for our bearer is retried once under the token the session
+        // re-check mints, and the retry needs these headers as they were
+        // before the first credential went on.
+        Route::Rewrite => format!("{}{}", state.gateway_base, routed.path_and_query),
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
             // `Authorization`; never inject the Gate credential here.
@@ -684,19 +671,47 @@ async fn proxy(
         })?
         .to_bytes();
 
-    let upstream_resp = state
-        .client
-        .request(method, &target)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("forwarding to gateway: {e}"),
-            )
-        })?;
+    let send = |headers: HeaderMap| {
+        state
+            .client
+            .request(method.clone(), &target)
+            .headers(headers)
+            .body(body.clone())
+            .send()
+    };
+    let forwarding_failed = |e: reqwest::Error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("forwarding to gateway: {e}"),
+        )
+    };
+    let upstream_resp = match route {
+        Route::Passthrough => send(headers).await.map_err(forwarding_failed)?,
+        Route::Rewrite => {
+            // Watch the token from before it is read, so a replacement that
+            // lands while this request is out is seen by the wait in
+            // `recovered_token` rather than missed. `mark_unchanged` first: a
+            // cloned receiver may otherwise report a change this request
+            // already carries.
+            let mut token_rx = state.token.clone();
+            token_rx.mark_unchanged();
+            let token: Arc<str> = token_rx.borrow().clone();
+            let mut attempt = headers.clone();
+            let sent_bearer = rewrite_headers(&mut attempt, state, &token, &routed.upstream_url)?;
+            let resp = send(attempt).await.map_err(forwarding_failed)?;
+            match sent_bearer.filter(|_| resp.status() == StatusCode::UNAUTHORIZED) {
+                None => resp,
+                Some(sent) => match recovered_token(&mut token_rx, &sent).await {
+                    None => resp,
+                    Some(fresh) => {
+                        let mut attempt = headers.clone();
+                        rewrite_headers(&mut attempt, state, &fresh, &routed.upstream_url)?;
+                        send(attempt).await.map_err(forwarding_failed)?
+                    }
+                },
+            }
+        }
+    };
 
     let mut builder = Response::builder().status(upstream_resp.status());
     if let Some(dst) = builder.headers_mut() {
@@ -721,19 +736,97 @@ async fn proxy(
     })
 }
 
-/// Inject the live Gate credential, via the rule shared with the MITM engine
-/// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
+/// Put the Gate credential and the upstream hint on a rewrite, with `token` as
+/// the bearer: the value read off the watch before the send, so the gateway's
+/// answer can be compared against exactly what went out. The credential
+/// follows the rule shared with the MITM engine ([`inject_gate_credential`]):
+/// a caller-supplied `x-gate-api-key` is left untouched, otherwise an OAuth
+/// token wins over the legacy key. Returns the bearer when it was ours, and
+/// `None` for either of those other cases - a refused key is a different
+/// problem with a different fix, and a caller's own credential is not ours to
+/// recover.
+///
+/// Refused outright, before anything is sent, when there is no credential at
+/// all: an OAuth account whose session is dead has no key to fall back to
+/// (see [`crate::account::load`]), and a request sent bare would come back as
+/// the gateway's complaint about a missing API key, which names a credential
+/// this account never had. The tool sees a 401 that says what to do instead.
+/// A caller that brought its own Gate key is not refused: the shared rule
+/// serves that key untouched, and the app's session has no bearing on it.
+fn rewrite_headers(
+    headers: &mut HeaderMap,
+    state: &RelayState,
+    token: &Arc<str>,
+    upstream_url: &str,
+) -> Result<Option<Arc<str>>, (StatusCode, String)> {
     // Clone the values out of the watch guards so no lock is held.
-    let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
     let org: Arc<str> = state.org.borrow().clone();
+    if token.is_empty() && api_key.is_empty() && !headers.contains_key(GATE_KEY_HEADER) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            super::SIGNED_OUT_MESSAGE.to_string(),
+        ));
+    }
     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    // The relay has no response hook to feed, so what was injected is not
-    // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id).map(|_| ())
+    let injected = inject_gate_credential(headers, &api_key, oauth_token, org_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("injecting Gate credential: {e:#}"),
+        )
+    })?;
+    // We set the upstream hint, overwriting anything the caller sent. The
+    // value comes from the catalog entry we resolved, so a local process
+    // can't aim the gateway at a host of its choosing.
+    set_upstream_header(headers, upstream_url).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+        )
+    })?;
+    Ok(injected.then(|| Arc::clone(token)))
+}
+
+/// How long a refused request waits for the session re-check to push a
+/// replacement bearer before the 401 goes back to the tool unchanged. The
+/// re-check is one Cognito round trip and one gateway probe, normally a
+/// second or two, and a dead session ends the wait early: the re-check pushes
+/// the empty token on that verdict, and any change ends it.
+const RECOVERED_TOKEN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A replacement for `sent`, the bearer the gateway has just refused, if the
+/// session re-check produces one in time.
+///
+/// The refusal goes to the same observer the MITM engine's response hook
+/// feeds, so a 401 seen here recovers the session the way one seen there
+/// does. It did not, before this: the relay's gateway hop is its own reqwest
+/// client and never crosses that hook, so a Claude Code turn refused after a
+/// sleep was left to the 30s tick. The verdict arrives on the token watch,
+/// which is what the shell pushes it through
+/// ([`RunningEngine::update_token`](super::engine::RunningEngine::update_token)):
+/// a non-empty value other than `sent` is a token worth retrying under; the
+/// empty string is a dead session, and the 401 stands.
+///
+/// The watch is read before the observer is asked: the previous refusal's
+/// re-check, or the 30s tick, may already have replaced the bearer between
+/// this request's read and the gateway's answer, and a re-check is not owed
+/// twice. On Linux the observer is the helper daemon's counter and the push
+/// comes from the GUI's next poll, so this mostly runs out the wait there; the
+/// retry is a macOS and Windows recovery first.
+async fn recovered_token(token_rx: &mut watch::Receiver<Arc<str>>, sent: &str) -> Option<Arc<str>> {
+    fn replacement(token_rx: &mut watch::Receiver<Arc<str>>, sent: &str) -> Option<Arc<str>> {
+        let now: Arc<str> = token_rx.borrow_and_update().clone();
+        (!now.is_empty() && now.as_ref() != sent).then_some(now)
+    }
+    if let Some(fresh) = replacement(token_rx, sent) {
+        return Some(fresh);
+    }
+    if !super::notify_gate_auth_observer() {
+        return None;
+    }
+    let _ = tokio::time::timeout(RECOVERED_TOKEN_WAIT, token_rx.changed()).await;
+    replacement(token_rx, sent)
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM

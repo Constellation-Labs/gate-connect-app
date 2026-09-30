@@ -3259,8 +3259,10 @@ pub fn run() {
                     // `live_session` silently refreshes a stale token (persisting
                     // it) and yields None when the session is dead; push the
                     // result into the running engine (a no-op when routing is
-                    // off). "" reverts to the API-key fallback, matching the
-                    // signed-out state the UI derives from oauth_status.
+                    // off). "" is a dead session: the engine then refuses
+                    // routed requests as signed out - an OAuth account holds
+                    // no key to fall back to - matching the signed-out state
+                    // the UI derives from oauth_status.
                     let token = gate_connect_core::oauth::live_session()
                         .map(|t| t.access_token)
                         .unwrap_or_default();
