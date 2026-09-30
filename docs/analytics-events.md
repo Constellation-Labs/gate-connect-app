@@ -105,6 +105,14 @@ of `diagnostics_opted_out`.
   server alias of the install id, which still rides its requests, cannot join
   that account to its own person: the install id is already someone else's.
   Only the `organization` group links its events.
+  **Known limit:** an API-key install records the org it spent its install id
+  on only after a successful activity read. If the app never gets one (the
+  legacy popover shell, or a persistently failing `/v1/me/activity`), Reset or
+  a key replacement does not retire the id, although dashboard-api may already
+  have aliased it.
+  **Known limit:** if the app support directory cannot be resolved, the
+  identity reads as the default (fail open) until the next identity broadcast
+  corrects it.
 - Never sent: names, emails, API keys, tokens, gateway hosts, file paths, error
   text. Error events carry a classified title; failure events carry a reason
   from a closed list.
