@@ -377,8 +377,8 @@ export default {
         "heading-16": "-0.16px",
       },
       fontSize: {
-        // New app UI. In rem, never px: px would opt these out of
-        // `useTextScale` entirely.
+        // New app UI. In rem, never px: px would opt these out of any
+        // root-level text scaling entirely.
         //
         // These three carry their tracking in the tuple, because the design's
         // `label/N` and `copy/N` are *text styles*: size and tracking are one

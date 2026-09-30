@@ -177,15 +177,6 @@ export const oauthStatus = () => invoke<OAuthStatus>("oauth_status");
  * shows the sign-in prompt again rather than the legacy key form. */
 export const oauthSignOut = () => invoke<void>("oauth_sign_out");
 
-/** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
- * from the sign-in screen; OAuth sign-in sets it implicitly. */
-export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
-
-/** Switch who pays the upstream provider. The relay and the MITM engine read
- * the mode per request, so routing follows immediately; a connected Codex is
- * re-applied on the Rust side, since its provider block encodes the mode. */
-export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
-
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
 
@@ -584,11 +575,6 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * and "didn't start" read `running: false`; this is what tells them apart. The
  * backend emits `proxy-state-changed` when it settles, either way. */
 export const routingStartupPending = () => invoke<boolean>("routing_startup_pending");
-
-/** Count running AI tools (same process set as {@link closeRunningAgents})
- * without touching them. Used to skip the routing-change takeover when there
- * is nothing to close. */
-export const runningAgentsCount = () => invoke<number>("running_agents_count");
 
 /** Why a tool is not verifiably routing. Closed set, mirroring
  * `routing_health::Reason` - a seventh value would need a next action and a

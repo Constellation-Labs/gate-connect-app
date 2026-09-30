@@ -8,13 +8,7 @@ import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
 import { initErrorContext } from "./lib/errorContext";
 import { describe, logError } from "./lib/log";
-import { applyTextScale, readStoredScale } from "./lib/useTextScale";
 import "./index.css";
-
-// Before first paint, so a user who scaled to 200% does not watch the popover
-// render at 100% and reflow. The hook re-asserts this on mount and owns every
-// change after it; this is only the head start.
-applyTextScale(readStoredScale());
 
 // Start analytics before render (no-op without a build-time key, and no-op when
 // the user has opted out of diagnostic data) and forward uncaught frontend

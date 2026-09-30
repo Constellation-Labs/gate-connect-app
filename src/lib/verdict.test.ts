@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
 import { countsAsProtected } from "../components/gc/Sidebar";
-import { NEXT_ACTION_LABEL, verdictStatus, verdictsBySlug } from "./verdict";
+import { verdictStatus, verdictsBySlug } from "./verdict";
 
 // `sectionStatus` is tested in `groups.test.ts`, against a real `buildGroups`
 // ledger: what it answers is a question about a section's members, and this
@@ -80,7 +80,6 @@ describe("verdictStatus", () => {
       }),
     );
     expect(status).toEqual({ kind: "not-protected", detail: "Configuration overridden" });
-    expect(NEXT_ACTION_LABEL.show_conflicting_config).toBe("Show conflicting file");
   });
 
   /**
@@ -233,14 +232,5 @@ describe("verdictsBySlug", () => {
     expect(map.get("claude-code")?.state).toBe("on");
     expect(map.get("codex")?.state).toBe("off");
     expect(map.get("opencode")).toBeUndefined();
-  });
-});
-
-describe("NEXT_ACTION_LABEL", () => {
-  /** The labels are AG-562's own words; a missing one would ship a blank button. */
-  it("labels every action the backend can send", () => {
-    expect(Object.values(NEXT_ACTION_LABEL).every((l) => l.length > 0)).toBe(true);
-    expect(NEXT_ACTION_LABEL.apply_gate_configuration).toBe("Apply Gate configuration");
-    expect(NEXT_ACTION_LABEL.sign_in).toBe("Sign in");
   });
 });

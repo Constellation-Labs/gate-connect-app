@@ -9,7 +9,6 @@ import {
   buildGroups,
   cascadeTargets,
   groupSummary,
-  hasBrowserSurface,
   isDeclaredSection,
   isProviderEndpoint,
   isSettingsManaged,
@@ -753,50 +752,6 @@ describe("cascadeTargets", () => {
     expect(cascadeTargets(g, false).map((m) => m.key)).toEqual(["anthropic-api"]);
   });
 });
-
-/**
- * The one piece of routing copy that is true on one platform and false on the
- * other two, which is why it is a function of the platform rather than a
- * sentence somebody could paste into a shared component.
- */
-
-/**
- * Which rows a browser tab can be sitting on, and what to say when one is
- * routed. The taxonomy cannot answer the first question - see
- * `BROWSER_SURFACE_ROWS` - so these are the tests that hold the answer in place.
- */
-describe("hasBrowserSurface", () => {
-  const members = (...domains: ProxyDomain[]) =>
-    buildGroups([], domains, ON).flatMap((g) => g.members);
-
-  it("is true for the two surfaces a person opens in a browser", () => {
-    const [claudeWeb] = members(sessionDomain());
-    const [chatgptApps] = members(
-      sessionDomain({ slug: "chatgpt-apps", hosts: ["chatgpt.com"], client: "chatgpt" }),
-    );
-    expect(hasBrowserSurface(claudeWeb)).toBe(true);
-    expect(hasBrowserSurface(chatgptApps)).toBe(true);
-  });
-
-  it("is false for the subscription row, which is two programs and no tab", () => {
-    // The row this table exists for. `chatgpt` is `Client::ChatGpt`,
-    // `Credential::Additive` and `Scope::Host` - identical to `chatgpt-apps` on
-    // every field the ledger carries - and what actually talks to it is Codex
-    // through the relay and the ChatGPT app's Work mode. Told to reload a tab,
-    // its user has nothing to reload.
-    const [subscription] = members(
-      sessionDomain({ slug: "chatgpt", display_name: "Subscription", hosts: ["chatgpt.com"] }),
-    );
-    expect(subscription.credential).toBe("additive");
-    expect(hasBrowserSurface(subscription)).toBe(false);
-  });
-
-  it("is false for a brokered host row, which is an API nobody browses", () => {
-    const [api] = members(domain());
-    expect(hasBrowserSurface(api)).toBe(false);
-  });
-});
-
 
 /**
  * The certificate's own restart note, which is a different fact from the proxy

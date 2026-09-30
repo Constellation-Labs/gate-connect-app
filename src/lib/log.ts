@@ -29,9 +29,6 @@ export const logInfo = (message: string) => write("info", message);
 export const logWarn = (message: string) => write("warn", message);
 export const logError = (message: string) => write("error", message);
 
-/** Where the log file is, or null when logging is off. */
-export const logFilePath = () => invoke<string | null>("log_file_path").catch(() => null);
-
 /**
  * Turn anything thrown into one line worth reading.
  *

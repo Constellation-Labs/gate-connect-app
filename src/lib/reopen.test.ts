@@ -1,16 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { RunningAgent, Verdict } from "./api";
 import {
-  actionsFor,
   allVerified,
   bucketOf,
   isTerminal,
   nextStage,
-  REOPEN_ACTION_LABEL,
   REOPEN_STAGE_DETAIL,
-  REOPEN_STAGE_LABEL,
-  reopenAppRows,
-  reopenBuckets,
   reopenTools,
   type ReopenStage,
   type ReopenTool,
@@ -196,21 +191,6 @@ describe("nextStage", () => {
 });
 
 describe("the account of what happened", () => {
-  it("separates the five outcomes and drops the empty ones", () => {
-    const buckets = reopenBuckets([
-      tool({ slug: "codex", stage: "routing" }),
-      tool({ slug: "claude-code", stage: "awaiting_reopen" }),
-      tool({ slug: "opencode", stage: "verify_failed" }),
-    ]);
-
-    expect(buckets.map((b) => b.key)).toEqual([
-      "verified",
-      "manual_reopen",
-      "verify_failed",
-    ]);
-    expect(buckets[1].tools.map((t) => t.slug)).toEqual(["claude-code"]);
-  });
-
   it("files a tool that is only waiting as waiting, not as a failure", () => {
     expect(bucketOf("awaiting_reopen")).toBe("manual_reopen");
     expect(bucketOf("reopen_required")).toBe("manual_reopen");
@@ -234,43 +214,8 @@ describe("the account of what happened", () => {
   });
 });
 
-describe("what a row offers", () => {
-  it("offers nothing on a resolved row", () => {
-    expect(actionsFor("routing")).toEqual([]);
-    expect(actionsFor("not_routed")).toEqual([]);
-    expect(actionsFor("verifying")).toEqual([]);
-  });
-
-  it("offers the write back where the write is what failed", () => {
-    expect(actionsFor("config_failed")).toContain("retry_application");
-    expect(actionsFor("config_failed")).toContain("use_tool_defaults");
-  });
-
-  it("does not offer to reopen a tool the user has already been asked to reopen", () => {
-    // Gate cannot start it, so the button would be an instruction dressed as a
-    // control.
-    expect(actionsFor("awaiting_reopen")).not.toContain("reopen_tool");
-    // And neither is the check: the watch re-reads both probes on a tick and
-    // the shells keep sweeping after this dialog is dismissed, so the reopen
-    // moves the row whether or not anybody presses anything. A refresh button
-    // beside a self-refreshing reading teaches the user it is not one.
-    expect(actionsFor("awaiting_reopen")).not.toContain("retry_verification");
-    expect(actionsFor("awaiting_reopen")).toEqual(["view_diagnostics"]);
-    // The failure that a check can still change its mind about keeps it.
-    expect(actionsFor("verify_failed")).toContain("retry_verification");
-    // Still running on its old route, though, and dealing with that process is
-    // something Gate can offer.
-    expect(actionsFor("close_failed")).toContain("reopen_tool");
-  });
-
-  it("offers nothing on a row that has nothing left to do", () => {
-    // Gate closed it, reopened it, and cannot check it. Every action here would
-    // invite the user to redo work that landed, or to retry a check that does
-    // not exist for this tool.
-    expect(actionsFor("reopened")).toEqual([]);
-  });
-
-  it("names every stage and every action", () => {
+describe("what a stage says", () => {
+  it("explains every stage", () => {
     const stages: ReopenStage[] = [
       "applying",
       "reopen_required",
@@ -286,11 +231,8 @@ describe("what a row offers", () => {
       "verify_failed",
     ];
     for (const stage of stages) {
-      expect(REOPEN_STAGE_LABEL[stage].length).toBeGreaterThan(0);
       expect(REOPEN_STAGE_DETAIL[stage].length).toBeGreaterThan(0);
     }
-    expect(REOPEN_ACTION_LABEL.use_tool_defaults).toBe("Use tool defaults");
-    expect(REOPEN_ACTION_LABEL.retry_verification).toBe("Retry verification");
   });
 });
 
@@ -380,101 +322,5 @@ describe("a tool the sweep is never going to answer for", () => {
     );
     expect(row.name).toBe("Claude Desktop");
     expect(row.verifiable).toBe(false);
-  });
-});
-
-/**
- * AG-898. The rail has called Codex and the ChatGPT desktop app one app named
- * "ChatGPT / Codex" since `SECTIONS` was written, and this dialog listed them
- * apart on the screen the user reached it from.
- */
-describe("one row per app (AG-898)", () => {
-  it("collapses the surfaces of one app into a single row", () => {
-    const rows = reopenAppRows([
-      tool({ slug: "codex", name: "Codex", stage: "routing" }),
-      tool({ slug: "chatgpt", name: "ChatGPT", stage: "routing" }),
-      tool({ slug: "claude-code", name: "Claude Code", stage: "routing" }),
-    ]);
-
-    expect(rows.map((r) => r.name)).toEqual(["ChatGPT / Codex", "Claude"]);
-    expect(rows[0].members.map((m) => m.slug)).toEqual(["codex", "chatgpt"]);
-  });
-
-  /**
-   * Reporting the better half is how a dialog tells somebody everything is
-   * fine while their editor is not routed. This is the exact pairing the
-   * ticket screenshotted: ChatGPT reopened-not-checked, Codex failed.
-   */
-  it("lets the worse member speak for the app", () => {
-    const rows = reopenAppRows([
-      tool({ slug: "chatgpt", name: "ChatGPT", stage: "reopened" }),
-      tool({ slug: "codex", name: "Codex", stage: "verify_failed" }),
-    ]);
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0].lead.slug).toBe("codex");
-    expect(rows[0].mixed).toBe(true);
-  });
-
-  it("does not flag a mix when the members agree", () => {
-    const rows = reopenAppRows([
-      tool({ slug: "chatgpt", name: "ChatGPT", stage: "routing" }),
-      tool({ slug: "codex", name: "Codex", stage: "routing" }),
-    ]);
-
-    expect(rows[0].mixed).toBe(false);
-  });
-
-  /** AG-566 AC 10: retrying one tool must never repeat the change for
-   *  another, so a merged row still acts through one slug. */
-  it("keeps the action on the member it belongs to", () => {
-    const rows = reopenAppRows([
-      tool({ slug: "chatgpt", name: "ChatGPT", stage: "routing" }),
-      tool({ slug: "codex", name: "Codex", stage: "config_failed" }),
-    ]);
-
-    expect(rows[0].lead.slug).toBe("codex");
-  });
-
-  /** `buildGroups` gives an unplaced member a section of its own; this has to
-   *  agree, or a tool added to the catalog before anyone gives it a home
-   *  vanishes from the dialog. */
-  it("keeps a slug no section claims as its own row, under its own name", () => {
-    const rows = reopenAppRows([tool({ slug: "brand-new", name: "Brand New" })]);
-
-    expect(rows).toEqual([
-      expect.objectContaining({ id: "brand-new", name: "Brand New", mixed: false }),
-    ]);
-  });
-
-  it("preserves the order the tools arrived in", () => {
-    const rows = reopenAppRows([
-      tool({ slug: "opencode", name: "OpenCode" }),
-      tool({ slug: "codex", name: "Codex" }),
-      tool({ slug: "claude-code", name: "Claude Code" }),
-      tool({ slug: "chatgpt", name: "ChatGPT" }),
-    ]);
-
-    expect(rows.map((r) => r.id)).toEqual(["opencode", "chatgpt", "claude"]);
-  });
-});
-
-/**
- * AG-898. Support belongs where Gate has established the user cannot resolve
- * it themselves, and no stage here establishes that.
- */
-describe("what a row no longer offers", () => {
-  it("does not send a routing check to support", () => {
-    expect(actionsFor("verify_failed")).not.toContain("contact_support");
-    expect(actionsFor("close_failed")).not.toContain("contact_support");
-  });
-
-  it("keeps the actions the user can act on", () => {
-    expect(actionsFor("verify_failed")).toEqual([
-      "retry_verification",
-      "use_tool_defaults",
-      "view_diagnostics",
-    ]);
-    expect(actionsFor("close_failed")).toEqual(["reopen_tool", "view_diagnostics"]);
   });
 });

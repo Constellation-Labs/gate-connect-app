@@ -456,9 +456,11 @@ deliberate reversal of an earlier "no dashboard" rule.
   redefines Tailwind's `blue` as an OKLCH ramp for the old ink system, so
   those classes render the wrong colour. Use `base.primary`,
   `blue-ribbon-*`, or the semantic `chart.*` group.
-- **Font sizes go in rem, never px.** `useTextScale` scales the whole ramp
-  from the root, and a px literal opts that call site out of it entirely.
-  Use the `base-*` / `gc-*` `fontSize` tokens.
+- **Font sizes go in rem, never px.** Text scaling works by scaling the whole
+  ramp from the root, and a px literal opts that call site out of it entirely.
+  The popover's `useTextScale` did this and went with it on 2026-09-30; the
+  window has no scaling yet, and keeping the ramp in rem is what lets it come
+  back as one root change. Use the `base-*` `fontSize` tokens.
 - **The design names shadows on Tailwind v4's scale; this repo is on
   v3.4.** Figma `shadow/sm` is v3's default `shadow`, not `shadow-sm`.
   The `base-*` shadow tokens absorb the mapping; shift any new value one
