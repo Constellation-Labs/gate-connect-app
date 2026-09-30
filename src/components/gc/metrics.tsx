@@ -215,7 +215,7 @@ function Stat({
   return (
     <Tag
       {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
-      className={`flex-1 p-4 text-left ${divided ? "border-l border-base-border" : ""}${
+      className={`flex-1 p-4 text-left ${divided ? "border-l border-black/[0.12]" : ""}${
         onSelect ? " transition hover:bg-gray-50" : ""
       }`}
     >
@@ -294,7 +294,9 @@ export function MessagesChart({
   const empty = !pending && !unavailable && !unattributed && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
+      {/* `heading/18` since the 2026-09-29 redraw (`1390:13642`), as on every
+        * card title in the Overview and App frames. */}
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />

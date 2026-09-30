@@ -138,7 +138,7 @@ describe("what a row shows, and what it must not", () => {
   it("names the verdict, category, tool and model", () => {
     render(section({ events: [blocked] }));
     expect(screen.getByText("Blocked")).toBeTruthy();
-    expect(screen.getByText("credential")).toBeTruthy();
+    expect(screen.getByText("Credential")).toBeTruthy();
     expect(screen.getByText("claude-code")).toBeTruthy();
     expect(screen.getByText("claude-opus-4")).toBeTruthy();
   });
@@ -162,8 +162,8 @@ describe("what a row shows, and what it must not", () => {
     const older = { ...blocked, id: "01A", at: "2026-08-31T10:00:00Z", category: "pii" };
     const newer = { ...blocked, id: "01B", at: "2026-08-31T14:00:00Z", category: "injection" };
     render(section({ events: [older, newer] }));
-    const cells = screen.getAllByText(/pii|injection/);
-    expect(cells[0].textContent).toBe("injection");
+    const cells = screen.getAllByText(/^(PII|Injection)$/);
+    expect(cells[0].textContent).toBe("Injection");
   });
 });
 

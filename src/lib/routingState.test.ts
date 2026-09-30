@@ -19,15 +19,15 @@ describe("routingState", () => {
    *  partly of anything. */
   it("separates none-routed from partly routed", () => {
     expect(kind(0, 3)).toBe("none-routed");
-    expect(routingState(0, 3).headline).toBe("Gate is not routing your apps");
-    expect(routingState(1, 3).headline).toBe("Gate is partly routing your apps");
+    expect(routingState(0, 3).headline).toBe("Gate Connect is not routing your apps");
+    expect(routingState(1, 3).headline).toBe("Gate Connect is partly routing your apps");
   });
 
   /** The card's loss: it called this "Not protected", reporting a fault the
    *  user caused on purpose. */
   it("separates nothing-asked-for from nothing-routed", () => {
     expect(kind(0, 0)).toBe("none-requested");
-    expect(routingState(0, 0).headline).toBe("No apps are set to route");
+    expect(routingState(0, 0).headline).toBe("No apps are routed");
     expect(routingState(0, 0).label).not.toBe("Not protected");
   });
 
@@ -44,15 +44,16 @@ describe("routingState", () => {
     }
   });
 
-  it("is green only when routed, because there is no third tone drawn", () => {
+  it("is green only when routed, amber for a failure, grey for nothing asked", () => {
     expect(routingState(3, 3).tone).toBe("green");
-    for (const [r, t] of [
-      [1, 3],
-      [0, 3],
-      [0, 0],
-    ] as const) {
-      expect(routingState(r, t).tone).toBe("amber");
-    }
+    // Switched on and not (fully) routing: something is wrong, and the tile
+    // says so.
+    expect(routingState(1, 3).tone).toBe("amber");
+    expect(routingState(0, 3).tone).toBe("amber");
+    // Nothing switched on is not a fault, and since the 2026-09-29 redraw it has
+    // its own tone (`1390:14026`): grey, with a CircleOff glyph.
+    expect(routingState(0, 0).tone).toBe("grey");
+    expect(routingState(0, 0).icon).toBe("circleOff");
   });
 
   it("pairs the shield with the tone, so no surface can mismatch them", () => {
@@ -61,9 +62,13 @@ describe("routingState", () => {
   });
 
   /**
-   * Every headline has to fit the tray's 360px card beside a 36px tile, which
-   * is why they say "Gate" rather than "Gate Connect". A longer one would wrap
-   * the card and the two surfaces would be back to needing separate copy.
+   * Every headline has to fit the tray's 360px card beside a 36px tile on one
+   * line, or the two surfaces are back to needing separate copy. The headlines
+   * said "Gate" for that reason until the 2026-09-29 redraw put "Gate Connect"
+   * on every window banner; the longest of them, "Gate Connect is partly
+   * routing your apps", measures 269px at 14px Medium (`1404:18358`) and the
+   * card has 280 beside its tile, so the bound moved with the copy rather
+   * than the copy being cut to the bound.
    */
   it("keeps every headline short enough for the narrow surface", () => {
     for (const [r, t] of [
@@ -73,8 +78,7 @@ describe("routingState", () => {
       [0, 0],
     ] as const) {
       const { headline } = routingState(r, t);
-      expect(headline.length).toBeLessThanOrEqual(34);
-      expect(headline).not.toMatch(/Gate Connect/);
+      expect(headline.length).toBeLessThanOrEqual(40);
     }
   });
 

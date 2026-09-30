@@ -3301,7 +3301,7 @@ export function NewUiApp() {
           // every section is unread, which is what the fallback says. Once
           // there is one, it names its own gaps.
           unavailable={activity.view?.missing ?? ALL_MISSING}
-          period={activity.view?.period ?? "Last 24 hours"}
+          updatedAt={activity.view?.takenAt ?? null}
           alert={
             <>
               {notice && (

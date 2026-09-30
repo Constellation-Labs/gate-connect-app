@@ -36,6 +36,8 @@ export type IconName =
   | "layoutDashboard"
   | "settings2"
   | "shieldBan"
+  | "circleOff"
+  | "box"
   | "triangleAlert"
   | "ellipsis"
   | "squareArrowOutUpRight"
@@ -376,6 +378,23 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="12" cy="12" r="10" />
       <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  // `Icon / CircleOff` (1392:15971): the routing banner's none-state tile.
+  circleOff: (
+    <>
+      <path d="m2 2 20 20" />
+      <path d="M8.35 2.69A10 10 0 0 1 21.3 15.65" />
+      <path d="M19.08 19.08A10 10 0 1 1 4.92 4.92" />
+    </>
+  ),
+  // `Icon / Box` (342:4813): the App default option on the model card. The
+  // Gate model option beside it takes `cube`, which is `Icon / Boxes`.
+  box: (
+    <>
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="M12 22V12" />
     </>
   ),
   circleX: (

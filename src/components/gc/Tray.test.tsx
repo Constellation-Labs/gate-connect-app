@@ -81,7 +81,7 @@ describe("the routing status card", () => {
       ],
     });
     expect(
-      screen.getByRole("heading", { name: "Gate is protecting you" }),
+      screen.getByRole("heading", { name: "Gate Connect is protecting you" }),
     ).toBeTruthy();
     expect(screen.getByText("2 of 2 tools on")).toBeTruthy();
   });
@@ -103,7 +103,7 @@ describe("the routing status card", () => {
     // sentence comes from. It used to read "Partially routed" here and
     // "partly routing your apps" there, for the same state.
     expect(
-      screen.getByRole("heading", { name: "Gate is partly routing your apps" }),
+      screen.getByRole("heading", { name: "Gate Connect is partly routing your apps" }),
     ).toBeTruthy();
     // Both rows are ON, so the fraction is 2 of 2 even though only one is
     // routed. The fraction counts intent over availability; the HEADING is
@@ -129,7 +129,7 @@ describe("the routing status card", () => {
   it("does not count a row the user never switched on", () => {
     renderTray();
     expect(
-      screen.getByRole("heading", { name: "Gate is protecting you" }),
+      screen.getByRole("heading", { name: "Gate Connect is protecting you" }),
     ).toBeTruthy();
     expect(screen.getByText("1 of 2 tools on")).toBeTruthy();
   });
@@ -152,7 +152,7 @@ describe("the routing status card", () => {
     // Its own state since AG-913, rather than being folded into "partly" the
     // way the banner used to fold it: none of one is not partly.
     expect(
-      screen.getByRole("heading", { name: "Gate is not routing your apps" }),
+      screen.getByRole("heading", { name: "Gate Connect is not routing your apps" }),
     ).toBeTruthy();
     expect(screen.getByText("Didn’t start · 1 of 1 tools on")).toBeTruthy();
   });
@@ -183,7 +183,7 @@ describe("the routing status card", () => {
     // entirely rather than printing a bare "On" under a heading that just
     // said nothing is routing.
     expect(
-      screen.getByRole("heading", { name: "No apps are set to route" }),
+      screen.getByRole("heading", { name: "No apps are routed" }),
     ).toBeTruthy();
     expect(screen.queryByText("On")).toBeNull();
     expect(screen.queryByText("Off")).toBeNull();

@@ -15,6 +15,42 @@ import { Icon } from "./Icon";
  * siblings): white, 8px radius, a 1px `base/border` hairline and `shadow/sm`.
  * Shared with the Settings pane, which uses the same shape per section.
  */
+/**
+ * A card's header row: `heading/18` title at left, an optional Outline `sm`
+ * action at right, 16/12 padding, and a `base/border` rule spanning the card.
+ *
+ * The frames still call the layer `card/footer`, but since the 2026-09-29
+ * redraw it sits at the TOP of every table card (`1402:17917`, `1402:18268`,
+ * `1402:17988`, `1410:28166`). It replaces the footer link the older
+ * `card/policies` (116:26707) drew under the rows, so the card it sits in
+ * carries no padding of its own and the rows below reach the border.
+ */
+export function CardHeader({
+  title,
+  action,
+}: {
+  title: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-base-border px-4 py-3">
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">
+        {title}
+      </h2>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          className="flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {action.label}
+          <Icon name="squareArrowOutUpRight" size={16} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Card({
   children,
   className = "",
@@ -61,6 +97,9 @@ export function Card({
 const TILE_TONES = {
   green: "from-green-50 to-green-200 border-green-300 text-green-700",
   amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
+  // The none state, drawn since the 2026-09-29 redraw (`1390:14026`): gray/50
+  // to gray/200 over a gray/300 line, the `CircleOff` glyph sampled gray/600.
+  grey: "from-gray-50 to-gray-200 border-gray-300 text-gray-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
   // gradient, 300 border, 600 icon pattern as the two that are.
   red: "from-red-50 to-red-200 border-red-300 text-red-600",

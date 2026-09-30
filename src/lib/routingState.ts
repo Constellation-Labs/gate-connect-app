@@ -65,33 +65,35 @@ export interface RoutingState {
   /**
    * The sentence, for a surface with room for one.
    *
-   * Says "Gate", not "Gate Connect". The tray's routing card is 360px wide and
-   * the longest of these has to fit beside a 36px tile; the card's own frame
-   * already writes "Gate is protecting you". Taking the narrow surface's
-   * product name is what lets both draw one sentence, which is the whole point
-   * of this module.
+   * Says "Gate Connect" since the 2026-09-29 redraw: every window banner
+   * (`1390:14024`, `1374:7567`, `1401:16730`, `1404:18354`) writes the full
+   * product name. This used to say "Gate" so the tray's 360px routing card
+   * could draw the same sentence; the longest of these is 269px at 14px
+   * Medium, which still fits beside that card's 36px tile.
    */
   headline: string;
-  tone: "green" | "amber";
-  icon: "shieldCheck" | "shieldBan";
+  /** Grey is the drawn none state (`1390:14024`, a gray/50-to-200 tile with a
+   *  `CircleOff` glyph), and the label beside it is muted rather than amber. */
+  tone: "green" | "amber" | "grey";
+  icon: "shieldCheck" | "shieldBan" | "circleOff";
 }
 
 const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
   routed: {
     label: "Routed",
-    headline: "Gate is protecting you",
+    headline: "Gate Connect is protecting you",
     tone: "green",
     icon: "shieldCheck",
   },
   partly: {
     label: "Partly routed",
-    headline: "Gate is partly routing your apps",
+    headline: "Gate Connect is partly routing your apps",
     tone: "amber",
     icon: "shieldBan",
   },
   "none-routed": {
     label: "Not protected",
-    headline: "Gate is not routing your apps",
+    headline: "Gate Connect is not routing your apps",
     tone: "amber",
     icon: "shieldBan",
   },
@@ -101,19 +103,22 @@ const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
     // answer rather than a gap. A fraction DOES go beside it now - "0 of 8
     // Apps on" - since the denominator became availability and stopped being
     // the meaningless half of "0 of 0" (2026-09-23).
-    headline: "No apps are set to route",
-    tone: "amber",
-    icon: "shieldBan",
+    headline: "No apps are routed",
+    tone: "grey",
+    icon: "circleOff",
   },
 };
 
 /**
  * Which state a pair of counts is in.
  *
- * Amber for all three unhappy states because there is no third tone drawn and
- * picking one by eye is the thing this repo is told not to do - see question 23
- * in `docs/figma-questions-for-design.md`. The words are the part that was
- * making a false claim, so the words are the part that changed.
+ * Grey for "nothing switched on" and amber for the two failures. The grey is
+ * drawn (`Overview/none-routed` 1390:13599 and `App/not-routing` 1340:21966,
+ * 2026-09-29), which answers the old question 23: before it every unhappy
+ * state was amber because no third tone existed. Whether that grey banner is
+ * also meant for `none-routed` - switched on, and routing did not start - is
+ * open (`plans/new-app-ui-figma.md`, design sync 2026-09-30, question 1), so that
+ * state keeps its amber and its own sentence.
  */
 export function routingState(routed: number, requested: number): RoutingState {
   const kind: RoutingStateKind =

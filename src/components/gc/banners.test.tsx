@@ -86,7 +86,7 @@ describe("RoutingBanner's fraction", () => {
     render(
       <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
     );
-    expect(screen.getByText("Gate is protecting you")).toBeTruthy();
+    expect(screen.getByText("Gate Connect is protecting you")).toBeTruthy();
     expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
   });
 
@@ -98,7 +98,7 @@ describe("RoutingBanner's fraction", () => {
     render(
       <RoutingBanner protectedCount={1} totalCount={2} availableCount={8} />,
     );
-    expect(screen.getByText("Gate is partly routing your apps")).toBeTruthy();
+    expect(screen.getByText("Gate Connect is partly routing your apps")).toBeTruthy();
     expect(screen.getByText("Partly routed")).toBeTruthy();
     expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
   });
@@ -109,7 +109,7 @@ describe("RoutingBanner's fraction", () => {
     render(
       <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
     );
-    expect(screen.getByText("No apps are set to route")).toBeTruthy();
+    expect(screen.getByText("No apps are routed")).toBeTruthy();
     expect(screen.getByText("0 of 8 Apps on")).toBeTruthy();
   });
 
@@ -119,7 +119,7 @@ describe("RoutingBanner's fraction", () => {
     render(
       <RoutingBanner protectedCount={0} totalCount={0} availableCount={0} />,
     );
-    expect(screen.getByText("No apps are set to route")).toBeTruthy();
+    expect(screen.getByText("No apps are routed")).toBeTruthy();
     expect(screen.queryByText(/of 0 Apps/)).toBeNull();
   });
 
