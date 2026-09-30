@@ -429,10 +429,16 @@ async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, Stri
         // Record that this account authenticates via OAuth so load() stops
         // requiring a pasted key, and push the fresh token into a running
         // engine so routing switches to it without waiting for a restart.
+        // The engine's key goes with it: an account that pasted one before
+        // this sign-in would otherwise keep it there, and a later dead session
+        // would be served under it rather than refused (`lacks_gate_credential`).
         gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
             .map_err(|e| format!("{e:#}"))?;
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+            gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        }
         Ok(OAuthStatusDto::from(&tokens))
     })
     .await
@@ -454,8 +460,9 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 async fn oauth_sign_out() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
-        // Revert a running engine to the legacy header immediately (empty
-        // token == fall back to the API key, if one is present).
+        // Take the token out of a running engine now. The account stays in
+        // OAuth mode and holds no key, so routed requests are refused as
+        // signed out rather than sent under anything.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_token("");
         Ok::<(), String>(())
@@ -474,7 +481,14 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
         } else {
             gate_connect_core::account::AuthMode::ApiKey
         };
-        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
+        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))?;
+        // An OAuth account holds no key (`account::load`), so neither may a
+        // running engine: see `oauth_begin_login`.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if oauth {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
@@ -1879,6 +1893,12 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
             }
         }
         gate_connect_core::startup::Recheck::Dead => {
+            // A sign-in that finished since the verdict cleared it
+            // (`oauth::store`) and pushed its own token, which this stale
+            // verdict must not replace.
+            if !gate_connect_core::oauth::session_rejected() {
+                return;
+            }
             // Push the empty token now rather than on the next tick: the
             // engine then refuses routed requests as signed out at once, and
             // a relay request waiting on this verdict stops waiting.
@@ -2947,8 +2967,8 @@ pub fn run() {
                 });
                 // Both verdicts reach the token watch: `Recovered` pushes the
                 // new token, `Dead` pushes the empty one. `Unchanged` pushes
-                // nothing, and a relay request waiting on it runs out its
-                // wait.
+                // nothing, and a relay request waiting on it stops when the
+                // guard above drops.
                 true
             });
 

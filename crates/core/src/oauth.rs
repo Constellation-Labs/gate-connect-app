@@ -22,7 +22,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use time::OffsetDateTime;
 
 use crate::env;
@@ -45,6 +45,18 @@ static SESSION_REJECTED_BY_GATEWAY: AtomicBool = AtomicBool::new(false);
 /// reports `None` until a new login stores fresh tokens.
 pub fn mark_session_rejected() {
     SESSION_REJECTED_BY_GATEWAY.store(true, Ordering::Relaxed);
+}
+
+/// Bumped every time the stored bundle is replaced ([`store`]: a sign-in or a
+/// refresh) or removed ([`clear`]). A verdict reached about one bundle says
+/// nothing about the next, so a caller that takes a while to reach one reads
+/// this before and after and drops the verdict if it moved - otherwise a
+/// sign-in that finished during a re-check would be marked dead by it.
+static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The current [`SESSION_GENERATION`].
+pub fn session_generation() -> u64 {
+    SESSION_GENERATION.load(Ordering::Acquire)
 }
 
 /// Whether the gateway has been recorded as rejecting the stored session
@@ -463,6 +475,7 @@ pub fn store(tokens: &OAuthTokens) -> Result<()> {
     let json = serde_json::to_string(tokens).context("serializing oauth tokens")?;
     keychain::set(&service(), &user, &json)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
+    SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 
@@ -500,6 +513,7 @@ pub fn clear() -> Result<()> {
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
+    SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 

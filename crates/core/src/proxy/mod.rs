@@ -688,11 +688,17 @@ pub fn set_gate_auth_observer(observer: impl Fn() -> bool + Send + Sync + 'stati
 /// already in flight or the last one's cooldown is still running. Called by
 /// the engine's `handle_response` on a 401 to a request we authenticated.
 ///
-/// Returns whether a verdict will follow on the token watch: what the observer
-/// answered when it ran, `true` while a check it started is still in flight,
-/// and `false` when there is no observer or the cooldown is running. The
-/// relay's retry waits on the watch exactly when this is `true`; on `false`
-/// nothing will change and a caller holding a refusal should pass it on now.
+/// Returns whether a verdict may follow on the token watch: what the observer
+/// answered when it ran, `true` while a check is already in flight, and
+/// `false` when there is no observer or the cooldown is running. The relay's
+/// retry waits on the watch exactly when this is `true`; on `false` nothing
+/// will change and a caller holding a refusal should pass it on now.
+///
+/// "In flight" says a check is running, not that it will push anything for
+/// this caller: it may have pushed its verdict already, reach none, or belong
+/// to an observer that never pushes (the Linux daemon's, whose latch is held
+/// only while it counts). So a waiter also stops at the check's end,
+/// [`GATE_AUTH_CHECK_DONE`], rather than only at a push or its deadline.
 pub(crate) fn notify_gate_auth_observer() -> bool {
     let Some(observer) = GATE_AUTH_OBSERVER.get() else {
         return false;
@@ -742,7 +748,16 @@ pub fn gate_auth_check_finished() {
         *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
     }
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
+    // Last, so a waiter woken here finds the cooldown already running.
+    GATE_AUTH_CHECK_DONE.notify_waiters();
 }
+
+/// Wakes every relay request waiting on a check's verdict when that check
+/// ends. The verdict itself travels on the token watch and is pushed before
+/// the check's guard drops, so by the time this fires the watch holds
+/// whatever the check decided; a waiter that still sees the refused token
+/// then has nothing more to wait for.
+pub(crate) static GATE_AUTH_CHECK_DONE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// The last `cf_clearance` a solve captured, kept for the life of the
 /// process so an engine restart does not throw it away.
@@ -1706,15 +1721,14 @@ pub(crate) fn inject_gate_credential(
             return Ok(true);
         }
         None => {
-            // Nothing to fall back to: an OAuth account whose session is dead
-            // holds no key (`account::load`). An empty header would go out as
-            // a credential and be refused as one, so this is an error rather
-            // than a header. Both callers test `lacks_gate_credential` before
-            // they get here and answer the tool themselves, so this is
-            // unreachable from either today. It is a real guard only on the
-            // relay, whose `?` sends nothing on an error; the engine's caller
-            // has already rewritten the URI to the gateway and forwards the
-            // request on an error, so there this would go out bare.
+            // The state `lacks_gate_credential` names. An empty header would
+            // go out as a credential and be refused as one, so this is an
+            // error rather than a header. Both callers test that predicate
+            // first and answer the tool themselves, so this is unreachable
+            // from either today. It is a real guard only on the relay, whose
+            // `?` sends nothing on an error; the engine's caller has already
+            // rewritten the URI to the gateway and forwards the request on an
+            // error, so there this would go out bare.
             if api_key.is_empty() {
                 anyhow::bail!("no Gate credential to inject: no live OAuth session and no API key");
             }
@@ -1750,20 +1764,26 @@ pub(crate) fn lacks_gate_credential(headers: &HeaderMap, api_key: &str, oauth_to
 pub(crate) const SIGNED_OUT_MESSAGE: &str =
     "Gate Connect is signed out; sign in to Gate Connect to keep routing through Gate";
 
-/// The `type` in [`signed_out_body`], for a client log to be searched by.
-pub(crate) const SIGNED_OUT_ERROR_TYPE: &str = "gate_signed_out";
-
 /// The 401 body both paths send when [`lacks_gate_credential`] holds: the
 /// provider error envelope shape the engine's other local answers use, typed
-/// [`SIGNED_OUT_ERROR_TYPE`]. One body rather than two, so the relay and the
-/// engine cannot say different things, and built rather than interpolated so
-/// the sentence can hold any character.
+/// `gate_signed_out` so a client log can be searched for it. One body rather
+/// than two, so the relay and the engine cannot say different things, and
+/// built rather than interpolated so the sentence can hold any character.
 pub(crate) fn signed_out_body() -> String {
     serde_json::json!({
-        "error": { "message": SIGNED_OUT_MESSAGE, "type": SIGNED_OUT_ERROR_TYPE }
+        "error": { "message": SIGNED_OUT_MESSAGE, "type": "gate_signed_out" }
     })
     .to_string()
 }
+
+/// The headers on the [`signed_out_body`] 401, on both paths. A 401 names its
+/// scheme (RFC 9110 11.6.1), and the body is JSON a tool may render, so it is
+/// never sniffed as anything else.
+pub(crate) const SIGNED_OUT_HEADERS: [(&str, &str); 3] = [
+    ("content-type", "application/json"),
+    ("www-authenticate", "Bearer realm=\"Gate Connect\""),
+    ("x-content-type-options", "nosniff"),
+];
 
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,

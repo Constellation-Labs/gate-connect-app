@@ -82,11 +82,8 @@ pub fn service() -> String {
 /// The key is not read in `OAuth` mode, and this is deliberate. A key pasted
 /// before the switch to OAuth stays in the keychain, because switching back
 /// ([`set_auth_mode`]) must find it; but it is not this account's credential,
-/// and handing it out here is what let a dead session fall back to it - every
-/// routed request quietly authenticated and billed under a key the user
-/// thought they had replaced, while the tray said sign in. With nothing to
-/// fall back to, the engine and relay refuse the request themselves
-/// (`proxy::SIGNED_OUT_MESSAGE`).
+/// and a dead session must not fall back to it. Why, and what a routed
+/// request gets instead, is on `proxy::lacks_gate_credential`.
 pub fn load() -> Result<Option<Account>> {
     let Some((file, raw)) = read_account_file_raw()? else {
         return Ok(None);

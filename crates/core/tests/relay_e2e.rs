@@ -766,8 +766,16 @@ async fn relay_retries_only_once() {
     ));
     let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
 
+    let started = Instant::now();
     let resp = post_messages(engine.relay_port(), &[]).await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    // A second retry would find the watch still on the token it just sent and
+    // wait out the deadline before giving up with the same two attempts
+    // captured, so the count alone cannot tell once from a loop.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the refused retry is passed on at once, not after another wait"
+    );
 
     push.await.unwrap();
     stop(engine);
@@ -805,6 +813,39 @@ async fn relay_does_not_retry_a_refused_legacy_key() {
     assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-test"));
 }
 
+/// A caller that brings its own Gate key is served under it even while a
+/// session is live, and a refusal of that key is the caller's, not ours: it is
+/// passed on at once, with no re-check and no retry. This is the case the
+/// "only retry our own bearer" rule exists for; the legacy-key test above
+/// cannot reach it, because with no token the refusal is settled before the
+/// rule is consulted.
+#[tokio::test]
+async fn relay_does_not_retry_a_refused_caller_key_while_signed_in() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-api-key", "sk-gw-caller");
+    let engine = boot_engine(gateway.base_url.clone(), "live-token", "org-uuid-1");
+
+    let started = Instant::now();
+    let resp = post_messages(engine.relay_port(), &[("x-gate-api-key", "sk-gw-caller")]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a refusal of the caller's own key has no verdict of ours to wait for"
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "a caller's refused key is not retried");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-caller"));
+    assert_eq!(
+        reqs[0].header("x-gate-authorization"),
+        None,
+        "nothing of ours goes on a caller-keyed request"
+    );
+}
+
 /// An OAuth account whose session is dead has no key to fall back to. The relay
 /// refuses the request itself with the same typed body the engine sends, and
 /// nothing reaches the gateway - which would otherwise have answered with a
@@ -822,6 +863,18 @@ async fn relay_refuses_locally_when_signed_out() {
             .and_then(|v| v.to_str().ok()),
         Some("application/json"),
         "the one relay error a tool is meant to parse is typed"
+    );
+    assert!(
+        resp.headers()
+            .get("www-authenticate")
+            .is_some_and(|v| v.as_bytes().starts_with(b"Bearer")),
+        "a 401 names its scheme"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
     );
     let body = resp.text().await.unwrap();
     assert!(

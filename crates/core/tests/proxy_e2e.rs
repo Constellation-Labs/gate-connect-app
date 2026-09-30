@@ -1234,6 +1234,17 @@ async fn proxy_refuses_locally_when_signed_out() {
         .await
         .expect("the engine answers");
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    for (name, value) in [
+        ("content-type", "application/json"),
+        ("www-authenticate", "Bearer realm=\"Gate Connect\""),
+        ("x-content-type-options", "nosniff"),
+    ] {
+        assert_eq!(
+            resp.headers().get(name).and_then(|v| v.to_str().ok()),
+            Some(value),
+            "the engine's 401 carries the relay's headers"
+        );
+    }
     let body = resp.text().await.unwrap();
     assert!(
         body.contains("gate_signed_out"),

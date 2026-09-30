@@ -1440,16 +1440,17 @@ fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
 /// The response a routed request gets when
 /// [`lacks_gate_credential`](crate::proxy::lacks_gate_credential) holds.
 /// Shaped like [`decline_upgrade_response`], and for the same reason; the body
-/// is [`crate::proxy::signed_out_body`], the one the relay's 401 carries.
+/// is [`crate::proxy::signed_out_body`], the one the relay's 401 carries, and
+/// so are the headers.
 fn signed_out_response() -> hudsucker::hyper::Response<Body> {
-    hudsucker::hyper::Response::builder()
-        .status(hudsucker::hyper::StatusCode::UNAUTHORIZED)
-        .header(
-            hudsucker::hyper::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )
+    let mut builder =
+        hudsucker::hyper::Response::builder().status(hudsucker::hyper::StatusCode::UNAUTHORIZED);
+    for (name, value) in crate::proxy::SIGNED_OUT_HEADERS {
+        builder = builder.header(name, HeaderValue::from_static(value));
+    }
+    builder
         .body(Body::from(crate::proxy::signed_out_body()))
-        // Infallible: the status and header are static, the body is a String.
+        // Infallible: the status and headers are static, the body is a String.
         .expect("signed-out response builds")
 }
 
