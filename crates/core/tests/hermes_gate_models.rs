@@ -423,3 +423,23 @@ fn a_fresh_install_survives_reconnects_and_app_default() {
         assert_eq!(config(), fresh, "Gate, App default, Gate again, disconnect");
     }
 }
+
+/// The stored choice and `config.yaml` disagreeing is drift, whatever the
+/// proxy says: App default stored while Gate's provider is still selected
+/// refuses every request (review on #382).
+#[test]
+fn a_config_left_on_gate_models_after_app_default_is_drift() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup(ORIGINAL);
+    let hermes = find(ToolId::Hermes).unwrap();
+    choose_gate(&[LUNA]);
+    hermes.connect(&input()).unwrap();
+    // App default stored, and no connect after it: the fix-up that failed.
+    choose_tool();
+    match hermes.status().unwrap() {
+        gate_connect_core::registry::Status::Drifted(why) => {
+            assert!(why.contains("still on Gate models"), "{why}")
+        }
+        other => panic!("expected drift, got {other:?}"),
+    }
+}

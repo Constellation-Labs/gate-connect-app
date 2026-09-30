@@ -155,9 +155,10 @@ export function RoutingBanner({
           * owed to design, along with the fact that it does not match the
           * rail's group counters on the numerator. `routingState` carries both.
           * The trailing "on" went on 2026-09-30, from staging QA ("2 of 4 apps"
-          * only), which is also the frame's own wording. It had been kept so the
-          * ratio could not read as routed-of-available beside a "Routed" pill;
-          * that risk is accepted with it. */}
+          * only). The frame draws "Apps", capitalised, so the lower case is a
+          * copy deviation owed to design too. "on" had been kept so the ratio
+          * could not read as routed-of-available beside a "Routed" pill; that
+          * risk is accepted with it. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>

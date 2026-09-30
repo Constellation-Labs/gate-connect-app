@@ -120,15 +120,25 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
         if !integ.supports_gate_models() {
             continue;
         }
+        // The card gets a fixed sentence and the log gets the chain. A parse
+        // error can quote the offending line of a config that sits next to a
+        // token, and the chain is developer text in any case (review on #382).
         let (state, problem) = match integ.gate_model_state() {
             Ok(state) => (state, None),
-            Err(e) => (
-                GateModelState::NotApplied,
-                Some(format!(
-                    "{}'s config could not be read: {e:#}",
+            Err(e) => {
+                crate::logging::failure(&format!(
+                    "reading {}'s config for Gate models failed: {e:#}",
                     integ.display_name()
-                )),
-            ),
+                ));
+                (
+                    GateModelState::NotApplied,
+                    Some(format!(
+                        "Gate Connect could not read {}'s config, so it cannot tell which \
+                         model it runs.",
+                        integ.display_name()
+                    )),
+                )
+            }
         };
         let mut view = ToolModelView {
             supported: true,
@@ -150,9 +160,10 @@ pub fn states() -> BTreeMap<&'static str, ToolModelView> {
                         integ.display_name()
                     ));
                     view.problem = Some(format!(
-                        "{} was moved off its Gate models, and Gate Connect could not put it \
-                         back on its own model: {e:#}",
-                        integ.display_name()
+                        "{name} was moved off its Gate models, and Gate Connect could not put \
+                         it back on its own model, so its requests are refused. Choose a model \
+                         for {name} again here.",
+                        name = integ.display_name()
                     ));
                 }
             }

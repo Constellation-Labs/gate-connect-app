@@ -209,7 +209,9 @@ pub(crate) fn set_nested(
         if current.trim_matches(['"', '\'']) == value {
             return Ok((body.to_string(), Edit::Unchanged));
         }
-        let comment = trailing_comment(rest).unwrap_or("");
+        // The trimmed value, as `set_child` passes it: from an untrimmed one a
+        // `#` inside quotes could read as a comment (review on #382).
+        let comment = trailing_comment(rest.trim()).unwrap_or("");
         out[child_open + 1 + i] = format!("{}{key}: {value}{comment}", " ".repeat(key_indent));
         return Ok((join(out, trailing_newline, eol), Edit::Refreshed));
     }

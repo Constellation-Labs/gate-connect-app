@@ -310,8 +310,30 @@ impl Integration for Hermes {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
         }
-        if load_state()?.is_none() {
+        let Some(state) = load_state()? else {
             return Ok(Status::Detected);
+        };
+        // The stored choice and `config.yaml` must agree about Gate models, or
+        // the row would read Protected over a Hermes whose every request the
+        // Gate models route refuses - still on Gate's provider after the
+        // choice went back to App default and the fix-up failed - or over one
+        // whose chosen models never reached its config (review on #382). The
+        // proxy checks below cannot see either: routing is in `.env`.
+        let chosen = crate::preferences::gate_models_for(ToolId::Hermes.slug()).is_some();
+        match (state.gate_models.is_some(), chosen) {
+            (true, false) => {
+                return Ok(Status::Drifted(
+                    "Hermes is still on Gate models in config.yaml although Gate Connect has it \
+                     on its own model, so its requests are refused"
+                        .into(),
+                ))
+            }
+            (false, true) => {
+                return Ok(Status::Drifted(
+                    "the Gate models chosen for Hermes are not in its config.yaml yet".into(),
+                ))
+            }
+            _ => {}
         }
         let configured = configured_proxy()?.unwrap_or_default();
         Ok(compute_status(

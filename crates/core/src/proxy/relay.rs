@@ -1237,11 +1237,9 @@ pub const HEALTH_PATH: &str = "/__gate/health";
 /// interface can call any path, exactly as it can send any `User-Agent`. What it
 /// buys is that the honest case stops depending on a string nobody here owns.
 ///
-/// Worth knowing before treating this as cosmetic: attribution authorizes
-/// nothing, but it is not inert either. `client_tool`'s result also gates
-/// `inject_model_choice`, so naming a tool correctly can start applying a
-/// Gate-model choice the user stored and the tool was too anonymous to receive.
-/// That is the intent; `client_tool`'s doc has the full note.
+/// On the Gate models route the marker is more than a label: it is how the
+/// enabled set is looked up (`gate_served`), which is why that route requires
+/// it. Everywhere else it only names the tool in the activity view.
 ///
 /// **Rolling back is a hard break, not a soft one.** A build that predates this
 /// prefix reads `__gate` as a leading catalog slug, finds no domain and no

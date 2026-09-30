@@ -139,27 +139,29 @@ fn an_untouched_tool_has_no_entry() {
     assert!(!load().tool_models.contains_key("claude-code"));
 }
 
-/// Overlapping saves for different tools keep both (review on #382). Without
-/// the write lock each load-modify-save could save what it loaded before the
-/// other landed.
+/// Overlapping saves for different keys keep every one (review on #382).
+/// Each thread writes a key no other thread touches, so any load-modify-save
+/// that saved what it loaded before another landed loses a whole key - which
+/// the unlocked version did routinely at this width, and which a lock rules out.
 #[test]
-fn concurrent_saves_for_different_tools_keep_both() {
+fn concurrent_saves_for_different_tools_keep_every_one() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
-    let threads: Vec<_> = (0..16)
+    const WRITERS: usize = 48;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+    let threads: Vec<_> = (0..WRITERS)
         .map(|i| {
+            let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let slug = if i % 2 == 0 { "codex" } else { "hermes" };
+                barrier.wait();
                 set_tool_model(
-                    slug,
+                    &format!("tool-{i}"),
                     ModelSource::Gate,
                     vec![format!("a/m{i}")],
                     true,
                     vec![],
                 )
                 .expect("save");
-                gate_connect_core::preferences::set_device_name(&format!("dev {i}"))
-                    .expect("rename");
             })
         })
         .collect();
@@ -167,9 +169,10 @@ fn concurrent_saves_for_different_tools_keep_both() {
         t.join().unwrap();
     }
     let prefs = gate_connect_core::preferences::load();
-    assert!(prefs.tool_models.contains_key("codex"), "{prefs:?}");
-    assert!(prefs.tool_models.contains_key("hermes"), "{prefs:?}");
-    assert!(prefs.device_name.is_some());
+    let missing: Vec<usize> = (0..WRITERS)
+        .filter(|i| !prefs.tool_models.contains_key(&format!("tool-{i}")))
+        .collect();
+    assert!(missing.is_empty(), "lost writes for {missing:?}");
 }
 
 /// A choice written by another process (the CLI) is served without a restart:
