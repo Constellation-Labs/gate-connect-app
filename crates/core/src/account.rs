@@ -99,13 +99,18 @@ pub fn service() -> String {
 /// Load the account if it's usable. The gateway URL (on disk) is always
 /// required. The key requirement depends on the auth mode: in the legacy
 /// `ApiKey` mode a Gate key in the keychain is required; in `OAuth` mode the
-/// Cognito token is the credential, so a missing key is expected and loads as
-/// an empty string . Missing what's required returns None.
+/// Cognito token is the credential, and `api_key` is **always empty**, whether
+/// or not a key is still in the keychain. Missing what's required returns None.
+///
+/// The key is not read in `OAuth` mode, and this is deliberate. A key pasted
+/// before the switch to OAuth stays in the keychain, because switching back
+/// ([`set_auth_mode`]) must find it; but it is not this account's credential,
+/// and a dead session must not fall back to it. Why, and what a routed
+/// request gets instead, is on `proxy::lacks_gate_credential`.
 pub fn load() -> Result<Option<Account>> {
     let Some((file, raw)) = read_account_file_raw()? else {
         return Ok(None);
     };
-    let user = env::current_user()?;
     // Witnessed by `account.json` rather than read outright: on Linux the
     // proxy manager calls this every 30 seconds to re-push the intercept
     // config, and a plain read there costs the secret-store daemon ~8 KB a
@@ -117,11 +122,15 @@ pub fn load() -> Result<Option<Account>> {
     // else would go unseen until the next in-process write. Pick a stronger
     // witness if you reuse this pattern on a value whose file records less.
     // See `keychain::get_cached`.
-    let stored_key = keychain::get_cached(&service(), &user, &raw)?;
-    let api_key = match (file.auth_mode, stored_key) {
-        (_, Some(key)) => key,
-        (AuthMode::OAuth, None) => String::new(),
-        (AuthMode::ApiKey, None) => return Ok(None),
+    let api_key = match file.auth_mode {
+        AuthMode::OAuth => String::new(),
+        AuthMode::ApiKey => {
+            let user = env::current_user()?;
+            match keychain::get_cached(&service(), &user, &raw)? {
+                Some(key) => key,
+                None => return Ok(None),
+            }
+        }
     };
     Ok(Some(Account {
         gateway_base_url: file.gateway_base_url,

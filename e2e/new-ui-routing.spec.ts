@@ -642,7 +642,7 @@ test.describe("new UI sidebar rail", () => {
 
     // The topbar's denominator is every app on the rail, and these are not.
     // Claude, ChatGPT / Codex and OpenClaw: the three rows drawn above.
-    await expect(app.page.getByText("0 of 3 apps", { exact: true })).toBeVisible();
+    await expect(app.page.getByText("0 of 3 Apps", { exact: true })).toBeVisible();
   });
 
   test("an app switch routes every surface that app uses", async ({ boot }) => {

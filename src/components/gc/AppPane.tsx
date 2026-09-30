@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
+import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, OutlineButton, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -525,7 +525,8 @@ function ModelSelection({
 
   return (
     <Card className="p-4">
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+      {/* `heading/18` (`1410:28124`) since the 2026-09-29 redraw. */}
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">
         Model selection
       </h2>
       <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
@@ -533,7 +534,7 @@ function ModelSelection({
       </p>
 
       {pending ? (
-        <div className="mt-4 grid grid-cols-2 gap-4">
+        <div className="mt-4 grid grid-cols-2 gap-2">
           <Skeleton className="h-[3.75rem]" />
           <Skeleton className="h-[3.75rem]" />
         </div>
@@ -542,13 +543,16 @@ function ModelSelection({
           <div
             role="radiogroup"
             aria-label="Model selection"
-            className="mt-4 grid grid-cols-2 gap-4"
+            // 8px between the two options (`1410:28126`), and the glyphs the
+            // frame draws on them: `Icon / Box` for App default, `Icon / Boxes`
+            // (`cube`) for Gate model (`1410:28130`, `1410:28138`).
+            className="mt-4 grid grid-cols-2 gap-2"
           >
             <ModelOption
               selected={choice === "app"}
               disabled={choice === null || busy}
               onSelect={() => onChoose("app")}
-              icon={<Icon name="cube" size={20} />}
+              icon={<Icon name="box" size={20} />}
               title="App default"
               description="Use the model configured in your app"
             />
@@ -556,7 +560,7 @@ function ModelSelection({
               selected={gateActive}
               disabled={choice === null || busy}
               onSelect={() => onChoose("gate")}
-              icon={<Icon name="layers" size={20} />}
+              icon={<Icon name="cube" size={20} />}
               title="Gate model"
               // Names the chosen model once there is one, rather than the
               // generic line the frame draws.
@@ -672,7 +676,11 @@ function ModelSelection({
        * picker when no model is enabled yet. */}
       {gateActive && (
         <>
-          <p className="mt-4 text-base-xs text-base-muted-foreground">
+          {/* `heading/14` in `base/muted-foreground` (`1410:28145`); was
+            * `label/12`. The frame's words are "Current Gate models"; this
+            * says where the models went and when they take effect, by the
+            * user's decision (2026-09-30), and is owed to design. */}
+          <p className="mt-4 text-sm font-medium leading-5 tracking-heading-14 text-base-muted-foreground">
             {(gateModel?.ids.length ?? 0) > 1
               ? `Gate models in ${appName}'s config, from its next session`
               : `Gate model in ${appName}'s config, from its next session`}
@@ -745,8 +753,11 @@ function ModelSelection({
                   {plan} plan
                 </p>
               )}
+              {/* "Gate credits:" is `heading/14` in `base/foreground`
+                * (`1410:28162`) and the balance `copy/14` beside it; the label
+                * was `neutral-600`. */}
               <p className="text-sm leading-5 text-base-foreground">
-                <span className="text-neutral-600">Gate credits: </span>
+                <span className="font-medium tracking-heading-14">Gate credits: </span>
                 {credits ?? "N/A"}
               </p>
             </InfoRow>
@@ -906,10 +917,13 @@ function RecentActivity({
   return (
     // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
     // own gutter above the heading, as the Overview's savings card does.
-    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
-        Recent activity
-      </h2>
+    // No padding on the card: the header's rule and every row divider span it
+    // edge to edge since the 2026-09-29 redraw (`table/recent-activity`
+    // 1410:28165), and the 16px lives on the cells. The frame's header also
+    // carries a "View activity" button (`1410:28168`); the dashboard has no
+    // activity URL to send it to, so the header draws without one.
+    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6" busy={pending}>
+      <CardHeader title="Recent activity" />
 
       {pending ? (
         <PendingRows />
@@ -928,9 +942,9 @@ function RecentActivity({
         // AG-889, and the same sentence the chart one over now gives: name
         // where these requests are counted rather than only where they are
         // not.
-        <EmptyNote>Shows in the Overview, not per app</EmptyNote>
+        <EmptyNote className="px-4 pb-4">Shows in the Overview, not per app</EmptyNote>
       ) : unavailable ? (
-        <EmptyNote>Recent activity couldn&apos;t be read</EmptyNote>
+        <EmptyNote className="px-4 pb-4">Recent activity couldn&apos;t be read</EmptyNote>
       ) : activity.length === 0 ? (
         // Deliberately NOT the chart's "in the last 24hrs". The entries outlive
         // the window they were sent in - the feed keeps the last messages even
@@ -938,11 +952,14 @@ function RecentActivity({
         // what this app last did - so borrowing the chart's sentence would state a
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
-        <EmptyNote>No recent messages</EmptyNote>
+        <EmptyNote className="px-4 pb-4">No recent messages</EmptyNote>
       ) : (
-        <table className="mt-5 w-full">
+        <table className="w-full">
           <thead>
-            <tr className="text-base-xs text-base-muted-foreground">
+            {/* `label/12` Medium on a 16/12 row (`1410:28173`). The Overview's
+              * tables draw their header at `label/14`; the two frames disagree
+              * and each surface follows its own. */}
+            <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
               {/* Four columns since 2026-09-28, redrawn by design: Time,
                 Status, Model, Action. The guardrail-category column headed
                 "Type" is gone, and "Security" is now "Status" - the same
@@ -953,27 +970,27 @@ function RecentActivity({
                 wide once each 16px gutter is counted in, which is the
                 26/25/35.5/13.5 below. Shares rather than pixel counts, so they
                 hold at both window sizes. */}
-              <th scope="col" className="w-[26%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[26%] py-3 pl-4 text-left">
                 Time
               </th>
-              <th scope="col" className="w-[25%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[25%] py-3 pl-4 text-left">
                 Status
               </th>
-              <th scope="col" className="w-[35.5%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[35.5%] py-3 pl-4 text-left">
                 Model
               </th>
-              <th scope="col" className="w-[13.5%] pb-3 text-right font-normal">
+              <th scope="col" className="w-[13.5%] py-3 pl-4 pr-4 text-right">
                 Action
               </th>
             </tr>
           </thead>
           <tbody>
             {rows.map((entry) => (
-              <tr key={entry.id} className="border-t border-base-border">
-                <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
+              <tr key={entry.id} className="h-14 border-t border-base-border">
+                <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                <td className="py-[1.125rem] pr-4">
+                <td className="pl-4">
                   {/* Error outranks the guardrail verdict, which is the design's
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
@@ -1014,7 +1031,7 @@ function RecentActivity({
                     </span>
                   )}
                 </td>
-                <td className="min-w-0 py-[1.125rem] pr-4">
+                <td className="min-w-0 pl-4">
                   {/* Truncated, not `nowrap`. A model id is unbounded - the
                     canonical ones run to `anthropic/claude-opus-4-5-20260514` -
                     and an un-truncated cell makes that string the table's minimum
@@ -1033,16 +1050,12 @@ function RecentActivity({
                     </span>
                   </span>
                 </td>
-                <td className="py-[1.125rem] text-right">
+                <td className="pl-4 pr-4 text-right">
                   {entry.onView ? (
-                    <button
-                      type="button"
-                      onClick={entry.onView}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                    >
+                    // The `xs` Outline variant (`1410:28190`); it was `sm`.
+                    <OutlineButton size="xs" onClick={entry.onView} external>
                       View
-                      <Icon name="squareArrowOutUpRight" size={16} />
-                    </button>
+                    </OutlineButton>
                   ) : null}
                 </td>
               </tr>
@@ -1052,9 +1065,9 @@ function RecentActivity({
       )}
 
       {more && (
-        <div className="mt-4 flex justify-center">
-          <button
-            type="button"
+        <div className="flex justify-center border-t border-base-border px-4 py-4">
+          <OutlineButton
+            size="sm"
             onClick={() => {
               // Reveal first, fetch only when the reveal has run out of held
               // rows. Fetching on every click would pull pages the person
@@ -1062,10 +1075,9 @@ function RecentActivity({
               setVisible((n) => n + PAGE);
               if (activity.length <= visible + PAGE) onLoadMore?.();
             }}
-            className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
-          </button>
+          </OutlineButton>
         </div>
       )}
     </Card>
@@ -1081,11 +1093,11 @@ function RecentActivity({
  */
 function PendingRows() {
   return (
-    <div className="mt-4 flex flex-col gap-3">
+    <div className="flex flex-col">
       {[0, 1, 2, 3, 4].map((i) => (
         <div
           key={i}
-          className="flex items-center justify-between gap-3 border-t border-base-border pt-3"
+          className={`flex h-14 items-center justify-between gap-3 px-4 ${i === 0 ? "" : "border-t border-base-border"}`}
         >
           <Skeleton className="h-4 w-16" />
           <Skeleton className="h-4 w-14" />

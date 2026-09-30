@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Overview } from "./Overview";
 import type { UsageStats } from "./metrics";
 import type { SecurityEventsProps } from "./SecurityEvents";
@@ -36,6 +36,34 @@ function pane(props: Partial<Parameters<typeof Overview>[0]> = {}) {
     />
   );
 }
+
+describe("the header", () => {
+  it("names the window, and the reading's time after it when there is one", () => {
+    render(pane({ updatedAt: "14:03" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeTruthy();
+    expect(screen.getByText("Last 24 hours")).toBeTruthy();
+    expect(screen.getByText("Updated 14:03")).toBeTruthy();
+  });
+
+  it("draws no time while there is no reading yet", () => {
+    // Principle 6: a value nobody measured is not printed. `null` is the
+    // shell's "no view yet", and the header must not invent a clock.
+    render(pane({ updatedAt: null }));
+    expect(screen.queryByText(/Updated/)).toBeNull();
+  });
+});
+
+describe("the card headers", () => {
+  it("carry the Manage actions, and each opens its own destination", () => {
+    const policies = vi.fn();
+    const savings = vi.fn();
+    render(pane({ onManagePolicies: policies, onManageSavings: savings }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage policies" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage savings" }));
+    expect(policies).toHaveBeenCalledTimes(1);
+    expect(savings).toHaveBeenCalledTimes(1);
+  });
+});
 
 /**
  * An empty table has two possible causes and they are not interchangeable: an

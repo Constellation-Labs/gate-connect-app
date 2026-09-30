@@ -109,15 +109,24 @@ export function UpdateBanner({
  * see question 23 in `docs/figma-questions-for-design.md`. The words are the
  * part that was making a false claim, so the words are the part that changed.
  */
+/** The label's ink follows the tile's tone. Grey is the drawn none state
+ *  (`1390:14030` resolves `base/muted-foreground`), where the code used to
+ *  paint every non-green label amber. */
+const LABEL_INK = {
+  green: "text-green-600",
+  amber: "text-amber-600",
+  grey: "text-base-muted-foreground",
+} as const;
+
 export function RoutingBanner({
   protectedCount,
   totalCount,
   availableCount,
 }: {
-  /** Routed, among the apps the user switched on. Judges the tone. */
-  protectedCount: number;
-  /** Switched on. The denominator the TONE is judged against, and the
+  /** Routed, among the apps the user switched on. Judges the tone, and is the
    *  numerator the fraction prints. */
+  protectedCount: number;
+  /** Switched on. The denominator the TONE is judged against. */
   totalCount: number;
   /** Every app on the rail, switched on or not. The fraction's denominator -
    *  see `showsFraction`. */
@@ -140,30 +149,26 @@ export function RoutingBanner({
       </div>
       <p className="text-sm leading-5 tracking-label-14">
         <span
-          className={`font-medium ${state.tone === "green" ? "text-green-600" : "text-amber-600"}`}
+          className={`font-medium ${LABEL_INK[state.tone]}`}
         >
-          {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
-            * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
+          {/* The rail's status vocabulary; see `routingState`. */}
           {state.label}
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
-        {/* Switched on, out of every app on the rail - coverage, not outcome.
-          * The frame draws `Routed · 4 of 4 Apps`, where both halves were
-          * routed-of-requested and the ratio restated the pill beside it.
-          * Changed on request 2026-09-23, so it deviates from the frame and is
-          * owed to design, along with the fact that it does not match the
-          * rail's group counters on the numerator. `routingState` carries both.
-          * The trailing "on" went on 2026-09-30, from staging QA ("2 of 4 apps"
-          * only). The frame draws "Apps", capitalised, so the lower case is a
-          * copy deviation owed to design too. "on" had been kept so the ratio
-          * could not read as routed-of-available beside a "Routed" pill; that
-          * risk is accepted with it. */}
+        {/* Routed, out of every app on the rail. The numerator was the
+          * switched-on count from 2026-09-23, with an "on" suffix so the ratio
+          * could not be read as routed-of-available. Design answered on
+          * 2026-09-30 that the words are "N of M" as the frames draw them
+          * (`1390:14031`, "0 of 6 Apps"); without the suffix, "3 of 8 Apps"
+          * beside "Not protected" counted neither the protected nor the
+          * unprotected apps, so the numerator became the routed count in the
+          * same review. `routingState` carries the history. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>
             <span className="text-base-muted-foreground">
-              {totalCount} of {availableCount} apps
+              {protectedCount} of {availableCount} Apps
             </span>
           </>
         )}
@@ -215,17 +220,22 @@ export function ReopenAlert({
     // appearing under a reader's cursor says so instead of arriving in silence.
     <div
       role="status"
-      className="flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5"
+      // 8px, a `TriangleAlert` tile and a primary-blue button, as
+      // `banner/alert/multiple-apps` draws them since the 2026-09-29 redraw
+      // (`1410:26594`). The heading stays "Reopen ... to finish" against the
+      // frame's "{name} isn't protected": raised with design, not applied -
+      // see `plans/new-app-ui-figma.md`, design sync 2026-09-30, question 12.
+      className="flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5"
     >
       <div className="flex min-w-0 flex-1 items-center gap-4">
-        <StatusTile tone="amber" icon="refresh" size={36} />
+        <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-base-foreground">
             Reopen {name} to finish
           </p>
           <p className="text-base-xs leading-4 text-gray-600">
             It was already running when its configuration changed, so it is still
-            using the settings it started with.
+            using the route it started with.
           </p>
           {routeInUse && requestedRoute && (
             // Sans, weighted rather than set in mono: identifier *values* are
@@ -245,7 +255,7 @@ export function ReopenAlert({
       <button
         type="button"
         onClick={onReopen}
-        className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-foreground shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {/* "Close", not "Reopen". The button opens the close confirmation,
             because a CLI is a shell session Gate does not own and cannot start

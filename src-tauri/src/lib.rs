@@ -593,6 +593,9 @@ async fn oauth_begin_login<R: tauri::Runtime>(
         // Record that this account authenticates via OAuth so load() stops
         // requiring a pasted key, and push the fresh token into a running
         // engine so routing switches to it without waiting for a restart.
+        // The engine's key goes with it: an account that pasted one before
+        // this sign-in would otherwise keep it there, and a later dead session
+        // would be served under it rather than refused (`lacks_gate_credential`).
         gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
             .map_err(|e| format!("{e:#}"))?;
         // Whatever ended the last session, this one is live - so the flag stops
@@ -602,7 +605,10 @@ async fn oauth_begin_login<R: tauri::Runtime>(
         // the user is no longer looking at.
         let _ = gate_connect_core::preferences::set_signed_out_deliberately(false);
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+            gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        }
         Ok(OAuthStatusDto::from(&tokens))
     })
     .await
@@ -655,8 +661,9 @@ async fn oauth_sign_out() -> Result<(), String> {
         // reasoning as there: a cache that will not delete must not be the reason
         // a sign-out reports failure.
         let _ = gate_connect_core::activity_cache::clear();
-        // Revert a running engine to the legacy header immediately (empty
-        // token == fall back to the API key, if one is present).
+        // Take the token out of a running engine now. The account stays in
+        // OAuth mode and holds no key, so routed requests are refused as
+        // signed out rather than sent under anything.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_token("");
         Ok::<(), String>(())
@@ -680,7 +687,14 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
         } else {
             gate_connect_core::account::AuthMode::ApiKey
         };
-        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
+        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))?;
+        // An OAuth account holds no key (`account::load`), so neither may a
+        // running engine: see `oauth_begin_login`.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if oauth {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?;
@@ -4131,6 +4145,16 @@ fn recheck_gate_session(
             SessionHealth::Valid
         }
         gate_connect_core::startup::Recheck::Dead => {
+            // A sign-in that finished since the verdict cleared it
+            // (`oauth::store`) and pushed its own token, which this stale
+            // verdict must not replace.
+            if !gate_connect_core::oauth::session_rejected() {
+                return SessionHealth::Unknown;
+            }
+            // Push the empty token now rather than on the next tick: the
+            // engine then refuses routed requests as signed out at once, and
+            // a relay request waiting on this verdict stops waiting.
+            gate_connect_core::proxy::manager().refresh_token("");
             signal_session_dead(app);
             SessionHealth::Rejected
         }
@@ -5482,6 +5506,11 @@ pub fn run() {
                     let _release = gate_connect_core::proxy::GateAuthCheck;
                     recheck_gate_session(&handle);
                 });
+                // Both verdicts reach the token watch: `Recovered` pushes the
+                // new token, `Dead` pushes the empty one. `Unchanged` pushes
+                // nothing, and a relay request waiting on it stops when the
+                // guard above drops.
+                true
             });
 
             // Routed traffic left for the gateway, from these tools. The
@@ -5966,8 +5995,10 @@ pub fn run() {
                     // `live_session` silently refreshes a stale token (persisting
                     // it) and yields None when the session is dead; push the
                     // result into the running engine (a no-op when routing is
-                    // off). "" reverts to the API-key fallback, matching the
-                    // signed-out state the UI derives from oauth_status.
+                    // off). "" is a dead session: the engine then refuses
+                    // routed requests as signed out - an OAuth account holds
+                    // no key to fall back to - matching the signed-out state
+                    // the UI derives from oauth_status.
                     let token = gate_connect_core::oauth::live_session()
                         .map(|t| t.access_token)
                         .unwrap_or_default();

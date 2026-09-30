@@ -58,10 +58,16 @@ static GATE_AUTH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// cooldown right away. That cooldown is what keeps a dead session - which
 /// 401s every request from every routed tool - from bumping this counter once
 /// per failed request; the GUI needs to see only that it moved.
+///
+/// Answers `false`: nothing this daemon does reaches the token watch. The
+/// GUI's re-verification runs on the tick after it sees the counter move and
+/// its push arrives one or two ticks later, so a relay request refused here
+/// has nothing to wait for, and the relay passes the 401 on at once.
 fn register_gate_auth_counter() {
     crate::proxy::set_gate_auth_observer(|| {
         let _release = crate::proxy::GateAuthCheck;
         count_gate_auth_refusal();
+        false
     });
 }
 

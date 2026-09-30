@@ -1473,3 +1473,123 @@ async fn a_row_switched_off_stops_rewriting_a_connection_already_open() {
         "the unrouted request goes to the provider instead"
     );
 }
+
+/// An OAuth account whose session is dead has no key to fall back to. The engine
+/// answers the intercepted request itself with a 401 that names the fix, and
+/// nothing reaches the gateway.
+#[tokio::test]
+async fn proxy_refuses_locally_when_signed_out() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: String::new(), // an OAuth account: no key to fall back to
+            oauth_token: String::new(), // and its session is dead
+            billing_mode: Default::default(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the engine answers");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    for (name, value) in [
+        ("content-type", "application/json"),
+        ("www-authenticate", "Bearer realm=\"Gate Connect\""),
+        ("x-content-type-options", "nosniff"),
+    ] {
+        assert_eq!(
+            resp.headers().get(name).and_then(|v| v.to_str().ok()),
+            Some(value),
+            "the engine's 401 carries the relay's headers"
+        );
+    }
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("gate_signed_out"),
+        "typed for a client log: {body}"
+    );
+
+    engine.stop();
+
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "nothing goes out bare"
+    );
+}
+
+/// The engine's signed-out refusal is about the app's own credential. A caller
+/// that brings its own Gate key is served under it, session or no session, as
+/// the shared injection rule says.
+#[tokio::test]
+async fn proxy_serves_a_caller_supplied_key_while_signed_out() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: String::new(),
+            oauth_token: String::new(),
+            billing_mode: Default::default(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-gate-api-key", "sk-gw-caller")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(resp.status().is_success(), "got {}", resp.status());
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-caller"));
+    assert_eq!(reqs[0].header("x-gate-authorization"), None);
+}

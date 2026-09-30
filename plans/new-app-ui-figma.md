@@ -3506,3 +3506,97 @@ is incomplete. Nothing navigates to it any more: the tray's security card was
 its one caller, through `request_security_events`, and both went on 2026-09-23
 at the user's request, since no tray frame (`694:34005`) draws the card. The
 anchor stays for the next caller.
+
+## Design sync 2026-09-30: the redrawn Overview and App (1280 format)
+
+Design rebuilt `Overview` (`116:26381`) and `App` (`116:30199`) on the 1280
+frame overnight on 2026-09-29 and named four changes: new table designs, corrected
+status-banner copy with a "not routing" state, cards that drop the footer for a
+header button, and badge fills at 100 rather than 200. Read node by node over
+MCP on 2026-09-30 (Overview: `1390:13599`, `1374:7331`, `1401:16086`; App:
+`116:30204`, `1340:22656`, `1340:21966`, and the dialogs `1410:30969`,
+`1410:29849`, `1410:25402`, `1410:26090`). This entry records what was applied
+on `feat/figma-overview-sync` and the questions left for design.
+
+Applied, because both sections draw it the same way or only one draws it:
+
+- Banner headlines say "Gate Connect". The nothing-switched-on state is grey
+  with a `CircleOff` tile and a muted label ("No apps are routed" / "None
+  routed"); `StatusTile` has a `grey` tone for it. The switched-on-but-failed
+  state keeps its amber and "didn't start" sentence, which no frame draws.
+- Overview title `heading/24`; the meta is "Last 24 hours" in `heading/14` and
+  "Updated HH:MM" in `copy/14`, so `ActivityView.period` went and `Overview`
+  takes `updatedAt` from `takenAt`.
+- Every card title `heading/18`. Table cards take `CardHeader` (title left,
+  Manage button right, full rule); `ManageLink` is gone.
+- Table rows 56px with full-width dividers and 16px cells; header cells
+  `label/14` on the Overview tables and `label/12` on the App table, which is
+  what each frame draws. Policies and savings labels `label/16` beside 24px
+  glyphs; the Policies glyphs in colour. Action and status pills at 100 fills
+  over 900 text.
+- Feed: sans 14px time, Category as glyph + label (PII / PHI / Injection /
+  Credential / Other), `xs` View buttons on both feeds.
+- App: model options 8px apart with `Box` / `Boxes` glyphs, "Current Gate
+  model" and "Gate credits:" at `heading/14`, the reopen alert at 8px with a
+  `TriangleAlert` tile and a primary-blue button.
+- KPI cell dividers at `rgba(0,0,0,0.12)`.
+
+Not applied. The frames also draw a coloured tool logo and a provider mark in
+the Overview feed, for which the event carries no key. Everything else left is
+a question for design:
+
+1. **"No apps are routed" covers which state?** The code has two: nothing
+   switched on, and switched on but routing did not start (a declined
+   certificate prompt, an engine that could not bind), which reads "Routing
+   didn't start when Gate Connect opened". Is the grey banner for the first
+   only, or for both, and if both, where does the failure sentence go?
+2. **Banner labels: Overview or App wording?** "Fully protected / Partially
+   protected" on Overview against "Routing / Partly routed" on App, for the same
+   component. **Answered 2026-09-30: neither.** The rail's three statuses,
+   Protected, Not protected, Not routed, and the frames are to be updated.
+   Applied.
+3. **Fraction suffix.** The frames still draw "N of M Apps". The app draws
+   "N of M Apps on" since 2026-09-23 because the numerator is switched-on apps,
+   not routed ones. Keep the "on", or change what the fraction counts?
+   **Answered 2026-09-30: "N of M".** Read as the frames' "N of M Apps" with no
+   suffix; the numerator was not addressed and stays switched-on apps. Applied.
+4. **Is the Overview's "Recent activity" the security feed?** The frame's table
+   has Category and Tool columns and a "View activity" button; the app's section
+   is the live blocked/flagged stream with a "Load more". If it is the same
+   section, its title changes and the paging control goes; if not, the feed has
+   no frame again.
+5. **Category labels.** The frame prints "PII", "Injection", "Credential". The
+   gateway also emits `phi` and `other`. What do those read as, and does the
+   glyph set extend?
+6. **Sidebar 250 vs 256.** The App frames draw 256, the Overview
+   frames 250; the code has 256. Likely the Overview frames need the fix.
+7. **The 520 organization modal.** `1410:24712` is drawn 520 wide beside two
+   at 512, a fifth width next to 480/512/544/600: chosen, or a drag?
+8. **Quit row external-link glyph.** Every row of `topnav/menu` (`1408:20428`)
+   carries it, including Quit, which does not leave the app.
+9. **"Security" vs "Status"** on the App table header. `1370:4990` (still on
+   the page) says Status; the redrawn `1410:28165` says Security. The code
+   followed the first on 2026-09-28.
+10. **"Savings tyoe"** so it gets fixed in the file.
+11. **The header help button** (`1327:12204`, a 14px CircleHelp beside the app
+    name). What does it open? Nothing else in the section draws its target.
+12. **Alert title.** "Claude Desktop isn't protected" (frame) or "Reopen Claude
+    Desktop to finish" (code, kept because the button closes and the user
+    reopens). Also the card radius, 8 drawn against the 4 built.
+13. **"All providers" filter** on the model picker: new control, no frames for
+    its open state. Is it in scope, and what does the list contain?
+14. **Gate model confirmation** now carries the credit balance and a
+    reassurance sentence (`1410:29867`). Confirm this is intended for the
+    single-model case only, since the multi-model layout has no room for it.
+15. **Two header sizes on one table component.** Overview `label/14`, App
+    `label/12` (`1402:17995` vs `1410:28173`).
+
+Answered the same day, and applied: the banner label is the rail's vocabulary
+(Protected / Not protected / Not routed, question 2), and the fraction reads
+"N of M Apps" with no "on" suffix (question 3). The review of the branch then
+found that without the suffix the switched-on numerator counted neither the
+protected nor the unprotected apps beside a "Not protected" label, so the
+numerator became the routed count, on both the banner and the tray's card
+(user's decision, 2026-09-30). The fraction now agrees with the rail's group
+eyebrows on both halves. That is a deviation from the numerator the frames'
+fixtures imply nothing about, and is owed to design with the rest.

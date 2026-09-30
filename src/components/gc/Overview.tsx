@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Card, EmptyNote, Skeleton } from "./base";
+import { Card, CardHeader, EmptyNote, GUARDRAIL_INK, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -8,9 +8,10 @@ import { SecurityEvents } from "./SecurityEvents";
 import type { SecurityEventsProps } from "./SecurityEvents";
 
 /**
- * The Overview pane (Figma `Flows / Overview`): a 24-hour summary of what Gate
- * actually did with the user's traffic. Sits right of the sidebar in the
- * 1024x720 window, on a gray/100 ground, and scrolls internally.
+ * The Overview pane (Figma `Overview/none-routed` 1390:13599 and its
+ * siblings): a 24-hour summary of what Gate actually did with the user's
+ * traffic. Sits right of the sidebar in the 1280x800 window as a 976px pane on
+ * the `base.background` ground, and scrolls internally.
  *
  * Presentational. The 24-hour backend is still being built, so every number
  * arrives as a prop and nothing here talks to `lib/api`.
@@ -59,9 +60,11 @@ export interface Saving {
 }
 
 /**
- * Action pills. Every fill was read off the pixels of `Overview-partly-routed-1`
- * on 2026-08-20: `red/200`, `amber/200`, `violet/200`, at a 2px radius with 8/4
- * padding and an 8px gap. Text sits at the matching 900.
+ * Action pills. `red/100`, `amber/100`, `violet/100` fills with text at the
+ * matching 900, at a 2px radius with 8/4 padding and an 8px gap
+ * (`1402:18182`, `1402:18209`, `1402:18236`). The fills were 200 until the
+ * 2026-09-29 redraw moved them one step lighter for contrast - design's own
+ * note on the change - so a 200 here is the old value, not a sample error.
  *
  * **Violet, not purple.** The drawn REDACT fill is `#ddd6fe`, which is violet/200;
  * purple/200 is `#e9d5ff`. Nothing else in this palette is violet, so it is easy
@@ -74,9 +77,9 @@ export interface Saving {
  * `chart.redacted` stays as it is pending design. This pill is not affected.
  */
 const ACTION_STYLES: Record<PolicyAction, string> = {
-  block: "bg-red-200 text-red-900",
-  flag: "bg-amber-200 text-amber-900",
-  redact: "bg-violet-200 text-violet-900",
+  block: "bg-red-100 text-red-900",
+  flag: "bg-amber-100 text-amber-900",
+  redact: "bg-violet-100 text-violet-900",
   // Not in the Figma, which draws only the three enforcing actions. Neutral
   // rather than a fourth colour: `allow` is the one that does nothing, and
   // giving it a hue would read as a severity it does not have.
@@ -93,6 +96,7 @@ export function Overview({
   security,
   alert,
   period = "Last 24 hours",
+  updatedAt = null,
   pending,
   unavailable,
 }: {
@@ -117,7 +121,12 @@ export function Overview({
   /** Slot for an `AlertBanner`, which the design places above the stat tiles.
    *  Whole-machine routing causes only; a tool's own card is on its pane. */
   alert?: ReactNode;
+  /** The window the numbers cover. */
   period?: string;
+  /** When the reading was taken, as `ActivityView.takenAt` formats it. Drawn
+   *  after the window as "Updated 14:03" (`1390:13613`); nothing is drawn
+   *  while there is no reading yet. */
+  updatedAt?: string | null;
 }) {
   return (
     // `relative`, because this is the scroll container. An `sr-only` node is
@@ -138,15 +147,24 @@ export function Overview({
         * where the cards below it are 16px apart - so this one gap is not the
         * pane's rhythm and cannot come from `gap-4`. */}
       <header className="mb-2 flex items-baseline justify-between">
-        <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
+        {/* `heading/24` (`1390:13609`, 24/28 at -1%) since the 2026-09-29
+          * redraw; it was `heading/20`. */}
+        <h1 className="text-2xl font-medium leading-7 tracking-heading-24 text-base-foreground">
           Overview
         </h1>
-        <div className="flex items-center gap-3">
-          {/* `copy/14`, not `copy/12`: the period label is a 20px-tall text
-            * node in both Overview generations (`864:3477`, `121:34782`'s
-            * parent), which is 14px type. */}
-          <span className="text-sm text-base-muted-foreground">{period}</span>
-        </div>
+        {/* Two runs, both muted: the window in `heading/14` Medium and the
+          * reading's time in `copy/14` after a separator (`1390:13611`,
+          * `1390:13613`). One `copy/14` string carried both until the redraw
+          * split them. */}
+        <p className="text-sm leading-5 text-base-muted-foreground">
+          <span className="font-medium tracking-heading-14">{period}</span>
+          {updatedAt && (
+            <>
+              <span> · </span>
+              <span>Updated {updatedAt}</span>
+            </>
+          )}
+        </p>
       </header>
 
       {alert}
@@ -216,13 +234,13 @@ function PolicyTable({
   onManage: () => void;
 }) {
   return (
-    // No padding on the card, because the footer's rule spans it edge to edge
-    // (`card/policies` 116:26707 draws `card/footer` at x=0, the full 720).
-    // The 16px lives on the contents instead: the row dividers are drawn INSET,
-    // every `line` in the frame measuring 688 inside the 720 card, so the table
-    // sits in its own gutter rather than reaching the border.
+    // No padding on the card: the header's rule spans it edge to edge, and so
+    // does every row divider since the 2026-09-29 redraw (`table/recent-activity`
+    // 1402:17916 draws each `table-row` full width with its own bottom border).
+    // The 16px lives on the cells. The older `card/policies` (116:26707) inset
+    // the dividers at 688 inside 720; that is the gutter this used to draw.
     <Card busy={pending}>
-      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Policies</h2>
+      <CardHeader title="Policies" action={{ label: "Manage policies", onClick: onManage }} />
 
       {pending ? (
         <PendingRows columns={3} />
@@ -231,72 +249,70 @@ function PolicyTable({
         // that has configured no guardrails, and a list the gateway would not
         // give us. The pane's gap notice supplies the cause and the action for
         // the second; what this must not do is report it as the first.
-        <EmptyNote icon="shieldCheck" className="px-4">
+        <EmptyNote icon="shieldCheck" className="px-4 pb-4">
           {unavailable ? "Policies couldn't be read" : "No policies configured"}
         </EmptyNote>
       ) : (
-        <div className="px-4">
-        <table className="mt-5 w-full">
-        <thead>
-          {/* `label/12`: Geist **Medium** 12/16 (`884:9598`). `font-medium`
-            * rather than the `font-normal` that used to undo preflight's bold,
-            * and `leading-4` because `text-base-xs` carries no line-height of
-            * its own and would otherwise inherit preflight's 1.5 (18px). */}
-          <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-            <th scope="col" className="pb-3 text-left">
-              Policy type
-            </th>
-            <th scope="col" className="pb-3 text-right">
-              Action
-            </th>
-            {/* 110px, not 96: the frame right-aligns the status badge to the
-              * card's inner edge and the action badge 60px before it
-              * (`884:9609` -> `884:9611`, and the same 60 on all three rows).
-              * The badge is 50 wide, so the column has to be 50 + 60. */}
-            <th scope="col" className="w-[110px] pb-3 text-right">
-              Status
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {policies.map((policy) => (
-            <tr key={policy.id} className="border-t border-base-border">
-              <td className="py-3">
-                {/* `heading/14`: Geist Medium 14/20 at 0% tracking
-                  * (`884:9607`), which is why the tracking is named rather
-                  * than left to `text-sm`'s own -0.14px. */}
-                <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
-                  <Icon name={policy.icon} size={20} className="text-base-muted-foreground" />
-                  {policy.name}
-                </span>
-              </td>
-              <td className="py-3 text-right">
-                {policy.action ? (
-                  <span
-                    className={`inline-flex items-center rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
-                  >
-                    {policy.action}
-                  </span>
-                ) : (
-                  // The policy names no single action, so neither does this. The
-                  // Status column still says whether the guardrail is running,
-                  // which is the part that would be a lie to leave blank.
-                  <span className="text-base-xs text-base-muted-foreground" title="This policy sets no single action">
-                    Not set
-                  </span>
-                )}
-              </td>
-              <td className="py-3 text-right">
-                <StatusPill on={policy.enabled} />
-              </td>
+        <table className="w-full">
+          <thead>
+            {/* `label/14` Medium in `base/muted-foreground` on a 16/12 row
+              * (`1402:18259`). Was `label/12` before the redraw. */}
+            <tr className="text-sm font-medium leading-5 text-base-muted-foreground">
+              <th scope="col" className="py-3 pl-4 text-left">
+                Policy type
+              </th>
+              <th scope="col" className="py-3 text-right">
+                Action
+              </th>
+              {/* 96 (`1402:18265`), holding the 50px badge flush right with the
+                * action badge 60px before it - the same 60 on all three rows
+                * (`1402:18181`), which is what the 46 of slack is for. */}
+              <th scope="col" className="w-24 py-3 pr-4 text-right">
+                Status
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-        </div>
+          </thead>
+          <tbody>
+            {policies.map((policy) => (
+              <tr key={policy.id} className="h-14 border-t border-base-border">
+                <td className="pl-4">
+                  {/* `label/16` (`1402:18180`: Geist Medium 16/24 at -2%, which
+                    * `text-base` carries) beside a 24px glyph, 12px apart. */}
+                  <span className="flex items-center gap-3 text-base font-medium leading-6 text-base-foreground">
+                    <Icon
+                      name={policy.icon}
+                      size={24}
+                      // In colour, one per guardrail (`1402:18151` and its two
+                      // siblings); the savings rows below stay muted.
+                      className={GUARDRAIL_INK[policy.icon] ?? "text-base-muted-foreground"}
+                    />
+                    {policy.name}
+                  </span>
+                </td>
+                <td className="text-right">
+                  {policy.action ? (
+                    <span
+                      className={`inline-flex items-center rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                    >
+                      {policy.action}
+                    </span>
+                  ) : (
+                    // The policy names no single action, so neither does this. The
+                    // Status column still says whether the guardrail is running,
+                    // which is the part that would be a lie to leave blank.
+                    <span className="text-base-xs text-base-muted-foreground" title="This policy sets no single action">
+                      Not set
+                    </span>
+                  )}
+                </td>
+                <td className="pr-4 text-right">
+                  <StatusPill on={policy.enabled} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
-
-      <ManageLink label="Manage policies" onClick={onManage} />
     </Card>
   );
 }
@@ -315,53 +331,55 @@ function SavingsTable({
   return (
     // `scroll-mt-6` so the smooth scroll from the Tokens saved counter leaves
     // the same gutter the pane's padding gives every other card, rather than
-    // butting the heading against the top edge. Padding sits on the contents,
-    // not here - see `PolicyTable`.
+    // butting the heading against the top edge. No padding on the card, for
+    // the reason `PolicyTable` gives.
     <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6" busy={pending}>
-      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Token savings</h2>
+      <CardHeader title="Token savings" action={{ label: "Manage savings", onClick: onManage }} />
 
       {pending ? (
         <PendingRows columns={2} />
       ) : savings.length === 0 ? (
         // Same split as the policies card, for the same reason.
-        <EmptyNote icon="layers" className="px-4">
+        <EmptyNote icon="layers" className="px-4 pb-4">
           {unavailable ? "Token savings couldn't be read" : "No savings configured"}
         </EmptyNote>
       ) : (
-      <div className="px-4">
-      <table className="mt-5 w-full">
-        <thead>
-          {/* `label/12`, as on the policies table above. */}
-          <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
-            <th scope="col" className="pb-3 text-left">
-              Savings type
-            </th>
-            <th scope="col" className="w-24 pb-3 text-right">
-              Status
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {savings.map((saving) => (
-            <tr key={saving.id} className="border-t border-base-border">
-              <td className="py-3">
-                {/* `heading/14`, as on the policies table above. */}
-                <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
-                  <Icon name={saving.icon} size={20} className="text-base-muted-foreground" />
-                  {saving.name}
-                </span>
-              </td>
-              <td className="py-3 text-right">
-                <StatusPill on={saving.enabled} />
-              </td>
+        <table className="w-full">
+          <thead>
+            {/* `label/14`, as on the policies table above. The frame spells the
+              * header "Savings tyoe" (`1402:18274`); that is a typo in the file,
+              * raised, not copy to ship. */}
+            <tr className="text-sm font-medium leading-5 text-base-muted-foreground">
+              <th scope="col" className="py-3 pl-4 text-left">
+                Savings type
+              </th>
+              {/* 92 (`1402:18276`). */}
+              <th scope="col" className="w-[92px] py-3 pr-4 text-right">
+                Status
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-      </div>
+          </thead>
+          <tbody>
+            {savings.map((saving) => (
+              <tr key={saving.id} className="h-14 border-t border-base-border">
+                <td className="pl-4">
+                  {/* `label/16` beside a 24px glyph, as on the policies table -
+                    * but these glyphs stay `base/muted-foreground`
+                    * (`1402:18323`, `1402:18333`): only the guardrail rows took
+                    * a colour in the redraw. */}
+                  <span className="flex items-center gap-3 text-base font-medium leading-6 text-base-foreground">
+                    <Icon name={saving.icon} size={24} className="text-base-muted-foreground" />
+                    {saving.name}
+                  </span>
+                </td>
+                <td className="pr-4 text-right">
+                  <StatusPill on={saving.enabled} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
-
-      <ManageLink label="Manage savings" onClick={onManage} />
     </Card>
   );
 }
@@ -371,16 +389,18 @@ function SavingsTable({
  *
  * Three rows because both tables draw three-ish, and a placeholder that guesses
  * the count high leaves the card collapsing when the real answer lands. The
- * status column keeps its own narrow shape so the row reads as a row.
+ * status column keeps its own narrow shape so the row reads as a row. Rows are
+ * the drawn 56px with full-width dividers, so the card does not change height
+ * or line pattern when the real rows land.
  */
 function PendingRows({ columns }: { columns: 2 | 3 }) {
   return (
-    // `px-4` on the wrapper, not on the bordered rows: the frame draws these
-    // dividers inset at 688 inside the 720 card, so the border must stop where
-    // the real rows' does.
-    <div className="mt-5 flex flex-col gap-3 px-4">
+    <div className="flex flex-col">
       {[0, 1, 2].map((i) => (
-        <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border pt-3">
+        <div
+          key={i}
+          className={`flex h-14 items-center justify-between gap-3 px-4 ${i === 0 ? "" : "border-t border-base-border"}`}
+        >
           <Skeleton className="h-4 w-40" />
           {columns === 3 && <Skeleton className="h-4 w-14" />}
           <Skeleton className="h-4 w-10" />
@@ -394,39 +414,19 @@ function StatusPill({ on }: { on: boolean }) {
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
-        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-base-foreground"
+        on ? "bg-green-100 text-green-900" : "bg-neutral-100 text-base-foreground"
       }`}
     >
-      {/* 14px, in green/800 one step lighter than the label. The 12px this
-        * drew was sampled off `Overview/routed-1` on 2026-08-21; both current
-        * policies cards draw the glyph at 14 (`884:9612` in the 720px frame,
-        * `884:10387` in the 1280 one), and 14 is also what makes the badge
-        * measure the drawn 50px: 8 + 14 + 4 + 15.84 + 8. */}
+      {/* green/100 under green/900 since the 2026-09-29 redraw (`1402:18184`);
+        * the fill was 200. The glyph stays green/800, one step lighter than the
+        * label: sampled #166534 off the render of `1390:13599`.
+        *
+        * 14px, not 12: both current policies cards draw the glyph at 14
+        * (`884:9612` in the 720px frame, `1402:18185` in the 1280 one), and 14
+        * is also what makes the badge measure the drawn 50px:
+        * 8 + 14 + 4 + 15.84 + 8. */}
       {on && <Icon name="circleCheck" size={14} className="text-green-800" />}
       {on ? "On" : "Off"}
     </span>
-  );
-}
-
-/** Right-aligned footer action under a full-width rule, per the drawn cards.
- *  Both destinations open the web dashboard.
- *
- *  The rule really does span the card, unlike the row dividers above it:
- *  `card/policies` (116:26707) draws the footer as its own frame at x=0 across
- *  the full 720, with the button's right edge 16px in and 13px of air above and
- *  below it. So `px-4 py-3` on the element that carries `border-t`, which insets
- *  the button without insetting the border. */
-function ManageLink({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <div className="flex justify-end border-t border-base-border px-4 py-3">
-      <button
-        type="button"
-        onClick={onClick}
-        className="flex items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        {label}
-        <Icon name="squareArrowOutUpRight" size={16} />
-      </button>
-    </div>
   );
 }
