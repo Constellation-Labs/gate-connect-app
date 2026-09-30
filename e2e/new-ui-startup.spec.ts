@@ -64,10 +64,9 @@ test.describe("new UI: a launch whose enable failed", () => {
     await expect(app.page.getByText(didNotStart)).toHaveCount(0);
   });
 
-  // BUG: `runNoticeAction` in NewUiApp.tsx catches every failure and drops it
-  // ("the shell has nowhere to render a failure yet"). A failed retry leaves the
-  // notice exactly as it was, so the click reads as a switch that does nothing.
-  test.fixme("a failed retry from the notice says why", async ({ boot }) => {
+  // `runNoticeAction` used to catch every failure and drop it, so a failed
+  // retry read as a switch that does nothing.
+  test("a failed retry from the notice says why", async ({ boot }) => {
     const app = await boot({
       ...routingDidNotStart,
       failures: { proxy_enable: "engine could not bind 127.0.0.1:8899" },
@@ -80,12 +79,10 @@ test.describe("new UI: a launch whose enable failed", () => {
     await expect(app.page.getByText(didNotStart)).toBeVisible();
   });
 
-  // BUG: the notice calls `proxy_enable` directly, and `proxy_enable` trusts the
-  // CA, so an untrusted certificate gets the OS trust prompt with no in-app
-  // question first. Every other path that can prompt (`useRouting`'s
-  // `ensureCaTrusted`) asks "Trust the Gate certificate?" before it, and the
-  // popover's version of this remedy did too.
-  test.fixme("the notice asks about the certificate before the OS does", async ({ boot }) => {
+  // `proxy_enable` trusts the CA itself, so the notice used to raise the OS
+  // trust prompt with no question first. Every other path that can prompt asks
+  // "Trust the Gate certificate?" before it.
+  test("the notice asks about the certificate before the OS does", async ({ boot }) => {
     const app = await boot({
       ...routingDidNotStart,
       proxy: { running: false, ca_trusted: false },
@@ -97,6 +94,24 @@ test.describe("new UI: a launch whose enable failed", () => {
       app.page.getByRole("heading", { name: "Trust the Gate certificate?" }),
     ).toBeVisible();
     expect(await app.lastCall("proxy_enable")).toBeNull();
+  });
+
+  test("Not now on the notice's question starts nothing, and says nothing", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      ...routingDidNotStart,
+      proxy: { running: false, ca_trusted: false },
+    });
+
+    await app.page.getByRole("switch", { name: "Turn routing on" }).click();
+    await app.page.getByRole("button", { name: "Not now" }).click();
+
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    await expect(app.page.getByRole("alert")).toHaveCount(0);
+    expect(await app.lastCall("proxy_trust_ca")).toBeNull();
+    expect(await app.lastCall("proxy_enable")).toBeNull();
+    await expect(app.page.getByText(didNotStart)).toBeVisible();
   });
 
   test("a domain switch whose engine start fails says why", async ({ boot }) => {
@@ -166,10 +181,9 @@ test.describe("new UI: the first enable, from setup", () => {
     expect((await app.state()).proxy.running).toBe(false);
   });
 
-  // BUG: `useSetup.turnOnRouting` records the error in `setup.error`, but
-  // `ConnectedPane` takes no `error` prop and NewUiApp passes it none, so the
-  // failure is never drawn. The button simply stops spinning.
-  test.fixme("a failed Turn on routing says why", async ({ boot }) => {
+  // `useSetup.turnOnRouting` recorded the error and `ConnectedPane` had nowhere
+  // to draw it, so the button simply stopped spinning.
+  test("a failed Turn on routing says why", async ({ boot }) => {
     const app = await boot({
       ...firstRun,
       failures: { proxy_enable: "failed to trust the CA: User canceled. (-128)" },

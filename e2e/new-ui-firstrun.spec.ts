@@ -437,18 +437,13 @@ test.describe("new UI: the diagnostic-data step", () => {
 /**
  * A session that changes while the window is in the background.
  *
- * The window reads account and OAuth state once at mount, and after its own
- * sign-in actions. The popover re-read them on every focus; these check whether
- * the window does.
+ * The window re-reads account and OAuth state when it is focused again, and
+ * when the backend says the session changed.
  */
 test.describe("new UI: the session on focus", () => {
-  // BUG: nothing in NewUiApp re-reads `oauth_status` after mount except its
-  // own sign-in actions. `useWindowReopen` fires on the blur -> focus edge but
-  // only re-checks updates, verdicts and activity, and the window listens for
-  // neither `session-changed` nor `session-signin-required` (only the tray
-  // does the first). A session that died in the background leaves the app
-  // shell up until the next launch.
-  test.fixme("an OAuth session that died while unfocused drops to re-sign-in", async ({ boot }) => {
+  // It used to read them once at mount, so a session that died in the
+  // background left the app shell up until the next launch.
+  test("an OAuth session that died while unfocused drops to re-sign-in", async ({ boot }) => {
     const app = await boot({});
     await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
 
@@ -467,12 +462,28 @@ test.describe("new UI: the session on focus", () => {
       oauth: { signed_in: false, email: null, expires_at_unix: 0 },
     });
     await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
+    const statusReads = async () =>
+      (await app.calls()).filter((c) => c.cmd === "oauth_status").length;
+    const before = await statusReads();
 
     await app.emit("tauri://blur");
     await app.emit("tauri://focus");
 
+    // The re-read happened, so staying put is the answer and not the absence
+    // of a question.
+    await expect.poll(statusReads).toBeGreaterThan(before);
     await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
     await expect(app.page.getByRole("heading", { name: "Session expired" })).toHaveCount(0);
+  });
+
+  test("a session the backend ends drops to re-sign-in without a focus", async ({ boot }) => {
+    const app = await boot({});
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
+
+    await app.patch({ oauth: { signed_in: false, email: null, expires_at_unix: 0 } });
+    await app.emit("session-signin-required");
+
+    await expect(app.page.getByRole("heading", { name: "Session expired" })).toBeVisible();
   });
 });
 

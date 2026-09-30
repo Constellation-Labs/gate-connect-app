@@ -46,10 +46,6 @@ describe("classifyError", () => {
     });
 
     it("names the button the user actually pressed", () => {
-      // "Trust", the label both certificate buttons actually carry (Home's card
-      // and the family panel's banner). It used to say "Trust certificate",
-      // which was the label when this branch was written.
-      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Trust");
       expect(classifyError("User canceled (-128)", "forget").hint).toContain("Reset");
     });
 
@@ -145,15 +141,18 @@ describe("backendErrorContext", () => {
 });
 
 describe("cancelled prompt names the control the user actually touched", () => {
-  // These two contexts fire from a role=switch, not a button, and they are the
-  // paths users actually hit: the enable path prompts for admin every time the
-  // system proxy changes. They used to fall through to "Click Connect again",
-  // and there is no Connect button on Home.
-  it("names the Routing switch for the master toggle", () => {
-    const hint = classifyError("User canceled (-128)", "proxy_toggle").hint;
-    expect(hint).toContain("the Routing switch");
-    expect(hint).not.toContain("Connect");
-    expect(hint).not.toContain("Click");
+  // Starting the engine and trusting the certificate are each reached from a
+  // switch, a button and a dialog, so neither may name one of them. Both used
+  // to name controls the window does not have: "the Routing switch", and a
+  // "Trust" button, with "Click Connect again" before that.
+  it("says what to do again for the engine and the certificate", () => {
+    for (const context of ["proxy_toggle", "trust_ca"] as const) {
+      const hint = classifyError("User canceled (-128)", context).hint;
+      expect(hint).toContain("again");
+      expect(hint).not.toContain("Connect");
+      expect(hint).not.toContain("Click");
+      expect(hint).not.toContain("Routing switch");
+    }
   });
 
   it("names a switch for a member toggle", () => {
@@ -163,7 +162,6 @@ describe("cancelled prompt names the control the user actually touched", () => {
   });
 
   it("still says Click for the paths that really are buttons", () => {
-    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Click Trust");
     expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
   });
 });
