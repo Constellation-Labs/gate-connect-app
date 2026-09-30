@@ -59,9 +59,12 @@ vi.mock("posthog-js", () => ({
       ph.state.distinctId = id;
       ph.state.identified = true;
     }),
+    // Like the real one: a new random id, and `consent.reset()` removes the
+    // persisted opt-out, so the client is capturing again afterwards.
     reset: vi.fn(() => {
       ph.state.distinctId = "fresh-random";
       ph.state.identified = false;
+      ph.state.optedOut = false;
     }),
     group: vi.fn(),
     opt_in_capturing: vi.fn(() => {
@@ -89,8 +92,24 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => {};
   }),
 }));
+/** The backend's `emit`. Only ever called with events `src-tauri/src/lib.rs`
+ *  really emits, under the names and payload shapes
+ *  `analytics.contract.test.ts` pins against its source. */
 function broadcast(event: string, payload: unknown) {
   for (const h of bus.handlers.get(event) ?? []) h({ payload });
+}
+
+/** What `oauth_sign_out` / `clear_account` do: forget the identity in the
+ *  core (keeping `ever_identified`), then `forget_analytics_identity` emits
+ *  what is stored. */
+function backendSignsOut() {
+  rust.identity = {
+    identified_sub: null,
+    ever_identified: rust.identity.ever_identified,
+    org_id: null,
+    auth_mode: null,
+  };
+  broadcast("analytics-identity-changed", { ...rust.identity });
 }
 
 /** The Rust records: markers won once, and the stored identity with its sticky
@@ -418,24 +437,95 @@ describe("item 3: one identity per account, merged at most once", () => {
     expect(rust.identity.identified_sub).toBe(SUB_B);
   });
 
-  it("goes back to the install id on a sign-out, without merging", async () => {
+  /**
+   * M1. The backend's `oauth_sign_out` forgets the identity and emits it
+   * (`forget_analytics_identity`, pinned in `src-tauri/src/lib.rs`'s tests and
+   * by `analytics.contract.test.ts`). Once identified, the install id belongs
+   * to that account's person, so the client must NOT go back to it.
+   */
+  it("moves to a fresh anonymous id on a sign-out, not back to the install id", async () => {
     prefsAre(true);
     rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
     const { initAnalytics, track } = await load();
     await initAnalytics();
+    vi.mocked(posthog.register).mockClear();
 
-    // The backend's `oauth_sign_out` forgets the identity and says so.
-    broadcast("analytics-identity-changed", {
-      identified_sub: null,
-      ever_identified: true,
-      org_id: null,
-      auth_mode: null,
-    });
+    backendSignsOut();
     track("app_launched");
 
     expect(posthog.reset).toHaveBeenCalledTimes(1);
     expect(posthog.identify).not.toHaveBeenCalled();
-    expect(ph.delivered.at(-1)!.distinctId).toBe(INSTALL_ID);
+    const last = ph.delivered.at(-1)!.distinctId;
+    expect(last).not.toBe(INSTALL_ID);
+    expect(last).not.toBe(SUB);
+    for (const [props] of vi.mocked(posthog.register).mock.calls) {
+      expect(props).not.toHaveProperty("distinct_id");
+    }
+    // The machine is still visible on each event.
+    expect(posthog.register).toHaveBeenCalledWith(expect.objectContaining({ install_id: INSTALL_ID }));
+  });
+
+  it("does not bootstrap the install id on the next launch of a signed-out install", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: null, ever_identified: true, org_id: null, auth_mode: null };
+    const { initAnalytics } = await load();
+    await initAnalytics();
+    expect(vi.mocked(posthog.init).mock.calls[0][1]).not.toHaveProperty("bootstrap");
+  });
+
+  /** H1, webview half: the sign-in window sees the session end before (or
+   *  without) the backend's announcement, and must not write the old account
+   *  back to disk. */
+  it("treats a session that is no longer signed in as a sign-out, and records it", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await settle();
+    expect(rust.identity.identified_sub).toBe(SUB);
+
+    noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    await settle();
+
+    expect(rust.identity.identified_sub).toBeNull();
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(ph.state.distinctId).not.toBe(SUB);
+  });
+
+  /** H1, backend half: every window follows the backend's sign-out. */
+  it("moves every window off the account when the backend signs out", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const tray = await load();
+    await tray.initAnalytics();
+    const main = await load();
+    await main.initAnalytics();
+
+    backendSignsOut();
+    await settle();
+
+    // Both windows reset, and the stored record stays forgotten: nothing wrote
+    // the old sub back.
+    expect(posthog.reset).toHaveBeenCalledTimes(2);
+    expect(rust.identity.identified_sub).toBeNull();
+    main.noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    await settle();
+    expect(rust.identity.identified_sub).toBeNull();
+  });
+
+  /** M3. `reset` deletes posthog-js's persisted opt-out in shared storage. */
+  it("keeps an opted-out install opted out across a reset", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    await setAnalyticsConsent(false, "settings");
+    expect(ph.state.optedOut).toBe(true);
+
+    backendSignsOut();
+
+    expect(posthog.reset).toHaveBeenCalled();
+    expect(ph.state.optedOut).toBe(true);
   });
 
   it("re-signing in after a sign-out resets rather than merging the install id again", async () => {

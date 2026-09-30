@@ -534,14 +534,17 @@ export function NewUiApp() {
   const signedInNow = isSignedIn(account, oauth);
   const sessionSub = oauth?.sub ?? null;
   const sessionAuthMode = account?.auth_mode ?? null;
+  // Only once the first account and OAuth reads are in: before that, "not signed
+  // in" is "not read yet", and the seam treats not signed in as a sign-out.
   useEffect(() => {
+    if (!loaded) return;
     noteSession({
       signedIn: signedInNow,
       authMode: sessionAuthMode,
       sub: sessionSub,
       orgId: sessionOrgId,
     });
-  }, [signedInNow, sessionAuthMode, sessionSub, sessionOrgId]);
+  }, [loaded, signedInNow, sessionAuthMode, sessionSub, sessionOrgId]);
   // The gateway names this machine once a request from it has arrived: the
   // `first_request_proxied` signal where the relay cannot report (Linux).
   useEffect(() => {

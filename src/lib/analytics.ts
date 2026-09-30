@@ -13,8 +13,8 @@
  * sent while "Share diagnostic data" is on, which it is by default, before the
  * onboarding step has asked. Everything AG-960 added - the account and org
  * identity (`identify`, `group`), every funnel milestone and `connection_failed`
- * - is held on this machine until the question has been ANSWERED
- * (`share_diagnostics_recorded`). A yes releases what was held, in order; a no
+ * - is held in memory until the question has been ANSWERED
+ * (`share_diagnostics_recorded`), and lost if the app quits first. A yes releases what was held, in order; a no
  * spends the milestones unsent and drops the rest. The one exception is
  * `diagnostics_opted_out`, which is the answer itself.
  *
@@ -347,16 +347,22 @@ async function boot(): Promise<void> {
   void trackMilestone("app_first_launched");
 }
 
+/** The backend's broadcasts, emitted by `src-tauri/src/lib.rs` under the same
+ *  names (`ANALYTICS_IDENTITY_EVENT`, `ANALYTICS_CONSENT_EVENT`) and pinned on
+ *  both sides by `analytics.contract.test.ts`. */
+export const ANALYTICS_IDENTITY_EVENT = "analytics-identity-changed";
+export const ANALYTICS_CONSENT_EVENT = "analytics-consent-changed";
+
 let subscribed = false;
 function subscribe(): void {
   if (subscribed) return;
   subscribed = true;
   try {
     void listen<{ share_diagnostics: boolean; recorded: boolean }>(
-      "analytics-consent-changed",
+      ANALYTICS_CONSENT_EVENT,
       (e) => void applyConsent(e.payload.share_diagnostics, e.payload.recorded, null),
     ).catch(() => {});
-    void listen<AnalyticsIdentity>("analytics-identity-changed", (e) =>
+    void listen<AnalyticsIdentity>(ANALYTICS_IDENTITY_EVENT, (e) =>
       followIdentity(e.payload),
     ).catch(() => {});
   } catch {
@@ -395,9 +401,13 @@ function startPosthog(): Promise<void> {
       ]);
       installIdValue = id;
       if (stored) adoptStoredIdentity(stored);
+      // An install that was identified once and is signed out now gets no
+      // bootstrap: its install id already belongs to that person, so filing
+      // under it would put this launch back on the account that left. The
+      // client keeps the fresh anonymous id the sign-out `reset` gave it.
       const bootstrap = identifiedAs
         ? { distinctID: identifiedAs, isIdentifiedID: true }
-        : id
+        : id && !everIdentified
           ? { distinctID: id }
           : undefined;
       safely("init", () =>
@@ -513,11 +523,18 @@ async function applyConsent(
  * claim has no timeout racing it: an unanswered claim sends nothing.
  */
 async function recordOptOut(source: ConsentSource): Promise<void> {
+  // No build key, no destination: nothing may be posted, and the marker must
+  // not be spent on a record that went nowhere.
+  if (!POSTHOG_KEY_VALUE) return;
   const won = await analyticsMilestoneClaim("diagnostics_opted_out").catch(() => false);
   if (!won) return;
   const s = session;
   const distinctId =
-    identifiedAs ?? (s?.authMode === "oauth" && s.sub ? s.sub : null) ?? installIdValue;
+    identifiedAs ??
+    (s?.authMode === "oauth" && s.sub ? s.sub : null) ??
+    // An install identified once belongs to that person; after its sign-out the
+    // record goes under the client's own fresh id rather than back onto them.
+    (everIdentified ? currentDistinctId() : installIdValue);
   if (!distinctId) return;
   const org = s?.orgId ?? storedOrg;
   try {
@@ -721,6 +738,17 @@ function orgArrived(): void {
  */
 export function noteSession(facts: SessionFacts): void {
   session = facts;
+  // Not signed in any more is a sign-out: the account's id comes off this
+  // client, and the record the other windows follow says so. Without this the
+  // next write below carried the old `sub` straight back to disk.
+  if (!facts.signedIn && (identifiedAs || storedSub)) {
+    storedSub = null;
+    syncToStoredIdentity();
+    // No client to move (opted out, or no key): the record still must not name
+    // the account that left.
+    identifiedAs = null;
+    lastPersisted = "";
+  }
   persistIdentity();
   const state = funnelState();
   if (state === "open") applySessionNow();
@@ -792,8 +820,9 @@ function spendSession(): void {
  *   anonymous install person (and everything it sent before sign-in) INTO the
  *   `sub` person, which may already exist and be identified - the dashboard's
  *   person, who clicked the download. `identify` rather than `alias`: `alias`
- *   folds the alias id into the current person, which PostHog refuses for an
- *   already-identified id (`posthog-core.js` ~2839-2842).
+ *   would ask PostHog's server to fold an already-identified id into another
+ *   person, which it refuses ("Refused to merge an already identified user",
+ *   https://posthog.com/docs/data/ingestion-warnings).
  * - **Any later change of account** (a different `sub`, or the same one after a
  *   sign-out): `reset()` first, which drops the old distinct id for a fresh
  *   random one, then `identify(sub)`. The only id merged into the new person is
@@ -814,11 +843,24 @@ function applyIdentity(sub: string): void {
   persistIdentity();
 }
 
+function currentDistinctId(): string | null {
+  if (!started) return null;
+  try {
+    return posthog.get_distinct_id() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop the client's identity and groups, keeping its super-properties. */
 function resetClient(): void {
   safely("reset", () => posthog.reset());
   safely("register", () => posthog.register(superProps));
   groupedAs = null;
+  // `reset` also clears posthog-js's persisted opt-out (`consent.reset()`,
+  // `consent.js` ~60), in storage every window shares. Put it back unless the
+  // user is sharing, or a later launch would start a client that sends.
+  if (consent !== true) safely("opt_out_capturing", () => posthog.opt_out_capturing());
 }
 
 /**
@@ -827,10 +869,11 @@ function resetClient(): void {
  *
  * - A `sub` this window is not on: reset and identify, never merging the
  *   install id (the sign-in window did that once, if it was due).
- * - No `sub` (signed out): reset, and point the client back at the install id,
- *   the same `distinct_id` registration bootstrap performs, so what this
- *   machine sends next is filed under the machine again rather than under the
- *   account that just left.
+ * - No `sub` (signed out): reset to a fresh anonymous id. NOT back to the
+ *   install id: once identified, the install id belongs to that account's
+ *   person, so filing under it would keep sending as the account that left.
+ *   `install_id` stays a super-property, so the machine is still visible on
+ *   each event.
  */
 function followIdentity(next: AnalyticsIdentity): void {
   storedSub = next.identified_sub;
@@ -850,9 +893,6 @@ function syncToStoredIdentity(): void {
   if (storedSub) {
     const sub = storedSub;
     safely("identify", () => posthog.identify(sub));
-  } else {
-    const id = installIdValue;
-    if (id) safely("register", () => posthog.register({ distinct_id: id, $device_id: id }));
   }
   identifiedAs = storedSub;
   applyGroup();

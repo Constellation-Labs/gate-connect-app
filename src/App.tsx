@@ -203,14 +203,20 @@ export function App() {
   // once paired. The popover has no org id for an API-key account (it never
   // reads the activity overview that carries one), so that case stays
   // ungrouped here; the window shell covers it.
+  //
+  // Not before the first read lands (`screen` leaves "loading" then): until
+  // then "not signed in" means "not read yet", and the seam treats not signed
+  // in as a sign-out.
+  const sessionRead = screen !== "loading";
   useEffect(() => {
+    if (!sessionRead) return;
     noteSession({
       signedIn: isSignedIn(account, oauth),
       authMode: account?.auth_mode ?? null,
       sub: oauth?.sub ?? null,
       orgId: account?.org_id ?? null,
     });
-  }, [account, oauth]);
+  }, [sessionRead, account, oauth]);
 
   // Routed traffic left for the gateway: the first report is the funnel's
   // `first_request_proxied`. The window shell listens for the same event.

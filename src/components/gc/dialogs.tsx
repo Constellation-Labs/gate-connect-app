@@ -1883,14 +1883,15 @@ export function CollectedDataLists({
               the organization id, so setup can be measured from download to
               first request. Neither is a name or an email. */}
           <li>
-            A device id generated on this machine. Once you sign in and have
-            answered this question, your account id and organization id too, so
-            setup can be measured from download to first request. Never your
-            name or email.
+            A device id generated on this machine. Once you sign in and answer
+            this question, your account id and organization id too, so setup
+            can be measured from download to first request. Never your name or
+            email.
           </li>
           {/* AG-960's opt-out record: the one thing that leaves after the
-              switch goes off, and only once per install. */}
-          <li>Turning sharing off sends one final note saying so.</li>
+              switch goes off, once per install, filed under the account's id
+              (or the device id) with the organization when known. */}
+          <li>Turning sharing off sends one final note, tied to your account, saying so.</li>
           <li>App version and operating system.</li>
           <li>
             Which action happened, from a fixed list - routing turned on or off,
@@ -1927,9 +1928,16 @@ export function CollectedDataLists({
           Sent with your traffic, whatever this setting says
         </p>
         <ul className="mt-1 list-disc pl-4">
+          {/* AG-960. The gateway links the device id on the activating
+              request to the account (dashboard-api's `$create_alias` at
+              `first_gateway_request`), which ties this device's analytics,
+              including what it already sent, to that account whatever the
+              diagnostics answer is: the header rides every request. */}
           <li>
             The same device id, so your activity view can group requests by
-            machine. It identifies nothing else and authorizes nothing.
+            machine. When your first request goes through, Gate also uses it to
+            link this device&rsquo;s diagnostic data to your account, whatever
+            you answer here. It authorizes nothing.
           </li>
           <li>
             Which app made the request, when Gate can tell from the request

@@ -40,9 +40,14 @@ of `diagnostics_opted_out`.
     person at most once per install, and account B is never attached to the
     person of account A. Events from the install before B's sign-in stay with
     A's person, where they were sent.
-  - **Sign-out** (in the app or the CLI) or Reset clears the stored identity;
-    every window resets and goes back to the install id, and the next launch
-    bootstraps the install id.
+  - **Sign-out** (in the app or the CLI) or Reset clears the stored identity,
+    and the backend announces it to every window. Each window then resets to a
+    fresh anonymous PostHog id, NOT back to the install id: once identified,
+    the install id belongs to that account's person, so filing under it would
+    keep sending as the account that left. `install_id` stays a
+    super-property. The next launch of such an install bootstraps nothing and
+    keeps that fresh id. An app session that is simply no longer signed in (an
+    expired session included) is treated the same way.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the
   org the gateway resolved the key to (read from `/v1/me/activity`; milestones
@@ -56,7 +61,14 @@ of `diagnostics_opted_out`.
   request's `x-gate-install-id` to the same distinct id as
   `first_gateway_request` (gate repo, PR AG-960). That alias depends on the
   install id being the distinct id of an unidentified install, which is why it
-  is.
+  is. It happens whatever the diagnostics answer is, because the header rides
+  every gateway request, and it links this install, and the events already
+  sent under its id, to that account. The in-app disclosure says so.
+  **Known limit:** on a machine where a Constellation account was identified
+  first, the install id already belongs to that person. A later API-key account
+  on the same machine is on a fresh anonymous id (see Sign-out above), so the
+  server alias cannot join it to its person, and only the `organization` group
+  links its events.
 - Never sent: names, emails, API keys, tokens, gateway hosts, file paths, error
   text. Error events carry a classified title; failure events carry a reason
   from a closed list.
@@ -73,8 +85,9 @@ change does not widen what they send.
   sent. Events tracked while the read is in flight wait and are dropped if the
   answer is no.
 - **Everything AG-960 added** (identify, group, every milestone,
-  `connection_failed`) is held on the machine until the diagnostics question
-  has been **answered** (`share_diagnostics_recorded`). Nothing is claimed while
+  `connection_failed`) is held in memory until the diagnostics question has
+  been **answered** (`share_diagnostics_recorded`), and lost if the app quits
+  first. Nothing is claimed while
   it is held. A yes releases it in order, identity and group first, each event
   stamped with the time it happened; a no spends the held milestones unsent and
   drops the rest. The onboarding step comes after sign-in, so on a fresh install
@@ -95,11 +108,26 @@ back in is not recorded), straight to PostHog's capture endpoint so it does not
 race the client being switched off. It is filed on the person: under the
 account's `sub` when a Constellation sign-in is known (without an `$identify`,
 so an install that was never identified is not merged by it), otherwise under
-the install id, with the org group when known, and carries only `source`.
+the install id (or, for an install identified once and signed out since, under
+its fresh anonymous id), with the org group when known, and carries only
+`source`. It is NOT sent with `$process_person_profile: false`: PostHog
+attributes past personless events to a person after a merge, but personless
+events cannot be used to build cohorts or in group analytics
+(https://posthog.com/docs/data/anonymous-vs-identified-events), and the funnel's
+"opted out" breakdown is exactly a cohort of people who performed it.
 At most once rather than at least once: the marker is claimed before the send,
 so a send that fails is lost rather than retried, because a duplicate would
 count one install's opt-out twice while a lost one only leaves it looking like a
 drop-off.
+
+## The legacy popover shell
+
+The popover shell (`App.tsx`, reachable with `VITE_NEW_UI=0` or `gcNewUi(false)`)
+has no diagnostics step, so on an install whose question was never answered its
+AG-960 events stay held and are never sent. That is intentional: the funnel is
+reported by the default window shell, and the legacy shell keeps only the base
+events it always sent. An install that answered in the window shell reports
+from either.
 
 ## Milestones
 
@@ -247,7 +275,7 @@ posthog-js batches events and flushes every 3 seconds by default
 seconds even from a hidden window whose timers are throttled.
 
 **The one-minute latency holds only once the diagnostics question has been
-answered.** Before that, AG-960's events are held on the machine (see Consent),
+answered.** Before that, AG-960's events are held in memory (see Consent),
 so a sign-in or pairing failure on a fresh install, which happens before the
 onboarding step asks, reaches PostHog when the question is answered yes, with
 its original timestamp, and never if it is answered no or never answered.

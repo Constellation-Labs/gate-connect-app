@@ -76,7 +76,11 @@ describe("docs/analytics-events.md stays in step with the code", () => {
   it("does not tell the user that collection is anonymous, and discloses the opt-out note", () => {
     const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8");
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
-    expect(dialogs).toContain("Turning sharing off sends one final note saying so.");
+    expect(dialogs).toContain(
+      "Turning sharing off sends one final note, tied to your account, saying so.",
+    );
+    // The server-side alias links the device whatever the answer (review round 2).
+    expect(dialogs).toMatch(/link\s+this device&rsquo;s diagnostic data to your account, whatever\s+you answer here/);
     const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8");
     expect(upload).not.toMatch(/anonymous posture/);
   });
