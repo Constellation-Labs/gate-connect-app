@@ -410,6 +410,18 @@ pub struct Identity {
     /// `"oauth"` or `"api_key"`, beside the org it describes.
     #[serde(default)]
     pub auth_mode: Option<String>,
+    /// The org an API-key account first paired this install with. From then on
+    /// the gateway may alias the install id into that key owner's person
+    /// (dashboard-api's `$create_alias` at `first_gateway_request`), so the
+    /// install id is spent on that account. Sticky once set.
+    #[serde(default)]
+    pub api_key_org: Option<String>,
+    /// Whether the install id must no longer be used as a distinct id: it
+    /// belongs to a person already (identified once, or spent on an API-key
+    /// account that has since gone), and filing a later account under it would
+    /// attach that account to the earlier person. Sticky.
+    #[serde(default)]
+    pub install_id_retired: bool,
 }
 
 const IDENTITY_FILE: &str = "analytics-identity.json";
@@ -433,11 +445,14 @@ pub fn load_identity_in(support: &Path) -> Identity {
             org_id: clean_id(i.org_id),
             auth_mode: clean_id(i.auth_mode),
             ever_identified: i.ever_identified,
+            api_key_org: clean_id(i.api_key_org),
+            install_id_retired: i.install_id_retired,
         })
         .unwrap_or_default()
 }
 
-/// Store `next`, keeping `ever_identified` sticky and implied by a sub.
+/// Store `next`, keeping the sticky facts sticky: `ever_identified` (implied
+/// by a sub), `api_key_org` once set, and `install_id_retired`.
 pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
     let prev = load_identity_in(support);
     let identified_sub = clean_id(next.identified_sub);
@@ -446,27 +461,57 @@ pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
         identified_sub,
         org_id: clean_id(next.org_id),
         auth_mode: clean_id(next.auth_mode),
+        api_key_org: prev.api_key_org.or(clean_id(next.api_key_org)),
+        install_id_retired: prev.install_id_retired || next.install_id_retired,
     };
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
     let body = serde_json::to_vec_pretty(&stored).context("serializing analytics identity")?;
     crate::primitives::write_file(&support.join(IDENTITY_FILE), &body, 0o600)
 }
 
-/// Drop the identified sub (and the org), keeping `ever_identified`. Called on
-/// sign-out and reset by the backend itself, so a sign-out the webview did not
-/// see (the CLI's) still stops the next launch bootstrapping the old person.
+/// The account is gone: drop the identified sub and the org, and retire the
+/// install id if it already belongs to someone (identified once, or spent on an
+/// API-key account). Called from `oauth::clear`, which every sign-out path
+/// reaches - the app's Disconnect and Reset, `gate-connect logout`, the startup
+/// reconcile - so a sign-out the webview never saw still stops the next launch
+/// filing under the old person.
 pub fn forget_identity_in(support: &Path) -> Result<()> {
     let prev = load_identity_in(support);
-    if prev.identified_sub.is_none() && prev.org_id.is_none() {
+    let retire = prev.install_id_retired || prev.ever_identified || prev.api_key_org.is_some();
+    if prev.identified_sub.is_none() && prev.org_id.is_none() && retire == prev.install_id_retired {
         return Ok(());
     }
     save_identity_in(
         support,
         Identity {
             ever_identified: prev.ever_identified,
+            api_key_org: prev.api_key_org,
+            install_id_retired: retire,
             ..Identity::default()
         },
     )
+}
+
+/// An API key was replaced by a different one: if the install id was spent on
+/// the previous key's account, retire it, so the new key's account is not filed
+/// under the old owner's person. Called from `account::save`.
+pub fn retire_spent_install_id_in(support: &Path) -> Result<()> {
+    let prev = load_identity_in(support);
+    if prev.api_key_org.is_none() || prev.install_id_retired {
+        return Ok(());
+    }
+    save_identity_in(
+        support,
+        Identity {
+            install_id_retired: true,
+            ..prev
+        },
+    )
+}
+
+/// [`retire_spent_install_id_in`] against the real data dir.
+pub fn retire_spent_install_id() -> Result<()> {
+    retire_spent_install_id_in(&crate::env::app_support_dir()?)
 }
 
 /// [`load_identity_in`] against the real data dir.
@@ -851,6 +896,7 @@ mod tests {
                 org_id: Some("org-1".into()),
                 auth_mode: Some("oauth".into()),
                 ever_identified: false,
+                ..Identity::default()
             },
         )
         .unwrap();
@@ -887,9 +933,107 @@ mod tests {
                 org_id: Some("a\nb".into()),
                 auth_mode: Some("x".repeat(200)),
                 ever_identified: false,
+                ..Identity::default()
             },
         )
         .unwrap();
         assert_eq!(load_identity_in(&dir), Identity::default());
+    }
+
+    /// Round 3, M4: an API-key install whose id may have been aliased to the key
+    /// owner is retired when that account goes, and stays retired.
+    #[test]
+    fn a_spent_install_id_is_retired_when_its_account_goes() {
+        let dir = scratch("spent");
+        save_identity_in(
+            &dir,
+            Identity {
+                org_id: Some("org-a".into()),
+                auth_mode: Some("api_key".into()),
+                api_key_org: Some("org-a".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        assert!(!load_identity_in(&dir).install_id_retired);
+
+        forget_identity_in(&dir).unwrap();
+        let got = load_identity_in(&dir);
+        assert!(got.install_id_retired);
+        assert_eq!(got.org_id, None);
+
+        // Sticky against a later save that knows nothing about it.
+        save_identity_in(&dir, Identity::default()).unwrap();
+        assert!(load_identity_in(&dir).install_id_retired);
+        assert_eq!(load_identity_in(&dir).api_key_org.as_deref(), Some("org-a"));
+    }
+
+    #[test]
+    fn replacing_a_spent_key_retires_the_install_id_and_an_unspent_one_does_not() {
+        let fresh = scratch("unspent");
+        retire_spent_install_id_in(&fresh).unwrap();
+        assert!(!load_identity_in(&fresh).install_id_retired);
+
+        let dir = scratch("replace");
+        save_identity_in(
+            &dir,
+            Identity {
+                api_key_org: Some("org-a".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        retire_spent_install_id_in(&dir).unwrap();
+        assert!(load_identity_in(&dir).install_id_retired);
+    }
+
+    #[test]
+    fn a_sign_out_of_an_identified_install_retires_its_install_id() {
+        let dir = scratch("identified-out");
+        save_identity_in(
+            &dir,
+            Identity {
+                identified_sub: Some("sub-a".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        forget_identity_in(&dir).unwrap();
+        let got = load_identity_in(&dir);
+        assert!(got.install_id_retired && got.ever_identified);
+        assert_eq!(got.identified_sub, None);
+    }
+
+    /// Round 3, M3: the forget lives in the core, on the path every sign-out
+    /// takes, so `gate-connect logout` forgets too. `account::clear` is what the
+    /// CLI's logout and the app's Reset call, and it reaches `oauth::clear`.
+    #[test]
+    fn every_sign_out_path_reaches_the_forget() {
+        let oauth = include_str!("oauth.rs");
+        let at = oauth
+            .find("pub fn clear() -> Result<()> {")
+            .expect("oauth::clear");
+        let body = &oauth[at..at + oauth[at..].find("\n}\n").expect("end of clear")];
+        assert!(body.contains("crate::analytics::forget_identity()"));
+
+        let account = include_str!("account.rs");
+        let at = account
+            .find("pub fn clear() -> Result<()> {")
+            .expect("account::clear");
+        let body = &account[at..at + account[at..].find("\n}\n").expect("end of clear")];
+        assert!(body.contains("crate::oauth::clear()?"));
+
+        let cli = include_str!("../../cli/src/main.rs");
+        let at = cli.find("fn cmd_logout()").expect("cmd_logout");
+        assert!(cli[at..].contains("account::clear()?"));
+    }
+
+    /// And replacing a key retires a spent install id in the core too.
+    #[test]
+    fn replacing_a_key_reaches_the_retire() {
+        let account = include_str!("account.rs");
+        let at = account.find("pub fn save(").expect("account::save");
+        let body = &account[at..at + account[at..].find("\n}\n").expect("end of save")];
+        assert!(body.contains("crate::analytics::retire_spent_install_id()"));
     }
 }

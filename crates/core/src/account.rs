@@ -296,6 +296,12 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         // cache that will not clear must not fail a key replace.
         if old_prefix != Some(new_prefix.as_str()) {
             let _ = crate::activity_cache::clear();
+            // A different key may belong to a different person, and the install
+            // id may already be aliased to the previous key's owner (AG-960).
+            // Only a replacement: the first key saved spends nothing.
+            if old_prefix.is_some() {
+                let _ = crate::analytics::retire_spent_install_id();
+            }
         }
     }
     Ok(())

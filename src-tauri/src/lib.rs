@@ -454,6 +454,9 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     if done.is_ok() {
         signal_session_changed();
     }
+    // A replaced key retires a spent install id in `account::save`; tell every
+    // window (AG-960).
+    announce_stored_analytics_identity();
     done
 }
 
@@ -465,10 +468,6 @@ async fn clear_account() -> Result<(), String> {
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
-        // The analytics identity belongs to the account being cleared: the next
-        // launch must bootstrap the install id, not this person (AG-960).
-        // Best-effort, like the preference writes beside it.
-        forget_analytics_identity();
         // And stop the environment forwarder. It is deliberately left running
         // across a plain routing-off - that is exactly when the processes
         // holding our exported variables still need it - so this path and the
@@ -487,6 +486,9 @@ async fn clear_account() -> Result<(), String> {
         security_feed().reset_for_account_change();
         signal_session_changed();
     }
+    // `account::clear` forgot the analytics identity (through `oauth::clear`);
+    // tell every window, so none keeps the account that went (AG-960).
+    announce_stored_analytics_identity();
     done
 }
 
@@ -551,6 +553,12 @@ struct OAuthStatusDto {
     /// person with once signed in so the install funnel joins the dashboard's
     /// person (AG-960). Not shown anywhere.
     sub: Option<String>,
+    /// `"live"`, `"signed_out"` (no session, or a refused one) or
+    /// `"unavailable"` (the identity provider or the secret store did not
+    /// answer). `signed_in` is false for both of the last two, as it always was;
+    /// this is what lets the analytics seam tell a sign-out from a machine that
+    /// is only offline (AG-960).
+    session: &'static str,
     /// Access-token expiry as a Unix timestamp; 0 when signed out.
     expires_at_unix: i64,
 }
@@ -561,6 +569,7 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
             signed_in: true,
             email: t.email(),
             sub: t.sub(),
+            session: "live",
             expires_at_unix: t.expires_at_unix,
         }
     }
@@ -575,12 +584,18 @@ fn oauth_status_now() -> Result<OAuthStatusDto, String> {
     // actually riding the legacy API-key fallback. Keeping a running engine's
     // token fresh is the background refresh loop's job (see `run()`), not this
     // read's, so status stays a read that never mutates engine state.
-    Ok(match gate_connect_core::oauth::live_session() {
-        Some(t) => OAuthStatusDto::from(&t),
-        None => OAuthStatusDto {
+    use gate_connect_core::oauth::SessionReading;
+    Ok(match gate_connect_core::oauth::session_reading() {
+        SessionReading::Live(t) => OAuthStatusDto::from(&t),
+        other => OAuthStatusDto {
             signed_in: false,
             email: None,
             sub: None,
+            session: if matches!(other, SessionReading::Unavailable) {
+                "unavailable"
+            } else {
+                "signed_out"
+            },
             expires_at_unix: 0,
         },
     })
@@ -665,10 +680,6 @@ async fn oauth_sign_out() -> Result<(), String> {
         // cache clear below: a preferences write must not be the reason a
         // sign-out reports failure.
         let _ = gate_connect_core::preferences::set_signed_out_deliberately(true);
-        // Nobody is signed in now, so the next launch bootstraps the install id
-        // rather than this person (AG-960). Here as well as in the webview so a
-        // sign-out it never saw still lands. Best-effort for the same reason.
-        forget_analytics_identity();
         // The held activity readings belong to the org just signed out of, and
         // signing out is not a disconnect: `account.json` keeps the gateway and
         // the org, so `activity_cache`'s scope stays byte-identical and every
@@ -690,6 +701,8 @@ async fn oauth_sign_out() -> Result<(), String> {
     if done.is_ok() {
         signal_session_changed();
     }
+    // `oauth::clear` forgot the analytics identity; tell every window (AG-960).
+    announce_stored_analytics_identity();
     done
 }
 
@@ -2967,36 +2980,13 @@ fn announce_analytics_identity(identity: gate_connect_core::analytics::Identity)
     }
 }
 
-/// Forget the analytics identity because the account is gone (sign-out,
-/// Reset), and tell every window. Without the announcement each window kept
-/// the old account's id for the rest of the session, and the sign-in window
-/// wrote it straight back to disk on its next session read.
-fn forget_analytics_identity() {
-    forget_and_announce(
-        gate_connect_core::analytics::forget_identity,
-        gate_connect_core::analytics::load_identity,
-        |name, identity| {
-            if let Some(handle) = APP_HANDLE.get() {
-                let _ = handle.emit(name, identity);
-            }
-        },
-    );
-}
-
-/// The ordering of [`forget_analytics_identity`], split out so a test drives it
-/// without an `AppHandle`: forget, then announce what is stored now, whether or
-/// not the forget succeeded (a failed write still leaves the windows on the
-/// truth on disk). Best-effort: a preferences-style write must not fail the
-/// sign-out it rides.
-fn forget_and_announce(
-    forget: impl FnOnce() -> anyhow::Result<()>,
-    load: impl FnOnce() -> gate_connect_core::analytics::Identity,
-    emit: impl FnOnce(&'static str, gate_connect_core::analytics::Identity),
-) {
-    if let Err(e) = forget() {
-        eprintln!("[gate] forgetting the analytics identity failed: {e:#}");
-    }
-    emit(ANALYTICS_IDENTITY_EVENT, load());
+/// Tell every window what analytics identity is stored now. The core does the
+/// forgetting and the retiring (`oauth::clear`, `account::save`), so every
+/// caller of those, the CLI included, changes the record; this is the shell's
+/// half, because only the shell has windows to tell. Without it each window
+/// kept the old account for the rest of the session.
+fn announce_stored_analytics_identity() {
+    announce_analytics_identity(gate_connect_core::analytics::load_identity());
 }
 
 /// The process name to look for on behalf of one tool.
@@ -6782,59 +6772,29 @@ mod tests {
         assert_ne!(source, bundle);
     }
 
-    /// A sign-out or Reset must announce the forgotten identity to every
-    /// window (AG-960). The first cut only forgot it, so each window stayed on
-    /// the old account and the sign-in window wrote it back.
+    /// Every command that ends or replaces the account announces the stored
+    /// analytics identity, after the core call that changed it (AG-960). A scan
+    /// of this file's own source, because the commands need a running app.
     #[test]
-    fn forgetting_the_analytics_identity_announces_it() {
-        let forgot = std::cell::Cell::new(false);
-        let mut emitted = None;
-        forget_and_announce(
-            || {
-                forgot.set(true);
-                Ok(())
-            },
-            || {
-                assert!(forgot.get(), "announced before the forget landed");
-                gate_connect_core::analytics::Identity {
-                    ever_identified: true,
-                    ..Default::default()
-                }
-            },
-            |name, identity| emitted = Some((name, identity)),
-        );
-        let (name, identity) = emitted.expect("the change must be announced");
-        assert_eq!(name, "analytics-identity-changed");
-        assert_eq!(identity.identified_sub, None);
-    }
-
-    #[test]
-    fn a_failed_forget_still_announces_what_is_stored() {
-        let mut emitted = false;
-        forget_and_announce(
-            || Err(anyhow::anyhow!("disk full")),
-            gate_connect_core::analytics::Identity::default,
-            |_, _| emitted = true,
-        );
-        assert!(emitted);
-    }
-
-    /// Both ways the account goes away announce it. A scan of this file's own
-    /// source, because the commands need a running app to call.
-    #[test]
-    fn sign_out_and_reset_both_forget_and_announce_the_identity() {
+    fn account_changes_announce_the_analytics_identity_after_the_change() {
         let src = include_str!("lib.rs");
-        for start in ["async fn oauth_sign_out()", "async fn clear_account()"] {
+        for (start, change) in [
+            ("async fn oauth_sign_out()", "oauth::clear()"),
+            ("async fn clear_account()", "account::clear()"),
+            ("async fn save_account(", "account::save("),
+        ] {
             let at = src.find(start).expect(start);
             let body = &src[at..];
             let end = body[start.len()..]
                 .find("\n#[tauri::command]")
                 .map(|i| i + start.len())
                 .unwrap_or(body.len());
-            assert!(
-                body[..end].contains("forget_analytics_identity();"),
-                "{start} must call forget_analytics_identity()"
-            );
+            let body = &body[..end];
+            let changed = body.find(change).expect(change);
+            let announced = body
+                .find("announce_stored_analytics_identity();")
+                .unwrap_or_else(|| panic!("{start} must announce the identity"));
+            assert!(changed < announced, "{start}: announce after {change}");
         }
     }
 
