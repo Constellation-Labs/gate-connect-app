@@ -282,6 +282,23 @@ fn config_path() -> Result<PathBuf> {
 /// cannot be wrong.
 static CACHE: RwLock<Option<(Stamp, Preferences)>> = RwLock::new(None);
 
+/// Serialises every read-modify-write of the file in this process.
+///
+/// Each setter loads, changes one field and saves. Two of them overlapping -
+/// the pane's focus re-read folding a drift while a save is in flight, which
+/// run in separate blocking tasks - would each save what they loaded and one
+/// change would be lost. That was a cosmetic risk while this file only held
+/// switches; it is not now that the relay decides what is served on the
+/// organization's credits from it (`gate_models_for`).
+///
+/// Process-wide only. The CLI writing at the same moment is still possible
+/// and still rare; the stamped cache is what makes its write visible here.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn write_guard() -> std::sync::MutexGuard<'static, ()> {
+    WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// What the preferences file looked like when the cached copy was parsed.
 ///
 /// `None` is a legitimate stamp - the file does not exist yet, which is the
@@ -360,16 +377,25 @@ pub fn load() -> Preferences {
 
 /// Write the preferences. 0644 - non-secret, and the CLI reads the same file.
 pub fn save(prefs: &Preferences) -> Result<()> {
+    let _w = write_guard();
+    save_locked(prefs)
+}
+
+/// [`save`] for a caller already holding [`WRITE_LOCK`].
+fn save_locked(prefs: &Preferences) -> Result<()> {
     let path = config_path()?;
     let body = serde_json::to_vec_pretty(prefs).context("serializing preferences")?;
     primitives::write_file(&path, &body, 0o644)
         .with_context(|| format!("writing {}", path.display()))?;
     // Refresh rather than clear: the next reader is on the request path, and
     // handing it a miss would put the parse back where this cache exists to keep
-    // it out of. Written after the file, and re-stamped from what actually
-    // landed, so a failed write leaves the cache agreeing with what is on disk.
+    // it out of. The cached value is parsed back from the bytes just written and
+    // stamped under the same lock, so it is what the file says rather than what
+    // the caller meant - two saves can no longer leave one's value under the
+    // other's stamp.
+    let written: Preferences = serde_json::from_slice(&body).unwrap_or_else(|_| prefs.clone());
     if let Ok(mut cache) = CACHE.write() {
-        *cache = Some((stamp(), prefs.clone()));
+        *cache = Some((stamp(), written));
     }
     Ok(())
 }
@@ -388,9 +414,10 @@ pub fn reset_cache_for_tests() {
 /// Read-modify-write rather than taking a whole `Preferences`, so a caller that
 /// only knows about one switch cannot clobber a field it has never heard of.
 pub fn set_notifications(enabled: bool) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.notifications = enabled;
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Record whether the session ended because the user asked it to.
@@ -399,16 +426,18 @@ pub fn set_notifications(enabled: bool) -> Result<()> {
 /// `false` wherever a sign-in completes, so it always describes the most recent
 /// departure rather than accumulating.
 pub fn set_signed_out_deliberately(deliberate: bool) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.signed_out_deliberately = deliberate;
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Turn the sound on those notifications on or off.
 pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.security_notification_sound = enabled;
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Record the diagnostic-data choice, and that it *was* a choice.
@@ -419,10 +448,11 @@ pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
 /// the person changed nothing: leaving the default in place is still an answer,
 /// and treating it as unanswered would ask again on the next launch.
 pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Record the domains Gate has switched on for `tool`, replacing any previous
@@ -437,13 +467,14 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
 /// An empty list removes the entry rather than storing `[]`, so the file does
 /// not grow a row per tool that never needed one.
 pub fn record_auto_enabled_domains(tool: &str, domains: Vec<String>) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     if domains.is_empty() {
         prefs.auto_enabled_domains.remove(tool);
     } else {
         prefs.auto_enabled_domains.insert(tool.to_string(), domains);
     }
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Read what Gate switched on for `tool`, without clearing it.
@@ -490,6 +521,7 @@ pub fn set_tool_model(
     acknowledge_paid_use: bool,
     meta: Vec<(String, GateModelMeta)>,
 ) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.gate_model_meta.extend(meta);
     if source == ModelSource::Gate
@@ -501,7 +533,7 @@ pub fn set_tool_model(
     prefs
         .tool_models
         .insert(slug.to_string(), ToolModelChoice { source, model_ids });
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// Put one tool back on its own model, keeping the models it had so the pane
@@ -513,6 +545,7 @@ pub fn set_tool_model(
 /// over it. No acknowledgement moves - going back to the tool's own model
 /// spends nothing.
 pub fn fall_back_to_tool_model(slug: &str) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     let Some(choice) = prefs.tool_models.get_mut(slug) else {
         return Ok(());
@@ -521,7 +554,7 @@ pub fn fall_back_to_tool_model(slug: &str) -> Result<()> {
         return Ok(());
     }
     choice.source = ModelSource::Tool;
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// What the catalogue said about `id` when it was picked, if anything.
@@ -535,9 +568,10 @@ pub fn gate_model_meta(id: &str) -> Option<GateModelMeta> {
 /// device row with nothing in it is worse than one showing what the OS calls the
 /// machine, and it is the state a user reaches by deleting the text.
 pub fn set_device_name(name: &str) -> Result<()> {
+    let _w = write_guard();
     let mut prefs = load();
     prefs.device_name = device_name_override(name);
-    save(&prefs)
+    save_locked(&prefs)
 }
 
 /// What to call this machine on the wire, or `None` to send no label at all.

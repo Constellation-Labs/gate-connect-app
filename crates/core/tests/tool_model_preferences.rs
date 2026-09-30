@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
-use gate_connect_core::preferences::{load, set_tool_model, ModelSource};
+use gate_connect_core::preferences::{gate_models_for, load, set_tool_model, ModelSource};
 
 /// The override is process-global even here, so these take turns.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -138,3 +138,51 @@ fn an_untouched_tool_has_no_entry() {
     set_tool_model("codex", ModelSource::Gate, vec!["a/b".into()], true, vec![]).expect("save");
     assert!(!load().tool_models.contains_key("claude-code"));
 }
+
+/// Overlapping saves for different tools keep both (review on #382). Without
+/// the write lock each load-modify-save could save what it loaded before the
+/// other landed.
+#[test]
+fn concurrent_saves_for_different_tools_keep_both() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let threads: Vec<_> = (0..16)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let slug = if i % 2 == 0 { "codex" } else { "hermes" };
+                set_tool_model(slug, ModelSource::Gate, vec![format!("a/m{i}")], true, vec![])
+                    .expect("save");
+                gate_connect_core::preferences::set_device_name(&format!("dev {i}")).expect("rename");
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let prefs = gate_connect_core::preferences::load();
+    assert!(prefs.tool_models.contains_key("codex"), "{prefs:?}");
+    assert!(prefs.tool_models.contains_key("hermes"), "{prefs:?}");
+    assert!(prefs.device_name.is_some());
+}
+
+/// A choice written by another process (the CLI) is served without a restart:
+/// the cache is stamped by the file, not only refreshed by this process's saves.
+#[test]
+fn a_change_written_by_another_process_is_picked_up() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    set_tool_model("codex", ModelSource::Gate, vec!["a/first".into()], true, vec![]).unwrap();
+    assert_eq!(gate_models_for("codex"), Some(vec!["a/first".to_string()]));
+
+    // Rewrite the file behind the cache's back, as a second process would.
+    let path = gate_connect_core::env::app_support_dir().unwrap().join("preferences.json");
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["tool_models"]["codex"]["model_ids"] = serde_json::json!(["b/second", "c/third"]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+
+    assert_eq!(
+        gate_models_for("codex"),
+        Some(vec!["b/second".to_string(), "c/third".to_string()])
+    );
+}
+
