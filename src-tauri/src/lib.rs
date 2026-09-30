@@ -543,6 +543,10 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
 struct OAuthStatusDto {
     signed_in: bool,
     email: Option<String>,
+    /// The id token's Cognito `sub`, which the webview identifies its PostHog
+    /// person with once signed in so the install funnel joins the dashboard's
+    /// person (AG-960). Not shown anywhere.
+    sub: Option<String>,
     /// Access-token expiry as a Unix timestamp; 0 when signed out.
     expires_at_unix: i64,
 }
@@ -552,6 +556,7 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
         Self {
             signed_in: true,
             email: t.email(),
+            sub: t.sub(),
             expires_at_unix: t.expires_at_unix,
         }
     }
@@ -571,6 +576,7 @@ fn oauth_status_now() -> Result<OAuthStatusDto, String> {
         None => OAuthStatusDto {
             signed_in: false,
             email: None,
+            sub: None,
             expires_at_unix: 0,
         },
     })
@@ -1225,7 +1231,7 @@ async fn proxy_enable<R: tauri::Runtime>(
         let (_, warnings) = gate_connect_core::routing::enable().map_err(|e| format!("{e:#}"))?;
         for w in warnings {
             eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
-            report_backend_error(w.component, format!("{:#}", w.error));
+            report_backend_failure(w.component, &w.error);
         }
         // Status re-read rather than enable's own state: the post-enable
         // restore pass can flip domains, and the UI wants the settled set.
@@ -1342,7 +1348,7 @@ async fn proxy_disable<R: tauri::Runtime>(
                 "[gate] proxy disable: {} failed: {:#}",
                 w.component, w.error
             );
-            report_backend_error(w.component, format!("{:#}", w.error));
+            report_backend_failure(w.component, &w.error);
         }
         Ok::<_, String>(state)
     })
@@ -1967,6 +1973,12 @@ impl<R: tauri::Runtime> Drop for StartupEnableSettled<R> {
 struct BackendError {
     context: &'static str,
     message: String,
+    /// The connection-failure reason decided from the error's TYPE, where the
+    /// failure site had the error itself rather than only its text
+    /// (`gate_connect_core::analytics::failure_reason`). `None` leaves the
+    /// webview to classify the message, as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
 
 /// Buffered failures, **per webview label**, because both shells drain.
@@ -2016,6 +2028,21 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// popover to drain it. Capped so a repeating failure can't grow unbounded;
 /// oldest entries drop first.
 fn report_backend_error(context: &'static str, message: String) {
+    queue_backend_error(context, message, None);
+}
+
+/// [`report_backend_error`] for a failure whose error value is in hand, so the
+/// reason it is filed under in analytics comes from its type (an `AddrInUse`
+/// anywhere in the chain) rather than from matching words in the message.
+fn report_backend_failure(context: &'static str, err: &anyhow::Error) {
+    queue_backend_error(
+        context,
+        format!("{err:#}"),
+        gate_connect_core::analytics::failure_reason(err),
+    );
+}
+
+fn queue_backend_error(context: &'static str, message: String, reason: Option<&'static str>) {
     if let Ok(mut guard) = PENDING_BACKEND_ERRORS.lock() {
         let per_label = guard.get_or_insert_with(HashMap::new);
         for label in ERROR_SINK_LABELS {
@@ -2026,6 +2053,7 @@ fn report_backend_error(context: &'static str, message: String) {
             pending.push(BackendError {
                 context,
                 message: message.clone(),
+                reason,
             });
         }
     }
@@ -2861,6 +2889,24 @@ fn record_auto_enabled_domains(tool: String, domains: Vec<String>) -> Result<(),
 #[tauri::command]
 fn read_auto_enabled_domains(tool: String) -> Vec<String> {
     gate_connect_core::preferences::read_auto_enabled_domains(&tool)
+}
+
+/// Claim a once-per-install analytics milestone (AG-960). True exactly once per
+/// install across every window and process; see
+/// `gate_connect_core::analytics`. Rejects for a name outside the closed set,
+/// and the webview reads any rejection as "do not send".
+#[tauri::command]
+fn analytics_milestone_claim(name: String) -> Result<bool, String> {
+    gate_connect_core::analytics::claim(&name).map_err(|e| format!("{e:#}"))
+}
+
+/// Why local Cowork cannot run on this machine, from Claude Desktop's own
+/// settings, or null when nothing readable says it is off. Read once, after the
+/// Claude Desktop row is connected: a small file read, never on a timer. See
+/// `gate_connect_core::analytics::cowork_setting_missing`.
+#[tauri::command]
+fn cowork_setting_check() -> Option<&'static str> {
+    gate_connect_core::analytics::cowork_setting_missing()
 }
 
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
@@ -5114,6 +5160,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            analytics_milestone_claim,
+            cowork_setting_check,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,
@@ -5183,6 +5231,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            analytics_milestone_claim,
+            cowork_setting_check,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,
@@ -5363,6 +5413,14 @@ pub fn run() {
             // Lets failure sites without a handle of their own nudge the
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
+            // Before any window loads and before anything below writes to the
+            // data dir, so the milestone store judges a fresh install fresh and
+            // an upgraded one legacy (AG-960). Best-effort: a store that cannot
+            // be created only means the webview's claims fail, which it reads
+            // as "do not send".
+            if let Err(e) = gate_connect_core::analytics::init() {
+                eprintln!("[gate] analytics milestone store unavailable: {e:#}");
+            }
 
             // Open the crash-restart session before anything that could itself
             // crash, and decide from the last one whether to keep asking the OS
@@ -5418,7 +5476,7 @@ pub fn run() {
                         }
                         Err(e) => {
                             eprintln!("[gate] status after engine crash failed: {e}");
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                         }
                     }
                 });
@@ -5601,7 +5659,7 @@ pub fn run() {
                     // dead loopback port. A clean disable leaves nothing to do.
                     if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
                         eprintln!("proxy startup reconcile failed: {e}");
-                        report_backend_error("restore_routing", format!("{e:#}"));
+                        report_backend_failure("restore_routing", &e);
                     }
 
                     // A deferred launch-at-login opt-out reaching a login-item
@@ -5633,7 +5691,7 @@ pub fn run() {
                             eprintln!(
                                 "[gate] disabling re-honored routing for the deferred opt-out failed: {e}"
                             );
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                         }
                         complete_pending_autostart_disable(&handle);
                         handle.exit(0);
@@ -5702,7 +5760,7 @@ pub fn run() {
                                     "[gate] startup auto-enable: {} failed: {:#}",
                                     w.component, w.error
                                 );
-                                report_backend_error(w.component, format!("{:#}", w.error));
+                                report_backend_failure(w.component, &w.error);
                             }
                             // Restore-on-any-launch means this can be the
                             // first thing to route on a machine with no login
@@ -5767,7 +5825,7 @@ pub fn run() {
                             // silent launch, open the popover so the user can
                             // finish it. A visible launch already shows it below.
                             eprintln!("[gate] startup auto-enable failed: {e}");
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                             if silent_launch {
                                 if let Some(window) = handle.get_webview_window("main") {
                                     POPOVER_PINNED.store(true, Ordering::Release);

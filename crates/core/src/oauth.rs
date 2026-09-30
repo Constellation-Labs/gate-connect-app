@@ -265,11 +265,28 @@ impl OAuthTokens {
     /// Best-effort email from the id token's payload, for UI display only -
     /// no signature check (the gateway verifies). `None` if absent/unparseable.
     pub fn email(&self) -> Option<String> {
+        self.id_claim("email")
+    }
+
+    /// The Cognito `sub` from the id token: the stable, opaque user id the
+    /// dashboard identifies its PostHog person with, and the one the gateway's
+    /// `first_gateway_request` event is sent under. The app aliases its install
+    /// person to it so the install funnel joins the dashboard's download click to
+    /// the gateway's first request (AG-960).
+    ///
+    /// Same terms as [`Self::email`]: unverified, read for attribution only,
+    /// `None` if absent or unparseable. An empty string is `None` too, because
+    /// identifying as "" would merge every such install into one person.
+    pub fn sub(&self) -> Option<String> {
+        self.id_claim("sub").filter(|s| !s.trim().is_empty())
+    }
+
+    fn id_claim(&self, name: &str) -> Option<String> {
         let id = self.id_token.as_deref()?;
         let payload_b64 = id.split('.').nth(1)?;
         let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
         let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-        claims.get("email")?.as_str().map(str::to_string)
+        claims.get(name)?.as_str().map(str::to_string)
     }
 }
 
@@ -1168,5 +1185,48 @@ mod tests {
             client_id: String::new(),
         };
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
+    }
+
+    fn with_id_token(id_token: Option<String>) -> OAuthTokens {
+        OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn sub_read_from_id_token_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"sub":"0b8c1f2e-1111-4222-8333-944455556666","email":"dev@example.test"}"#,
+        );
+        let t = with_id_token(Some(format!("h.{payload}.s")));
+        assert_eq!(
+            t.sub().as_deref(),
+            Some("0b8c1f2e-1111-4222-8333-944455556666")
+        );
+    }
+
+    /// Every malformed shape is `None`, never a panic and never a partial value:
+    /// a wrong sub would merge this install into somebody else's person.
+    #[test]
+    fn sub_is_none_for_malformed_tokens() {
+        let enc = |b: &[u8]| URL_SAFE_NO_PAD.encode(b);
+        for token in [
+            None,
+            Some(String::new()),
+            Some("no-dots-at-all".to_string()),
+            Some("h..s".to_string()),
+            Some("h.!!!not-base64!!!.s".to_string()),
+            Some(format!("h.{}.s", enc(b"not json"))),
+            Some(format!("h.{}.s", enc(br#"{"email":"x@y.z"}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":42}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":""}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":"   "}"#))),
+        ] {
+            assert_eq!(with_id_token(token.clone()).sub(), None, "{token:?}");
+        }
     }
 }
