@@ -3357,7 +3357,7 @@ export function NewUiApp() {
           // every section is unread, which is what the fallback says. Once
           // there is one, it names its own gaps.
           unavailable={activity.view?.missing ?? ALL_MISSING}
-          period={activity.view?.period ?? "Last 24 hours"}
+          updatedAt={activity.view?.takenAt ?? null}
           alert={
             <>
               {notice && (
@@ -3625,8 +3625,8 @@ function ActivityGaps({
   return (
     <div className="flex flex-col gap-2">
       {/* No separate staleness disclosure. It was a second sentence saying what
-          the period label beside the header already says - "updated 14:03", with
-          the date in front of it when the reading is not from today - and the
+          the meta beside the header already says - "Updated 14:03", with the
+          date in front of it when the reading is not from today - and the
           product call (2026-08-18) was that a held reading is a feature rather
           than a warning: what the user wants on screen is the last thing that
           actually happened to their traffic. The notices below still name the

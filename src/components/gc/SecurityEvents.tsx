@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
-import { BADGE_STYLES, Card, EmptyNote, Pill, Skeleton } from "./base";
+import { BADGE_STYLES, Card, CardHeader, EmptyNote, GUARDRAIL_INK, OutlineButton, Pill, Skeleton } from "./base";
+import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
 
 /**
@@ -68,6 +69,39 @@ function eventTime(at: string): string {
   return `${date}, ${time}`;
 }
 
+/**
+ * The Category cell: a 20px glyph and a short label (`1402:18010`), where the
+ * cell used to print the gateway's raw category string. The frame draws three
+ * of the gateway's five - `pii` as "PII" on `UserRound`, `injection` as
+ * "Injection" on `ShieldAlert`, `credential` as "Credential" on `KeyRound` -
+ * in the same three inks the Policies rows above take for the same guardrails.
+ * `phi` and `other` are not drawn (`plans/new-app-ui-figma.md`, design sync 2026-09-30,
+ * question 5); `phi` takes the PII/PHI scanner's glyph because it is that
+ * policy's other half, and `other` is printed as a word with no glyph rather
+ * than given one by eye. A category outside the five is printed as received.
+ */
+const CATEGORY: Record<string, { label: string; icon?: IconName }> = {
+  pii: { label: "PII", icon: "userRound" },
+  phi: { label: "PHI", icon: "userRound" },
+  injection: { label: "Injection", icon: "shieldAlert" },
+  credential: { label: "Credential", icon: "key" },
+  other: { label: "Other" },
+};
+
+function Category({ value }: { value: string }) {
+  // `hasOwn`, not a bare index: the value is the gateway's string, and a plain
+  // object answers "constructor" or "toString" with a function, which would
+  // render as a blank cell rather than the string received. `lib/toolEvents.ts`
+  // guards its own tables the same way.
+  const c = Object.hasOwn(CATEGORY, value) ? CATEGORY[value] : { label: value };
+  return (
+    <span className="flex items-center gap-3 text-sm font-medium leading-5 tracking-heading-14 text-base-foreground">
+      {c.icon && <Icon name={c.icon} size={20} className={GUARDRAIL_INK[c.icon]} />}
+      {c.label}
+    </span>
+  );
+}
+
 /** What a cell says when the gateway attributed nothing to it.
  *
  * Not an error and not a withholding: an agent whose User-Agent is not on the
@@ -75,11 +109,13 @@ function eventTime(at: string): string {
  * the honest outcome and an ordinary one. */
 const UNATTRIBUTED = "-";
 
+/** `label/14` Medium in `base/muted-foreground` on a 16/12 row (`1402:17995`),
+ *  as on the Policies and Token savings tables above. */
 function Th({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <th
       scope="col"
-      className={`pb-3 text-left text-base-xs font-medium text-base-muted-foreground ${className}`}
+      className={`py-3 pl-4 text-left text-sm font-medium leading-5 text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
@@ -95,9 +131,10 @@ function PendingRows() {
   return (
     <>
       {[0, 1, 2].map((i) => (
-        <tr key={i} className="border-t border-base-border">
-          {[0, 1, 2, 3, 4].map((c) => (
-            <td key={c} className="py-3 pr-3">
+        <tr key={i} className="h-14 border-t border-base-border">
+          {/* Six cells under six columns, the last one the View button's. */}
+          {[0, 1, 2, 3, 4, 5].map((c) => (
+            <td key={c} className="pl-4 last:pr-4">
               <Skeleton className="h-4 w-full" />
             </td>
           ))}
@@ -196,10 +233,15 @@ export function SecurityEvents({
         </div>
       )}
 
-      <Card className="p-4" busy={loading}>
+      <Card busy={loading}>
         {loading && <span className="sr-only">Loading security events</span>}
-        {/* `heading/16`, the same line the Policies and Token savings cards
-          * above draw. */}
+        {/* The header row the Policies and Token savings cards above draw,
+          * without their action. The frame (`1402:17988`) titles this card
+          * "Recent activity" and gives it a "View activity" button; whether
+          * that card is this feed is open (question 4 in
+          * `plans/new-app-ui-figma.md`, design sync 2026-09-30), and the dashboard
+          * has no activity URL to send the button to, so the title and the
+          * Load more below stay. */}
         {/* The feed's connection pill - Live / Reconnecting / Offline - sat
           * beside this heading until 2026-09-23, when product asked for it to
           * go. "Live" was true on every healthy launch and said nothing; the
@@ -207,11 +249,8 @@ export function SecurityEvents({
           * either, the tray's security card having been removed in #334. An
           * offline feed and a quiet machine now look the same here. Raised
           * with the decision, not overlooked. */}
-        <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
-          Security events
-        </h2>
-        {/* 20px under the heading, as on both cards above. */}
-        <table className="mt-5 w-full">
+        <CardHeader title="Security events" />
+        <table className="w-full">
           <thead>
             <tr>
               <Th>Time</Th>
@@ -227,7 +266,7 @@ export function SecurityEvents({
               <PendingRows />
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={6} className="px-4 pb-4">
                   {unavailable ? (
                     // AC6: cannot load. Says so, and offers the way out. Never
                     // "No security events", which would be a claim about the
@@ -276,23 +315,31 @@ export function SecurityEvents({
               rows.map((e) => {
                 const action = ACTION_LABEL[e.action];
                 return (
-                  <tr key={e.id} className="border-t border-base-border">
-                    <td className="py-3 pr-3 font-mono text-base-xs text-base-foreground">
+                  // 56px rows with a full-width divider, 16px cells, `copy/14`
+                  // sans throughout (`1402:18003`). The time was mono 12px until
+                  // the 2026-09-29 redraw; a timestamp is a value, not machine
+                  // output, and CLAUDE.md's sans rule for identifier values
+                  // already said so. The frame also draws a coloured tool logo
+                  // and a provider mark beside the model (`1402:18014`,
+                  // `1402:18017`); the feed carries neither a tool id the
+                  // brand marks are keyed on nor a vendor, so both stay text.
+                  <tr key={e.id} className="h-14 border-t border-base-border">
+                    <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                       {eventTime(e.at)}
                     </td>
-                    <td className="py-3 pr-3">
+                    <td className="pl-4">
                       <Pill className={action.badge}>{action.label}</Pill>
                     </td>
-                    <td className="py-3 pr-3 text-base-xs text-base-foreground">
-                      {e.category ?? UNATTRIBUTED}
+                    <td className="pl-4 text-sm leading-5 text-base-foreground">
+                      {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
                     </td>
-                    <td className="py-3 pr-3 text-base-xs text-base-foreground">
+                    <td className="pl-4 text-sm leading-5 text-base-foreground">
                       {e.tool ?? UNATTRIBUTED}
                     </td>
-                    <td className="max-w-0 truncate py-3 pr-3 text-base-xs text-base-foreground">
+                    <td className="max-w-0 truncate pl-4 text-sm leading-5 text-base-foreground">
                       {e.model ?? UNATTRIBUTED}
                     </td>
-                    <td className="py-3 text-right">
+                    <td className="pl-4 pr-4 text-right">
                       {/* Straight to the dashboard. This opened
                           `SecurityEventDialog` - a summary of the same six
                           fields the row already draws, with an "Open in
@@ -300,14 +347,11 @@ export function SecurityEvents({
                           that step on 2026-09-23. The external-link icon was
                           always here and was misleading while it opened a
                           dialog; it is accurate now. */}
-                      <button
-                        type="button"
-                        onClick={() => onOpenInDashboard(e)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                      >
+                      {/* The `xs` Outline variant (`1402:18021`), not the `sm`
+                          the header button takes. */}
+                      <OutlineButton size="xs" onClick={() => onOpenInDashboard(e)} external>
                         View
-                        <Icon name="squareArrowOutUpRight" size={16} />
-                      </button>
+                      </OutlineButton>
                     </td>
                   </tr>
                 );
@@ -322,14 +366,10 @@ export function SecurityEvents({
           * nothing is the thing the empty-state comment above already argues
           * against. */}
         {more > 0 && (
-          <div className="mt-4 flex justify-center">
-            <button
-              type="button"
-              onClick={() => setVisible((n) => n + PAGE)}
-              className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-            >
+          <div className="flex justify-center border-t border-base-border px-4 py-4">
+            <OutlineButton size="sm" onClick={() => setVisible((n) => n + PAGE)}>
               Load more
-            </button>
+            </OutlineButton>
           </div>
         )}
       </Card>

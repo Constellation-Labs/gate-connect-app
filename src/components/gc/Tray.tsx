@@ -241,10 +241,11 @@ export function Tray({
 
 /**
  * The engine's observed state over the rows it carries, drawn as the success
- * tile recipe on green or amber (`Connect/routing` 694:34185 vs
- * `Connect/partial` 694:34024). Counts derive from the rows so the card can
- * never disagree with the switches under it; "tools routing" is the drawn
- * phrase.
+ * tile recipe on green, amber or grey (`Connect/routing` 694:34185,
+ * `Connect/partial` 694:34024; the grey none state is the window banner's,
+ * `1390:14024`, which no tray frame draws yet). Counts derive from the rows so
+ * the card can never disagree with the switches under it; "tools routing" is
+ * the drawn phrase.
  *
  * **The denominator is intent, not every row.** It counted every row, chat
  * domains included, and that docstring read like a drawn decision - it predates
@@ -263,6 +264,15 @@ export function Tray({
  * `proxyMemberStatus` reports `protected` once it routes - so this hides
  * nothing the user chose.
  */
+/** The card's edge follows the tile's tone, one step darker than the tile's
+ *  own gradient ends: the `TILE_TONES` recipe in `base.tsx`, read at the border.
+ *  A two-way green/amber ternary here framed the grey none tile in amber. */
+const CARD_EDGE = {
+  green: "border-green-300",
+  amber: "border-amber-300",
+  grey: "border-gray-300",
+} as const;
+
 function RoutingCard({
   running,
   starting,
@@ -281,23 +291,19 @@ function RoutingCard({
   // into "Not protected", which reports a fault the user caused on purpose.
   const state = routingState(routed, apps.length);
   const { tone, icon } = state;
-  // Switched on, out of every app on the rail - NOT routed out of requested,
-  // which is what the headline above already answers. Same call as the topbar
-  // banner's, from the same module, so the two cannot drift apart again.
-  //
-  // This does NOT line up with the group eyebrows below, which count routed
-  // over group. It lines up on the denominator and not on the numerator, and
-  // "on" is the only thing in the words that says so. `routingState` carries
-  // the argument and the design question.
+  // Routed, out of every app on the rail - the same reading the topbar banner
+  // prints, from the same module, and the same two quantities the group
+  // eyebrows below add up to. The numerator was switched-on with an "on"
+  // suffix until 2026-09-30; `routingState` carries the history.
   const fraction = showsFraction(all.length)
-    ? `${apps.length} of ${all.length} tools on`
+    ? `${routed} of ${all.length} tools`
     : "";
   // This line used to lead with "On" / "Off", from the engine's running flag
   // standing in for a master switch. There is no such switch - routing is on
   // for exactly as long as Gate Connect is open - so "On" was unfalsifiable
   // furniture, and with nothing switched on it printed "On" directly under
-  // "No apps are set to route". (That state draws a fraction of its own now,
-  // "0 of 8 tools on", where it used to draw nothing at all.)
+  // "No apps are routed". (That state draws a fraction of its own now,
+  // "0 of 8 tools", where it used to draw nothing at all.)
   //
   // The engine failing to come up is still worth printing, so it keeps its
   // half in the words already decided for it elsewhere: a launch enable that
@@ -316,9 +322,7 @@ function RoutingCard({
     .join(" · ");
   return (
     <div
-      className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${
-        tone === "green" ? "border-green-300" : "border-amber-300"
-      }`}
+      className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${CARD_EDGE[tone]}`}
     >
       <StatusTile tone={tone} icon={icon} size={36} />
       <div className="flex min-w-0 flex-col gap-0.5">

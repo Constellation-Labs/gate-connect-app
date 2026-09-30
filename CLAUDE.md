@@ -251,10 +251,15 @@ one-to-one so any value can be traced back without guessing.
   glyph at `neutral-500` beside a `#030712` label reads as disabled, and
   `AppPane`'s row frames resolve `base/card` + `base/border` + `base/foreground`
   (`683:20439`) at 36px around a 20px glyph.
-  **It is a per-surface rule, not a global one.** The Overview policy and
-  savings tables draw their row glyphs at `base/muted-foreground` #6b7280
-  (`116:26721`), deliberately quieter than the label beside them. Resolve the
-  node before applying either half of this.
+  **It is a per-surface rule, not a global one.** The Overview Token savings
+  table draws its row glyphs at `base/muted-foreground` #6b7280 (`1402:18323`),
+  deliberately quieter than the label beside them. **The Policies table beside
+  it does not, since the 2026-09-29 redraw**: its three guardrail glyphs are in
+  colour, sampled red-700 / green-700 / blue-700 off `1390:13599`, and the
+  Overview feed's Category cell takes the same three for the same guardrails.
+  Both are 24px on the table rows (20 in the feed). Resolve the node before
+  applying any of this; the old `116:26721` reading was one table generalised
+  to two.
   **A model row is a third case, and takes neither ink**: it draws the
   provider's own full-colour brand mark (`src/components/gc/ProviderMark.tsx`),
   because the frames do - `anthropic 2` is `#E8704E`, `deepseek-color 1`
@@ -320,9 +325,15 @@ one-to-one so any value can be traced back without guessing.
   `text-base-xs`, `text-sm` and `text-base`: size and tracking are one text
   style, and splitting them is what let `label/14` render at both 0% and -1%.
   The named `tracking-label-12` / `-14` tokens are the same values and stay.
-  **`heading/16` is a different style at -1%**, so card and section headings
-  keep `tracking-heading-16` and the -2% default is for `copy/16`. The lockup
-  is neither, and keeps its measured literal.
+  **`heading/16` is a different style at -1%**, so section headings keep
+  `tracking-heading-16` and the -2% default is for `copy/16`. The lockup is
+  neither, and keeps its measured literal. **Card titles are `heading/18` since
+  the 2026-09-29 redraw** (`1402:17918`, `1390:13642`, `1410:28124`): `text-lg
+  leading-6 tracking-heading-18`, on Policies, Token savings, Messages, Model
+  selection and both Recent activity cards. A table card puts that title in a
+  header row (`CardHeader` in `base.tsx`) with the Manage button at its right
+  and a full-width rule under it; the footer link that used to sit under the
+  rows is gone, and every row divider spans the card.
   **The heading ramp does not share one tracking, so never reach for
   `tracking-heading` by size proximity.** `heading/18` is -1% (-0.18px) and
   `heading/14` is **0%** - the one named heading step with no tracking at all -
