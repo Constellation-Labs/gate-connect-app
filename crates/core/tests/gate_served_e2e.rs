@@ -464,3 +464,33 @@ async fn the_route_refuses_without_retry_while_routing_is_off() {
     engine.stop();
     assert!(gateway.captured.lock().unwrap().is_empty());
 }
+
+/// The relay's ordinary catalog route strips a caller-set `x-gate-model` too:
+/// an older gateway would still rewrite the model from it (review on #382).
+#[tokio::test]
+async fn the_catalog_route_strips_a_caller_set_model_header() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+
+    let resp = reqwest::Client::new()
+        .post(url(&engine, "/__gate/t/codex/openai/v1/responses"))
+        .header("x-gate-model", "anthropic/claude-opus-5")
+        .header("authorization", "Bearer sk-own")
+        .json(&serde_json::json!({ "model": "gpt-5.6-sol", "input": "hi" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].header("x-gate-model"), None);
+    assert_eq!(
+        reqs[0].header("x-gate-upstream-url"),
+        Some("https://api.openai.com"),
+        "an ordinary BYOK forward otherwise"
+    );
+}

@@ -1969,9 +1969,9 @@ pub(crate) fn apply_rewrite<T>(
 
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
-    // Credential first: `inject_gate_credential` is what stamps the model header
-    // (through `inject_attribution`), so asking whether this request is served
-    // before it runs would always answer no.
+    // Credential and attribution in one call (`inject_gate_credential` runs
+    // `inject_attribution`), which is also what strips a caller's `x-gate-model`
+    // before anything reaches the gateway.
     // The engine's half of the established-tool pair. There is no base URL here
     // to carry a marker - this is a forward proxy - so the tool names itself in
     // a header Gate wrote into its own config instead. Read before the call,
