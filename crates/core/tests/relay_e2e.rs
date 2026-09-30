@@ -1038,6 +1038,136 @@ async fn relay_retries_only_once() {
     );
 }
 
+/// The retry rebuilds the whole rewrite, not just the bearer: under PAYG the
+/// served shape - no upstream hint, none of the tool's own credential - has to
+/// hold on the second attempt too, or the retry is billed to the org and
+/// forwarded to the tool's provider at once.
+#[tokio::test]
+async fn relay_retries_a_refused_bearer_in_payg_keeping_the_served_shape() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine_full(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+        None,
+        BillingMode::Payg,
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/anthropic/v1/messages",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .header("x-api-key", "sk-ant-api03-app-key")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the relay answers");
+    assert!(
+        resp.status().is_success(),
+        "the tool must not see the refusal: got {}",
+        resp.status()
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one refused attempt, one retry");
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+    for (n, r) in reqs.iter().enumerate() {
+        assert_eq!(r.path, "/v1/messages", "attempt {n}");
+        assert_eq!(r.header("x-gate-upstream-url"), None, "attempt {n}");
+        assert_eq!(r.header("authorization"), None, "attempt {n}");
+        assert_eq!(r.header("x-api-key"), None, "attempt {n}");
+    }
+}
+
+/// An app-support dir holding one stored choice, Codex on a Gate model, for
+/// the whole binary. The override is process-global and the other tests here
+/// boot engines concurrently, so it is set once and never reset rather than
+/// swapped per test. Only the Gate-model test names Codex, so no other request
+/// in this binary picks the choice up.
+fn gate_model_home() {
+    static HOME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("gc-relay-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp app-support dir");
+        gate_connect_core::env::set_app_support_dir_for_tests(Some(dir));
+        gate_connect_core::preferences::reset_cache_for_tests();
+        gate_connect_core::preferences::set_tool_model(
+            "codex",
+            gate_connect_core::preferences::ModelSource::Gate,
+            vec!["openai/gpt-4o".into()],
+            true,
+        )
+        .expect("store the choice");
+    });
+}
+
+/// A Gate-model request goes to a different path from the one it arrived on,
+/// so the retry's target has to come from the same rewrite as its headers. A
+/// retry that rebuilt only the headers would resend `/codex/responses`, which
+/// the gateway can only forward, without the upstream hint that says where.
+#[tokio::test]
+async fn relay_retries_a_refused_bearer_on_a_gate_model_keeping_the_served_path() {
+    hold_session_check_open();
+    gate_model_home();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/__gate/t/codex/chatgpt/codex/responses",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer chatgpt-subscription-token")
+        .json(&serde_json::json!({ "model": "gpt-5", "input": [] }))
+        .send()
+        .await
+        .expect("the relay answers");
+    assert!(
+        resp.status().is_success(),
+        "the tool must not see the refusal: got {}",
+        resp.status()
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one refused attempt, one retry");
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+    for (n, r) in reqs.iter().enumerate() {
+        assert_eq!(r.path, "/v1/responses", "attempt {n}");
+        assert_eq!(
+            r.header("x-gate-model"),
+            Some("openai/gpt-4o"),
+            "attempt {n}"
+        );
+        assert_eq!(r.header("x-gate-upstream-url"), None, "attempt {n}");
+        assert_eq!(r.header("authorization"), None, "attempt {n}");
+    }
+}
+
 /// A refused legacy key is a different problem with a different fix, and not
 /// ours to recover: the 401 goes straight to the tool, with no wait and no
 /// retry.
