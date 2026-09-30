@@ -188,8 +188,8 @@ function detectionSignature(reading: unknown): string {
 }
 
 /**
- * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
- * popover are still reachable via `gcNewUi(false)`.
+ * The new window UI: the main window's only shell since the popover was
+ * removed on 2026-09-30.
  *
  * Routing is wired: app and family-member switches go through `useRouting`,
  * which gates a drifted config behind the review dialog and the certificate
@@ -336,9 +336,9 @@ export function NewUiApp() {
    * key is in the keychain rather than drawing a fabricated `sk-gw` and twenty
    * asterisks, which is what it used to do.
    *
-   * `backfill_account_key_prefix` could recover it from the keychain and is
-   * deliberately not called: it can raise an OS prompt, and this row is a passive
-   * mask nobody asked to reveal.
+   * Recovering it would mean reading the key from the keychain, which can raise
+   * an OS prompt, and this row is a passive mask nobody asked to reveal. (The
+   * popover's `backfill_account_key_prefix` did that; it went with it.)
    */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
   /**
@@ -982,6 +982,39 @@ export function NewUiApp() {
     })();
   }, []);
 
+  /**
+   * Re-read the account and the OAuth session, for a change made while the
+   * window was not looking: a session that died in the background, or a
+   * sign-in or org switch from the CLI or the tray.
+   *
+   * The setup stage is derived from these two, so a dead session drops to
+   * re-sign-in with nothing else to route it. A failed read keeps what is on
+   * screen rather than reading as signed out, and an unchanged reading keeps
+   * the same objects, so the effects keyed on `account` do not re-run on every
+   * focus.
+   */
+  const refreshSession = useCallback(async () => {
+    const [acct, oauthState] = await Promise.all([getAccount(), oauthStatus()]).catch(
+      () => [undefined, undefined] as const,
+    );
+    if (acct === undefined || oauthState === undefined) return;
+    const keep = <T,>(prev: T, next: T) =>
+      JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+    setAccount((prev) => keep(prev, acct));
+    setOAuth((prev) => keep(prev, oauthState));
+  }, []);
+
+  // The backend announces a session change it made itself, and a session the
+  // gateway refused; either can land while the window is up.
+  useEffect(() => {
+    const offs = ["session-changed", "session-signin-required"].map((event) =>
+      listen(event, () => void refreshSession()),
+    );
+    return () => {
+      for (const off of offs) void off.then((f) => f()).catch(() => {});
+    };
+  }, [refreshSession]);
+
   // Re-read on every account change rather than once: replacing the key writes a
   // new prefix, and an org switch or a sign-out re-reads the account anyway. The
   // account only changes on a user action, so this is not a poll.
@@ -1033,6 +1066,9 @@ export function NewUiApp() {
   // when it is focused again costs one request and keeps the banner honest.
   useWindowReopen(() => {
     void checkForUpdates();
+    // The session is the thing most likely to have died while the window was
+    // away, and nothing else tells this window it did.
+    void refreshSession();
     // The same edge is the likeliest moment for a reopen to have happened:
     // someone alt-tabs out, opens their terminal, and comes back. Gated on the
     // condition for the reason the interval above is - the sweep costs two
@@ -1106,11 +1142,14 @@ export function NewUiApp() {
     onError: (e, context) => {
       // `connect` covers both directions of a tool write: the remedy copy is the
       // same either way. The engine-level actions are the ones whose remedy
-      // genuinely differs - a cancelled admin prompt on the master toggle has
-      // nothing to do with a config file - so those report their own context.
+      // genuinely differs - a cancelled certificate prompt has nothing to do
+      // with a config file, and folded into `connect` it told the user to
+      // "Click Connect again" in a window with no Connect - so those report
+      // their own context.
       const engineContexts: ErrorContext[] = [
         "proxy_toggle",
         "env_export",
+        "trust_ca",
         "untrust_ca",
       ];
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
@@ -1390,10 +1429,24 @@ export function NewUiApp() {
             await routeApp(action.slug, true);
             break;
           case "enable-routing":
-            await proxyEnable();
+            // Asked in the app first, as every other path that can raise the OS
+            // trust prompt is: `proxy_enable` trusts the CA itself, and an
+            // unannounced system security dialog reads as something going
+            // wrong. A declined or failed trust stops here; the gate reports a
+            // failure itself and a decline is an answer, not an error.
+            if (!(await routing.confirmCaTrusted())) break;
+            try {
+              await proxyEnable();
+            } catch (e) {
+              setActionError(classifyError(e, "proxy_toggle"));
+            }
             break;
           case "trust-certificate":
-            await proxyTrustCa();
+            try {
+              await proxyTrustCa();
+            } catch (e) {
+              setActionError(classifyError(e, "trust_ca"));
+            }
             break;
           default: {
             const unhandled: never = action;
@@ -1402,16 +1455,12 @@ export function NewUiApp() {
             );
           }
         }
-      } catch {
-        // Swallowed on purpose for now: the shell has nowhere to render a
-        // failure yet, and the notice staying put is itself the signal that
-        // nothing changed. Wire this to the error surface when one exists.
       } finally {
         await refreshRouting();
         setNoticeBusy(false);
       }
     },
-    [noticeBusy, refreshRouting, routeApp],
+    [noticeBusy, refreshRouting, routeApp, routing],
   );
 
   const apps = useMemo<SidebarApp[]>(
@@ -2559,6 +2608,13 @@ export function NewUiApp() {
             workspace={orgLabel(account, activity.view?.orgName)}
             offerRouting={!!proxy && !proxy.running}
             busy={setup.busy}
+            // Its own context rather than `setupError`'s `sign_in`: the only
+            // thing this step does is start the engine.
+            error={
+              setup.error ? (
+                <SetupNote error={classifyError(setup.error, "proxy_toggle")} />
+              ) : null
+            }
             onTurnOnRouting={() => void setup.turnOnRouting()}
             onDone={setup.finish}
           />

@@ -456,9 +456,11 @@ deliberate reversal of an earlier "no dashboard" rule.
   redefines Tailwind's `blue` as an OKLCH ramp for the old ink system, so
   those classes render the wrong colour. Use `base.primary`,
   `blue-ribbon-*`, or the semantic `chart.*` group.
-- **Font sizes go in rem, never px.** `useTextScale` scales the whole ramp
-  from the root, and a px literal opts that call site out of it entirely.
-  Use the `base-*` / `gc-*` `fontSize` tokens.
+- **Font sizes go in rem, never px.** Text scaling works by scaling the whole
+  ramp from the root, and a px literal opts that call site out of it entirely.
+  The popover's `useTextScale` did this and went with it on 2026-09-30; the
+  window has no scaling yet, and keeping the ramp in rem is what lets it come
+  back as one root change. Use the `base-*` `fontSize` tokens.
 - **The design names shadows on Tailwind v4's scale; this repo is on
   v3.4.** Figma `shadow/sm` is v3's default `shadow`, not `shadow-sm`.
   The `base-*` shadow tokens absorb the mapping; shift any new value one
@@ -510,9 +512,9 @@ deliberate reversal of an earlier "no dashboard" rule.
   entirely, CI skips it, and it was found on a dev box only because a daemon
   had been accumulating for three weeks. It reaches production users harder
   than developers.
-- **The `gc.*` palette and `gc/ui.tsx` are still live**, backing the
-  popover screens until they are retired. Don't delete them, and don't
-  reach for them in new UI either.
+- **The `gc.*` palette and `gc/ui.tsx` are gone**, with the popover
+  (2026-09-30). `components/gc/` is the new UI's own folder despite the name;
+  the tokens are `base.*`.
 
 ## Running the app locally
 
@@ -578,15 +580,10 @@ built.
 still open, and the values sampled from Figma. Read it before starting UI
 work.
 
-Both shells exist in one build, and **the new window UI is the default**.
-`gcNewUi(false)` in devtools returns to the popover, or `VITE_NEW_UI=0` at
-build time; see `src/lib/newUi.ts`, which is the authority. This file said
-the popover was still the shipping default until 2026-09-01, which was
-wrong and is the kind of error that decides whether a change is treated as
-user-facing: anything landing in the new shell ships to production users.
-
-The new shell's routing actions are still inert until they are wired
-through drift review and certificate trust, which is why the popover
-remains reachable at all.
+**The popover shell is gone** (2026-09-30): `App.tsx`, the `screens/` it
+drove and its takeovers were deleted, along with `src/lib/newUi.ts`, the
+`gcNewUi` devtools switch and `VITE_NEW_UI`. The main window always renders
+`NewUiApp`; the onboarding and tray windows keep their own content
+(`src/main.tsx`). Anything that lands in the window ships to production users.
 
 NOTE: never use "—"

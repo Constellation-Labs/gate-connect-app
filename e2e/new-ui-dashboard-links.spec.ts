@@ -22,10 +22,6 @@ import { test, expect } from "./fixtures";
  * that surface.
  */
 test.describe("dashboard links follow the active gateway", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem("gc.newUi", "1"));
-  });
-
   test("the topnav opens the dashboard for the account's own environment", async ({
     boot,
   }) => {

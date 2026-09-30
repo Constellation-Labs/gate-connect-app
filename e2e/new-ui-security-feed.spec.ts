@@ -19,8 +19,6 @@ import { test, expect } from "./fixtures";
  * emits the same two. From the window's side those are the same thing, which is
  * the whole reason the transport lives behind an event boundary.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 /**
  * The feed's section on the Overview, and every assertion below is scoped to it.
  *
@@ -48,10 +46,6 @@ const blocked = {
 };
 
 test.describe("new UI security feed", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("the feed is the Overview's last section, and the rail has lost its entry", async ({
     boot,
   }) => {

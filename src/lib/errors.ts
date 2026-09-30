@@ -66,35 +66,6 @@ export interface ClassifiedError {
   raw: string;
 }
 
-/** The user pressed Not now on the certificate pre-flight (`CertificateNotice`).
- *
- * Thrown rather than returned because it has to abort the caller from inside
- * `ensureCaTrusted`, exactly as a failed trust does - but it must never reach
- * `classifyError`. A refused OS dialog is a surprise worth explaining; declining
- * our own screen is a choice the user made on purpose, one second ago, and
- * answering it with a red note explaining what they just decided is the app
- * arguing with them. Callers guard their catch on this and abort silently. */
-export class TrustDeclined extends Error {
-  constructor() {
-    super("certificate trust declined by the user");
-    this.name = "TrustDeclined";
-  }
-}
-
-/** The user pressed Cancel on the Hermes provider gate
- * (`HermesProviderNotice`), which leaves Hermes switched off.
- *
- * Its own sentinel rather than [`TrustDeclined`] because the two abort for
- * different reasons and a caller may one day want to tell them apart; what they
- * share is the rule that makes both sentinels exist - a choice the user made on
- * purpose is not an error, and must never reach `classifyError`. */
-export class ProviderDeclined extends Error {
-  constructor() {
-    super("provider interception declined by the user");
-    this.name = "ProviderDeclined";
-  }
-}
-
 /**
  * Normalize an unknown error payload into a searchable string. Errors come
  * across the Tauri boundary as plain strings, but JS-side throws and
@@ -199,16 +170,23 @@ export function classifyError(
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
-    // The verb has to name the button the user actually pressed. A cancelled
+    // The verb has to name the control the user actually touched. A cancelled
     // certificate prompt used to say "Click Connect again" next to a button
-    // labelled Trust certificate.
-    // The two toggle contexts fire from a role=switch, not a button, and they
-    // are the paths a user actually hits: the enable path prompts for admin
-    // every time the system proxy changes. They fell through to "Connect",
-    // which names no control on Home. Switches get "Flip", buttons get
-    // "Click".
+    // labelled Trust certificate. Switches get "Flip", buttons get "Click".
+    //
+    // Starting the engine and trusting the certificate are each reached from
+    // more than one control - a notice's switch, setup's button, the dialog in
+    // front of a connect - so those two say what to do again rather than name
+    // one control and be wrong about the others.
+    const retryHints: Partial<Record<ErrorContext, string>> = {
+      proxy_toggle: "Turn routing on again and approve your system password prompt.",
+      trust_ca: "Try again and approve your system password prompt.",
+    };
+    const retryHint = retryHints[context];
+    if (retryHint) {
+      return { title: "The system prompt was cancelled", hint: retryHint, raw };
+    }
     const switchNames: Partial<Record<ErrorContext, string>> = {
-      proxy_toggle: "the Routing switch",
       provider_toggle: "that switch",
     };
     const switchName = switchNames[context];
@@ -224,17 +202,11 @@ export function classifyError(
         ? "Reset"
         : context === "sign_out"
           ? "Sign out"
-          : context === "trust_ca"
-            ? // "Trust", not "Trust certificate": both buttons that raise this
-              // prompt (Home's certificate card, the family panel's banner) are
-              // labelled Trust, and this hint's whole job is naming the control
-              // the user pressed.
-              "Trust"
-            : context === "untrust_ca"
-              ? "Remove"
-              : context === "close_agents"
-                ? "Close everything"
-                : "Connect";
+          : context === "untrust_ca"
+            ? "Remove"
+            : context === "close_agents"
+              ? "Close everything"
+              : "Connect";
     return {
       title: "The system prompt was cancelled",
       hint: `Click ${verb} again and approve your system password prompt.`,

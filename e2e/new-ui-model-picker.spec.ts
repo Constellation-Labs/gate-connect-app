@@ -17,8 +17,6 @@ import type { Page } from "@playwright/test";
  * real setter does, so a flow that stopped asking would fail here rather than
  * quietly start billing.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const tools = [
   {
     slug: "claude-code",
@@ -82,10 +80,6 @@ async function switchToGateModel(app: { page: import("@playwright/test").Page })
 }
 
 test.describe("new UI model picker", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("says no model is chosen before one is", async ({ boot }) => {
     const app = await boot(base);
     await openApp(app);
@@ -276,10 +270,6 @@ test.describe("new UI model picker", () => {
  * unusable without them.
  */
 test.describe("new UI model picker search and set", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const many = [
     ...catalogue,
     { id: "openai/gpt-5", owned_by: "openai", name: "GPT-5", tags: ["tool-use"] },
@@ -446,10 +436,6 @@ test.describe("new UI model picker search and set", () => {
  * reported, and PAYG being switched off entirely.
  */
 test.describe("new UI model card credits", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("shows the balance the way the design words it", async ({ boot }) => {
     const app = await boot({
       ...base,
@@ -550,10 +536,6 @@ test.describe("new UI model card credits", () => {
  * commitment - not the first model with the rest summarised somewhere else.
  */
 test.describe("new UI Gate model confirmation", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("names the single model with its vendor, as the frame draws it", async ({ boot }) => {
     const app = await boot({ ...base, toolModels: { catalogue } });
     await openApp(app);
@@ -618,10 +600,6 @@ test.describe("new UI Gate model confirmation", () => {
  * precisely a model Gate can no longer serve.
  */
 test.describe("new UI model needs attention", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const funded = {
     plan: "pro",
     paygEnabled: true,
@@ -728,10 +706,6 @@ test.describe("new UI model needs attention", () => {
  * be served with simply broke the tool with nothing on screen.
  */
 test.describe("new UI model feedback", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const funded = {
     plan: "pro",
     paygEnabled: true,
@@ -815,10 +789,6 @@ test.describe("new UI model picker compatibility", () => {
     // Nothing known about this one. It must be OFFERED, below the divider.
     { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
   ];
-
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
 
   /** Open Codex's picker. Four tests below need the same three clicks. */
   const openPicker = async (app: { page: Page }) => {
@@ -930,10 +900,6 @@ test.describe("new UI Gate models in the tool's config", () => {
     paidAckUnix: 1787740800,
     choices: { codex: { source: "gate" as const, model_ids: set } },
   };
-
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
 
   test("the card leads with the model the tool's config starts on, and saves keep the stored order", async ({
     boot,

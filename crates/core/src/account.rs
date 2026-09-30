@@ -464,9 +464,8 @@ pub fn has_api_key() -> Result<bool> {
 
 /// The stored Gate key, read straight from the keychain.
 ///
-/// Distinct from [`backfill_api_key_prefix`], which is gated behind an explicit
-/// confirmation: that one *reveals* the secret to the user, while this hands it
-/// to code that is about to authenticate with it. This is the same read [`load`]
+/// It hands the secret to code that is about to authenticate with it, never to
+/// the user. This is the same read [`load`]
 /// already performs on every proxy enable, provider enable, and startup
 /// reconcile, against an item this app created in [`save`] - so on macOS the
 /// per-(item, application) ACL already covers it, and no caller pays a dialog
@@ -484,24 +483,6 @@ pub fn stored_api_key() -> Result<Option<String>> {
 /// the stored-prefix field .
 pub fn api_key_prefix() -> Result<Option<String>> {
     Ok(read_account_file()?.and_then(|f| f.api_key_prefix))
-}
-
-/// Fallback reveal for accounts saved before the prefix was recorded on disk:
-/// read the key from the keychain (which may trigger an OS authorization
-/// prompt), record its prefix in `account.json` so later reveals are free, and
-/// return it. Gated behind an explicit user confirmation in the UI because of
-/// the keychain read. Returns `None` when no key is stored.
-pub fn backfill_api_key_prefix() -> Result<Option<String>> {
-    let user = env::current_user()?;
-    let Some(key) = keychain::get(&service(), &user)? else {
-        return Ok(None);
-    };
-    let prefix: String = key.chars().take(12).collect();
-    if let Some(mut file) = read_account_file()? {
-        file.api_key_prefix = Some(prefix.clone());
-        write_account_file(&file)?;
-    }
-    Ok(Some(prefix))
 }
 
 pub fn clear() -> Result<()> {

@@ -2,25 +2,13 @@ import { test, expect } from "./fixtures";
 import { OPENCLAW } from "./backend";
 
 /**
- * The new window UI's routing actions, against the same fake backend the
- * popover suite uses.
- *
- * The rest of this suite is pinned to the popover (`VITE_NEW_UI=0` in
- * playwright.config.ts) because those tests assert on popover flows. This spec
- * opts back in per-test: `newUiEnabled()` reads localStorage before the
- * build-time default, so an init script is enough and nothing global changes.
+ * The new window UI's routing actions, against the suite's fake backend.
  *
  * What this covers that `lib/useRouting.test.tsx` cannot: that the gate is
  * actually wired to the switch, that the dialog the design specifies is the one
  * that opens, and that approving it reaches the backend.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 test.describe("new UI routing", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const driftedCodex = {
     proxy: { running: true, ca_trusted: true },
     tools: [
@@ -221,10 +209,6 @@ async function callsFor(page: import("@playwright/test").Page, cmd: string) {
  * shows what it would write before asking for approval.
  */
 test.describe("new UI drift repair", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const codex = {
     slug: "codex",
     name: "CLI",
@@ -347,10 +331,6 @@ test.describe("new UI drift repair", () => {
  * stayed gone.
  */
 test.describe("new UI: refreshing the inventory", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const countOf = async (app: { calls: () => Promise<{ cmd: string }[]> }, cmd: string) =>
     (await app.calls()).filter((c) => c.cmd === cmd).length;
 
@@ -438,10 +418,6 @@ test.describe("new UI: refreshing the inventory", () => {
  * apps on it - with a "0/0" count that reads like a clean answer.
  */
 test.describe("new UI: an empty inventory", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("a completed scan with nothing on the device says so, with a time", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
@@ -507,10 +483,6 @@ test.describe("new UI: an empty inventory", () => {
  * back, and the window said nothing.
  */
 test.describe("new UI: buffered backend failures", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("a failed restore that predates the window is shown, not just logged", async ({
     boot,
   }) => {
@@ -586,10 +558,6 @@ test.describe("new UI: buffered backend failures", () => {
  * any sentence about what Gate does and does not touch.
  */
 test.describe("new UI: the review names the file it will change", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const driftedWithPath = {
     proxy: { running: true, ca_trusted: true },
     tools: [
@@ -643,10 +611,6 @@ test.describe("new UI: the review names the file it will change", () => {
  * the first of these pins.
  */
 test.describe("new UI sidebar rail", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("apps detection did not find are listed under Not installed, and counted nowhere", async ({
     boot,
   }) => {
@@ -1015,10 +979,6 @@ test.describe("new UI sidebar rail", () => {
  * Reported from a build log on 2026-09-28.
  */
 test.describe("new UI: a pane whose row disappears", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("returns to Overview, and never routes by the section id", async ({ boot }) => {
     const app = await boot({
       proxy: {

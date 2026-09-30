@@ -346,8 +346,8 @@ export function MessagesChart({
         // `bars` frame is 108 tall and the tallest stack inside it is 88, with
         // the 20px tick row below (`706:10513` -> `706:10564`, and the same 88
         // in `864:3510`). This was `h-28`, 112px, which stretched every bar by
-        // a quarter against identical proportional data. In rem so
-        // `useTextScale` still carries it.
+        // a quarter against identical proportional data. In rem so root-level
+        // text scaling carries it.
         className="relative mt-5 flex h-[5.5rem] items-end justify-between gap-2"
         onMouseLeave={() => setHovered(null)}
       >

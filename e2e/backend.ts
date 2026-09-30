@@ -2,8 +2,8 @@
  * The fake Rust side, and the state it serves.
  *
  * These e2e tests run the real frontend bundle in a real browser: real
- * `App.tsx` orchestration, real `src/lib/api.ts`, real CSS at 360px, real
- * focus and keyboard behaviour. The one thing that isn't real is the Tauri
+ * `NewUiApp.tsx` orchestration, real `src/lib/api.ts`, real CSS, real focus
+ * and keyboard behaviour. The one thing that isn't real is the Tauri
  * process, and this file is what stands in for it - a stateful in-page
  * backend that answers the same command names over the same IPC entry point
  * (`window.__TAURI_INTERNALS__.invoke`).

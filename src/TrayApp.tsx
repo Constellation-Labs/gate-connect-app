@@ -496,7 +496,12 @@ export function TrayApp() {
       void refreshVerdicts();
     },
     onError: (e, context) => {
-      const engineContexts: ErrorContext[] = ["proxy_toggle", "env_export", "untrust_ca"];
+      const engineContexts: ErrorContext[] = [
+        "proxy_toggle",
+        "env_export",
+        "trust_ca",
+        "untrust_ca",
+      ];
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
       setActionError(classifyError(e, ctx));
     },
