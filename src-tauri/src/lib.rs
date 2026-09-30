@@ -468,7 +468,7 @@ async fn clear_account() -> Result<(), String> {
         // The analytics identity belongs to the account being cleared: the next
         // launch must bootstrap the install id, not this person (AG-960).
         // Best-effort, like the preference writes beside it.
-        let _ = gate_connect_core::analytics::forget_identity();
+        forget_analytics_identity();
         // And stop the environment forwarder. It is deliberately left running
         // across a plain routing-off - that is exactly when the processes
         // holding our exported variables still need it - so this path and the
@@ -668,7 +668,7 @@ async fn oauth_sign_out() -> Result<(), String> {
         // Nobody is signed in now, so the next launch bootstraps the install id
         // rather than this person (AG-960). Here as well as in the webview so a
         // sign-out it never saw still lands. Best-effort for the same reason.
-        let _ = gate_connect_core::analytics::forget_identity();
+        forget_analytics_identity();
         // The held activity readings belong to the org just signed out of, and
         // signing out is not a disconnect: `account.json` keeps the gateway and
         // the org, so `activity_cache`'s scope stays byte-identical and every
@@ -2929,7 +2929,7 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
     // launch until the next one (AG-960).
     if let Some(handle) = APP_HANDLE.get() {
         let _ = handle.emit(
-            "analytics-consent-changed",
+            ANALYTICS_CONSENT_EVENT,
             serde_json::json!({ "share_diagnostics": enabled, "recorded": true }),
         );
     }
@@ -2949,13 +2949,54 @@ fn analytics_identity() -> gate_connect_core::analytics::Identity {
 #[tauri::command]
 fn set_analytics_identity(identity: gate_connect_core::analytics::Identity) -> Result<(), String> {
     gate_connect_core::analytics::save_identity(identity).map_err(|e| format!("{e:#}"))?;
-    if let Some(handle) = APP_HANDLE.get() {
-        let _ = handle.emit(
-            "analytics-identity-changed",
-            gate_connect_core::analytics::load_identity(),
-        );
-    }
+    announce_analytics_identity(gate_connect_core::analytics::load_identity());
     Ok(())
+}
+
+/// The event every window's analytics seam listens on to follow a change of
+/// analytics identity (`src/lib/analytics.ts`). Pinned on both sides by
+/// `src/lib/analytics.contract.test.ts`.
+const ANALYTICS_IDENTITY_EVENT: &str = "analytics-identity-changed";
+/// The event every window listens on to follow a change of the diagnostics
+/// answer made in another window.
+const ANALYTICS_CONSENT_EVENT: &str = "analytics-consent-changed";
+
+fn announce_analytics_identity(identity: gate_connect_core::analytics::Identity) {
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit(ANALYTICS_IDENTITY_EVENT, identity);
+    }
+}
+
+/// Forget the analytics identity because the account is gone (sign-out,
+/// Reset), and tell every window. Without the announcement each window kept
+/// the old account's id for the rest of the session, and the sign-in window
+/// wrote it straight back to disk on its next session read.
+fn forget_analytics_identity() {
+    forget_and_announce(
+        gate_connect_core::analytics::forget_identity,
+        gate_connect_core::analytics::load_identity,
+        |name, identity| {
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.emit(name, identity);
+            }
+        },
+    );
+}
+
+/// The ordering of [`forget_analytics_identity`], split out so a test drives it
+/// without an `AppHandle`: forget, then announce what is stored now, whether or
+/// not the forget succeeded (a failed write still leaves the windows on the
+/// truth on disk). Best-effort: a preferences-style write must not fail the
+/// sign-out it rides.
+fn forget_and_announce(
+    forget: impl FnOnce() -> anyhow::Result<()>,
+    load: impl FnOnce() -> gate_connect_core::analytics::Identity,
+    emit: impl FnOnce(&'static str, gate_connect_core::analytics::Identity),
+) {
+    if let Err(e) = forget() {
+        eprintln!("[gate] forgetting the analytics identity failed: {e:#}");
+    }
+    emit(ANALYTICS_IDENTITY_EVENT, load());
 }
 
 /// The process name to look for on behalf of one tool.
@@ -6739,6 +6780,62 @@ mod tests {
              Hermes and which regenerates on every connect"
         );
         assert_ne!(source, bundle);
+    }
+
+    /// A sign-out or Reset must announce the forgotten identity to every
+    /// window (AG-960). The first cut only forgot it, so each window stayed on
+    /// the old account and the sign-in window wrote it back.
+    #[test]
+    fn forgetting_the_analytics_identity_announces_it() {
+        let forgot = std::cell::Cell::new(false);
+        let mut emitted = None;
+        forget_and_announce(
+            || {
+                forgot.set(true);
+                Ok(())
+            },
+            || {
+                assert!(forgot.get(), "announced before the forget landed");
+                gate_connect_core::analytics::Identity {
+                    ever_identified: true,
+                    ..Default::default()
+                }
+            },
+            |name, identity| emitted = Some((name, identity)),
+        );
+        let (name, identity) = emitted.expect("the change must be announced");
+        assert_eq!(name, "analytics-identity-changed");
+        assert_eq!(identity.identified_sub, None);
+    }
+
+    #[test]
+    fn a_failed_forget_still_announces_what_is_stored() {
+        let mut emitted = false;
+        forget_and_announce(
+            || Err(anyhow::anyhow!("disk full")),
+            gate_connect_core::analytics::Identity::default,
+            |_, _| emitted = true,
+        );
+        assert!(emitted);
+    }
+
+    /// Both ways the account goes away announce it. A scan of this file's own
+    /// source, because the commands need a running app to call.
+    #[test]
+    fn sign_out_and_reset_both_forget_and_announce_the_identity() {
+        let src = include_str!("lib.rs");
+        for start in ["async fn oauth_sign_out()", "async fn clear_account()"] {
+            let at = src.find(start).expect(start);
+            let body = &src[at..];
+            let end = body[start.len()..]
+                .find("\n#[tauri::command]")
+                .map(|i| i + start.len())
+                .unwrap_or(body.len());
+            assert!(
+                body[..end].contains("forget_analytics_identity();"),
+                "{start} must call forget_analytics_identity()"
+            );
+        }
     }
 
     /// Serialises the tests that mutate [`PENDING_BACKEND_ERRORS`].
