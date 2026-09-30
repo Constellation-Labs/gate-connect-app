@@ -3552,10 +3552,14 @@ a question for design:
    only, or for both, and if both, where does the failure sentence go?
 2. **Banner labels: Overview or App wording?** "Fully protected / Partially
    protected" on Overview against "Routing / Partly routed" on App, for the same
-   component.
+   component. **Answered 2026-09-30: neither.** The rail's three statuses,
+   Protected, Not protected, Not routed, and the frames are to be updated.
+   Applied.
 3. **Fraction suffix.** The frames still draw "N of M Apps". The app draws
    "N of M Apps on" since 2026-09-23 because the numerator is switched-on apps,
    not routed ones. Keep the "on", or change what the fraction counts?
+   **Answered 2026-09-30: "N of M".** Read as the frames' "N of M Apps" with no
+   suffix; the numerator was not addressed and stays switched-on apps. Applied.
 4. **Is the Overview's "Recent activity" the security feed?** The frame's table
    has Category and Tool columns and a "View activity" button; the app's section
    is the live blocked/flagged stream with a "Load more". If it is the same
@@ -3564,10 +3568,12 @@ a question for design:
 5. **Category labels.** The frame prints "PII", "Injection", "Credential". The
    gateway also emits `phi` and `other`. What do those read as, and does the
    glyph set extend?
-6. **Sidebar 250 vs 256** (section 9). The App frames draw 256, the Overview
+6. **Sidebar 250 vs 256.** The App frames draw 256, the Overview
    frames 250; the code has 256. Likely the Overview frames need the fix.
-7. **The 520 organization modal** (section 8): a fifth width, or a drag?
-8. **Quit row external-link glyph** (section 7).
+7. **The 520 organization modal.** `1410:24712` is drawn 520 wide beside two
+   at 512, a fifth width next to 480/512/544/600: chosen, or a drag?
+8. **Quit row external-link glyph.** Every row of `topnav/menu` (`1408:20428`)
+   carries it, including Quit, which does not leave the app.
 9. **"Security" vs "Status"** on the App table header. `1370:4990` (still on
    the page) says Status; the redrawn `1410:28165` says Security. The code
    followed the first on 2026-09-28.
@@ -3584,3 +3590,9 @@ a question for design:
     single-model case only, since the multi-model layout has no room for it.
 15. **Two header sizes on one table component.** Overview `label/14`, App
     `label/12` (`1402:17995` vs `1410:28173`).
+
+Answered the same day, and applied: the banner label is the rail's vocabulary
+(Protected / Not protected / Not routed, question 2), and the fraction reads
+"N of M Apps" with no "on" suffix (question 3). The numerator is still the
+switched-on count and still disagrees with the rail's group counters, which
+question 3 asked about and the answer did not reach.

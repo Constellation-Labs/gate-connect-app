@@ -58,8 +58,12 @@ export interface RoutingState {
   /**
    * The short phrase: the banner's pill, and the card's heading.
    *
-   * "Routed", not "Routing" - every routed frame on Flows/Overview reads
-   * `Routed · 4 of 4 Apps` (re-read 2026-08-21).
+   * The rail's three statuses, by design's answer of 2026-09-30 to the
+   * redrawn frames disagreeing with each other ("Fully protected" on Overview
+   * against "Routing" on App): Protected when everything asked for is routed,
+   * Not protected when something asked for is not, Not routed when nothing was
+   * asked for. `status-label` (434:136) is the one vocabulary, and the topbar
+   * cannot call protected what a row calls not protected.
    */
   label: string;
   /**
@@ -80,13 +84,13 @@ export interface RoutingState {
 
 const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
   routed: {
-    label: "Routed",
+    label: "Protected",
     headline: "Gate Connect is protecting you",
     tone: "green",
     icon: "shieldCheck",
   },
   partly: {
-    label: "Partly routed",
+    label: "Not protected",
     headline: "Gate Connect is partly routing your apps",
     tone: "amber",
     icon: "shieldBan",
@@ -100,9 +104,9 @@ const STATES: Record<RoutingStateKind, Omit<RoutingState, "kind">> = {
   "none-requested": {
     label: "None routed",
     // No fault is claimed: the user switched everything off, which is an
-    // answer rather than a gap. A fraction DOES go beside it now - "0 of 8
-    // Apps on" - since the denominator became availability and stopped being
-    // the meaningless half of "0 of 0" (2026-09-23).
+    // answer rather than a gap. A fraction DOES go beside it - "0 of 8 Apps" -
+    // since the denominator became availability and stopped being the
+    // meaningless half of "0 of 0" (2026-09-23).
     headline: "No apps are routed",
     tone: "grey",
     icon: "circleOff",

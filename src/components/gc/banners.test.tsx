@@ -87,7 +87,7 @@ describe("RoutingBanner's fraction", () => {
       <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
     );
     expect(screen.getByText("Gate Connect is protecting you")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
   });
 
   it("keeps counting intent while the state reports the failure", () => {
@@ -99,8 +99,8 @@ describe("RoutingBanner's fraction", () => {
       <RoutingBanner protectedCount={1} totalCount={2} availableCount={8} />,
     );
     expect(screen.getByText("Gate Connect is partly routing your apps")).toBeTruthy();
-    expect(screen.getByText("Partly routed")).toBeTruthy();
-    expect(screen.getByText("2 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("Not protected")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
   });
 
   it("prints 0 of M with nothing switched on, where it used to print nothing", () => {
@@ -110,7 +110,7 @@ describe("RoutingBanner's fraction", () => {
       <RoutingBanner protectedCount={0} totalCount={0} availableCount={8} />,
     );
     expect(screen.getByText("No apps are routed")).toBeTruthy();
-    expect(screen.getByText("0 of 8 Apps on")).toBeTruthy();
+    expect(screen.getByText("0 of 8 Apps")).toBeTruthy();
   });
 
   it("says nothing about a ratio when the rail is empty", () => {
@@ -123,12 +123,16 @@ describe("RoutingBanner's fraction", () => {
     expect(screen.queryByText(/of 0 Apps/)).toBeNull();
   });
 
-  it("says 'on', so the ratio cannot be read as routed-of-available", () => {
-    // Without the suffix, "2 of 8 Apps" beside a "Routed" pill states that two
-    // of eight are routed, which is a different and false claim.
+  it("prints the frame's 'N of M Apps' with no suffix, beside the rail's status word", () => {
+    // The "on" suffix that kept "2 of 8 Apps" from reading as two-of-eight
+    // routed went on 2026-09-30, by design's answer; the label beside the
+    // digits now says Protected / Not protected / Not routed and carries the
+    // outcome the suffix used to guard.
     render(
       <RoutingBanner protectedCount={2} totalCount={2} availableCount={8} />,
     );
-    expect(screen.queryByText("2 of 8 Apps")).toBeNull();
+    expect(screen.getByText("Protected")).toBeTruthy();
+    expect(screen.getByText("2 of 8 Apps")).toBeTruthy();
+    expect(screen.queryByText(/Apps on/)).toBeNull();
   });
 });

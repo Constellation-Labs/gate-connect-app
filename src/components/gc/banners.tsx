@@ -151,25 +151,25 @@ export function RoutingBanner({
         <span
           className={`font-medium ${LABEL_INK[state.tone]}`}
         >
-          {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
-            * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
+          {/* The rail's status vocabulary; see `routingState`. */}
           {state.label}
         </span>
         {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
           * separator is that list's own disc marker, same colour as its text. */}
         {/* Switched on, out of every app on the rail - coverage, not outcome.
-          * The frame draws `Routed · 4 of 4 Apps`, where both halves were
-          * routed-of-requested and the ratio restated the pill beside it.
-          * Changed on request 2026-09-23, so it deviates from the frame and is
-          * owed to design, along with the fact that it does not match the
-          * rail's group counters on the numerator. `routingState` carries both.
-          * "on" is load-bearing in the words: without it "2 of 8 Apps" beside a
-          * "Routed" pill reads as two routed out of eight. */}
+          * The numerator changed to intent on 2026-09-23 and an "on" suffix
+          * went with it, so the ratio could not be read as routed-of-available
+          * beside a "Routed" pill. Design answered on 2026-09-30 that the words
+          * are "N of M" as the frames draw them (`1390:14031`, "0 of 6 Apps"),
+          * so the suffix goes. The label beside it now says Protected / Not
+          * protected / Not routed, which carries the outcome the suffix used to
+          * keep the digits from implying. The numerator is still intent, and
+          * still does not match the rail's group counters. */}
         {showsFraction(availableCount) && (
           <>
             <span className="text-base-muted-foreground"> · </span>
             <span className="text-base-muted-foreground">
-              {totalCount} of {availableCount} Apps on
+              {totalCount} of {availableCount} Apps
             </span>
           </>
         )}

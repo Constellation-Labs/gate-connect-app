@@ -35,8 +35,12 @@ test.describe("new UI routing verdict", () => {
       tools: [connectedCodex],
     });
 
-    // `exact`, because the sidebar's own eyebrow reads "Protected apps".
-    await expect(app.page.getByText("Protected", { exact: true })).toBeVisible();
+    // The row, by its accessible name: a bare "Protected" also matches the
+    // routing banner's label since 2026-09-30, when it took the rail's
+    // vocabulary, and the sidebar's own eyebrow reads "Protected apps".
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible();
     // The sweep is a real command, not a derivation from the tool list.
     await expect.poll(() => app.lastCall("routing_verdicts")).not.toBeNull();
   });
