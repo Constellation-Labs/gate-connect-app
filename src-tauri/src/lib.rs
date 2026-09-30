@@ -465,6 +465,10 @@ async fn clear_account() -> Result<(), String> {
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // The analytics identity belongs to the account being cleared: the next
+        // launch must bootstrap the install id, not this person (AG-960).
+        // Best-effort, like the preference writes beside it.
+        let _ = gate_connect_core::analytics::forget_identity();
         // And stop the environment forwarder. It is deliberately left running
         // across a plain routing-off - that is exactly when the processes
         // holding our exported variables still need it - so this path and the
@@ -661,6 +665,10 @@ async fn oauth_sign_out() -> Result<(), String> {
         // cache clear below: a preferences write must not be the reason a
         // sign-out reports failure.
         let _ = gate_connect_core::preferences::set_signed_out_deliberately(true);
+        // Nobody is signed in now, so the next launch bootstraps the install id
+        // rather than this person (AG-960). Here as well as in the webview so a
+        // sign-out it never saw still lands. Best-effort for the same reason.
+        let _ = gate_connect_core::analytics::forget_identity();
         // The held activity readings belong to the org just signed out of, and
         // signing out is not a disconnect: `account.json` keeps the gateway and
         // the org, so `activity_cache`'s scope stays byte-identical and every
@@ -2914,7 +2922,40 @@ fn cowork_setting_check() -> Option<&'static str> {
 /// send path is its own story.
 #[tauri::command]
 fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
+    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))?;
+    // Every window runs its own analytics client, and only the one the user
+    // clicked in knows the answer changed. Broadcast it so the tray and the
+    // intro stop (or start) too, instead of acting on the answer they read at
+    // launch until the next one (AG-960).
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit(
+            "analytics-consent-changed",
+            serde_json::json!({ "share_diagnostics": enabled, "recorded": true }),
+        );
+    }
+    Ok(())
+}
+
+/// What this install is identified as in analytics; see
+/// `gate_connect_core::analytics::Identity`.
+#[tauri::command]
+fn analytics_identity() -> gate_connect_core::analytics::Identity {
+    gate_connect_core::analytics::load_identity()
+}
+
+/// Record a change of analytics identity, and tell every window, so each one's
+/// client follows the same person (AG-960). Called only by the window that
+/// owns sign-in.
+#[tauri::command]
+fn set_analytics_identity(identity: gate_connect_core::analytics::Identity) -> Result<(), String> {
+    gate_connect_core::analytics::save_identity(identity).map_err(|e| format!("{e:#}"))?;
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit(
+            "analytics-identity-changed",
+            gate_connect_core::analytics::load_identity(),
+        );
+    }
+    Ok(())
 }
 
 /// The process name to look for on behalf of one tool.
@@ -5162,6 +5203,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             set_share_diagnostics,
             analytics_milestone_claim,
             cowork_setting_check,
+            analytics_identity,
+            set_analytics_identity,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,
@@ -5233,6 +5276,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
             set_share_diagnostics,
             analytics_milestone_claim,
             cowork_setting_check,
+            analytics_identity,
+            set_analytics_identity,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,

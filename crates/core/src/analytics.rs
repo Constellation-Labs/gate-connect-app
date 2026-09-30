@@ -251,24 +251,98 @@ pub fn cowork_setting_missing() -> Option<&'static str> {
     if cowork_disabled_by_policy() {
         return Some("enterprise");
     }
-    let raw = fs::read_to_string(claude_desktop_config_path()?).ok()?;
-    cowork_block_in_config(&raw)
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+    let candidates = claude_config_candidates(
+        os,
+        dirs::data_dir().as_deref(),
+        dirs::data_local_dir().as_deref(),
+    );
+    strongest_block(
+        candidates
+            .iter()
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .filter_map(|raw| cowork_block_in_config(&raw)),
+    )
 }
 
-/// The user-level Claude Desktop config: `~/Library/Application
-/// Support/Claude/claude_desktop_config.json` on macOS and
-/// `%APPDATA%\Claude\claude_desktop_config.json` on Windows, the paths
-/// Anthropic documents for this file. `None` on Linux (see above).
-fn claude_desktop_config_path() -> Option<PathBuf> {
-    if cfg!(any(target_os = "macos", target_os = "windows")) {
-        Some(
-            dirs::data_dir()?
-                .join("Claude")
-                .join("claude_desktop_config.json"),
-        )
-    } else {
-        None
+/// Any-true across every config Claude might be using, with the org policy
+/// outranking the user's own switch - the same precedence as within one file.
+fn strongest_block(found: impl Iterator<Item = &'static str>) -> Option<&'static str> {
+    let mut best = None;
+    for block in found {
+        if block == "org_cloud_only" {
+            return Some(block);
+        }
+        best = Some(block);
     }
+    best
+}
+
+/// Every `claude_desktop_config.json` Claude Desktop itself may read, in the
+/// order Claude probes its data dirs.
+///
+/// Taken from Claude Desktop 2.16120.0's own resolver rather than from the one
+/// path the MCP docs name, because on Windows the first-party app is an MSIX
+/// package (which local Cowork requires) and its data lives in the package's
+/// redirected roaming folder, not in `%APPDATA%`. The bundle's `$Re()` lists the
+/// first-party dirs:
+///
+/// - Windows: `%LOCALAPPDATA%\Claude-Data` (used when roaming app data is
+///   redirected to a network share), `%APPDATA%\Claude`, and
+///   `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`.
+/// - elsewhere: `<app data>/Claude`.
+///
+/// and `Gu()` the third-party deployment's dir, `Claude-3p`: under
+/// `%LOCALAPPDATA%` on Windows, beside `Claude` elsewhere. Probing a dir that
+/// is not in use costs one failed read, and the answer is any-true, so listing
+/// one Claude does not use on this machine cannot produce a false block - only
+/// a stale file left behind by an uninstalled flavour could, which is the
+/// accepted limit of reading another app's state.
+///
+/// Empty on Linux, which has no Claude Desktop to run Cowork in. Pure, so each
+/// path is testable on any host.
+pub fn claude_config_candidates(
+    os: &str,
+    app_data: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    const FILE: &str = "claude_desktop_config.json";
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    match os {
+        "windows" => {
+            if let Some(local) = local_app_data {
+                dirs.push(local.join("Claude-Data"));
+            }
+            if let Some(roaming) = app_data {
+                dirs.push(roaming.join("Claude"));
+            }
+            if let Some(local) = local_app_data {
+                dirs.push(
+                    local
+                        .join("Packages")
+                        .join("Claude_pzs8sxrjxfjjc")
+                        .join("LocalCache")
+                        .join("Roaming")
+                        .join("Claude"),
+                );
+                dirs.push(local.join("Claude-3p"));
+            }
+        }
+        "macos" => {
+            if let Some(support) = app_data {
+                dirs.push(support.join("Claude"));
+                dirs.push(support.join("Claude-3p"));
+            }
+        }
+        _ => {}
+    }
+    dirs.into_iter().map(|d| d.join(FILE)).collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -298,6 +372,118 @@ pub fn cowork_block_in_config(raw: &str) -> Option<&'static str> {
         return Some("user");
     }
     None
+}
+
+/// What this install is identified as in analytics, kept next to `install-id`
+/// so every window and every launch agrees on it (AG-960).
+///
+/// **Why it is persisted.** posthog-js's bootstrap re-registers its distinct id
+/// on every launch; bootstrapping the install id as anonymous each time forced
+/// a fresh `$identify(sub, $anon = install id)` per launch, and a second account
+/// signing in on the same machine would have been merged onto the first
+/// person's install. With this record the webview bootstraps the identified
+/// `sub` directly (`isIdentifiedID: true`, no event), merges the install id into
+/// a person only the first time this install is ever identified
+/// (`ever_identified`), and on sign-out or an account switch resets the client
+/// instead of merging.
+///
+/// Nothing here is a secret: `sub` is the opaque Cognito id already sent as the
+/// distinct id, and the org id is already the analytics group. The webview only
+/// writes it after the diagnostics answer allows identification, so an install
+/// that never agreed has nothing here but the org it routes for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Identity {
+    /// The Cognito `sub` the analytics client is identified as right now, or
+    /// `None` when it is on the install id.
+    #[serde(default)]
+    pub identified_sub: Option<String>,
+    /// Whether this install has ever been identified with anybody. Sticky: once
+    /// true, a save cannot turn it back.
+    #[serde(default)]
+    pub ever_identified: bool,
+    /// The organization this install routes for, as the owning window last saw
+    /// it. Lets a window that never reads the account (the tray, the intro)
+    /// group its events, including an API-key account's, whose org only the
+    /// main window's activity read learns.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// `"oauth"` or `"api_key"`, beside the org it describes.
+    #[serde(default)]
+    pub auth_mode: Option<String>,
+}
+
+const IDENTITY_FILE: &str = "analytics-identity.json";
+
+/// A value from the webview that becomes a PostHog id: bounded, printable,
+/// non-empty. Anything else is dropped rather than stored.
+fn clean_id(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
+}
+
+/// The stored identity, or the default for a missing or unreadable file. A
+/// corrupt record reads as "never identified on the install id", which at worst
+/// costs one `$identify` that PostHog then declines to merge twice.
+pub fn load_identity_in(support: &Path) -> Identity {
+    fs::read_to_string(support.join(IDENTITY_FILE))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Identity>(&raw).ok())
+        .map(|i| Identity {
+            identified_sub: clean_id(i.identified_sub),
+            org_id: clean_id(i.org_id),
+            auth_mode: clean_id(i.auth_mode),
+            ever_identified: i.ever_identified,
+        })
+        .unwrap_or_default()
+}
+
+/// Store `next`, keeping `ever_identified` sticky and implied by a sub.
+pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
+    let prev = load_identity_in(support);
+    let identified_sub = clean_id(next.identified_sub);
+    let stored = Identity {
+        ever_identified: prev.ever_identified || next.ever_identified || identified_sub.is_some(),
+        identified_sub,
+        org_id: clean_id(next.org_id),
+        auth_mode: clean_id(next.auth_mode),
+    };
+    fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
+    let body = serde_json::to_vec_pretty(&stored).context("serializing analytics identity")?;
+    crate::primitives::write_file(&support.join(IDENTITY_FILE), &body, 0o600)
+}
+
+/// Drop the identified sub (and the org), keeping `ever_identified`. Called on
+/// sign-out and reset by the backend itself, so a sign-out the webview did not
+/// see (the CLI's) still stops the next launch bootstrapping the old person.
+pub fn forget_identity_in(support: &Path) -> Result<()> {
+    let prev = load_identity_in(support);
+    if prev.identified_sub.is_none() && prev.org_id.is_none() {
+        return Ok(());
+    }
+    save_identity_in(
+        support,
+        Identity {
+            ever_identified: prev.ever_identified,
+            ..Identity::default()
+        },
+    )
+}
+
+/// [`load_identity_in`] against the real data dir.
+pub fn load_identity() -> Identity {
+    crate::env::app_support_dir()
+        .map(|d| load_identity_in(&d))
+        .unwrap_or_default()
+}
+
+/// [`save_identity_in`] against the real data dir.
+pub fn save_identity(next: Identity) -> Result<()> {
+    save_identity_in(&crate::env::app_support_dir()?, next)
+}
+
+/// [`forget_identity_in`] against the real data dir.
+pub fn forget_identity() -> Result<()> {
+    forget_identity_in(&crate::env::app_support_dir()?)
 }
 
 #[cfg(test)]
@@ -571,5 +757,139 @@ mod tests {
         assert!(!claim_in(&dir, "cowork_setting_missing.user").unwrap());
         assert!(claim_in(&dir, "cowork_setting_missing.org_cloud_only").unwrap());
         assert!(!is_known_milestone("cowork_setting_missing.other"));
+    }
+
+    #[test]
+    fn windows_probes_every_dir_claude_does() {
+        let got = claude_config_candidates("windows", Some(Path::new("R")), Some(Path::new("L")));
+        let want: Vec<PathBuf> = [
+            "L/Claude-Data",
+            "R/Claude",
+            "L/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude",
+            "L/Claude-3p",
+        ]
+        .iter()
+        .map(|d| {
+            d.split('/')
+                .fold(PathBuf::new(), |p, c| p.join(c))
+                .join("claude_desktop_config.json")
+        })
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn macos_probes_first_and_third_party_dirs() {
+        let got = claude_config_candidates("macos", Some(Path::new("S")), None);
+        assert_eq!(
+            got,
+            vec![
+                Path::new("S")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+                Path::new("S")
+                    .join("Claude-3p")
+                    .join("claude_desktop_config.json"),
+            ]
+        );
+    }
+
+    #[test]
+    fn linux_has_no_claude_desktop_to_probe() {
+        assert!(
+            claude_config_candidates("linux", Some(Path::new("S")), Some(Path::new("L")))
+                .is_empty()
+        );
+    }
+
+    /// Each candidate on its own is enough: the MSIX package dir is where the
+    /// first-party Windows app keeps it, and a probe that stopped at
+    /// `%APPDATA%` missed it entirely.
+    #[test]
+    fn any_candidate_that_says_off_wins() {
+        let dir = scratch("cowork-paths");
+        let roaming = dir.join("R");
+        let local = dir.join("L");
+        let candidates = claude_config_candidates("windows", Some(&roaming), Some(&local));
+        for (i, target) in candidates.iter().enumerate() {
+            let _ = fs::remove_dir_all(&roaming);
+            let _ = fs::remove_dir_all(&local);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(
+                target,
+                r#"{"preferences":{"secureVmFeaturesEnabled":false}}"#,
+            )
+            .unwrap();
+            let found = strongest_block(
+                candidates
+                    .iter()
+                    .filter_map(|p| fs::read_to_string(p).ok())
+                    .filter_map(|raw| cowork_block_in_config(&raw)),
+            );
+            assert_eq!(found, Some("user"), "candidate {i}: {}", target.display());
+        }
+    }
+
+    #[test]
+    fn the_org_policy_outranks_the_user_switch_across_files() {
+        assert_eq!(
+            strongest_block(["user", "org_cloud_only"].into_iter()),
+            Some("org_cloud_only")
+        );
+        assert_eq!(strongest_block(["user"].into_iter()), Some("user"));
+        assert_eq!(strongest_block(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn identity_round_trips_and_first_identification_is_sticky() {
+        let dir = scratch("identity");
+        assert_eq!(load_identity_in(&dir), Identity::default());
+        save_identity_in(
+            &dir,
+            Identity {
+                identified_sub: Some("sub-a".into()),
+                org_id: Some("org-1".into()),
+                auth_mode: Some("oauth".into()),
+                ever_identified: false,
+            },
+        )
+        .unwrap();
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub.as_deref(), Some("sub-a"));
+        assert!(
+            got.ever_identified,
+            "a sub implies the install has been identified"
+        );
+
+        forget_identity_in(&dir).unwrap();
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub, None);
+        assert_eq!(got.org_id, None);
+        assert!(
+            got.ever_identified,
+            "sign-out must not make the next sign-in look like the first"
+        );
+
+        // A save from the webview cannot clear it either.
+        save_identity_in(&dir, Identity::default()).unwrap();
+        assert!(load_identity_in(&dir).ever_identified);
+    }
+
+    #[test]
+    fn a_corrupt_or_hostile_identity_reads_as_default_values() {
+        let dir = scratch("identity-bad");
+        fs::write(dir.join(IDENTITY_FILE), "{not json").unwrap();
+        assert_eq!(load_identity_in(&dir), Identity::default());
+        save_identity_in(
+            &dir,
+            Identity {
+                identified_sub: Some("  ".into()),
+                org_id: Some("a\nb".into()),
+                auth_mode: Some("x".repeat(200)),
+                ever_identified: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(load_identity_in(&dir), Identity::default());
     }
 }
