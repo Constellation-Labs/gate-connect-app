@@ -117,9 +117,10 @@ export async function sendDiagnosticReport(report: string): Promise<string> {
         // version would mean the screen that exists to say what leaves the
         // machine is describing something else.
         report,
-        // Keep the anonymous posture the shared client is configured for
-        // (`person_profiles: "identified_only"`): this event must not be what
-        // finally creates a person profile for an install that never identified.
+        // Follow the shared client's `person_profiles: "identified_only"`: this
+        // event must not be what creates a person profile for an install that
+        // was never identified. An identified install already has one, and the
+        // report joins it through the distinct id.
         $process_person_profile: false,
       },
     }),

@@ -1,28 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 
 /**
- * Three promises, one channel.
+ * The analytics seam's promises, pinned.
  *
- * Consent: the channel is real - PostHog, started at boot - and until recently it
- * had no user opt-out at all, while Settings offered a "Share diagnostic data"
- * switch that only recorded a preference. A switch that implies control it does
- * not have is worse than no switch, so these tests pin that the preference
- * actually gates the client.
+ * Consent: the preference gates the client; base events (those that predate
+ * AG-960) follow "Share diagnostic data", and everything AG-960 added - the
+ * identity, the org group, the milestones, `connection_failed` - is held until
+ * the diagnostics question has been ANSWERED, released on a yes and spent on a
+ * no.
  *
- * Content: what a running client may send. Event props pass an allowlist, so a
- * sensitive value (gateway host, API key, path) cannot ride along on an event by
- * accident, and error events carry the *classified* title + context, never the
- * raw Tauri error string (it can carry hosts/paths).
+ * Content: props pass an allowlist, errors carry classified titles, failures a
+ * reason from a closed list.
  *
- * The install funnel (AG-960): events are filed under the install id from the
- * first one, joined to the account and the org at pairing, milestones are sent
- * once per install, an opt-out is recorded once and before capture stops, and a
- * connection failure carries a reason from a closed list.
+ * Identity: the install id from the first event; a stored identified `sub`
+ * bootstraps without an `$identify`; the install id is merged into a person at
+ * most once; another account or a sign-out resets rather than merges; every
+ * window follows the same identity and the same consent.
  *
- * A build-time key is required for any of it to run, so the module is loaded with
- * one injected. Without that every path no-ops and the tests would pass while
- * proving nothing.
+ * The fakes below keep the two pieces of state that outlive a launch - the
+ * posthog-js opt-out it persists in its own storage, and the Rust records (the
+ * milestone markers, the analytics identity) - across `load()`, which is what a
+ * relaunch or a second window looks like to this module. Without that the
+ * relaunch tests would pass against a client that forgot everything.
  */
 vi.mock("./config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config")>()),
@@ -30,17 +30,79 @@ vi.mock("./config", async (importOriginal) => ({
   POSTHOG_HOST: "https://example.invalid",
 }));
 
+/** posthog-js as far as these tests need it, with its persisted opt-out. */
+const ph = vi.hoisted(() => {
+  const state = { optedOut: false, distinctId: "anon-1", identified: false };
+  const delivered: { event: string; props: unknown; options: unknown; distinctId: string }[] =
+    [];
+  return { state, delivered };
+});
+
 vi.mock("posthog-js", () => ({
   default: {
-    init: vi.fn(),
-    register: vi.fn(),
-    capture: vi.fn(),
+    init: vi.fn((_key: string, config: { bootstrap?: { distinctID: string; isIdentifiedID?: boolean } }) => {
+      if (config.bootstrap) {
+        ph.state.distinctId = config.bootstrap.distinctID;
+        ph.state.identified = config.bootstrap.isIdentifiedID === true;
+      }
+    }),
+    register: vi.fn((props: Record<string, unknown>) => {
+      if (typeof props.distinct_id === "string") ph.state.distinctId = props.distinct_id;
+    }),
+    // Like the real client: a capture while opted out is silently dropped.
+    capture: vi.fn((event: string, props: unknown, options: unknown) => {
+      if (ph.state.optedOut) return;
+      ph.delivered.push({ event, props, options, distinctId: ph.state.distinctId });
+    }),
     captureException: vi.fn(),
-    identify: vi.fn(),
+    identify: vi.fn((id: string) => {
+      ph.state.distinctId = id;
+      ph.state.identified = true;
+    }),
+    reset: vi.fn(() => {
+      ph.state.distinctId = "fresh-random";
+      ph.state.identified = false;
+    }),
     group: vi.fn(),
-    opt_in_capturing: vi.fn(),
-    opt_out_capturing: vi.fn(),
-    get_distinct_id: vi.fn(() => "anon-1"),
+    opt_in_capturing: vi.fn(() => {
+      ph.state.optedOut = false;
+    }),
+    opt_out_capturing: vi.fn(() => {
+      ph.state.optedOut = true;
+    }),
+    has_opted_out_capturing: vi.fn(() => ph.state.optedOut),
+    is_capturing: vi.fn(() => !ph.state.optedOut),
+    get_distinct_id: vi.fn(() => ph.state.distinctId),
+  },
+}));
+
+/** Tauri events: every loaded module (window) subscribes; `broadcast` is the
+ *  backend's `emit`. */
+const bus = vi.hoisted(() => ({
+  handlers: new Map<string, Array<(e: { payload: unknown }) => void>>(),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (event: string, handler: (e: { payload: unknown }) => void) => {
+    const list = bus.handlers.get(event) ?? [];
+    list.push(handler);
+    bus.handlers.set(event, list);
+    return () => {};
+  }),
+}));
+function broadcast(event: string, payload: unknown) {
+  for (const h of bus.handlers.get(event) ?? []) h({ payload });
+}
+
+/** The Rust records: markers won once, and the stored identity with its sticky
+ *  first-identification bit. `set_analytics_identity` broadcasts, as the real
+ *  command does. */
+const rust = vi.hoisted(() => ({
+  claimed: new Set<string>(),
+  identity: { identified_sub: null, ever_identified: false, org_id: null, auth_mode: null } as {
+    identified_sub: string | null;
+    ever_identified: boolean;
+    org_id: string | null;
+    auth_mode: string | null;
   },
 }));
 
@@ -49,6 +111,14 @@ vi.mock("./api", () => ({
   installId: vi.fn(),
   analyticsMilestoneClaim: vi.fn(),
   coworkSettingCheck: vi.fn(),
+  analyticsIdentity: vi.fn(async () => ({ ...rust.identity })),
+  setAnalyticsIdentity: vi.fn(async (next: typeof rust.identity) => {
+    rust.identity = {
+      ...next,
+      ever_identified: rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
+    };
+    broadcast("analytics-identity-changed", { ...rust.identity });
+  }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "1.2.3") }));
 vi.mock("./platform", () => ({ fetchPlatform: vi.fn(async () => "linux") }));
@@ -59,23 +129,23 @@ import { classifyError, type ConnectionFailureReason, type ErrorContext } from "
 
 const INSTALL_ID = "3f0c9a52-7d1e-4b8a-9c2f-1a2b3c4d5e6f";
 const SUB = "0b8c1f2e-1111-4222-8333-944455556666";
+const SUB_B = "7a7a7a7a-2222-4333-8444-955566667777";
 const ORG = "9d7e6f5a-aaaa-4bbb-8ccc-0123456789ab";
 
-/**
- * The Rust marker store, faked with its one property: a name is won once. Kept
- * across `load()`s on purpose, because a module reload is what a second window
- * (or a relaunch) looks like to this code, and the marker must outlive both.
- */
-const claimed = new Set<string>();
-
-/** Fresh module per test: consent state lives in module-level flags. */
+/** A window: a fresh copy of the module over the same persisted state. */
 async function load() {
   vi.resetModules();
   return import("./analytics");
 }
 
-function consentIs(share: boolean) {
-  (getPreferences as Mock).mockResolvedValue({ share_diagnostics: share, notifications: true });
+/** The two preference fields that decide everything here. The fresh-install
+ *  default is `(true, false)`: sharing on, question not answered. */
+function prefsAre(share: boolean, recorded = true) {
+  (getPreferences as Mock).mockResolvedValue({
+    share_diagnostics: share,
+    share_diagnostics_recorded: recorded,
+    notifications: true,
+  });
 }
 
 /** Let pending promise chains (IPC mocks, the boot, a claim) run out. */
@@ -84,475 +154,557 @@ async function settle() {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-/** The captures of one event name, props only. */
+/** What actually left: captures the client delivered, props only, by name. */
 function sent(event: string): unknown[] {
-  return vi
-    .mocked(posthog.capture)
-    .mock.calls.filter(([name]) => name === event)
-    .map(([, props]) => props);
+  return ph.delivered.filter((d) => d.event === event).map((d) => d.props);
 }
 
-/** Every argument PostHog received, flattened to one string, so a test can
- *  assert a secret appears nowhere in anything we sent. */
+const fetchMock = vi.fn(async () => new Response("{}"));
+
+/** Bodies POSTed straight to the capture endpoint (the opt-out record). */
+function posted(): { event: string; distinct_id: string; properties: Record<string, unknown> }[] {
+  return fetchMock.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
+}
+
 function everythingSent(): string {
-  const mocked = vi.mocked(posthog);
   return JSON.stringify([
-    ...mocked.capture.mock.calls,
-    ...mocked.captureException.mock.calls.map((args) =>
+    ...ph.delivered,
+    ...vi.mocked(posthog.captureException).mock.calls.map((args) =>
       args.map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : a)),
     ),
+    ...posted(),
   ]);
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  claimed.clear();
+  ph.state.optedOut = false;
+  ph.state.distinctId = "anon-1";
+  ph.state.identified = false;
+  ph.delivered.length = 0;
+  bus.handlers.clear();
+  rust.claimed.clear();
+  rust.identity = { identified_sub: null, ever_identified: false, org_id: null, auth_mode: null };
   (installId as Mock).mockResolvedValue(INSTALL_ID);
   (analyticsMilestoneClaim as Mock).mockImplementation(async (name: string) => {
-    if (claimed.has(name)) return false;
-    claimed.add(name);
+    if (rust.claimed.has(name)) return false;
+    rust.claimed.add(name);
     return true;
   });
   (coworkSettingCheck as Mock).mockResolvedValue(null);
+  vi.stubGlobal("fetch", fetchMock);
 });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+const PAIRED_OAUTH = { signedIn: true, authMode: "oauth" as const, sub: SUB, orgId: ORG };
 
 describe("initAnalytics consent", () => {
   it("starts the client when the user has not opted out", async () => {
-    consentIs(true);
+    prefsAre(true);
     const { initAnalytics } = await load();
-
     await initAnalytics();
-
     expect(posthog.init).toHaveBeenCalledTimes(1);
   });
 
-  /** The point of the whole change. */
   it("never constructs the client when the user has opted out", async () => {
-    consentIs(false);
+    prefsAre(false);
     const { initAnalytics } = await load();
-
     await initAnalytics();
-
     expect(posthog.init).not.toHaveBeenCalled();
   });
 
-  /**
-   * Consent that cannot be confirmed is not consent. `preferences::load()` is
-   * infallible in Rust, so this only happens when the IPC itself fails - and the
-   * safe direction is silence.
-   */
   it("does not collect when consent could not be read", async () => {
     (getPreferences as Mock).mockRejectedValue(new Error("ipc unavailable"));
     const { initAnalytics } = await load();
-
     await initAnalytics();
-
     expect(posthog.init).not.toHaveBeenCalled();
   });
 
-  it("sends nothing after an opted-out start", async () => {
-    consentIs(false);
-    const { initAnalytics, track } = await load();
-    await initAnalytics();
-
-    track("app_launched");
-    await settle();
-
-    expect(posthog.capture).not.toHaveBeenCalled();
-  });
-
-  /** An event tracked while the consent read is in flight waits for the answer,
-   *  and a no drops it rather than sending it later. */
   it("drops an event tracked during the boot when the answer is no", async () => {
-    consentIs(false);
+    prefsAre(false);
     const { initAnalytics, track } = await load();
     const boot = initAnalytics();
     track("app_launched");
     await boot;
     await settle();
-
-    expect(posthog.capture).not.toHaveBeenCalled();
+    expect(ph.delivered).toEqual([]);
   });
 });
 
-describe("identity: the install id from the first event (AG-960)", () => {
-  it("bootstraps the install id as the distinct id", async () => {
-    consentIs(true);
-    const { initAnalytics } = await load();
-
+describe("item 1: nothing AG-960 added leaves before the question is answered", () => {
+  /** The real fresh-install default, and the order the new UI asks in: sign-in,
+   *  org, device, confirmation, and only then the diagnostics step. */
+  it("holds identity, group and every milestone while the answer is missing", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, noteToolConnected, track, trackError } = await load();
     await initAnalytics();
-
-    const [, config] = vi.mocked(posthog.init).mock.calls[0];
-    expect(config).toMatchObject({
-      bootstrap: { distinctID: INSTALL_ID },
-      person_profiles: "identified_only",
-      autocapture: false,
-    });
-  });
-
-  it("registers version, platform and install id before the first capture", async () => {
-    consentIs(true);
-    const { initAnalytics, track } = await load();
-    await initAnalytics();
-    track("app_launched");
-
-    expect(posthog.register).toHaveBeenCalledWith({
-      app_version: "1.2.3",
-      platform: "linux",
-      install_id: INSTALL_ID,
-    });
-    const registered = vi.mocked(posthog.register).mock.invocationCallOrder[0];
-    for (const order of vi.mocked(posthog.capture).mock.invocationCallOrder) {
-      expect(registered).toBeLessThan(order);
-    }
-  });
-
-  /**
-   * The regression. The old init fired `register` in an unawaited `then` and
-   * never bootstrapped an id, and every event tracked before the client existed
-   * was dropped: the first events of a fresh install either vanished or went out
-   * under a random browser id with no version, and a storage reset made the same
-   * machine a new person.
-   */
-  it("holds an event tracked during the boot and sends it once identity is set", async () => {
-    let answer!: (v: unknown) => void;
-    (getPreferences as Mock).mockReturnValue(new Promise((r) => (answer = r)));
-    const { initAnalytics, track } = await load();
-    const boot = initAnalytics();
 
     track("app_launched", { has_account: false });
-    expect(posthog.capture).not.toHaveBeenCalled();
-    answer({ share_diagnostics: true });
-    await boot;
+    noteSession(PAIRED_OAUTH);
+    noteToolConnected("codex", "config");
+    trackError("address in use", "connect", { tool: "codex" });
+    await settle();
 
+    // The base event keeps its pre-AG-960 rule.
     expect(sent("app_launched")).toEqual([{ has_account: false }]);
-    const init = vi.mocked(posthog.init).mock.invocationCallOrder[0];
-    const register = vi.mocked(posthog.register).mock.invocationCallOrder[0];
-    const capture = vi
+    expect(posthog.identify).not.toHaveBeenCalled();
+    expect(posthog.group).not.toHaveBeenCalled();
+    for (const e of ["app_first_launched", "pairing_completed", "tool_connected", "connection_failed"]) {
+      expect(sent(e), e).toEqual([]);
+    }
+    // Holding is not spending: no marker is claimed yet.
+    expect(analyticsMilestoneClaim).not.toHaveBeenCalled();
+  });
+
+  it("releases what it held, in order and with identity first, on a yes", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, noteToolConnected, setAnalyticsConsent, trackError } =
+      await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    noteToolConnected("codex", "config");
+    trackError("address in use", "connect", { tool: "codex" });
+    await settle();
+
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+
+    expect(posthog.identify).toHaveBeenCalledWith(SUB);
+    expect(posthog.group).toHaveBeenCalledWith("organization", ORG);
+    expect(sent("app_first_launched")).toHaveLength(1);
+    expect(sent("pairing_completed")).toEqual([{ auth_mode: "oauth" }]);
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+    expect(sent("connection_failed")).toEqual([
+      { reason: "port_in_use", context: "connect", tool: "codex" },
+    ]);
+    // Every released event went out under the account, grouped.
+    const FUNNEL = ["app_first_launched", "pairing_completed", "tool_connected", "connection_failed"];
+    for (const d of ph.delivered.filter((d) => FUNNEL.includes(d.event))) {
+      expect(d.distinctId, d.event).toBe(SUB);
+    }
+    const identifyAt = vi.mocked(posthog.identify).mock.invocationCallOrder[0];
+    const firstReleased = vi
       .mocked(posthog.capture)
-      .mock.calls.findIndex(([name]) => name === "app_launched");
-    const captureOrder = vi.mocked(posthog.capture).mock.invocationCallOrder[capture];
-    expect(init).toBeLessThan(captureOrder);
-    expect(register).toBeLessThan(captureOrder);
+      .mock.calls.findIndex(([e]) => e === "app_first_launched");
+    expect(identifyAt).toBeLessThan(vi.mocked(posthog.capture).mock.invocationCallOrder[firstReleased]);
+    // Stamped when they happened: the first launch sorts before the pairing.
+    const stamp = (e: string) =>
+      (ph.delivered.find((d) => d.event === e)!.options as { timestamp: Date }).timestamp.getTime();
+    expect(stamp("app_first_launched")).toBeLessThanOrEqual(stamp("pairing_completed"));
+  });
+
+  it("spends the held milestones unsent, and drops the rest, on a no", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, noteToolConnected, setAnalyticsConsent, trackError } =
+      await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    noteToolConnected("codex", "config");
+    trackError("address in use", "connect", { tool: "codex" });
+    await settle();
+
+    await setAnalyticsConsent(false, "onboarding_skip");
+    await settle();
+
+    expect(posthog.identify).not.toHaveBeenCalled();
+    expect(posthog.group).not.toHaveBeenCalled();
+    for (const e of ["app_first_launched", "pairing_completed", "tool_connected", "connection_failed"]) {
+      expect(sent(e), e).toEqual([]);
+    }
+    expect([...rust.claimed].sort()).toEqual(
+      ["app_first_launched", "diagnostics_opted_out", "pairing_completed", "tool_connected.codex"].sort(),
+    );
+    // And a later opt-in cannot report them late.
+    await setAnalyticsConsent(true, "settings");
+    await settle();
+    expect(sent("app_first_launched")).toEqual([]);
+    expect(sent("pairing_completed")).toEqual([]);
+  });
+
+  it("does not bootstrap an identified sub before the question is answered", async () => {
+    prefsAre(true, false);
+    rust.identity = { identified_sub: null, ever_identified: false, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics } = await load();
+    await initAnalytics();
     expect(vi.mocked(posthog.init).mock.calls[0][1]).toMatchObject({
       bootstrap: { distinctID: INSTALL_ID },
     });
   });
+});
 
-  it("still starts, unidentified by install, when the install id cannot be read", async () => {
-    consentIs(true);
-    (installId as Mock).mockRejectedValue(new Error("data dir unreadable"));
-    const { initAnalytics } = await load();
+describe("item 2: a persisted opt-out does not outlive a new yes", () => {
+  it("lifts a stale posthog-js opt-out once sharing is on, so captures are delivered", async () => {
+    // Launch one: opted out in Settings. posthog-js persists that.
+    prefsAre(true);
+    let mod = await load();
+    await mod.initAnalytics();
+    await mod.setAnalyticsConsent(false, "settings");
+    expect(ph.state.optedOut).toBe(true);
 
+    // Launch two: still off, so no client. Then back on in Settings.
+    prefsAre(false);
+    mod = await load();
+    await mod.initAnalytics();
+    await mod.setAnalyticsConsent(true, "settings");
+    mod.track("app_launched");
+    mod.noteToolConnected("codex", "config");
+    await settle();
+
+    expect(posthog.opt_in_capturing).toHaveBeenCalled();
+    expect(sent("app_launched")).toHaveLength(1);
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+  });
+
+  it("never claims a marker into a client that is not delivering", async () => {
+    prefsAre(true);
+    ph.state.optedOut = true;
+    // A client that refuses to opt back in: the claim must not be spent.
+    vi.mocked(posthog.opt_in_capturing).mockImplementationOnce(() => {});
+    const { initAnalytics, noteToolConnected } = await load();
     await initAnalytics();
+    noteToolConnected("codex", "config");
+    await settle();
 
-    const [, config] = vi.mocked(posthog.init).mock.calls[0];
-    expect(config).not.toHaveProperty("bootstrap");
+    expect(rust.claimed.has("tool_connected.codex")).toBe(false);
+    expect(rust.claimed.has("app_first_launched")).toBe(false);
   });
 });
 
-describe("pairing: group and identity", () => {
-  it("identifies an OAuth install with the sub and groups it before pairing_completed", async () => {
-    consentIs(true);
-    const { initAnalytics, noteOrgChoices, noteSession } = await load();
+describe("item 3: one identity per account, merged at most once", () => {
+  it("bootstraps a stored identified sub without sending $identify", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
     await initAnalytics();
-
-    noteOrgChoices(3);
-    noteSession({ signedIn: true, authMode: "oauth", sub: SUB, orgId: ORG });
+    noteSession(PAIRED_OAUTH);
     await settle();
 
+    expect(vi.mocked(posthog.init).mock.calls[0][1]).toMatchObject({
+      bootstrap: { distinctID: SUB, isIdentifiedID: true },
+    });
+    expect(posthog.identify).not.toHaveBeenCalled();
+    expect(posthog.reset).not.toHaveBeenCalled();
+  });
+
+  it("merges the install id into the first account only, and records it", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await settle();
+
+    expect(posthog.reset).not.toHaveBeenCalled();
     expect(posthog.identify).toHaveBeenCalledWith(SUB);
+    expect(rust.identity).toMatchObject({ identified_sub: SUB, ever_identified: true, org_id: ORG });
+  });
+
+  /** The two-account regression: B must not be merged onto A's install person. */
+  it("resets before identifying a second account on the same install", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ ...PAIRED_OAUTH, sub: SUB_B });
+    await settle();
+
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(posthog.identify).toHaveBeenCalledWith(SUB_B);
+    expect(vi.mocked(posthog.reset).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(posthog.identify).mock.invocationCallOrder[0],
+    );
+    expect(rust.identity.identified_sub).toBe(SUB_B);
+  });
+
+  it("goes back to the install id on a sign-out, without merging", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, track } = await load();
+    await initAnalytics();
+
+    // The backend's `oauth_sign_out` forgets the identity and says so.
+    broadcast("analytics-identity-changed", {
+      identified_sub: null,
+      ever_identified: true,
+      org_id: null,
+      auth_mode: null,
+    });
+    track("app_launched");
+
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(posthog.identify).not.toHaveBeenCalled();
+    expect(ph.delivered.at(-1)!.distinctId).toBe(INSTALL_ID);
+  });
+
+  it("re-signing in after a sign-out resets rather than merging the install id again", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: null, ever_identified: true, org_id: null, auth_mode: null };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await settle();
+    expect(vi.mocked(posthog.reset).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(posthog.identify).mock.invocationCallOrder[0],
+    );
+  });
+
+  /** The tray never reads the OAuth session; it follows the stored identity. */
+  it("keeps the tray on the same identity and group as the window", async () => {
+    prefsAre(true);
+    const tray = await load();
+    await tray.initAnalytics();
+    const main = await load();
+    await main.initAnalytics();
+
+    main.noteSession(PAIRED_OAUTH);
+    await settle();
+    // Only the tray's own reaction: reset and identify, never merging the install.
+    vi.mocked(posthog.capture).mockClear();
+    ph.delivered.length = 0;
+    tray.noteToolConnected("codex", "config");
+    await settle();
+
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+    expect(ph.delivered[0].distinctId).toBe(SUB);
     expect(posthog.group).toHaveBeenCalledWith("organization", ORG);
-    expect(sent("pairing_completed")).toEqual([{ auth_mode: "oauth", org_count: 3 }]);
-    const pairing = vi
-      .mocked(posthog.capture)
-      .mock.calls.findIndex(([name]) => name === "pairing_completed");
-    const pairingAt = vi.mocked(posthog.capture).mock.invocationCallOrder[pairing];
-    expect(vi.mocked(posthog.identify).mock.invocationCallOrder[0]).toBeLessThan(pairingAt);
-    expect(vi.mocked(posthog.group).mock.invocationCallOrder[0]).toBeLessThan(pairingAt);
-  });
-
-  /** An API key carries no user: grouped by the org the gateway resolved, never
-   *  identified, so it can never be merged into somebody's person. */
-  it("groups an API-key install without identifying it", async () => {
-    consentIs(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
-    await settle();
-
-    expect(posthog.identify).not.toHaveBeenCalled();
-    expect(posthog.group).toHaveBeenCalledWith("organization", ORG);
-    expect(sent("pairing_completed")).toEqual([{ auth_mode: "api_key" }]);
-  });
-
-  it("does nothing for a session that is not signed in, and does not repeat itself", async () => {
-    consentIs(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-
-    noteSession({ signedIn: false, authMode: "oauth", sub: SUB, orgId: null });
-    await settle();
-    expect(posthog.identify).not.toHaveBeenCalled();
-
-    const paired = { signedIn: true, authMode: "oauth" as const, sub: SUB, orgId: ORG };
-    noteSession(paired);
-    noteSession(paired);
-    noteSession(paired);
-    await settle();
-    expect(posthog.identify).toHaveBeenCalledTimes(1);
-    expect(posthog.group).toHaveBeenCalledTimes(1);
-    expect(sent("pairing_completed")).toHaveLength(1);
-  });
-
-  /** The session is known before the client exists (the boot read is slower
-   *  than the account read); it is applied as soon as the client starts. */
-  it("applies a session noted before the client started", async () => {
-    consentIs(true);
-    const { initAnalytics, noteSession } = await load();
-    noteSession({ signedIn: true, authMode: "oauth", sub: SUB, orgId: ORG });
-    expect(posthog.identify).not.toHaveBeenCalled();
-
-    await initAnalytics();
-    await settle();
-
-    expect(posthog.identify).toHaveBeenCalledWith(SUB);
-    expect(sent("pairing_completed")).toHaveLength(1);
-  });
-
-  it("never sends the org's name or the account's email", async () => {
-    consentIs(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-    noteSession({ signedIn: true, authMode: "oauth", sub: SUB, orgId: ORG });
-    await settle();
-
-    expect(vi.mocked(posthog.group).mock.calls[0]).toEqual(["organization", ORG]);
-    expect(vi.mocked(posthog.identify).mock.calls[0]).toEqual([SUB]);
+    // The fake client is shared, so the distinct id above cannot tell the two
+    // windows apart; the calls can. The window identified once (merging the
+    // install), and the tray followed on its own with a reset first.
+    expect(vi.mocked(posthog.identify).mock.calls).toEqual([[SUB], [SUB]]);
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(posthog.reset).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(posthog.identify).mock.invocationCallOrder[0],
+    );
   });
 });
 
-describe("milestones: once per install", () => {
-  it("sends app_first_launched at the first boot, and never again", async () => {
-    consentIs(true);
+describe("item 4: consent follows the user into every window", () => {
+  it("starts a window that booted opted out when the answer changes elsewhere", async () => {
+    prefsAre(false);
+    const tray = await load();
+    await tray.initAnalytics();
+    tray.noteToolConnected("codex", "config");
+    await settle();
+    expect(sent("tool_connected")).toEqual([]);
+
+    // `set_share_diagnostics` broadcasts the new answer to every window.
+    broadcast("analytics-consent-changed", { share_diagnostics: true, recorded: true });
+    await settle();
+    tray.noteToolConnected("claude-code", "config");
+    await settle();
+
+    expect(sent("tool_connected")).toEqual([{ tool: "claude-code", surface: "config" }]);
+  });
+
+  it("stops a live window when the user opts out elsewhere, without recording twice", async () => {
+    prefsAre(true);
+    const tray = await load();
+    await tray.initAnalytics();
+    broadcast("analytics-consent-changed", { share_diagnostics: false, recorded: true });
+    tray.track("app_launched");
+    await settle();
+
+    expect(sent("app_launched")).toEqual([]);
+    expect(posted()).toEqual([]);
+  });
+
+  it("releases a window's held events when the answer is given elsewhere", async () => {
+    prefsAre(true, false);
+    const tray = await load();
+    await tray.initAnalytics();
+    tray.noteToolConnected("codex", "config");
+    await settle();
+    expect(sent("tool_connected")).toEqual([]);
+
+    broadcast("analytics-consent-changed", { share_diagnostics: true, recorded: true });
+    await settle();
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+  });
+});
+
+describe("milestones", () => {
+  it("sends app_first_launched once across windows and launches", async () => {
+    prefsAre(true);
     let mod = await load();
     await mod.initAnalytics();
     await settle();
-    expect(sent("app_first_launched")).toHaveLength(1);
-
-    // A second window, or the next launch: a fresh module, the same store.
     mod = await load();
     await mod.initAnalytics();
     await settle();
     expect(sent("app_first_launched")).toHaveLength(1);
   });
 
-  it("sends each milestone once across repeated calls", async () => {
-    consentIs(true);
+  it("sends each milestone once, instantly", async () => {
+    prefsAre(true);
     const { initAnalytics, noteToolConnected, noteTrafficObserved } = await load();
     await initAnalytics();
-
     for (let i = 0; i < 5; i++) {
       noteToolConnected("codex", "config");
       noteTrafficObserved(["codex"]);
     }
-    noteToolConnected("claude-code", "config");
     await settle();
 
-    expect(sent("tool_connected")).toEqual([
-      { tool: "codex", surface: "config" },
-      { tool: "claude-code", surface: "config" },
-    ]);
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
     expect(sent("first_request_proxied")).toEqual([{ source: "relay", tool: "codex" }]);
+    for (const d of ph.delivered.filter((d) => d.event !== "$none")) {
+      expect(d.options, d.event).toMatchObject({ send_instantly: true });
+    }
   });
 
   it("files a gateway-attributed first request under its own source", async () => {
-    consentIs(true);
+    prefsAre(true);
     const { initAnalytics, noteGatewayAttributed, noteTrafficObserved } = await load();
     await initAnalytics();
-
     noteGatewayAttributed();
     noteTrafficObserved([null]);
     await settle();
-
     expect(sent("first_request_proxied")).toEqual([{ source: "gateway" }]);
-  });
-
-  /** Opted out when it happened: spent, not deferred, so opting back in later
-   *  cannot report it weeks late. */
-  it("spends a milestone that happens while opted out, and sends nothing", async () => {
-    consentIs(false);
-    const { initAnalytics, noteToolConnected, setAnalyticsConsent } = await load();
-    await initAnalytics();
-
-    noteToolConnected("codex", "config");
-    await settle();
-    expect(claimed.has("tool_connected.codex")).toBe(true);
-
-    await setAnalyticsConsent(true);
-    noteToolConnected("codex", "config");
-    await settle();
-    expect(sent("tool_connected")).toEqual([]);
   });
 
   it("leaves a milestone unclaimed when consent is unknown", async () => {
     (getPreferences as Mock).mockRejectedValue(new Error("ipc unavailable"));
     const { initAnalytics, noteToolConnected } = await load();
     await initAnalytics();
-
     noteToolConnected("codex", "config");
     await settle();
-
     expect(analyticsMilestoneClaim).not.toHaveBeenCalled();
-    expect(posthog.capture).not.toHaveBeenCalled();
   });
 
   it("sends nothing when the store cannot answer", async () => {
-    consentIs(true);
+    prefsAre(true);
     (analyticsMilestoneClaim as Mock).mockRejectedValue("data dir unwritable");
     const { initAnalytics, noteToolConnected } = await load();
     await initAnalytics();
-
     noteToolConnected("codex", "config");
     await settle();
-
-    expect(sent("app_first_launched")).toEqual([]);
     expect(sent("tool_connected")).toEqual([]);
   });
 });
 
-describe("setAnalyticsConsent", () => {
-  it("opts a live client out, and stops sending immediately", async () => {
-    consentIs(true);
-    const { initAnalytics, setAnalyticsConsent, track } = await load();
+describe("item 11: an API-key install waits for its org", () => {
+  const API_KEY_NO_ORG = { signedIn: true, authMode: "api_key" as const, sub: null, orgId: null };
+
+  it("holds a milestone until the org lands, then sends it grouped", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession, noteToolConnected } = await load();
     await initAnalytics();
+    noteSession(API_KEY_NO_ORG);
+    noteToolConnected("codex", "config");
     await settle();
-    vi.mocked(posthog.capture).mockClear();
+    expect(sent("tool_connected")).toEqual([]);
+    expect(rust.claimed.has("tool_connected.codex")).toBe(false);
 
-    const done = setAnalyticsConsent(false);
-    track("app_launched");
-    await done;
-    track("app_launched");
-
-    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
-    expect(sent("app_launched")).toEqual([]);
+    noteSession({ ...API_KEY_NO_ORG, orgId: ORG });
+    await settle();
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+    const grouped = vi.mocked(posthog.group).mock.invocationCallOrder[0];
+    const at = vi.mocked(posthog.capture).mock.calls.findIndex(([e]) => e === "tool_connected");
+    expect(grouped).toBeLessThan(vi.mocked(posthog.capture).mock.invocationCallOrder[at]);
+    expect(posthog.identify).not.toHaveBeenCalled();
   });
 
-  /**
-   * The regression for "opt-out not recorded": the old switch opted out and
-   * sent nothing, so an install that said no was indistinguishable from one
-   * that stopped being used.
-   */
-  it("records the opt-out once, instantly, before capture stops", async () => {
-    consentIs(true);
-    const { initAnalytics, setAnalyticsConsent } = await load();
-    await initAnalytics();
+  it("gives up waiting after a bound and sends it ungrouped", async () => {
+    vi.useFakeTimers();
+    prefsAre(true);
+    const { initAnalytics, noteSession, noteToolConnected, ORG_WAIT_MS } = await load();
+    const boot = initAnalytics();
+    await vi.advanceTimersByTimeAsync(0);
+    await boot;
+    noteSession(API_KEY_NO_ORG);
+    noteToolConnected("codex", "config");
+    await vi.advanceTimersByTimeAsync(ORG_WAIT_MS + 1000);
+    expect(sent("tool_connected")).toEqual([{ tool: "codex", surface: "config" }]);
+  });
+});
 
+describe("item 7 and 10: the opt-out record", () => {
+  it("is sent once, under the account without merging the install, with the org", async () => {
+    // The onboarding Skip: signed in, question never answered, so the install
+    // was never identified - and must not be merged by the record either.
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
     await setAnalyticsConsent(false, "onboarding_skip");
+    await settle();
 
-    const calls = vi.mocked(posthog.capture).mock.calls;
-    const at = calls.findIndex(([name]) => name === "diagnostics_opted_out");
-    expect(at).toBeGreaterThanOrEqual(0);
-    expect(calls[at][1]).toEqual({ source: "onboarding_skip" });
-    expect(calls[at][2]).toEqual({ send_instantly: true });
-    expect(vi.mocked(posthog.capture).mock.invocationCallOrder[at]).toBeLessThan(
-      vi.mocked(posthog.opt_out_capturing).mock.invocationCallOrder[0],
-    );
+    expect(posthog.identify).not.toHaveBeenCalled();
+    expect(posted()).toEqual([
+      {
+        api_key: "phc_test",
+        event: "diagnostics_opted_out",
+        distinct_id: SUB,
+        properties: { source: "onboarding_skip", $groups: { organization: ORG } },
+      },
+    ]);
   });
 
-  it("does not record a second opt-out after opting back in", async () => {
-    consentIs(true);
+  it("files an API-key install's record under the install id", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    await setAnalyticsConsent(false, "settings");
+    await settle();
+    expect(posted()[0]).toMatchObject({ distinct_id: INSTALL_ID, properties: { source: "settings" } });
+  });
+
+  it("is recorded once per install, not per opt-out", async () => {
+    prefsAre(true);
     const { initAnalytics, setAnalyticsConsent } = await load();
     await initAnalytics();
-
     await setAnalyticsConsent(false, "settings");
     await setAnalyticsConsent(true, "settings");
     await setAnalyticsConsent(false, "settings");
-
-    expect(sent("diagnostics_opted_out")).toHaveLength(1);
-    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(2);
+    await settle();
+    expect(posted()).toHaveLength(1);
   });
 
-  it("stops the client even if the marker store never answers", async () => {
-    vi.useFakeTimers();
-    try {
-      consentIs(true);
-      (analyticsMilestoneClaim as Mock).mockImplementation(() => new Promise(() => {}));
-      const { initAnalytics, setAnalyticsConsent } = await load();
-      await initAnalytics();
-
-      const done = setAnalyticsConsent(false);
-      await vi.advanceTimersByTimeAsync(2500);
-      await done;
-
-      expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
-      expect(sent("diagnostics_opted_out")).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("starts the client the first time consent is given in a session", async () => {
-    // The opted-out install: nothing was constructed at boot, so turning the
-    // switch on has to do the init rather than only opt back in.
-    consentIs(false);
+  it("stops capture at once and still sends the record when the claim answers late", async () => {
+    prefsAre(true);
+    let answer!: (won: boolean) => void;
+    (analyticsMilestoneClaim as Mock).mockImplementation((name: string) =>
+      name === "diagnostics_opted_out" ? new Promise<boolean>((r) => (answer = r)) : Promise.resolve(false),
+    );
     const { initAnalytics, setAnalyticsConsent, track } = await load();
     await initAnalytics();
-    expect(posthog.init).not.toHaveBeenCalled();
 
-    const done = setAnalyticsConsent(true);
+    const done = setAnalyticsConsent(false, "settings");
     track("app_launched");
+    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
     await done;
+    await new Promise((r) => setTimeout(r, 2500));
+    answer(true);
+    await settle();
 
-    expect(posthog.init).toHaveBeenCalledTimes(1);
-    expect(posthog.opt_in_capturing).not.toHaveBeenCalled();
-    expect(sent("app_launched")).toHaveLength(1);
-  });
+    expect(sent("app_launched")).toEqual([]);
+    expect(posted()).toHaveLength(1);
+  }, 10_000);
 
-  it("opts back in rather than re-initialising an existing client", async () => {
-    consentIs(true);
+  it("records nothing for an install that was never sharing", async () => {
+    prefsAre(false);
     const { initAnalytics, setAnalyticsConsent } = await load();
     await initAnalytics();
-
-    await setAnalyticsConsent(false);
-    await setAnalyticsConsent(true);
-
-    expect(posthog.init).toHaveBeenCalledTimes(1);
-    expect(posthog.opt_in_capturing).toHaveBeenCalledTimes(1);
-  });
-
-  it("is safe to call with the value already in force", async () => {
-    consentIs(false);
-    const { initAnalytics, setAnalyticsConsent } = await load();
-    await initAnalytics();
-
-    await setAnalyticsConsent(false);
-    await setAnalyticsConsent(false);
-
-    // Nothing to opt out of - the client was never built, and nothing to record.
-    expect(posthog.opt_out_capturing).not.toHaveBeenCalled();
+    await setAnalyticsConsent(false, "settings");
+    expect(posted()).toEqual([]);
     expect(posthog.init).not.toHaveBeenCalled();
-    expect(analyticsMilestoneClaim).not.toHaveBeenCalledWith("diagnostics_opted_out");
   });
 });
 
 describe("connection_failed: a reason from a closed list", () => {
   async function running() {
-    consentIs(true);
+    prefsAre(true);
     const mod = await load();
     await mod.initAnalytics();
     await settle();
-    vi.mocked(posthog.capture).mockClear();
+    ph.delivered.length = 0;
     return mod;
   }
 
   const CASES: [string, ErrorContext, ConnectionFailureReason][] = [
-    [
-      "starting the engine: the relay port 45981 is already in use. Another relay host is likely running",
-      "proxy_toggle",
-      "port_in_use",
-    ],
+    ["starting the engine: the relay port 45981 is already in use.", "proxy_toggle", "port_in_use"],
     ["bind 127.0.0.1:8080: Address already in use (os error 48)", "connect", "port_in_use"],
     ["Address already in use (os error 98)", "restore_routing", "port_in_use"],
     [
@@ -560,7 +712,6 @@ describe("connection_failed: a reason from a closed list", () => {
       "connect",
       "port_in_use",
     ],
-    ["address in use", "connect", "port_in_use"],
     ["the proxy is not running; turn routing on first", "connect", "routing_off"],
     ["the certificate trust dialog was cancelled", "trust_ca", "ca_trust_declined"],
     ["execution error: User canceled. (-128)", "trust_ca", "ca_trust_declined"],
@@ -568,85 +719,103 @@ describe("connection_failed: a reason from a closed list", () => {
     ["error sending request: connection refused", "connect", "offline"],
     ["gateway answered 401 Unauthorized", "provider_toggle", "auth_rejected"],
     ["disk quota exceeded writing /Users/x/.codex/config.toml", "connect", "unknown"],
+    // Item 12: numbers inside ports and ids are not a status code or a cancel.
+    ["listener 127.0.0.1:40199 closed unexpectedly", "connect", "unknown"],
+    ["session 5a401b7c failed to start", "provider_toggle", "unknown"],
+    ["request c0a8-128e failed", "trust_ca", "unknown"],
   ];
 
   for (const [raw, context, reason] of CASES) {
-    it(`files "${raw.slice(0, 40)}..." in ${context} as ${reason}`, async () => {
+    it(`files "${raw.slice(0, 40)}" in ${context} as ${reason}`, async () => {
       const { trackError } = await running();
-
       trackError(raw, context, { tool: "codex" });
-
-      const [props] = sent("connection_failed");
-      expect(props).toEqual({ reason, context, tool: "codex" });
-      const call = vi
-        .mocked(posthog.capture)
-        .mock.calls.find(([name]) => name === "connection_failed");
-      expect(call?.[2]).toEqual({ send_instantly: true });
+      await settle();
+      expect(sent("connection_failed")).toEqual([{ reason, context, tool: "codex" }]);
+      expect(ph.delivered.find((d) => d.event === "connection_failed")!.options).toMatchObject({
+        send_instantly: true,
+      });
     });
   }
 
   it("never puts the raw message on the wire", async () => {
     const { trackError } = await running();
     trackError("disk quota exceeded writing /Users/x/.codex/config.toml", "connect");
+    await settle();
     expect(everythingSent()).not.toContain("/Users/x");
   });
 
   it("prefers the backend's typed reason over the message", async () => {
     const { trackError } = await running();
     trackError("starting the relay failed", "restore_routing", undefined, "port_in_use");
-    expect(sent("connection_failed")).toEqual([
-      { reason: "port_in_use", context: "restore_routing" },
-    ]);
-  });
-
-  it("names a domain as the tool", async () => {
-    const { trackError } = await running();
-    trackError("connection refused", "provider_toggle", { domain: "anthropic", routed: true });
-    expect(sent("connection_failed")).toEqual([
-      { reason: "offline", context: "provider_toggle", tool: "anthropic" },
-    ]);
+    await settle();
+    expect(sent("connection_failed")).toEqual([{ reason: "port_in_use", context: "restore_routing" }]);
   });
 
   it("is not sent for a failure outside a connecting step", async () => {
     const { trackError } = await running();
     trackError("connection refused", "update");
-    trackError("connection refused", "sign_out");
+    await settle();
     expect(sent("connection_failed")).toEqual([]);
-    expect(sent("error_shown")).toHaveLength(2);
+    expect(sent("error_shown")).toHaveLength(1);
   });
 
   it("reports the same failure once per window, not on every retry", async () => {
     const { trackError } = await running();
     for (let i = 0; i < 4; i++) trackError("address in use", "connect", { tool: "codex" });
     trackError("address in use", "connect", { tool: "opencode" });
+    await settle();
     expect(sent("connection_failed")).toHaveLength(2);
   });
 
-  it("files a refused gateway read as auth_rejected and an unreachable one as offline", async () => {
+  /** Item 5: no credential to send is a state of the app, not a refusal. */
+  it("does not file a signed-out read at all", async () => {
+    const { noteGatewayFailure } = await running();
+    noteGatewayFailure("signed_out");
+    await settle();
+    expect(sent("connection_failed")).toEqual([]);
+  });
+
+  it("files only a refused or unreachable gateway read, not a signed-out one", async () => {
     const { noteGatewayFailure } = await running();
     noteGatewayFailure("rejected");
     noteGatewayFailure("offline");
+    noteGatewayFailure("signed_out");
     noteGatewayFailure("gateway");
-    noteGatewayFailure("no_org");
+    await settle();
     expect(sent("connection_failed")).toEqual([
       { reason: "auth_rejected", context: "gateway" },
       { reason: "offline", context: "gateway" },
     ]);
   });
 
+  /** Item 6: the sign-in and pairing steps. */
+  it("files sign-in and pairing failures with typed reasons", async () => {
+    const { noteSetupFailure } = await running();
+    noteSetupFailure("gateway /v1/me/orgs returned 401 Unauthorized: {}", "org_list");
+    noteSetupFailure(JSON.stringify({ code: "rejected", message: "refused" }), "org_select");
+    noteSetupFailure(JSON.stringify({ code: "offline", message: "dns" }), "sign_in");
+    noteSetupFailure("authorization failed (access_denied)", "sign_in");
+    noteSetupFailure("keychain write failed", "org_select");
+    await settle();
+    expect(sent("connection_failed")).toEqual([
+      { reason: "auth_rejected", context: "org_list" },
+      { reason: "auth_rejected", context: "org_select" },
+      { reason: "offline", context: "sign_in" },
+      { reason: "sign_in_not_completed", context: "sign_in" },
+      { reason: "unknown", context: "org_select" },
+    ]);
+  });
+
   it("reports a Claude setting that keeps local Cowork off, once per setting", async () => {
     const { noteToolConnected } = await running();
     (coworkSettingCheck as Mock).mockResolvedValue("user");
-
     noteToolConnected("anthropic", "domain");
     await settle();
     noteToolConnected("anthropic", "domain");
     await settle();
-
     expect(sent("connection_failed")).toEqual([
       { reason: "cowork_setting_missing", context: "connect", tool: "anthropic", detail: "user" },
     ]);
-    expect(sent("tool_connected")).toEqual([{ tool: "anthropic", surface: "domain" }]);
   });
 
   it("does not read Claude's settings for any other connect", async () => {
@@ -657,34 +826,59 @@ describe("connection_failed: a reason from a closed list", () => {
     expect(coworkSettingCheck).not.toHaveBeenCalled();
   });
 
-  it("says nothing when Cowork is not blocked", async () => {
-    const { noteToolConnected } = await running();
-    noteToolConnected("anthropic", "domain");
-    await settle();
-    expect(sent("connection_failed")).toEqual([]);
-  });
-
   it("sends nothing at all while opted out", async () => {
-    consentIs(false);
+    prefsAre(false);
     const { initAnalytics, trackError, noteGatewayFailure } = await load();
     await initAnalytics();
     trackError("address in use", "connect");
     noteGatewayFailure("rejected");
     await settle();
-    expect(posthog.capture).not.toHaveBeenCalled();
+    expect(ph.delivered).toEqual([]);
+  });
+});
+
+describe("identity at start", () => {
+  it("bootstraps the install id as the distinct id", async () => {
+    prefsAre(true);
+    const { initAnalytics } = await load();
+    await initAnalytics();
+    expect(vi.mocked(posthog.init).mock.calls[0][1]).toMatchObject({
+      bootstrap: { distinctID: INSTALL_ID },
+      person_profiles: "identified_only",
+      autocapture: false,
+    });
+  });
+
+  it("holds an event tracked during the boot and sends it once identity is set", async () => {
+    let answer!: (v: unknown) => void;
+    (getPreferences as Mock).mockReturnValue(new Promise((r) => (answer = r)));
+    const { initAnalytics, track } = await load();
+    const boot = initAnalytics();
+    track("app_launched", { has_account: false });
+    expect(ph.delivered).toEqual([]);
+    answer({ share_diagnostics: true, share_diagnostics_recorded: true });
+    await boot;
+
+    expect(sent("app_launched")).toEqual([{ has_account: false }]);
+    expect(ph.delivered[0].distinctId).toBe(INSTALL_ID);
+    expect(vi.mocked(posthog.register).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(posthog.capture).mock.invocationCallOrder[0],
+    );
+    expect(posthog.register).toHaveBeenCalledWith({
+      app_version: "1.2.3",
+      platform: "linux",
+      install_id: INSTALL_ID,
+    });
   });
 });
 
 describe("track: the event-prop allowlist", () => {
-  // The consent gate is the subject of the suite above, not this one: these
-  // tests are about what a *running* client is allowed to send, so they grant
-  // consent and wait for the client to exist before asserting on it.
   async function running() {
-    consentIs(true);
+    prefsAre(true);
     const mod = await load();
     await mod.initAnalytics();
     await settle();
-    vi.mocked(posthog.capture).mockClear();
+    ph.delivered.length = 0;
     return mod;
   }
 
@@ -696,30 +890,12 @@ describe("track: the event-prop allowlist", () => {
       gateway_host: "gateway.internal.example",
       api_key: "sk-secret-value",
     });
-    expect(posthog.capture).toHaveBeenCalledTimes(1);
-    const [event, props] = vi.mocked(posthog.capture).mock.calls[0];
-    expect(event).toBe("tool_toggled");
-    expect(props).toEqual({ tool: "codex", routed: true });
-  });
-
-  it("never sends the dropped values in any form", async () => {
-    const { track } = await running();
-    track("proxy_enabled", { source: "toggle", data_dir: "/Users/someone/Library" });
-    expect(everythingSent()).not.toContain("/Users/someone/Library");
+    expect(sent("tool_toggled")).toEqual([{ tool: "codex", routed: true }]);
   });
 
   it("allows the funnel's own props, and the two it used to drop", async () => {
     const { ALLOWED_PROP_KEYS } = await running();
-    for (const key of [
-      "auth_mode",
-      "org_count",
-      "surface",
-      "reason",
-      "detail",
-      "install_id",
-      "restarted",
-      "inline",
-    ]) {
+    for (const key of ["auth_mode", "org_count", "surface", "reason", "detail", "install_id", "restarted", "inline"]) {
       expect(ALLOWED_PROP_KEYS.has(key), key).toBe(true);
     }
     for (const key of ["email", "org_name", "sub", "name", "message", "path"]) {
@@ -729,69 +905,63 @@ describe("track: the event-prop allowlist", () => {
 });
 
 describe("trackError: raw error strings stay on this machine", () => {
-  async function running() {
-    consentIs(true);
-    const mod = await load();
-    await mod.initAnalytics();
-    await settle();
-    vi.mocked(posthog.capture).mockClear();
-    return mod;
-  }
-
-  // A raw Tauri error chain of the shape that motivated the classification:
-  // it names a host, which must never leave the machine.
   const RAW = "connection refused by https://gateway.internal.example:8443";
 
   it("sends the classified title and context, not the raw string", async () => {
-    const { trackError } = await running();
+    prefsAre(true);
+    const { initAnalytics, trackError } = await load();
+    await initAnalytics();
     trackError(RAW, "proxy_toggle");
+    await settle();
     const { title } = classifyError(RAW, "proxy_toggle");
-    expect(posthog.capture).toHaveBeenCalledWith("error_shown", {
-      context: "proxy_toggle",
-      title,
-    });
+    expect(sent("error_shown")).toContainEqual({ context: "proxy_toggle", title });
     expect(everythingSent()).not.toContain("gateway.internal.example");
-  });
-
-  it("files the exception under the classified title too", async () => {
-    const { trackError } = await running();
-    trackError(new Error(RAW), "connect");
-    const { title } = classifyError(new Error(RAW), "connect");
-    const [err] = vi.mocked(posthog.captureException).mock.calls[0];
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toBe(title);
-    expect(everythingSent()).not.toContain("gateway.internal.example");
-  });
-
-  it("runs extra caller props through the same allowlist", async () => {
-    const { trackError } = await running();
-    trackError(RAW, "provider_toggle", {
-      domain: "anthropic",
-      upstream_url: "https://gateway.internal.example",
-    });
-    const [, props] = vi.mocked(posthog.capture).mock.calls[0];
-    expect(props).toHaveProperty("domain", "anthropic");
-    expect(props).not.toHaveProperty("upstream_url");
   });
 });
 
-describe("the tray's session", () => {
-  /** The tray groups what it sends but leaves pairing to the window that owns
-   *  sign-in, so the claim cannot be won without the org count. */
-  it("groups without reporting pairing_completed", async () => {
-    consentIs(true);
-    const { initAnalytics, noteSession } = await load();
+describe("the held queue", () => {
+  it("holds a repeating signal once, so it cannot crowd out the rest", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, noteTrafficObserved, setAnalyticsConsent } = await load();
     await initAnalytics();
+    for (let i = 0; i < 300; i++) noteTrafficObserved(["codex"]);
+    noteSession(PAIRED_OAUTH);
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+    expect(sent("first_request_proxied")).toHaveLength(1);
+    expect(sent("pairing_completed")).toHaveLength(1);
+  });
 
-    noteSession(
-      { signedIn: true, authMode: "oauth", sub: null, orgId: ORG },
-      { reportPairing: false },
-    );
+  it("spends a pairing that happens after a no, so an opt-in cannot report it late", async () => {
+    prefsAre(false);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await settle();
+    expect(rust.claimed.has("pairing_completed")).toBe(true);
+    await setAnalyticsConsent(true, "settings");
+    await settle();
+    expect(sent("pairing_completed")).toEqual([]);
+  });
+
+  it("puts a waiting tray on the account identity once the answer is yes", async () => {
+    prefsAre(true, false);
+    const tray = await load();
+    await tray.initAnalytics();
+    const main = await load();
+    await main.initAnalytics();
+    main.noteSession(PAIRED_OAUTH);
+    tray.noteToolConnected("codex", "config");
     await settle();
 
-    expect(posthog.group).toHaveBeenCalledWith("organization", ORG);
-    expect(posthog.identify).not.toHaveBeenCalled();
-    expect(sent("pairing_completed")).toEqual([]);
-    expect(claimed.has("pairing_completed")).toBe(false);
+    await main.setAnalyticsConsent(true, "onboarding");
+    broadcast("analytics-consent-changed", { share_diagnostics: true, recorded: true });
+    await settle();
+
+    const toolConnected = ph.delivered.find((d) => d.event === "tool_connected");
+    expect(toolConnected?.distinctId).toBe(SUB);
+    // Both windows moved onto the account: the window by identifying, the tray
+    // by following the stored identity.
+    expect(vi.mocked(posthog.identify).mock.calls).toEqual([[SUB], [SUB]]);
   });
 });

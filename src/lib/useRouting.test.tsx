@@ -24,6 +24,7 @@ vi.mock("./analytics", () => ({
   track: vi.fn(),
   trackError: vi.fn(),
   noteOrgChoices: vi.fn(),
+  noteSetupFailure: vi.fn(),
   noteToolConnected: vi.fn(),
 }));
 // The log lines are the only trace some of these paths leave, so a test has

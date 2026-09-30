@@ -62,6 +62,25 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     expect([...at].sort((a, b) => a - b)).toEqual(at);
   });
 
+  it("documents the limits the reviews asked to be written down", () => {
+    // A CLI-first install is judged legacy, a group turns on a person profile
+    // for an API-key install, and API-key installs join the person funnel only
+    // through the gateway's server-side alias.
+    expect(doc).toMatch(/CLI-first install is judged legacy/);
+    expect(doc).toMatch(/setting a group turns on\s+person processing/);
+    expect(doc).toContain("`$create_alias`");
+    // And the one-minute promise says when it does not hold.
+    expect(doc).toMatch(/one-minute latency holds only once the diagnostics question has been\s+answered/);
+  });
+
+  it("does not tell the user that collection is anonymous, and discloses the opt-out note", () => {
+    const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8");
+    expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
+    expect(dialogs).toContain("Turning sharing off sends one final note saying so.");
+    const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8");
+    expect(upload).not.toMatch(/anonymous posture/);
+  });
+
   it("contains no em dash", () => {
     expect(doc.includes(String.fromCharCode(0x2014))).toBe(false);
   });

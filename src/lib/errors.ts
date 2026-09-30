@@ -153,7 +153,9 @@ function isPortInUse(lc: string): boolean {
  * - `prompt_declined`: another OS prompt (the admin prompt for the system proxy)
  *   was cancelled.
  * - `offline`: the gateway could not be reached.
- * - `auth_rejected`: the gateway refused the session or the key (401).
+ * - `auth_rejected`: the gateway refused the session or the key (401, or a
+ *   typed `rejected` code).
+ * - `sign_in_not_completed`: the browser sign-in was declined or abandoned.
  * - `unknown`: none of the above.
  */
 export type ConnectionFailureReason =
@@ -164,6 +166,7 @@ export type ConnectionFailureReason =
   | "prompt_declined"
   | "offline"
   | "auth_rejected"
+  | "sign_in_not_completed"
   | "unknown";
 
 export const CONNECTION_FAILURE_REASONS: readonly ConnectionFailureReason[] = [
@@ -174,6 +177,7 @@ export const CONNECTION_FAILURE_REASONS: readonly ConnectionFailureReason[] = [
   "prompt_declined",
   "offline",
   "auth_rejected",
+  "sign_in_not_completed",
   "unknown",
 ];
 
@@ -194,14 +198,32 @@ export function connectionFailureReason(
   rawInput: unknown,
   context: ErrorContext,
 ): ConnectionFailureReason {
-  const lc = rawToString(rawInput).toLowerCase();
+  const text = rawToString(rawInput);
+  // A typed `gateway_api::FailureCode` envelope, where the command sent one:
+  // the code decides, not the words in its message.
+  const code = failureCodeOf(text);
+  if (code === "rejected") return "auth_rejected";
+  if (code === "offline") return "offline";
+  const lc = text.toLowerCase();
   if (isPortInUse(lc)) return "port_in_use";
   if (lc.includes("proxy is not running")) return "routing_off";
   if (lc.includes("certificate trust dialog was cancelled")) return "ca_trust_declined";
+  // The browser sign-in's own Cancel and its five-minute give-up, ahead of the
+  // prompt and network arms that their words would otherwise match.
+  if (
+    lc.includes("access_denied") ||
+    lc.includes("access denied") ||
+    lc.includes("login redirect") ||
+    lc.includes("waiting for the login")
+  ) {
+    return "sign_in_not_completed";
+  }
   if (
     lc.includes("user canceled") ||
     lc.includes("user cancelled") ||
-    lc.includes("-128") ||
+    // osascript's cancel code as it prints it - "(-128)" or "error -128" - and
+    // never a bare substring, which a port or an id can contain.
+    /\(-128\)|\berror -128\b/.test(lc) ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
     return context === "trust_ca" ? "ca_trust_declined" : "prompt_declined";
@@ -215,8 +237,33 @@ export function connectionFailureReason(
   ) {
     return "offline";
   }
-  if (lc.includes("401") || lc.includes("unauthorized")) return "auth_rejected";
+  if (isUnauthorized(lc)) return "auth_rejected";
   return "unknown";
+}
+
+/**
+ * A 401 as the backend words one: "returned 401 Unauthorized", "status 401",
+ * "HTTP 401", or the word "unauthorized" on its own. A bare `401` is not
+ * enough: it is a substring of ports (`:40199`) and ids.
+ */
+function isUnauthorized(lc: string): boolean {
+  return (
+    /\bunauthori[sz]ed\b/.test(lc) ||
+    /\b(?:returned|status|http|code)\b[\s:=]*401\b/.test(lc) ||
+    /\b401 unauthori/.test(lc)
+  );
+}
+
+/** The `code` of a JSON failure envelope (`gateway_api::Failure`), if that is
+ *  what the rejection is. */
+function failureCodeOf(text: string): string | null {
+  if (!text.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown };
+    return typeof parsed.code === "string" ? parsed.code : null;
+  } catch {
+    return null;
+  }
 }
 
 export function classifyError(

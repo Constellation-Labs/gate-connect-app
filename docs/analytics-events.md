@@ -11,68 +11,125 @@ of `diagnostics_opted_out`.
 
 ## Identity
 
-- **Before sign-in** every event is filed under this install's id: the
-  `install-id` file in the data dir, generated locally and the same id routed
-  requests carry as `x-gate-install-id`. It is passed to posthog-js as
-  `bootstrap.distinctID`, so the first event of every launch already carries it
-  and a wiped webview storage does not create a new person.
+- **Before sign-in, and for every install that is never identified**, events
+  are filed under this install's id: the `install-id` file in the data dir,
+  generated locally and the same id routed requests carry as
+  `x-gate-install-id`. It is passed to posthog-js as `bootstrap.distinctID`, so
+  the first event of every launch already carries it and a wiped webview
+  storage does not create a new person. Base events use it from the first
+  launch; the id already rode every error event as `install_id` before AG-960.
 - **Super-properties** on every event: `app_version`, `platform`
-  (`macos`, `windows`, `linux`, `unknown`) and `install_id`. They are registered
-  before the first event of a launch is released.
-- **Constellation sign-in (OAuth)** calls `identify(sub)`, where `sub` is the
-  Cognito subject from the id token: the same id the dashboard identifies its
-  PostHog person with and the one the gateway sends `first_gateway_request`
-  under. PostHog merges the anonymous install person into that person, so events
-  from before sign-in join the dashboard's. `identify` rather than `alias`
-  because the `sub` person is usually already identified (it clicked the
-  download); PostHog refuses to identify an already-identified install into a
-  second account, so two accounts on one machine are not merged.
-  Because bootstrap re-registers the install id on each launch, a signed-in
-  install sends one `$identify` per launch.
-- **Pairing** sets the `organization` group to the org id: the org chosen at
-  sign-in, or for an API-key account the org the gateway resolved the key to
-  (read from `/v1/me/activity`). Only the id; the org's name is the dashboard's
-  to set. API-key accounts are never identified, since they carry no user.
+  (`macos`, `windows`, `linux`, `unknown`) and `install_id`, registered before
+  the first event of a launch is released.
+- **Constellation sign-in (OAuth)**, once the diagnostics question is answered
+  yes: the install is identified with the Cognito `sub` from the id token, the
+  id the dashboard identifies its PostHog person with and the one the gateway
+  sends `first_gateway_request` under.
+  - The **first** identification of an install calls `identify(sub)`, which
+    merges the anonymous install person, and what it sent before sign-in, into
+    the `sub` person. `identify` rather than `alias`, because the `sub` person
+    usually already exists and is identified (it clicked the download), and
+    PostHog will not fold an identified id into another person.
+  - The identity is stored in the data dir (`analytics-identity.json`), so
+    every later launch bootstraps the `sub` directly as an identified distinct
+    id and sends no `$identify`, and every window (the tray, the intro) follows
+    the same identity.
+  - **Any later account change** (a second account signing in on the machine,
+    or the same one after a sign-out) resets the client first, so only a fresh
+    empty id is merged into the new person. The install id is merged into a
+    person at most once per install, and account B is never attached to the
+    person of account A. Events from the install before B's sign-in stay with
+    A's person, where they were sent.
+  - **Sign-out** (in the app or the CLI) or Reset clears the stored identity;
+    every window resets and goes back to the install id, and the next launch
+    bootstraps the install id.
+- **Pairing** sets the `organization` group to the org id, once the question
+  is answered yes: the org chosen at sign-in, or for an API-key account the
+  org the gateway resolved the key to (read from `/v1/me/activity`; milestones
+  wait up to two minutes for it so they are not sent ungrouped). Only the id;
+  the org's name is the dashboard's to set. In PostHog, setting a group turns on
+  person processing, so an API-key install gets a person profile keyed on its
+  install id once grouped.
+- **API-key installs** are never identified from the app: an API key carries no
+  user. They join the person funnel through a server-side alias: dashboard-api
+  sends `$create_alias` at `first_gateway_request` time, aliasing the activating
+  request's `x-gate-install-id` to the same distinct id as
+  `first_gateway_request` (gate repo, PR AG-960). That alias depends on the
+  install id being the distinct id of an unidentified install, which is why it
+  is.
 - Never sent: names, emails, API keys, tokens, gateway hosts, file paths, error
   text. Error events carry a classified title; failure events carry a reason
   from a closed list.
 
 ## Consent
 
-- The preference is read before the client is constructed. Off, or unreadable,
-  means no client and nothing sent. Events tracked while the read is in flight
-  wait and are dropped if the answer is no.
-- Turning it off (Settings, or onboarding's Continue with it off, or Skip) stops
-  every event at once, sends `diagnostics_opted_out` instantly, then opts the
-  client out. `diagnostics_opted_out` is sent **once per install**: a second
-  opt-out after opting back in is not recorded again. Opting back in sends
-  PostHog's own `$opt_in`.
+Two tiers, because the events that predate AG-960 already had a rule and this
+change does not widen what they send.
+
+- **Base events** (every row below not marked AG-960) keep their existing rule:
+  sent while **Share diagnostic data** is on, which it is by default on a fresh
+  install before the onboarding step has asked. The preference is read before
+  the client is constructed; off, or unreadable, means no client and nothing
+  sent. Events tracked while the read is in flight wait and are dropped if the
+  answer is no.
+- **Everything AG-960 added** (identify, group, every milestone,
+  `connection_failed`) is held on the machine until the diagnostics question
+  has been **answered** (`share_diagnostics_recorded`). Nothing is claimed while
+  it is held. A yes releases it in order, identity and group first, each event
+  stamped with the time it happened; a no spends the held milestones unsent and
+  drops the rest. The onboarding step comes after sign-in, so on a fresh install
+  the first launch, the pairing and any early connection failure all wait for
+  it.
+- Turning sharing off (Settings, onboarding's Continue with it off, or Skip)
+  stops every event at once and opts the client out, and sends one
+  `diagnostics_opted_out` (below). The change is broadcast to every window.
+- Turning it back on lifts posthog-js's own persisted opt-out, which outlives a
+  relaunch, and sends PostHog's own `$opt_in`.
 - A milestone that happens while opted out is spent, not deferred: opting back
   in never reports it late. A milestone that happens while consent is unknown
   (the preference could not be read) is left for a later launch.
 
+**`diagnostics_opted_out`** is the answer itself, so it is the one AG-960 event
+not held. It is sent at most once per install (a second opt-out after opting
+back in is not recorded), straight to PostHog's capture endpoint so it does not
+race the client being switched off. It is filed on the person: under the
+account's `sub` when a Constellation sign-in is known (without an `$identify`,
+so an install that was never identified is not merged by it), otherwise under
+the install id, with the org group when known, and carries only `source`.
+At most once rather than at least once: the marker is claimed before the send,
+so a send that fails is lost rather than retried, because a duplicate would
+count one install's opt-out twice while a lost one only leaves it looking like a
+drop-off.
+
 ## Milestones
 
-Each is sent at most once per install. The claim is a marker file per milestone
-under `<data dir>/analytics-milestones/`, created with `create_new`, so exactly
-one of the three windows (or any process) wins it. An install that ran Gate
-Connect before this store existed (an `account.json` or `preferences.json`
-already on disk when the store is created) never sends the first-occurrence
-milestones, because it cannot know whether the first time already happened.
-`diagnostics_opted_out` and the Cowork condition are not first occurrences and
-are still sent there.
+Each is sent at most once per install, instantly (not batched). The claim is a
+marker file per milestone under `<data dir>/analytics-milestones/`, created
+with `create_new`, so exactly one of the three windows (or any process) wins it,
+and it is claimed only while the client is actually delivering.
+
+An install that ran Gate Connect before this store existed (an `account.json`
+or `preferences.json` already on disk when the store is created) never sends
+the first-occurrence milestones, because it cannot know whether the first time
+already happened. `diagnostics_opted_out` and the Cowork condition are not first
+occurrences and are still sent there. **A CLI-first install is judged legacy
+too**: `gate-connect` writes `account.json` before the app ever runs, so an
+install that signed in through the CLI and then opened the app does not send
+`app_first_launched` (or the other first-occurrence milestones). That
+under-reports the funnel's first step for CLI-first users rather than reporting
+a first launch for machines that are not new.
 
 ## Event inventory
 
 | Event | Properties | When it fires |
 | --- | --- | --- |
 | `app_launched` | `has_account`, `proxy_available`, `routing_on`; the popover shell also sends `provider_count`, `codex_drifted`, `launch_at_login` | Every launch, once the first state read lands. |
-| `app_first_launched` | none beyond the super-properties | Milestone. The first launch of a fresh install. |
-| `pairing_completed` | `auth_mode` (`oauth`, `api_key`), `org_count` (OAuth, when the picker loaded) | Milestone. The first time the install is signed in with an org: after the org is chosen (OAuth), or when the gateway first resolves the API key's org. Carries the org group and, for OAuth, the account identity. |
-| `tool_connected` | `tool` (registry slug, or a proxy domain slug such as `anthropic` for Claude Desktop and Cowork), `surface` (`config`, `domain`) | Milestone, once per tool. The first successful connect of that tool from any switch. |
-| `first_request_proxied` | `source` (`relay`, `gateway`), `tool` (relay only, when the relay named the sender) | Milestone. `relay`: Gate's relay or engine forwarded a gateway-bound request for a routed tool (the `traffic-observed` report, about 5 seconds after the burst). `gateway`: the gateway listed this install among the ones it has had traffic from, the fallback on Linux where the engine runs in a helper daemon with no observer. |
-| `connection_failed` | `reason`, `context`, `tool` (when known), `detail` (Cowork only) | A failure on a connecting step, sent instantly (not batched). At most once per window per reason, context and tool every 5 minutes. |
-| `diagnostics_opted_out` | `source` (`settings`, `onboarding`, `onboarding_skip`) | Once per install, the first time a live client is switched off. |
+| `app_first_launched` | none beyond the super-properties | AG-960 milestone. The first launch of a fresh install. |
+| `pairing_completed` | `auth_mode` (`oauth`, `api_key`), `org_count` (OAuth, when the picker loaded) | AG-960 milestone. The first time the install is signed in with an org: after the org is chosen (OAuth), or when the gateway first resolves the API key's org. Carries the org group and, for OAuth, the account identity. |
+| `tool_connected` | `tool` (registry slug, or a proxy domain slug such as `anthropic` for Claude Desktop and Cowork), `surface` (`config`, `domain`) | AG-960 milestone, once per tool. The first successful connect of that tool from any switch. |
+| `first_request_proxied` | `source` (`relay`, `gateway`), `tool` (relay only, when the relay named the sender) | AG-960 milestone. `relay`: Gate's relay or engine forwarded a gateway-bound request for a routed tool (the `traffic-observed` report, about 5 seconds after the burst). `gateway`: the gateway listed this install among the ones it has had traffic from, the fallback on Linux where the engine runs in a helper daemon with no observer. |
+| `connection_failed` | `reason`, `context`, `tool` (when known), `detail` (Cowork only) | AG-960. A failure on a connecting, sign-in or pairing step, sent instantly (not batched) once the diagnostics question is answered. At most once per window per reason, context and tool every 5 minutes. |
+| `diagnostics_opted_out` | `source` (`settings`, `onboarding`, `onboarding_skip`) | AG-960. Once per install, the first time sharing is switched off; see Consent. |
 | `popover_opened` | none | The popover shell is reopened from the tray. |
 | `signed_in` | none | A sign-in or API-key save completes (before any org is chosen). |
 | `workspace_forgotten` | none | Reset completes. |
@@ -144,17 +201,29 @@ Only these keys ever leave the app; any other key is dropped before sending.
 | Reason | Meaning and source |
 | --- | --- |
 | `port_in_use` | A loopback port Gate binds is held by another process (a second app, or `gate-connect proxy relay`). Decided from the error's type (`io::ErrorKind::AddrInUse` in the chain) for backend failures; for command rejections, from the relay's own sentence or the OS's "address in use" words. |
-| `cowork_setting_missing` | Connecting the Claude row succeeded, but Claude Desktop keeps local Cowork off, so a Cowork task never reaches this machine's network. `detail` is `user` (`preferences.secureVmFeaturesEnabled: false` in `claude_desktop_config.json`), `org_cloud_only` (`preferences.coworkLocalTasksOffLatched: true` there, Claude's cached copy of an org policy that runs Cowork in the cloud only) or `enterprise` (the `secureVmFeaturesEnabled` policy set to 0 under `HKLM\SOFTWARE\Policies\Claude`, Windows only). Read once on each connect of the `anthropic` domain, and reported once per install per `detail`. |
+| `cowork_setting_missing` | Connecting the Claude row succeeded, but Claude Desktop keeps local Cowork off, so a Cowork task never reaches this machine's network. `detail` is `user` (`preferences.secureVmFeaturesEnabled: false` in a `claude_desktop_config.json`), `org_cloud_only` (`preferences.coworkLocalTasksOffLatched: true` there, Claude's cached copy of an org policy that runs Cowork in the cloud only) or `enterprise` (the `secureVmFeaturesEnabled` policy set to 0 under `HKLM\SOFTWARE\Policies\Claude`, Windows only). Read once on each connect of the `anthropic` domain, from every config Claude itself may use (see below), any-true, and reported once per install per `detail`. |
 | `routing_off` | A proxy-routed tool refused because the engine is not running. |
 | `ca_trust_declined` | The OS certificate prompt was declined or dismissed. |
 | `prompt_declined` | Another OS prompt (the admin prompt for the system proxy) was cancelled. |
 | `offline` | The gateway could not be reached (typed `FailureCode::Offline` on gateway reads). |
-| `auth_rejected` | The gateway refused the session or key (typed `FailureCode::Rejected` or `SignedOut` on gateway reads, or a 401 on a command). |
+| `auth_rejected` | The gateway refused the session or key: typed `FailureCode::Rejected` on gateway reads or in a command's JSON failure envelope, or a 401 worded as one (`returned 401`, `status 401`, `401 Unauthorized`, `unauthorized`; a bare `401` inside a port or an id does not count). `SignedOut` is not a refusal (there was no credential to send) and is not reported. |
+| `sign_in_not_completed` | The browser sign-in was declined (`access_denied`) or abandoned (the five-minute wait for the redirect ran out). |
 | `unknown` | None of the above. |
 
 Contexts that send it: `connect`, `provider_toggle`, `proxy_toggle`,
-`trust_ca`, `restore_routing`, `provider_restore`, and `gateway` (the Overview's
-activity read).
+`trust_ca`, `restore_routing`, `provider_restore`; `gateway` (the Overview's
+activity read); and the sign-in and pairing steps, `sign_in` (browser sign-in or
+API key save), `org_list` (reading the organizations, including the automatic
+pick of the only one) and `org_select` (choosing one).
+
+**Which Claude config is read.** Every `claude_desktop_config.json` Claude
+Desktop 2.16120.0's own resolver may use (its `$Re()` for first-party data dirs
+and `Gu()` for the third-party deployment): on Windows
+`%LOCALAPPDATA%\Claude-Data`, `%APPDATA%\Claude`,
+`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude` (the
+MSIX package, which local Cowork requires) and `%LOCALAPPDATA%\Claude-3p`; on
+macOS `~/Library/Application Support/Claude` and `.../Claude-3p`. Any file that
+says off is enough.
 
 **Limits of `cowork_setting_missing`.** The keys are Claude Desktop's internal
 names, found in its 2.16120.0 bundle (the preference schema, the defaults
@@ -172,9 +241,16 @@ A missing file, key or unparseable JSON reads as "not blocked".
 ## Delivery
 
 posthog-js batches events and flushes every 3 seconds by default
-(`DEFAULT_FLUSH_INTERVAL_MS` in its `request-queue`). `connection_failed` and
-`diagnostics_opted_out` bypass the batch (`send_instantly`), so a failure is on
-the wire within seconds even from a hidden window whose timers are throttled.
+(`DEFAULT_FLUSH_INTERVAL_MS` in its `request-queue`). The milestones and
+`connection_failed` bypass the batch (`send_instantly`), and
+`diagnostics_opted_out` is posted directly, so each is on the wire within
+seconds even from a hidden window whose timers are throttled.
+
+**The one-minute latency holds only once the diagnostics question has been
+answered.** Before that, AG-960's events are held on the machine (see Consent),
+so a sign-in or pairing failure on a fresh install, which happens before the
+onboarding step asks, reaches PostHog when the question is answered yes, with
+its original timestamp, and never if it is answered no or never answered.
 
 ## Building the install funnel in PostHog
 
@@ -187,16 +263,20 @@ No SQL. Product analytics, New insight, Funnels:
 
 - **Aggregated by unique users** this joins end to end for Constellation
   sign-ins: the dashboard and the gateway file under the Cognito `sub`, and the
-  app's install person is merged into it at sign-in. Use a conversion window of
-  at least 14 days.
+  app's install person is merged into it at the install's first sign-in (once
+  the diagnostics question is answered yes). API-key installs join through the
+  server-side `$create_alias` described under Identity. Use a conversion window
+  of at least 14 days.
 - **Aggregated by `organization`** it covers every account type, including API
   keys, but step 2 has no org by construction (the app is not paired yet at its
   first launch), so use the three-step funnel `setup_download_clicked`,
   `pairing_completed`, `first_gateway_request` there, or add
   `first_request_proxied` as the app-side last step.
 - **Opted out, not dropped off.** Create a behavioural cohort "Opted out of
-  diagnostics": persons who performed `diagnostics_opted_out` at any time. Break
-  the funnel down by that cohort. Opted-out installs stop sending app milestones
+  diagnostics": persons who performed `diagnostics_opted_out` at any time (it is
+  filed under the account's `sub` for a Constellation sign-in, so it lands on the
+  same person as the dashboard and gateway steps). Break the funnel down by that
+  cohort. Opted-out installs stop sending app milestones
   but still reach step 4, which the gateway sends regardless, so their gap
   between steps shows in the cohort's own row instead of as drop-off.
 - Break down by `platform` or `app_version`, or by `reason` on a

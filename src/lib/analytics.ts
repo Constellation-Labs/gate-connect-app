@@ -9,22 +9,28 @@
  * along by accident, and Tauri-side errors are classified before send rather
  * than shipping the raw string.
  *
- * **Identity (AG-960).** Events are filed under this install's id from the first
- * one: the Rust install id (`install-id` in the data dir) is the PostHog
- * distinct id, bootstrapped at init, so an event sent before sign-in belongs to
- * the machine and survives a webview storage reset. Once the app is paired,
- * events also carry the `organization` group (the org id, nothing else about
- * the org), and a Constellation sign-in identifies the install with the
- * account's Cognito `sub` - the opaque id the dashboard and the gateway already
- * file that person's events under - so the install funnel can join the
- * dashboard's download click to the gateway's first request. No name, email,
- * key or path is ever sent; `docs/analytics-events.md` is the inventory.
+ * **Two tiers of consent.** The events that predate AG-960 keep their old rule:
+ * sent while "Share diagnostic data" is on, which it is by default, before the
+ * onboarding step has asked. Everything AG-960 added - the account and org
+ * identity (`identify`, `group`), every funnel milestone and `connection_failed`
+ * - is held on this machine until the question has been ANSWERED
+ * (`share_diagnostics_recorded`). A yes releases what was held, in order; a no
+ * spends the milestones unsent and drops the rest. The one exception is
+ * `diagnostics_opted_out`, which is the answer itself.
  *
- * Consent (AG-603) gates all of it: an opted-out install sends nothing, except
- * one `diagnostics_opted_out` record at the moment it opts out.
+ * **Identity (AG-960).** Base events are filed under this install's id (the Rust
+ * `install-id`), bootstrapped as the PostHog distinct id so a storage reset does
+ * not make a new person; that id already rode every error event as `install_id`.
+ * Once allowed and paired, events carry the `organization` group (the org id
+ * only), and a Constellation sign-in identifies the install with the account's
+ * Cognito `sub`, the id the dashboard and the gateway already use. The current
+ * identity is kept in Rust (`analytics-identity.json`) so every window and every
+ * launch agree; see `applyIdentity`. No name, email, key or path is ever sent;
+ * `docs/analytics-events.md` is the inventory.
  */
 import posthog from "posthog-js";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { POSTHOG_KEY_VALUE, POSTHOG_HOST } from "./config";
 import { fetchPlatform } from "./platform";
 import {
@@ -34,10 +40,13 @@ import {
   type ErrorContext,
 } from "./errors";
 import {
+  analyticsIdentity,
   analyticsMilestoneClaim,
   coworkSettingCheck,
   getPreferences,
   installId as fetchInstallId,
+  setAnalyticsIdentity,
+  type AnalyticsIdentity,
   type AuthMode,
 } from "./api";
 import { errorContext } from "./errorContext";
@@ -140,38 +149,37 @@ export const ALLOWED_PROP_KEYS: ReadonlySet<string> = new Set<string>([
   "feed_state",
 ]);
 
-/** Whether this window may send right now: the client exists and consent is on. */
+/** Whether this window may send base events: the client exists and sharing is on. */
 let enabled = false;
-/** Whether `posthog.init` has run. Distinct from `enabled`: a user who opts out
- *  and back in must not re-initialise a live client. */
+/** Whether `posthog.init` has run. A user who opts out and back in must not
+ *  re-initialise a live client. */
 let started = false;
 /**
- * What the user said, as far as this window knows. `null` until the preference
- * read answers, and for good if it fails: consent that cannot be confirmed is
- * not consent, and it is also not a refusal, which matters to the milestones
- * (see `trackMilestone`).
+ * "Share diagnostic data", as far as this window knows. `null` until the
+ * preference read answers, and for good if it fails: consent that cannot be
+ * confirmed is not consent, and it is also not a refusal.
  */
 let consent: boolean | null = null;
+/** Whether the diagnostics question has been answered. `null` until read. The
+ *  gate on everything AG-960 added; see the header. */
+let answered: boolean | null = null;
 /** The in-flight or finished start, so concurrent callers share one init. */
 let starting: Promise<void> | null = null;
 /** The in-flight or finished `initAnalytics`. */
 let booting: Promise<void> | null = null;
-/** Whether `initAnalytics` is still deciding. Events tracked meanwhile wait in
- *  `pending` rather than being dropped, and are dropped only if the answer is no. */
+/** Whether `initAnalytics` is still deciding. */
 let deciding = false;
 /**
- * Captures made before the client could send them, replayed in order once it
- * can - after the super-properties and the distinct id are in place, which is
- * the point: the first event of a launch used to race `register` and could go
- * out without a version or a platform.
- *
- * Only filled while consent is being established (the boot read, or a start
- * after the user turned the switch on). Cleared the moment the answer is no, so
- * nothing captured before an opt-out can leave after it. Capped, because a
- * start that never finishes must not grow it forever.
+ * Base captures made before the client could send them, replayed in order once
+ * it can, after the super-properties and the distinct id are in place. Cleared
+ * the moment the answer is no. Capped.
  */
 let pending: Array<() => void> = [];
 const PENDING_CAP = 50;
+/** This install's id, once read: the distinct id of an unidentified install. */
+let installIdValue: string | null = null;
+/** Super-properties, kept to re-register after a `reset`. */
+let superProps: Props = {};
 
 function sanitize(props?: Props): Props | undefined {
   if (!props) return undefined;
@@ -199,8 +207,20 @@ function safely(what: string, fn: () => void): void {
   }
 }
 
-/** Send now if we may, hold it if consent is still being decided, drop it
- *  otherwise. The one door every capture goes through. */
+/** Whether the client will actually deliver. posthog-js keeps an opt-out in its
+ *  own storage across launches, and a capture while it stands is silently
+ *  dropped, so this is asked of the client rather than assumed from `enabled`. */
+function capturing(): boolean {
+  if (!started) return false;
+  try {
+    return posthog.is_capturing();
+  } catch {
+    return false;
+  }
+}
+
+/** Send a base event now if we may, hold it if consent is still being decided,
+ *  drop it otherwise. */
 function send(fn: () => void): void {
   if (enabled) {
     fn();
@@ -211,22 +231,94 @@ function send(fn: () => void): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The AG-960 gate
+
+/** One thing AG-960 would send: `run` sends it, `spend` is what a "no" does. */
+interface Held {
+  run: () => Promise<void>;
+  spend?: () => Promise<void>;
+}
+
+/** Held until the diagnostics question is answered. Capped: a question never
+ *  answered must not grow this for the life of the process. */
+let held: Held[] = [];
+/** Milestone markers already in `held`, so a signal that repeats while the
+ *  question is open (the relay's traffic report, every 30s) is held once. */
+const heldMarkers = new Set<string>();
+const HELD_CAP = 100;
+
+type FunnelState = "open" | "held" | "refused" | "closed";
+
 /**
- * Start PostHog, if there is a key **and** the user has not opted out.
+ * Where AG-960's events stand right now.
  *
- * Consent is read before the client is constructed, not after: opting out and
- * then initialising would put the user's device on the wire before the opt-out
- * took effect, however briefly. An install that has opted out never creates the
- * client at all.
+ * - `open`: sharing on, question answered, client delivering.
+ * - `held`: the answer is not in yet (the boot read, or sharing on by default
+ *   and the question not answered).
+ * - `refused`: sharing off. Milestones are spent, the rest dropped.
+ * - `closed`: no key, no readable preference, or no client. Nothing is sent and
+ *   nothing is spent, so a later launch that can confirm consent still may.
+ */
+function funnelState(): FunnelState {
+  if (!POSTHOG_KEY_VALUE) return "closed";
+  if (deciding || (starting !== null && !started)) return consent === false ? "refused" : "held";
+  if (consent === false) return "refused";
+  if (consent !== true) return "closed";
+  if (answered !== true) return "held";
+  return capturing() ? "open" : "closed";
+}
+
+function funnel(item: Held): void {
+  switch (funnelState()) {
+    case "open":
+      void item.run();
+      return;
+    case "held":
+      if (held.length < HELD_CAP) held.push(item);
+      return;
+    case "refused":
+      void item.spend?.();
+      return;
+    case "closed":
+      return;
+  }
+}
+
+/** Settle what was held: release it if the funnel is open now, spend it if it
+ *  was refused, keep holding otherwise. Session effects go first, so every
+ *  released event carries the identity and the group. */
+function settleHeld(): void {
+  const state = funnelState();
+  if (state === "held") return;
+  const items = held;
+  held = [];
+  heldMarkers.clear();
+  // Closed for good (no readable preference, no client): nothing may be sent
+  // and nobody said no, so nothing is spent either.
+  if (state === "closed") return;
+  if (state === "open") {
+    applySessionNow();
+    for (const item of items) void item.run();
+  } else {
+    spendSession();
+    for (const item of items) void item.spend?.();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Start
+
+/**
+ * Start PostHog, if there is a key **and** sharing is on.
  *
- * A failed read means **do not collect**. `preferences::load()` is infallible on
- * the Rust side, so the only way here is the IPC itself failing - and consent that
- * cannot be confirmed is not consent. The cost is a session of missing telemetry
- * on an app that is already misbehaving.
+ * Consent is read before the client is constructed, not after: an install that
+ * has opted out never creates the client at all. A failed read means **do not
+ * collect**. No-op without a build-time key. Idempotent: every window calls it
+ * once, and a second call returns the first one's promise.
  *
- * No-op without a build-time key either way, so dev builds and unconfigured
- * releases send nothing. Idempotent: every window calls it once, and a second
- * call returns the first one's promise.
+ * Also subscribes to the two backend broadcasts that keep windows in step: a
+ * consent change made in another window, and a change of analytics identity.
  */
 export function initAnalytics(): Promise<void> {
   if (!booting) booting = boot();
@@ -235,13 +327,13 @@ export function initAnalytics(): Promise<void> {
 
 async function boot(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return;
+  subscribe();
   deciding = true;
   try {
-    const read = await getPreferences()
-      .then((p) => p.share_diagnostics)
-      .catch(() => null);
+    const prefs = await getPreferences().catch(() => null);
     // A switch flipped while the read was in flight is the newer answer.
-    if (consent === null) consent = read;
+    if (consent === null) consent = prefs ? prefs.share_diagnostics : null;
+    if (answered === null) answered = prefs ? prefs.share_diagnostics_recorded === true : null;
     if (consent !== true) {
       pending = [];
       return;
@@ -249,39 +341,65 @@ async function boot(): Promise<void> {
     await startPosthog();
   } finally {
     deciding = false;
+    settleHeld();
   }
   // Every window runs this; the claim decides which one reports it.
   void trackMilestone("app_first_launched");
 }
 
+let subscribed = false;
+function subscribe(): void {
+  if (subscribed) return;
+  subscribed = true;
+  try {
+    void listen<{ share_diagnostics: boolean; recorded: boolean }>(
+      "analytics-consent-changed",
+      (e) => void applyConsent(e.payload.share_diagnostics, e.payload.recorded, null),
+    ).catch(() => {});
+    void listen<AnalyticsIdentity>("analytics-identity-changed", (e) =>
+      followIdentity(e.payload),
+    ).catch(() => {});
+  } catch {
+    // Outside Tauri (unit tests, plain-browser dev) there is nothing to hear.
+  }
+}
+
 /**
  * Construct the client with its identity already settled.
  *
- * Three reads first, all local: the install id, the app version and the
- * platform. The install id is the reason to wait. `bootstrap.distinctID` makes
- * it the distinct id before the first capture - posthog-js's `_init` registers
- * it as `distinct_id` (and `$device_id`) and marks the user anonymous, which is
- * `posthog-core.js` ~575-582 in 1.407.2 - so nothing is ever filed under a
- * random browser id, and a wiped `localStorage` comes back as the same install
- * rather than a new person. Version, platform and install id are then
- * registered as super-properties before `enabled` flips, so the first event of
- * a launch carries them; they used to be registered in an unawaited `then` that
- * the first event could beat.
+ * Reads first, all local: the install id, the stored analytics identity, the
+ * app version and the platform. Then `bootstrap`:
  *
- * Note what bootstrap does on every launch: it re-registers the install id as
- * an ANONYMOUS distinct id even if the last launch identified. That is why
- * `applySession` identifies again once the session is known, and why that costs
- * one `$identify` per launch of a signed-in install.
+ * - A stored identified `sub` (only ever written after the question was
+ *   answered yes, see `applyIdentity`) bootstraps as `{ distinctID: sub,
+ *   isIdentifiedID: true }`: posthog-js then registers it as the identified
+ *   distinct id with no event (`posthog-core.js` ~575-582 in 1.407.2), so a
+ *   signed-in launch sends no `$identify` at all.
+ * - Otherwise the install id bootstraps as an anonymous distinct id.
+ *
+ * A persisted posthog-js opt-out outlives the launch that made it
+ * (`__ph_opt_in_out_<token>`, `consent.js`), and `init` does not clear it, so a
+ * user who opted out, relaunched and opted back in would have a client that
+ * silently drops every capture. Consent is ours to decide, so a stale
+ * persisted opt-out is lifted here.
  */
 function startPosthog(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return Promise.resolve();
   if (!starting) {
     starting = (async () => {
-      const [id, app_version, platform] = await Promise.all([
+      const [id, stored, app_version, platform] = await Promise.all([
         fetchInstallId().catch(() => null),
+        analyticsIdentity().catch(() => null),
         getVersion().catch(() => "unknown"),
         fetchPlatform().catch(() => "unknown"),
       ]);
+      installIdValue = id;
+      if (stored) adoptStoredIdentity(stored);
+      const bootstrap = identifiedAs
+        ? { distinctID: identifiedAs, isIdentifiedID: true }
+        : id
+          ? { distinctID: id }
+          : undefined;
       safely("init", () =>
         posthog.init(POSTHOG_KEY_VALUE, {
           api_host: POSTHOG_HOST,
@@ -290,22 +408,19 @@ function startPosthog(): Promise<void> {
           capture_pageleave: false,
           disable_session_recording: true,
           person_profiles: "identified_only",
-          ...(id ? { bootstrap: { distinctID: id } } : {}),
+          ...(bootstrap ? { bootstrap } : {}),
         }),
       );
       started = true;
-      safely("register", () =>
-        posthog.register({ app_version, platform, ...(id ? { install_id: id } : {}) }),
-      );
+      superProps = { app_version, platform, ...(id ? { install_id: id } : {}) };
+      safely("register", () => posthog.register(superProps));
       if (consent !== true) {
-        // Switched off while we were starting. Nothing was captured yet; make the
-        // off stick in PostHog's own persistence and send nothing.
         safely("opt_out_capturing", () => posthog.opt_out_capturing());
         pending = [];
         return;
       }
+      liftStaleOptOut();
       enabled = true;
-      applySession();
       const queued = pending;
       pending = [];
       for (const fn of queued) fn();
@@ -314,83 +429,117 @@ function startPosthog(): Promise<void> {
   return starting;
 }
 
+function liftStaleOptOut(): void {
+  safely("opt_in_capturing", () => {
+    if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Consent
+
 /** Where a consent change came from, for `diagnostics_opted_out`'s `source`. */
 export type ConsentSource = "settings" | "onboarding" | "onboarding_skip";
 
-/** How long an opt-out waits on the marker store before it stops the client
- *  anyway. Local file I/O; this only bounds a wedged IPC. */
-const OPT_OUT_CLAIM_TIMEOUT_MS = 2000;
-
 /**
- * Apply a consent change made in Settings or onboarding, so the switch controls
- * something rather than only recording an intention.
+ * Apply a consent answer given in THIS window (Settings or onboarding).
  *
- * Turning it **off** stops every entry point here at once (`enabled` drops
- * synchronously), then records the opt-out, then opts the client out -
- * `opt_out_capturing` also persists PostHog's own flag, so nothing queued leaks
- * out after the user said no. The record is `diagnostics_opted_out`, sent at
- * most once per install (a Rust-side marker) and sent instantly, before the
- * client stops, so it actually leaves the machine: an event queued for the next
- * batch would be dropped by the opt-out it describes. Only a live client
- * records it; an install that never started (opted out at launch, or an
- * unreadable preference) has nothing to switch off and nothing to report from.
+ * The answer is recorded as an answer (`answered` = true) whichever way it
+ * went, which is what releases or spends what AG-960 was holding. The backend
+ * broadcasts the same answer to the other windows once `set_share_diagnostics`
+ * lands, and they apply it without recording anything.
  *
- * **Once per install, not once per opt-out.** Someone who opts out, back in and
- * out again is recorded the first time only, which is what the ticket asks
- * ("recorded once"). The later history is still readable: PostHog's own
- * `$opt_in` event marks every opt back in.
- *
- * Turning it **on** starts the client if this session never did (the opted-out
- * install case) and opts back in otherwise.
- *
- * Resolves when the change has fully landed; callers may ignore it. Safe to
- * call with the value it already has.
+ * Turning it **off** stops every entry point at once, sends
+ * `diagnostics_opted_out` (see `recordOptOut`), and opts the client out;
+ * `opt_out_capturing` persists PostHog's own flag, so nothing queued leaks out
+ * after the user said no. Turning it **on** starts the client if this session
+ * never did and opts back in otherwise.
  */
 export function setAnalyticsConsent(
   consented: boolean,
   source: ConsentSource = "settings",
 ): Promise<void> {
-  consent = consented;
-  if (!consented) {
-    const wasLive = enabled;
-    enabled = false;
-    pending = [];
-    if (!started) return Promise.resolve();
-    const stop = () => {
-      // A switch turned back on while the record was in flight wins.
-      if (consent === false) safely("opt_out_capturing", () => posthog.opt_out_capturing());
-    };
-    if (!wasLive) {
-      stop();
-      return Promise.resolve();
-    }
-    return recordOptOut(source).then(stop, stop);
-  }
-  if (!started) return startPosthog();
-  if (enabled) return Promise.resolve();
-  safely("opt_in_capturing", () => posthog.opt_in_capturing());
-  enabled = true;
-  applySession();
-  return Promise.resolve();
+  return applyConsent(consented, true, source);
 }
 
-async function recordOptOut(source: ConsentSource): Promise<void> {
-  const claimed = await Promise.race([
-    analyticsMilestoneClaim("diagnostics_opted_out").catch(() => false),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), OPT_OUT_CLAIM_TIMEOUT_MS)),
-  ]);
-  if (!claimed) return;
-  // Straight to posthog rather than through `send`: `enabled` is already false,
-  // and this is the one event that is allowed past it.
-  safely("capture", () =>
-    posthog.capture("diagnostics_opted_out", sanitize({ source }), { send_instantly: true }),
-  );
+async function applyConsent(
+  consented: boolean,
+  recorded: boolean,
+  source: ConsentSource | null,
+): Promise<void> {
+  const was = consent;
+  consent = consented;
+  if (recorded) answered = true;
+  if (!consented) {
+    enabled = false;
+    pending = [];
+    // Only the window the user clicked in records it, and only for a real
+    // transition from sharing to not sharing.
+    if (source !== null && was === true) void recordOptOut(source);
+    if (started) safely("opt_out_capturing", () => posthog.opt_out_capturing());
+    settleHeld();
+    return;
+  }
+  if (!started) {
+    await startPosthog();
+  } else if (!enabled) {
+    safely("opt_in_capturing", () => posthog.opt_in_capturing());
+    enabled = true;
+  }
+  settleHeld();
 }
 
 /**
- * The anonymous device id, or why there is none to show. Three states because
- * "analytics never started" and "it started and we could not read the id" are
- * different findings when a support thread is asking why no events arrived.
+ * Send `diagnostics_opted_out`, at most once per install.
+ *
+ * **Straight to PostHog's capture endpoint, not through the client.** The
+ * client is being switched off in the same tick, and the record must not
+ * depend on which of the two wins: it goes by `fetch` with `keepalive`, the
+ * same route `diagnosticsUpload.ts` uses, while the client's own opt-out
+ * happens immediately beside it.
+ *
+ * **On the person, without merging anyone.** The ticket needs the funnel to
+ * show this install as "opted out": the record is filed under the account's
+ * `sub` when a Constellation sign-in is known (the person the dashboard and the
+ * gateway use, whether or not this install was ever identified - no
+ * `$identify` is sent, so the install id is not merged), otherwise under the
+ * install id, and it carries the org group when the org is known. Props:
+ * `source` only.
+ *
+ * **At most once, not at least once.** The marker is claimed before the send,
+ * so a send that fails is not retried. A duplicate would count one person's
+ * opt-out twice in every insight built on it; a lost one shows that install as
+ * a drop-off, the state the funnel was already in before this existed. The
+ * claim has no timeout racing it: an unanswered claim sends nothing.
+ */
+async function recordOptOut(source: ConsentSource): Promise<void> {
+  const won = await analyticsMilestoneClaim("diagnostics_opted_out").catch(() => false);
+  if (!won) return;
+  const s = session;
+  const distinctId =
+    identifiedAs ?? (s?.authMode === "oauth" && s.sub ? s.sub : null) ?? installIdValue;
+  if (!distinctId) return;
+  const org = s?.orgId ?? storedOrg;
+  try {
+    await fetch(`${POSTHOG_HOST}/i/v0/e/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      keepalive: true,
+      body: JSON.stringify({
+        api_key: POSTHOG_KEY_VALUE,
+        event: "diagnostics_opted_out",
+        distinct_id: distinctId,
+        properties: { source, ...(org ? { $groups: { organization: org } } : {}) },
+      }),
+    });
+  } catch (e) {
+    console.warn("[gate] analytics opt-out record failed", e);
+  }
+}
+
+/**
+ * The id PostHog files this install's events under, or why there is none to
+ * show, for the diagnostics report.
  */
 export type AnalyticsId =
   | { kind: "id"; value: string }
@@ -398,10 +547,9 @@ export type AnalyticsId =
   | { kind: "unavailable" };
 
 /**
- * The id PostHog files this install's events under, for the diagnostics report:
- * the install id, or the account's Cognito `sub` once a Constellation sign-in
- * has identified the install - the one string that lets a pasted report be lined
- * up against its event stream.
+ * The install id, or the account's Cognito `sub` once a Constellation sign-in
+ * has identified the install - the one string that lets a pasted report be
+ * lined up against its event stream.
  */
 export function analyticsId(): AnalyticsId {
   if (!enabled) return { kind: "disabled" };
@@ -422,30 +570,31 @@ export function track(event: AnalyticsEvent, props?: Props): void {
 // ---------------------------------------------------------------------------
 // Milestones (AG-960)
 
-/** Markers this window has already asked about, so a signal that repeats (the
+/** Markers this window has already settled, so a signal that repeats (the
  *  relay's traffic report, every 30s per tool) costs one IPC, not one per
  *  report. The answer itself lives in Rust. */
 const askedHere = new Set<string>();
 
+/** How long a milestone waits for an API-key install's org before going out
+ *  without it. The org arrives with the main window's first activity read;
+ *  sending before it would leave the event ungrouped for good. */
+export const ORG_WAIT_MS = 120_000;
+
 /**
- * Send a funnel milestone once per install.
+ * Send a funnel milestone once per install, sent instantly.
  *
- * Waits for the start to settle, then claims the marker and sends only if the
- * claim is won. Three outcomes, and the difference between the last two is a
- * decision:
+ * - **Open**: claim the marker, and send on a win. Claimed only while the
+ *   client is actually delivering, so a marker is never spent into a client
+ *   that drops it.
+ * - **Held** (the question is not answered yet): nothing is claimed; it waits.
+ * - **Refused** (sharing off): claim and send nothing. It happened while the
+ *   user had said no, so it is spent: a later opt-in cannot report it late.
+ * - **Closed** (no key, unreadable preference): nothing is claimed, so a later
+ *   launch that can confirm consent may still report it.
  *
- * - **Consent on**: claim, and send on a win.
- * - **Consent off**: claim, and send nothing. The milestone happened while the
- *   user was opted out, so it is spent: opting back in later must not report,
- *   weeks late and with a wrong timestamp, something that happened during the
- *   opt-out. That is what makes the funnel's gap read as "opted out" rather
- *   than as a late conversion.
- * - **Consent unknown** (the preference read failed, or there is no build key):
- *   leave it unclaimed. Nobody said no, so a later launch that can confirm
- *   consent may still report it.
- *
- * A claim that fails (the store could not answer) sends nothing: a first launch
- * reported twice is worse than one not reported.
+ * A claim that fails sends nothing: a first launch reported twice is worse than
+ * one not reported. Resolves once the milestone is settled (sent, spent or
+ * held); the boolean is whether it was sent.
  */
 export async function trackMilestone(
   event: MilestoneEvent,
@@ -453,23 +602,48 @@ export async function trackMilestone(
   marker: string = event,
 ): Promise<boolean> {
   if (!POSTHOG_KEY_VALUE || askedHere.has(marker)) return false;
+  // When it happened, not when it was released: a first launch held until the
+  // diagnostics answer must still sort before the pairing that came after it.
+  const at = new Date();
   if (booting) await booting;
   if (starting) await starting;
-  if (consent === null) return false;
-  askedHere.add(marker);
-  let won: boolean;
-  try {
-    won = await analyticsMilestoneClaim(marker);
-  } catch {
-    // Unanswered, so not spent: let a later signal ask again.
-    askedHere.delete(marker);
-    return false;
+  if (funnelState() === "held") {
+    if (heldMarkers.has(marker)) return false;
+    heldMarkers.add(marker);
   }
-  if (!won || !enabled) return false;
-  const clean = sanitize(props);
-  safely("capture", () => posthog.capture(event, clean));
-  return true;
+  return new Promise<boolean>((resolve) => {
+    funnel({
+      run: async () => {
+        if (askedHere.has(marker)) return resolve(false);
+        await waitForOrg();
+        if (askedHere.has(marker) || !capturing()) return resolve(false);
+        askedHere.add(marker);
+        let won = false;
+        try {
+          won = await analyticsMilestoneClaim(marker);
+        } catch {
+          askedHere.delete(marker);
+          return resolve(false);
+        }
+        if (!won || !capturing()) return resolve(false);
+        const clean = sanitize(props);
+        safely("capture", () => posthog.capture(event, clean, { send_instantly: true, timestamp: at }));
+        resolve(true);
+      },
+      spend: async () => {
+        if (askedHere.has(marker)) return resolve(false);
+        askedHere.add(marker);
+        await analyticsMilestoneClaim(marker).catch(() => false);
+        resolve(false);
+      },
+    });
+    // Held or closed: settled from this caller's point of view.
+    if (funnelState() === "held" || funnelState() === "closed") resolve(false);
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Session and identity
 
 /** What the shell knows about the signed-in session. */
 export interface SessionFacts {
@@ -479,34 +653,81 @@ export interface SessionFacts {
   /** The Cognito `sub`, for an OAuth session. */
   sub: string | null;
   /** The organization this install routes for: the one chosen at sign-in, or
-   *  for an API key the one the gateway resolved it to. */
+   *  for an API-key account the one the gateway resolved it to. */
   orgId: string | null;
 }
 
 let session: SessionFacts | null = null;
-let reportsPairing = true;
+/** The `sub` the client is identified as, or null on the install id. */
 let identifiedAs: string | null = null;
+/** Whether this install has ever been identified (stored in Rust, sticky). */
+let everIdentified = false;
+/** The org and auth mode last stored by the sign-in window, for the windows that
+ *  never read the account themselves. */
+let storedOrg: string | null = null;
+/** The identified `sub` the backend holds, which every window follows. */
+let storedSub: string | null = null;
+let storedAuthMode: string | null = null;
 let groupedAs: string | null = null;
 let orgChoices: number | null = null;
+let orgWaiters: Array<() => void> = [];
+
+function adoptStoredIdentity(stored: AnalyticsIdentity): void {
+  identifiedAs = stored.identified_sub;
+  storedSub = stored.identified_sub;
+  everIdentified = stored.ever_identified;
+  storedOrg = stored.org_id;
+  storedAuthMode = stored.auth_mode;
+}
+
+function currentOrg(): string | null {
+  return session?.orgId ?? storedOrg;
+}
+
+function currentAuthMode(): string | null {
+  return session?.authMode ?? storedAuthMode;
+}
+
+/** Resolve once the org is known, or at once when there is no org to wait for
+ *  (not an API-key install), or after `ORG_WAIT_MS` regardless. */
+function waitForOrg(): Promise<void> {
+  if (currentOrg() || currentAuthMode() !== "api_key") return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      orgWaiters = orgWaiters.filter((w) => w !== done);
+      resolve();
+    }, ORG_WAIT_MS);
+    orgWaiters.push(done);
+  });
+}
+
+function orgArrived(): void {
+  if (!currentOrg() && currentAuthMode() === "api_key") return;
+  const waiters = orgWaiters;
+  orgWaiters = [];
+  applyGroup();
+  for (const w of waiters) w();
+}
 
 /**
- * Tell the seam who is signed in. Called by the shells whenever account, OAuth
- * or activity state changes; cheap and idempotent, so they need not diff.
- *
- * Every window that can send events calls this, so whatever it sends carries
- * the org group - a `tool_connected` won by the tray must not go out ungrouped.
- * Only the window that owns sign-in reports `pairing_completed`: the tray
- * re-reads the account on the same `session-changed` edge and could otherwise
- * win the claim without the org count the sign-in knows. `reportPairing: false`
- * is how it says so.
+ * Tell the seam who is signed in. Called by the window that owns sign-in (the
+ * main window, in either shell) whenever account, OAuth or activity state
+ * changes; cheap and idempotent. The other windows follow the stored identity
+ * the backend broadcasts, not their own reads.
  */
-export function noteSession(
-  facts: SessionFacts,
-  { reportPairing = true }: { reportPairing?: boolean } = {},
-): void {
+export function noteSession(facts: SessionFacts): void {
   session = facts;
-  reportsPairing = reportPairing;
-  if (enabled) applySession();
+  persistIdentity();
+  const state = funnelState();
+  if (state === "open") applySessionNow();
+  // A pairing that happens while the user has said no is spent like any other
+  // milestone, so a later opt-in cannot report it late.
+  else if (state === "refused") spendSession();
+  orgArrived();
 }
 
 /** How many organizations the sign-in offered, for `pairing_completed`'s
@@ -515,45 +736,42 @@ export function noteOrgChoices(count: number): void {
   orgChoices = count;
 }
 
-/**
- * Tie this install's events to the account and the org.
- *
- * **`identify(sub)`, not `alias(sub)`, and why it is safe.** In posthog-js
- * 1.407.2 `identify` sends `$identify` with `$anon_distinct_id` = the current
- * (bootstrapped, anonymous) install id whenever the id changes and the current
- * user is known-anonymous (`posthog-core.js` ~2205-2215). PostHog merges the
- * anonymous install person INTO the `sub` person, which may already exist and
- * be identified - it is the dashboard's person, who clicked the download - and
- * that is exactly the join the funnel needs. `alias` goes the other way: it
- * asks to fold the alias id into the current person, and PostHog refuses that
- * for an id that is already identified (the method's own comment calls it
- * "VERY BAD" for an existing person, ~2839-2842). A second account signing in
- * on the same machine is safe too: the install id already belongs to the first
- * person, which is identified, so the server does not merge them; the second
- * account's events are simply filed under its own `sub`.
- *
- * Only OAuth has a `sub`. An API-key account has no user identity on this
- * machine, so it is grouped but never identified; its funnel joins through the
- * `organization` group instead.
- *
- * The group is the org id and nothing else. The org's name is the dashboard's
- * to set on the group; sending it from here would put a customer name on every
- * install's events for no analytical gain.
- */
-function applySession(): void {
+let lastPersisted = "";
+/** Keep the backend's record of the org and auth mode current, so the tray and
+ *  the next launch know them. Local only; nothing is sent. */
+function persistIdentity(): void {
   const s = session;
-  if (!s || !s.signedIn) return;
-  if (s.authMode === "oauth" && s.sub && identifiedAs !== s.sub) {
-    const sub = s.sub;
-    safely("identify", () => posthog.identify(sub));
-    identifiedAs = sub;
-  }
-  if (s.orgId && groupedAs !== s.orgId) {
-    const org = s.orgId;
-    safely("group", () => posthog.group("organization", org));
-    groupedAs = org;
-  }
-  if (s.orgId && reportsPairing) {
+  if (!s || !POSTHOG_KEY_VALUE) return;
+  const next: AnalyticsIdentity = {
+    identified_sub: identifiedAs,
+    ever_identified: everIdentified,
+    org_id: s.signedIn ? s.orgId : null,
+    auth_mode: s.authMode,
+  };
+  const key = JSON.stringify(next);
+  if (key === lastPersisted) return;
+  lastPersisted = key;
+  storedOrg = next.org_id;
+  storedAuthMode = next.auth_mode;
+  void setAnalyticsIdentity(next).catch(() => {});
+}
+
+function applyGroup(): void {
+  const org = currentOrg();
+  if (!org || groupedAs === org || funnelState() !== "open") return;
+  safely("group", () => posthog.group("organization", org));
+  groupedAs = org;
+}
+
+/** The session's effects, once the funnel is open: identity, group, pairing.
+ *  A window that owns no session (the tray, the intro) follows the stored
+ *  identity instead. */
+function applySessionNow(): void {
+  const s = session;
+  if (s?.signedIn && s.authMode === "oauth" && s.sub) applyIdentity(s.sub);
+  else syncToStoredIdentity();
+  applyGroup();
+  if (s?.signedIn && s.orgId) {
     void trackMilestone("pairing_completed", {
       auth_mode: s.authMode ?? "unknown",
       ...(s.authMode === "oauth" && orgChoices !== null ? { org_count: orgChoices } : {}),
@@ -561,13 +779,91 @@ function applySession(): void {
   }
 }
 
+/** A "no": the pairing that already happened is spent like any other milestone. */
+function spendSession(): void {
+  const s = session;
+  if (s?.signedIn && s.orgId) void trackMilestone("pairing_completed");
+}
+
+/**
+ * Move the client onto `sub`, the account the sign-in window sees.
+ *
+ * - **The install's first identification**: `identify(sub)`. PostHog merges the
+ *   anonymous install person (and everything it sent before sign-in) INTO the
+ *   `sub` person, which may already exist and be identified - the dashboard's
+ *   person, who clicked the download. `identify` rather than `alias`: `alias`
+ *   folds the alias id into the current person, which PostHog refuses for an
+ *   already-identified id (`posthog-core.js` ~2839-2842).
+ * - **Any later change of account** (a different `sub`, or the same one after a
+ *   sign-out): `reset()` first, which drops the old distinct id for a fresh
+ *   random one, then `identify(sub)`. The only id merged into the new person is
+ *   that fresh one, which has sent nothing. The install id is never merged a
+ *   second time, so account B on A's machine is never attached to A's person.
+ *
+ * The result is stored in Rust, which tells the other windows, and is what the
+ * next launch bootstraps from, so a signed-in launch sends no `$identify`.
+ */
+function applyIdentity(sub: string): void {
+  if (identifiedAs === sub) return;
+  if (everIdentified) resetClient();
+  safely("identify", () => posthog.identify(sub));
+  identifiedAs = sub;
+  storedSub = sub;
+  everIdentified = true;
+  lastPersisted = "";
+  persistIdentity();
+}
+
+/** Drop the client's identity and groups, keeping its super-properties. */
+function resetClient(): void {
+  safely("reset", () => posthog.reset());
+  safely("register", () => posthog.register(superProps));
+  groupedAs = null;
+}
+
+/**
+ * Follow an identity change the backend broadcast: another window signed in
+ * (or out), or a sign-out or reset happened in the backend itself.
+ *
+ * - A `sub` this window is not on: reset and identify, never merging the
+ *   install id (the sign-in window did that once, if it was due).
+ * - No `sub` (signed out): reset, and point the client back at the install id,
+ *   the same `distinct_id` registration bootstrap performs, so what this
+ *   machine sends next is filed under the machine again rather than under the
+ *   account that just left.
+ */
+function followIdentity(next: AnalyticsIdentity): void {
+  storedSub = next.identified_sub;
+  storedOrg = next.org_id;
+  storedAuthMode = next.auth_mode;
+  everIdentified = everIdentified || next.ever_identified;
+  // A sign-out is followed whatever the funnel's state: it takes the account's
+  // id off what this machine sends next, and sends nothing itself.
+  if (!storedSub || funnelState() === "open") syncToStoredIdentity();
+  orgArrived();
+}
+
+/** Put the client on the identity Rust holds, if it is on another one. */
+function syncToStoredIdentity(): void {
+  if (!started || storedSub === identifiedAs) return;
+  resetClient();
+  if (storedSub) {
+    const sub = storedSub;
+    safely("identify", () => posthog.identify(sub));
+  } else {
+    const id = installIdValue;
+    if (id) safely("register", () => posthog.register({ distinct_id: id, $device_id: id }));
+  }
+  identifiedAs = storedSub;
+  applyGroup();
+}
+
 /**
  * A tool was connected: its config written, or its proxy domain routed. Called
  * on every success; the milestone is once per tool per install.
  *
  * Connecting the Claude row (the `anthropic` domain) also reads whether Claude
- * Desktop keeps local Cowork off, since that is the one way this connect
- * succeeds and still routes nothing: see `reportCoworkSetting`.
+ * Desktop keeps local Cowork off: see `reportCoworkSetting`.
  */
 export function noteToolConnected(tool: string, surface: "config" | "domain"): void {
   void trackMilestone("tool_connected", { tool, surface }, `tool_connected.${tool}`);
@@ -576,9 +872,7 @@ export function noteToolConnected(tool: string, surface: "config" | "domain"): v
 
 /**
  * The relay saw a gateway-bound request leave for the gateway, from these tools.
- * The first one is `first_request_proxied`: Gate forwarded a real request for a
- * real tool, measured where it happens. See `docs/analytics-events.md` for why
- * this and not a gateway read.
+ * The first one is `first_request_proxied`.
  */
 export function noteTrafficObserved(tools: readonly (string | null)[]): void {
   const tool = tools.find((t): t is string => typeof t === "string" && t.length > 0);
@@ -586,10 +880,8 @@ export function noteTrafficObserved(tools: readonly (string | null)[]): void {
 }
 
 /**
- * The gateway named this machine as one it has had traffic from. The fallback
- * signal for `first_request_proxied` where the relay cannot report - Linux, whose
- * engine runs in a helper daemon with no observer - and the gateway's own word
- * that a request from this install arrived.
+ * The gateway named this machine as one it has had traffic from: the fallback
+ * signal for `first_request_proxied` where the relay cannot report (Linux).
  */
 export function noteGatewayAttributed(): void {
   void trackMilestone("first_request_proxied", { source: "gateway" });
@@ -600,9 +892,9 @@ export function noteGatewayAttributed(): void {
 
 /**
  * The error contexts that are a step of connecting: a tool, a domain, routing
- * itself, the certificate, or the backend's own restore of all of those. A
- * failure in one of these also sends `connection_failed`, beside the
- * `error_shown` every failure sends.
+ * itself, the certificate, or the backend's own restore of those. A failure in
+ * one also sends `connection_failed`, beside the `error_shown` every failure
+ * sends. The sign-in and pairing steps report through `noteSetupFailure`.
  */
 const CONNECTION_CONTEXTS: ReadonlySet<ErrorContext> = new Set<ErrorContext>([
   "connect",
@@ -613,17 +905,15 @@ const CONNECTION_CONTEXTS: ReadonlySet<ErrorContext> = new Set<ErrorContext>([
   "provider_restore",
 ]);
 
-/** How long one window stays quiet about the same failure. A dead session fails
- *  every read and a stuck port fails every retry; one report per cause per
- *  window per five minutes is the finding, the rest is noise. */
+/** How long one window stays quiet about the same failure. */
 const FAILURE_REPEAT_MS = 5 * 60 * 1000;
 const lastFailure = new Map<string, number>();
 
 /**
- * Send `connection_failed`. Sent instantly rather than batched: the ticket asks
- * for a failure to be visible within a minute, and the batch timer lives in a
- * webview the OS may throttle while it is hidden, which is exactly when a
- * startup restore fails.
+ * Send `connection_failed`, instantly rather than batched: the batch timer
+ * lives in a webview the OS may throttle while hidden. Held like every AG-960
+ * event until the diagnostics question is answered, so a failure before that
+ * reaches PostHog when the answer does, not within a minute of happening.
  */
 export function reportConnectionFailure(
   reason: ConnectionFailureReason,
@@ -636,46 +926,60 @@ export function reportConnectionFailure(
   if (last !== undefined && now - last < FAILURE_REPEAT_MS) return;
   lastFailure.set(key, now);
   const clean = sanitize({ ...props, reason, context });
-  send(() =>
-    safely("capture", () =>
-      posthog.capture("connection_failed", clean, { send_instantly: true }),
-    ),
-  );
+  const at = new Date();
+  funnel({
+    run: async () => {
+      if (!capturing()) return;
+      safely("capture", () =>
+        posthog.capture("connection_failed", clean, { send_instantly: true, timestamp: at }),
+      );
+    },
+  });
 }
 
 /**
  * Report the Claude Desktop setting that keeps local Cowork off, if one does.
- *
- * Once per install per setting (a marker claimed only while sending is
- * allowed), because the setting is a standing condition, not an event: someone
- * who reconnects the Claude row ten times with it off has one finding, not ten.
- * The read is Claude's own config file, so this is a deterministic check, not a
- * guess from traffic; `core::analytics::cowork_setting_missing` says exactly what
- * it reads and what it cannot see.
+ * Once per install per setting, since it is a standing condition; the marker
+ * is only claimed while the funnel is open.
  */
 async function reportCoworkSetting(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return;
   if (booting) await booting;
   if (starting) await starting;
-  if (!enabled) return;
-  const detail = await coworkSettingCheck().catch(() => null);
-  if (!detail) return;
-  const won = await analyticsMilestoneClaim(`cowork_setting_missing.${detail}`).catch(() => false);
-  if (!won) return;
-  reportConnectionFailure("cowork_setting_missing", "connect", { tool: "anthropic", detail });
+  funnel({
+    run: async () => {
+      const detail = await coworkSettingCheck().catch(() => null);
+      if (!detail || !capturing()) return;
+      const won = await analyticsMilestoneClaim(`cowork_setting_missing.${detail}`).catch(
+        () => false,
+      );
+      if (!won) return;
+      reportConnectionFailure("cowork_setting_missing", "connect", { tool: "anthropic", detail });
+    },
+  });
 }
 
 /**
- * The gateway refused or could not be reached on a read the shell made - the
- * connection step's view of "auth rejected" and "offline", taken from the typed
- * `FailureCode` rather than from an error message.
+ * A gateway read the shell made failed with a typed `FailureCode`: `rejected`
+ * (the gateway refused the credential) is `auth_rejected`, `offline` is
+ * `offline`. `signed_out` is not either: it means there was no credential to
+ * send, which is a state of the app, not a failure of the connection.
  */
 export function noteGatewayFailure(code: string): void {
-  if (code === "rejected" || code === "signed_out") {
-    reportConnectionFailure("auth_rejected", "gateway");
-  } else if (code === "offline") {
-    reportConnectionFailure("offline", "gateway");
-  }
+  if (code === "rejected") reportConnectionFailure("auth_rejected", "gateway");
+  else if (code === "offline") reportConnectionFailure("offline", "gateway");
+}
+
+/** The sign-in and pairing steps, for `connection_failed`'s `context`. */
+export type SetupStep = "sign_in" | "org_list" | "org_select";
+
+/**
+ * A step of signing in or pairing failed. Sent beside the `error_shown` the
+ * call site already sends, with a reason read from the error the same way a
+ * connect's is (a 401 or a `rejected` envelope is `auth_rejected`).
+ */
+export function noteSetupFailure(err: unknown, step: SetupStep): void {
+  reportConnectionFailure(connectionFailureReason(err, "sign_in"), step);
 }
 
 /**
@@ -685,8 +989,8 @@ export function noteGatewayFailure(code: string): void {
  * extra allowlisted dimensions (e.g. which provider's toggle failed).
  *
  * A failure in a connecting context also sends `connection_failed` with its
- * reason. `reason` is the backend's typed answer where it had one; otherwise
- * the reason is read from the error the same way the title is.
+ * reason: the backend's typed answer where it had one, otherwise read from the
+ * error the same way the title is.
  */
 export function trackError(
   err: unknown,
@@ -699,9 +1003,6 @@ export function trackError(
   // naming the tool it was toggling still wins. Errors only: see
   // `lib/errorContext.ts` for why this is not a super-property.
   track("error_shown", { ...errorContext(), ...props, context, title });
-  // The paired exception carries the same state. It is a separate record from
-  // the `error_shown` event above, and whoever triages the exception list does
-  // not have that event beside them.
   const ctx = { ...sanitize(errorContext()), context };
   send(() =>
     safely("captureException", () => posthog.captureException(new Error(title), ctx)),
@@ -722,9 +1023,6 @@ export function trackError(
  * point and there's nothing of the user's to redact.
  */
 export function captureException(err: unknown): void {
-  // Sanitised like any other payload: an uncaught exception is our own bug and
-  // its stack is the point, but the context riding beside it goes through the
-  // same allowlist everything else does.
   const ctx = sanitize(errorContext());
   send(() => safely("captureException", () => posthog.captureException(err, ctx)));
 }

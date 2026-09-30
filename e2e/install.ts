@@ -528,6 +528,16 @@ export function installFakeTauri(state: BackendState): void {
       return true;
     },
     cowork_setting_check: () => state.coworkSetting,
+    analytics_identity: () => ({ ...state.analyticsIdentity }),
+    set_analytics_identity: ({ identity }) => {
+      const next = identity as typeof state.analyticsIdentity;
+      state.analyticsIdentity = {
+        ...next,
+        ever_identified:
+          state.analyticsIdentity.ever_identified || next.ever_identified || !!next.identified_sub,
+      };
+      return null;
+    },
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;
       // Answering is what the real command records too, and it is what dismisses

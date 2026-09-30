@@ -21,10 +21,12 @@ vi.mock("./analytics", () => ({
   track: vi.fn(),
   trackError: vi.fn(),
   noteOrgChoices: vi.fn(),
+  noteSetupFailure: vi.fn(),
   noteToolConnected: vi.fn(),
 }));
 vi.mock("./oauthOffer", () => ({ markOAuthOfferSeen: vi.fn() }));
 
+import { noteSetupFailure } from "./analytics";
 import {
   getAccount,
   oauthBeginLogin,
@@ -461,5 +463,37 @@ describe("useSetup: finishing", () => {
 
     expect(api.current!.error).toBeTruthy();
     expect(api.current!.stage.kind).toBe("connected");
+  });
+});
+
+describe("useSetup: the pairing steps report their failures (AG-960)", () => {
+  it("files a refused org list under org_list", async () => {
+    (oauthListOrgs as Mock).mockRejectedValue(
+      "gateway /v1/me/orgs returned 401 Unauthorized: {}",
+    );
+    const { api } = harness({
+      account: oauthAccount({ org_id: null, org_name: null }),
+      oauth: SIGNED_IN,
+    });
+
+    await act(async () => {
+      await api.current!.loadOrgs();
+    });
+
+    expect(noteSetupFailure).toHaveBeenCalledWith(
+      "gateway /v1/me/orgs returned 401 Unauthorized: {}",
+      "org_list",
+    );
+  });
+
+  it("files a failed browser sign-in under sign_in", async () => {
+    (oauthBeginLogin as Mock).mockRejectedValue("authorization failed (access_denied)");
+    const { api } = harness({ account: null, oauth: null });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+
+    expect(noteSetupFailure).toHaveBeenCalledWith("authorization failed (access_denied)", "sign_in");
   });
 });

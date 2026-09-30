@@ -56,7 +56,15 @@ vi.mock("./api", () => ({
   // not land among the captures these tests count.
   analyticsMilestoneClaim: vi.fn(async () => false),
   coworkSettingCheck: vi.fn(async () => null),
+  analyticsIdentity: vi.fn(async () => ({
+    identified_sub: null,
+    ever_identified: false,
+    org_id: null,
+    auth_mode: null,
+  })),
+  setAnalyticsIdentity: vi.fn(async () => undefined),
 }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 /** Every argument PostHog received, flattened to one string, so a test can
  *  assert a secret appears nowhere in anything we sent. */

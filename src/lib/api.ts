@@ -969,6 +969,22 @@ export const analyticsMilestoneClaim = (name: string) =>
  *  `core::analytics::cowork_setting_missing` for what each reads. */
 export const coworkSettingCheck = () => invoke<string | null>("cowork_setting_check");
 
+/** What this install is identified as in analytics, kept beside `install-id`
+ *  so every window and launch agrees (`core::analytics::Identity`). */
+export interface AnalyticsIdentity {
+  identified_sub: string | null;
+  ever_identified: boolean;
+  org_id: string | null;
+  auth_mode: string | null;
+}
+
+export const analyticsIdentity = () => invoke<AnalyticsIdentity>("analytics_identity");
+
+/** Store a change of analytics identity; the backend broadcasts it to every
+ *  window as `analytics-identity-changed`. Called by the sign-in window only. */
+export const setAnalyticsIdentity = (identity: AnalyticsIdentity) =>
+  invoke<void>("set_analytics_identity", { identity });
+
 
 export const setSecurityNotificationSound = (enabled: boolean) =>
   invoke<void>("set_security_notification_sound", { enabled });

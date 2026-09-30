@@ -1883,10 +1883,14 @@ export function CollectedDataLists({
               the organization id, so setup can be measured from download to
               first request. Neither is a name or an email. */}
           <li>
-            A device id generated on this machine. Once you sign in, your
-            account id and organization id too, so setup can be measured from
-            download to first request. Never your name or email.
+            A device id generated on this machine. Once you sign in and have
+            answered this question, your account id and organization id too, so
+            setup can be measured from download to first request. Never your
+            name or email.
           </li>
+          {/* AG-960's opt-out record: the one thing that leaves after the
+              switch goes off, and only once per install. */}
+          <li>Turning sharing off sends one final note saying so.</li>
           <li>App version and operating system.</li>
           <li>
             Which action happened, from a fixed list - routing turned on or off,

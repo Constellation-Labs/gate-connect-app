@@ -21,7 +21,6 @@ import {
   routingVerdicts,
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
-import { noteSession } from "./lib/analytics";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
@@ -120,24 +119,6 @@ export function TrayApp() {
    *  documents - and that sentence is false. Principle 6, one level up from
    *  a figure. */
   const [accountUnread, setAccountUnread] = useState(false);
-  // The tray sends events too (its switches connect tools), so they carry the
-  // org group like the window's (AG-960). No `sub` here: the tray never reads
-  // the OAuth session, and it does not need to - the window identifies this
-  // install, and PostHog files the install id under that person from then on.
-  // Not signed in without a credential or, for OAuth, an org; and never the
-  // one to report `pairing_completed`, which is the window's (see
-  // `noteSession`).
-  useEffect(() => {
-    noteSession(
-      {
-        signedIn: account !== null && (account.has_api_key || account.org_id !== null),
-        authMode: account?.auth_mode ?? null,
-        sub: null,
-        orgId: account?.org_id ?? null,
-      },
-      { reportPairing: false },
-    );
-  }, [account]);
   /** The account's key prefix, which is what makes a replaced api key a different
    *  credential. Read back after every account read for the reason
    *  `activity_cache.rs` records: in api-key mode the org is whatever the gateway

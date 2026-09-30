@@ -14,7 +14,7 @@ import type { Account, OAuthStatus, Org, ProxyState } from "./api";
 import { DEFAULT_GATEWAY_BASE_URL } from "./config";
 import { isSignedIn, needsOrg } from "./session";
 import { markOAuthOfferSeen } from "./oauthOffer";
-import { noteOrgChoices, track, trackError } from "./analytics";
+import { noteOrgChoices, noteSetupFailure, track, trackError } from "./analytics";
 
 /**
  * First run for the new window UI: sign in, pick an organization, confirm.
@@ -201,11 +201,14 @@ export function useSetup({
     }
     // Confirm a sign-in that happened here; never greet a returning user.
     if (sawSignedOut.current && !confirmationSeen) return { kind: "connected" };
-    // Consent before Overview, and before collection: `lib/analytics.ts` starts at
-    // launch, so the first thing this buys is a person who has been asked. Only
-    // once the answer is known to be missing - `undefined` is the read still being
-    // in flight, and treating that as unanswered would flash the step at someone
-    // who answered months ago.
+    // Consent before Overview. `lib/analytics.ts` starts at launch with the
+    // default (sharing on) for the events that predate AG-960, but holds
+    // everything AG-960 added - the account and org identity, the funnel
+    // milestones, connection failures - until this step is answered, which is
+    // why the step comes after sign-in without the sign-in being reported
+    // first. Only once the answer is known to be missing - `undefined` is the
+    // read still being in flight, and treating that as unanswered would flash
+    // the step at someone who answered months ago.
     if (diagnosticsAnswered === false) return { kind: "diagnostics" };
     return { kind: "ready" };
   })();
@@ -236,6 +239,7 @@ export function useSetup({
       if (needsOrg(next.account, next.oauth)) setOrgs(null);
     } catch (err) {
       trackError(err, "sign_in");
+      noteSetupFailure(err, "sign_in");
       if (mine === attempt.current) setError(err);
     } finally {
       if (mine === attempt.current) setBusy(false);
@@ -260,6 +264,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "sign_in");
+      noteSetupFailure(err, "sign_in");
     } finally {
       setBusy(false);
     }
@@ -288,6 +293,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "generic");
+      noteSetupFailure(err, "org_list");
     }
   }, [reread]);
 
@@ -302,6 +308,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "generic");
+      noteSetupFailure(err, "org_select");
     } finally {
       setBusy(false);
     }

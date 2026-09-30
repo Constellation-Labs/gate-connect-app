@@ -320,6 +320,13 @@ export interface BackendState {
   /** What `cowork_setting_check` answers: which Claude setting keeps local
    *  Cowork off, or null. */
   coworkSetting: string | null;
+  /** What `analytics_identity` answers, as `core::analytics::Identity`. */
+  analyticsIdentity: {
+    identified_sub: string | null;
+    ever_identified: boolean;
+    org_id: string | null;
+    auth_mode: string | null;
+  };
   /** The machine's hostname, which `device_name` falls back to when the user has
    *  not renamed anything - the resolution the real command does in Rust. */
   hostName: string;
@@ -668,6 +675,7 @@ export function defaultState(): BackendState {
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
     milestones: [],
     coworkSetting: null,
+    analyticsIdentity: { identified_sub: null, ever_identified: false, org_id: null, auth_mode: null },
     hostName: "e2e-macbook",
     installations: { installations: [], current: null },
     failures: {},
