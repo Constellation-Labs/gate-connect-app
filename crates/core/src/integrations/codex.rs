@@ -1055,17 +1055,57 @@ pub fn is_app_server_command(cmd: &[std::ffi::OsString]) -> bool {
     cmd.iter().skip(1).any(|arg| arg == "app-server")
 }
 
-/// Restart Codex's app-server daemon if one is running, so new sessions load
-/// the config and model catalog Gate just wrote. It reads both only when it
-/// starts: measured on 0.159, a TUI session opened after a model change was
-/// still offered the catalog the daemon had loaded before it.
+/// Is this process name Codex's binary, on any OS? Windows reports `codex.exe`.
+fn is_codex_name(name: &str) -> bool {
+    name == "codex" || name.eq_ignore_ascii_case("codex.exe")
+}
+
+/// Is this command line Codex's MANAGED app-server daemon - the one
+/// `codex app-server daemon restart` controls - rather than any app-server?
 ///
-/// A no-op when none is running - nothing holds stale config then, and
-/// `restart` would start one the user never asked for. Returns whether it ran.
+/// Two processes make it up: the server (`app-server --listen … --managed-daemon`)
+/// and its supervisor (`app-server daemon pid-update-loop`). An IDE extension's
+/// own `codex app-server` is neither, and restarting "the daemon" on its account
+/// would start one the user never had while the extension kept its stale copy
+/// (review on #382).
+fn is_managed_daemon_command(cmd: &[std::ffi::OsString]) -> bool {
+    let args: Vec<&std::ffi::OsStr> = cmd.iter().skip(1).map(|a| a.as_os_str()).collect();
+    let Some(at) = args.iter().position(|a| *a == "app-server") else {
+        return false;
+    };
+    let rest = &args[at + 1..];
+    rest.iter().any(|a| *a == "--managed-daemon")
+        || (rest.first().is_some_and(|a| *a == "daemon")
+            && rest.get(1).is_some_and(|a| *a == "pid-update-loop"))
+}
+
+/// What [`refresh_app_server_daemon`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DaemonRefresh {
+    /// No managed daemon is running: nothing holds a stale config.
+    NotRunning,
+    /// It started after Codex's config last changed, so it already has it.
+    Current,
+    /// It predated the change and was restarted.
+    Restarted,
+}
+
+/// Restart Codex's managed app-server daemon if it predates the last change Gate
+/// made to Codex's config, so new sessions load that config and model catalog.
+/// The daemon reads both only when it starts: measured on 0.159, a TUI session
+/// opened after a model change was still offered the catalog it had loaded.
 ///
-/// Callers decide WHEN: the restart ends the sessions the daemon hosts, so it
-/// runs only with no Codex session open, or right after the user closed them.
-pub fn restart_app_server_daemon() -> Result<bool> {
+/// "Predates" is the same test the reopen check applies to a running tool - the
+/// process's start time against `config_changes`' record of Gate's last write -
+/// so every caller agrees on what is stale: a model save, the restart notice's
+/// Close, and startup's reconnect (review on #382: one rule, one code path).
+/// Nothing runs for a daemon that is current or absent; `restart` on an absent
+/// one would start a daemon the user never asked for.
+///
+/// Blocks for up to 20s while Codex restarts it, so callers on a user-facing
+/// path run it on a thread of their own. The restart ends the sessions the
+/// daemon hosts, so callers also decide it only with no Codex session open.
+pub fn refresh_app_server_daemon() -> Result<DaemonRefresh> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -1076,17 +1116,24 @@ pub fn restart_app_server_daemon() -> Result<bool> {
             .with_exe(UpdateKind::OnlyIfNotSet)
             .with_cmd(UpdateKind::OnlyIfNotSet),
     );
-    // The daemon's own binary, never the one the ChatGPT app bundles: that
-    // app-server belongs to the app and restarts with it.
-    let Some(exe) = sys
+    let daemon: Vec<(std::path::PathBuf, u64)> = sys
         .processes()
         .values()
-        .filter(|p| p.name().to_string_lossy() == "codex" && is_app_server_command(p.cmd()))
-        .filter_map(|p| p.exe().map(Path::to_path_buf))
-        .find(|exe| !exe.components().any(|c| c.as_os_str() == "ChatGPT.app"))
-    else {
-        return Ok(false);
+        .filter(|p| {
+            is_codex_name(&p.name().to_string_lossy()) && is_managed_daemon_command(p.cmd())
+        })
+        .filter_map(|p| Some((p.exe()?.to_path_buf(), p.start_time())))
+        .collect();
+    let Some((exe, _)) = daemon.first().cloned() else {
+        return Ok(DaemonRefresh::NotRunning);
     };
+    let started = daemon.iter().map(|(_, t)| *t).max().unwrap_or(0);
+    let changed = config_path()
+        .ok()
+        .and_then(|p| crate::config_changes::changed_at(&p));
+    if changed.is_none_or(|changed| started >= changed) {
+        return Ok(DaemonRefresh::Current);
+    }
     let mut child = std::process::Command::new(&exe)
         .args(["app-server", "daemon", "restart"])
         .env("CODEX_HOME", env::codex_config_dir()?)
@@ -1102,7 +1149,7 @@ pub fn restart_app_server_daemon() -> Result<bool> {
                 status.success(),
                 "codex app-server daemon restart exited {status}"
             );
-            return Ok(true);
+            return Ok(DaemonRefresh::Restarted);
         }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
@@ -1445,6 +1492,46 @@ fn upgrade_inline_to_table(item: &mut Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_managed_daemon_is_the_daemon() {
+        use std::ffi::OsString;
+        let cmd = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(is_managed_daemon_command(&cmd(&[
+            "/u/.codex/packages/app-server-daemon/current/bin/codex",
+            "app-server",
+            "--listen",
+            "unix://",
+            "--managed-daemon",
+        ])));
+        assert!(is_managed_daemon_command(&cmd(&[
+            "codex",
+            "app-server",
+            "daemon",
+            "pid-update-loop"
+        ])));
+        // An IDE extension's own app-server, and the ChatGPT app's, are not it.
+        assert!(!is_managed_daemon_command(&cmd(&[
+            "codex",
+            "app-server",
+            "--listen",
+            "stdio://"
+        ])));
+        assert!(!is_managed_daemon_command(&cmd(&[
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--analytics-default-enabled",
+        ])));
+        assert!(!is_managed_daemon_command(&cmd(&[
+            "codex",
+            "exec",
+            "app-server"
+        ])));
+        assert!(is_codex_name("codex") && is_codex_name("codex.exe") && is_codex_name("Codex.EXE"));
+        assert!(!is_codex_name("codex-helper"));
+    }
 
     /// AG-674's disagreement case for Codex. Our provider block and pointer are
     /// exactly as `connect` left them; the selected profile names a different

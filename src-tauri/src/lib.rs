@@ -1037,21 +1037,11 @@ async fn set_tool_model(
             meta,
         )
         .map_err(|e| format!("{e:#}"))?;
-        // Codex's app-server daemon loads the config and model catalog only
-        // when it starts, so without this the change would not reach the next
-        // session either. Restarted now only when no Codex session is open: one
-        // that is gets the restart notice, and the daemon restarts when the user
-        // closes it (`restart_codex_daemon_after_close`).
+        // Codex's app-server daemon reads its config and model catalog only
+        // when it starts; see `refresh_codex_daemon_when_idle`.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if applied && tool == gate_connect_core::registry::ToolId::Codex {
-            let mut open_sessions = 0u32;
-            for_each_agent_process(&["codex"], |_| open_sessions += 1);
-            if open_sessions == 0 {
-                if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon()
-                {
-                    eprintln!("[gate] set model: could not restart the Codex app server: {e:#}");
-                }
-            }
+            refresh_codex_daemon_when_idle("set model");
         }
         Ok(applied)
     })
@@ -1308,6 +1298,8 @@ async fn proxy_enable<R: tauri::Runtime>(
         // selection around the engine start, and surface best-effort hiccups
         // without blocking the proxy from coming up.
         let (_, warnings) = gate_connect_core::routing::enable().map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        refresh_codex_daemon_when_idle("routing on");
         for w in warnings {
             eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
             report_backend_error(w.component, format!("{:#}", w.error));
@@ -3731,18 +3723,32 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
     (closed, still_running)
 }
 
-/// Restart Codex's app-server daemon once its sessions have been closed, when
-/// the close covered Codex. The daemon holds the config it loaded at start, so
-/// a reopened Codex would otherwise still get the old one; with its sessions
-/// just closed on the user's say-so, there is nothing left for it to cut off.
+/// Refresh Codex's app-server daemon, if it is stale and no Codex session is
+/// open. The one rule for it, shared by every path that changes what Codex
+/// should load: a model save, the restart notice's Close, and routing coming
+/// up (startup or the toggle), which reconnects Codex and can rewrite its
+/// config (review on #382).
+///
+/// Stale is `codex::refresh_app_server_daemon`'s test: the daemon started
+/// before Gate last changed Codex's config. An open session is left alone,
+/// because the restart would end it; the restart notice asks the user to close
+/// it, and its Close comes back here. A session that outlived that close still
+/// counts as open, so it is not cut off either.
+///
+/// On a thread of its own: the restart can take seconds, and the callers are a
+/// save the user is watching, a close, and the startup thread.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn restart_codex_daemon_after_close(only: Option<&[String]>) {
-    if only.is_some_and(|slugs| !slugs.iter().any(|s| s == "codex")) {
-        return;
-    }
-    if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon() {
-        eprintln!("[gate] close agents: could not restart the Codex app server: {e:#}");
-    }
+fn refresh_codex_daemon_when_idle(why: &'static str) {
+    std::thread::spawn(move || {
+        let mut open_sessions = 0u32;
+        for_each_agent_process(&["codex"], |_| open_sessions += 1);
+        if open_sessions > 0 {
+            return;
+        }
+        if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
+            eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+        }
+    });
 }
 
 /// Close running agents so their next launch picks up the routing change, and
@@ -3756,7 +3762,12 @@ fn restart_codex_daemon_after_close(only: Option<&[String]>) {
 #[tauri::command(async)]
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     let (closed, _) = close_agents(only.as_deref());
-    restart_codex_daemon_after_close(only.as_deref());
+    if only
+        .as_deref()
+        .is_none_or(|slugs| slugs.iter().any(|s| s == "codex"))
+    {
+        refresh_codex_daemon_when_idle("close agents");
+    }
     let mut reopen: Vec<(String, Relaunch)> = Vec::new();
     for target in &closed {
         if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
@@ -3786,7 +3797,7 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
 #[tauri::command(async)]
 fn restart_running_agents() -> ClosedAgentsDto {
     let (closed, still_running) = close_agents(None);
-    restart_codex_daemon_after_close(None);
+    refresh_codex_daemon_when_idle("restart agents");
     let mut dto = ClosedAgentsDto {
         closed: closed.len() as u32,
         restarted: Vec::new(),
@@ -5839,6 +5850,9 @@ pub fn run() {
                     // loaded is a harmless no-op.
                     match gate_connect_core::routing::enable() {
                         Ok((state, warnings)) => {
+                            // Reconnecting can rewrite Codex's config; the
+                            // daemon picks it up only if refreshed.
+                            refresh_codex_daemon_when_idle("startup");
                             for w in warnings {
                                 eprintln!(
                                     "[gate] startup auto-enable: {} failed: {:#}",
