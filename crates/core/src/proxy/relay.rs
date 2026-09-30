@@ -769,8 +769,19 @@ async fn proxy(
                     &refusal.message,
                 ));
             }
-            // Which org account serves this is the org's call, not the caller's.
-            headers.remove("x-gate-provider");
+            // Every caller-set `x-gate-*` goes before ours are injected: the
+            // provider pin (which org account pays), and anything else of
+            // Gate's a local process could set to steer the gateway (review on
+            // #382). The credential and attribution below are the only Gate
+            // headers this request carries.
+            let gate_headers: Vec<_> = headers
+                .keys()
+                .filter(|k| k.as_str().starts_with("x-gate-"))
+                .cloned()
+                .collect();
+            for name in gate_headers {
+                headers.remove(name);
+            }
             inject_credential(
                 &mut headers,
                 state,
@@ -845,10 +856,10 @@ async fn proxy(
                 &refusal.message,
             ));
         }
-        // And no account pin in the body either; see `without_provider`. The
-        // length changes with it, so the caller's `content-length` goes and the
-        // client computes its own.
-        if let Some(stripped) = super::gate_served::without_provider(&body) {
+        // Nor any routing override in the body; see `without_routing_overrides`.
+        // The length changes with it, so the caller's `content-length` goes and
+        // the client computes its own.
+        if let Some(stripped) = super::gate_served::without_routing_overrides(&body) {
             body = Bytes::from(stripped);
             headers.remove(hyper::header::CONTENT_LENGTH);
         }

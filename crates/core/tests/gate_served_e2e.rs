@@ -356,9 +356,13 @@ async fn the_route_drops_the_tools_own_credentials_and_provider_pins() {
         .header("x-api-key", "sk-ant-api03-user-key")
         .header("authorization", "Bearer sk-ant-oat01-user-token")
         .header("x-gate-provider", "some-other-account")
+        .header("x-gate-org-id", "someone-elses-org")
+        .header("x-gate-api-key", "sk-gw-someone-elses-key")
         .json(&serde_json::json!({
             "model": "anthropic/claude-opus-5",
             "provider": { "order": ["some-other-account"] },
+            "models": ["openai/gpt-5.6-sol"],
+            "route": "fallback",
             "messages": [],
         }))
         .send()
@@ -374,8 +378,23 @@ async fn the_route_drops_the_tools_own_credentials_and_provider_pins() {
     assert_eq!(r.header("x-api-key"), None);
     assert_eq!(r.header("authorization"), None);
     assert_eq!(r.header("x-gate-provider"), None);
+    assert_eq!(
+        r.header("x-gate-org-id"),
+        None,
+        "no org of the caller's choosing"
+    );
+    assert_eq!(
+        r.header("x-gate-api-key"),
+        Some("sk-gw-test"),
+        "Gate's own credential"
+    );
     let sent: serde_json::Value = serde_json::from_str(&r.body).unwrap();
     assert!(sent.get("provider").is_none(), "{sent}");
+    assert!(
+        sent.get("models").is_none(),
+        "no fallback outside the set: {sent}"
+    );
+    assert!(sent.get("route").is_none(), "{sent}");
     assert_eq!(sent["model"], "anthropic/claude-opus-5");
 }
 

@@ -154,16 +154,30 @@ pub(crate) fn check_model(
     })
 }
 
-/// The body without a top-level `provider` field, or `None` when it has none.
+/// Top-level body fields that steer how a request is routed rather than what
+/// it asks for, all dropped on this route (review on #382):
 ///
-/// The gateway reads that field (and `x-gate-provider`) to choose which of the
-/// organization's provider accounts serves a request. On this route the
-/// organization pays, so a local caller must not steer which account does: it
-/// cannot escape the enabled set, but it can move spend onto an account the
-/// org would not have picked (review on #382).
-pub(crate) fn without_provider(body: &[u8]) -> Option<Vec<u8>> {
+/// - `provider` picks which of the organization's accounts serves it - the
+///   org pays here, so a local caller must not choose which account does;
+/// - `models` (an OpenRouter-style fallback list) and `route` let a request be
+///   served as a model OTHER than the `model` [`check_model`] checked, which
+///   would put a model outside the enabled set on the org's credits.
+///
+/// Dropped rather than refused: the checked `model` is still exactly what is
+/// served, and a tool configured with fallbacks keeps working on it.
+const ROUTING_OVERRIDES: &[&str] = &["provider", "models", "route"];
+
+/// The body without any [`ROUTING_OVERRIDES`], or `None` when it has none.
+pub(crate) fn without_routing_overrides(body: &[u8]) -> Option<Vec<u8>> {
     let mut v: serde_json::Value = serde_json::from_slice(body).ok()?;
-    v.as_object_mut()?.remove("provider")?;
+    let obj = v.as_object_mut()?;
+    let removed = ROUTING_OVERRIDES
+        .iter()
+        .filter(|k| obj.remove(**k).is_some())
+        .count();
+    if removed == 0 {
+        return None;
+    }
     serde_json::to_vec(&v).ok()
 }
 
@@ -269,13 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_pin_is_dropped_and_nothing_else_is() {
-        let body = br#"{"model":"a/b","provider":{"order":["x"]},"input":"hi"}"#;
+    fn routing_overrides_are_dropped_and_nothing_else_is() {
+        let body = br#"{"model":"a/b","provider":{"order":["x"]},"models":["c/d"],"route":"fallback","input":"hi"}"#;
         let out: serde_json::Value =
-            serde_json::from_slice(&without_provider(body).expect("had one")).unwrap();
+            serde_json::from_slice(&without_routing_overrides(body).expect("had some")).unwrap();
         assert_eq!(out, serde_json::json!({"model":"a/b","input":"hi"}));
-        assert!(without_provider(br#"{"model":"a/b"}"#).is_none());
-        assert!(without_provider(b"not json").is_none());
+        assert!(without_routing_overrides(br#"{"model":"a/b"}"#).is_none());
+        assert!(without_routing_overrides(b"not json").is_none());
     }
 
     #[test]
