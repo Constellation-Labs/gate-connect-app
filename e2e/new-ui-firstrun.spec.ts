@@ -433,3 +433,91 @@ test.describe("new UI: the diagnostic-data step", () => {
     await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
   });
 });
+
+/**
+ * A session that changes while the window is in the background.
+ *
+ * The window reads account and OAuth state once at mount, and after its own
+ * sign-in actions. The popover re-read them on every focus; these check whether
+ * the window does.
+ */
+test.describe("new UI: the session on focus", () => {
+  // BUG: nothing in NewUiApp re-reads `oauth_status` after mount except its
+  // own sign-in actions. `useWindowReopen` fires on the blur -> focus edge but
+  // only re-checks updates, verdicts and activity, and the window listens for
+  // neither `session-changed` nor `session-signin-required` (only the tray
+  // does the first). A session that died in the background leaves the app
+  // shell up until the next launch.
+  test.fixme("an OAuth session that died while unfocused drops to re-sign-in", async ({ boot }) => {
+    const app = await boot({});
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
+
+    await app.emit("tauri://blur");
+    await app.patch({ oauth: { signed_in: false, email: null, expires_at_unix: 0 } });
+    await app.emit("tauri://focus");
+
+    await expect(app.page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
+  });
+
+  test("an API-key account is not dropped on focus", async ({ boot }) => {
+    // It has no session to expire, so a signed-out OAuth reading is not news.
+    const app = await boot({
+      account: { auth_mode: "api_key", has_api_key: true, org_id: null, org_name: null },
+      oauth: { signed_in: false, email: null, expires_at_unix: 0 },
+    });
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
+
+    await app.emit("tauri://blur");
+    await app.emit("tauri://focus");
+
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Session expired" })).toHaveCount(0);
+  });
+});
+
+test.describe("new UI: sign-in edges", () => {
+  test("signed in with no org picked boots to the org picker", async ({ boot }) => {
+    // A browser sign-in that finished before an organization was chosen: the
+    // gateway refuses requests without one, so this is not signed in yet.
+    const app = await boot({ account: { org_id: null, org_name: null } });
+
+    await expect(app.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+    await expect(app.page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
+    await expect.poll(() => app.lastCall("oauth_list_orgs")).not.toBeNull();
+
+    await app.page.getByRole("radio", { name: /Constellation Labs/ }).click();
+    await app.page.getByRole("button", { name: "Continue" }).click();
+
+    await expect
+      .poll(() => app.lastCall("set_org"))
+      .toEqual({ orgId: "org-1", orgName: "Constellation Labs" });
+    // Treated as a sign-in finishing here, so the rest of setup follows it.
+    await expect(app.page.getByRole("heading", { name: "Name this device" })).toBeVisible();
+  });
+
+  test("the no-organization dead end signs out, and the key form is one click on", async ({
+    boot,
+  }) => {
+    const app = await boot({ account: { org_id: null, org_name: null }, orgs: [] });
+
+    await expect(app.page.getByText("No organizations found.")).toBeVisible();
+    await app.page.getByRole("button", { name: "Go back" }).click();
+
+    // Back to the sign-in choice, not sideways into the key form: the spent
+    // session is dropped on the way, and the user is the one who ended it.
+    await expect.poll(() => app.lastCall("oauth_sign_out")).not.toBeNull();
+    await expect(app.page.getByRole("heading", { name: "You are signed out" })).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Use an API key" }).click();
+    await expect(app.page.getByRole("heading", { name: "Use an API key" })).toBeVisible();
+    await app.page.getByLabel("API key").fill("sk-gw-pasted");
+    await app.page.getByRole("button", { name: "Connect and continue" }).click();
+
+    await expect.poll(() => app.lastCall("save_account")).toMatchObject({
+      apiKey: "sk-gw-pasted",
+    });
+    await app.page.getByRole("button", { name: "Skip naming" }).click();
+    await expect(app.page.getByRole("heading", { name: "You're connected" })).toBeVisible();
+  });
+});
