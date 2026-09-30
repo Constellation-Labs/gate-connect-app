@@ -301,3 +301,72 @@ describe("what a set of several means", () => {
     expect(screen.queryByText(/own model picker lists/)).toBeNull();
   });
 });
+
+describe("the model picker, at the limit", () => {
+  const FIVE = [
+    ...CATALOGUE,
+    { id: "deepseek/deepseek-v4", vendor: "deepseek", tags: [] },
+    { id: "qwen/qwen3-6", vendor: "qwen", tags: [] },
+  ];
+
+  it("counts the draft against the limit, not the catalogue", () => {
+    renderPicker({ models: FIVE });
+    expect(screen.getByText("1 of 4 models selected")).toBeTruthy();
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+    fireEvent.click(box("openai/gpt-5"));
+    expect(screen.getByText("2 of 4 models selected")).toBeTruthy();
+  });
+
+  it("stops at four, and a cleared row frees a slot", () => {
+    const onSave = vi.fn();
+    renderPicker({ models: FIVE, onSave });
+    for (const id of ["openai/gpt-5", "moonshot/kimi-k3", "deepseek/deepseek-v4"]) {
+      fireEvent.click(box(id));
+    }
+    expect(screen.getByText("4 of 4 models selected")).toBeTruthy();
+    const fifth = box("qwen/qwen3-6") as HTMLButtonElement;
+    expect(fifth.disabled).toBe(true);
+    fireEvent.click(fifth);
+    expect(fifth.getAttribute("aria-checked")).toBe("false");
+    // A chosen row stays live, so the set can still be changed.
+    expect((box("openai/gpt-5") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(box("openai/gpt-5"));
+    expect(fifth.disabled).toBe(false);
+    fireEvent.click(fifth);
+    fireEvent.click(apply());
+    expect(onSave).toHaveBeenCalledWith([
+      "anthropic/claude-opus-5",
+      "moonshot/kimi-k3",
+      "deepseek/deepseek-v4",
+      "qwen/qwen3-6",
+    ]);
+  });
+
+  it("will not apply a set stored over the limit until it comes down", () => {
+    renderPicker({ models: FIVE, selectedIds: FIVE.map((m) => m.id) });
+    expect(screen.getByText("5 of 4 models selected")).toBeTruthy();
+    expect(apply().getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(box("qwen/qwen3-6"));
+    expect(apply().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("clears every selection without writing anything", () => {
+    const onSave = vi.fn();
+    renderPicker({ models: FIVE, selectedIds: [FIVE[0].id, FIVE[1].id], onSave });
+    fireEvent.click(screen.getByRole("button", { name: "Clear selections" }));
+    expect(screen.getByText("0 of 4 models selected")).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+    // An empty set cannot be applied, so clearing cannot leave the app with none.
+    expect(apply().getAttribute("aria-disabled")).toBe("true");
+    expect(
+      (screen.getByRole("button", { name: "Clear selections" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("draws no Clear selections when choosing one", () => {
+    renderPicker({ multiple: false });
+    expect(screen.queryByRole("button", { name: "Clear selections" })).toBeNull();
+    expect(screen.queryByText(/models selected/)).toBeNull();
+  });
+});

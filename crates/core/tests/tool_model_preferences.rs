@@ -205,3 +205,38 @@ fn a_change_written_by_another_process_is_picked_up() {
         Some(vec!["b/second".to_string(), "c/third".to_string()])
     );
 }
+
+/// A Gate choice stops at four models, before anything is stored; App default
+/// keeps whatever set it remembers, so a longer set stored by an older build
+/// can still be put back on the tool's own model.
+#[test]
+fn a_gate_choice_is_limited_to_four_models() {
+    use gate_connect_core::registry::ToolId;
+    use gate_connect_core::tool_models::{choose, MAX_GATE_MODELS};
+
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    // OpenCode stores a choice but has no Gate models config to write, so this
+    // exercises the limit without touching a tool's files.
+    let tool = ToolId::from_slug("opencode").expect("opencode is a tool");
+    let ids = |n: usize| {
+        (0..n)
+            .map(|i| format!("vendor/model-{i}"))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(MAX_GATE_MODELS, 4);
+    let err = choose(tool, ModelSource::Gate, ids(5), true, vec![])
+        .expect_err("five Gate models are refused");
+    assert!(err.to_string().contains("at most 4"), "{err:#}");
+    assert!(
+        !load().tool_models.contains_key("opencode"),
+        "a refused choice stores nothing"
+    );
+
+    choose(tool, ModelSource::Gate, ids(4), true, vec![]).expect("four are accepted");
+    assert_eq!(gate_models_for("opencode").map(|s| s.len()), Some(4));
+
+    choose(tool, ModelSource::Tool, ids(6), false, vec![])
+        .expect("App default is not held to the limit");
+}

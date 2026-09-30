@@ -61,6 +61,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  */
 export const GATE_MODEL_TOOLS: ReadonlySet<string> = new Set(["codex", "hermes", "claude-code"]);
 
+/**
+ * The most Gate models one app can be put on at once (design, 2026-09-30).
+ *
+ * The picker stops at this many and the backend refuses more
+ * (`tool_models::MAX_GATE_MODELS`), so the two move together.
+ */
+export const MAX_GATE_MODELS = 4;
+
 /** What Gate serves for one platform. Mirrors the gateway's `source`. */
 export type ModelSource = "tool" | "gate";
 

@@ -3187,19 +3187,10 @@ export function NewUiApp() {
                   else void saveModel("tool", step.modelIds);
                 },
                 gateModel: openModelId
-                  ? // Vendor from the id's own namespace rather than from the
-                    // catalogue: the catalogue is only loaded when the picker is
-                    // open, and a card that showed a vendor only while a dialog
-                    // was up would be stranger than one that reads it off the
-                    // id. AG-592 is where a selected model gets looked up and
-                    // told it is gone.
-                    {
-                      vendor: cardModelIds[0].split("/")[0],
-                      // The whole set: the card lists it rather than naming the
-                      // first and counting the rest in a heading nobody can
-                      // expand. Configured-first, for display only.
-                      ids: cardModelIds,
-                    }
+                  ? // The whole set, configured-first, for display only. The
+                    // card reads each vendor off the id: the catalogue is only
+                    // loaded while the picker is open.
+                    { ids: cardModelIds }
                   : null,
                 onChangeModel: () =>
                   setModelOverlay({
