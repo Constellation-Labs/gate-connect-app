@@ -135,8 +135,10 @@ export function useRouting({
   proxy: ProxyState | null;
   /** Fresh backend truth after any action, successful or not. */
   onSnapshot: (next: RoutingSnapshot) => void;
-  /** A failure the user should see, already classified by the caller. */
-  onError?: (error: unknown, context: string) => void;
+  /** A failure the user should see, already classified by the caller.
+   *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
+   *  caller can draw it on that tool's pane rather than across the window. */
+  onError?: (error: unknown, context: string, slug?: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   /**
@@ -528,7 +530,7 @@ export function useRouting({
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
           trackError(e, "connect", { tool: slug, routed });
-          onError?.(e, routed ? "connect" : "disconnect");
+          onError?.(e, routed ? "connect" : "disconnect", slug);
           setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {

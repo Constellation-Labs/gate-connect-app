@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { ReopenAlert, RoutingBanner } from "./banners";
+import { AlertBanner, ReopenAlert, RoutingBanner } from "./banners";
 
 afterEach(cleanup);
 
@@ -126,5 +126,27 @@ describe("RoutingBanner's fraction", () => {
     );
     expect(screen.getByText("No apps are routed")).toBeTruthy();
     expect(screen.queryByText(/of 0 Apps/)).toBeNull();
+  });
+});
+
+describe("AlertBanner", () => {
+  const props = {
+    title: "Couldn’t connect this tool",
+    body: "Click Connect again.",
+    on: false,
+    switchLabel: "Try Codex again",
+    onToggle: () => {},
+    onDismiss: () => {},
+  };
+
+  it("carries a failed write's underlying message behind Details", () => {
+    render(<AlertBanner {...props} details="failed to write ~/.codex/config.toml" />);
+    expect(screen.getByText("Details")).toBeTruthy();
+    expect(screen.getByText("failed to write ~/.codex/config.toml")).toBeTruthy();
+  });
+
+  it("draws no Details without one", () => {
+    render(<AlertBanner {...props} />);
+    expect(screen.queryByText("Details")).toBeNull();
   });
 });

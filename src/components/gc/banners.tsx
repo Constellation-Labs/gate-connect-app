@@ -360,6 +360,7 @@ export function AlertBanner({
   onToggle,
   onDismiss,
   paging,
+  details,
 }: {
   title: string;
   body: string;
@@ -373,6 +374,9 @@ export function AlertBanner({
   onDismiss: () => void;
   /** Present only in the multiple-apps variant. */
   paging?: { onPrev: () => void; onNext: () => void };
+  /** The underlying message behind a failed action, under the body; see
+   *  `ErrorDetails`. Only a failed tool write passes one. */
+  details?: string;
 }) {
   return (
     <div className="relative flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
@@ -381,6 +385,7 @@ export function AlertBanner({
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
           <p className="text-base-xs leading-4 tracking-label-12 text-gray-600">{body}</p>
+          <ErrorDetails raw={details} title={title} />
         </div>
       </div>
 

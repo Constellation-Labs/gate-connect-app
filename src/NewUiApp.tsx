@@ -69,6 +69,7 @@ import {
 import {
   CHECKING_DETAIL,
   REASON_DETAIL,
+  WRITE_FAILED_DETAIL,
   sectionStatus,
   verdictStatus,
   verdictsBySlug,
@@ -1091,6 +1092,21 @@ export function NewUiApp() {
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   /**
+   * A failed config write for one tool, by slug, drawn on that tool's pane and
+   * not in the window-wide banner (`noticeChain`): the banner stood over
+   * Overview, Settings and every other app for a fault in one app's config.
+   * The window banner keeps what is not one app's - the engine, the
+   * certificate, a sign-in.
+   *
+   * `routed` is the direction that failed, so the card's switch can show the
+   * state the tool is still in and retry the same write. Drawn only while
+   * `useRouting` still records the failure, so a later write that lands takes
+   * the card with it.
+   */
+  const [toolWriteErrors, setToolWriteErrors] = useState<
+    Readonly<Record<string, { error: ClassifiedError; routed: boolean }>>
+  >({});
+  /**
    * Routing work that was recorded and did not finish, read from the provider
    * snapshots. Null until the first read; empty lists mean nothing outstanding,
    * which is the normal case.
@@ -1139,7 +1155,7 @@ export function NewUiApp() {
       // reopen, and the relay may have been auto-enabled by the connect.
       void refreshVerdicts();
     },
-    onError: (e, context) => {
+    onError: (e, context, slug) => {
       // `connect` covers both directions of a tool write: the remedy copy is the
       // same either way. The engine-level actions are the ones whose remedy
       // genuinely differs - a cancelled certificate prompt has nothing to do
@@ -1154,6 +1170,14 @@ export function NewUiApp() {
       ];
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
       const classified = classifyError(e, ctx);
+      // One tool's write: its pane, not the window. See `toolWriteErrors`.
+      if (slug && (context === "connect" || context === "disconnect")) {
+        setToolWriteErrors((prev) => ({
+          ...prev,
+          [slug]: { error: classified, routed: context === "connect" },
+        }));
+        return;
+      }
       setActionError(
         // Unreachable from this shell since the family switches came off the
         // rail on 2026-08-27: `setFamilyRouted` is the only thing that throws
@@ -2434,6 +2458,19 @@ export function NewUiApp() {
    * Nothing for "Checking" either: the sweep has not answered, and a card
    * saying the app isn't protected would be a claim nobody measured.
    */
+  /**
+   * The open pane's failed tool write, if one of its members has one. First
+   * member wins: a section is one app, and one card says what failed.
+   */
+  const paneWriteError = useMemo(() => {
+    if (view.kind !== "app") return null;
+    for (const key of sectionMemberKeys(view.slug)) {
+      const failure = toolWriteErrors[key];
+      if (failure && routing.writeFailures.has(key)) return { slug: key, ...failure };
+    }
+    return null;
+  }, [view, toolWriteErrors, routing.writeFailures]);
+
   const statusNote = useMemo(() => {
     if (view.kind !== "app") return undefined;
     const app = appFor(railApps, view.slug);
@@ -2441,13 +2478,15 @@ export function NewUiApp() {
     const detail = app.status.detail;
     if (!detail || detail === CHECKING_DETAIL) return undefined;
     if (reopenAlert && detail === REASON_DETAIL.reopen_required) return undefined;
+    // The failed-write card below already names this, with the retry.
+    if (paneWriteError && detail === WRITE_FAILED_DETAIL) return undefined;
     if (
       paneNotice?.id.startsWith("drifted:") &&
       detail === REASON_DETAIL.configuration_changed
     )
       return undefined;
     return <PaneNote title={`${app.name} isn’t protected`} body={detail} />;
-  }, [view, reopenAlert, paneNotice, railApps]);
+  }, [view, reopenAlert, paneNotice, paneWriteError, railApps]);
 
   const onMenuSelect = useCallback(
     (action: MenuAction) => {
@@ -3282,6 +3321,31 @@ export function NewUiApp() {
           // per surface as attribution improves rather than needing a sweep.
           alert={
             <>
+              {/* First: the write the user just asked for did not happen, and
+                * the app is left where it was. The single-app alert
+                * (`1426:35788`), its switch showing that state; toggling it
+                * tries the same write again. */}
+              {paneWriteError && (
+                <AlertBanner
+                  key={`write:${paneWriteError.slug}`}
+                  title={paneWriteError.error.title}
+                  body={paneWriteError.error.hint}
+                  details={paneWriteError.error.raw}
+                  on={!paneWriteError.routed}
+                  switchLabel={`Try ${toolName(paneWriteError.slug) ?? "this app"} again`}
+                  busy={routingBusy}
+                  onToggle={() =>
+                    void routeApp(paneWriteError.slug, paneWriteError.routed)
+                  }
+                  onDismiss={() =>
+                    setToolWriteErrors((prev) => {
+                      const next = { ...prev };
+                      delete next[paneWriteError.slug];
+                      return next;
+                    })
+                  }
+                />
+              )}
               {reopenAlert}
               {/* Scope first, then the caveat on it. On a Linux chat row both of
                   these draw, and in the other order they read as two unrelated
