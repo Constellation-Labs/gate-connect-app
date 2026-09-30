@@ -429,7 +429,9 @@ impl ProxyManager {
     }
 
     /// Push a refreshed OAuth access token into the running daemon, if any.
-    /// Empty string reverts to the API key. Re-sends the current account/CA
+    /// Empty string means no live session: the engine falls back to the API
+    /// key in legacy mode, and refuses routed requests as signed out on an
+    /// OAuth account, which holds no key. Re-sends the current account/CA
     /// so the live update carries the new token to in-flight routing.
     pub fn refresh_token(&self, oauth_token: &str) {
         if let Some(client) = self

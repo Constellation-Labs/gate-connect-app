@@ -629,7 +629,7 @@ impl Drop for CfChallengeSolve {
 /// desktop OS. In the Linux helper daemon the observer is the daemon's own
 /// refusal counter, which the GUI polls (`refused_since_last_look`), because the
 /// shell that can recover the session is a different process.
-static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
+static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>> =
     std::sync::OnceLock::new();
 
 /// Whether the helper daemon's refusal counter shows a new refusal since the
@@ -673,16 +673,35 @@ static GATE_AUTH_NEXT_ALLOWED: std::sync::Mutex<Option<std::time::Instant>> =
 
 /// Register the gateway-auth observer. First registration wins; later calls
 /// are ignored (the shell registers exactly once at setup).
-pub fn set_gate_auth_observer(observer: impl Fn() + Send + Sync + 'static) {
+///
+/// The observer reports whether a verdict will reach the token watch: the
+/// desktop shell's re-check pushes one (a recovered token, or the empty token
+/// for a dead session), so it answers `true`; the Linux helper daemon's
+/// counter only records the refusal for the GUI to poll, so it answers
+/// `false`. The relay's retry waits on the watch exactly when the answer is
+/// `true`.
+pub fn set_gate_auth_observer(observer: impl Fn() -> bool + Send + Sync + 'static) {
     let _ = GATE_AUTH_OBSERVER.set(Box::new(observer));
 }
 
 /// Invoke the registered gateway-auth observer, if any, unless a check is
 /// already in flight or the last one's cooldown is still running. Called by
 /// the engine's `handle_response` on a 401 to a request we authenticated.
-pub(crate) fn notify_gate_auth_observer() {
+///
+/// Returns whether a verdict may follow on the token watch: what the observer
+/// answered when it ran, `true` while a check is already in flight, and
+/// `false` when there is no observer or the cooldown is running. The relay's
+/// retry waits on the watch exactly when this is `true`; on `false` nothing
+/// will change and a caller holding a refusal should pass it on now.
+///
+/// "In flight" says a check is running, not that it will push anything for
+/// this caller: it may have pushed its verdict already, reach none, or belong
+/// to an observer that never pushes (the Linux daemon's, whose latch is held
+/// only while it counts). So a waiter also stops at the check's end,
+/// [`GATE_AUTH_CHECK_DONE`], rather than only at a push or its deadline.
+pub(crate) fn notify_gate_auth_observer() -> bool {
     let Some(observer) = GATE_AUTH_OBSERVER.get() else {
-        return;
+        return false;
     };
     let cooling = GATE_AUTH_NEXT_ALLOWED
         .lock()
@@ -696,7 +715,7 @@ pub(crate) fn notify_gate_auth_observer() {
                  session re-check's cooldown is still running"
             );
         }
-        return;
+        return false;
     }
     if GATE_AUTH_CHECKING.swap(true, std::sync::atomic::Ordering::AcqRel) {
         if engine::debug_log() {
@@ -704,9 +723,9 @@ pub(crate) fn notify_gate_auth_observer() {
                 "[gate-proxy] gateway rejected our bearer while a session re-check is in flight"
             );
         }
-        return;
+        return true;
     }
-    observer();
+    observer()
 }
 
 /// Holds the re-check latch for the life of one check and releases it on
@@ -729,7 +748,16 @@ pub fn gate_auth_check_finished() {
         *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
     }
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
+    // Last, so a waiter woken here finds the cooldown already running.
+    GATE_AUTH_CHECK_DONE.notify_waiters();
 }
+
+/// Wakes every relay request waiting on a check's verdict when that check
+/// ends. The verdict itself travels on the token watch and is pushed before
+/// the check's guard drops, so by the time this fires the watch holds
+/// whatever the check decided; a waiter that still sees the refused token
+/// then has nothing more to wait for.
+pub(crate) static GATE_AUTH_CHECK_DONE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// The last `cf_clearance` a solve captured, kept for the life of the
 /// process so an engine restart does not throw it away.
@@ -1660,7 +1688,8 @@ pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
 /// can't ride alongside the credential we inject) and the live credential is
 /// added: a non-empty `oauth_token` wins - `X-Gate-Authorization: Bearer
 /// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
-/// `X-Gate-Api-Key`.
+/// `X-Gate-Api-Key`, and an error when there is neither (the `None` arm says
+/// why an empty key is not a credential).
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
@@ -1692,6 +1721,17 @@ pub(crate) fn inject_gate_credential(
             return Ok(true);
         }
         None => {
+            // The state `lacks_gate_credential` names. An empty header would
+            // go out as a credential and be refused as one, so this is an
+            // error rather than a header. Both callers test that predicate
+            // first and answer the tool themselves, so this is unreachable
+            // from either today. It is a real guard only on the relay, whose
+            // `?` sends nothing on an error; the engine's caller has already
+            // rewritten the URI to the gateway and forwards the request on an
+            // error, so there this would go out bare.
+            if api_key.is_empty() {
+                anyhow::bail!("no Gate credential to inject: no live OAuth session and no API key");
+            }
             headers.insert(
                 HeaderName::from_static(GATE_KEY_HEADER),
                 HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
@@ -1700,6 +1740,50 @@ pub(crate) fn inject_gate_credential(
     }
     Ok(false)
 }
+
+/// Whether a rewrite has no Gate credential to go out under: no live OAuth
+/// token, no legacy key, and nothing the caller brought itself. One predicate
+/// for both paths, beside the injection rule, for the reason the rule is
+/// shared: the engine and the relay must refuse the same requests.
+///
+/// The state it names is an OAuth account whose session is dead. Such an
+/// account holds no key - [`crate::account::load`] keeps it that way, so a key
+/// pasted before the switch to OAuth cannot quietly carry a dead session - and
+/// a request sent bare would come back as the gateway's complaint about a
+/// missing API key, a credential the account never had. So both paths answer
+/// the tool themselves, with [`signed_out_body`]. A caller carrying its own
+/// `x-gate-api-key` is served under it, session or no session, as
+/// [`inject_gate_credential`] says.
+pub(crate) fn lacks_gate_credential(headers: &HeaderMap, api_key: &str, oauth_token: &str) -> bool {
+    oauth_token.is_empty() && api_key.is_empty() && !headers.contains_key(GATE_KEY_HEADER)
+}
+
+/// What a routed request is told when [`lacks_gate_credential`] holds. It says
+/// what to do, in words that fit the app and the standalone CLI relay alike:
+/// the CLI signs in with `gate-connect login`.
+pub(crate) const SIGNED_OUT_MESSAGE: &str =
+    "Gate Connect is signed out; sign in to Gate Connect to keep routing through Gate";
+
+/// The 401 body both paths send when [`lacks_gate_credential`] holds: the
+/// provider error envelope shape the engine's other local answers use, typed
+/// `gate_signed_out` so a client log can be searched for it. One body rather
+/// than two, so the relay and the engine cannot say different things, and
+/// built rather than interpolated so the sentence can hold any character.
+pub(crate) fn signed_out_body() -> String {
+    serde_json::json!({
+        "error": { "message": SIGNED_OUT_MESSAGE, "type": "gate_signed_out" }
+    })
+    .to_string()
+}
+
+/// The headers on the [`signed_out_body`] 401, on both paths. A 401 names its
+/// scheme (RFC 9110 11.6.1), and the body is JSON a tool may render, so it is
+/// never sniffed as anything else.
+pub(crate) const SIGNED_OUT_HEADERS: [(&str, &str); 3] = [
+    ("content-type", "application/json"),
+    ("www-authenticate", "Bearer realm=\"Gate Connect\""),
+    ("x-content-type-options", "nosniff"),
+];
 
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,
@@ -2523,16 +2607,23 @@ mod tests {
         static FIRED: AtomicUsize = AtomicUsize::new(0);
         super::set_gate_auth_observer(|| {
             FIRED.fetch_add(1, Ordering::SeqCst);
+            true
         });
 
-        super::notify_gate_auth_observer();
+        assert!(
+            super::notify_gate_auth_observer(),
+            "a check that started will put a verdict on the watch"
+        );
         assert_eq!(
             FIRED.load(Ordering::SeqCst),
             1,
             "the first refusal starts a check"
         );
 
-        super::notify_gate_auth_observer();
+        assert!(
+            super::notify_gate_auth_observer(),
+            "a check in flight will still put its verdict on the watch"
+        );
         assert_eq!(
             FIRED.load(Ordering::SeqCst),
             1,
@@ -2542,7 +2633,10 @@ mod tests {
         // The check finished; the cooldown it starts covers the responses
         // still in flight when it did, which all carry the same 401.
         super::gate_auth_check_finished();
-        super::notify_gate_auth_observer();
+        assert!(
+            !super::notify_gate_auth_observer(),
+            "inside the cooldown nothing will change, and a refusal must be passed on"
+        );
         assert_eq!(
             FIRED.load(Ordering::SeqCst),
             1,
@@ -4008,5 +4102,20 @@ mod refusal_edge_tests {
     fn a_restarted_daemon_is_read_from_zero() {
         assert!(!refused_since_last_look(Some(9), 0));
         assert!(refused_since_last_look(Some(9), 1));
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    /// No token and no key is not "an empty key": the header would go out as
+    /// a credential and be refused as one, so it is an error instead.
+    #[test]
+    fn injecting_with_no_credential_is_an_error() {
+        let mut headers = HeaderMap::new();
+        let err = inject_gate_credential(&mut headers, "", None, None).unwrap_err();
+        assert!(err.to_string().contains("no Gate credential"), "{err:#}");
+        assert!(headers.get(GATE_KEY_HEADER).is_none());
     }
 }

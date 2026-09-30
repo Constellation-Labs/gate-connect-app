@@ -633,24 +633,11 @@ async fn proxy(
     strip_hop_by_hop(&mut headers);
     headers.remove(HOST);
     let target = match route {
-        Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("injecting Gate credential: {e:#}"),
-                )
-            })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
-            format!("{}{}", state.gateway_base, routed.path_and_query)
-        }
+        // The credential and the upstream hint go on per attempt, below: a
+        // 401 for our bearer is retried once under the token the session
+        // re-check mints, and the retry needs these headers as they were
+        // before the first credential went on.
+        Route::Rewrite => format!("{}{}", state.gateway_base, routed.path_and_query),
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
             // `Authorization`; never inject the Gate credential here.
@@ -684,19 +671,70 @@ async fn proxy(
         })?
         .to_bytes();
 
-    let upstream_resp = state
-        .client
-        .request(method, &target)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("forwarding to gateway: {e}"),
-            )
-        })?;
+    let send = |headers: HeaderMap| {
+        state
+            .client
+            .request(method.clone(), &target)
+            .headers(headers)
+            .body(body.clone())
+            .send()
+    };
+    let forwarding_failed = |e: reqwest::Error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("forwarding to gateway: {e}"),
+        )
+    };
+    let upstream_resp = match route {
+        Route::Passthrough => send(headers).await.map_err(forwarding_failed)?,
+        Route::Rewrite => {
+            // Watch the token from before it is read, so a replacement that
+            // lands while this request is out is seen by the wait in
+            // `recovered_token` rather than missed: `borrow_and_update` marks
+            // the value this request carries as seen, and only a later push
+            // wakes the wait.
+            let mut token_rx = state.token.clone();
+            let token: Arc<str> = token_rx.borrow_and_update().clone();
+            // Refused before anything is sent: see `lacks_gate_credential`.
+            // The relay's other errors are bare sentences; this one is the
+            // body a tool is meant to parse and search, so it is typed.
+            // Read once and carried into both rewrites, so the refusal check
+            // and the injection judge the same key.
+            let api_key: Arc<str> = state.api_key.borrow().clone();
+            if super::lacks_gate_credential(&headers, &api_key, &token) {
+                return Ok(signed_out_response());
+            }
+            let mut attempt = headers.clone();
+            let sent_ours =
+                rewrite_headers(&mut attempt, state, &api_key, &token, &routed.upstream_url)?;
+            let resp = send(attempt).await.map_err(forwarding_failed)?;
+            if sent_ours && resp.status() == StatusCode::UNAUTHORIZED {
+                let recovered = recovered_token(
+                    &mut token_rx,
+                    &token,
+                    super::notify_gate_auth_observer,
+                    &super::GATE_AUTH_CHECK_DONE,
+                )
+                .await;
+                match recovered {
+                    None => resp,
+                    Some(fresh) => {
+                        let mut attempt = headers;
+                        rewrite_headers(
+                            &mut attempt,
+                            state,
+                            &api_key,
+                            &fresh,
+                            &routed.upstream_url,
+                        )?;
+                        send(attempt).await.map_err(forwarding_failed)?
+                    }
+                }
+            } else {
+                resp
+            }
+        }
+    };
 
     let mut builder = Response::builder().status(upstream_resp.status());
     if let Some(dst) = builder.headers_mut() {
@@ -721,19 +759,132 @@ async fn proxy(
     })
 }
 
-/// Inject the live Gate credential, via the rule shared with the MITM engine
-/// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
-    // Clone the values out of the watch guards so no lock is held.
-    let token: Arc<str> = state.token.borrow().clone();
-    let api_key: Arc<str> = state.api_key.borrow().clone();
+/// Put the Gate credential and the upstream hint on a rewrite, with `token` as
+/// the bearer: the value read off the watch before the send, so the gateway's
+/// answer can be compared against exactly what went out. `api_key` is the one
+/// the caller tested `lacks_gate_credential` against, for the same reason. The credential
+/// follows the rule shared with the MITM engine ([`inject_gate_credential`]):
+/// a caller-supplied `x-gate-api-key` is left untouched, otherwise an OAuth
+/// token wins over the legacy key. Returns whether the bearer that went on was
+/// ours; `false` for either of those other cases, which a refusal must not
+/// retry - a refused key is a different problem with a different fix, and a
+/// caller's own credential is not ours to recover.
+///
+/// The caller has already refused a request with no credential at all
+/// (`lacks_gate_credential`), so the error from [`inject_gate_credential`] on
+/// that state is a guard, not a path.
+fn rewrite_headers(
+    headers: &mut HeaderMap,
+    state: &RelayState,
+    api_key: &str,
+    token: &str,
+    upstream_url: &str,
+) -> Result<bool, (StatusCode, String)> {
+    // Clone the value out of the watch guard so no lock is held.
     let org: Arc<str> = state.org.borrow().clone();
-    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+    let oauth_token = (!token.is_empty()).then_some(token);
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    // The relay has no response hook to feed, so what was injected is not
-    // news here.
-    inject_gate_credential(headers, &api_key, oauth_token, org_id).map(|_| ())
+    let injected = inject_gate_credential(headers, api_key, oauth_token, org_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("injecting Gate credential: {e:#}"),
+        )
+    })?;
+    // We set the upstream hint, overwriting anything the caller sent. The
+    // value comes from the catalog entry we resolved, so a local process
+    // can't aim the gateway at a host of its choosing.
+    set_upstream_header(headers, upstream_url).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+        )
+    })?;
+    Ok(injected)
+}
+
+/// How long a refused request waits for the session re-check's verdict before
+/// the 401 goes back to the tool unchanged. The re-check is one Cognito round
+/// trip and one gateway probe, normally a second or two, and the wait ends as
+/// soon as the check does: at its verdict on the token watch (a recovered
+/// token, or the empty token the shell pushes for a dead session), or at its
+/// end without one. So this bounds only a check that is itself slow - an
+/// identity provider or gateway that neither answers nor fails.
+const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
+
+/// A replacement for `sent`, the bearer the gateway has just refused, if the
+/// session re-check produces one in time.
+///
+/// The refusal goes to the same observer the MITM engine's response hook
+/// feeds (`notify`, which is [`super::notify_gate_auth_observer`] outside
+/// tests), so a 401 seen here recovers the session the way one seen there
+/// does. It did not, before this: the relay's gateway hop is its own reqwest
+/// client and never crosses that hook, so a Claude Code turn refused after a
+/// sleep was left to the 30s tick. The verdict arrives on the token watch,
+/// which is what the shell pushes it through
+/// ([`RunningEngine::update_token`](super::engine::RunningEngine::update_token)):
+/// a non-empty value other than `sent` is a token worth retrying under; the
+/// empty string is a dead session, and the 401 stands.
+///
+/// The watch is read before the observer is asked: the previous refusal's
+/// re-check, or the 30s tick, may already have replaced the bearer between
+/// this request's read and the gateway's answer, and a re-check is not owed
+/// twice. The wait then loops rather than taking the first wake-up, because a
+/// push bumps the watch whether or not the value moved and the 30s tick
+/// re-pushes an unchanged token every tick: a tick inside the re-check window
+/// must not hand the 401 to the tool moments before the recovered token lands.
+///
+/// It also ends when the check does (`check_done`, which is
+/// [`super::GATE_AUTH_CHECK_DONE`] outside tests). The check pushes its verdict
+/// before it ends, so a waiter still holding the refused token at that point
+/// has none coming: the check reached no verdict, or already delivered one this
+/// request was sent under, or was the Linux daemon's, which only counts. The
+/// wakeup is registered before the observer is asked, so an end that lands in
+/// between is not missed.
+///
+/// No wait at all when `notify` says no verdict is coming: the Linux helper
+/// daemon's observer answers so, since the GUI's re-check reaches its relay one
+/// or two ticks later.
+async fn recovered_token(
+    token_rx: &mut watch::Receiver<Arc<str>>,
+    sent: &str,
+    notify: impl FnOnce() -> bool,
+    check_done: &tokio::sync::Notify,
+) -> Option<Arc<str>> {
+    let check_over = check_done.notified();
+    tokio::pin!(check_over);
+    check_over.as_mut().enable();
+    let mut notify = Some(notify);
+    let mut ended = false;
+    let deadline = tokio::time::Instant::now() + RECOVERED_TOKEN_WAIT;
+    loop {
+        let now: Arc<str> = token_rx.borrow_and_update().clone();
+        if now.is_empty() {
+            // A dead session: the 401 stands.
+            return None;
+        }
+        if now.as_ref() != sent {
+            return Some(now);
+        }
+        // Still the refused token.
+        if ended {
+            return None;
+        }
+        if let Some(notify) = notify.take() {
+            if !notify() {
+                return None;
+            }
+        }
+        tokio::select! {
+            changed = tokio::time::timeout_at(deadline, token_rx.changed()) => {
+                // `Err` is the deadline, or a sender that is gone because the
+                // engine is stopping; either way the 401 stands.
+                if !matches!(changed, Ok(Ok(()))) {
+                    return None;
+                }
+            }
+            () = &mut check_over => ended = true,
+        }
+    }
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -916,6 +1067,20 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in names {
         headers.remove(&name);
     }
+}
+
+/// A local answer with a JSON body, for the one refusal a tool is meant to
+/// parse and search ([`signed_out_body`](super::signed_out_body)). Every other
+/// relay error is a bare sentence from [`error_response`].
+/// The relay's 401 when `lacks_gate_credential` holds: the engine's
+/// `signed_out_response`, body and headers alike.
+fn signed_out_response() -> Response<BoxBody<Bytes, std::io::Error>> {
+    let mut resp = error_response(StatusCode::UNAUTHORIZED, super::signed_out_body());
+    for (name, value) in super::SIGNED_OUT_HEADERS {
+        resp.headers_mut()
+            .insert(name, hyper::header::HeaderValue::from_static(value));
+    }
+    resp
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {
@@ -1126,5 +1291,117 @@ mod tests {
         let (_listener, bound) = bind_relay_behind(Some(taken)).expect("a fresh port");
         assert_ne!(bound, taken);
         assert!(bind_relay(Some(taken)).is_err());
+    }
+
+    /// A watch holding the refused token, as the relay leaves it: the request
+    /// read it with `borrow_and_update`, so only a later push is news.
+    fn refused_watch() -> (watch::Sender<Arc<str>>, watch::Receiver<Arc<str>>) {
+        let (tx, mut rx) = watch::channel::<Arc<str>>(Arc::from("stale"));
+        rx.borrow_and_update();
+        (tx, rx)
+    }
+
+    /// The 30s tick re-pushes an unchanged token, and a push bumps the watch
+    /// whether or not the value moved. One landing inside the re-check window
+    /// must not end the wait: the token the check pushes after it is the one
+    /// to retry under.
+    #[tokio::test]
+    async fn a_same_value_push_does_not_end_the_wait() {
+        let (tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let pusher = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(Arc::from("stale")).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(Arc::from("fresh")).unwrap();
+            tx
+        });
+        let got = recovered_token(&mut rx, "stale", || true, &check_done).await;
+        assert_eq!(got.as_deref(), Some("fresh"));
+        drop(pusher.await.unwrap());
+    }
+
+    /// A check that ends without moving the watch has no verdict for this
+    /// request: it reached none, or it delivered one before this request was
+    /// sent under it. The wait ends with the check, not at the deadline.
+    #[tokio::test]
+    async fn the_wait_ends_when_the_check_does() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = Arc::new(tokio::sync::Notify::new());
+        let ender = Arc::clone(&check_done);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            ender.notify_waiters();
+        });
+        let started = std::time::Instant::now();
+        let got = recovered_token(&mut rx, "stale", || true, &check_done).await;
+        assert_eq!(got, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the check's end, not the deadline, ends the wait"
+        );
+    }
+
+    /// The Linux daemon's check starts and ends inside one observer call, so
+    /// a request that sees its latch set can be told a verdict is coming by a
+    /// check that has already ended. That end was registered before the ask,
+    /// so it is not missed.
+    #[tokio::test]
+    async fn a_check_that_ends_before_the_wait_starts_is_not_missed() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let started = std::time::Instant::now();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || {
+                check_done.notify_waiters();
+                true
+            },
+            &check_done,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// An observer that says no verdict is coming - no observer, the
+    /// cooldown, the daemon's counter - means the 401 is passed on at once.
+    #[tokio::test]
+    async fn no_wait_when_no_verdict_is_coming() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let asked = std::cell::Cell::new(false);
+        let started = std::time::Instant::now();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || {
+                asked.set(true);
+                false
+            },
+            &check_done,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(asked.get(), "the refusal is still reported");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A token replaced between this request's read and the gateway's answer
+    /// is retried under at once, and no second re-check is asked for.
+    #[tokio::test]
+    async fn a_token_already_replaced_is_used_without_asking() {
+        let (tx, mut rx) = refused_watch();
+        tx.send(Arc::from("fresh")).unwrap();
+        let check_done = tokio::sync::Notify::new();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || panic!("a re-check is not owed twice"),
+            &check_done,
+        )
+        .await;
+        assert_eq!(got.as_deref(), Some("fresh"));
     }
 }
