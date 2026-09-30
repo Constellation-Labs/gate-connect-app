@@ -327,9 +327,9 @@ export function NewUiApp() {
    * key is in the keychain rather than drawing a fabricated `sk-gw` and twenty
    * asterisks, which is what it used to do.
    *
-   * `backfill_account_key_prefix` could recover it from the keychain and is
-   * deliberately not called: it can raise an OS prompt, and this row is a passive
-   * mask nobody asked to reveal.
+   * Recovering it would mean reading the key from the keychain, which can raise
+   * an OS prompt, and this row is a passive mask nobody asked to reveal. (The
+   * popover's `backfill_account_key_prefix` did that; it went with it.)
    */
   const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
   /**
