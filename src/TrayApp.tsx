@@ -22,7 +22,7 @@ import {
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
@@ -55,7 +55,6 @@ import { Modal } from "./components/gc/Modal";
 import {
   reopenSubjects,
   ApplyChangesDialog,
-  ChangeReadyDialog,
   CloseAppsDialog,
   OpenCodeEnvDialog,
   ReviewConfigDialog,
@@ -518,20 +517,17 @@ export function TrayApp() {
   });
 
   /**
-   * The reopen flow draws a dialog for every stage but one: `work` shows only
-   * "Change is ready", once every tool verifies. Until then the stage runs with
-   * nothing on screen, so the rail carries it, and a CLI waiting for its user to
-   * reopen it can stay there indefinitely.
+   * The reopen flow draws a dialog for the offer and the confirmation only.
+   * `work` runs with nothing on screen, so the rail carries it, and a CLI
+   * waiting for its user to reopen it can stay there indefinitely. It used to
+   * end on a "Change is ready" dialog once every tool verified; that dialog is
+   * not in the Figma and went on 2026-09-30, by the user's decision.
    */
   const reopenDialogShown =
-    runningApps.stage !== null &&
-    (runningApps.stage.kind !== "work" || allVerified(runningApps.stage.tools));
-  /** Every tool is done and they did not all verify: nothing will be drawn, so
-   * end the flow. */
+    runningApps.stage !== null && runningApps.stage.kind !== "work";
+  /** Every tool is done: nothing is drawn for the outcome, so end the flow. */
   const reopenOutcomeUndrawn =
-    runningApps.stage?.kind === "work" &&
-    allSettled(runningApps.stage.tools) &&
-    !allVerified(runningApps.stage.tools);
+    runningApps.stage?.kind === "work" && allSettled(runningApps.stage.tools);
   const { dismiss: dismissRunningApps } = runningApps;
   useEffect(() => {
     if (reopenOutcomeUndrawn) dismissRunningApps();
@@ -1008,20 +1004,6 @@ export function TrayApp() {
               tools={reopenSubjects(runningApps.stage.tools)}
               onGoBack={runningApps.goBack}
               onCloseApps={() => void runningApps.closeApps()}
-            />
-          ) : runningApps.stage?.kind === "work" &&
-            allVerified(runningApps.stage.tools) ? (
-            // The all-clear as drawn. Anything else is left to the rail, and
-            // `useRunningApps` ends the stage for it.
-            <ChangeReadyDialog
-              app={{
-                name:
-                  runningApps.stage.tools.length === 1
-                    ? runningApps.stage.tools[0].name
-                    : "The affected apps",
-              }}
-              plural={runningApps.stage.tools.length !== 1}
-              onDone={runningApps.dismiss}
             />
           ) : null}
         </>

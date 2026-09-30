@@ -262,17 +262,20 @@ test.describe("new UI running apps", () => {
     await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
-    // Nothing on screen while Gate waits for the user: only the all-clear is
-    // drawn for this stage.
+    // Nothing on screen while Gate waits for the user: this stage draws no
+    // dialog, and the rail carries it.
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
 
-    // The user opens it again.
+    // The user opens it again. The verified reopen reads as routing on the
+    // rail, and no all-clear dialog follows ("Change is ready" is not in the
+    // Figma, and went on 2026-09-30).
     await app.patch({ runningAgentNames: ["codex"] });
 
-    await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
   /**

@@ -359,9 +359,3 @@ export function nextStage(
 export function allSettled(tools: ReopenTool[]): boolean {
   return tools.every((t) => isTerminal(t.stage));
 }
-
-/** Everything landed and was checked, which is the one outcome that needs no
- *  account of itself - the design draws "Change is ready" for it. */
-export function allVerified(tools: ReopenTool[]): boolean {
-  return tools.length > 0 && tools.every((t) => bucketOf(t.stage) === "verified");
-}

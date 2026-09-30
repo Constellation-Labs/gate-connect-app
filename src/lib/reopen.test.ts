@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunningAgent, Verdict } from "./api";
 import {
-  allVerified,
   bucketOf,
   isTerminal,
   nextStage,
@@ -201,17 +200,6 @@ describe("the account of what happened", () => {
     expect(bucketOf("verifying")).toBeNull();
     expect(isTerminal("verifying")).toBe(false);
   });
-
-  it("only calls it done when every tool was checked", () => {
-    expect(allVerified([tool({ stage: "routing" }), tool({ stage: "not_routed" })])).toBe(
-      true,
-    );
-    expect(
-      allVerified([tool({ stage: "routing" }), tool({ stage: "awaiting_reopen" })]),
-    ).toBe(false);
-    // Nothing to be done about is not the same as everything worked.
-    expect(allVerified([])).toBe(false);
-  });
 });
 
 describe("what a stage says", () => {
@@ -294,7 +282,6 @@ describe("a tool the sweep is never going to answer for", () => {
     // the one routing claim in this app with nothing behind it.
     expect(isTerminal("reopened")).toBe(true);
     expect(bucketOf("reopened")).toBe("reopened");
-    expect(allVerified([app({ stage: "reopened" })])).toBe(false);
   });
 
   it("still lets Gate close and relaunch it first", () => {

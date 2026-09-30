@@ -609,59 +609,6 @@ export function CloseAppsDialog({
 }
 
 /**
- * The all-clear, drawn at `134:61659`.
- *
- * **The copy deviates from the frame, and AG-880 is why.** The frame's subtitle
- * ("Codex closed successfully") and its body ("Open Codex whenever you are
- * ready to continue") describe the moment straight after the SIGTERM, which is
- * where this dialog used to fire - `stage.kind === "done"`, out of `closeApps`.
- * AG-566 moved the tail behind `allVerified`, and `bucketOf` returns `verified`
- * only for `routing` and `not_routed`, both of which mean the tool came back up
- * and Gate took a reading on it. So no state is left in which this dialog draws
- * and the user still has an app to open, and the drawn instruction asked for a
- * step they had already finished.
- *
- * "the change" rather than "the new Gate route": `not_routed` lands in the
- * same bucket, and that is the verdict when the change being applied was
- * routing *off*. Naming Gate there would claim a path the tool is not on. And
- * not "the new route" either, since a Gate model write stamps `config_changes`
- * and raises this flow too, where what changed is the tool's model.
- */
-export function ChangeReadyDialog({
-  app,
-  plural = false,
-  onDone,
-}: {
-  app: DialogApp;
-  /** Whether `app.name` stands for several apps ("The affected apps"), so the
-   *  subtitle agrees with its subject. Both call sites close a set. */
-  plural?: boolean;
-  onDone: () => void;
-}) {
-  return (
-    <Modal
-      tone="success"
-      icon="circleCheck"
-      title="Change is ready"
-      subtitle={`${app.name} ${plural ? "are" : "is"} back with the change applied`}
-      primary={{ label: "Done", onClick: onDone }}
-      onDismiss={onDone}
-      width={512}
-    >
-      <ModalNote>
-        <p className="font-medium text-base-foreground">
-          The change is active and in use.
-        </p>
-        <p className="mt-1">
-          Gate verified the route after the restart, so there is nothing left to
-          do.
-        </p>
-      </ModalNote>
-    </Modal>
-  );
-}
-
-/**
  * The whole state of this install as text. Shown before it is copied, never
  * copied blind - `screens/Diagnostics.tsx` argues the point and it still holds:
  * this app installs a root certificate, runs a local proxy and holds a
