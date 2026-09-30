@@ -27,10 +27,31 @@ describe("the analytics broadcasts the backend emits", () => {
     expect(lib).toContain(`const ANALYTICS_CONSENT_EVENT: &str = "${ANALYTICS_CONSENT_EVENT}";`);
   });
 
-  it("announces the identity after a sign-out and after Reset", () => {
-    expect(body("async fn oauth_sign_out()")).toContain("forget_analytics_identity();");
-    expect(body("async fn clear_account()")).toContain("forget_analytics_identity();");
-    expect(body("fn forget_and_announce(")).toContain("emit(ANALYTICS_IDENTITY_EVENT, load());");
+  it("announces the identity after a sign-out, a Reset and a key save", () => {
+    // The core forgets or retires (`oauth::clear`, `account::save`; pinned by
+    // `core::analytics`'s tests), and the shell announces after it.
+    for (const [cmd, change] of [
+      ["async fn oauth_sign_out()", "oauth::clear()"],
+      ["async fn clear_account()", "account::clear()"],
+      ["async fn save_account(", "account::save("],
+    ]) {
+      const b = body(cmd);
+      const changed = b.indexOf(change);
+      const announced = b.indexOf("announce_stored_analytics_identity();");
+      expect(changed, cmd).toBeGreaterThanOrEqual(0);
+      expect(announced, cmd).toBeGreaterThan(changed);
+    }
+    expect(body("fn announce_stored_analytics_identity(")).toContain(
+      "announce_analytics_identity(gate_connect_core::analytics::load_identity())",
+    );
+  });
+
+  it("forgets the identity in the core, where the CLI's logout reaches it", () => {
+    const oauth = readFileSync(resolve(__dirname, "../../crates/core/src/oauth.rs"), "utf8");
+    const at = oauth.indexOf("pub fn clear() -> Result<()> {");
+    expect(oauth.slice(at, oauth.indexOf("\n}\n", at))).toContain(
+      "crate::analytics::forget_identity()",
+    );
   });
 
   it("announces the identity after a window stores a new one", () => {

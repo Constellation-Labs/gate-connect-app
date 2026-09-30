@@ -212,6 +212,9 @@ export function App() {
     if (!sessionRead) return;
     noteSession({
       signedIn: isSignedIn(account, oauth),
+      // Unread or unanswered is not signed out: see NewUiApp's copy of this.
+      sessionUnknown:
+        account?.auth_mode === "oauth" && (oauth === null || oauth.session === "unavailable"),
       authMode: account?.auth_mode ?? null,
       sub: oauth?.sub ?? null,
       orgId: account?.org_id ?? null,

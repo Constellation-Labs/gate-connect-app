@@ -534,17 +534,23 @@ export function NewUiApp() {
   const signedInNow = isSignedIn(account, oauth);
   const sessionSub = oauth?.sub ?? null;
   const sessionAuthMode = account?.auth_mode ?? null;
+  // An OAuth session whose state could not be read (the status IPC failed, or
+  // the identity provider did not answer) is not a sign-out, whatever
+  // `signedIn` says: an offline launch must keep its identity.
+  const sessionUnknown =
+    sessionAuthMode === "oauth" && (oauth === null || oauth.session === "unavailable");
   // Only once the first account and OAuth reads are in: before that, "not signed
   // in" is "not read yet", and the seam treats not signed in as a sign-out.
   useEffect(() => {
     if (!loaded) return;
     noteSession({
       signedIn: signedInNow,
+      sessionUnknown,
       authMode: sessionAuthMode,
       sub: sessionSub,
       orgId: sessionOrgId,
     });
-  }, [loaded, signedInNow, sessionAuthMode, sessionSub, sessionOrgId]);
+  }, [loaded, signedInNow, sessionUnknown, sessionAuthMode, sessionSub, sessionOrgId]);
   // The gateway names this machine once a request from it has arrived: the
   // `first_request_proxied` signal where the relay cannot report (Linux).
   useEffect(() => {

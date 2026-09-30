@@ -76,11 +76,14 @@ describe("docs/analytics-events.md stays in step with the code", () => {
   it("does not tell the user that collection is anonymous, and discloses the opt-out note", () => {
     const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8");
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
-    expect(dialogs).toContain(
-      "Turning sharing off sends one final note, tied to your account, saying so.",
+    expect(dialogs).toMatch(
+      /Turning sharing off sends one final note saying so, tied to your\s+account if you are signed in\./,
     );
-    // The server-side alias links the device whatever the answer (review round 2).
-    expect(dialogs).toMatch(/link\s+this device&rsquo;s diagnostic data to your account, whatever\s+you answer here/);
+    // The server-side alias links the device whatever the answer, and only for
+    // an API-key install that sent its organization's first request (round 3).
+    expect(dialogs).toMatch(
+      /With an API key, if this device sends your organization&rsquo;s\s+first request, Gate also uses it to link this device&rsquo;s\s+diagnostic data to the key&rsquo;s account, whatever you answer here\./,
+    );
     const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8");
     expect(upload).not.toMatch(/anonymous posture/);
   });

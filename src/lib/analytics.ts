@@ -330,7 +330,7 @@ async function boot(): Promise<void> {
   subscribe();
   deciding = true;
   try {
-    const prefs = await getPreferences().catch(() => null);
+    const [prefs] = await Promise.all([getPreferences().catch(() => null), loadIdentity()]);
     // A switch flipped while the read was in flight is the newer answer.
     if (consent === null) consent = prefs ? prefs.share_diagnostics : null;
     if (answered === null) answered = prefs ? prefs.share_diagnostics_recorded === true : null;
@@ -393,21 +393,20 @@ function startPosthog(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return Promise.resolve();
   if (!starting) {
     starting = (async () => {
-      const [id, stored, app_version, platform] = await Promise.all([
+      const [id, , app_version, platform] = await Promise.all([
         fetchInstallId().catch(() => null),
-        analyticsIdentity().catch(() => null),
+        loadIdentity(),
         getVersion().catch(() => "unknown"),
         fetchPlatform().catch(() => "unknown"),
       ]);
       installIdValue = id;
-      if (stored) adoptStoredIdentity(stored);
-      // An install that was identified once and is signed out now gets no
-      // bootstrap: its install id already belongs to that person, so filing
-      // under it would put this launch back on the account that left. The
-      // client keeps the fresh anonymous id the sign-out `reset` gave it.
+      // An install id that already belongs to a person (identified once, or
+      // spent on an API-key account that has since gone) gets no bootstrap:
+      // filing under it would put this launch back on that person. The client
+      // keeps whatever fresh anonymous id its storage holds.
       const bootstrap = identifiedAs
         ? { distinctID: identifiedAs, isIdentifiedID: true }
-        : id && !everIdentified
+        : id && !installIdSpent()
           ? { distinctID: id }
           : undefined;
       safely("init", () =>
@@ -424,6 +423,11 @@ function startPosthog(): Promise<void> {
       started = true;
       superProps = { app_version, platform, ...(id ? { install_id: id } : {}) };
       safely("register", () => posthog.register(superProps));
+      // No bootstrap does not mean no identity: posthog-js keeps its last one
+      // in storage. A launch that signed out while no client ran (opted out,
+      // say) never reset it, so it would resume as the person who left, or as
+      // the retired install id. Reset to a fresh anonymous id instead.
+      if (!identifiedAs && installIdSpent() && persistedAsSomeone(id)) resetClient();
       if (consent !== true) {
         safely("opt_out_capturing", () => posthog.opt_out_capturing());
         pending = [];
@@ -534,7 +538,7 @@ async function recordOptOut(source: ConsentSource): Promise<void> {
     (s?.authMode === "oauth" && s.sub ? s.sub : null) ??
     // An install identified once belongs to that person; after its sign-out the
     // record goes under the client's own fresh id rather than back onto them.
-    (everIdentified ? currentDistinctId() : installIdValue);
+    (installIdSpent() ? currentDistinctId() : installIdValue);
   if (!distinctId) return;
   const org = s?.orgId ?? storedOrg;
   try {
@@ -666,6 +670,13 @@ export async function trackMilestone(
 export interface SessionFacts {
   /** A usable credential and, for OAuth, an organization. */
   signedIn: boolean;
+  /**
+   * The session's state could not be read: the OAuth status IPC failed, or the
+   * identity provider or the secret store did not answer
+   * (`OAuthStatus.session === "unavailable"`). `signedIn` is false then, and it
+   * is NOT a sign-out: an offline launch must keep the identity it has.
+   */
+  sessionUnknown?: boolean;
   authMode: AuthMode | null;
   /** The Cognito `sub`, for an OAuth session. */
   sub: string | null;
@@ -682,6 +693,10 @@ let everIdentified = false;
 /** The org and auth mode last stored by the sign-in window, for the windows that
  *  never read the account themselves. */
 let storedOrg: string | null = null;
+/** The org an API-key account paired this install with (the install id is
+ *  spent on it), and whether the install id is retired. Both stored in Rust. */
+let storedApiKeyOrg: string | null = null;
+let installIdRetired = false;
 /** The identified `sub` the backend holds, which every window follows. */
 let storedSub: string | null = null;
 let storedAuthMode: string | null = null;
@@ -695,6 +710,47 @@ function adoptStoredIdentity(stored: AnalyticsIdentity): void {
   everIdentified = stored.ever_identified;
   storedOrg = stored.org_id;
   storedAuthMode = stored.auth_mode;
+  storedApiKeyOrg = stored.api_key_org ?? null;
+  installIdRetired = stored.install_id_retired ?? false;
+}
+
+let identityLoad: Promise<void> | null = null;
+/** Whether the stored identity has been read. Until it has, this window knows
+ *  nothing about who the install is, so it must not write the record: a
+ *  session noted in the meantime would otherwise clobber the stored sub. */
+let adopted = false;
+
+/** Read the stored identity once per window, then apply any session noted
+ *  while it was being read. */
+function loadIdentity(): Promise<void> {
+  if (!identityLoad) {
+    identityLoad = analyticsIdentity()
+      .then(adoptStoredIdentity)
+      .catch(() => {})
+      .finally(() => {
+        adopted = true;
+        if (session) noteSession(session);
+      });
+  }
+  return identityLoad;
+}
+
+/** Whether the install id may no longer be the distinct id. */
+function installIdSpent(): boolean {
+  return everIdentified || installIdRetired;
+}
+
+/** Whether posthog-js's own storage has the client as somebody: identified, or
+ *  on the (spent) install id. */
+function persistedAsSomeone(installId: string | null): boolean {
+  try {
+    return (
+      posthog.get_property("$user_state") === "identified" ||
+      (installId !== null && posthog.get_distinct_id() === installId)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function currentOrg(): string | null {
@@ -738,16 +794,30 @@ function orgArrived(): void {
  */
 export function noteSession(facts: SessionFacts): void {
   session = facts;
-  // Not signed in any more is a sign-out: the account's id comes off this
-  // client, and the record the other windows follow says so. Without this the
-  // next write below carried the old `sub` straight back to disk.
-  if (!facts.signedIn && (identifiedAs || storedSub)) {
+  // Nothing is decided about identity until the stored record is in, and
+  // nothing at all while the session itself could not be read.
+  if (!adopted || facts.sessionUnknown) return;
+  // Not signed in any more is a sign-out, and so is an OAuth identity giving
+  // way to an API key (whose account may be somebody else's): the account's id
+  // comes off this client, and the record the other windows follow says so.
+  const leftAccount =
+    !facts.signedIn || (facts.authMode === "api_key" && identifiedAs !== null);
+  if (leftAccount && (identifiedAs || storedSub)) {
     storedSub = null;
     syncToStoredIdentity();
     // No client to move (opted out, or no key): the record still must not name
     // the account that left.
     identifiedAs = null;
     lastPersisted = "";
+  }
+  // An API-key account spends the install id once paired: the gateway may
+  // alias it to that key's owner. The account going, or the org changing,
+  // retires it, so a later account is not filed under the earlier owner.
+  if (facts.signedIn && facts.authMode === "api_key" && facts.orgId && !installIdRetired) {
+    if (storedApiKeyOrg === null) storedApiKeyOrg = facts.orgId;
+    else if (storedApiKeyOrg !== facts.orgId) retireInstallId();
+  } else if (!facts.signedIn && storedApiKeyOrg !== null && !installIdRetired) {
+    retireInstallId();
   }
   persistIdentity();
   const state = funnelState();
@@ -769,12 +839,14 @@ let lastPersisted = "";
  *  the next launch know them. Local only; nothing is sent. */
 function persistIdentity(): void {
   const s = session;
-  if (!s || !POSTHOG_KEY_VALUE) return;
+  if (!s || !POSTHOG_KEY_VALUE || !adopted || s.sessionUnknown) return;
   const next: AnalyticsIdentity = {
     identified_sub: identifiedAs,
     ever_identified: everIdentified,
     org_id: s.signedIn ? s.orgId : null,
     auth_mode: s.authMode,
+    api_key_org: storedApiKeyOrg,
+    install_id_retired: installIdRetired,
   };
   const key = JSON.stringify(next);
   if (key === lastPersisted) return;
@@ -834,7 +906,9 @@ function spendSession(): void {
  */
 function applyIdentity(sub: string): void {
   if (identifiedAs === sub) return;
-  if (everIdentified) resetClient();
+  // Merge the install id into this person only if it belongs to nobody yet: not
+  // after an earlier identification, and not once an API-key account spent it.
+  if (everIdentified || installIdRetired || storedApiKeyOrg !== null) resetClient();
   safely("identify", () => posthog.identify(sub));
   identifiedAs = sub;
   storedSub = sub;
@@ -880,10 +954,22 @@ function followIdentity(next: AnalyticsIdentity): void {
   storedOrg = next.org_id;
   storedAuthMode = next.auth_mode;
   everIdentified = everIdentified || next.ever_identified;
+  storedApiKeyOrg = storedApiKeyOrg ?? next.api_key_org ?? null;
+  // Retired in the core (Reset, a replaced key, `gate-connect logout`): leave
+  // the install id now.
+  if (next.install_id_retired && !installIdRetired) retireInstallId();
   // A sign-out is followed whatever the funnel's state: it takes the account's
   // id off what this machine sends next, and sends nothing itself.
   if (!storedSub || funnelState() === "open") syncToStoredIdentity();
   orgArrived();
+}
+
+/** Stop using the install id as the distinct id: move a client that is on it to
+ *  a fresh anonymous id. Sticky, and stored. */
+function retireInstallId(): void {
+  installIdRetired = true;
+  if (started && !identifiedAs) resetClient();
+  lastPersisted = "";
 }
 
 /** Put the client on the identity Rust holds, if it is on another one. */

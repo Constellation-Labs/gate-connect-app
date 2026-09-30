@@ -133,6 +133,10 @@ export interface OAuthStatus {
    *  person at sign-in (AG-960); never shown. Optional because an older backend
    *  does not send it. */
   sub?: string | null;
+  /** `"live"`, `"signed_out"` (none, or refused) or `"unavailable"` (the
+   *  identity provider or the secret store did not answer). Optional because an
+   *  older backend does not send it. */
+  session?: "live" | "signed_out" | "unavailable";
   /** Access-token expiry as a Unix timestamp; 0 when signed out. */
   expires_at_unix: number;
 }
@@ -976,6 +980,11 @@ export interface AnalyticsIdentity {
   ever_identified: boolean;
   org_id: string | null;
   auth_mode: string | null;
+  /** The org an API-key account spent the install id on (sticky). */
+  api_key_org?: string | null;
+  /** The install id belongs to a person already and is no longer used as the
+   *  distinct id (sticky). */
+  install_id_retired?: boolean;
 }
 
 export const analyticsIdentity = () => invoke<AnalyticsIdentity>("analytics_identity");

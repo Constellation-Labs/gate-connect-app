@@ -36,18 +36,25 @@ of `diagnostics_opted_out`.
     the same identity.
   - **Any later account change** (a second account signing in on the machine,
     or the same one after a sign-out) resets the client first, so only a fresh
-    empty id is merged into the new person. The install id is merged into a
-    person at most once per install, and account B is never attached to the
-    person of account A. Events from the install before B's sign-in stay with
-    A's person, where they were sent.
-  - **Sign-out** (in the app or the CLI) or Reset clears the stored identity,
-    and the backend announces it to every window. Each window then resets to a
+    empty id is merged into the new person. The app merges the install id into
+    a person at most once per install, and never files a later account B under
+    account A's person. Events from the install before B's sign-in stay with
+    A's person, where they were sent. An install id already spent on an API-key
+    account (below) is never merged into a Constellation account either.
+  - **Sign-out** (in the app or `gate-connect logout`) or Reset clears the
+    stored identity in the core (`oauth::clear`, which every sign-out path
+    reaches), and the app's backend announces it to every window. Each window then resets to a
     fresh anonymous PostHog id, NOT back to the install id: once identified,
     the install id belongs to that account's person, so filing under it would
     keep sending as the account that left. `install_id` stays a
     super-property. The next launch of such an install bootstraps nothing and
-    keeps that fresh id. An app session that is simply no longer signed in (an
-    expired session included) is treated the same way.
+    keeps that fresh id, and if its stored client state was never reset (the
+    sign-out happened while no client ran), it is reset at the next start
+    instead of resuming the old person. An app session that is no longer signed
+    in because the credential is gone or was refused is treated the same way;
+    one whose state could not be read (offline, the identity provider or the
+    secret store did not answer, the status read failed) keeps its identity.
+    Pasting an API key over a Constellation sign-in also leaves that identity.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the
   org the gateway resolved the key to (read from `/v1/me/activity`; milestones
@@ -64,11 +71,19 @@ of `diagnostics_opted_out`.
   is. It happens whatever the diagnostics answer is, because the header rides
   every gateway request, and it links this install, and the events already
   sent under its id, to that account. The in-app disclosure says so.
-  **Known limit:** on a machine where a Constellation account was identified
-  first, the install id already belongs to that person. A later API-key account
-  on the same machine is on a fresh anonymous id (see Sign-out above), so the
-  server alias cannot join it to its person, and only the `organization` group
-  links its events.
+  **The install id is spent once an API-key account has paired** (its org is
+  known), because from then on the gateway may alias it to that key's owner.
+  It is recorded (`api_key_org`) and, when that account goes - Reset, a
+  sign-out, replacing the key with a different one (in Settings or the CLI), or
+  the key resolving to a different org - the install id is **retired**: the
+  client moves to a fresh anonymous id, and no later launch bootstraps the
+  install id again.
+  **Known limit:** once the install id belongs to a person (a Constellation
+  account identified on this machine, or a paired API-key account), a later
+  API-key account on the same machine is on a fresh anonymous id, and the
+  server alias of the install id, which still rides its requests, cannot join
+  that account to its own person: the install id is already someone else's.
+  Only the `organization` group links its events.
 - Never sent: names, emails, API keys, tokens, gateway hosts, file paths, error
   text. Error events carry a classified title; failure events carry a reason
   from a closed list.

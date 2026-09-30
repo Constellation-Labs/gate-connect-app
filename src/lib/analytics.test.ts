@@ -76,6 +76,9 @@ vi.mock("posthog-js", () => ({
     has_opted_out_capturing: vi.fn(() => ph.state.optedOut),
     is_capturing: vi.fn(() => !ph.state.optedOut),
     get_distinct_id: vi.fn(() => ph.state.distinctId),
+    get_property: vi.fn((k: string) =>
+      k === "$user_state" ? (ph.state.identified ? "identified" : "anonymous") : undefined,
+    ),
   },
 }));
 
@@ -99,16 +102,28 @@ function broadcast(event: string, payload: unknown) {
   for (const h of bus.handlers.get(event) ?? []) h({ payload });
 }
 
-/** What `oauth_sign_out` / `clear_account` do: forget the identity in the
- *  core (keeping `ever_identified`), then `forget_analytics_identity` emits
- *  what is stored. */
+/** What `oauth_sign_out`, `clear_account` and `gate-connect logout` do: the
+ *  core's `forget_identity_in` (keep the sticky facts, retire a spent install
+ *  id), then the shell's `announce_stored_analytics_identity`. */
 function backendSignsOut() {
+  const prev = rust.identity;
   rust.identity = {
     identified_sub: null,
-    ever_identified: rust.identity.ever_identified,
+    ever_identified: prev.ever_identified,
     org_id: null,
     auth_mode: null,
+    api_key_org: prev.api_key_org ?? null,
+    install_id_retired: !!prev.install_id_retired || prev.ever_identified || !!prev.api_key_org,
   };
+  broadcast("analytics-identity-changed", { ...rust.identity });
+}
+
+/** What `save_account` with a different key does: `account::save` calls
+ *  `retire_spent_install_id`, then the shell announces. */
+function backendReplacesKey() {
+  if (rust.identity.api_key_org && !rust.identity.install_id_retired) {
+    rust.identity = { ...rust.identity, install_id_retired: true };
+  }
   broadcast("analytics-identity-changed", { ...rust.identity });
 }
 
@@ -122,6 +137,8 @@ const rust = vi.hoisted(() => ({
     ever_identified: boolean;
     org_id: string | null;
     auth_mode: string | null;
+    api_key_org?: string | null;
+    install_id_retired?: boolean;
   },
 }));
 
@@ -131,10 +148,13 @@ vi.mock("./api", () => ({
   analyticsMilestoneClaim: vi.fn(),
   coworkSettingCheck: vi.fn(),
   analyticsIdentity: vi.fn(async () => ({ ...rust.identity })),
+  // `save_identity_in`'s sticky rules, then `set_analytics_identity`'s emit.
   setAnalyticsIdentity: vi.fn(async (next: typeof rust.identity) => {
     rust.identity = {
       ...next,
       ever_identified: rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
+      api_key_org: rust.identity.api_key_org ?? next.api_key_org ?? null,
+      install_id_retired: !!rust.identity.install_id_retired || !!next.install_id_retired,
     };
     broadcast("analytics-identity-changed", { ...rust.identity });
   }),
@@ -1053,5 +1073,158 @@ describe("the held queue", () => {
     // Both windows moved onto the account: the window by identifying, the tray
     // by following the stored identity.
     expect(vi.mocked(posthog.identify).mock.calls).toEqual([[SUB], [SUB]]);
+  });
+});
+
+describe("round 3", () => {
+  /** M1. The sign-out happened in a launch with no client (opted out), so
+   *  posthog-js's storage still has the client identified as A. */
+  it("does not resume the old account's id when a signed-out install opts back in", async () => {
+    prefsAre(false);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    ph.state.distinctId = SUB;
+    ph.state.identified = true;
+    const { initAnalytics, noteSession, setAnalyticsConsent, track } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    await settle();
+
+    await setAnalyticsConsent(true, "settings");
+    track("app_launched");
+
+    expect(vi.mocked(posthog.init).mock.calls[0][1]).not.toHaveProperty("bootstrap");
+    expect(posthog.reset).toHaveBeenCalled();
+    expect(ph.delivered.at(-1)!.distinctId).not.toBe(SUB);
+    expect(ph.delivered.at(-1)!.distinctId).not.toBe(INSTALL_ID);
+  });
+
+  /** M1 low. A session noted before the stored record is read must not write
+   *  over it. */
+  it("does not let a session noted before the stored identity is read clobber it", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
+    noteSession(PAIRED_OAUTH);
+    await initAnalytics();
+    await settle();
+
+    expect(rust.identity.identified_sub).toBe(SUB);
+    expect(vi.mocked(posthog.init).mock.calls[0][1]).toMatchObject({
+      bootstrap: { distinctID: SUB, isIdentifiedID: true },
+    });
+    expect(posthog.reset).not.toHaveBeenCalled();
+    expect(posthog.identify).not.toHaveBeenCalled();
+  });
+
+  /** M2. Offline, or the status IPC failed: signed in reads false, and the
+   *  identity must stay. */
+  it("keeps the identity when the session could not be read", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: false, sessionUnknown: true, authMode: "oauth", sub: null, orgId: ORG });
+    await settle();
+
+    expect(posthog.reset).not.toHaveBeenCalled();
+    expect(rust.identity.identified_sub).toBe(SUB);
+    expect(ph.state.distinctId).toBe(SUB);
+  });
+
+  /** M4. An API-key install's id may be aliased to the key's owner by the
+   *  gateway; Reset must move the machine off it for good. */
+  it("retires a spent install id on Reset and does not bootstrap it again", async () => {
+    prefsAre(true);
+    let mod = await load();
+    await mod.initAnalytics();
+    mod.noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    await settle();
+    expect(rust.identity.api_key_org).toBe(ORG);
+    expect(ph.state.distinctId).toBe(INSTALL_ID);
+
+    backendSignsOut();
+    await settle();
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+
+    mod = await load();
+    await mod.initAnalytics();
+    expect(vi.mocked(posthog.init).mock.calls.at(-1)![1]).not.toHaveProperty("bootstrap");
+  });
+
+  /** "Use a different account" drops the key by saving the account with none
+   *  (`useSetup.signOut`), which never reaches `account::clear`, so no core
+   *  retirement is announced: the sign-in window has to see it. */
+  it("retires a spent install id when the key is dropped without a Reset", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    await settle();
+    noteSession({ signedIn: false, authMode: "api_key", sub: null, orgId: null });
+    await settle();
+
+    expect(rust.identity.install_id_retired).toBe(true);
+    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+  });
+
+  it("retires a spent install id when the key is replaced", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    await settle();
+
+    backendReplacesKey();
+    await settle();
+
+    expect(rust.identity.install_id_retired).toBe(true);
+    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+  });
+
+  it("retires a spent install id when the key's org changes", async () => {
+    prefsAre(true);
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    await settle();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: "org-b" });
+    await settle();
+
+    expect(rust.identity.install_id_retired).toBe(true);
+    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+  });
+
+  it("does not merge a spent install id into a later Constellation account", async () => {
+    prefsAre(true);
+    rust.identity = {
+      identified_sub: null,
+      ever_identified: false,
+      org_id: ORG,
+      auth_mode: "api_key",
+      api_key_org: ORG,
+    };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await settle();
+
+    expect(vi.mocked(posthog.reset).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(posthog.identify).mock.invocationCallOrder[0],
+    );
+  });
+
+  /** L2. An API key pasted on a machine identified as A may be someone else's. */
+  it("leaves the Constellation identity when the account switches to an API key", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: null });
+    await settle();
+
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(ph.state.distinctId).not.toBe(SUB);
+    expect(rust.identity.identified_sub).toBeNull();
   });
 });

@@ -1891,7 +1891,10 @@ export function CollectedDataLists({
           {/* AG-960's opt-out record: the one thing that leaves after the
               switch goes off, once per install, filed under the account's id
               (or the device id) with the organization when known. */}
-          <li>Turning sharing off sends one final note, tied to your account, saying so.</li>
+          <li>
+            Turning sharing off sends one final note saying so, tied to your
+            account if you are signed in.
+          </li>
           <li>App version and operating system.</li>
           <li>
             Which action happened, from a fixed list - routing turned on or off,
@@ -1935,9 +1938,10 @@ export function CollectedDataLists({
               diagnostics answer is: the header rides every request. */}
           <li>
             The same device id, so your activity view can group requests by
-            machine. When your first request goes through, Gate also uses it to
-            link this device&rsquo;s diagnostic data to your account, whatever
-            you answer here. It authorizes nothing.
+            machine. With an API key, if this device sends your organization&rsquo;s
+            first request, Gate also uses it to link this device&rsquo;s
+            diagnostic data to the key&rsquo;s account, whatever you answer here.
+            It authorizes nothing.
           </li>
           <li>
             Which app made the request, when Gate can tell from the request
