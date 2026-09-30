@@ -24,8 +24,7 @@
  *
  * **Dev builds only.** Both the global and the delay itself are behind
  * `import.meta.env.DEV`, so a stray localStorage key cannot slow a real build
- * down - unlike `gcNewUi`, which is deliberately live in production because it
- * is a fallback rather than an instrument.
+ * down.
  */
 
 const KEY = "gc.slowActivity";

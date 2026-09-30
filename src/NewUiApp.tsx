@@ -179,8 +179,8 @@ function detectionSignature(reading: unknown): string {
 }
 
 /**
- * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
- * popover are still reachable via `gcNewUi(false)`.
+ * The new window UI: the main window's only shell since the popover was
+ * removed on 2026-09-30.
  *
  * Routing is wired: app and family-member switches go through `useRouting`,
  * which gates a drifted config behind the review dialog and the certificate

@@ -1,10 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { App } from "./App";
 import { NewUiApp } from "./NewUiApp";
 import { TrayApp } from "./TrayApp";
-import { newUiEnabled } from "./lib/newUi";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
@@ -64,8 +62,8 @@ const windowKind = (() => {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* The onboarding and tray windows keep their own content whatever the
-        shell flag says - each is a separate window with a separate job. */}
+    {/* The onboarding and tray windows keep their own content - each is a
+        separate window with a separate job. */}
     {windowKind === "onboarding" ? (
       <ErrorBoundary>
         <Onboarding />
@@ -74,13 +72,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <ErrorBoundary>
         <TrayApp />
       </ErrorBoundary>
-    ) : newUiEnabled() ? (
-      <ErrorBoundary>
-        <NewUiApp />
-      </ErrorBoundary>
     ) : (
       <ErrorBoundary>
-        <App />
+        <NewUiApp />
       </ErrorBoundary>
     )}
   </React.StrictMode>,

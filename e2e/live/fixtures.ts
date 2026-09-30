@@ -180,17 +180,12 @@ export const test = base.extend<Fixtures>({
     page.on("pageerror", (err) => crashes.push(err));
 
     await use(async () => {
-      // The window UI, not the popover. The shared Vite server pins
-      // `VITE_NEW_UI=0` for the popover suite, and `newUiEnabled()` reads
-      // localStorage before that build-time default - so this is the same
-      // per-test opt-in the `new-ui-*` specs use, and it costs no second server.
       await page.addInitScript(() => {
-        localStorage.setItem("gc.newUi", "1");
         // The one-time "sign in instead of pasting a key" offer, marked answered.
         //
         // It is an artefact of this harness rather than a flow under test:
-        // `FirstRun` stamps this key itself when a key connects, and these
-        // specs seed the account through the backend instead - so the offer
+        // setup (`useSetup`) stamps this key itself when a key connects, and
+        // these specs seed the account through the backend instead - so the offer
         // fires on every boot and its overlay swallows the first click of every
         // test. A spec that wants to drive the offer should clear this key.
         localStorage.setItem("gc.oauth-offer.v1.seen", "1");

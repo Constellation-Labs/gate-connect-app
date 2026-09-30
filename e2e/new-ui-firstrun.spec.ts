@@ -10,13 +10,7 @@ import { test, expect } from "./fixtures";
  * rather than stored, so what needs proving is that each on-disk state puts the
  * right pane on screen - and that reset gets back here with nothing left over.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 test.describe("new UI first run", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("no account lands on sign-in, not the app shell", async ({ boot }) => {
     const app = await boot({ account: null, oauth: { signed_in: false, email: null, expires_at_unix: 0 } });
 
@@ -151,10 +145,6 @@ test.describe("new UI first run", () => {
 });
 
 test.describe("new UI: the two ways back to first run", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("reset turns routing off before wiping, and lands on sign-in", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
@@ -368,10 +358,6 @@ test.describe("new UI: the two ways back to first run", () => {
  * which is why a reload cannot skip it.
  */
 test.describe("new UI: the diagnostic-data step", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const unanswered = {
     account: {
       gateway_base_url: "https://gw.example",

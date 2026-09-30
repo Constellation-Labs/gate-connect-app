@@ -44,7 +44,7 @@ answers IPC with no window and no plugins, on every platform. So `ui-e2e` in
 
 - **Rendering.** The browser is Chromium, never WKWebView / WebView2 /
   WebKitGTK. This proves interaction and wiring; how any of it paints is
-  covered by nothing, same as the popover suite.
+  covered by nothing, same as the fake-backend suite.
 - **The tray, window lifecycle, OS trust dialogs, the updater.** No window
   exists. `session-changed` and friends can still be exercised, because the
   backend emits them and `/events` replays them.
@@ -97,10 +97,10 @@ pnpm test:e2e:live                          # this suite
 GATE_UI_HARNESS_ROUTING=1 pnpm test:e2e:live  # ...including the routing arc
 ```
 
-`pnpm test:e2e` runs the popover suite and **not** this one. They are separate
+`pnpm test:e2e` runs the fake-backend suite and **not** this one. They are separate
 config files (`playwright.live.config.ts`) rather than two projects in one,
 because Playwright resolves `webServer` per config and never per project: as a
-project, this suite's Rust harness started on every popover run too, including
+project, this suite's Rust harness started on every fake-backend run too, including
 the CI job that installs no Rust.
 
 ## The port is a remote control, and it is guarded

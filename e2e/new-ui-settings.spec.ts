@@ -1,24 +1,14 @@
 import { test, expect } from "./fixtures";
 
 /**
- * The new window UI's Settings actions and org switcher, against the same fake
- * backend the popover suite uses.
- *
- * Same per-test opt-in as `new-ui-routing.spec.ts`: the suite is pinned to the
- * popover, and `newUiEnabled()` reads localStorage before the build-time
- * default.
+ * The new window UI's Settings actions and org switcher, against the suite's
+ * fake backend.
  *
  * What this covers that `lib/useSettingsActions.test.tsx` cannot: that the row
  * is wired to the action at all, that the dialog the design specifies is the one
  * that opens, and that confirming it reaches the backend.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 test.describe("new UI settings", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("the launch-at-login switch reaches the backend", async ({ boot }) => {
     const app = await boot({});
 
@@ -226,10 +216,6 @@ test.describe("new UI settings", () => {
  * value.
  */
 test.describe("new UI settings preferences", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("both preference switches read On before anything has been written", async ({
     boot,
   }) => {
@@ -323,10 +309,6 @@ test.describe("new UI settings preferences", () => {
  * analytics key and the channel no-ops entirely.
  */
 test.describe("new UI: what diagnostics collects", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("the list opens and changes no setting", async ({ boot }) => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();

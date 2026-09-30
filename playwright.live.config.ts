@@ -52,9 +52,8 @@ export default defineConfig({
     : [["list"]],
   webServer: [
     {
-      // Its own port and its own server: 5599 belongs to the popover config,
-      // which pins `VITE_NEW_UI=0`. `--host 127.0.0.1` for the IPv6 reason
-      // spelled out in `playwright.config.ts`.
+      // Its own port and its own server: 5599 belongs to `playwright.config.ts`.
+      // `--host 127.0.0.1` for the IPv6 reason spelled out there.
       command: "pnpm exec vite --port 5600 --strictPort --host 127.0.0.1",
       url: "http://127.0.0.1:5600",
       reuseExistingServer: !process.env.CI,

@@ -94,21 +94,6 @@ export interface RoutingSnapshot {
   proxy: ProxyState | null;
 }
 
-/**
- * One provider row the popover's Hermes notice asks about.
- *
- * The new shell no longer asks: its OpenRouter row is not drawn and Hermes'
- * switch owns the domain (`TOOL_MANAGED_DOMAINS`, AG-934's sibling decision on
- * 2026-09-23). The popover keeps its own `HermesProviderNotice` until it is
- * retired, which is why this type outlived `HermesProviderDialog`.
- *
- * Its answer is deliberately NOT recorded in `auto_enabled_domains`: somebody
- * who said yes to a question turned the domain on themselves, and the record
- * is for what Gate turned on without being asked. So a later Hermes-off in the
- * new shell leaves it alone, which is the rule working rather than a gap.
- */
-export type HermesProviderChoice = { name: string; slug: string; tools: string[] };
-
 /** The one tool whose switch also flips the shell-environment channel. Named
  *  once rather than spelled inline, because the dialog copy and the action have
  *  to be talking about the same row. */
@@ -116,12 +101,8 @@ const OPENCODE_SLUG = "opencode";
 
 /** The tool whose provider lives in another section, so its switch alone
  *  routes it without inspecting anything. OpenClaw has the same shape and the
- *  same CLI-only coverage note; it is not wired here yet.
- *
- *  Exported because the popover connects tools through `App.tsx` rather than
- *  through this hook and has to gate the same row. One name, so the two shells
- *  cannot come to disagree about which row this is. */
-export const HERMES_SLUG = "hermes";
+ *  same CLI-only coverage note; it is not wired here yet. */
+const HERMES_SLUG = "hermes";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
