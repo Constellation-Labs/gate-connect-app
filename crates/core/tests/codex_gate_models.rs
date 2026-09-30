@@ -127,6 +127,7 @@ fn choose_gate(ids: &[&str]) {
             name: Some("GPT-5.6 Luna".into()),
             context_window: Some(400_000),
             max_tokens: None,
+            freeform_tools: Some(true),
         },
     )];
     preferences::set_tool_model("codex", ModelSource::Gate, ids, true, meta).unwrap();
@@ -347,6 +348,7 @@ fn catalog_entries_are_cloned_from_what_codex_already_knows() {
             {"slug":"gpt-hidden","visibility":"hide","priority":0,"base_instructions":"hidden"},
             {"slug":"gpt-6-sol","display_name":"Sol","visibility":"list","priority":1,
              "base_instructions":"You are Codex.","shell_type":"shell_command",
+             "tool_mode":"code_mode_only","apply_patch_tool_type":"freeform",
              "upgrade":{"model":"x"},"service_tiers":[],"context_window":272000}
         ]}"#,
     )
@@ -372,6 +374,64 @@ fn catalog_entries_are_cloned_from_what_codex_already_knows() {
         entry.get("context_window").is_none(),
         "the template's window belongs to another model"
     );
+    // Nobody checked OPUS for freeform tools, so Codex must not send any.
+    assert!(
+        entry.get("tool_mode").is_none(),
+        "code mode sends a custom `exec` tool"
+    );
+    assert!(
+        entry.get("apply_patch_tool_type").is_none(),
+        "a custom `apply_patch`"
+    );
+}
+
+/// A model the gateway has seen accept freeform tools keeps Codex's own
+/// toolset, code mode included; one it has not gets plain function tools.
+#[test]
+fn freeform_tools_are_kept_only_for_models_that_take_them() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, stub) = setup();
+    fs::write(
+        env::home()
+            .unwrap()
+            .join(".codex")
+            .join("models_cache.json"),
+        r#"{"models":[{"slug":"gpt-6-sol","visibility":"list","priority":1,
+            "base_instructions":"You are Codex.","tool_mode":"code_mode_only",
+            "apply_patch_tool_type":"freeform"}]}"#,
+    )
+    .unwrap();
+    let meta = |freeform| GateModelMeta {
+        name: None,
+        context_window: None,
+        max_tokens: None,
+        freeform_tools: freeform,
+    };
+    preferences::set_tool_model(
+        "codex",
+        ModelSource::Gate,
+        vec![LUNA.into(), "meta-llama/muse-spark-1-1".into(), OPUS.into()],
+        true,
+        vec![
+            (LUNA.into(), meta(Some(true))),
+            ("meta-llama/muse-spark-1-1".into(), meta(Some(false))),
+        ],
+    )
+    .unwrap();
+    find(ToolId::Codex).unwrap().connect(&input(&stub)).unwrap();
+
+    let catalog: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(catalog_file()).unwrap()).unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    assert_eq!(
+        models[0]["tool_mode"], "code_mode_only",
+        "checked: keeps code mode"
+    );
+    assert_eq!(models[0]["apply_patch_tool_type"], "freeform");
+    for m in &models[1..] {
+        assert!(m.get("tool_mode").is_none(), "{}", m["slug"]);
+        assert!(m.get("apply_patch_tool_type").is_none(), "{}", m["slug"]);
+    }
 }
 
 /// A user who only ever ran Codex on Gate models may never have logged Codex

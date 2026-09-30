@@ -767,10 +767,11 @@ test.describe("new UI model feedback", () => {
  * Only the models this app can actually be served with (AG-590, AG-729).
  *
  * The case that cost a real prompt on staging: Codex was offered `gpt-4o`, which
- * carries the `tool-use` tag and still cannot serve it, because Codex sends
- * freeform tools. The provider's refusal - `Missing required parameter:
- * 'tools[0].custom'` - is not something a user can act on, so the picker
- * answers first.
+ * carries the `tool-use` tag and still could not serve it, because Codex sent
+ * freeform tools. That one is fixed at the source now - Gate writes a model
+ * that has not been seen to take freeform tools into Codex's catalog without
+ * them (`integrations/codex.rs`) - so a freeform refusal no longer holds a
+ * model back from Codex. A model with no tool use at all still is.
  *
  * AG-729 split the answer into three. Only a model MEASURED failing is held
  * back; a model nobody ever tried is offered below an "Unverified" divider,
@@ -836,22 +837,22 @@ test.describe("new UI model picker compatibility", () => {
     });
     const dialog = await openPicker(app);
 
-    await expect(dialog.getByText(/2 models are not shown/)).toBeVisible();
+    // Only the model with no tool use: the freeform refusal no longer counts.
+    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
   });
 
-  test("names the reason when every held-back model shares one", async ({ boot }) => {
+  test("offers a model that refuses freeform tools, since Codex is sent function tools", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
-      // Only the freeform refusal remains, so there is one sentence worth saying.
       toolModels: { catalogue: mixed.filter((m) => m.id !== "openai/gpt-3-5-turbo-instruct") },
     });
     const dialog = await openPicker(app);
 
-    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
-    // The copy no longer names a family, which stops being true the moment the
-    // verdict table grows. It states what was measured.
-    await expect(dialog.getByText(/verified to reject/)).toBeVisible();
+    await expect(dialog.getByText("GPT-4o")).toBeVisible();
+    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
   });
 
   test("treats an older gateway's silence as offered, not as a refusal", async ({ boot }) => {

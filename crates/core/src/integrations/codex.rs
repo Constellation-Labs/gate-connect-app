@@ -1260,6 +1260,10 @@ fn catalog_template() -> Option<serde_json::Value> {
         .cloned()
 }
 
+/// The template fields that make Codex send freeform tools. See
+/// [`catalog_entry`].
+const FREEFORM_TOOL_FIELDS: &[&str] = &["tool_mode", "apply_patch_tool_type"];
+
 const CATALOG_DROPPED_FIELDS: &[&str] = &[
     "upgrade",
     "availability_nux",
@@ -1300,6 +1304,19 @@ fn catalog_entry(
     };
     for field in CATALOG_DROPPED_FIELDS {
         obj.remove(*field);
+    }
+    // Codex's own toolset sends two freeform (`type: "custom"`) tools: code
+    // mode's `exec` (`tool_mode: code_mode_only`) and `apply_patch`
+    // (`apply_patch_tool_type: freeform`). Measured on 0.159: with both keys
+    // gone every tool it sends is a plain function, and file edits go through
+    // `exec_command` instead. Most providers refuse custom tools outright -
+    // Meta's endpoint answers "`custom` tools are not supported" - so they are
+    // kept only for a model the gateway has seen accept them. Unknown is not
+    // yes: two in three catalogue models have never been checked.
+    if meta.freeform_tools != Some(true) {
+        for field in FREEFORM_TOOL_FIELDS {
+            obj.remove(*field);
+        }
     }
     obj.insert("slug".into(), id.into());
     obj.insert(

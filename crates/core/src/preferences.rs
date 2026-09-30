@@ -197,6 +197,13 @@ pub struct GateModelMeta {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+    /// Whether the gateway has seen this model accept OpenAI freeform
+    /// (`type: "custom"`) tools: `Some(true)` only for a `works` verdict.
+    /// Codex's own toolset leans on them (its code mode and `apply_patch`),
+    /// and most providers refuse them outright, so an unknown answer is
+    /// treated as no - see `integrations::codex`'s catalog entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform_tools: Option<bool>,
 }
 
 /// What Gate should serve for one tool.

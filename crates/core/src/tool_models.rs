@@ -140,12 +140,22 @@ pub fn meta_from_catalogue(catalogue_json: &str, ids: &[String]) -> Vec<(String,
                 return None;
             }
             let num = |k: &str| row.get(k).and_then(|n| n.as_u64());
+            let freeform = row
+                .get("tool_shapes")
+                .and_then(|t| t.get("freeform"))
+                .and_then(|f| f.get("verdict"))
+                .and_then(|v| v.as_str());
             Some((
                 id.to_string(),
                 GateModelMeta {
                     name: row.get("name").and_then(|n| n.as_str()).map(str::to_owned),
                     context_window: num("context_window"),
                     max_tokens: num("max_tokens"),
+                    freeform_tools: match freeform {
+                        Some("works") => Some(true),
+                        Some("fails") => Some(false),
+                        _ => None,
+                    },
                 },
             ))
         })
@@ -159,7 +169,8 @@ mod tests {
     #[test]
     fn catalogue_rows_become_picker_fields_for_chosen_ids_only() {
         let json = r#"{"object":"list","data":[
-            {"id":"openai/gpt-5.6-luna","name":"GPT-5.6 Luna","context_window":400000,"max_tokens":128000},
+            {"id":"openai/gpt-5.6-luna","name":"GPT-5.6 Luna","context_window":400000,"max_tokens":128000,
+             "tool_shapes":{"freeform":{"verdict":"works"},"function":{"verdict":"works"}}},
             {"id":"anthropic/claude-opus-5","name":"Claude Opus 5"},
             {"id":"other/model","name":"Other"}
         ]}"#;
@@ -173,6 +184,11 @@ mod tests {
         assert_eq!(meta[0].1.context_window, Some(400_000));
         assert_eq!(meta[1].1.name.as_deref(), Some("Claude Opus 5"));
         assert_eq!(meta[1].1.context_window, None);
+        assert_eq!(meta[0].1.freeform_tools, Some(true));
+        assert_eq!(
+            meta[1].1.freeform_tools, None,
+            "nobody checked: unknown, not yes"
+        );
     }
 
     #[test]
