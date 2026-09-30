@@ -465,3 +465,22 @@ fn app_default_does_not_need_a_codex_login() {
         GateModelState::NotApplied
     );
 }
+
+/// Connecting again - launch, reconcile - changes nothing and stays applied.
+#[test]
+fn a_reconnect_keeps_codex_on_gate_models() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, stub) = setup();
+    let codex = find(ToolId::Codex).unwrap();
+    choose_gate(&[LUNA, OPUS]);
+    codex.connect(&input(&stub)).unwrap();
+    let first = config();
+    codex.connect(&input(&stub)).unwrap();
+    codex.connect(&input(&stub)).unwrap();
+    assert_eq!(config(), first);
+    assert_eq!(
+        codex.gate_model_state().unwrap(),
+        GateModelState::Applied { model: LUNA.into() }
+    );
+    assert_eq!(preferences::load().tool_models["codex"].source, ModelSource::Gate);
+}

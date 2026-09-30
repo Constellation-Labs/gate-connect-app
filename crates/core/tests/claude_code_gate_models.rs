@@ -257,3 +257,63 @@ fn the_default_row_is_not_drift() {
         GateModelState::Applied { model: OPUS.into() }
     );
 }
+
+/// A reconnect - app launch, reconcile, a second `set_tool_model` - must leave
+/// Claude Code on its Gate models. The routing block removes the base URL on
+/// every connect, and a drift check read after it saw every reconnect as the
+/// user leaving (review on #382).
+#[test]
+fn a_reconnect_keeps_claude_code_on_gate_models() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    choose_gate(&[OPUS, LUNA]);
+    claude.connect(&input()).unwrap();
+    let first = raw();
+    claude.connect(&input()).unwrap();
+    claude.connect(&input()).unwrap();
+    assert_eq!(
+        claude.gate_model_state().unwrap(),
+        GateModelState::Applied { model: OPUS.into() },
+        "{}",
+        raw()
+    );
+    assert_eq!(raw(), first, "a reconnect changes nothing");
+    assert_eq!(
+        preferences::load().tool_models["claude-code"].source,
+        ModelSource::Gate
+    );
+}
+
+/// The user picks the second model of the set in `/model`, then goes back to
+/// App default: the in-set pick is Gate's to take back, or Claude Code would
+/// send a Gate id to api.anthropic.com (review on #382).
+#[test]
+fn app_default_after_an_in_set_pick_restores_the_users_model() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup();
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    choose_gate(&[OPUS, LUNA]);
+    claude.connect(&input()).unwrap();
+
+    let mut s = json();
+    s["model"] = Value::String(LUNA.into());
+    s["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = Value::String(LUNA.into());
+    fs::write(
+        env::claude_code_settings_path().unwrap(),
+        serde_json::to_string_pretty(&s).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        claude.gate_model_state().unwrap(),
+        GateModelState::Applied { model: LUNA.into() }
+    );
+
+    choose_tool();
+    claude.connect(&input()).unwrap();
+    let s = json();
+    assert_eq!(s["model"], "opus", "the user's own model, not a Gate id");
+    assert!(s["env"].get("ANTHROPIC_DEFAULT_HAIKU_MODEL").is_none());
+    assert!(s["env"].get("ANTHROPIC_BASE_URL").is_none());
+}
+

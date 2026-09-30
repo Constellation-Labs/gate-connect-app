@@ -317,3 +317,22 @@ fn a_pick_from_the_set_inside_hermes_is_not_drift() {
     assert_eq!(y["model"]["base_url"], "https://openrouter.ai/api/v1");
     assert_eq!(y["model"]["api_mode"], "chat_completions");
 }
+
+/// Connecting again - launch, reconcile - changes nothing and stays applied.
+#[test]
+fn a_reconnect_keeps_hermes_on_gate_models() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = setup(ORIGINAL);
+    let hermes = find(ToolId::Hermes).unwrap();
+    choose_gate(&[LUNA, OPUS]);
+    hermes.connect(&input()).unwrap();
+    let first = config();
+    hermes.connect(&input()).unwrap();
+    hermes.connect(&input()).unwrap();
+    assert_eq!(config(), first);
+    assert_eq!(
+        hermes.gate_model_state().unwrap(),
+        GateModelState::Applied { model: LUNA.into() }
+    );
+    assert_eq!(preferences::load().tool_models["hermes"].source, ModelSource::Gate);
+}

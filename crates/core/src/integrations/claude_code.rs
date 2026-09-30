@@ -405,6 +405,15 @@ impl Integration for ClaudeCode {
         // would silently replace it with `{}` (see reject_non_object_env).
         reject_non_object_env(&settings)?;
 
+        // Drift is read off the settings AS LOADED, before the routing block
+        // below touches them: that block removes `ANTHROPIC_BASE_URL` on every
+        // connect (the canonical-URL rule), and a check made after it would
+        // read every reconnect of a Claude Code on Gate models as the user
+        // having moved off them.
+        if gate_model_state_of(&settings).is_drifted() {
+            crate::preferences::fall_back_to_tool_model(ToolId::ClaudeCode.slug())?;
+        }
+
         // Preserve the original values across reconnects and migrations. A key
         // already listed as managed is ours; a newly managed key still belongs
         // to the user and must be snapshotted before we replace it.
@@ -488,11 +497,8 @@ impl Integration for ClaudeCode {
 
         // Gate models last, over the routing keys above: the base URL they
         // write is the one exception to the canonical-URL rule, and it is only
-        // there while the user has Claude Code on Gate models. A config the
-        // user moved off them from inside Claude Code is theirs now.
-        if gate_model_state_of(&settings).is_drifted() {
-            crate::preferences::fall_back_to_tool_model(ToolId::ClaudeCode.slug())?;
-        }
+        // there while the user has Claude Code on Gate models. (Drift was
+        // settled against the loaded file at the top.)
         match gate_set() {
             Some(ids) => {
                 let relay = input.relay_base_url.as_deref().context(
@@ -650,6 +656,14 @@ fn gate_values(ids: &[String], default: &str, relay: &str) -> Vec<(String, Value
     out
 }
 
+/// Slots that name a model, as opposed to a switch or the route.
+fn is_model_slot(key: &str) -> bool {
+    key == "model"
+        || key
+            .strip_prefix("env.")
+            .is_some_and(|k| k.ends_with("_MODEL") && k != "CLAUDE_CODE_SUBAGENT_MODEL")
+}
+
 /// What the settings say about Gate models.
 enum Reading {
     NotApplied,
@@ -770,8 +784,24 @@ fn revert_gate_models(settings: &mut Map<String, Value>) {
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
+    let ids: Vec<String> = record
+        .get("ids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
     for (key, ours) in &wrote {
-        if slot(settings, key) != Some(ours) {
+        // A model slot holding ANY id of the set is still ours: the user
+        // picking another enabled model in `/model` moves `model` off the value
+        // Gate wrote without making it theirs. Left behind, that Gate id would
+        // be sent to api.anthropic.com once the route below is gone, and every
+        // request would fail. Codex and Hermes read their model slot the same
+        // way.
+        let current = slot(settings, key);
+        let in_set = is_model_slot(key)
+            && current
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| ids.iter().any(|id| id == m));
+        if current != Some(ours) && !in_set {
             continue;
         }
         if key == &format!("env.{KEY_BASE_URL}") {
