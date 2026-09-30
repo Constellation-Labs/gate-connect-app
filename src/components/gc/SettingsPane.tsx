@@ -6,9 +6,7 @@ import type { AuthMode } from "../../lib/api";
 import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
 
 /**
- * The Settings pane (Figma `Flows / Settings`). Named `SettingsPane` rather
- * than `Settings` so it does not read as a swap for `screens/Settings.tsx`,
- * which is the popover's version and stays until the shell swap.
+ * The Settings pane (Figma `Flows / Settings`).
  *
  * Rows are uniform enough across all six sections that the pane takes a
  * declarative model rather than a prop per field: label, an optional value, and

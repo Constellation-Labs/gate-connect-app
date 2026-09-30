@@ -6,8 +6,7 @@ import { Icon } from "./Icon";
 /**
  * Shared primitives for the new app UI (Figma "Gate Connect"). Named for the
  * `base.*` token group in `tailwind.config.ts`, which mirrors the design's own
- * variable names. Distinct from `gc/ui.tsx`, which is the menu-bar popover's
- * primitive set and stays until those screens migrate.
+ * variable names.
  */
 
 /**
@@ -92,9 +91,8 @@ export function StatusTile({
 
 /**
  * 36x20 track, 16px thumb (`Switch` component set, `408:14253`). Geometry
- * differs from the popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so
- * the two coexist until the popover screens migrate; the accessibility
- * contract is carried over unchanged, including the `before:` hit-area
+ * differs from the old popover's Switch (38x22 with a check glyph); its
+ * accessibility contract is carried over unchanged, including the `before:` hit-area
  * expansion that takes the target past 24px without moving the visible track.
  */
 export function BaseSwitch({

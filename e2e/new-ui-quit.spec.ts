@@ -7,8 +7,6 @@ import { test, expect } from "./fixtures";
  *
  * Opts into the new shell per-test; the suite default is the popover.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const connectedTools = [
   {
     slug: "claude-code",
@@ -27,10 +25,6 @@ const connectedTools = [
 ];
 
 test.describe("new UI quit", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("with tools routed, the menu quits without asking", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },

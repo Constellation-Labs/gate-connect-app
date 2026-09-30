@@ -1,4 +1,4 @@
-import type { UpstreamCoverage, Verdict, VerdictNextAction, VerdictReason } from "./api";
+import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
 import { governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
@@ -54,18 +54,6 @@ export const REASON_DETAIL: Record<VerdictReason, string> = {
   connection_problem: "Connection problem",
   access_problem: "Access problem",
   verification_failed: "Verification failed",
-};
-
-/** Button label for the one action a reason offers. Straight from AG-562's list
- * ("Reopen tool, Apply Gate configuration, Retry check, Sign in, Reconnect"), so
- * the control and the ticket say the same thing. */
-export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
-  apply_gate_configuration: "Apply Gate configuration",
-  show_conflicting_config: "Show conflicting file",
-  reopen_tool: "Reopen tool",
-  reconnect: "Reconnect",
-  sign_in: "Sign in",
-  retry_check: "Retry check",
 };
 
 /**

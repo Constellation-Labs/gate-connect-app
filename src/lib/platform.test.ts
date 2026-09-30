@@ -3,7 +3,6 @@ import {
   browserScopeNote,
   secretStoreName,
   trustPromptHint,
-  trustPromptWaiting,
   trustStoreName,
   type Platform,
 } from "./platform";
@@ -90,38 +89,12 @@ describe("trustPromptHint", () => {
   });
 });
 
-describe("trustPromptWaiting", () => {
-  it("names the certificate Windows is quoting back, so the user can match it", () => {
-    // Exactly the CN in cert_authority.rs. A near-miss here is worse than
-    // silence: the dialog quotes the real name, and a mismatch is what a
-    // careful user would read as "this is not the app that asked".
-    expect(trustPromptWaiting("windows")).toContain("Gate Connect Local CA");
-    expect(trustPromptWaiting("windows")).toContain("Yes");
-  });
-
+describe("the macOS trust prompt", () => {
   it("names the process macOS actually shows, which is not ours", () => {
     // The Security Agent titles the prompt `security`, the binary
     // `ca::ensure_trusted` shells out to. A user told to expect something from
-    // Gate Connect would be hunting for a name that is not on the screen, so
-    // both strings have to name `security` instead.
-    expect(trustPromptWaiting("macos")).toContain("security");
+    // Gate Connect would be hunting for a name that is not on the screen.
     expect(trustPromptHint("macos")).toContain("security");
-    // And must not promise our own name on the one platform that never shows it.
-    expect(trustPromptWaiting("macos")).not.toContain("Gate Connect Local CA");
-  });
-
-  it("is present tense on every platform, because the dialog is already up", () => {
-    for (const p of PLATFORMS) {
-      const waiting = trustPromptWaiting(p);
-      expect(waiting.length).toBeGreaterThan(0);
-      expect(waiting).not.toContain("will ask");
-    }
-  });
-
-  it("differs from the pre-click hint everywhere, so the swap is visible", () => {
-    for (const p of PLATFORMS) {
-      expect(trustPromptWaiting(p)).not.toBe(trustPromptHint(p));
-    }
   });
 });
 

@@ -336,7 +336,6 @@ export function installFakeTauri(state: BackendState): void {
     // ---- account
     get_account: () => state.account,
     get_account_key_prefix: () => state.accountKeyPrefix,
-    backfill_account_key_prefix: () => state.accountKeyPrefix,
     save_account: ({ baseUrl, apiKey }) => {
       state.account = {
         gateway_base_url: baseUrl,
@@ -386,10 +385,6 @@ export function installFakeTauri(state: BackendState): void {
       // omitted it, so every harness run modelled a session that had died and
       // no test could see the pane get it wrong.
       state.preferences.signed_out_deliberately = true;
-      return null;
-    },
-    set_auth_mode: ({ oauth }) => {
-      if (state.account) state.account.auth_mode = oauth ? "oauth" : "api_key";
       return null;
     },
     oauth_list_orgs: () => state.orgs,
@@ -576,7 +571,6 @@ export function installFakeTauri(state: BackendState): void {
     // The startup enable has always settled in the harness: a mock backend
     // has no startup thread to be in flight.
     routing_startup_pending: () => false,
-    running_agents_count: () => state.runningAgents,
     // `only` is a list of tool slugs, or null for "every tool". Mirrors the
     // Rust `AGENT_PROCESSES` table: a slug with no process name of its own
     // (`hermes`, `openclaw`, `env-proxy`, a proxy domain key) matches nothing
@@ -620,7 +614,6 @@ export function installFakeTauri(state: BackendState): void {
           .filter((a) => names.includes(a.name)),
       };
     },
-    stale_agents_count: () => state.staleAgents,
     // Mirrors `routing_health::verdict_for`'s precedence over the state a spec
     // can actually set. The relay is hosted by the engine, so `proxy.running`
     // stands in for relay reachability, and `staleAgents` for a process that
@@ -689,15 +682,6 @@ export function installFakeTauri(state: BackendState): void {
         state.staleAgents = 0;
       }
       return n;
-    },
-    // The Home banner's restart: close everything, then report what came back.
-    // Nothing is modelled as reopening, so every closed tool is the user's.
-    restart_running_agents: () => {
-      const n = state.runningAgentNames.length || state.runningAgents;
-      state.runningAgentNames = [];
-      state.runningAgents = 0;
-      state.staleAgents = 0;
-      return { closed: n, restarted: [], reopen_yourself: [], still_running: [] };
     },
     quit_app: () => null,
     // Window choreography the tray popover invokes: revealing the main window

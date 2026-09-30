@@ -7,8 +7,6 @@ import { test, expect } from "./fixtures";
  * so what these tests care about is that **nothing is killed without two
  * answers**, and that walking away leaves the saved config alone.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const CLAUDE_CODE = {
   slug: "claude-code",
   // The surface, not the product: `integrations/claude_code.rs`. The rail's
@@ -39,10 +37,6 @@ function reopenCard(app: { page: import("@playwright/test").Page }) {
 }
 
 test.describe("new UI running apps", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("offers to close an app that is running when its config changes", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },

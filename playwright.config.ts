@@ -46,18 +46,6 @@ export default defineConfig({
   webServer: {
     command: "pnpm exec vite --port 5599 --strictPort --host 127.0.0.1",
     url: "http://127.0.0.1:5599",
-    // Pin these tests to the popover, which is no longer the app's default.
-    //
-    // They assert on popover flows - first run, the org picker, routing counts -
-    // in the popover's own copy and layout, so they keep testing the surface
-    // they were written against. This line used to say the new shell's
-    // routing was inert and could not satisfy them; it is wired
-    // (`src/lib/useRouting.ts`), and `playwright.live.config.ts` drives it.
-    //
-    // Retire this line together with the popover screens. `newUiEnabled()`
-    // reads localStorage first and a fresh browser context has none, so the
-    // build-time default is what decides here.
-    env: { VITE_NEW_UI: "0" },
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     // So the next startup failure says why instead of only that it timed out.

@@ -11,12 +11,7 @@ import { test, expect } from "./fixtures";
  * every one of them. What could not be tested at the hook level is exactly what
  * was broken here: whether the control on screen is connected to the action at
  * all. `onToggleProtected={noop}` type-checks perfectly.
- *
- * Same per-test opt-in as the other new-UI specs: the suite is pinned to the
- * popover, and `newUiEnabled()` reads localStorage before the build-time default.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const CLAUDE_CODE = {
   slug: "claude-code",
   // The tool's own row label. The rail draws a row per APP now, so this reaches
@@ -32,10 +27,6 @@ const CLAUDE_CODE = {
 };
 
 test.describe("new UI engine controls", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   /**
    * Routing follows the app: it starts at launch and stops at quit, so there is
    * nothing on screen for the user to set. The rail drew this switch above the
@@ -138,10 +129,6 @@ test.describe("new UI engine controls", () => {
 });
 
 test.describe("new UI app pane", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("the pane's own switch routes the app", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [CLAUDE_CODE] });
 
@@ -180,10 +167,6 @@ test.describe("new UI app pane", () => {
 });
 
 test.describe("new UI certificate and diagnostics", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("removing the certificate is confirmed first", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
@@ -266,10 +249,6 @@ test.describe("new UI certificate and diagnostics", () => {
 });
 
 test.describe("new UI device and install id", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("both rows read from the backend rather than sitting empty", async ({ boot }) => {
     // Device was hardcoded "-", and the install id came from the analytics client:
     // absent in a build with no PostHog key, and absent again once diagnostics are
@@ -317,10 +296,6 @@ test.describe("new UI device and install id", () => {
 });
 
 test.describe("new UI OAuth offer", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   /** The flag counts as answered only when it reads "1", which is how a spec
    *  asks for an install that has never been offered - `merge` folds the record
    *  into the default rather than replacing it, so the key cannot be removed. */

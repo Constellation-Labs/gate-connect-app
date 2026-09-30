@@ -358,15 +358,6 @@ fn get_account_key_prefix() -> Result<Option<String>, String> {
     account::api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
-/// Fallback for accounts saved before the prefix was recorded on disk: read the
-/// key from the keychain (may prompt), backfill the prefix into `account.json`,
-/// and return it. The UI calls this only after the user confirms the reveal,
-/// since it touches the keychain.
-#[tauri::command]
-fn backfill_account_key_prefix() -> Result<Option<String>, String> {
-    account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
-}
-
 /// Is this gateway base URL's scheme acceptable?
 ///
 /// This is the IPC boundary, so the check is deliberately defensive: a
@@ -1016,16 +1007,6 @@ fn log_message(level: String, message: String) {
         gate_connect_core::logging::Level::from_wire(&level),
         &message,
     );
-}
-
-/// Where the diagnostic log lives, or `None` when logging is off.
-///
-/// Lets Settings and the diagnostics report name the file to send instead of
-/// asking someone to find it, and returns nothing in a production build so the
-/// UI cannot offer a path to a file that is never written.
-#[tauri::command]
-fn log_file_path() -> Option<String> {
-    gate_connect_core::logging::path_for_report().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Serialize an activity failure for the IPC boundary.
@@ -2562,22 +2543,6 @@ fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     agent_row_of(process).map(|(slug, _, _, _)| *slug)
 }
 
-/// Count running agent processes without touching them. Lets the frontend
-/// skip the "close running agents" routing takeover when there is nothing to
-/// close.
-///
-/// `(async)`, like every probe here that walks the process table: sync would
-/// put the walk on the main thread, which on Linux is the GTK loop. This one
-/// runs on the boot path, where a blocked loop is a window that looks like it
-/// never opened.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn running_agents_count() -> u32 {
-    let mut count = 0u32;
-    for_each_agent_process(&agent_names_for(None), |_| count += 1);
-    count
-}
-
 /// Did this agent start before the last change to something it reads once at
 /// launch, and so is still using what it loaded then?
 ///
@@ -2631,27 +2596,6 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
     changed_at.filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
-}
-
-/// Count running agent processes that missed a change to what they read at
-/// launch ([`agent_needs_reopen`]), i.e. the ones that genuinely need a
-/// restart. Same process set as `running_agents_count`.
-///
-/// `(async)` for the reason on [`running_agents_count`]: this is the probe the
-/// boot path and the `proxy-state-changed` handler both call.
-///
-/// `since` (Unix seconds) counts only changes made at or after it; see
-/// [`agent_needs_reopen`].
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn stale_agents_count(since: Option<u64>) -> u32 {
-    let mut count = 0u32;
-    for_each_agent_process(&agent_names_for(None), |process| {
-        if agent_needs_reopen(process, since) {
-            count += 1;
-        }
-    });
-    count
 }
 
 /// The user's Settings choices. Never fails: a missing or mangled file loads as
@@ -2962,10 +2906,9 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 /// Is a process for this one tool running that predates the last change to that
 /// tool's configuration, and is therefore still using whatever it loaded then?
 ///
-/// This is `stale_agents_count` narrowed to one tool *and* given a durable
-/// bound, which is what a per-tool verdict needs: the count answers "does
-/// anything need restarting" about the current session, and cannot say which
-/// row to mark, nor survive a restart of Gate.
+/// Narrowed to one tool *and* given a durable bound, which is what a per-tool
+/// verdict needs: it has to say which row to mark, and survive a restart of
+/// Gate.
 ///
 /// The decision itself is [`gate_connect_core::reopen::reopen_pending`], which
 /// is pure and carries the reasoning. This function is only the three readings
@@ -3033,7 +2976,7 @@ struct VerdictDto {
 /// per-tool calls would be the same answer at N times the cost, and would let
 /// two rows in one refresh disagree about whether the session is alive.
 ///
-/// Off the main thread for the reason on [`running_agents_count`] - but as a
+/// Off the main thread for the reason on [`running_agents`] - but as a
 /// real `async fn` handing the work to `spawn_blocking`, not as
 /// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
 /// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
@@ -3326,7 +3269,7 @@ struct RunningAgent {
     started_at_unix: u64,
     /// Started before the last change to its own configuration or to Gate's
     /// certificate, so it is still using what it loaded and needs a restart.
-    /// Same rule as [`stale_agents_count`], via [`agent_needs_reopen`].
+    /// Decided by [`agent_needs_reopen`].
     needs_reopen: bool,
 }
 
@@ -3428,25 +3371,6 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
     }
 }
 
-/// What [`restart_running_agents`] did, for the popover to report back.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[derive(Serialize)]
-struct ClosedAgentsDto {
-    /// Processes that were closed, the restarted ones included. 0 means none
-    /// were running.
-    closed: u32,
-    /// Desktop apps that quit and were opened again, by name ("Claude").
-    restarted: Vec<String>,
-    /// Closed and not opened again, by tool name: a terminal tool belongs to
-    /// the terminal it ran in, so a copy Gate started would not be the user's;
-    /// and an app that quit but could not be relaunched. The user opens these
-    /// again.
-    reopen_yourself: Vec<String>,
-    /// Asked to quit and still running once Gate stopped waiting, by name.
-    /// Not counted in `closed`: the user has to quit these themselves.
-    still_running: Vec<String>,
-}
-
 /// How long an agent gets to quit on its own before Gate stops waiting. A
 /// restart has to see the app gone before it relaunches it, or the launch just
 /// brings the old one forward. Claude Desktop's quit cleanup, Cowork's VM
@@ -3465,7 +3389,7 @@ struct CloseTarget {
     started: u64,
     /// The [`AGENT_PROCESSES`] row's slug, which the reopen queue is keyed by.
     slug: Option<&'static str>,
-    /// The row's product name, for the popover.
+    /// The row's product name.
     name: String,
     surface: Option<Surface>,
     /// `None` for a CLI, which is the whole point of `Surface` - see
@@ -3474,8 +3398,7 @@ struct CloseTarget {
 }
 
 /// Close running agents (CLIs and desktop apps, see [`AGENT_PROCESSES`]) and
-/// wait for them to go. Shared by [`close_running_agents`] and
-/// [`restart_running_agents`], which differ only in what happens after.
+/// wait for them to go, for [`close_running_agents`].
 ///
 /// Asking first matters most on Windows, where the only step used to be the
 /// hard kill. Claude Desktop never ran its quit cleanup, so Cowork's VM was
@@ -3633,54 +3556,6 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
         guard.extend(reopen);
     }
     closed.len() as u32
-}
-
-/// Restart every running agent in one step, for the Home banner: close them
-/// all ([`close_agents`]), open the desktop apps again once they have quit,
-/// and name the terminal tools for the user to start again, since they belong
-/// to a terminal Gate cannot start them in.
-///
-/// `(async)` for the same reason as [`close_running_agents`].
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn restart_running_agents() -> ClosedAgentsDto {
-    let (closed, still_running) = close_agents(None);
-    let mut dto = ClosedAgentsDto {
-        closed: closed.len() as u32,
-        restarted: Vec::new(),
-        reopen_yourself: Vec::new(),
-        still_running,
-    };
-    let mut launched: Vec<&'static str> = Vec::new();
-    for target in closed {
-        match (&target.relaunch, target.slug) {
-            // Already launched for another of this app's processes.
-            (Some(_), Some(slug)) if launched.contains(&slug) => {}
-            (Some(relaunch), slug) => {
-                if relaunch.spawn() {
-                    launched.extend(slug);
-                    dto.restarted.push(target.name);
-                } else {
-                    eprintln!("[gate] close agents: could not reopen {}", target.name);
-                    dto.reopen_yourself.push(target.name);
-                }
-            }
-            (None, _) => dto.reopen_yourself.push(target.name),
-        }
-    }
-    // The ChatGPT app's bundled `codex` has no relaunch of its own and shares
-    // the app's name; relaunching the app is what brings it back.
-    dto.reopen_yourself
-        .retain(|name| !dto.restarted.contains(name));
-    for names in [
-        &mut dto.restarted,
-        &mut dto.reopen_yourself,
-        &mut dto.still_running,
-    ] {
-        names.sort();
-        names.dedup();
-    }
-    dto
 }
 
 /// Was `pid` started under another agent, at any depth? `parent_of` and
@@ -5035,15 +4910,6 @@ fn join_names(names: &[String]) -> String {
     }
 }
 
-/// The tools Gate Connect currently manages, for copy that has to name what a
-/// disconnect will interrupt.
-#[tauri::command]
-async fn routed_app_names() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::registry::managed_tool_names)
-        .await
-        .map_err(|e| format!("join error: {e}"))
-}
-
 /// The command table, shared by the app and by `examples/ui-harness.rs`.
 ///
 /// Generic over the runtime so the harness can register this identical list
@@ -5066,7 +4932,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             disconnect_tool,
             get_account,
             get_account_key_prefix,
-            backfill_account_key_prefix,
             save_account,
             clear_account,
             switch_gateway,
@@ -5087,7 +4952,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             gate_model_catalogue,
             gate_credits,
             log_message,
-            log_file_path,
             set_org,
             app_platform,
             os_name,
@@ -5108,7 +4972,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             proxy_set_env_export,
             proxy_trust_ca,
             proxy_untrust_ca,
-            routed_app_names,
             launch_at_login_status,
             set_launch_at_login,
             get_preferences,
@@ -5124,12 +4987,9 @@ pub fn invoke_handler<R: tauri::Runtime>(
             routing_startup_pending,
             routing_verdicts,
             teardown_report,
-            running_agents_count,
-            stale_agents_count,
             running_agents,
             close_running_agents,
             reopen_running_agents,
-            restart_running_agents,
             drain_backend_errors,
             security_feed_state,
             security_feed_history_ok,
@@ -5148,7 +5008,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             disconnect_tool,
             get_account,
             get_account_key_prefix,
-            backfill_account_key_prefix,
             save_account,
             clear_account,
             switch_gateway,
@@ -5167,7 +5026,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             gate_model_catalogue,
             gate_credits,
             log_message,
-            log_file_path,
             set_org,
             app_platform,
             os_name,

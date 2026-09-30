@@ -8,12 +8,7 @@ import { test, expect } from "./fixtures";
  * asks the backend for a verdict rather than deriving the line from
  * `Tool.status`, and that the switch stays on intent while the line moves. Those
  * two are the same bug `lib/groups.ts` documents, one level down.
- *
- * Opts into the new shell per-test, like the rest of the `new-ui-*` specs; the
- * suite default is the popover (`VITE_NEW_UI=0`).
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const connectedCodex = {
   slug: "codex",
   // The surface, not the product: rows are named for what they cover and the
@@ -25,10 +20,6 @@ const connectedCodex = {
 };
 
 test.describe("new UI routing verdict", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("a connected app reads Protected only once the sweep confirms it", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
