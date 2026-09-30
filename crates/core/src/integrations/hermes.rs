@@ -48,6 +48,20 @@
 //! because a round-trip returns a semantically equal document with every
 //! comment gone, and this is a file the user wrote. A shape that editor will
 //! not touch is left alone, costing the label and nothing else.
+//!
+//! **Gate models are the one thing that selects an endpoint in `config.yaml`,
+//! and it is Gate's own.** When the user puts Hermes on Gate models, Gate adds a
+//! `providers.gate-connect` entry - the relay's Gate models route, chat
+//! completions, the enabled set as a fixed list with discovery off - and selects
+//! it with `model.provider` and `model.default`, so `hermes model` and `/model`
+//! offer exactly the set and Hermes names the model it runs. This is not the
+//! `model.base_url` redirect above coming back: that pointed the user's own
+//! providers at Gate behind their back; this adds a provider the user chose, by
+//! name, and every value it replaces is snapshotted in the sidecar and put back
+//! on App default or disconnect unless the user has since changed it in Hermes.
+//! The same surgical editor does it, and it refuses the same shapes - here as an
+//! error, because the user asked for these models and a silent skip would leave
+//! the pane claiming a model Hermes is not on.
 //! A correct `.env` is only half of being visible: the engine MITMs a host
 //! only while an enabled catalog domain claims it, and Hermes' documented default
 //! upstream (`openrouter.ai`) ships off, so the traffic can be routed through
@@ -93,7 +107,7 @@ use crate::integrations::binaries;
 use crate::integrations::dotenv;
 use crate::integrations::precedence::Override;
 use crate::integrations::yaml_block;
-use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
+use crate::registry::{ConnectInput, GateModelState, Integration, Mechanism, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
 /// The row label. Hermes is its own family on the ledger, so the heading
@@ -140,6 +154,30 @@ struct State {
     /// had not.
     #[serde(default)]
     header_created: Option<yaml_block::Created>,
+    /// What Gate models changed in `config.yaml`, while they are applied.
+    /// `None` is Hermes on its own model as far as Gate is concerned.
+    #[serde(default)]
+    gate_models: Option<GateModels>,
+}
+
+/// The record behind Gate models in `config.yaml`: what Gate wrote, and what it
+/// replaced, so going back to Hermes' own model restores the user's values
+/// rather than a guess at them.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GateModels {
+    /// The set Gate last wrote, in the user's order.
+    written: Vec<String>,
+    /// `model.<key>` as it was before Gate models, per [`MODEL_KEYS`]: `None`
+    /// for a key that was not set.
+    #[serde(default)]
+    previous: BTreeMap<String, Option<String>>,
+    /// How `model:` itself looked, since a fresh install's `model: ""` has to
+    /// come back as exactly that.
+    #[serde(default)]
+    model_shape: yaml_block::ParentShape,
+    /// How `providers:` looked, for the same reason.
+    #[serde(default)]
+    providers_shape: yaml_block::ParentShape,
 }
 
 fn default_version() -> u8 {
@@ -235,6 +273,28 @@ impl Integration for Hermes {
     /// `HTTPS_PROXY` in `.env` names the forwarder's proxy address.
     fn mechanism(&self) -> Mechanism {
         Mechanism::ForwardProxy
+    }
+
+    fn supports_gate_models(&self) -> bool {
+        true
+    }
+
+    /// Gate models live in `config.yaml` and routing in `.env`, so this is
+    /// the config half of `disconnect` and nothing more.
+    fn leave_gate_models(&self, _input: &ConnectInput) -> Result<()> {
+        let Some(mut state) = load_state()? else {
+            return Ok(());
+        };
+        revert_gate_models(&mut state)?;
+        save_state(&state)
+    }
+
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        let Some(gm) = load_state()?.and_then(|s| s.gate_models) else {
+            return Ok(GateModelState::NotApplied);
+        };
+        let body = read_config_body()?;
+        Ok(gate_model_state_of(&body, &gm))
     }
 
     fn configured_addresses(&self) -> Result<Vec<String>> {
@@ -366,6 +426,26 @@ impl Integration for Hermes {
             state.header_created = header_created;
         }
 
+        // Gate models: Hermes' own provider list and default model, pointed at
+        // the relay's Gate models route. Unlike the header above this is not
+        // best-effort - the user asked for these models, and a config Gate
+        // could not write them into has to say so rather than leave Hermes on
+        // a model the pane claims it is not on.
+        if let Some(gm) = &state.gate_models {
+            if drifted(gm) {
+                crate::preferences::fall_back_to_tool_model(ToolId::Hermes.slug())?;
+            }
+        }
+        match crate::preferences::gate_models_for(ToolId::Hermes.slug()) {
+            Some(ids) => {
+                let relay = input.relay_base_url.as_deref().context(
+                    "the Gate relay is not running -- Hermes reaches Gate models through it",
+                )?;
+                apply_gate_models(&mut state, &ids, relay)?;
+            }
+            None => revert_gate_models(&mut state)?,
+        }
+
         // Preserve the ORIGINAL record across re-connects: a second connect
         // must not claim credit for variables the first one added.
         if state.added_vars.is_empty() {
@@ -409,9 +489,16 @@ impl Integration for Hermes {
     }
 
     fn disconnect(&self) -> Result<()> {
-        let Some(state) = load_state()? else {
+        let Some(mut state) = load_state()? else {
             return Ok(());
         };
+        // Hermes' own model back first, while the sidecar still says what it
+        // was. Saved at once, so a failure below cannot leave a sidecar that
+        // claims Gate models are still applied over a restored config.
+        if state.gate_models.is_some() {
+            revert_gate_models(&mut state)?;
+            save_state(&state)?;
+        }
         dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
         // Only if we wrote one. A `None` here is a connect that predates the
         // header or one whose write was refused, and in both cases the config
@@ -789,6 +876,196 @@ fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
     if after != before {
         write_config(&path, &after)?;
     }
+    Ok(())
+}
+
+/// Gate's provider entry in `config.yaml`. Not a built-in Hermes id - a name
+/// that matched one would be claimed by the built-in and never resolve.
+const GATE_PROVIDER: &str = "gate-connect";
+const GATE_PROVIDER_NAME: &str = "Gate Connect";
+
+/// The `model.*` keys Gate models touch, and so snapshot and restore.
+/// `base_url` and `api_mode` are pointed at our provider too: the named
+/// provider supplies both on the main chat path, and a stale OpenRouter
+/// `base_url` is still read by parts of Hermes that are not.
+const MODEL_KEYS: &[&str] = &["provider", "default", "base_url", "api_mode"];
+
+/// Does `model.provider` name Gate's provider? Hermes' own `hermes model`
+/// writes it as `custom:gate-connect`, its `/model` as `gate-connect`.
+fn is_gate_provider(value: &str) -> bool {
+    let v = value.trim().to_ascii_lowercase();
+    v == GATE_PROVIDER || v == format!("custom:{GATE_PROVIDER}")
+}
+
+fn read_config_body() -> Result<String> {
+    let path = crate::env::hermes_config_path()?;
+    match std::fs::read_to_string(&path) {
+        Ok(body) => Ok(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn refused(what: &str, why: yaml_block::Refusal) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Hermes' config.yaml writes {what} in a shape Gate will not edit safely ({why:?}). \
+         Choose the model in Hermes instead, or simplify that entry and try again."
+    )
+}
+
+/// What `config.yaml` says, given what Gate wrote. Applied means Hermes is on
+/// Gate's provider with one of the set as its default; anything else is the
+/// user moving it, from inside Hermes.
+fn gate_model_state_of(body: &str, gm: &GateModels) -> GateModelState {
+    let get = |key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
+    let model = get("default");
+    let on_provider = get("provider").is_some_and(|p| is_gate_provider(&p));
+    let has_block = yaml_block::has_child(body, "providers", GATE_PROVIDER);
+    match model {
+        Some(m) if on_provider && has_block && gm.written.contains(&m) => {
+            GateModelState::Applied { model: m }
+        }
+        model => GateModelState::Drifted { model },
+    }
+}
+
+fn drifted(gm: &GateModels) -> bool {
+    read_config_body()
+        .map(|body| {
+            matches!(
+                gate_model_state_of(&body, gm),
+                GateModelState::Drifted { .. }
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// The `providers.gate-connect` body: the served route, chat completions, the
+/// set as a fixed list with discovery off - which is what makes `hermes model`
+/// and `/model` offer exactly these - and the tool header, scoped to this
+/// provider as well so it survives Hermes rewriting the `model:` block.
+fn provider_block(relay: &str, ids: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        format!("name: {GATE_PROVIDER_NAME}"),
+        format!(
+            "api: {}",
+            crate::proxy::gate_served::relay_base_url(relay, ToolId::Hermes)
+        ),
+        "api_mode: chat_completions".to_string(),
+        "discover_models: false".to_string(),
+        "models:".to_string(),
+    ];
+    lines.extend(ids.iter().map(|id| format!("  - {id}")));
+    lines.push("extra_headers:".to_string());
+    lines.push(format!("  {}: hermes", crate::proxy::GATE_TOOL_HEADER));
+    lines
+}
+
+/// Write the Gate models into `config.yaml`, snapshotting Hermes' own values
+/// the first time.
+///
+/// The default is the first of the set, unless Hermes is already on one of the
+/// set and the set has not changed: then the user picked it in Hermes' own
+/// picker, and a reconnect must not take it back.
+fn apply_gate_models(state: &mut State, ids: &[String], relay: &str) -> Result<()> {
+    let before = read_config_body()?;
+    let first = ids.first().context("a Gate model set cannot be empty")?;
+    let current = yaml_block::get_child(&before, "model", "default")
+        .map_err(|e| refused("model.default", e))?;
+    let default = match (&state.gate_models, &current) {
+        (Some(gm), Some(c)) if gm.written.as_slice() == ids && ids.contains(c) => c.clone(),
+        _ => first.clone(),
+    };
+
+    if state.gate_models.is_none() {
+        let mut previous = BTreeMap::new();
+        for key in MODEL_KEYS {
+            let value = yaml_block::get_child(&before, "model", key)
+                .map_err(|e| refused(&format!("model.{key}"), e))?;
+            previous.insert((*key).to_string(), value);
+        }
+        state.gate_models = Some(GateModels {
+            written: Vec::new(),
+            previous,
+            model_shape: yaml_block::parent_shape(&before, "model")
+                .map_err(|e| refused("model", e))?,
+            providers_shape: yaml_block::parent_shape(&before, "providers")
+                .map_err(|e| refused("providers", e))?,
+        });
+    }
+
+    let mut body = before.clone();
+    body = yaml_block::set_child(&body, "model", "provider", Some(GATE_PROVIDER))
+        .map_err(|e| refused("model.provider", e))?;
+    body = yaml_block::set_child(&body, "model", "default", Some(&default))
+        .map_err(|e| refused("model.default", e))?;
+    // Set rather than removed, to what Hermes' own `/model` writes for our
+    // provider: the named provider decides the endpoint on the main chat path,
+    // but other readers still look at `model.base_url`, and an edit in place is
+    // one a restore can reverse byte for byte.
+    let served = crate::proxy::gate_served::relay_base_url(relay, ToolId::Hermes);
+    body = yaml_block::set_child(&body, "model", "base_url", Some(&served))
+        .map_err(|e| refused("model.base_url", e))?;
+    body = yaml_block::set_child(&body, "model", "api_mode", Some("chat_completions"))
+        .map_err(|e| refused("model.api_mode", e))?;
+    body = yaml_block::set_block(
+        &body,
+        "providers",
+        GATE_PROVIDER,
+        Some(&provider_block(relay, ids)),
+    )
+    .map_err(|e| refused("providers", e))?;
+    if body != before {
+        write_config(&crate::env::hermes_config_path()?, &body)?;
+    }
+    if let Some(gm) = state.gate_models.as_mut() {
+        gm.written = ids.to_vec();
+    }
+    Ok(())
+}
+
+/// Put Hermes' own model back, if Gate models were applied.
+///
+/// Compare-and-restore, key by key: a value is put back only while it is still
+/// the one Gate wrote (Hermes' own `/model` writes the same values for our
+/// provider, so those count). Anything else is the user's choice made in Hermes
+/// after Gate wrote, and it stays.
+fn revert_gate_models(state: &mut State) -> Result<()> {
+    let Some(gm) = state.gate_models.clone() else {
+        return Ok(());
+    };
+    let before = read_config_body()?;
+    let mut body = before.clone();
+    let current = |body: &str, key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
+    let still_ours = |key: &str, value: Option<&str>| match key {
+        "provider" => value.is_some_and(is_gate_provider),
+        "default" => value.is_none_or(|v| gm.written.iter().any(|w| w == v)),
+        "base_url" => {
+            value.is_none_or(|v| crate::proxy::gate_served::is_relay_base_url(v, ToolId::Hermes))
+        }
+        "api_mode" => value.is_none_or(|v| v == "chat_completions"),
+        _ => false,
+    };
+    for key in MODEL_KEYS {
+        let now = current(&body, key);
+        if !still_ours(key, now.as_deref()) {
+            continue;
+        }
+        let previous = gm.previous.get(*key).cloned().flatten();
+        if previous == now {
+            continue;
+        }
+        body = yaml_block::set_child(&body, "model", key, previous.as_deref())
+            .map_err(|e| refused(&format!("model.{key}"), e))?;
+    }
+    body = yaml_block::tidy_parent(&body, "model", &gm.model_shape);
+    body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
+        .map_err(|e| refused("providers", e))?;
+    body = yaml_block::tidy_parent(&body, "providers", &gm.providers_shape);
+    if body != before {
+        write_config(&crate::env::hermes_config_path()?, &body)?;
+    }
+    state.gate_models = None;
     Ok(())
 }
 

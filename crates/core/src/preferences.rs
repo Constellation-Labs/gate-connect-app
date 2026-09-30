@@ -155,6 +155,18 @@ pub struct Preferences {
     /// token store; the `time` crate is pulled in without its formatting feature.
     #[serde(default)]
     pub gate_model_paid_ack_unix: Option<i64>,
+    /// What the catalogue said about each Gate model a tool has been given,
+    /// keyed by canonical id.
+    ///
+    /// The choice is written into the tool's own config, and a tool's model
+    /// picker wants a name and a context window, not just an id - Codex's
+    /// fallback metadata "can degrade performance" by its own account. The
+    /// catalogue is a network read and `connect` is not: it runs on every
+    /// reconcile, at startup and on master-on, and must work offline. So the
+    /// few fields a picker needs are remembered when the user picks, and a model
+    /// with no entry is written with its id alone.
+    #[serde(default)]
+    pub gate_model_meta: BTreeMap<String, GateModelMeta>,
     /// Whether the last sign-out was one the user asked for.
     ///
     /// A deliberate sign-out and an expired session end in exactly the same
@@ -174,6 +186,17 @@ pub struct Preferences {
     /// only ever describe the most recent departure.
     #[serde(default)]
     pub signed_out_deliberately: bool,
+}
+
+/// The catalogue fields a tool's own model picker can use.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateModelMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
 }
 
 /// What Gate should serve for one tool.
@@ -216,6 +239,7 @@ impl Default for Preferences {
             tool_models: BTreeMap::new(),
             auto_enabled_domains: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
+            gate_model_meta: BTreeMap::new(),
             signed_out_deliberately: false,
         }
     }
@@ -268,17 +292,22 @@ fn stamp() -> Stamp {
     Some((meta.modified().ok()?, meta.len()))
 }
 
-/// The models Gate should serve for one tool, or `None` to leave the request
-/// alone.
+/// The Gate models one tool is set to, in the user's order, or `None` when the
+/// tool keeps its own model.
+///
+/// Two readers. The integrations write this set into the tool's own config on
+/// connect, and the relay's Gate models route checks each request's model
+/// against it, so a model the user never enabled is refused rather than served.
 ///
 /// `None` covers every case where the tool's own model must win: no entry, an
 /// entry whose source is [`ModelSource::Tool`], or an empty set. That last one
 /// matters - a `Gate` source with nothing chosen is not "serve anything", it is
-/// a state the UI prevents and the request path must not invent a meaning for.
+/// a state the UI prevents and neither reader may invent a meaning for.
 ///
-/// Infallible by construction, for the reason `install_id_cached` gives: this is
-/// called while forwarding the user's real work, and a preferences file that
-/// cannot be read must degrade to "the tool picks", never to a failed request.
+/// Infallible by construction, for the reason `install_id_cached` gives: the
+/// relay calls this while forwarding the user's real work, and a preferences
+/// file that cannot be read must degrade to "not on Gate models", never to a
+/// panic.
 pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
     let current = stamp();
     {
@@ -452,8 +481,10 @@ pub fn set_tool_model(
     source: ModelSource,
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
+    meta: Vec<(String, GateModelMeta)>,
 ) -> Result<()> {
     let mut prefs = load();
+    prefs.gate_model_meta.extend(meta);
     if source == ModelSource::Gate
         && acknowledge_paid_use
         && prefs.gate_model_paid_ack_unix.is_none()
@@ -464,6 +495,31 @@ pub fn set_tool_model(
         .tool_models
         .insert(slug.to_string(), ToolModelChoice { source, model_ids });
     save(&prefs)
+}
+
+/// Put one tool back on its own model, keeping the models it had so the pane
+/// can still offer them.
+///
+/// The drift path: the user changed the model inside the tool itself, so the
+/// tool's config no longer names a Gate model. That is a choice, and storing it
+/// is what keeps the next connect from writing the Gate model straight back
+/// over it. No acknowledgement moves - going back to the tool's own model
+/// spends nothing.
+pub fn fall_back_to_tool_model(slug: &str) -> Result<()> {
+    let mut prefs = load();
+    let Some(choice) = prefs.tool_models.get_mut(slug) else {
+        return Ok(());
+    };
+    if choice.source == ModelSource::Tool {
+        return Ok(());
+    }
+    choice.source = ModelSource::Tool;
+    save(&prefs)
+}
+
+/// What the catalogue said about `id` when it was picked, if anything.
+pub fn gate_model_meta(id: &str) -> Option<GateModelMeta> {
+    load().gate_model_meta.get(id).cloned()
 }
 
 /// Rename this device, or clear the override and go back to the hostname.

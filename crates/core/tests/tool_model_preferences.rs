@@ -60,6 +60,7 @@ fn the_paid_acknowledgement_is_stamped_once_and_never_moved() {
         ModelSource::Gate,
         vec!["anthropic/claude-opus-5".into()],
         true,
+        vec![],
     )
     .expect("first save");
     let first = load().gate_model_paid_ack_unix.expect("stamped");
@@ -69,6 +70,7 @@ fn the_paid_acknowledgement_is_stamped_once_and_never_moved() {
         ModelSource::Gate,
         vec!["openai/gpt-5".into()],
         true,
+        vec![],
     )
     .expect("second save");
     assert_eq!(load().gate_model_paid_ack_unix, Some(first));
@@ -87,6 +89,7 @@ fn choosing_the_tools_own_default_never_records_consent() {
         ModelSource::Tool,
         vec!["anthropic/claude-opus-5".into()],
         true,
+        vec![],
     )
     .expect("save");
 
@@ -107,8 +110,15 @@ fn setting_one_tool_leaves_the_others_alone() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
 
-    set_tool_model("claude-code", ModelSource::Gate, vec!["a/b".into()], true).expect("first");
-    set_tool_model("codex", ModelSource::Tool, vec![], false).expect("second");
+    set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["a/b".into()],
+        true,
+        vec![],
+    )
+    .expect("first");
+    set_tool_model("codex", ModelSource::Tool, vec![], false, vec![]).expect("second");
 
     let prefs = load();
     assert_eq!(prefs.tool_models["claude-code"].source, ModelSource::Gate);
@@ -125,6 +135,6 @@ fn an_untouched_tool_has_no_entry() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
 
-    set_tool_model("codex", ModelSource::Gate, vec!["a/b".into()], true).expect("save");
+    set_tool_model("codex", ModelSource::Gate, vec!["a/b".into()], true, vec![]).expect("save");
     assert!(!load().tool_models.contains_key("claude-code"));
 }

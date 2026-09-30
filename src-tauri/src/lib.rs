@@ -889,6 +889,10 @@ async fn activity_installations() -> Result<String, String> {
 #[tauri::command]
 async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
     tauri::async_runtime::spawn_blocking(|| {
+        // Configs first: a tool moved off Gate models from inside itself is put
+        // back on its own model here, and the stored choices read below must
+        // already say so.
+        let configured = gate_connect_core::tool_models::states();
         let prefs = gate_connect_core::preferences::load();
         ToolModelsDto {
             tools: prefs
@@ -897,10 +901,48 @@ async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
                 .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
                 .collect(),
             paid_ack_unix: prefs.gate_model_paid_ack_unix,
+            configured: configured
+                .into_iter()
+                .map(|(slug, view)| (slug.to_string(), ConfiguredModelDto::from(view)))
+                .collect(),
         }
     })
     .await
     .map_err(|e| format!("tool model preferences join error: {e}"))
+}
+
+/// What one tool's own config says about Gate models (R3: the config, not the
+/// stored choice, is what the tool will run).
+#[derive(Serialize)]
+struct ConfiguredModelDto {
+    /// `"applied"`, `"not_applied"` or `"drifted"`. Drift has normally been
+    /// resolved by the time this is read, so `"drifted"` means the resolution
+    /// itself failed.
+    state: &'static str,
+    /// The model the config starts the tool on, when it is on Gate models.
+    model: Option<String>,
+    /// True when this read found the tool moved off Gate models from inside the
+    /// tool, and put it back on its own model. The window says so once.
+    left_gate_models: bool,
+    /// With `left_gate_models`: the model the tool's config names now, if any.
+    left_to_model: Option<String>,
+}
+
+impl From<gate_connect_core::tool_models::ToolModelView> for ConfiguredModelDto {
+    fn from(v: gate_connect_core::tool_models::ToolModelView) -> Self {
+        use gate_connect_core::registry::GateModelState;
+        let (state, model) = match v.state {
+            GateModelState::Applied { model } => ("applied", Some(model)),
+            GateModelState::Drifted { model } => ("drifted", model),
+            GateModelState::NotApplied | GateModelState::Unsupported => ("not_applied", None),
+        };
+        Self {
+            state,
+            model,
+            left_gate_models: v.left_gate_models.is_some(),
+            left_to_model: v.left_gate_models.flatten(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -910,6 +952,8 @@ struct ToolModelsDto {
     tools: std::collections::BTreeMap<String, ToolModelChoiceDto>,
     /// Unix seconds, or null when this install has never accepted paid use.
     paid_ack_unix: Option<i64>,
+    /// Keyed by tool slug, for the tools that support Gate models.
+    configured: std::collections::BTreeMap<String, ConfiguredModelDto>,
 }
 
 #[derive(Serialize)]
@@ -944,13 +988,18 @@ impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDt
 /// `acknowledge_paid_use` records that the person accepted billing, and is
 /// honoured only when moving to `"gate"` - remembering a model under the tool's
 /// own default spends nothing and must not record consent to spend.
+///
+/// The choice is written into the tool's own config when Gate manages it, and
+/// the answer says whether it was: `true` means the file changed and the tool
+/// picks it up on its next session, which is the window's cue to offer the
+/// restart notice.
 #[tauri::command]
 async fn set_tool_model(
     tool: String,
     source: String,
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     // Parsed, not trusted: the slug has to be one this app actually configures,
     // or the pane would store a choice under a key nothing reads.
     let Some(tool) = parse_tool(Some(tool))? else {
@@ -962,13 +1011,22 @@ async fn set_tool_model(
         other => return Err(format!("unknown model source {other:?}")),
     };
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::preferences::set_tool_model(
-            tool.slug(),
-            source,
-            model_ids,
-            acknowledge_paid_use,
-        )
-        .map_err(|e| format!("{e:#}"))
+        // The names and context windows the tool's own picker will show, read
+        // now because the connect that writes them may run offline later. A
+        // catalogue that cannot be read costs the picker its labels, not the
+        // choice.
+        let meta = match source {
+            gate_connect_core::preferences::ModelSource::Gate => {
+                gate_connect_core::gate_models::catalogue_json()
+                    .map(|json| {
+                        gate_connect_core::tool_models::meta_from_catalogue(&json, &model_ids)
+                    })
+                    .unwrap_or_default()
+            }
+            gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
+        };
+        gate_connect_core::tool_models::choose(tool, source, model_ids, acknowledge_paid_use, meta)
+            .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("set tool model join error: {e}"))?
@@ -2112,10 +2170,16 @@ fn drain_backend_errors<R: tauri::Runtime>(window: tauri::Window<R>) -> Vec<Back
 /// Naming them beside the process is the only place that cannot drift from the
 /// row it names.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
+const AGENT_PROCESSES: [(&str, &str, &str, Surface); 6] = [
     ("claude-code", "claude", "Claude Code", Surface::Cli),
     ("codex", "codex", "Codex", Surface::Cli),
     ("opencode", "opencode", "OpenCode", Surface::Cli),
+    // Hermes is a Python program: its launcher execs the venv's `python` with
+    // the `hermes` script, so no process is *named* `hermes`. `agent_name_of`
+    // resolves it from the command line (see `is_hermes_command`). It needs a
+    // row now that Gate writes its model into `config.yaml`, which Hermes reads
+    // at startup - the restart notice after a model change has to find it.
+    ("hermes", "hermes", "Hermes", Surface::Cli),
     // The desktop apps. Their slugs are proxy-domain keys rather than registry
     // tool ids, because that is what these are: Gate routes them through the
     // system proxy, not by rewriting a config file. `agent_names_for`'s doc
@@ -2181,7 +2245,7 @@ enum Surface {
 /// The process names to scan for. `None` means every tool - the master toggle,
 /// the popover's routing takeover and the diagnostics listing all genuinely
 /// mean all of them. `Some(slugs)` narrows to the tools whose configs were
-/// just rewritten; slugs with no process of their own (`hermes`, `openclaw`,
+/// just rewritten; slugs with no process of their own (`openclaw`,
 /// `env-proxy`, a proxy domain key) drop out, and `Some(&[])` scans nothing.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
@@ -2230,10 +2294,14 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
         .iter()
         .filter(|(pid, process)| {
             let name = agent_name_of(process);
+            // An interpreter is a candidate only when Hermes is asked about:
+            // this pass has no command lines, and the one below reads them for
+            // candidates alone, which is what tells Hermes from other Python.
             Some(**pid) != own_pid
-                && AGENT_PROCESSES
+                && (AGENT_PROCESSES
                     .iter()
                     .any(|(_, n, _, _)| n.eq_ignore_ascii_case(&name))
+                    || (names.contains(&"hermes") && is_python_name(&name)))
         })
         .map(|(pid, _)| *pid)
         .collect();
@@ -2317,7 +2385,31 @@ fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
 /// itself is left alone.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_name_of(process: &sysinfo::Process) -> String {
-    normalise_agent_name(&process.name().to_string_lossy())
+    let name = normalise_agent_name(&process.name().to_string_lossy());
+    if is_python_name(&name) && is_hermes_command(process.cmd()) {
+        return "hermes".to_string();
+    }
+    name
+}
+
+/// Whether a process name is a Python interpreter (`python`, `python3.11`,
+/// macOS's `Python`). Only these can be Hermes.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_python_name(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("python")
+}
+
+/// Whether an interpreter's command line runs Hermes: the script right after
+/// the interpreter (or after one flag) is a file called `hermes` - the
+/// launcher's `hermes-agent/hermes` and the venv's `bin/hermes` both are. The
+/// basename rather than the path, since `HERMES_HOME` moves the install.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_hermes_command(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter().skip(1).take(2).any(|arg| {
+        std::path::Path::new(arg)
+            .file_name()
+            .is_some_and(|n| n == "hermes")
+    })
 }
 
 /// The half of [`agent_name_of`] that is testable without a live process table.
@@ -6600,6 +6692,44 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn hermes_is_found_by_its_script_not_its_interpreter() {
+        use std::ffi::OsString;
+        let cmd = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(is_python_name("python"));
+        assert!(is_python_name("Python"));
+        assert!(is_python_name("python3.11"));
+        assert!(!is_python_name("hermes"));
+        // The launcher's exec, and the venv entry point.
+        assert!(is_hermes_command(&cmd(&[
+            "/Users/me/.hermes/hermes-agent/venv/bin/python",
+            "/Users/me/.hermes/hermes-agent/hermes",
+            "chat",
+        ])));
+        assert!(is_hermes_command(&cmd(&["python3", "/venv/bin/hermes"])));
+        assert!(is_hermes_command(&cmd(&[
+            "python",
+            "-u",
+            "/opt/hermes-agent/hermes"
+        ])));
+        // Other Python, including one that merely mentions hermes later on.
+        assert!(!is_hermes_command(&cmd(&[
+            "python",
+            "manage.py",
+            "runserver"
+        ])));
+        assert!(!is_hermes_command(&cmd(&[
+            "python",
+            "-m",
+            "http.server",
+            "hermes"
+        ])));
+        assert!(AGENT_PROCESSES
+            .iter()
+            .any(|(slug, name, _, _)| *slug == "hermes" && *name == "hermes"));
+    }
     use super::*;
 
     /// The reopen bound must stat the file the covered tools actually read.
@@ -6790,7 +6920,9 @@ mod tests {
             );
         }
         assert_eq!(agent_process_names("anthropic"), vec!["Claude"]);
-        assert!(agent_process_names("hermes").is_empty());
+        // Found by its script, not its interpreter - see `is_hermes_command`.
+        assert_eq!(agent_process_names("hermes"), vec!["hermes"]);
+        assert!(agent_process_names("openclaw").is_empty());
     }
 
     /// Every row can be named, and only the registry rows can be verified.
@@ -6806,7 +6938,7 @@ mod tests {
             assert!(!product.is_empty(), "{slug} has no product name");
             assert_eq!(
                 ToolId::from_slug(slug).is_some(),
-                matches!(slug, "claude-code" | "codex" | "opencode"),
+                matches!(slug, "claude-code" | "codex" | "opencode" | "hermes"),
                 "{slug} disagrees with the registry about whether it can be swept"
             );
         }
@@ -6822,7 +6954,7 @@ mod tests {
     fn only_apps_are_relaunchable() {
         for (slug, _, _, surface) in AGENT_PROCESSES {
             let expected = match slug {
-                "claude-code" | "codex" | "opencode" => Surface::Cli,
+                "claude-code" | "codex" | "opencode" | "hermes" => Surface::Cli,
                 _ => Surface::App,
             };
             assert!(

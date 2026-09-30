@@ -25,6 +25,19 @@
 //! We track our own writes via a sibling `_gateConnect` block so
 //! disconnect cleanly reverses what connect did and any prior
 //! user-set values are restored.
+//!
+//! **Gate models are the exception to the canonical base URL, by the user's
+//! choice.** Putting Claude Code on Gate models writes the models into its own
+//! settings - the default `model`, a `modelPicker` that replaces the built-in
+//! lineup with the enabled set, and the model tiers Claude Code falls back to on
+//! its own (Default, opus/sonnet/haiku/fable, the small-fast model, subagents) -
+//! and points `ANTHROPIC_BASE_URL` at the relay's Gate models route, which
+//! serves only those models. A non-Anthropic model has no first-party
+//! capability path to keep, and the tiers are pinned because the route refuses
+//! any model outside the set: a background request on `claude-haiku-*` would
+//! fail rather than quietly spend on a model the user never chose. Recorded
+//! under `_gateConnect.gateModels` and put back on App default or disconnect,
+//! value by value, unless the user has changed it since.
 //! Context-window selection also remains Claude Code-owned: Gate Connect never
 //! writes ANTHROPIC_BETAS. Standard variants therefore stay at 200K, while
 //! Claude Code's [1m] variants add their own 1M beta per selected model.
@@ -45,7 +58,7 @@ use std::path::PathBuf;
 use crate::env;
 use crate::integrations::binaries;
 use crate::integrations::precedence::Override;
-use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
+use crate::registry::{ConnectInput, GateModelState, Integration, Mechanism, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "Anthropic";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
@@ -189,6 +202,26 @@ impl Integration for ClaudeCode {
     }
 
     /// `settings.json` names the forwarder's proxy address.
+    fn supports_gate_models(&self) -> bool {
+        true
+    }
+
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        Ok(match load_settings()? {
+            Some(settings) => gate_model_state_of(&settings).into_state(),
+            None => GateModelState::NotApplied,
+        })
+    }
+
+    /// Settings only: the proxy keys are routing, and stay.
+    fn leave_gate_models(&self, _input: &ConnectInput) -> Result<()> {
+        let Some(mut settings) = load_settings()? else {
+            return Ok(());
+        };
+        revert_gate_models(&mut settings);
+        write_settings(&settings)
+    }
+
     fn mechanism(&self) -> Mechanism {
         Mechanism::ForwardProxy
     }
@@ -235,7 +268,14 @@ impl Integration for ClaudeCode {
                 "Claude Code still uses Gate's legacy custom-base-URL routing".into(),
             ));
         }
-        if env_block.contains_key(KEY_BASE_URL) {
+        let on_gate_models = gate_set().is_some()
+            && env_block
+                .get(KEY_BASE_URL)
+                .and_then(|v| v.as_str())
+                .is_some_and(|u| {
+                    crate::proxy::gate_served::is_relay_base_url(u, ToolId::ClaudeCode)
+                });
+        if env_block.contains_key(KEY_BASE_URL) && !on_gate_models {
             return Ok(Status::Drifted(format!(
                 "managed {KEY_BASE_URL} must be absent so Claude Code keeps first-party model capabilities"
             )));
@@ -396,7 +436,14 @@ impl Integration for ClaudeCode {
             && env_str(KEY_HTTPS_PROXY) == Some(claude_proxy_url.as_str())
             && env_str(KEY_NO_PROXY) == Some(NO_PROXY_VALUE)
             && env_str(KEY_NODE_EXTRA_CA_CERTS) == Some(ca_cert_value.as_str());
-        if already_applied {
+        // Gate models add keys of their own, so "already applied" also needs
+        // there to be none wanted and none left to take out.
+        let gate_models_idle = gate_set().is_none()
+            && settings
+                .get(MARKER_KEY)
+                .and_then(|m| m.get(GATE_MODELS_MARKER))
+                .is_none();
+        if already_applied && gate_models_idle {
             return Ok(());
         }
 
@@ -439,6 +486,23 @@ impl Integration for ClaudeCode {
             ),
         );
 
+        // Gate models last, over the routing keys above: the base URL they
+        // write is the one exception to the canonical-URL rule, and it is only
+        // there while the user has Claude Code on Gate models. A config the
+        // user moved off them from inside Claude Code is theirs now.
+        if gate_model_state_of(&settings).is_drifted() {
+            crate::preferences::fall_back_to_tool_model(ToolId::ClaudeCode.slug())?;
+        }
+        match gate_set() {
+            Some(ids) => {
+                let relay = input.relay_base_url.as_deref().context(
+                    "the Gate relay is not running - Claude Code reaches Gate models through it",
+                )?;
+                apply_gate_models(&mut settings, &ids, relay);
+            }
+            None => revert_gate_models(&mut settings),
+        }
+
         write_settings(&settings)
     }
 
@@ -447,6 +511,8 @@ impl Integration for ClaudeCode {
         let Some(mut settings) = load_settings()? else {
             return Ok(());
         };
+        // Gate models first: their record lives in the marker removed below.
+        revert_gate_models(&mut settings);
 
         let prev = settings
             .get(MARKER_KEY)
@@ -481,6 +547,242 @@ impl Integration for ClaudeCode {
             return Ok(());
         }
         write_settings(&settings)
+    }
+}
+
+/// `_gateConnect.gateModels`: what Gate models wrote and what they replaced.
+const GATE_MODELS_MARKER: &str = "gateModels";
+
+/// The `env` keys Gate models set, every one to an enabled id (or a switch
+/// that keeps Claude Code on one). Measured on Claude Code 2.1.285: these are
+/// every place it picks a model without being asked - the Default row, the
+/// tier aliases, the small-fast model its background helpers use, subagents
+/// (forced, so an agent that names its own model inherits instead), and the
+/// fallback chain.
+const GATE_ENV_KEYS: &[&str] = &[
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+    "CLAUDE_CODE_NO_MODEL_FALLBACK",
+];
+
+fn gate_set() -> Option<Vec<String>> {
+    crate::preferences::gate_models_for(ToolId::ClaudeCode.slug())
+}
+
+/// Where one recorded value lives: `env.<key>` or a top-level key.
+fn slot<'a>(settings: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    match key.strip_prefix("env.") {
+        Some(k) => settings.get("env")?.as_object()?.get(k),
+        None => settings.get(key),
+    }
+}
+
+fn set_slot(settings: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    match key.strip_prefix("env.") {
+        Some(k) => {
+            let env = ensure_object(settings, "env");
+            match value {
+                Some(v) => {
+                    env.insert(k.into(), v);
+                }
+                None => {
+                    env.remove(k);
+                }
+            }
+            if env.is_empty() {
+                settings.remove("env");
+            }
+        }
+        None => match value {
+            Some(v) => {
+                settings.insert(key.into(), v);
+            }
+            None => {
+                settings.remove(key);
+            }
+        },
+    }
+}
+
+/// The values Gate models write for `ids`, keyed as [`slot`] reads them.
+fn gate_values(ids: &[String], default: &str, relay: &str) -> Vec<(String, Value)> {
+    let mut out = vec![(
+        format!("env.{KEY_BASE_URL}"),
+        Value::String(crate::proxy::gate_served::relay_root_url(
+            relay,
+            ToolId::ClaudeCode,
+        )),
+    )];
+    for key in GATE_ENV_KEYS {
+        let v = match *key {
+            "CLAUDE_CODE_SUBAGENT_MODEL" => "inherit".to_string(),
+            "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" | "CLAUDE_CODE_NO_MODEL_FALLBACK" => "1".to_string(),
+            _ => default.to_string(),
+        };
+        out.push((format!("env.{key}"), Value::String(v)));
+    }
+    // The top-level `model`, not `env.ANTHROPIC_MODEL`: the env value would
+    // override the user's own `/model` pick on every launch.
+    out.push(("model".into(), Value::String(default.into())));
+    let options: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            let label = crate::preferences::gate_model_meta(id)
+                .and_then(|m| m.name)
+                .unwrap_or_else(|| id.clone());
+            serde_json::json!({
+                "model": id,
+                "label": label,
+                "description": "Gate model, billed to your organization's Gate credits",
+            })
+        })
+        .collect();
+    out.push((
+        "modelPicker".into(),
+        serde_json::json!({ "replaceBuiltInOptions": true, "options": options }),
+    ));
+    out
+}
+
+/// What the settings say about Gate models.
+enum Reading {
+    NotApplied,
+    Applied(String),
+    Drifted(Option<String>),
+}
+
+impl Reading {
+    fn is_drifted(&self) -> bool {
+        matches!(self, Reading::Drifted(_))
+    }
+
+    fn into_state(self) -> GateModelState {
+        match self {
+            Reading::NotApplied => GateModelState::NotApplied,
+            Reading::Applied(model) => GateModelState::Applied { model },
+            Reading::Drifted(model) => GateModelState::Drifted { model },
+        }
+    }
+}
+
+fn written_ids(settings: &Map<String, Value>) -> Option<Vec<String>> {
+    let list = settings
+        .get(MARKER_KEY)?
+        .get(GATE_MODELS_MARKER)?
+        .get("ids")?
+        .as_array()?;
+    Some(
+        list.iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+/// Applied while Claude Code still sends to our route and starts on one of the
+/// set. An absent `model` is the picker's Default row, which resolves to the
+/// `ANTHROPIC_DEFAULT_MODEL` Gate pinned, so it counts.
+fn gate_model_state_of(settings: &Map<String, Value>) -> Reading {
+    let Some(ids) = written_ids(settings) else {
+        return Reading::NotApplied;
+    };
+    let on_route = slot(settings, &format!("env.{KEY_BASE_URL}"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|u| crate::proxy::gate_served::is_relay_base_url(u, ToolId::ClaudeCode));
+    let model = slot(settings, "model")
+        .and_then(|v| v.as_str())
+        .or_else(|| slot(settings, "env.ANTHROPIC_DEFAULT_MODEL").and_then(|v| v.as_str()))
+        .map(str::to_owned);
+    match model {
+        Some(m) if on_route && ids.contains(&m) => Reading::Applied(m),
+        model => Reading::Drifted(model),
+    }
+}
+
+/// Write the Gate models, snapshotting Claude Code's own values the first time.
+/// The default is the first of the set, unless Claude Code is already on one of
+/// an unchanged set: then the user picked it in `/model`.
+fn apply_gate_models(settings: &mut Map<String, Value>, ids: &[String], relay: &str) {
+    let Some(first) = ids.first() else { return };
+    let written = written_ids(settings);
+    let current = slot(settings, "model")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let default = match (&written, &current) {
+        (Some(w), Some(c)) if w.as_slice() == ids && ids.contains(c) => c.clone(),
+        _ => first.clone(),
+    };
+    let values = gate_values(ids, &default, relay);
+
+    let previous = settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.get(GATE_MODELS_MARKER))
+        .and_then(|g| g.get("previous"))
+        .cloned()
+        .unwrap_or_else(|| {
+            // First apply: what each slot held, `null` for absent. The base URL
+            // is routing's to restore - its own snapshot already has it - so it
+            // is not recorded twice.
+            let mut prev = Map::new();
+            for (key, _) in values.iter().skip(1) {
+                prev.insert(
+                    key.clone(),
+                    slot(settings, key).cloned().unwrap_or(Value::Null),
+                );
+            }
+            Value::Object(prev)
+        });
+    let mut wrote = Map::new();
+    for (key, value) in &values {
+        set_slot(settings, key, Some(value.clone()));
+        wrote.insert(key.clone(), value.clone());
+    }
+    let marker = ensure_object(settings, MARKER_KEY);
+    marker.insert(
+        GATE_MODELS_MARKER.into(),
+        serde_json::json!({ "ids": ids, "previous": previous, "wrote": wrote }),
+    );
+}
+
+/// Put Claude Code's own values back, each only while it still holds what Gate
+/// wrote. The base URL is removed while it is still our route: the canonical
+/// URL is what routing wants, and a user value was routing's to snapshot.
+fn revert_gate_models(settings: &mut Map<String, Value>) {
+    let Some(record) = settings
+        .get(MARKER_KEY)
+        .and_then(|m| m.get(GATE_MODELS_MARKER))
+        .cloned()
+    else {
+        return;
+    };
+    let previous = record
+        .get("previous")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let wrote = record
+        .get("wrote")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (key, ours) in &wrote {
+        if slot(settings, key) != Some(ours) {
+            continue;
+        }
+        if key == &format!("env.{KEY_BASE_URL}") {
+            set_slot(settings, key, None);
+            continue;
+        }
+        let back = previous.get(key).cloned().filter(|v| !v.is_null());
+        set_slot(settings, key, back);
+    }
+    if let Some(marker) = settings.get_mut(MARKER_KEY).and_then(|v| v.as_object_mut()) {
+        marker.remove(GATE_MODELS_MARKER);
     }
 }
 
