@@ -4,6 +4,7 @@ import {
   clearAccount,
   deviceName as fetchDeviceName,
   getAccount,
+  readAccount,
   oauthBeginLogin,
   oauthListOrgs,
   oauthSignOut,
@@ -141,7 +142,12 @@ export function useSettingsActions({
    * backend decides what an empty name means. */
   onDeviceName: (name: string) => void;
   /** Both credentials at once, for the two actions that end the session. */
-  onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
+  onSession: (next: {
+    account: Account | null;
+    oauth: OAuthStatus | null;
+    /** The account read rejected (see `readAccount`), as opposed to finding none. */
+    accountUnread?: boolean;
+  }) => void;
   onProxy: (next: ProxyState | null) => void;
   /**
    * A teardown just ran, so the caller can report where the tools stand.
@@ -333,11 +339,8 @@ export function useSettingsActions({
     setBusy(true);
     try {
       await oauthSignOut();
-      const [acct, oauth] = await Promise.all([
-        getAccount().catch(() => null),
-        oauthStatus().catch(() => null),
-      ]);
-      onSession({ account: acct, oauth });
+      const [reading, oauth] = await Promise.all([readAccount(), oauthStatus().catch(() => null)]);
+      onSession({ account: reading.account, oauth, accountUnread: reading.unread });
       setPrompt(null);
       // The configs are kept on purpose here (this row ends the session, not the
       // account), so every connected tool is now pointing at Gate with no
@@ -371,11 +374,8 @@ export function useSettingsActions({
     setOauthBusy(true);
     try {
       await oauthBeginLogin();
-      const [acct, oauth] = await Promise.all([
-        getAccount().catch(() => null),
-        oauthStatus().catch(() => null),
-      ]);
-      onSession({ account: acct, oauth });
+      const [reading, oauth] = await Promise.all([readAccount(), oauthStatus().catch(() => null)]);
+      onSession({ account: reading.account, oauth, accountUnread: reading.unread });
     } finally {
       setBusy(false);
       setOauthBusy(false);

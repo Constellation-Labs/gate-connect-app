@@ -810,15 +810,13 @@ export function noteSession(facts: SessionFacts): void {
     identifiedAs = null;
     lastPersisted = "";
   }
-  // An API-key account spends the install id once paired: the gateway may
-  // alias it to that key's owner. The account going, or the org changing,
-  // retires it, so a later account is not filed under the earlier owner.
-  if (facts.signedIn && facts.authMode === "api_key" && facts.orgId && !installIdRetired) {
-    if (storedApiKeyOrg === null) storedApiKeyOrg = facts.orgId;
-    else if (storedApiKeyOrg !== facts.orgId) retireInstallId();
-  } else if (!facts.signedIn && storedApiKeyOrg !== null && !installIdRetired) {
-    retireInstallId();
-  }
+  // Spending and retiring the install id is the core's to decide, never this
+  // window's: it records the org an API-key account paired with from what is
+  // reported here, and retires the install id on its own explicit events
+  // (Reset, logout, a replaced key, the key resolving to another org). A
+  // window inferring "the account went" from what it failed to read would
+  // retire it for good on one keychain hiccup. The decision arrives back here
+  // as `install_id_retired` in the stored record.
   persistIdentity();
   const state = funnelState();
   if (state === "open") applySessionNow();

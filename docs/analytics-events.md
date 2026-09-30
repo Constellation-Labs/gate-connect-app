@@ -50,11 +50,14 @@ of `diagnostics_opted_out`.
     super-property. The next launch of such an install bootstraps nothing and
     keeps that fresh id, and if its stored client state was never reset (the
     sign-out happened while no client ran), it is reset at the next start
-    instead of resuming the old person. An app session that is no longer signed
-    in because the credential is gone or was refused is treated the same way;
-    one whose state could not be read (offline, the identity provider or the
-    secret store did not answer, the status read failed) keeps its identity.
-    Pasting an API key over a Constellation sign-in also leaves that identity.
+    instead of resuming the old person. An app session whose reads RESOLVED to
+    "not signed in" (no account file, or a credential that is gone or was
+    refused) is treated the same way. A read that could not answer decides
+    nothing: an account read that rejected (the account file or the secret
+    store could not be read), an OAuth status read that failed, or a session
+    the identity provider or the secret store could not give (offline) all keep
+    the identity exactly as it is. Pasting an API key over a Constellation
+    sign-in also leaves that identity.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the
   org the gateway resolved the key to (read from `/v1/me/activity`; milestones
@@ -73,11 +76,24 @@ of `diagnostics_opted_out`.
   sent under its id, to that account. The in-app disclosure says so.
   **The install id is spent once an API-key account has paired** (its org is
   known), because from then on the gateway may alias it to that key's owner.
-  It is recorded (`api_key_org`) and, when that account goes - Reset, a
-  sign-out, replacing the key with a different one (in Settings or the CLI), or
-  the key resolving to a different org - the install id is **retired**: the
-  client moves to a fresh anonymous id, and no later launch bootstraps the
-  install id again.
+  The core records it (`api_key_org`) from the org the sign-in window reports,
+  which for an API key is only ever the gateway's own answer. The install id is
+  **retired** only on the core's own explicit events, never inferred by a
+  window from what it failed to read:
+  - Reset or `gate-connect logout` (the forget in `oauth::clear`);
+  - saving a key over an existing one (`account::save`, in Settings or the
+    CLI). This fails closed: a legacy account with no recorded key prefix
+    counts as a replacement whatever the key, and a rotation to a new key of
+    the same owner retires too, because the app cannot tell the owner of a key;
+  - the key resolving to a different org than the one it paired with.
+
+  Retired means the client moves to a fresh anonymous id, and no later launch
+  bootstraps the install id again. An `analytics-identity.json` that exists but
+  cannot be read or parsed also fails closed: it reads as retired and
+  identified, so the install files under a fresh anonymous id from then on.
+  A change the CLI makes while the app is open (a logout, a key save) is on disk
+  at once and takes effect in the app at its next account read, or at the next
+  launch; there is no message from the CLI to the running app.
   **Known limit:** once the install id belongs to a person (a Constellation
   account identified on this machine, or a paired API-key account), a later
   API-key account on the same machine is on a fresh anonymous id, and the

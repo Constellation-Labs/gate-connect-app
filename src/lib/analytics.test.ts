@@ -148,13 +148,19 @@ vi.mock("./api", () => ({
   analyticsMilestoneClaim: vi.fn(),
   coworkSettingCheck: vi.fn(),
   analyticsIdentity: vi.fn(async () => ({ ...rust.identity })),
-  // `save_identity_in`'s sticky rules, then `set_analytics_identity`'s emit.
+  // `save_identity_in`'s rules (sticky facts; the core, not the window, spends
+  // the install id on an API-key org and retires it when the org moves), then
+  // `set_analytics_identity`'s emit.
   setAnalyticsIdentity: vi.fn(async (next: typeof rust.identity) => {
+    const prev = rust.identity;
+    const isKey = next.auth_mode === "api_key";
+    const apiKeyOrg = prev.api_key_org ?? (isKey ? next.org_id : null) ?? null;
+    const orgMoved = isKey && !!prev.api_key_org && !!next.org_id && next.org_id !== prev.api_key_org;
     rust.identity = {
       ...next,
-      ever_identified: rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
-      api_key_org: rust.identity.api_key_org ?? next.api_key_org ?? null,
-      install_id_retired: !!rust.identity.install_id_retired || !!next.install_id_retired,
+      ever_identified: prev.ever_identified || next.ever_identified || !!next.identified_sub,
+      api_key_org: apiKeyOrg,
+      install_id_retired: !!prev.install_id_retired || !!next.install_id_retired || orgMoved,
     };
     broadcast("analytics-identity-changed", { ...rust.identity });
   }),
@@ -1152,10 +1158,10 @@ describe("round 3", () => {
     expect(vi.mocked(posthog.init).mock.calls.at(-1)![1]).not.toHaveProperty("bootstrap");
   });
 
-  /** "Use a different account" drops the key by saving the account with none
-   *  (`useSetup.signOut`), which never reaches `account::clear`, so no core
-   *  retirement is announced: the sign-in window has to see it. */
-  it("retires a spent install id when the key is dropped without a Reset", async () => {
+  /** Round 4: the window no longer infers that an API-key account went. A
+   *  signed-out reading (resolved or not) retires nothing; only the core's own
+   *  events do (Reset/logout forget, a replaced key, an org move). */
+  it("does not retire a spent install id from a signed-out reading alone", async () => {
     prefsAre(true);
     const { initAnalytics, noteSession } = await load();
     await initAnalytics();
@@ -1164,8 +1170,8 @@ describe("round 3", () => {
     noteSession({ signedIn: false, authMode: "api_key", sub: null, orgId: null });
     await settle();
 
-    expect(rust.identity.install_id_retired).toBe(true);
-    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+    expect(rust.identity.install_id_retired).toBeFalsy();
+    expect(ph.state.distinctId).toBe(INSTALL_ID);
   });
 
   it("retires a spent install id when the key is replaced", async () => {

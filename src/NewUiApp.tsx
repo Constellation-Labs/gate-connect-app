@@ -18,8 +18,8 @@ import type {
 import {
   deviceName as fetchDeviceName,
   diagnostics as fetchDiagnostics,
-  getAccount,
   getAccountKeyPrefix,
+  readAccount,
   installId as fetchInstallId,
   launchAtLoginStatus,
   listProviders,
@@ -46,7 +46,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
-import { isSignedIn } from "./lib/session";
+import { sessionFacts } from "./lib/analyticsSession";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -226,6 +226,10 @@ export function NewUiApp() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
+  /** The last account read REJECTED (see `readAccount`), so `account` being
+   *  null says nothing about whether anyone is signed in. Only the analytics
+   *  seam reads it; the screens draw both as signed out, as they always have. */
+  const [accountUnread, setAccountUnread] = useState(false);
   /**
    * Open a link, and show it in the existing error banner if it fails.
    *
@@ -529,16 +533,19 @@ export function NewUiApp() {
    * Overview's reading, which is also the first moment the gateway has accepted
    * the key: that is when an API-key install counts as paired.
    */
-  const sessionOrgId =
-    account?.org_id ?? (account?.auth_mode === "api_key" ? (activity.view?.orgId ?? null) : null);
-  const signedInNow = isSignedIn(account, oauth);
-  const sessionSub = oauth?.sub ?? null;
-  const sessionAuthMode = account?.auth_mode ?? null;
-  // An OAuth session whose state could not be read (the status IPC failed, or
-  // the identity provider did not answer) is not a sign-out, whatever
-  // `signedIn` says: an offline launch must keep its identity.
-  const sessionUnknown =
-    sessionAuthMode === "oauth" && (oauth === null || oauth.session === "unavailable");
+  // `sessionFacts` holds the rule for what counts as unknown: a rejected account
+  // read, or an OAuth status that could not answer, is never a sign-out.
+  const facts = sessionFacts({
+    account,
+    accountUnread,
+    oauth,
+    apiKeyOrgId: activity.view?.orgId ?? null,
+  });
+  const sessionOrgId = facts.orgId;
+  const signedInNow = facts.signedIn;
+  const sessionSub = facts.sub;
+  const sessionAuthMode = facts.authMode;
+  const sessionUnknown = facts.sessionUnknown ?? false;
   // Only once the first account and OAuth reads are in: before that, "not signed
   // in" is "not read yet", and the seam treats not signed in as a sign-out.
   useEffect(() => {
@@ -1034,7 +1041,7 @@ export function NewUiApp() {
         listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
-        getAccount().catch(() => null),
+        readAccount(),
         oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
       ]);
@@ -1046,7 +1053,8 @@ export function NewUiApp() {
       void refreshVerdicts();
         setProviders(p);
       setProxy(px);
-      setAccount(acct);
+      setAccount(acct.account);
+      setAccountUnread(acct.unread);
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
@@ -1057,7 +1065,7 @@ export function NewUiApp() {
       // provider and drift dimensions describe a surface this shell does not
       // draw.
       track("app_launched", {
-        has_account: acct !== null,
+        has_account: acct.account !== null,
         proxy_available: px !== null,
         routing_on: px?.running ?? false,
       });
@@ -1654,15 +1662,24 @@ export function NewUiApp() {
     ({
       account: a,
       oauth: o,
+      accountUnread: unread,
     }: {
       account: Account | null;
       oauth: OAuthStatus | null;
+      accountUnread?: boolean;
     }) => {
       setAccount(a);
+      setAccountUnread(unread ?? false);
       setOAuth(o);
     },
     [],
   );
+
+  /** A read that resolved: whatever it says, it is an answer. */
+  const onAccountRead = useCallback((a: Account | null) => {
+    setAccount(a);
+    setAccountUnread(false);
+  }, []);
 
   const setup = useSetup({
     loaded,
@@ -1684,7 +1701,7 @@ export function NewUiApp() {
     proxyRunning: proxy?.running ?? false,
     launchAtLogin,
     onLaunchAtLogin: ({ enabled }) => setLaunchAtLogin(enabled),
-    onAccount: setAccount,
+    onAccount: onAccountRead,
     onDeviceName: setDevice,
     onSession,
     onProxy: setProxy,

@@ -13,7 +13,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  getAccount,
+  readAccount,
   saveAccount,
   clearAccount,
   switchGateway,
@@ -51,6 +51,7 @@ import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { forwardBackendErrors } from "./lib/backendErrors";
+import { sessionFacts } from "./lib/analyticsSession";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
 import { HermesProviderNotice } from "./components/HermesProviderNotice";
@@ -197,6 +198,8 @@ export function App() {
     setMotionFrom(screen);
   }
   const [account, setAccount] = useState<Account | null>(null);
+  /** The last account read rejected (see `readAccount`); analytics only. */
+  const [accountUnread, setAccountUnread] = useState(false);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
 
   // Who is signed in, for the install funnel (AG-960): identity and org group
@@ -210,16 +213,10 @@ export function App() {
   const sessionRead = screen !== "loading";
   useEffect(() => {
     if (!sessionRead) return;
-    noteSession({
-      signedIn: isSignedIn(account, oauth),
-      // Unread or unanswered is not signed out: see NewUiApp's copy of this.
-      sessionUnknown:
-        account?.auth_mode === "oauth" && (oauth === null || oauth.session === "unavailable"),
-      authMode: account?.auth_mode ?? null,
-      sub: oauth?.sub ?? null,
-      orgId: account?.org_id ?? null,
-    });
-  }, [sessionRead, account, oauth]);
+    // The popover never reads the activity overview, so an API-key account has
+    // no org here; see `sessionFacts` for the unknown rule.
+    noteSession(sessionFacts({ account, accountUnread, oauth }));
+  }, [sessionRead, account, accountUnread, oauth]);
 
   // Routed traffic left for the gateway: the first report is the funnel's
   // `first_request_proxied`. The window shell listens for the same event.
@@ -412,10 +409,9 @@ export function App() {
       await unlisten.catch(() => {});
       // Each load degrades to its empty default so the popover still opens;
       // the failure itself is tracked rather than swallowed.
-      const acct = await getAccount().catch((err) => {
-        trackError(err, "startup");
-        return null;
-      });
+      const reading = await readAccount();
+      if (reading.unread) trackError(reading.error, "startup");
+      const acct = reading.account;
       // Best-effort: on failure treat as signed out (routes to sign-in), never
       // crashes the launch.
       const oauthState = await oauthStatus().catch(() => null);
@@ -448,6 +444,7 @@ export function App() {
       const agents = px?.running ? await staleAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setAccount(acct);
+      setAccountUnread(reading.unread);
       setOAuth(oauthState);
       setProxy(px);
       setTools(toolList);
@@ -633,7 +630,9 @@ export function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    setAccount(await getAccount().catch(() => null));
+    const reading = await readAccount();
+    setAccount(reading.account);
+    setAccountUnread(reading.unread);
     setOAuth(await oauthStatus().catch(() => null));
   }, []);
 
@@ -696,9 +695,11 @@ export function App() {
   const onConnected = useCallback(async () => {
     // Read the fresh account directly (state setters are async) so we can route
     // an OAuth sign-in that still needs an org straight to the picker.
-    const acct = await getAccount().catch(() => null);
+    const reading = await readAccount();
+    const acct = reading.account;
     const oauthState = await oauthStatus().catch(() => null);
     setAccount(acct);
+    setAccountUnread(reading.unread);
     setOAuth(oauthState);
     track("signed_in");
     if (needsOrg(acct, oauthState)) {

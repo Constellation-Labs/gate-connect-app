@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import {
-  getAccount,
+  readAccount,
   oauthBeginLogin,
   oauthListOrgs,
   oauthSignOut,
@@ -107,7 +107,12 @@ export function useSetup({
   account: Account | null;
   oauth: OAuthStatus | null;
   /** A fresh read of both, after anything that could change either. */
-  onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
+  onSession: (next: {
+    account: Account | null;
+    oauth: OAuthStatus | null;
+    /** The account read rejected (see `readAccount`), as opposed to finding none. */
+    accountUnread?: boolean;
+  }) => void;
   onProxy: (next: ProxyState) => void;
   /** Whether the diagnostic-data question has been answered. `undefined` while the
    * preference read is in flight - not "unanswered", which would flash the step at
@@ -214,11 +219,12 @@ export function useSetup({
   })();
 
   const reread = useCallback(async () => {
-    const [acct, oauthState] = await Promise.all([
-      getAccount().catch(() => null),
+    const [reading, oauthState] = await Promise.all([
+      readAccount(),
       oauthStatus().catch(() => null),
     ]);
-    onSession({ account: acct, oauth: oauthState });
+    const acct = reading.account;
+    onSession({ account: acct, oauth: oauthState, accountUnread: reading.unread });
     return { account: acct, oauth: oauthState };
   }, [onSession]);
 

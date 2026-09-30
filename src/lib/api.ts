@@ -152,6 +152,29 @@ export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool"
 
 export const getAccount = () => invoke<Account | null>("get_account");
 
+/**
+ * An account read that keeps "could not read" apart from "no account".
+ *
+ * `get_account` resolves `null` only when there is no `account.json`; it
+ * REJECTS when the file or the secret store could not be read (a keychain
+ * error in `has_api_key`, say). The screens have always drawn both as signed
+ * out, which is the safe thing to draw. The analytics seam must not decide
+ * anything from the second one, so every read that feeds it goes through this
+ * and passes `unread` along (AG-960).
+ */
+export interface AccountReading {
+  account: Account | null;
+  unread: boolean;
+  /** The rejection, when `unread`, for a caller that reports it. */
+  error?: unknown;
+}
+
+export const readAccount = (): Promise<AccountReading> =>
+  getAccount().then(
+    (account) => ({ account, unread: false }),
+    (error: unknown) => ({ account: null, unread: true, error }),
+  );
+
 /** Leading characters of the stored Gate key, for the reveal control in
  * Settings. Reads the prefix recorded in the account config, not the keychain.
  * Returns null when no key is stored. */
