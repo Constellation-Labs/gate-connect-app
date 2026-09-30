@@ -16,9 +16,10 @@ import { isSignedIn } from "./session";
  *   state the identity provider or the secret store could not give
  *   (`session === "unavailable"`).
  *
- * The org is the account's own for OAuth. An API-key account stores none, so it
- * is the org the gateway resolved the key to (`apiKeyOrgId`, from the
- * Overview's reading), which is also the first moment the key was accepted.
+ * The org is the account's own for OAuth. For an API key it is ONLY the org the
+ * gateway resolved the key to (`apiKeyOrgId`, from the Overview's reading),
+ * which is also the first moment the key was accepted: never the account
+ * file's `org_id`, which a pasted key leaves behind from an earlier sign-in.
  */
 export function sessionFacts({
   account,
@@ -38,6 +39,9 @@ export function sessionFacts({
       accountUnread || (authMode === "oauth" && (oauth === null || oauth.session === "unavailable")),
     authMode,
     sub: oauth?.sub ?? null,
-    orgId: account?.org_id ?? (authMode === "api_key" ? apiKeyOrgId : null),
+    // An API key's org is the gateway's answer and nothing else. `org_id` in
+    // the account file belongs to an OAuth sign-in, and a pasted key keeps the
+    // file's old one, so reading it here would report a stale org as this key's.
+    orgId: authMode === "api_key" ? apiKeyOrgId : (account?.org_id ?? null),
   };
 }

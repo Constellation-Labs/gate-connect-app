@@ -77,7 +77,9 @@ of `diagnostics_opted_out`.
   **The install id is spent once an API-key account has paired** (its org is
   known), because from then on the gateway may alias it to that key's owner.
   The core records it (`api_key_org`) from the org the sign-in window reports,
-  which for an API key is only ever the gateway's own answer. The install id is
+  which for an API key is only ever the gateway's own answer (the account
+  file's `org_id`, which a pasted key can leave behind from an earlier
+  sign-in, is never used for one). The install id is
   **retired** only on the core's own explicit events, never inferred by a
   window from what it failed to read:
   - Reset or `gate-connect logout` (the forget in `oauth::clear`);
@@ -88,9 +90,12 @@ of `diagnostics_opted_out`.
   - the key resolving to a different org than the one it paired with.
 
   Retired means the client moves to a fresh anonymous id, and no later launch
-  bootstraps the install id again. An `analytics-identity.json` that exists but
-  cannot be read or parsed also fails closed: it reads as retired and
-  identified, so the install files under a fresh anonymous id from then on.
+  bootstraps the install id again. An `analytics-identity.json` whose content
+  cannot be parsed also fails closed: it reads as retired and identified, so
+  the install files under a fresh anonymous id from then on. A read that fails
+  for a passing reason (permission, a busy file) makes the app treat the
+  install as retired for that read, but never writes that back: the next read
+  of the unchanged record decides again.
   A change the CLI makes while the app is open (a logout, a key save) is on disk
   at once and takes effect in the app at its next account read, or at the next
   launch; there is no message from the CLI to the running app.

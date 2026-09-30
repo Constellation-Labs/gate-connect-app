@@ -269,6 +269,22 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         .unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
     let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
+    // A different key may belong to a different person, and the install id may
+    // already be aliased to the previous key's owner (AG-960), so a replacement
+    // retires an install id an API-key account has spent. Decided against the
+    // prefix read BEFORE anything is written, and done before the fallible
+    // steps: when the keychain write below fails after `account.json` already
+    // holds the new prefix, a retry would otherwise compare the new key with
+    // itself and skip the retirement. The first key on a fresh install changes
+    // nothing (no spent install id). A legacy account with no recorded prefix
+    // cannot say whether this is the same key, so it counts as a replacement:
+    // fail closed. A rotation to a new key of the same owner retires too.
+    if let Some(key) = api_key {
+        let new_prefix: String = key.chars().take(12).collect();
+        if old_prefix != Some(new_prefix.as_str()) {
+            let _ = crate::analytics::retire_spent_install_id();
+        }
+    }
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
@@ -296,14 +312,6 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         // cache that will not clear must not fail a key replace.
         if old_prefix != Some(new_prefix.as_str()) {
             let _ = crate::activity_cache::clear();
-            // A different key may belong to a different person, and the install
-            // id may already be aliased to the previous key's owner (AG-960).
-            // Retires only an install id an API-key account has spent, so the
-            // first key saved on a fresh install changes nothing. A legacy
-            // account with no recorded prefix cannot say whether this is the
-            // same key, so it counts as a replacement: fail closed. A rotation
-            // to a new key of the same owner retires too, by the same rule.
-            let _ = crate::analytics::retire_spent_install_id();
         }
     }
     Ok(())

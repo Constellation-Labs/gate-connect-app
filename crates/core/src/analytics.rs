@@ -441,14 +441,30 @@ fn clean_id(v: Option<String>) -> Option<String> {
 /// nothing about who it belonged to can be recovered, and assuming "nobody"
 /// would bootstrap an install id that may already be a person's. The cost is
 /// that such an install files under a fresh anonymous id from then on.
+///
+/// An I/O failure that is not about the content (permission denied, a busy
+/// file, a rename racing the read on Windows) also reads as fail-closed here,
+/// because a reader must answer something; but the writers below refuse to
+/// build on it (see [`read_identity_in`]), so a transient error can never be
+/// written back as a permanent retirement.
 pub fn load_identity_in(support: &Path) -> Identity {
+    read_identity_in(support).unwrap_or_else(|_| Identity::fail_closed())
+}
+
+/// [`load_identity_in`] for a writer: `Err` when the file could not be READ,
+/// so the caller writes nothing, rather than persisting the fail-closed value
+/// of a read that may succeed a moment later. Content that is there but not a
+/// record (unparseable JSON, bytes that are not UTF-8) still fails closed: that
+/// will not get better on a retry.
+fn read_identity_in(support: &Path) -> Result<Identity> {
     let path = support.join(IDENTITY_FILE);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Identity::default(),
-        Err(_) => return Identity::fail_closed(),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Identity::default()),
+        Err(e) if e.kind() == ErrorKind::InvalidData => return Ok(Identity::fail_closed()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    serde_json::from_str::<Identity>(&raw)
+    Ok(serde_json::from_str::<Identity>(&raw)
         .ok()
         .map(|i| Identity {
             identified_sub: clean_id(i.identified_sub),
@@ -458,7 +474,7 @@ pub fn load_identity_in(support: &Path) -> Identity {
             api_key_org: clean_id(i.api_key_org),
             install_id_retired: i.install_id_retired,
         })
-        .unwrap_or_else(Identity::fail_closed)
+        .unwrap_or_else(Identity::fail_closed))
 }
 
 impl Identity {
@@ -475,7 +491,7 @@ impl Identity {
 /// Store `next`, keeping the sticky facts sticky: `ever_identified` (implied
 /// by a sub), `api_key_org` once set, and `install_id_retired`.
 pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
-    let prev = load_identity_in(support);
+    let prev = read_identity_in(support)?;
     let identified_sub = clean_id(next.identified_sub);
     // The core decides when an API-key account spends the install id, and when
     // it moves on, from the org the sign-in window reports (which for an API
@@ -511,7 +527,7 @@ pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
 /// reconcile - so a sign-out the webview never saw still stops the next launch
 /// filing under the old person.
 pub fn forget_identity_in(support: &Path) -> Result<()> {
-    let prev = load_identity_in(support);
+    let prev = read_identity_in(support)?;
     let retire = prev.install_id_retired || prev.ever_identified || prev.api_key_org.is_some();
     if prev.identified_sub.is_none() && prev.org_id.is_none() && retire == prev.install_id_retired {
         return Ok(());
@@ -531,7 +547,7 @@ pub fn forget_identity_in(support: &Path) -> Result<()> {
 /// the previous key's account, retire it, so the new key's account is not filed
 /// under the old owner's person. Called from `account::save`.
 pub fn retire_spent_install_id_in(support: &Path) -> Result<()> {
-    let prev = load_identity_in(support);
+    let prev = read_identity_in(support)?;
     if prev.api_key_org.is_none() || prev.install_id_retired {
         return Ok(());
     }
@@ -957,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_or_hostile_identity_reads_as_default_values() {
+    fn a_corrupt_identity_fails_closed_and_hostile_values_are_not_stored() {
         let dir = scratch("identity-bad");
         fs::write(dir.join(IDENTITY_FILE), "{not json").unwrap();
         // Fails closed: nothing can say whose the install id was.
@@ -1074,7 +1090,12 @@ mod tests {
         let account = include_str!("account.rs");
         let at = account.find("pub fn save(").expect("account::save");
         let body = &account[at..at + account[at..].find("\n}\n").expect("end of save")];
-        assert!(body.contains("crate::analytics::retire_spent_install_id()"));
+        let retire = body
+            .find("crate::analytics::retire_spent_install_id()")
+            .expect("save retires");
+        // Before the first fallible write, so a failed save cannot hide it from
+        // the retry (`tests/analytics_key_retire.rs` drives the failure).
+        assert!(retire < body.find("write_account_file(").expect("the write"));
     }
 
     #[test]
@@ -1132,5 +1153,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_identity_in(&dir).api_key_org, None);
+    }
+
+    /// Round 5: an identity file that cannot be READ (here, a directory where
+    /// the file should be: the read fails with an I/O error, not a parse error)
+    /// makes every writer refuse, and writes nothing. Persisting the
+    /// fail-closed value would turn a transient error into a permanent
+    /// retirement.
+    #[test]
+    fn an_unreadable_identity_is_not_written_over() {
+        let dir = scratch("identity-io");
+        fs::create_dir_all(dir.join(IDENTITY_FILE)).unwrap();
+        assert!(save_identity_in(&dir, Identity::default()).is_err());
+        assert!(forget_identity_in(&dir).is_err());
+        assert!(retire_spent_install_id_in(&dir).is_err());
+        assert!(dir.join(IDENTITY_FILE).is_dir(), "nothing was written");
+        // A reader still answers, and answers closed.
+        assert!(load_identity_in(&dir).install_id_retired);
+    }
+
+    /// The case the round-5 fix is for: the record is fine, a read of it fails
+    /// for a reason that passes (here, permissions), and the write path is
+    /// still open - `write_file` replaces by rename, so an unreadable file does
+    /// not stop it. The old code wrote the fail-closed value over a perfectly
+    /// good record, retiring the install id for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_transient_read_error_does_not_retire_a_good_record() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root reads through a 000 mode, which would make this pass vacuously.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = scratch("identity-eacces");
+        save_identity_in(
+            &dir,
+            Identity {
+                org_id: Some("org-a".into()),
+                auth_mode: Some("api_key".into()),
+                ..Identity::default()
+            },
+        )
+        .unwrap();
+        let file = dir.join(IDENTITY_FILE);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert!(save_identity_in(&dir, Identity::default()).is_err());
+        assert!(forget_identity_in(&dir).is_err());
+        assert!(retire_spent_install_id_in(&dir).is_err());
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        let got = load_identity_in(&dir);
+        assert!(
+            !got.install_id_retired,
+            "a good record must not be retired by a read error"
+        );
+        assert_eq!(got.api_key_org.as_deref(), Some("org-a"));
     }
 }
