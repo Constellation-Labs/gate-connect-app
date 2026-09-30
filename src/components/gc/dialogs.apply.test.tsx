@@ -127,11 +127,11 @@ describe("ChangeReadyDialog", () => {
     expect(screen.queryByText(/^Open Codex/i)).toBeNull();
   });
 
-  it("says the route is active and in use", () => {
+  it("says the change is active and in use", () => {
     render(<ChangeReadyDialog app={{ name: "Codex" }} onDone={noop} />);
 
-    expect(screen.getByText(/The new route is active and in use\./)).toBeTruthy();
-    expect(screen.getByText(/Codex is back on the new route/)).toBeTruthy();
+    expect(screen.getByText(/The change is active and in use\./)).toBeTruthy();
+    expect(screen.getByText(/Codex is back with the change applied/)).toBeTruthy();
   });
 
   it("offers dismissal as the only action", () => {
@@ -150,7 +150,7 @@ describe("ChangeReadyDialog", () => {
       <ChangeReadyDialog app={{ name: "The affected apps" }} plural onDone={noop} />,
     );
 
-    expect(screen.getByText(/The affected apps are back on the new route/)).toBeTruthy();
+    expect(screen.getByText(/The affected apps are back with the change applied/)).toBeTruthy();
   });
 
   /**

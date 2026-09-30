@@ -905,6 +905,38 @@ async fn respond(client: &mut TcpStream, status: u16, message: &str) {
     linger(client).await;
 }
 
+/// The Gate models route while Gate Connect is closed. Same shape and status as
+/// [`respond_payg`], for the same reason: the tool sends no provider key of its
+/// own, and only Gate Connect can serve it. Marked not to be retried, which a
+/// retry cannot fix: the Anthropic and OpenAI SDKs both honour the header.
+async fn respond_gate_models_unavailable(client: &mut TcpStream) {
+    let body = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "gate_connect_not_running",
+            "code": "gate_connect_not_running",
+            "message": "Gate Connect is not running. This tool is set to use Gate models, \
+                        which work only while Gate Connect is open. Open Gate Connect and \
+                        try again, or switch this tool back to its own model.",
+        }
+    })
+    .to_string();
+    let _ = client
+        .write_all(
+            format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\
+                 X-Content-Type-Options: nosniff\r\nX-Should-Retry: false\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await;
+    // As `respond_payg` does: closing at once can reset the connection before
+    // the tool has read the answer, and it would see a dropped socket instead.
+    linger(client).await;
+}
+
 /// The answer a pay-as-you-go tool gets while the app is closed, shaped so both
 /// the OpenAI and the Anthropic SDKs show its message: `error.message` is where
 /// each looks.
@@ -1009,6 +1041,14 @@ async fn serve_direct(mut client: TcpStream, services: &Services) -> Result<()> 
         let _ = client
             .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
             .await;
+        return Ok(());
+    }
+
+    // A tool on Gate models names Gate's own route, which has no provider behind
+    // it to go direct to: its config says "Gate serves this". Nothing here can,
+    // so say what to do rather than calling the route an unknown upstream.
+    if gate_connect_paths::is_gate_served_target(&target) {
+        respond_gate_models_unavailable(&mut client).await;
         return Ok(());
     }
 

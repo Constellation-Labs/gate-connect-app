@@ -57,6 +57,8 @@ pub mod startup;
 /// What a routable row is - who it is aimed at, how wide it reaches, whose
 /// credential rides it - shared by the proxy catalog and the tool registry.
 pub mod taxonomy;
+/// Gate models, written into each tool's own config and read back from it.
+pub mod tool_models;
 /// The filesystem watch behind `tools-changed`, which is what replaced both
 /// shells' 5s detection poll.
 pub mod tool_watch;

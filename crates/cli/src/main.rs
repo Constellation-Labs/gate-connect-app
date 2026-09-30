@@ -81,6 +81,27 @@ enum Command {
     Connect { tool: String },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
+    /// Choose the model a tool runs on.
+    ///
+    /// `--gate` writes Gate models into the tool's own config: the first is its
+    /// default, and the whole set is what its own model picker offers. They are
+    /// served by Gate on your organization's credits, and a model outside the
+    /// set is refused. `--app-default` puts the tool back on its own model. With
+    /// neither, prints the current choice and what the tool's config holds.
+    Model {
+        /// Tool slug, e.g. `codex`.
+        tool: String,
+        /// Gate model ids, comma-separated, e.g. `openai/gpt-5.6-luna,anthropic/claude-opus-5`.
+        #[arg(long, value_delimiter = ',', conflicts_with = "app_default")]
+        gate: Vec<String>,
+        /// Go back to the tool's own model.
+        #[arg(long)]
+        app_default: bool,
+        /// Accept that Gate models are billed to your organization's Gate
+        /// credits. Needed once per install, the first time `--gate` is used.
+        #[arg(long)]
+        accept_paid: bool,
+    },
     /// Manage the built-in MITM proxy that routes config-less apps
     /// (Claude Desktop, ChatGPT, …) and command-line tools through the Gate
     /// gateway. Enabling installs a local CA and points the system proxy at a
@@ -195,6 +216,12 @@ fn main() -> Result<()> {
         Command::Status { tool } => cmd_status(&tool),
         Command::Connect { tool } => cmd_connect(&tool),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
+        Command::Model {
+            tool,
+            gate,
+            app_default,
+            accept_paid,
+        } => cmd_model(&tool, gate, app_default, accept_paid),
         Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
@@ -528,7 +555,7 @@ fn cmd_connect(tool: &str) -> Result<()> {
         ToolId::Hermes => {
             println!("  1. Quit any running `hermes` sessions.");
             println!(
-                "  2. Re-run `hermes` - it reads ~/.hermes/.env on launch and sends its traffic through Gate's local proxy. Your config.yaml is not touched."
+                "  2. Re-run `hermes` - it reads ~/.hermes/.env on launch and sends its traffic through Gate's local proxy. Your providers in config.yaml are not repointed; Gate only names Hermes there, and adds its own provider if you choose Gate models (`gate-connect model hermes`)."
             );
             println!(
                 "  3. Your upstream credentials are untouched. Gate injects its own in flight and forwards each request to the original upstream."
@@ -545,6 +572,89 @@ fn cmd_connect(tool: &str) -> Result<()> {
                 "  3. This is machine-wide: git, curl and npm go through Gate's proxy too. It blind-tunnels anything Gate does not intercept, and `gate-connect disconnect env-proxy` takes it back out."
             );
         }
+    }
+    Ok(())
+}
+
+fn cmd_model(tool: &str, gate: Vec<String>, app_default: bool, accept_paid: bool) -> Result<()> {
+    use gate_connect_core::preferences::{self, ModelSource};
+    use gate_connect_core::registry::GateModelState;
+    use gate_connect_core::tool_models;
+
+    let integ = resolve(tool)?;
+    if !integ.supports_gate_models() {
+        anyhow::bail!("{} does not support Gate models yet", integ.display_name());
+    }
+    let slug = integ.id().slug();
+    let name = integ.display_name();
+
+    if gate.is_empty() && !app_default {
+        let view = tool_models::states().remove(slug);
+        if let Some(v) = view.as_ref().filter(|v| v.left_gate_models.is_some()) {
+            let to = v.left_gate_models.clone().flatten();
+            println!(
+                "{name} was moved off Gate models from inside {name}{}; it is back on its own model.",
+                to.map(|m| format!(" (to {m})")).unwrap_or_default()
+            );
+        }
+        let prefs = preferences::load();
+        match prefs.tool_models.get(slug) {
+            Some(c) if c.source == ModelSource::Gate => {
+                println!("Choice: Gate models {}", c.model_ids.join(", "))
+            }
+            Some(c) if !c.model_ids.is_empty() => println!(
+                "Choice: App default (remembered Gate models: {})",
+                c.model_ids.join(", ")
+            ),
+            _ => println!("Choice: App default"),
+        }
+        match view.map(|v| v.state) {
+            Some(GateModelState::Applied { model }) => {
+                println!("{name}'s config: on Gate models, starting on {model}")
+            }
+            Some(GateModelState::Drifted { model }) => println!(
+                "{name}'s config: moved off Gate models{}",
+                model.map(|m| format!(" (names {m})")).unwrap_or_default()
+            ),
+            _ => println!("{name}'s config: its own model"),
+        }
+        return Ok(());
+    }
+
+    let (source, ids) = if app_default {
+        let kept = preferences::load()
+            .tool_models
+            .get(slug)
+            .map(|c| c.model_ids.clone())
+            .unwrap_or_default();
+        (ModelSource::Tool, kept)
+    } else {
+        if preferences::load().gate_model_paid_ack_unix.is_none() && !accept_paid {
+            anyhow::bail!(
+                "Gate models are billed to your organization's Gate credits. Re-run with \
+                 --accept-paid to confirm."
+            );
+        }
+        (ModelSource::Gate, gate)
+    };
+    let meta = match source {
+        ModelSource::Gate => gate_connect_core::gate_models::catalogue_json()
+            .map(|json| tool_models::meta_from_catalogue(&json, &ids))
+            .unwrap_or_default(),
+        ModelSource::Tool => Vec::new(),
+    };
+    let applied = tool_models::choose(integ.id(), source, ids.clone(), accept_paid, meta)?;
+    let what = match source {
+        ModelSource::Gate => format!("Gate models {}", ids.join(", ")),
+        ModelSource::Tool => "its own model".to_string(),
+    };
+    if applied {
+        println!("{name} is set to {what}. Restart running {name} sessions to pick it up.");
+    } else {
+        println!(
+            "{name} is set to {what}. Gate is not managing {name}'s config right now, so it \
+             applies the next time you run `gate-connect connect {slug}`."
+        );
     }
     Ok(())
 }

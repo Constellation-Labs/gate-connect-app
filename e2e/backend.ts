@@ -297,6 +297,14 @@ export interface BackendState {
       lowBalanceThresholdCents: number | null;
       autoTopupArmed: boolean;
     };
+    /** Tools the user moved off Gate models from inside the tool, with the
+     *  model each moved to (null when its config names none). Consumed by the
+     *  next `tool_model_preferences`, which is what the backend does: it puts
+     *  the tool back on App default on the read that finds it, and says so once. */
+    left?: Record<string, string | null>;
+    /** The model a tool's config starts on, when not the first of its set - the
+     *  user picked another model of the set in the tool's own picker. */
+    configuredModel?: Record<string, string>;
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */

@@ -672,6 +672,16 @@ async fn proxy(
     // mode doesn't make the relay an open proxy.
     let route = if *state.intercept.borrow() {
         routed.route
+    } else if routed.route == Route::Serve {
+        // There is no provider behind the served route to fall back to: the
+        // tool's config names Gate and nothing else. Say so, rather than
+        // forwarding somewhere the user never chose.
+        return Ok(served_refusal(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "gate_not_routing",
+            "Gate Connect is not routing right now, so Gate models are unavailable. \
+             Turn routing on in Gate Connect, or switch this app back to its own model.",
+        ));
     } else {
         Route::Passthrough
     };
@@ -689,7 +699,7 @@ async fn proxy(
     // wait.
     let mut token_rx = state.token.clone();
     let mut retry = None;
-    let (target, attempt) = match route {
+    let (target, mut attempt) = match route {
         Route::Rewrite => {
             let token: Arc<str> = token_rx.borrow_and_update().clone();
             // Refused before anything is sent: see `lacks_gate_credential`.
@@ -702,6 +712,81 @@ async fn proxy(
                 return Ok(signed_out_response());
             }
             let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
+            let mut attempt = headers.clone();
+            let (sent_ours, target) =
+                rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &token)?;
+            retry = sent_ours.then_some((token, api_key, mode));
+            (target, attempt)
+        }
+        Route::Serve => {
+            // The user put this tool on Gate models, and the tool's own config
+            // sent it here: Gate serves it on the org's credits, whatever the
+            // account's billing mode. Payg is forced for that reason - the
+            // helper then strips the tool's own key, which would otherwise read
+            // as a passthrough token and force BYOK.
+            let path = routed
+                .path_and_query
+                .split_once('?')
+                .map_or(routed.path_and_query.as_str(), |(p, _)| p);
+            if !super::gate_served::serves(&method, path) {
+                return Ok(served_refusal(
+                    StatusCode::NOT_FOUND,
+                    "gate_path_not_served",
+                    &format!("Gate does not serve {method} {path} on this route"),
+                ));
+            }
+            // Only a tool Gate writes Gate models for, and only once this install
+            // has accepted paid use: a set stored some other way (an older build,
+            // a hand edit) is not a licence to spend the org's credits.
+            let tool_id = routed.tool.and_then(crate::registry::ToolId::from_slug);
+            let supported = tool_id
+                .and_then(crate::registry::find)
+                .is_some_and(|i| i.supports_gate_models());
+            let enabled = routed
+                .tool
+                .filter(|_| supported)
+                .and_then(crate::preferences::gate_models_served_for);
+            if enabled.is_none() {
+                let display = tool_id
+                    .and_then(crate::registry::find)
+                    .map(|i| i.display_name())
+                    .unwrap_or("This app");
+                let refusal = super::gate_served::check_model(
+                    routed.tool.unwrap_or("this app"),
+                    display,
+                    None,
+                    b"",
+                )
+                .expect_err("no set is always a refusal");
+                return Ok(served_refusal(
+                    StatusCode::BAD_REQUEST,
+                    refusal.code,
+                    &refusal.message,
+                ));
+            }
+            // Every caller-set `x-gate-*` goes before ours are injected: the
+            // provider pin (which org account pays), and anything else of
+            // Gate's a local process could set to steer the gateway (review on
+            // #382). The credential and attribution below are the only Gate
+            // headers this request carries.
+            let gate_headers: Vec<_> = headers
+                .keys()
+                .filter(|k| k.as_str().starts_with("x-gate-"))
+                .cloned()
+                .collect();
+            for name in gate_headers {
+                headers.remove(name);
+            }
+            let token: Arc<str> = token_rx.borrow_and_update().clone();
+            let api_key: Arc<str> = state.api_key.borrow().clone();
+            if super::lacks_gate_credential(&headers, &api_key, &token) {
+                return Ok(signed_out_response());
+            }
+            // `routed.slug` is `gate_served::SLUG` on this route, so the
+            // rewrite attributes it there, strips the tool's own key and
+            // leaves the upstream hint off. A refused bearer retries the same
+            // way as on the rewrite arm.
+            let mode = BillingMode::Payg;
             let mut attempt = headers.clone();
             let (sent_ours, target) =
                 rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &token)?;
@@ -746,6 +831,41 @@ async fn proxy(
             )
         })?
         .to_bytes();
+    let mut body = body;
+
+    // The served route's one rule: the model must be one the user enabled for
+    // this tool. Checked on the body the tool actually sent, after routing has
+    // settled, and answered in the tool's own error shape. The model list a tool
+    // fetches for its picker carries no body and needs no check.
+    if route == Route::Serve && method == hyper::Method::POST {
+        let tool = routed.tool.unwrap_or("this app");
+        let display = routed
+            .tool
+            .and_then(crate::registry::ToolId::from_slug)
+            .and_then(crate::registry::find)
+            .map(|i| i.display_name())
+            .unwrap_or(tool);
+        let enabled = routed
+            .tool
+            .and_then(crate::preferences::gate_models_served_for);
+        if let Err(refusal) =
+            super::gate_served::check_model(tool, display, enabled.as_deref(), &body)
+        {
+            return Ok(served_refusal(
+                StatusCode::BAD_REQUEST,
+                refusal.code,
+                &refusal.message,
+            ));
+        }
+        // Nor any routing override in the body; see `without_routing_overrides`.
+        // The length changes with it, so the caller's `content-length` goes and
+        // the client computes its own.
+        if let Some(stripped) = super::gate_served::without_routing_overrides(&body) {
+            body = Bytes::from(stripped);
+            headers.remove(hyper::header::CONTENT_LENGTH);
+            attempt.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
 
     let send = |target: &str, headers: HeaderMap| {
         state
@@ -774,9 +894,8 @@ async fn proxy(
             match recovered {
                 None => resp,
                 Some(fresh) => {
-                    // Rebuilt rather than reused: the target follows the
-                    // headers (a Gate model is served on its own path), so
-                    // both come from the same rewrite.
+                    // Rebuilt from the headers as they were before the
+                    // first credential went on.
                     let mut attempt = headers;
                     let (_, target) =
                         rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &fresh)?;
@@ -827,10 +946,6 @@ async fn proxy(
 /// is a different problem with a different fix, and a caller's own credential
 /// is not ours to recover.
 ///
-/// The target comes back with the headers because it follows them: a request
-/// Gate serves goes to the path that can answer it (`serve_path`), which is
-/// decided from the model header the injection has just stamped.
-///
 /// The caller has already refused a request with no credential at all
 /// (`lacks_gate_credential`), so the error from [`inject_gate_credential`] on
 /// that state is a guard, not a path.
@@ -868,76 +983,22 @@ fn rewrite_headers(
     // so a local process can't aim the gateway at a host of its
     // choosing.
     //
-    // Served: the hint's ABSENCE is the whole switch, so it is removed
-    // instead - including anything the caller sent, which would
-    // otherwise be a way for a local process to force a forward and
-    // spend the tool's own credential.
-    //
-    // Two independent things ask Gate to serve, and either is enough.
-    // The org routes this domain pay-as-you-go, so the gateway resolves
-    // a provider and debits its balance. Or the user put this tool on a
-    // Gate model, which is why a chosen model had no effect until this
-    // branch existed: with the hint present the gateway forwards to the
-    // tool's own provider and never reaches the override. That half is
-    // read back from the header `inject_gate_credential` has just stamped
-    // rather than derived a second time - two computations of "is this
-    // served?" could disagree, and the disagreement would be a request
-    // billed one way and routed the other.
-    //
-    // The Gate-model half also turns on the PATH: Gate can only answer
-    // on a route it implements, and withholding the hint on any other
-    // leaves the gateway with nothing to do and the caller waiting. PAYG
-    // is not gated that way - the org routes that domain and its
-    // forwarded path is already a shape the gateway serves. See
-    // `serve_path`.
-    let (req_path, req_query) = routed
-        .path_and_query
-        .split_once('?')
-        .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
-            (p, Some(q))
-        });
-    let model_serve_path = if super::serves_gate_model(headers) {
-        super::serve_path(req_path)
-    } else {
-        None
-    };
-    let target = if mode == BillingMode::Byok && model_serve_path.is_none() {
+    // Served (the org routes this domain pay-as-you-go, or this is the Gate
+    // models route, which is always Payg): the hint's ABSENCE is the whole
+    // switch, so it is removed instead - including anything the caller sent,
+    // which would otherwise be a way for a local process to force a forward
+    // and spend the tool's own credential.
+    let target = if mode == BillingMode::Byok {
         set_upstream_header(headers, &routed.upstream_url).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
             )
         })?;
-        // The model header goes too. It is not a label: its own contract says it
-        // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
-        // this tool on a Gate model. Leaving it on a forwarded request states
-        // both "Gate serves this, bill the org" and "send this to my own
-        // provider under my own key" at once, and the body's model would be
-        // rewritten to a Gate id the tool's own provider has never heard of.
-        // Unreachable before the serve rewrite existed, because the request hung
-        // instead of falling back; reachable now on any path Gate does not
-        // serve, such as `count_tokens`.
-        headers.remove(GATE_MODEL_HEADER);
         format!("{}{}", state.gateway_base, routed.path_and_query)
     } else {
         headers.remove(UPSTREAM_URL_HEADER);
-        // The tool's own key goes with it - on a served request the
-        // model, the provider and the bill are all Gate's.
-        // `inject_gate_credential` has already done this for PAYG; this
-        // covers the Gate-model case, where the org is still BYOK.
-        super::strip_client_auth(headers);
-        // Onto the path that can answer, which is not always the one the
-        // tool asked on: Codex's `/codex/responses` is served at
-        // `/v1/responses`, the same wire format under a route the
-        // gateway implements. A PAYG request with no model override
-        // keeps the path it arrived on.
-        match model_serve_path {
-            Some(gateway_path) => match req_query {
-                Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
-                None => format!("{}{gateway_path}", state.gateway_base),
-            },
-            None => format!("{}{}", state.gateway_base, routed.path_and_query),
-        }
+        format!("{}{}", state.gateway_base, routed.path_and_query)
     };
     Ok((injected, target))
 }
@@ -1037,6 +1098,9 @@ enum Route {
     /// Account/metadata path: forward to the real upstream under the tool's own
     /// credential.
     Passthrough,
+    /// The Gate-models route ([`super::gate_served`]): served by Gate on the
+    /// org's credits, never forwarded to a provider of the tool's own.
+    Serve,
 }
 
 /// A resolved relay request: which upstream owns it, the path to forward, and
@@ -1137,6 +1201,23 @@ fn resolve_route(
     let (tool, path_and_query) = split_tool_segment(path_and_query);
     let path_and_query = path_and_query.as_ref();
     if let Some((segment, inner)) = split_leading_segment(path_and_query) {
+        if segment == super::gate_served::SLUG {
+            // The tool is how the enabled set is found, so this route will not
+            // guess one: a URL without the marker did not come from Gate.
+            if tool.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{original:?} is the Gate models route but names no tool"),
+                ));
+            }
+            return Ok(Routed {
+                upstream_url: String::new(),
+                slug: super::gate_served::SLUG.to_string(),
+                route: Route::Serve,
+                path_and_query: inner,
+                tool,
+            });
+        }
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
@@ -1311,11 +1392,9 @@ pub const HEALTH_PATH: &str = "/__gate/health";
 /// interface can call any path, exactly as it can send any `User-Agent`. What it
 /// buys is that the honest case stops depending on a string nobody here owns.
 ///
-/// Worth knowing before treating this as cosmetic: attribution authorizes
-/// nothing, but it is not inert either. `client_tool`'s result also gates
-/// `inject_model_choice`, so naming a tool correctly can start applying a
-/// Gate-model choice the user stored and the tool was too anonymous to receive.
-/// That is the intent; `client_tool`'s doc has the full note.
+/// On the Gate models route the marker is more than a label: it is how the
+/// enabled set is looked up (`gate_served`), which is why that route requires
+/// it. Everywhere else it only names the tool in the activity view.
 ///
 /// **Rolling back is a hard break, not a soft one.** A build that predates this
 /// prefix reads `__gate` as a leading catalog slug, finds no domain and no
@@ -1337,6 +1416,27 @@ fn health_response() -> Response<BoxBody<Bytes, std::io::Error>> {
         .status(StatusCode::NO_CONTENT)
         .body(body)
         .expect("building relay health response")
+}
+
+/// A refusal on the Gate models route, as JSON the tool will show.
+fn served_refusal(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+) -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::from(super::gate_served::error_body(code, message)))
+        .map_err(|never| match never {})
+        .boxed();
+    let mut builder = Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json");
+    // A 503 here is "Gate is not routing" or "Gate Connect is closed", which a
+    // retry does not fix. Without this the Anthropic and OpenAI SDKs back off
+    // and retry for a while before the user sees the message; both honour it.
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        builder = builder.header("x-should-retry", "false");
+    }
+    builder.body(body).expect("building relay refusal response")
 }
 
 /// A local answer with a JSON body, for the one refusal a tool is meant to

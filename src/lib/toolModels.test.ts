@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { adaptCredits, adaptModels, adaptPreferences, formatCredits, formatPlan } from "./toolModels";
+import {
+  adaptCredits,
+  adaptModels,
+  adaptPreferences,
+  formatCredits,
+  formatPlan,
+  leftGateModelsNotice,
+  stepForChoice,
+} from "./toolModels";
 import type { ToolModels } from "./api";
 
 /**
@@ -77,6 +85,111 @@ describe("adaptPreferences", () => {
       } as unknown as Partial<ToolModels>),
     );
     expect(view.byTool.get("codex")?.modelIds).toEqual(["openai/gpt-5"]);
+  });
+});
+
+describe("adaptPreferences: what each tool's config says", () => {
+  it("reads an applied config and the model it starts the tool on", () => {
+    const view = adaptPreferences(
+      payload({
+        configured: {
+          codex: {
+            state: "applied",
+            model: "openai/gpt-5",
+            left_gate_models: false,
+            left_to_model: null,
+          },
+        },
+      }),
+    );
+
+    expect(view.configured.get("codex")).toEqual({
+      state: "applied",
+      model: "openai/gpt-5",
+      leftGateModels: false,
+      leftToModel: null,
+      problem: null,
+    });
+  });
+
+  it("carries a tool moved off Gate models from inside itself, with where it went", () => {
+    const view = adaptPreferences(
+      payload({
+        configured: {
+          codex: {
+            state: "not_applied",
+            model: null,
+            left_gate_models: true,
+            left_to_model: "gpt-6-sol",
+          },
+          hermes: { state: "not_applied", model: null, left_gate_models: true, left_to_model: null },
+        },
+      }),
+    );
+
+    expect(view.configured.get("codex")?.leftGateModels).toBe(true);
+    expect(view.configured.get("codex")?.leftToModel).toBe("gpt-6-sol");
+    // Moved, but to nothing the config names: reported without a model.
+    expect(view.configured.get("hermes")?.leftGateModels).toBe(true);
+    expect(view.configured.get("hermes")?.leftToModel).toBeNull();
+  });
+
+  it("does not report a destination unless the tool actually left", () => {
+    // A stray `left_to_model` beside `left_gate_models: false` is not a report.
+    const view = adaptPreferences(
+      payload({
+        configured: {
+          codex: { state: "applied", model: "a/b", left_gate_models: false, left_to_model: "x" },
+        },
+      }),
+    );
+    expect(view.configured.get("codex")?.leftToModel).toBeNull();
+  });
+
+  it("drops an entry whose state it cannot read, rather than guessing one", () => {
+    const view = adaptPreferences(
+      payload({
+        configured: {
+          codex: { state: "sideways", model: "a/b", left_gate_models: true, left_to_model: null },
+          hermes: null,
+        },
+      } as unknown as Partial<ToolModels>),
+    );
+    expect(view.configured.size).toBe(0);
+  });
+
+  it("reads a payload from a binary that predates the field as nothing reported", () => {
+    // Older builds send no `configured` at all, and a malformed one is the same.
+    expect(adaptPreferences(payload()).configured.size).toBe(0);
+    expect(
+      adaptPreferences({ ...payload(), configured: "nope" } as unknown as ToolModels).configured
+        .size,
+    ).toBe(0);
+  });
+
+  it("reads a left_gate_models that is not literally true as not left", () => {
+    const view = adaptPreferences(
+      payload({
+        configured: {
+          codex: { state: "not_applied", model: null, left_gate_models: "yes", left_to_model: "m" },
+        },
+      } as unknown as Partial<ToolModels>),
+    );
+    expect(view.configured.get("codex")?.leftGateModels).toBe(false);
+  });
+});
+
+describe("leftGateModelsNotice", () => {
+  it("names the app and the model it moved to", () => {
+    expect(leftGateModelsNotice("Codex", "gpt-6-sol")).toBe(
+      "You switched Codex to gpt-6-sol in Codex, so it is back on App default.",
+    );
+  });
+
+  it("does not invent a model when the config names none", () => {
+    expect(leftGateModelsNotice("Hermes", null)).toBe(
+      "You switched Hermes to another model in Hermes, so it is back on App default.",
+    );
   });
 });
 
@@ -299,3 +412,47 @@ describe("formatPlan", () => {
     expect(formatPlan(null)).toBeNull();
   });
 });
+
+describe("stepForChoice", () => {
+  const set = ["openai/gpt-5-6-sol", "openai/gpt-5-6-luna", "openai/gpt-5-2"];
+
+  it("keeps the whole set when switching back to App default", () => {
+    // It kept only the first, so a round trip through App default dropped the
+    // rest and the Gate radio then named one model where three were enabled.
+    expect(stepForChoice("app", set)).toEqual({ kind: "remember", modelIds: set });
+  });
+
+  it("switches to Gate with the whole set", () => {
+    expect(stepForChoice("gate", set)).toEqual({ kind: "activate", modelIds: set });
+  });
+
+  it("asks for a model first when none is enabled", () => {
+    expect(stepForChoice("gate", [])).toEqual({ kind: "pick" });
+  });
+
+  it("remembers nothing when nothing was chosen", () => {
+    expect(stepForChoice("app", [])).toEqual({ kind: "remember", modelIds: [] });
+  });
+});
+
+describe("configured problems", () => {
+  it("carries a problem the card must show, and nothing when there is none", () => {
+    const view = adaptPreferences({
+      tools: {},
+      paid_ack_unix: null,
+      configured: {
+        codex: {
+          state: "drifted",
+          model: null,
+          left_gate_models: false,
+          left_to_model: null,
+          problem: "Codex could not be put back on its own model: disk full",
+        },
+        hermes: { state: "applied", model: "a/b", left_gate_models: false, left_to_model: null },
+      },
+    });
+    expect(view.configured.get("codex")?.problem).toMatch(/could not be put back/);
+    expect(view.configured.get("hermes")?.problem).toBeNull();
+  });
+});
+

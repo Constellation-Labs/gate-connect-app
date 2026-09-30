@@ -244,24 +244,27 @@ describe("ModelPickerDialog vendor marks", () => {
 describe("what a set of several means", () => {
   /**
    * AG-888 was filed as "the picker lets you pick more than the app can use".
-   * It cannot be fixed as written - `applyUserModelChoice` in `gateway-proxy`
-   * treats the set as an ALLOW-LIST (AG-746), so the second and later entries
-   * are what let several sessions keep their own models - but the dialog never
-   * said so, which is why that reading was available at all.
+   * It cannot be fixed as written - the set is written into the tool's own
+   * config as the list its model picker offers, so the second and later
+   * entries are what let several sessions keep their own models - but the
+   * dialog never said so, which is why that reading was available at all.
    */
   it("says nothing extra while one model is chosen", () => {
-    // One model is the unambiguous case: the tool either asks for it or is
-    // rewritten onto it, and there is no order to explain.
+    // One model is the unambiguous case: the tool's picker holds only it, and
+    // there is no order to explain.
     renderPicker({ selectedIds: [CATALOGUE[0].id] });
 
-    expect(screen.queryByText(/keeps its own model/)).toBeNull();
+    expect(screen.queryByText(/own model picker lists/)).toBeNull();
   });
 
-  it("explains the rule, and names the fallback, once there are several", () => {
+  it("explains the rule, and names the starting model, once there are several", () => {
     renderPicker({ selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id] });
 
-    expect(screen.getByText(/keeps its own model whenever it asks for one of these/)).toBeTruthy();
-    // The fallback is named rather than left to be inferred from the list.
+    expect(screen.getByText(/own model picker lists exactly these/)).toBeTruthy();
+    // Outside the set is a refusal now, never a substitution onto the first.
+    expect(screen.getByText(/Gate refuses a request for any other model/)).toBeTruthy();
+    expect(screen.queryByText(/served as/)).toBeNull();
+    // The starting model is named rather than left to be inferred from the list.
     expect(screen.getByText(CATALOGUE[0].id, { selector: "span.font-medium" })).toBeTruthy();
   });
 
@@ -274,7 +277,7 @@ describe("what a set of several means", () => {
     fireEvent.click(box(CATALOGUE[1].id));
     fireEvent.click(box(CATALOGUE[0].id));
 
-    // The fallback is what was checked first, not what sits at the top.
+    // The starting model is what was checked first, not what sits at the top.
     expect(screen.getByText(CATALOGUE[1].id, { selector: "span.font-medium" })).toBeTruthy();
     expect(screen.queryByText(/first in the list/)).toBeNull();
   });
@@ -285,7 +288,7 @@ describe("what a set of several means", () => {
     renderPicker({ selectedIds: [CATALOGUE[0].id] });
     fireEvent.click(box(CATALOGUE[1].id));
 
-    expect(screen.getByText(/keeps its own model/)).toBeTruthy();
+    expect(screen.getByText(/own model picker lists/)).toBeTruthy();
   });
 
   it("stays out of the single-select mode", () => {
@@ -295,6 +298,6 @@ describe("what a set of several means", () => {
       selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id],
     });
 
-    expect(screen.queryByText(/keeps its own model/)).toBeNull();
+    expect(screen.queryByText(/own model picker lists/)).toBeNull();
   });
 });

@@ -1108,15 +1108,15 @@ fn gate_model_home() {
             gate_connect_core::preferences::ModelSource::Gate,
             vec!["openai/gpt-4o".into()],
             true,
+            vec![],
         )
         .expect("store the choice");
     });
 }
 
-/// A Gate-model request goes to a different path from the one it arrived on,
-/// so the retry's target has to come from the same rewrite as its headers. A
-/// retry that rebuilt only the headers would resend `/codex/responses`, which
-/// the gateway can only forward, without the upstream hint that says where.
+/// A refused bearer on the Gate models route is retried like any other, and
+/// the retry is served the same way as the first attempt: Payg, no upstream
+/// hint, and none of the tool's own credential.
 #[tokio::test]
 async fn relay_retries_a_refused_bearer_on_a_gate_model_keeping_the_served_path() {
     hold_session_check_open();
@@ -1133,11 +1133,11 @@ async fn relay_retries_a_refused_bearer_on_a_gate_model_keeping_the_served_path(
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client
         .post(format!(
-            "http://127.0.0.1:{}/__gate/t/codex/chatgpt/codex/responses",
+            "http://127.0.0.1:{}/__gate/t/codex/gate/v1/responses",
             engine.relay_port()
         ))
         .header("authorization", "Bearer chatgpt-subscription-token")
-        .json(&serde_json::json!({ "model": "gpt-5", "input": [] }))
+        .json(&serde_json::json!({ "model": "openai/gpt-4o", "input": [] }))
         .send()
         .await
         .expect("the relay answers");
@@ -1158,11 +1158,7 @@ async fn relay_retries_a_refused_bearer_on_a_gate_model_keeping_the_served_path(
     );
     for (n, r) in reqs.iter().enumerate() {
         assert_eq!(r.path, "/v1/responses", "attempt {n}");
-        assert_eq!(
-            r.header("x-gate-model"),
-            Some("openai/gpt-4o"),
-            "attempt {n}"
-        );
+        assert_eq!(r.header("x-gate-model"), None, "attempt {n}");
         assert_eq!(r.header("x-gate-upstream-url"), None, "attempt {n}");
         assert_eq!(r.header("authorization"), None, "attempt {n}");
     }

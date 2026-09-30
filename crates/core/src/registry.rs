@@ -97,6 +97,23 @@ pub enum Status {
     Overridden(String),
 }
 
+/// What a tool's own config says about Gate models, read from the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateModelState {
+    /// This tool has no Gate model support.
+    Unsupported,
+    /// Gate has not written models into this config: the tool is on its own
+    /// model, as far as Gate is concerned.
+    NotApplied,
+    /// The config is on the Gate models Gate wrote, and `model` is the one it
+    /// will start with.
+    Applied { model: String },
+    /// Gate wrote Gate models here and the config has since moved off them -
+    /// the user picked another model or provider inside the tool. `model` is
+    /// what it names now, when it names one.
+    Drifted { model: Option<String> },
+}
+
 impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -356,6 +373,38 @@ pub trait Integration: Send + Sync {
     /// Revert everything `connect` wrote. After this returns the tool
     /// must be back to its prior configuration with zero Gate residue.
     fn disconnect(&self) -> Result<()>;
+
+    /// Whether this tool's Gate model card is live: `connect` writes the
+    /// stored Gate models into the tool's own config, and
+    /// [`Self::gate_model_state`] reads them back.
+    ///
+    /// Opt-in. A tool that does not support it keeps its own model whatever the
+    /// stored choice says, and the pane does not offer the card.
+    fn supports_gate_models(&self) -> bool {
+        false
+    }
+
+    /// What the tool's config says about Gate models right now.
+    ///
+    /// **The config is the source of truth, not the stored choice.** A user can
+    /// change the model inside the tool - its own picker, a hand edit - and the
+    /// pane has to show what the tool will actually run. So this reads the file,
+    /// and a config that no longer names a Gate model Gate wrote reads as
+    /// [`GateModelState::Drifted`].
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        Ok(GateModelState::Unsupported)
+    }
+
+    /// Take Gate models back out of this tool's config, and nothing else.
+    ///
+    /// For the drift path: the user moved the tool off Gate models from inside
+    /// it, so what is left of Gate's models (the picker, the Gate models route)
+    /// has to go, while the routing and whatever the user just picked stay. A
+    /// full `connect` would do too much: it reasserts routing, which the user
+    /// may have just changed on purpose, and on some tools needs the engine.
+    fn leave_gate_models(&self, _input: &ConnectInput) -> Result<()> {
+        Ok(())
+    }
 
     /// Keep this tool out of the popover's ledger.
     ///

@@ -91,7 +91,16 @@ import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { useActivity, useInstallations } from "./lib/activity";
-import { formatCredits, formatPlan, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import {
+  GATE_MODEL_TOOLS,
+  formatCredits,
+  leftGateModelsNotice,
+  stepForChoice,
+  formatPlan,
+  useCredits,
+  useGateModels,
+  useToolModels,
+} from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { machineNotices, memberNotices } from "./lib/notices";
@@ -364,9 +373,10 @@ export function NewUiApp() {
   /**
    * The two overlays that change an app's model, and what each is for.
    *
-   * The choice itself is no longer here: it lives in the org's preferences on the
-   * gateway (AG-588), read by `useToolModels` below. What is local is only which
-   * dialog is on screen and why it was opened.
+   * The choice itself is no longer here: it lives in this install's
+   * preferences and, once applied, in the tool's own config (AG-588), both read
+   * by `useToolModels` below. What is local is only which dialog is on screen
+   * and why it was opened.
    *
    * The picker carries `then`, because "choose a model" means two different
    * things depending on how it was reached. Opened from the Gate model radio it
@@ -520,8 +530,9 @@ export function NewUiApp() {
     credential,
     openTool ?? undefined,
   );
-  /** The org's per-tool model preferences (AG-588). One read for the whole
-   *  sidebar: the preference is org-wide, so asking per pane would repeat the
+  /** This install's per-tool model choices, and what each tool's own config
+   *  says (AG-588). One read for the whole sidebar: the backend reads every
+   *  supporting tool's config in one pass, so asking per pane would repeat the
    *  same question. */
   const toolModels = useToolModels(canRead, credential);
   /** This app's stored choice, or undefined when it has never been set - which
@@ -576,11 +587,30 @@ export function NewUiApp() {
   /**
    * The remembered models, active or not.
    *
-   * A list because AG-590 enables a set. The pane's "Current Gate model" row
+   * A list because AG-590 enables a set. The pane's Gate model row
    * shows the first and says how many more there are, which keeps the card the
    * height the Figma draws whether one model is enabled or six.
    */
+  /**
+   * The stored set, in the user's order - what every save and the picker use.
+   * Reordering it would be a choice nobody made: saving it back moves the first
+   * model, rewrites the tool's config and restarts Codex's daemon (review on
+   * #382).
+   */
   const openModelIds = openPref?.modelIds ?? [];
+  /**
+   * What the tool's own config says, when the backend reported it. The config
+   * is the source of truth for what the tool will run (R3), so the CARD - and
+   * only the card - leads with the model it actually starts on: a user who
+   * picked the second model of the set in the tool's own picker sees that one.
+   */
+  const openConfigured = openTool ? toolModels.view?.configured.get(openTool) : undefined;
+  const configuredModel =
+    openConfigured?.state === "applied" ? openConfigured.model : null;
+  const cardModelIds =
+    configuredModel && openModelIds.includes(configuredModel)
+      ? [configuredModel, ...openModelIds.filter((id) => id !== configuredModel)]
+      : openModelIds;
   /** The primary - what a single-model reading of the same state would show. */
   const openModelId = openModelIds[0] ?? null;
 
@@ -705,56 +735,6 @@ export function NewUiApp() {
   useEffect(() => {
     setModelError(null);
   }, [openTool, credential]);
-
-  /**
-   * Write one model choice, and surface anything that goes wrong in its own
-   * words.
-   *
-   * A local file write, so the failures are things like a read-only home rather
-   * than a policy refusal - and no code distinguishes them. The message is what
-   * tells the reader whether to retry or to look at their disk.
-   */
-  const saveModel = useCallback(
-    async (
-      source: "tool" | "gate",
-      modelIds: string[],
-      acknowledgePaidUse = false,
-    ) => {
-      if (!openTool) return;
-      setModelBusy(true);
-      setModelError(null);
-      const failure = await toolModels.save(
-        openTool,
-        source,
-        modelIds,
-        acknowledgePaidUse,
-      );
-      setModelBusy(false);
-      if (failure) setModelError(failure.message);
-    },
-    [openTool, toolModels],
-  );
-
-  /**
-   * Hand routing to Gate for a set of models, asking about billing first if this
-   * install has never been asked.
-   *
-   * Per install now that the choice is local - the trade recorded in
-   * `preferences.rs`. Empty sets are refused here rather than written: Gate
-   * cannot serve a model nobody enabled, and AG-590 makes that a rule rather
-   * than an accident.
-   */
-  const activateGateModel = useCallback(
-    (modelIds: string[]) => {
-      if (modelIds.length === 0) return;
-      if (toolModels.view?.paidAckUnix) {
-        void saveModel("gate", modelIds);
-      } else {
-        setModelOverlay({ kind: "confirm-gate", modelIds });
-      }
-    },
-    [saveModel, toolModels.view?.paidAckUnix],
-  );
 
   /**
    * The feed's rows, each with somewhere to go.
@@ -1251,6 +1231,67 @@ export function NewUiApp() {
   }, [reopenOutcomeUndrawn, dismissRunningApps]);
 
   /**
+   * Write one model choice, and surface anything that goes wrong in its own
+   * words.
+   *
+   * Local file writes - `preferences.json`, then the tool's own config - so
+   * the failures are things like a read-only home rather than a policy
+   * refusal, and no code distinguishes them. The message is what tells the
+   * reader whether to retry or to look at their disk.
+   *
+   * Declared below `runningApps` because a successful write offers its restart
+   * notice, and a hook's dependency list is read when the render reaches it.
+   */
+  const saveModel = useCallback(
+    async (
+      source: "tool" | "gate",
+      modelIds: string[],
+      acknowledgePaidUse = false,
+    ) => {
+      if (!openTool) return;
+      setModelBusy(true);
+      setModelError(null);
+      const tool = openTool;
+      const { failure, applied } = await toolModels.save(
+        tool,
+        source,
+        modelIds,
+        acknowledgePaidUse,
+      );
+      setModelBusy(false);
+      if (failure) setModelError(failure.message);
+      // The choice landed in the tool's own config, which a running copy only
+      // reads when it starts - the same situation a routing write leaves, so
+      // the same notice, scoped to this tool for the reason `routeApp` gives.
+      // `false` means Gate does not manage its config right now: nothing on
+      // disk moved, so there is nothing to restart for.
+      else if (applied) await runningApps.offerAfterChange([tool]);
+    },
+    [openTool, toolModels, runningApps],
+  );
+
+  /**
+   * Hand routing to Gate for a set of models, asking about billing first if this
+   * install has never been asked.
+   *
+   * Per install now that the choice is local - the trade recorded in
+   * `preferences.rs`. Empty sets are refused here rather than written: Gate
+   * cannot serve a model nobody enabled, and AG-590 makes that a rule rather
+   * than an accident.
+   */
+  const activateGateModel = useCallback(
+    (modelIds: string[]) => {
+      if (modelIds.length === 0) return;
+      if (toolModels.view?.paidAckUnix) {
+        void saveModel("gate", modelIds);
+      } else {
+        setModelOverlay({ kind: "confirm-gate", modelIds });
+      }
+    },
+    [saveModel, toolModels.view?.paidAckUnix],
+  );
+
+  /**
    * Open a dashboard destination, or say why there is not one.
    *
    * The guard is the point. These links used to be constants pinned to
@@ -1336,26 +1377,6 @@ export function NewUiApp() {
     [tools, proxy, verdicts],
   );
 
-  /**
-   * The rows with no single model family, taken from the members' own
-   * `coversAllProviders` rather than from a slug list here - so the pane and
-   * the ledger can never disagree about which they are.
-   *
-   * Today that is OpenCode, OpenClaw, Hermes and the environment channel. They
-   * get no model card; see `AppPane`'s `modelChoice`. Read off the member
-   * rather than off the group, because a group is an app now and one app's
-   * surfaces do not have to answer this the same way.
-   */
-  const multiProviderSlugs = useMemo(
-    () =>
-      new Set(
-        groups
-          .flatMap((g) => g.members)
-          .filter((m) => m.coversAllProviders)
-          .map((m) => m.key),
-      ),
-    [groups],
-  );
 
   // Re-read the routing facts the notices are built from. Their whole point is
   // that they disappear once acted on, which only works if the state behind them
@@ -3098,20 +3119,18 @@ export function NewUiApp() {
             (!installsResolved ||
               (toolActivity.view === null && toolActivity.failure === null))
           }
-          // A multi-provider tool gets no model card: see `AppPane`'s
-          // `modelChoice`. `multiProviderSlugs` is `buildGroups`' own
-          // membership, so this can never disagree with the rail about which
-          // tools those are.
-          // `openDomain` joins the multi-provider tools in getting no model
-          // card, and for a stricter reason than theirs: theirs has no single
-          // answer, this one cannot take effect at all. `inject_model_choice`
-          // (proxy/mod.rs) stamps `x-gate-model` only when `client_tool`
-          // positively identifies the sender from its User-Agent, and that
-          // matcher knows five CLI agents. A chat domain is a browser, so the
-          // header is never sent and the gateway never overrides the model.
-          // Offering the choice let the user pick a Gate model, accept the paid
-          // confirmation, and be served their own model anyway.
-          {...((openTool !== null && multiProviderSlugs.has(openTool)) || openDomain
+          // Only a tool whose config Gate can write a model into gets the
+          // card: see `GATE_MODEL_TOOLS` and `AppPane`'s `modelChoice`. That
+          // list is not the rail's `coversAllProviders` - Hermes is
+          // multi-provider there and still takes a Gate model set here.
+          // `openDomain` (where `openTool` is null) never gets the card, and for
+          // a stricter reason than the other tools left out: the choice could
+          // not take effect at all. A Gate model choice is written into the
+          // tool's own config, and a chat domain is a browser, which has no
+          // config Gate writes. Offering the choice let the user pick a Gate
+          // model, accept the paid confirmation, and be served their own model
+          // anyway.
+          {...(openTool === null || !GATE_MODEL_TOOLS.has(openTool)
             ? {}
             : {
                 modelChoice: openModelChoice,
@@ -3123,7 +3142,12 @@ export function NewUiApp() {
                 // AG-592. Null while anything it depends on is unread - an
                 // unchecked model is not a healthy one, and saying nothing is
                 // the honest state.
+                // A config that could not be read, or a tool that could not be
+                // put back on its own model, outranks every other warning: the
+                // stored choice and what the tool runs disagree, and the second
+                // case refuses every request.
                 modelAttention:
+                  openConfigured?.problem ??
                   modelAttention({
                     choice: openPref,
                     catalogue: gateModels.models,
@@ -3134,21 +3158,33 @@ export function NewUiApp() {
                     // requests fail anyway.
                     recent: toolEvents.view?.entries.slice(0, 5) ?? null,
                   })?.message ?? null,
+                // R3: the user changed the model inside the app, so its config
+                // no longer holds a Gate model and the card moved to App
+                // default on its own. Said once, held until dismissed or the
+                // next save for this tool (`useToolModels`).
+                modelNotice: toolModels.leftGateModels.has(openTool)
+                  ? leftGateModelsNotice(
+                      appFor(apps, openTool)?.name ?? "This app",
+                      toolModels.leftGateModels.get(openTool) ?? null,
+                    )
+                  : null,
+                onDismissModelNotice: () => toolModels.dismissLeft(openTool),
                 // Switching to a Gate model spends PAYG credits, so it is
                 // confirmed rather than taken on a radio click. Switching back
                 // is not - and it keeps the chosen model, which is the whole
                 // reason a preference may name a model while its source is
                 // "tool".
                 onChooseModel: (choice: ModelChoice) => {
-                  if (choice === "gate") {
-                    if (openModelIds.length > 0)
-                      activateGateModel(openModelIds);
-                    // Nothing to switch *to* yet, so the picker comes first:
-                    // Gate cannot serve a model nobody enabled.
-                    else setModelOverlay({ kind: "picker", then: "activate" });
-                  } else {
-                    void saveModel("tool", openModelId ? [openModelId] : []);
-                  }
+                  // `stepForChoice` keeps the whole set under App default:
+                  // switching back is not unchoosing, and keeping only the
+                  // first lost the rest on a round trip.
+                  const step = stepForChoice(choice, openModelIds);
+                  if (step.kind === "activate") activateGateModel(step.modelIds);
+                  // Nothing to switch *to* yet, so the picker comes first:
+                  // Gate cannot serve a model nobody enabled.
+                  else if (step.kind === "pick")
+                    setModelOverlay({ kind: "picker", then: "activate" });
+                  else void saveModel("tool", step.modelIds);
                 },
                 gateModel: openModelId
                   ? // Vendor from the id's own namespace rather than from the
@@ -3158,18 +3194,19 @@ export function NewUiApp() {
                     // id. AG-592 is where a selected model gets looked up and
                     // told it is gone.
                     {
-                      vendor: openModelId.split("/")[0],
+                      vendor: cardModelIds[0].split("/")[0],
                       // The whole set: the card lists it rather than naming the
                       // first and counting the rest in a heading nobody can
-                      // expand.
-                      ids: openModelIds,
+                      // expand. Configured-first, for display only.
+                      ids: cardModelIds,
                     }
                   : null,
                 onChangeModel: () =>
                   setModelOverlay({
                     kind: "picker",
-                    // Already on Gate: a different model is served immediately,
-                    // and billing was accepted when the switch was made. On App
+                    // Already on Gate: a different set is written into the
+                    // app's config and applies from its next session, and
+                    // billing was accepted when the switch was made. On App
                     // default it is a browse, and picking must not start
                     // spending.
                     then: openModelChoice === "gate" ? "activate" : "remember",

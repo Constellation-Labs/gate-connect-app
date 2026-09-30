@@ -71,8 +71,8 @@ export type ReopenStage =
 export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   applying: "Writing this tool's configuration.",
   reopen_required:
-    "Running, and still using the route it started with.",
-  closing: "Asking this tool to close so it can pick up its new route.",
+    "Running, and still using the settings it started with.",
+  closing: "Asking this tool to close so it can pick up its new configuration.",
   awaiting_reopen:
     "Closed. Open it again and Gate will check its route.",
   reopening: "Gate is starting this tool again.",
@@ -82,7 +82,7 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   routing: "Open, and its traffic is going through Gate.",
   not_routed: "Open, and its traffic is going to its own upstream.",
   close_failed:
-    "Gate could not close it, so it is still using the route it started with.",
+    "Gate could not close it, so it is still using the settings it started with.",
   config_failed:
     "Gate could not write this tool's configuration, so nothing changed for it.",
   verify_failed:
@@ -108,7 +108,7 @@ export const REOPEN_IDLE_WATCH_MS = 10_000;
 /** Why any of this is necessary, in one sentence. Shared by every surface that
  *  raises the flow, so the reason cannot be phrased two ways. */
 export const WHY_REOPEN =
-  "A tool reads its configuration when it starts, so one that was already running keeps the route it launched with until it is opened again.";
+  "A tool reads its configuration when it starts, so one that was already running keeps the settings it launched with until it is opened again.";
 
 /**
  * Waiting on the person, not on Gate.

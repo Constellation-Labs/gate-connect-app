@@ -47,6 +47,8 @@ pub mod ca_bundle;
 
 mod cert_authority;
 
+/// The relay route a tool's config points at when it is on Gate models.
+pub mod gate_served;
 /// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
 mod relay;
 
@@ -1992,25 +1994,18 @@ pub(crate) const GATE_TOOL_HEADER: &str = "x-gate-tool";
 /// offers to skip naming, and a hostname usually carries a person's name. An
 /// unnamed device is attributed by its install id alone.
 pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
-/// The models the user enabled for this tool, comma-separated (AG-588 / AG-590).
+/// The retired Gate-model header, stripped from every request and never sent.
 ///
-/// Unlike the two above this is not a label on the request - it **changes what
-/// the gateway serves**. Sent only when the user set that tool to a Gate model;
-/// absent means the tool's own choice stands, which is the default and must stay
-/// the default.
+/// Gate Models used to work here: the proxy stamped the user's chosen models on
+/// each request and the gateway rewrote the body's `model`, so the tool went on
+/// showing a model it was not being served. The choice now lives in the tool's
+/// own config and reaches Gate on the relay's served route (`gate_served`), so
+/// nothing sets this header any more.
 ///
-/// **The set is an allow-list, not an override queue (AG-746).** This comment
-/// said the gateway "rewrites the body's `model` to the first entry", full stop,
-/// which was true before AG-746 and is the reading AG-888 was filed on. What
-/// `gateway-proxy`'s `applyUserModelChoice` actually does: a request for a model
-/// IN the set is served as the model the tool asked for and the body is left
-/// alone; only a request for something outside the set is rewritten, onto the
-/// first entry. Three sessions on three enabled models therefore keep their own
-/// choices instead of all being served the first.
-///
-/// So the order is still the user's and still load-bearing - the first entry is
-/// what everything unlisted becomes - but it is a fallback rather than a
-/// default.
+/// It is still stripped, and that is the whole reason the constant survives: a
+/// gateway that predates the change still honours it, so a local process that
+/// set it itself could pick a paid model on the user's behalf. Remove the strip
+/// once no supported gateway reads the header.
 pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 
 /// Stamp the attribution headers the activity view groups by.
@@ -2023,15 +2018,8 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// existed. Failing a request to protect a chart would be the wrong trade.
 ///
 /// Any value the caller sent is overwritten: a tool cannot label its traffic as
-/// another machine's - and, for the model header, a tool cannot ask Gate to
-/// serve something the user did not choose.
-///
-/// **The model header is not attribution and does not follow its rules.** The
-/// other three are labels: leaving one off costs a chart a data point. This one
-/// decides what the user is billed for, so it is stamped only from stored intent
-/// and only when a tool was positively identified. An unrecognised tool sends no
-/// override at all rather than a best guess, because guessing here would serve -
-/// and charge for - a model chosen for a different tool.
+/// another machine's. The retired [`GATE_MODEL_HEADER`] is removed outright for
+/// the reason its own doc gives.
 fn inject_attribution(
     headers: &mut HeaderMap,
     domain: Option<&str>,
@@ -2059,8 +2047,7 @@ fn inject_attribution(
     // on the loopback interface can call any path, exactly as it can send any
     // header - it is only no longer dependent on a string Gate neither owns nor
     // versions, so the honest case stops breaking when a tool renames itself.
-    // Worth holding onto here rather than only at `TOOL_PATH_PREFIX`, because
-    // this is the line that feeds `inject_model_choice`. The guess stays
+    // The guess stays
     // underneath for everything the marker cannot reach - the forward-proxy
     // engine, where there is no URL to write, and any relay base URL written
     // before the marker existed and not yet reconciled.
@@ -2083,83 +2070,10 @@ fn inject_attribution(
             HeaderValue::from_static(slug),
         );
     }
-    inject_model_choice(headers, tool);
-}
-
-/// Stamp the chosen models for `tool`, or strip the header entirely.
-///
-/// Stripped unconditionally first, and that is the security-relevant half: a
-/// tool that set `x-gate-model` itself would otherwise pick its own Gate model
-/// and bill the user for it, having never been offered the confirmation. The
-/// only thing that may populate this header is a choice the user stored.
-///
-/// Comma-separated because AG-590 enables a set. Which of the set a request uses
-/// is the gateway's decision, not this one - see the header's own doc. The order
-/// is the user's, preserved.
-fn inject_model_choice(headers: &mut HeaderMap, tool: Option<&'static str>) {
     headers.remove(GATE_MODEL_HEADER);
-    let Some(slug) = tool else { return };
-    let Some(models) = crate::preferences::gate_models_for(slug) else {
-        return;
-    };
-    // A model id that cannot be a header value is dropped rather than escaped:
-    // the ids are `provider/model`, so anything that fails here did not come
-    // from a catalogue, and sending part of a set would serve a model the user
-    // did not put first.
-    if let Ok(value) = HeaderValue::from_str(&models.join(",")) {
-        headers.insert(HeaderName::from_static(GATE_MODEL_HEADER), value);
-    }
 }
 
-/// Is this request one Gate itself will serve, rather than one it forwards to
-/// the tool's own provider?
-///
-/// Answered by the presence of [`GATE_MODEL_HEADER`], which
-/// [`inject_model_choice`] has just decided: it is set only when the user put
-/// this tool on a Gate model. Reading it back rather than re-deriving the choice
-/// keeps one decision in one place - two computations of "is this served?" could
-/// disagree, and the disagreement would be a request billed one way and routed
-/// the other.
-pub(crate) fn serves_gate_model(headers: &HeaderMap) -> bool {
-    headers.contains_key(GATE_MODEL_HEADER)
-}
-
-/// The gateway path that can serve a Gate model for this request, if any.
-///
-/// `None` means the gateway has no way to answer this request itself, so the
-/// tool must stay on its own provider however the user set the model.
-///
-/// **This is the difference between a served request and a hung one.** Serving
-/// works by withholding the upstream hint so the gateway resolves a provider of
-/// its own - but the gateway can only do that for the paths it actually
-/// implements. Send it a path it does not serve with no upstream to forward to
-/// and it holds the socket open: no response, no error, until the client gives
-/// up. Codex hit exactly that. Its request arrives as `/codex/responses`, the
-/// ChatGPT passthrough route, which means "forward this to ChatGPT" and nothing
-/// else; with the hint removed there was neither a handler nor a destination.
-///
-/// The remedy is that `/v1/responses` - the public OpenAI Responses API - *is*
-/// served, and is the same wire format Codex speaks. So a served Codex request
-/// is sent there instead of to its passthrough route. Verified against staging:
-/// `/v1/responses` with [`GATE_MODEL_HEADER`] returns a Responses body, streams
-/// the usual `response.output_text.delta` sequence, and reports `is_byok: false`.
-///
-/// Paths map to themselves when they are already servable, so Claude Code's
-/// `/v1/messages` is untouched.
-pub(crate) fn serve_path(path: &str) -> Option<&'static str> {
-    match path {
-        "/v1/messages" => Some("/v1/messages"),
-        "/v1/chat/completions" => Some("/v1/chat/completions"),
-        "/v1/responses" => Some("/v1/responses"),
-        // Codex's passthrough route, rewritten onto the servable one it matches.
-        // Both spellings appear: the relay sees the short path Codex builds from
-        // its own base URL, the engine the real one off a bare host.
-        "/codex/responses" | "/backend-api/codex/responses" => Some("/v1/responses"),
-        _ => None,
-    }
-}
-
-/// Test seam for the attribution + model-choice injection.
+/// Test seam for the attribution injection.
 ///
 /// The injection itself is `pub(crate)` because nothing outside the proxy should
 /// stamp these headers. It still needs covering from an integration test rather
@@ -2179,20 +2093,6 @@ pub mod testing {
         super::inject_attribution(headers, None, None);
     }
 
-    /// Whether the injection decided Gate serves this request.
-    pub fn serves_gate_model(headers: &HeaderMap) -> bool {
-        super::serves_gate_model(headers)
-    }
-
-    /// Which gateway path, if any, can serve a Gate model for `path`.
-    ///
-    /// Exposed because the mapping is the whole difference between a served
-    /// request and one that hangs, and it has to be assertable from a test that
-    /// also drives the preferences it depends on.
-    pub fn serve_path(path: &str) -> Option<&'static str> {
-        super::serve_path(path)
-    }
-
     /// Repoint a request at the gateway exactly as the MITM engine does.
     ///
     /// Exposed so the serve routing can be asserted from the integration test
@@ -2203,10 +2103,8 @@ pub mod testing {
     /// generic seam monomorphises in the calling crate, which then has to link
     /// this crate's private dependencies, and an integration test cannot.
     ///
-    /// `BillingMode::Byok` is the interesting case for these tests: it is the
-    /// mode in which serving is decided by the model header alone, which is the
-    /// behaviour the serve routing exists to get right. A PAYG org serves
-    /// regardless and would not exercise it.
+    /// Always `BillingMode::Byok`: the forwarded shape, which is the one that
+    /// carries the upstream hint.
     pub fn apply_rewrite_for_tests(
         req: &mut hyper::Request<()>,
         gateway: &hyper::Uri,
@@ -2282,21 +2180,11 @@ pub(crate) fn header_tool(headers: &HeaderMap) -> Option<&'static str> {
 /// [`GATE_CLIENT_HEADER`] before stamping, so a caller cannot set the value
 /// outright - only steer which branch fires.
 ///
-/// This doc used to say "nothing in routing, credential injection or the cascade
-/// rule reads the result", and that is **false**: [`inject_model_choice`] takes
-/// this value and stamps [`GATE_MODEL_HEADER`] only for a positively identified
-/// tool, and that header rewrites the served model and decides what the user is
-/// billed for. So identifying a tool better does not only move a number on a
-/// chart - it can start honouring a Gate-model choice that was stored but never
-/// applied, because the tool was going unrecognised. That is the intended
-/// reading of the feature (the user picked that model for that tool, and it was
-/// silently not being used), and it is a billing-visible consequence that
-/// belongs written down rather than discovered.
-///
-/// It remains **never an authorization input**: nothing here decides whether a
-/// request is served, only which stored intent is applied to it. Keep that half
-/// true. The ceiling on the steerable case is that a forged agent can only reach
-/// a model the user themselves chose for the tool it is impersonating.
+/// Nothing in routing, credential injection or billing reads the result: it is
+/// a label for the activity view and **never an authorization input**. (It was
+/// briefly more than that, while Gate Models stamped a per-tool model header
+/// keyed on this value. That mechanism is gone - the model now lives in the
+/// tool's own config - and this must stay a label.)
 ///
 /// Four of the values it emits - `claude-desktop`, `claude-web`, `chatgpt`,
 /// `chatgpt-web` - have no [`crate::registry::ToolId`], and the activity queries
