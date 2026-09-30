@@ -10,9 +10,10 @@
 //! in-process client. No OS trust store, no system proxy, no elevation.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http_body_util::Empty;
+use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -22,6 +23,7 @@ use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsage
 use tokio::net::TcpListener;
 
 use gate_connect_core::account::BillingMode;
+use gate_connect_core::proxy;
 use gate_connect_core::proxy::default_domains;
 use gate_connect_core::proxy::engine::{self, EngineConfig};
 
@@ -51,23 +53,41 @@ impl Captured {
 struct MockGateway {
     base_url: String,
     captured: Arc<Mutex<Vec<Captured>>>,
+    /// Credentials the gateway refuses with a 401, as (header, value) pairs:
+    /// a bearer that expired while the app still thought it fresh, or a key
+    /// that was revoked.
+    refused: Arc<Mutex<Vec<(&'static str, String)>>>,
+}
+
+impl MockGateway {
+    /// Refuse every request whose `header` carries exactly `value`.
+    fn refuse(&self, header: &'static str, value: &str) {
+        self.refused
+            .lock()
+            .unwrap()
+            .push((header, value.to_string()));
+    }
 }
 
 async fn start_mock_gateway() -> MockGateway {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let captured: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
+    let refused: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
     let cap = Arc::clone(&captured);
+    let rej = Arc::clone(&refused);
     tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 break;
             };
             let cap = Arc::clone(&cap);
+            let rej = Arc::clone(&rej);
             tokio::spawn(async move {
                 let service = service_fn(move |req: Request<Incoming>| {
                     let cap = Arc::clone(&cap);
+                    let rej = Arc::clone(&rej);
                     async move {
                         cap.lock().unwrap().push(Captured {
                             method: req.method().to_string(),
@@ -80,7 +100,21 @@ async fn start_mock_gateway() -> MockGateway {
                                 })
                                 .collect(),
                         });
-                        Ok::<_, std::convert::Infallible>(Response::new(Empty::<Bytes>::new()))
+                        let refused = rej.lock().unwrap().iter().any(|(header, value)| {
+                            req.headers().get(*header).and_then(|v| v.to_str().ok())
+                                == Some(value.as_str())
+                        });
+                        let resp = if refused {
+                            Response::builder()
+                                .status(401)
+                                .body(Full::new(Bytes::from_static(
+                                    br#"{"error":{"code":"invalid_gate_token"}}"#,
+                                )))
+                                .unwrap()
+                        } else {
+                            Response::new(Full::new(Bytes::new()))
+                        };
+                        Ok::<_, std::convert::Infallible>(resp)
                     }
                 });
                 let _ = http1::Builder::new()
@@ -93,6 +127,7 @@ async fn start_mock_gateway() -> MockGateway {
     MockGateway {
         base_url: format!("http://127.0.0.1:{port}"),
         captured,
+        refused,
     }
 }
 
@@ -141,11 +176,29 @@ fn boot_engine_full(
     owner_uid: Option<u32>,
     billing_mode: BillingMode,
 ) -> engine::RunningEngine {
+    boot_engine_with(
+        gateway_base_url,
+        "sk-gw-test",
+        oauth_token,
+        org_id,
+        owner_uid,
+        billing_mode,
+    )
+}
+
+fn boot_engine_with(
+    gateway_base_url: String,
+    api_key: &str,
+    oauth_token: &str,
+    org_id: &str,
+    owner_uid: Option<u32>,
+    billing_mode: BillingMode,
+) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     engine::start(
         EngineConfig {
             gateway_base_url,
-            api_key: "sk-gw-test".into(),
+            api_key: api_key.into(),
             oauth_token: oauth_token.into(),
             org_id: org_id.into(),
             billing_mode,
@@ -802,4 +855,324 @@ async fn relay_in_payg_does_not_touch_a_passthrough_hop() {
         gateway.captured.lock().unwrap().is_empty(),
         "a non-inference path must never reach the gateway"
     );
+}
+
+/// Stands in for the desktop shell's observer, for every test in this binary
+/// that drives a refusal of our bearer. The observer slot is process-global and
+/// first registration wins, so one observer serves them all. It answers `true`
+/// (a verdict will reach the token watch) and never releases the latch, which
+/// leaves the binary in the "check in flight" state for good: every later
+/// refusal waits on the watch, and each test pushes its own verdict into the
+/// engine from a task, the way the shell's re-check thread does, rather than
+/// from inside the observer. That also exercises the wait itself, instead of a
+/// push that lands before `changed()` is polled. Releasing the latch would
+/// start the 60s cooldown and make the next test's refusal pass straight
+/// through, which is the ordering hazard this avoids.
+fn hold_session_check_open() {
+    proxy::set_gate_auth_observer(|| true);
+}
+
+/// Push `token` into the engine once the gateway has seen the first attempt,
+/// from a task, as the shell's re-check thread does. Keyed on the attempt
+/// rather than a delay: under a parallel test run an engine can take longer
+/// to answer its first request than any fixed delay, and a verdict that lands
+/// before the relay reads the watch is a different test (the request is then
+/// refused locally, or sent under the new token first time). The engine is
+/// held weakly so the test can unwrap and stop it once the request has been
+/// answered; await the handle first.
+fn push_verdict_after_first_attempt(
+    engine: &Arc<engine::RunningEngine>,
+    gateway: &MockGateway,
+    token: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    let weak = Arc::downgrade(engine);
+    let captured = Arc::clone(&gateway.captured);
+    tokio::spawn(async move {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while captured.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the gateway never saw the first attempt"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if let Some(engine) = weak.upgrade() {
+            engine.update_token(token);
+        }
+    })
+}
+
+/// A tool's inference request to the relay, with any extra headers.
+async fn post_messages(port: u16, extra: &[(&str, &str)]) -> reqwest::Response {
+    let client = reqwest::Client::builder().build().unwrap();
+    let mut req = client
+        .post(format!("http://127.0.0.1:{port}/v1/messages"))
+        .header("x-gate-upstream-url", "https://api.anthropic.com");
+    for (name, value) in extra {
+        req = req.header(*name, *value);
+    }
+    req.json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the relay answers")
+}
+
+fn stop(engine: Arc<engine::RunningEngine>) {
+    Arc::try_unwrap(engine)
+        .ok()
+        .expect("only the test holds the engine")
+        .stop();
+}
+
+/// The gateway refuses the bearer the relay sent - an access token that expired
+/// across a sleep, while the local clock still called it fresh. The relay hands
+/// the refusal to the session observer, waits for the token the re-check
+/// pushes, and retries once under it; the tool sees only the success.
+#[tokio::test]
+async fn relay_retries_a_refused_bearer_under_the_recovered_token() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let resp = post_messages(engine.relay_port(), &[]).await;
+    assert!(
+        resp.status().is_success(),
+        "the tool must not see the refusal: got {}",
+        resp.status()
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one refused attempt, one retry");
+    assert_eq!(
+        reqs[0].header("x-gate-authorization"),
+        Some("Bearer stale-token")
+    );
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+    assert_eq!(
+        reqs[1].header("x-gate-org-id"),
+        Some("org-uuid-1"),
+        "the retry carries the org like the first attempt"
+    );
+    assert_eq!(
+        reqs[1].header("x-gate-upstream-url"),
+        Some("https://api.anthropic.com")
+    );
+}
+
+/// The re-check finds the session dead and pushes the empty token. That ends
+/// the wait at once, the 401 goes to the tool unchanged, and nothing is
+/// retried.
+#[tokio::test]
+async fn relay_passes_the_401_through_when_the_session_is_dead() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "");
+
+    let started = Instant::now();
+    let resp = post_messages(engine.relay_port(), &[]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the empty token ends the wait; the deadline must not be what ended it"
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "nothing is retried on a dead session");
+}
+
+/// The retry is once only: a gateway that refuses the recovered token too
+/// leaves the tool with that 401 after exactly two attempts.
+#[tokio::test]
+async fn relay_retries_only_once() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    gateway.refuse("x-gate-authorization", "Bearer fresh-token");
+    let engine = Arc::new(boot_engine(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let started = Instant::now();
+    let resp = post_messages(engine.relay_port(), &[]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    // A second retry would find the watch still on the token it just sent and
+    // wait out the deadline before giving up with the same two attempts
+    // captured, so the count alone cannot tell once from a loop.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the refused retry is passed on at once, not after another wait"
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one attempt and one retry, never a third");
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+}
+
+/// A refused legacy key is a different problem with a different fix, and not
+/// ours to recover: the 401 goes straight to the tool, with no wait and no
+/// retry.
+#[tokio::test]
+async fn relay_does_not_retry_a_refused_legacy_key() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-api-key", "sk-gw-test");
+    let engine = boot_engine(gateway.base_url.clone(), "", "");
+
+    let started = Instant::now();
+    let resp = post_messages(engine.relay_port(), &[]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a refused key is passed on at once; there is no verdict to wait for"
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "a refused key is not retried");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-test"));
+}
+
+/// A caller that brings its own Gate key is served under it even while a
+/// session is live, and a refusal of that key is the caller's, not ours: it is
+/// passed on at once, with no re-check and no retry. This is the case the
+/// "only retry our own bearer" rule exists for; the legacy-key test above
+/// cannot reach it, because with no token the refusal is settled before the
+/// rule is consulted.
+#[tokio::test]
+async fn relay_does_not_retry_a_refused_caller_key_while_signed_in() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-api-key", "sk-gw-caller");
+    let engine = boot_engine(gateway.base_url.clone(), "live-token", "org-uuid-1");
+
+    let started = Instant::now();
+    let resp = post_messages(engine.relay_port(), &[("x-gate-api-key", "sk-gw-caller")]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a refusal of the caller's own key has no verdict of ours to wait for"
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "a caller's refused key is not retried");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-caller"));
+    assert_eq!(
+        reqs[0].header("x-gate-authorization"),
+        None,
+        "nothing of ours goes on a caller-keyed request"
+    );
+}
+
+/// An OAuth account whose session is dead has no key to fall back to. The relay
+/// refuses the request itself with the same typed body the engine sends, and
+/// nothing reaches the gateway - which would otherwise have answered with a
+/// complaint about a missing API key, a credential this account never had.
+#[tokio::test]
+async fn relay_refuses_locally_when_signed_out() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_with(
+        gateway.base_url.clone(),
+        "",
+        "",
+        "",
+        None,
+        BillingMode::Byok,
+    );
+
+    let resp = post_messages(engine.relay_port(), &[]).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the one relay error a tool is meant to parse is typed"
+    );
+    assert!(
+        resp.headers()
+            .get("www-authenticate")
+            .is_some_and(|v| v.as_bytes().starts_with(b"Bearer")),
+        "a 401 names its scheme"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("gate_signed_out"),
+        "typed for a client log, like the engine's: {body}"
+    );
+    assert!(
+        body.contains("sign in"),
+        "the refusal names the fix: {body}"
+    );
+
+    engine.stop();
+
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "nothing goes out bare"
+    );
+}
+
+/// The signed-out refusal is about the app's own credential. A caller that
+/// brings its own Gate key is served under it, session or no session, as the
+/// shared injection rule says.
+#[tokio::test]
+async fn relay_serves_a_caller_supplied_key_while_signed_out() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_with(
+        gateway.base_url.clone(),
+        "",
+        "",
+        "",
+        None,
+        BillingMode::Byok,
+    );
+
+    let resp = post_messages(engine.relay_port(), &[("x-gate-api-key", "sk-gw-caller")]).await;
+    assert!(resp.status().is_success(), "got {}", resp.status());
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-caller"));
+    assert_eq!(reqs[0].header("x-gate-authorization"), None);
 }

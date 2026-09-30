@@ -151,6 +151,9 @@ pub fn reverify_session() -> Recheck {
     let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
         return Recheck::Unchanged;
     };
+    // Each `Dead` below is about the bundle this check judged. A sign-in that
+    // replaced it meanwhile is not dead, and must not be marked so.
+    let judged = oauth::session_generation();
     let tokens = match oauth::force_refresh(&cfg) {
         // No stored bundle: signed out, nothing to recover.
         Ok(None) => return Recheck::Unchanged,
@@ -161,8 +164,7 @@ pub fn reverify_session() -> Recheck {
         // the same one a rejected probe gives.
         Err(e) if e.is_refusal() => {
             eprintln!("[gate] re-verifying the session: the refresh was refused: {e}");
-            oauth::mark_session_rejected();
-            return Recheck::Dead;
+            return dead_unless_replaced(judged);
         }
         // Cognito could not be reached at all. This is the likeliest thing
         // to happen at exactly the moment that brought us here - a machine
@@ -175,6 +177,9 @@ pub fn reverify_session() -> Recheck {
             return Recheck::Unchanged;
         }
     };
+    // The forced refresh stored a bundle of its own: that one is what the
+    // probe judges.
+    let judged = oauth::session_generation();
     let Ok(Some(gateway)) = account::load_base_url() else {
         return Recheck::Unchanged;
     };
@@ -185,8 +190,7 @@ pub fn reverify_session() -> Recheck {
                 "[gate] the gateway rejected the session even after a forced refresh; \
                  sign-in required"
             );
-            oauth::mark_session_rejected();
-            Recheck::Dead
+            dead_unless_replaced(judged)
         }
         // Unreachable or a non-auth error: no verdict. The forced refresh
         // still happened and its token is stored, so a caller that re-seeds
@@ -194,4 +198,16 @@ pub fn reverify_session() -> Recheck {
         // new token up through `live_session` anyway.
         org::SessionProbe::Unavailable => Recheck::Unchanged,
     }
+}
+
+/// Mark the session dead, unless the bundle judged (`judged`, a
+/// [`oauth::session_generation`]) has been replaced since: then the verdict
+/// is about a session that is already gone, and there is none.
+fn dead_unless_replaced(judged: u64) -> Recheck {
+    if oauth::session_generation() != judged {
+        eprintln!("[gate] re-verifying the session: a new sign-in landed meanwhile; no verdict");
+        return Recheck::Unchanged;
+    }
+    oauth::mark_session_rejected();
+    Recheck::Dead
 }
