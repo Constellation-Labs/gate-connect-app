@@ -1065,21 +1065,21 @@ mod tests {
     /// CLI's logout and the app's Reset call, and it reaches `oauth::clear`.
     #[test]
     fn every_sign_out_path_reaches_the_forget() {
-        let oauth = include_str!("oauth.rs");
+        let oauth = include_str!("oauth.rs").replace("\r\n", "\n");
         let at = oauth
             .find("pub fn clear() -> Result<()> {")
             .expect("oauth::clear");
         let body = &oauth[at..at + oauth[at..].find("\n}\n").expect("end of clear")];
         assert!(body.contains("crate::analytics::forget_identity()"));
 
-        let account = include_str!("account.rs");
+        let account = include_str!("account.rs").replace("\r\n", "\n");
         let at = account
             .find("pub fn clear() -> Result<()> {")
             .expect("account::clear");
         let body = &account[at..at + account[at..].find("\n}\n").expect("end of clear")];
         assert!(body.contains("crate::oauth::clear()?"));
 
-        let cli = include_str!("../../cli/src/main.rs");
+        let cli = include_str!("../../cli/src/main.rs").replace("\r\n", "\n");
         let at = cli.find("fn cmd_logout()").expect("cmd_logout");
         assert!(cli[at..].contains("account::clear()?"));
     }
@@ -1087,7 +1087,7 @@ mod tests {
     /// And replacing a key retires a spent install id in the core too.
     #[test]
     fn replacing_a_key_reaches_the_retire() {
-        let account = include_str!("account.rs");
+        let account = include_str!("account.rs").replace("\r\n", "\n");
         let at = account.find("pub fn save(").expect("account::save");
         let body = &account[at..at + account[at..].find("\n}\n").expect("end of save")];
         let retire = body

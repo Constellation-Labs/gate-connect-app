@@ -6777,7 +6777,7 @@ mod tests {
     /// of this file's own source, because the commands need a running app.
     #[test]
     fn account_changes_announce_the_analytics_identity_after_the_change() {
-        let src = include_str!("lib.rs");
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
         for (start, change) in [
             ("async fn oauth_sign_out()", "oauth::clear()"),
             ("async fn clear_account()", "account::clear()"),

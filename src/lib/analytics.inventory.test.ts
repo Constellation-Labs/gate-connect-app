@@ -16,8 +16,8 @@ import { CONNECTION_FAILURE_REASONS } from "./errors";
  * `analytics.ts` itself.
  */
 const root = resolve(__dirname, "../..");
-const doc = readFileSync(resolve(root, "docs/analytics-events.md"), "utf8");
-const source = readFileSync(resolve(root, "src/lib/analytics.ts"), "utf8");
+const doc = readFileSync(resolve(root, "docs/analytics-events.md"), "utf8").replace(/\r\n/g, "\n");
+const source = readFileSync(resolve(root, "src/lib/analytics.ts"), "utf8").replace(/\r\n/g, "\n");
 
 /** The backticked first-column names of the table under `## <heading>`. */
 function tableNames(heading: string): string[] {
@@ -74,7 +74,7 @@ describe("docs/analytics-events.md stays in step with the code", () => {
   });
 
   it("does not tell the user that collection is anonymous, and discloses the opt-out note", () => {
-    const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8");
+    const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8").replace(/\r\n/g, "\n");
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
     expect(dialogs).toMatch(
       /Turning sharing off sends one final note saying so, tied to your\s+account if you are signed in\./,
@@ -84,7 +84,7 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     expect(dialogs).toMatch(
       /With an API key, if this device sends your organization&rsquo;s\s+first request, Gate also uses it to link this device&rsquo;s\s+diagnostic data to the key&rsquo;s account, whatever you answer here\./,
     );
-    const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8");
+    const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8").replace(/\r\n/g, "\n");
     expect(upload).not.toMatch(/anonymous posture/);
   });
 

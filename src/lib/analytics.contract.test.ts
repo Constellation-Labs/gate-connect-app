@@ -10,7 +10,7 @@ import { ANALYTICS_CONSENT_EVENT, ANALYTICS_IDENTITY_EVENT } from "./analytics";
  * say it does. This pins each of those against `src-tauri/src/lib.rs` itself,
  * whose own unit tests pin that the sign-out paths call the emitter.
  */
-const lib = readFileSync(resolve(__dirname, "../../src-tauri/src/lib.rs"), "utf8");
+const lib = readFileSync(resolve(__dirname, "../../src-tauri/src/lib.rs"), "utf8").replace(/\r\n/g, "\n");
 
 /** The body of one Rust fn, up to the next `#[tauri::command]` or `fn`. */
 function body(signature: string): string {
@@ -47,7 +47,7 @@ describe("the analytics broadcasts the backend emits", () => {
   });
 
   it("forgets the identity in the core, where the CLI's logout reaches it", () => {
-    const oauth = readFileSync(resolve(__dirname, "../../crates/core/src/oauth.rs"), "utf8");
+    const oauth = readFileSync(resolve(__dirname, "../../crates/core/src/oauth.rs"), "utf8").replace(/\r\n/g, "\n");
     const at = oauth.indexOf("pub fn clear() -> Result<()> {");
     expect(oauth.slice(at, oauth.indexOf("\n}\n", at))).toContain(
       "crate::analytics::forget_identity()",
