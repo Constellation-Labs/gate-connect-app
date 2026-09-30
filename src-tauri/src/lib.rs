@@ -1025,8 +1025,30 @@ async fn set_tool_model(
             }
             gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
         };
-        gate_connect_core::tool_models::choose(tool, source, model_ids, acknowledge_paid_use, meta)
-            .map_err(|e| format!("{e:#}"))
+        let applied = gate_connect_core::tool_models::choose(
+            tool,
+            source,
+            model_ids,
+            acknowledge_paid_use,
+            meta,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        // Codex's app-server daemon loads the config and model catalog only
+        // when it starts, so without this the change would not reach the next
+        // session either. Restarted now only when no Codex session is open: one
+        // that is gets the restart notice, and the daemon restarts when the user
+        // closes it (`restart_codex_daemon_after_close`).
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if applied && tool == gate_connect_core::registry::ToolId::Codex {
+            let mut open_sessions = 0u32;
+            for_each_agent_process(&["codex"], |_| open_sessions += 1);
+            if open_sessions == 0 {
+                if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon() {
+                    eprintln!("[gate] set model: could not restart the Codex app server: {e:#}");
+                }
+            }
+        }
+        Ok(applied)
     })
     .await
     .map_err(|e| format!("set tool model join error: {e}"))?
@@ -2351,6 +2373,10 @@ fn walk_yields(
         names.contains(&row.1)
             && !is_chrome_native_host(cmd)
             && !(row.1 == "Claude" && is_electron_child(cmd))
+            // Codex's app-server daemon outlives every session and is not one
+            // (`codex::is_app_server_command`); counting it put "Close tool"
+            // on screen with nothing open.
+            && !(row.1 == "codex" && gate_connect_core::integrations::codex::is_app_server_command(cmd))
     })
 }
 
@@ -3697,6 +3723,20 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
     (closed, still_running)
 }
 
+/// Restart Codex's app-server daemon once its sessions have been closed, when
+/// the close covered Codex. The daemon holds the config it loaded at start, so
+/// a reopened Codex would otherwise still get the old one; with its sessions
+/// just closed on the user's say-so, there is nothing left for it to cut off.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn restart_codex_daemon_after_close(only: Option<&[String]>) {
+    if only.is_some_and(|slugs| !slugs.iter().any(|s| s == "codex")) {
+        return;
+    }
+    if let Err(e) = gate_connect_core::integrations::codex::restart_app_server_daemon() {
+        eprintln!("[gate] close agents: could not restart the Codex app server: {e:#}");
+    }
+}
+
 /// Close running agents so their next launch picks up the routing change, and
 /// queue the apps among them for [`reopen_running_agents`]. Returns how many
 /// processes closed - 0 means none were running. One still running when Gate
@@ -3708,6 +3748,7 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
 #[tauri::command(async)]
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     let (closed, _) = close_agents(only.as_deref());
+    restart_codex_daemon_after_close(only.as_deref());
     let mut reopen: Vec<(String, Relaunch)> = Vec::new();
     for target in &closed {
         if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
@@ -3737,6 +3778,7 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
 #[tauri::command(async)]
 fn restart_running_agents() -> ClosedAgentsDto {
     let (closed, still_running) = close_agents(None);
+    restart_codex_daemon_after_close(None);
     let mut dto = ClosedAgentsDto {
         closed: closed.len() as u32,
         restarted: Vec::new(),
@@ -6692,6 +6734,34 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn codexs_app_server_daemon_is_not_a_running_codex() {
+        use std::ffi::OsString;
+        let cmd = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        let daemon_exe = std::path::Path::new(
+            "/Users/me/.codex/packages/app-server-daemon/releases/0.159.2/bin/codex",
+        );
+        // Both of the daemon's processes, as `ps` shows them on macOS.
+        for args in [
+            cmd(&[daemon_exe.to_str().unwrap(), "app-server", "daemon", "pid-update-loop"]),
+            cmd(&[daemon_exe.to_str().unwrap(), "app-server", "--listen", "unix://", "--managed-daemon"]),
+        ] {
+            assert!(
+                !walk_yields("codex", Some(daemon_exe), &args, &["codex"]),
+                "{args:?} is the app server, not a session"
+            );
+        }
+        // A real session still counts, including one whose prompt says app-server.
+        assert!(walk_yields("codex", Some(daemon_exe), &cmd(&["codex"]), &["codex"]));
+        assert!(walk_yields(
+            "codex",
+            Some(daemon_exe),
+            &cmd(&["codex", "exec", "explain the app-server flag"]),
+            &["codex"]
+        ));
+    }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]

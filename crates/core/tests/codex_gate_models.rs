@@ -519,3 +519,28 @@ fn an_explicit_choice_is_not_undone_by_unread_drift() {
     assert_eq!(d["_gate_connect"]["previous_model"].as_str(), Some("gpt-6-sol"));
 }
 
+/// An active profile that sets its own model wins over the Gate models Gate
+/// wrote at the top level, so it is reported rather than shown as applied
+/// (review on #382).
+#[test]
+fn a_profile_with_its_own_model_is_reported_as_an_override() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, stub) = setup();
+    let codex = find(ToolId::Codex).unwrap();
+    choose_gate(&[LUNA]);
+    codex.connect(&input(&stub)).unwrap();
+    let with_profile = format!(
+        "profile = \"work\"\n{}\n[profiles.work]\nmodel = \"gpt-5.1-codex\"\n",
+        config()
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), with_profile).unwrap();
+
+    match codex.status().unwrap() {
+        Status::Overridden(o) => {
+            let text = o;
+            assert!(text.contains("work") && text.contains("gpt-5.1-codex"), "{text}");
+        }
+        other => panic!("expected an override, got {other:?}"),
+    }
+}
+

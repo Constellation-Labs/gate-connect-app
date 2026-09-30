@@ -871,13 +871,29 @@ fn config_path() -> Result<PathBuf> {
 /// [`crate::integrations::precedence`].
 fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> {
     let profile = doc.get("profile").and_then(|i| i.as_str())?;
-    let provider = doc
+    let table = doc
         .get("profiles")
         .and_then(|i| i.as_table_like())
         .and_then(|t| t.get(profile))
-        .and_then(|i| i.as_table_like())
-        .and_then(|t| t.get("model_provider"))
-        .and_then(|i| i.as_str())?;
+        .and_then(|i| i.as_table_like())?;
+    // On Gate models the profile can also displace the MODEL: Gate writes the
+    // top-level `model` and picker, and a profile that sets its own wins over
+    // both. Codex then sends that model to the Gate models route, which refuses
+    // it, while the pane would say the Gate models are applied (review on #382).
+    if written_gate_models(doc).is_some() {
+        for key in ["model", "model_catalog_json"] {
+            if let Some(value) = table.get(key).and_then(|i| i.as_str()) {
+                return Some(Override::new(
+                    source,
+                    format!(
+                        "selects profile {profile:?}, whose {key} is {value:?} - Codex reads that \
+                         before the Gate models written at the top level"
+                    ),
+                ));
+            }
+        }
+    }
+    let provider = table.get("model_provider").and_then(|i| i.as_str())?;
     if provider == PROVIDER_ID {
         return None;
     }
@@ -1024,6 +1040,73 @@ fn is_passthrough_stub(doc: &DocumentMut) -> bool {
         .and_then(|t| t.get(PASSTHROUGH_MARKER))
         .and_then(|i| i.as_bool())
         .unwrap_or(false)
+}
+
+/// Whether a `codex` command line is Codex's app-server rather than a session.
+///
+/// The Codex TUI does not read `config.toml` itself: it talks to a long-lived
+/// app-server daemon (`codex app-server --listen …`, supervised by
+/// `codex app-server daemon pid-update-loop`), which stays up after every TUI
+/// and the ChatGPT app have quit. It is not something a user opens or closes,
+/// so it must not read as a running Codex - which is what put "Reopen CLI to
+/// finish / Close tool" on screen with no Codex open - and it is the process
+/// that has to restart for a config change to reach new sessions.
+pub fn is_app_server_command(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter().skip(1).any(|arg| arg == "app-server")
+}
+
+/// Restart Codex's app-server daemon if one is running, so new sessions load
+/// the config and model catalog Gate just wrote. It reads both only when it
+/// starts: measured on 0.159, a TUI session opened after a model change was
+/// still offered the catalog the daemon had loaded before it.
+///
+/// A no-op when none is running - nothing holds stale config then, and
+/// `restart` would start one the user never asked for. Returns whether it ran.
+///
+/// Callers decide WHEN: the restart ends the sessions the daemon hosts, so it
+/// runs only with no Codex session open, or right after the user closed them.
+pub fn restart_app_server_daemon() -> Result<bool> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    // The daemon's own binary, never the one the ChatGPT app bundles: that
+    // app-server belongs to the app and restarts with it.
+    let Some(exe) = sys
+        .processes()
+        .values()
+        .filter(|p| p.name().to_string_lossy() == "codex" && is_app_server_command(p.cmd()))
+        .filter_map(|p| p.exe().map(Path::to_path_buf))
+        .find(|exe| !exe.components().any(|c| c.as_os_str() == "ChatGPT.app"))
+    else {
+        return Ok(false);
+    };
+    let mut child = std::process::Command::new(&exe)
+        .args(["app-server", "daemon", "restart"])
+        .env("CODEX_HOME", env::codex_config_dir()?)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("running {} app-server daemon restart", exe.display()))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(status.success(), "codex app-server daemon restart exited {status}");
+            return Ok(true);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            anyhow::bail!("codex app-server daemon restart did not finish in 20s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// `[_gate_connect]` keys for Gate models, beside the provider ones.
