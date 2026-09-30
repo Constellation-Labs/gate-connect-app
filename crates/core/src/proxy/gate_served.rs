@@ -11,8 +11,10 @@
 //! **The URL is the whole signal.** A request that arrives here is served by
 //! Gate on the organization's credits whatever the account's billing mode, and a
 //! request that arrives anywhere else is routed exactly as it was before. Only
-//! Gate Connect writes this URL, and it writes it only after the user accepted
-//! paid Gate model use for that tool (`preferences::set_tool_model`).
+//! Gate Connect writes this URL. The route itself also refuses a tool that does
+//! not support Gate models, and serves nothing until this install has accepted
+//! paid Gate model use - once per install, not per tool
+//! (`preferences::gate_models_served_for`).
 //!
 //! **What is refused, and why a refusal rather than a substitution.** The model
 //! must be one the user enabled for this tool. Anything else - a `-m` flag, a
@@ -152,6 +154,19 @@ pub(crate) fn check_model(
     })
 }
 
+/// The body without a top-level `provider` field, or `None` when it has none.
+///
+/// The gateway reads that field (and `x-gate-provider`) to choose which of the
+/// organization's provider accounts serves a request. On this route the
+/// organization pays, so a local caller must not steer which account does: it
+/// cannot escape the enabled set, but it can move spend onto an account the
+/// org would not have picked (review on #382).
+pub(crate) fn without_provider(body: &[u8]) -> Option<Vec<u8>> {
+    let mut v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    v.as_object_mut()?.remove("provider")?;
+    serde_json::to_vec(&v).ok()
+}
+
 /// An OpenAI-shaped error body. Codex, Hermes and the OpenAI SDKs all surface
 /// `error.message`, so this is what makes a refusal readable in the tool rather
 /// than a bare status.
@@ -251,6 +266,16 @@ mod tests {
             let refusal = check_model("codex", "Codex", Some(&enabled), body).unwrap_err();
             assert_eq!(refusal.code, "gate_model_missing");
         }
+    }
+
+    #[test]
+    fn a_provider_pin_is_dropped_and_nothing_else_is() {
+        let body = br#"{"model":"a/b","provider":{"order":["x"]},"input":"hi"}"#;
+        let out: serde_json::Value =
+            serde_json::from_slice(&without_provider(body).expect("had one")).unwrap();
+        assert_eq!(out, serde_json::json!({"model":"a/b","input":"hi"}));
+        assert!(without_provider(br#"{"model":"a/b"}"#).is_none());
+        assert!(without_provider(b"not json").is_none());
     }
 
     #[test]

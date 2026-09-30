@@ -482,7 +482,10 @@ fn a_reconnect_keeps_codex_on_gate_models() {
         codex.gate_model_state().unwrap(),
         GateModelState::Applied { model: LUNA.into() }
     );
-    assert_eq!(preferences::load().tool_models["codex"].source, ModelSource::Gate);
+    assert_eq!(
+        preferences::load().tool_models["codex"].source,
+        ModelSource::Gate
+    );
 }
 
 /// The user moved Codex off its Gate models in Codex, and nothing has read the
@@ -507,7 +510,10 @@ fn an_explicit_choice_is_not_undone_by_unread_drift() {
     )
     .unwrap();
     assert!(applied);
-    assert_eq!(preferences::load().tool_models["codex"].source, ModelSource::Gate);
+    assert_eq!(
+        preferences::load().tool_models["codex"].source,
+        ModelSource::Gate
+    );
     assert_eq!(
         codex.gate_model_state().unwrap(),
         GateModelState::Applied { model: OPUS.into() },
@@ -516,7 +522,10 @@ fn an_explicit_choice_is_not_undone_by_unread_drift() {
     );
     // And the snapshot is the user's own model from before that choice.
     let d = doc();
-    assert_eq!(d["_gate_connect"]["previous_model"].as_str(), Some("gpt-6-sol"));
+    assert_eq!(
+        d["_gate_connect"]["previous_model"].as_str(),
+        Some("gpt-6-sol")
+    );
 }
 
 /// An active profile that sets its own model wins over the Gate models Gate
@@ -538,9 +547,11 @@ fn a_profile_with_its_own_model_is_reported_as_an_override() {
     match codex.status().unwrap() {
         Status::Overridden(o) => {
             let text = o;
-            assert!(text.contains("work") && text.contains("gpt-5.1-codex"), "{text}");
+            assert!(
+                text.contains("work") && text.contains("gpt-5.1-codex"),
+                "{text}"
+            );
         }
         other => panic!("expected an override, got {other:?}"),
     }
 }
-

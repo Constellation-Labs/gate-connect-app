@@ -740,6 +740,37 @@ async fn proxy(
                     &format!("Gate does not serve {method} {path} on this route"),
                 ));
             }
+            // Only a tool Gate writes Gate models for, and only once this install
+            // has accepted paid use: a set stored some other way (an older build,
+            // a hand edit) is not a licence to spend the org's credits.
+            let tool_id = routed.tool.and_then(crate::registry::ToolId::from_slug);
+            let supported = tool_id
+                .and_then(crate::registry::find)
+                .is_some_and(|i| i.supports_gate_models());
+            let enabled = routed
+                .tool
+                .filter(|_| supported)
+                .and_then(crate::preferences::gate_models_served_for);
+            if enabled.is_none() {
+                let display = tool_id
+                    .and_then(crate::registry::find)
+                    .map(|i| i.display_name())
+                    .unwrap_or("This app");
+                let refusal = super::gate_served::check_model(
+                    routed.tool.unwrap_or("this app"),
+                    display,
+                    None,
+                    b"",
+                )
+                .expect_err("no set is always a refusal");
+                return Ok(served_refusal(
+                    StatusCode::BAD_REQUEST,
+                    refusal.code,
+                    &refusal.message,
+                ));
+            }
+            // Which org account serves this is the org's call, not the caller's.
+            headers.remove("x-gate-provider");
             inject_credential(
                 &mut headers,
                 state,
@@ -788,6 +819,7 @@ async fn proxy(
             )
         })?
         .to_bytes();
+    let mut body = body;
 
     // The served route's one rule: the model must be one the user enabled for
     // this tool. Checked on the body the tool actually sent, after routing has
@@ -801,7 +833,9 @@ async fn proxy(
             .and_then(crate::registry::find)
             .map(|i| i.display_name())
             .unwrap_or(tool);
-        let enabled = routed.tool.and_then(crate::preferences::gate_models_for);
+        let enabled = routed
+            .tool
+            .and_then(crate::preferences::gate_models_served_for);
         if let Err(refusal) =
             super::gate_served::check_model(tool, display, enabled.as_deref(), &body)
         {
@@ -810,6 +844,13 @@ async fn proxy(
                 refusal.code,
                 &refusal.message,
             ));
+        }
+        // And no account pin in the body either; see `without_provider`. The
+        // length changes with it, so the caller's `content-length` goes and the
+        // client computes its own.
+        if let Some(stripped) = super::gate_served::without_provider(&body) {
+            body = Bytes::from(stripped);
+            headers.remove(hyper::header::CONTENT_LENGTH);
         }
     }
 
@@ -1222,11 +1263,16 @@ fn served_refusal(
     let body = Full::new(Bytes::from(super::gate_served::error_body(code, message)))
         .map_err(|never| match never {})
         .boxed();
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .expect("building relay refusal response")
+        .header(hyper::header::CONTENT_TYPE, "application/json");
+    // A 503 here is "Gate is not routing" or "Gate Connect is closed", which a
+    // retry does not fix. Without this the Anthropic and OpenAI SDKs back off
+    // and retry for a while before the user sees the message; both honour it.
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        builder = builder.header("x-should-retry", "false");
+    }
+    builder.body(body).expect("building relay refusal response")
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {

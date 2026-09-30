@@ -1041,8 +1041,9 @@ fn plan_gate_models(
             // was still there) is the one to restore, not today's `model:`.
             let model_shape = match &state.model_shape_before_gate_models {
                 Some(shape) => shape.clone(),
-                None => yaml_block::parent_shape(before, "model")
-                    .map_err(|e| refused("model", e))?,
+                None => {
+                    yaml_block::parent_shape(before, "model").map_err(|e| refused("model", e))?
+                }
             };
             GateModels {
                 written: Vec::new(),

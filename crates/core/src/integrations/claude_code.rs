@@ -787,7 +787,11 @@ fn revert_gate_models(settings: &mut Map<String, Value>) {
     let ids: Vec<String> = record
         .get("ids")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
     for (key, ours) in &wrote {
         // A model slot holding ANY id of the set is still ours: the user

@@ -1098,7 +1098,10 @@ pub fn restart_app_server_daemon() -> Result<bool> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(status.success(), "codex app-server daemon restart exited {status}");
+            anyhow::ensure!(
+                status.success(),
+                "codex app-server daemon restart exited {status}"
+            );
             return Ok(true);
         }
         if std::time::Instant::now() > deadline {

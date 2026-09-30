@@ -329,3 +329,138 @@ async fn the_route_serves_the_model_list_and_refuses_what_gate_cannot_answer() {
     assert_eq!(reqs[0].path, "/v1/models");
     assert_eq!(reqs[0].header("x-gate-upstream-url"), None);
 }
+
+/// Claude Code on Gate models: the served route drops the tool's own
+/// `x-api-key` as well as its `Authorization`, and the provider pins a local
+/// caller could use to steer which org account pays (review on #382).
+#[tokio::test]
+async fn the_route_drops_the_tools_own_credentials_and_provider_pins() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    preferences::set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["anthropic/claude-opus-5".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+
+    let resp = reqwest::Client::new()
+        .post(url(
+            &engine,
+            "/__gate/t/claude-code/gate/v1/messages?beta=true",
+        ))
+        .header("x-api-key", "sk-ant-api03-user-key")
+        .header("authorization", "Bearer sk-ant-oat01-user-token")
+        .header("x-gate-provider", "some-other-account")
+        .json(&serde_json::json!({
+            "model": "anthropic/claude-opus-5",
+            "provider": { "order": ["some-other-account"] },
+            "messages": [],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-api-key"), None);
+    assert_eq!(r.header("authorization"), None);
+    assert_eq!(r.header("x-gate-provider"), None);
+    let sent: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert!(sent.get("provider").is_none(), "{sent}");
+    assert_eq!(sent["model"], "anthropic/claude-opus-5");
+}
+
+/// The route serves only a tool that supports Gate models, and only once this
+/// install has accepted paid use; a set stored without either is refused
+/// before the gateway (review on #382).
+#[tokio::test]
+async fn the_route_needs_a_supported_tool_and_the_paid_use_acknowledgement() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    // Stored with no acknowledgement, as a hand edit or an older build could.
+    preferences::set_tool_model("codex", ModelSource::Gate, vec![LUNA.into()], false, vec![])
+        .unwrap();
+    // And a set for a tool with no Gate models support at all.
+    preferences::set_tool_model(
+        "opencode",
+        ModelSource::Gate,
+        vec![LUNA.into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    assert!(
+        preferences::load().gate_model_paid_ack_unix.is_some(),
+        "acked by the second"
+    );
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+    let client = reqwest::Client::new();
+
+    let unsupported = client
+        .post(url(&engine, "/__gate/t/opencode/gate/v1/chat/completions"))
+        .json(&serde_json::json!({ "model": LUNA, "messages": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unsupported.status(), 400);
+    let err: serde_json::Value = unsupported.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "gate_models_off");
+
+    // Clear the acknowledgement: now Codex's stored set is not servable either.
+    let path = gate_connect_core::env::app_support_dir()
+        .unwrap()
+        .join("preferences.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["gate_model_paid_ack_unix"] = serde_json::Value::Null;
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let unacked = client
+        .get(url(&engine, "/__gate/t/codex/gate/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unacked.status(), 400, "not even the model list");
+
+    engine.stop();
+    assert!(gateway.captured.lock().unwrap().is_empty());
+}
+
+/// Routing off: the route has no provider to fall back to, so it says so with
+/// a 503 the SDKs will not retry.
+#[tokio::test]
+async fn the_route_refuses_without_retry_while_routing_is_off() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    codex_on(&[LUNA]);
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+    engine.set_intercept(false);
+
+    let resp = reqwest::Client::new()
+        .post(url(&engine, "/__gate/t/codex/gate/v1/responses"))
+        .json(&serde_json::json!({ "model": LUNA, "input": "hi" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 503);
+    assert_eq!(
+        resp.headers()
+            .get("x-should-retry")
+            .and_then(|v| v.to_str().ok()),
+        Some("false")
+    );
+    let err: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "gate_not_routing");
+    engine.stop();
+    assert!(gateway.captured.lock().unwrap().is_empty());
+}

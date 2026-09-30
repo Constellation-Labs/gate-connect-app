@@ -905,12 +905,10 @@ async fn respond(client: &mut TcpStream, status: u16, message: &str) {
     linger(client).await;
 }
 
-/// The answer a pay-as-you-go tool gets while the app is closed, shaped so both
-/// the OpenAI and the Anthropic SDKs show its message: `error.message` is where
-/// each looks.
 /// The Gate models route while Gate Connect is closed. Same shape and status as
 /// [`respond_payg`], for the same reason: the tool sends no provider key of its
-/// own, and only Gate Connect can serve it.
+/// own, and only Gate Connect can serve it. Marked not to be retried, which a
+/// retry cannot fix: the Anthropic and OpenAI SDKs both honour the header.
 async fn respond_gate_models_unavailable(client: &mut TcpStream) {
     let body = serde_json::json!({
         "type": "error",
@@ -927,14 +925,21 @@ async fn respond_gate_models_unavailable(client: &mut TcpStream) {
         .write_all(
             format!(
                 "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\
-                 X-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{body}",
+                 X-Content-Type-Options: nosniff\r\nX-Should-Retry: false\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .as_bytes(),
         )
         .await;
+    // As `respond_payg` does: closing at once can reset the connection before
+    // the tool has read the answer, and it would see a dropped socket instead.
+    linger(client).await;
 }
+
+/// The answer a pay-as-you-go tool gets while the app is closed, shaped so both
+/// the OpenAI and the Anthropic SDKs show its message: `error.message` is where
+/// each looks.
 
 async fn respond_payg(client: &mut TcpStream) {
     let body = serde_json::json!({

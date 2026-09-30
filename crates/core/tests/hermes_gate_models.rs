@@ -334,7 +334,10 @@ fn a_reconnect_keeps_hermes_on_gate_models() {
         hermes.gate_model_state().unwrap(),
         GateModelState::Applied { model: LUNA.into() }
     );
-    assert_eq!(preferences::load().tool_models["hermes"].source, ModelSource::Gate);
+    assert_eq!(
+        preferences::load().tool_models["hermes"].source,
+        ModelSource::Gate
+    );
 }
 
 fn env_file() -> String {
@@ -355,8 +358,15 @@ fn a_refused_config_on_first_connect_leaves_nothing_behind() {
     choose_gate(&[LUNA]);
 
     let err = hermes.connect(&input()).unwrap_err();
-    assert!(format!("{err:#}").contains("will not edit safely"), "{err:#}");
-    assert!(!env_file().contains("HTTPS_PROXY"), "no proxy left in .env: {}", env_file());
+    assert!(
+        format!("{err:#}").contains("will not edit safely"),
+        "{err:#}"
+    );
+    assert!(
+        !env_file().contains("HTTPS_PROXY"),
+        "no proxy left in .env: {}",
+        env_file()
+    );
     assert_eq!(config(), refused, "config.yaml untouched");
 
     // Fixed by hand, the next connect works and disconnect cleans up fully.

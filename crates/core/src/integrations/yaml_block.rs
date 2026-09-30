@@ -114,7 +114,12 @@ pub(crate) fn set_nested(
     let trailing_newline = body.is_empty() || body.ends_with('\n');
     let eol = eol_of(body);
 
-    if lines.iter().filter(|l| opens_block(l, parent, 0).is_some()).count() > 1 {
+    if lines
+        .iter()
+        .filter(|l| opens_block(l, parent, 0).is_some())
+        .count()
+        > 1
+    {
         return Err(Refusal::DuplicateKey);
     }
     let parent_open = lines
@@ -300,7 +305,10 @@ pub(crate) fn parent_shape(body: &str, parent: &str) -> Result<ParentShape, Refu
         .lines()
         .filter(|l| {
             let (lead, rest) = split_indent(l);
-            lead == 0 && rest.strip_prefix(parent).is_some_and(|r| r.starts_with(':'))
+            lead == 0
+                && rest
+                    .strip_prefix(parent)
+                    .is_some_and(|r| r.starts_with(':'))
         })
         .count();
     if top_level > 1 {
@@ -894,7 +902,10 @@ model:
     fn a_crlf_file_stays_crlf() {
         let before = "model:\r\n  default: a/b\r\n  provider: x\r\nother: 1\r\n";
         let after = set_child(before, "model", "default", Some("c/d")).unwrap();
-        assert_eq!(after, "model:\r\n  default: c/d\r\n  provider: x\r\nother: 1\r\n");
+        assert_eq!(
+            after,
+            "model:\r\n  default: c/d\r\n  provider: x\r\nother: 1\r\n"
+        );
         let (nested, _) = set_nested(before, "model", "extra_headers", "k", "v").unwrap();
         assert!(!nested.replace("\r\n", "").contains('\n'), "{nested:?}");
     }
@@ -902,7 +913,10 @@ model:
     #[test]
     fn a_duplicated_key_is_refused_not_half_edited() {
         let dup_parent = "model:\n  default: a/b\nmodel:\n  default: c/d\n";
-        assert_eq!(parent_shape(dup_parent, "model"), Err(Refusal::DuplicateKey));
+        assert_eq!(
+            parent_shape(dup_parent, "model"),
+            Err(Refusal::DuplicateKey)
+        );
         assert_eq!(
             set_child(dup_parent, "model", "default", Some("x/y")),
             Err(Refusal::DuplicateKey)
@@ -912,7 +926,10 @@ model:
             Err(Refusal::DuplicateKey)
         );
         let dup_child = "model:\n  default: a/b\n  default: c/d\n";
-        assert_eq!(get_child(dup_child, "model", "default"), Err(Refusal::DuplicateKey));
+        assert_eq!(
+            get_child(dup_child, "model", "default"),
+            Err(Refusal::DuplicateKey)
+        );
         assert_eq!(
             set_child(dup_child, "model", "default", Some("x/y")),
             Err(Refusal::DuplicateKey)
@@ -923,12 +940,17 @@ model:
     fn a_refreshed_value_keeps_its_comment() {
         let before = "model:\n  default: a/b  # my pick\n  provider: \"x # y\"\n";
         let after = set_child(before, "model", "default", Some("c/d")).unwrap();
-        assert_eq!(after, "model:\n  default: c/d  # my pick\n  provider: \"x # y\"\n");
+        assert_eq!(
+            after,
+            "model:\n  default: c/d  # my pick\n  provider: \"x # y\"\n"
+        );
         let after = set_child(before, "model", "provider", Some("z")).unwrap();
-        assert!(after.contains("  provider: z\n"), "a # inside quotes is not a comment: {after}");
+        assert!(
+            after.contains("  provider: z\n"),
+            "a # inside quotes is not a comment: {after}"
+        );
         let nested = "model:\n  extra_headers:\n    k: old  # keep\n";
         let (after, _) = set_nested(nested, "model", "extra_headers", "k", "new").unwrap();
         assert_eq!(after, "model:\n  extra_headers:\n    k: new  # keep\n");
     }
 }
-

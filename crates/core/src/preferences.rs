@@ -333,17 +333,35 @@ fn stamp() -> Stamp {
 /// file that cannot be read must degrade to "not on Gate models", never to a
 /// panic.
 pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
+    with_cached(|prefs| servable(prefs, slug))
+}
+
+/// [`gate_models_for`], for the relay's Gate models route: the set only while
+/// this install has accepted paid Gate model use.
+///
+/// The acknowledgement is what licenses spending the organization's credits,
+/// and a choice stored some other way - an older build, a hand-edited file -
+/// must not be served on the strength of its presence alone (review on #382).
+pub fn gate_models_served_for(slug: &str) -> Option<Vec<String>> {
+    with_cached(|prefs| {
+        prefs.gate_model_paid_ack_unix?;
+        servable(prefs, slug)
+    })
+}
+
+/// Answer `f` from the stamped cache, re-reading the file only when it moved.
+fn with_cached<T>(f: impl Fn(&Preferences) -> Option<T>) -> Option<T> {
     let current = stamp();
     {
         let cache = CACHE.read().ok()?;
         if let Some((cached, prefs)) = cache.as_ref() {
             if *cached == current {
-                return servable(prefs, slug);
+                return f(prefs);
             }
         }
     }
     let prefs = load();
-    let answer = servable(&prefs, slug);
+    let answer = f(&prefs);
     if let Ok(mut cache) = CACHE.write() {
         *cache = Some((current, prefs));
     }

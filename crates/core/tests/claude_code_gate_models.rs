@@ -316,4 +316,3 @@ fn app_default_after_an_in_set_pick_restores_the_users_model() {
     assert!(s["env"].get("ANTHROPIC_DEFAULT_HAIKU_MODEL").is_none());
     assert!(s["env"].get("ANTHROPIC_BASE_URL").is_none());
 }
-

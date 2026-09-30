@@ -1072,3 +1072,27 @@ async fn a_proof_with_trailing_bytes_is_not_trusted() {
     assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
     assert!(!reply.contains("forged"), "{reply}");
 }
+
+/// A tool on Gate models names Gate's own route, which has no provider behind
+/// it: with the app closed it gets a 503 saying so, not to be retried, and
+/// nothing reaches any origin.
+#[tokio::test]
+async fn the_gate_models_route_says_gate_connect_is_closed() {
+    let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay(Some(dead_port()), table(origin_port)).await;
+
+    let reply = roundtrip(
+        port,
+        b"POST /__gate/t/codex/gate/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          Content-Length: 2\r\n\r\n{}",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+    assert!(reply.contains("X-Should-Retry: false\r\n"), "{reply}");
+    assert!(reply.contains("Gate models"), "{reply}");
+    assert!(
+        reply.contains("\"code\":\"gate_connect_not_running\""),
+        "{reply}"
+    );
+    drop(seen);
+}

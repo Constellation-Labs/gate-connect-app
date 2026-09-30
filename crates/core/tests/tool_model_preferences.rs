@@ -150,9 +150,16 @@ fn concurrent_saves_for_different_tools_keep_both() {
         .map(|i| {
             std::thread::spawn(move || {
                 let slug = if i % 2 == 0 { "codex" } else { "hermes" };
-                set_tool_model(slug, ModelSource::Gate, vec![format!("a/m{i}")], true, vec![])
-                    .expect("save");
-                gate_connect_core::preferences::set_device_name(&format!("dev {i}")).expect("rename");
+                set_tool_model(
+                    slug,
+                    ModelSource::Gate,
+                    vec![format!("a/m{i}")],
+                    true,
+                    vec![],
+                )
+                .expect("save");
+                gate_connect_core::preferences::set_device_name(&format!("dev {i}"))
+                    .expect("rename");
             })
         })
         .collect();
@@ -171,12 +178,22 @@ fn concurrent_saves_for_different_tools_keep_both() {
 fn a_change_written_by_another_process_is_picked_up() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
-    set_tool_model("codex", ModelSource::Gate, vec!["a/first".into()], true, vec![]).unwrap();
+    set_tool_model(
+        "codex",
+        ModelSource::Gate,
+        vec!["a/first".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
     assert_eq!(gate_models_for("codex"), Some(vec!["a/first".to_string()]));
 
     // Rewrite the file behind the cache's back, as a second process would.
-    let path = gate_connect_core::env::app_support_dir().unwrap().join("preferences.json");
-    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let path = gate_connect_core::env::app_support_dir()
+        .unwrap()
+        .join("preferences.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     v["tool_models"]["codex"]["model_ids"] = serde_json::json!(["b/second", "c/third"]);
     std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
 
@@ -185,4 +202,3 @@ fn a_change_written_by_another_process_is_picked_up() {
         Some(vec!["b/second".to_string(), "c/third".to_string()])
     );
 }
-
