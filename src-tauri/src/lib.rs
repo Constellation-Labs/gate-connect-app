@@ -2375,13 +2375,16 @@ fn walk_yields(
     names: &[&str],
 ) -> bool {
     agent_row_for(name, exe).is_some_and(|row| {
-        names.contains(&row.1)
-            && !is_chrome_native_host(cmd)
-            && !(row.1 == "Claude" && is_electron_child(cmd))
-            // Codex's app-server daemon outlives every session and is not one
-            // (`codex::is_app_server_command`); counting it put "Close tool"
-            // on screen with nothing open.
-            && !(row.1 == "codex" && gate_connect_core::integrations::codex::is_app_server_command(cmd))
+        if !names.contains(&row.1) || is_chrome_native_host(cmd) {
+            return false;
+        }
+        if row.1 == "Claude" && is_electron_child(cmd) {
+            return false;
+        }
+        // Codex's app-server daemon outlives every session and is not one
+        // (`codex::is_app_server_command`); counting it put "Close tool" on
+        // screen with nothing open.
+        !(row.1 == "codex" && gate_connect_core::integrations::codex::is_app_server_command(cmd))
     })
 }
 

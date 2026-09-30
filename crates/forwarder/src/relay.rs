@@ -940,7 +940,6 @@ async fn respond_gate_models_unavailable(client: &mut TcpStream) {
 /// The answer a pay-as-you-go tool gets while the app is closed, shaped so both
 /// the OpenAI and the Anthropic SDKs show its message: `error.message` is where
 /// each looks.
-
 async fn respond_payg(client: &mut TcpStream) {
     let body = serde_json::json!({
         "type": "error",
