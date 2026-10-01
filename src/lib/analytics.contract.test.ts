@@ -27,13 +27,12 @@ describe("the analytics broadcasts the backend emits", () => {
     expect(lib).toContain(`const ANALYTICS_CONSENT_EVENT: &str = "${ANALYTICS_CONSENT_EVENT}";`);
   });
 
-  it("announces the identity after a sign-out, a Reset and a key save", () => {
-    // The core forgets or retires (`oauth::clear`, `account::save`; pinned by
-    // `core::analytics`'s tests), and the shell announces after it.
+  it("announces the identity after a sign-out and a Reset", () => {
+    // The core forgets (`oauth::clear`; pinned by `core::analytics`'s tests),
+    // and the shell announces after it.
     for (const [cmd, change] of [
       ["async fn oauth_sign_out()", "oauth::clear()"],
       ["async fn clear_account()", "account::clear()"],
-      ["async fn save_account(", "account::save("],
     ]) {
       const b = body(cmd);
       const changed = b.indexOf(change);
@@ -54,8 +53,13 @@ describe("the analytics broadcasts the backend emits", () => {
     );
   });
 
-  it("announces the identity after a window stores a new one", () => {
-    expect(body("fn set_analytics_identity(")).toContain("announce_analytics_identity(");
+  it("announces the identity after a window stores a new one, landed or refused", () => {
+    const b = body("fn set_analytics_identity(");
+    expect(b).toContain("announce_analytics_identity(");
+    // The refusal is what `analytics.test.ts` fakes as "broadcast, then reject":
+    // the save's error must not return before the announcement.
+    expect(b).not.toMatch(/save_identity\(identity\)[^;]*\?;/);
+    expect(b.indexOf("announce_analytics_identity(")).toBeLessThan(b.lastIndexOf("saved"));
     expect(body("fn announce_analytics_identity(")).toContain("emit(ANALYTICS_IDENTITY_EVENT, identity)");
   });
 

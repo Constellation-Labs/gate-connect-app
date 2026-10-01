@@ -64,26 +64,33 @@ describe("docs/analytics-events.md stays in step with the code", () => {
 
   it("documents the limits the reviews asked to be written down", () => {
     // A CLI-first install is judged legacy, a group turns on a person profile
-    // for an API-key install, and API-key installs join the person funnel only
-    // through the gateway's server-side alias.
+    // for an API-key install, and the org wait has a stated fallback.
     expect(doc).toMatch(/CLI-first install is judged legacy/);
     expect(doc).toMatch(/setting a group turns on\s+person processing/);
-    expect(doc).toContain("`$create_alias`");
+    expect(doc).toMatch(/If no org arrives\s+within the bound, the milestone is sent without one/);
     // And the one-minute promise says when it does not hold.
     expect(doc).toMatch(/one-minute latency holds only once the diagnostics question has been\s+answered/);
   });
 
-  it("does not tell the user that collection is anonymous, and discloses the opt-out note", () => {
+  it("aggregates the install funnel by organization", () => {
+    const funnel = doc.slice(doc.indexOf("## Building the install funnel"));
+    expect(funnel).toMatch(/Aggregating by:\s+organization/);
+  });
+
+  /** Review design A: no server-side alias ties an API-key install to anyone,
+   *  so neither the inventory nor the disclosure may say one does. */
+  it("claims no server-side link of the device id, and discloses the opt-out note", () => {
     const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8").replace(/\r\n/g, "\n");
+    expect(doc).not.toContain("$create_alias");
+    expect(dialogs).not.toContain("$create_alias");
+    expect(dialogs).not.toMatch(/key&rsquo;s account/);
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
-    expect(dialogs).toMatch(
-      /Turning sharing off sends one final note saying so, tied to your\s+account if you are signed in\./,
-    );
-    // The server-side alias links the device whatever the answer, and only for
-    // an API-key install that sent its organization's first request (round 3).
-    expect(dialogs).toMatch(
-      /With an API key, if this device sends your organization&rsquo;s\s+first request, Gate also uses it to link this device&rsquo;s\s+diagnostic data to the key&rsquo;s account, whatever you answer here\./,
-    );
+    // Review items 6 and 7: the copy names the switch, and the no and the Skip.
+    expect(dialogs).toMatch(/Once you sign in, and while\s+sharing is on/);
+    expect(dialogs).toMatch(/Saying no, or turning sharing off later, sends one final note/);
+    const setup = readFileSync(resolve(root, "src/components/gc/setup.tsx"), "utf8").replace(/\r\n/g, "\n");
+    // Review item 10: the onboarding step says what the yes ties events to.
+    expect(setup).toMatch(/tied to your organization and, if you signed in with\s+Constellation, your account\./);
     const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8").replace(/\r\n/g, "\n");
     expect(upload).not.toMatch(/anonymous posture/);
   });

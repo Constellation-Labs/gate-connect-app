@@ -21,14 +21,17 @@
  * **Identity (AG-960).** Base events are filed under this install's id (the Rust
  * `install-id`), bootstrapped as the PostHog distinct id so a storage reset does
  * not make a new person; that id already rode every error event as `install_id`.
- * Once allowed and paired, events carry the `organization` group (the org id
- * only), and a Constellation sign-in identifies the install with the account's
- * Cognito `sub`, the id the dashboard and the gateway already use. The current
+ * Once allowed, every milestone carries the `organization` group (the org id
+ * only; a held milestone waits for it, see `waitForOrg`), and a Constellation
+ * sign-in identifies the install with the account's Cognito `sub`, the id the
+ * dashboard and the gateway already use. An API-key account is never
+ * identified, here or anywhere: a key's creator is not necessarily the person
+ * at this machine, so its installs are counted by organization only. The current
  * identity is kept in Rust (`analytics-identity.json`) so every window and every
  * launch agree; see `applyIdentity`. No name, email, key or path is ever sent;
  * `docs/analytics-events.md` is the inventory.
  */
-import posthog from "posthog-js";
+import posthog, { type PostHogConfig } from "posthog-js";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { POSTHOG_KEY_VALUE, POSTHOG_HOST } from "./config";
@@ -234,10 +237,12 @@ function send(fn: () => void): void {
 // ---------------------------------------------------------------------------
 // The AG-960 gate
 
-/** One thing AG-960 would send: `run` sends it, `spend` is what a "no" does. */
+/** One thing AG-960 would send: `run` sends it, `spend` is what a "no" does.
+ *  `failure` marks a `connection_failed`, which has its own share of the cap. */
 interface Held {
   run: () => Promise<void>;
   spend?: () => Promise<void>;
+  failure?: boolean;
 }
 
 /** Held until the diagnostics question is answered. Capped: a question never
@@ -247,6 +252,15 @@ let held: Held[] = [];
  *  question is open (the relay's traffic report, every 30s) is held once. */
 const heldMarkers = new Set<string>();
 const HELD_CAP = 100;
+/**
+ * How many of `HELD_CAP` connection failures may take. A failure repeats (an
+ * `offline` gateway read every five minutes, for as long as the question goes
+ * unanswered, which in the legacy shell is forever), while each milestone is
+ * held once; without a share of its own, failures alone could fill the queue
+ * and leave no room for the milestones the funnel is built from.
+ */
+const HELD_FAILURE_CAP = 20;
+let heldFailures = 0;
 
 type FunnelState = "open" | "held" | "refused" | "closed";
 
@@ -275,7 +289,12 @@ function funnel(item: Held): void {
       void item.run();
       return;
     case "held":
-      if (held.length < HELD_CAP) held.push(item);
+      if (held.length >= HELD_CAP) return;
+      if (item.failure) {
+        if (heldFailures >= HELD_FAILURE_CAP) return;
+        heldFailures += 1;
+      }
+      held.push(item);
       return;
     case "refused":
       void item.spend?.();
@@ -293,11 +312,15 @@ function settleHeld(): void {
   if (state === "held") return;
   const items = held;
   held = [];
+  heldFailures = 0;
   heldMarkers.clear();
   // Closed for good (no readable preference, no client): nothing may be sent
   // and nobody said no, so nothing is spent either.
   if (state === "closed") return;
   if (state === "open") {
+    // Identity and the group first. A milestone that still has no org waits
+    // for it inside its own `run` (see `waitForOrg`), so the first launch that
+    // was held until this answer goes out grouped like the pairing after it.
     applySessionNow();
     for (const item of items) void item.run();
   } else {
@@ -371,6 +394,61 @@ function subscribe(): void {
 }
 
 /**
+ * The client's configuration, minus the bootstrap.
+ *
+ * **Everything automatic is pinned off, by name.** Leaving an option undefined
+ * does not mean off in posthog-js 1.407.2: exception autocapture, dead clicks,
+ * heatmaps and web vitals each fall back to the project's REMOTE config when
+ * the local value is undefined (`extensions/exception-autocapture/index.js`
+ * ~70: `isUndefined(providedConfig) ? this._remoteEnabled : providedConfig`;
+ * `heatmaps.js` ~118, `dead-clicks-autocapture.js` ~28 and
+ * `web-vitals/index.js` ~227 read the same way). A switch flipped in the
+ * PostHog project would then start sending `$exception` with raw messages and
+ * stacks, or element text, from every window, before the diagnostics question
+ * is answered. So:
+ *
+ * - `advanced_disable_flags` stops the remote config request itself
+ *   (`remote-config.js` ~55) and the flags request, so nothing remote is read;
+ * - and every feature the remote config could turn on is also false here, so a
+ *   value persisted by an older build, or a future preloaded config, cannot
+ *   turn one on either: exceptions, dead clicks, heatmaps, web vitals,
+ *   autocapture, rage clicks, page views and leaves, session recording and its
+ *   console log, surveys and their display, product tours, conversations, web
+ *   experiments, site apps, console log capture;
+ * - `disable_external_dependency_loading` refuses every lazily loaded script
+ *   (`entrypoints/external-scripts-loader.js`), which is also how the toolbar
+ *   and the recorder would arrive.
+ *
+ * Option names checked against `@posthog/types`'s `PostHogConfig` as shipped
+ * with 1.407.2; `analytics.test.ts` pins this object.
+ */
+export const CLIENT_CONFIG = {
+  api_host: POSTHOG_HOST,
+  person_profiles: "identified_only",
+  advanced_disable_flags: true,
+  advanced_disable_feature_flags: true,
+  advanced_disable_feature_flags_on_first_load: true,
+  disable_external_dependency_loading: true,
+  autocapture: false,
+  rageclick: false,
+  capture_pageview: false,
+  capture_pageleave: false,
+  capture_exceptions: false,
+  capture_dead_clicks: false,
+  capture_heatmaps: false,
+  capture_performance: false,
+  disable_session_recording: true,
+  enable_recording_console_log: false,
+  disable_surveys: true,
+  disable_surveys_automatic_display: true,
+  disable_product_tours: true,
+  disable_conversations: true,
+  disable_web_experiments: true,
+  opt_in_site_apps: false,
+  logs: { captureConsoleLogs: false },
+} as const satisfies Partial<PostHogConfig>;
+
+/**
  * Construct the client with its identity already settled.
  *
  * Reads first, all local: the install id, the stored analytics identity, the
@@ -400,26 +478,15 @@ function startPosthog(): Promise<void> {
         fetchPlatform().catch(() => "unknown"),
       ]);
       installIdValue = id;
-      // An install id that already belongs to a person (identified once, or
-      // spent on an API-key account that has since gone) gets no bootstrap:
-      // filing under it would put this launch back on that person. The client
-      // keeps whatever fresh anonymous id its storage holds.
+      // An install id that already belongs to a person (identified once)
+      // gets no bootstrap: filing under it would put this launch back on that
+      // person. The client keeps whatever fresh anonymous id its storage holds.
       const bootstrap = identifiedAs
         ? { distinctID: identifiedAs, isIdentifiedID: true }
-        : id && !installIdSpent()
+        : id && !everIdentified
           ? { distinctID: id }
           : undefined;
-      safely("init", () =>
-        posthog.init(POSTHOG_KEY_VALUE, {
-          api_host: POSTHOG_HOST,
-          autocapture: false,
-          capture_pageview: false,
-          capture_pageleave: false,
-          disable_session_recording: true,
-          person_profiles: "identified_only",
-          ...(bootstrap ? { bootstrap } : {}),
-        }),
-      );
+      safely("init", () => posthog.init(POSTHOG_KEY_VALUE, { ...CLIENT_CONFIG, ...(bootstrap ? { bootstrap } : {}) }));
       started = true;
       superProps = { app_version, platform, ...(id ? { install_id: id } : {}) };
       safely("register", () => posthog.register(superProps));
@@ -427,7 +494,7 @@ function startPosthog(): Promise<void> {
       // in storage. A launch that signed out while no client ran (opted out,
       // say) never reset it, so it would resume as the person who left, or as
       // the retired install id. Reset to a fresh anonymous id instead.
-      if (!identifiedAs && installIdSpent() && persistedAsSomeone(id)) resetClient();
+      if (!identifiedAs && everIdentified && persistedAsSomeone(id)) resetClient();
       if (consent !== true) {
         safely("opt_out_capturing", () => posthog.opt_out_capturing());
         pending = [];
@@ -443,10 +510,26 @@ function startPosthog(): Promise<void> {
   return starting;
 }
 
+/** Lift a persisted opt-out without announcing it. This runs at every start,
+ *  including one whose AG-960 events are still held, and in every window that
+ *  starts, so it must not be what sends PostHog's `$opt_in`: see `announceOptIn`. */
 function liftStaleOptOut(): void {
   safely("opt_in_capturing", () => {
-    if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing();
+    if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing({ captureEventName: false });
   });
+}
+
+/**
+ * PostHog's own `$opt_in`, sent by hand. `opt_in_capturing()` with no options
+ * captures it itself, instantly, from whichever window calls it, and every
+ * started window calls it when a consent broadcast reaches it: three windows
+ * sent three. So every call here passes `captureEventName: false`, and the one
+ * event comes from `applyConsent`, in the window where the user flipped the
+ * switch, for a real change from off to on.
+ */
+function announceOptIn(): void {
+  if (!capturing()) return;
+  safely("capture", () => posthog.capture("$opt_in", undefined, { send_instantly: true }));
 }
 
 // ---------------------------------------------------------------------------
@@ -497,9 +580,13 @@ async function applyConsent(
   if (!started) {
     await startPosthog();
   } else if (!enabled) {
-    safely("opt_in_capturing", () => posthog.opt_in_capturing());
+    safely("opt_in_capturing", () => posthog.opt_in_capturing({ captureEventName: false }));
     enabled = true;
   }
+  // One `$opt_in` per change: from the window the user answered in (the
+  // broadcast's copies have no source), for a real change from off to on, and
+  // only once the question is answered, which a change made here always is.
+  if (source !== null && was === false && answered === true) announceOptIn();
   settleHeld();
 }
 
@@ -538,7 +625,7 @@ async function recordOptOut(source: ConsentSource): Promise<void> {
     (s?.authMode === "oauth" && s.sub ? s.sub : null) ??
     // An install identified once belongs to that person; after its sign-out the
     // record goes under the client's own fresh id rather than back onto them.
-    (installIdSpent() ? currentDistinctId() : installIdValue);
+    (everIdentified ? currentDistinctId() : installIdValue);
   if (!distinctId) return;
   const org = s?.orgId ?? storedOrg;
   try {
@@ -596,9 +683,8 @@ export function track(event: AnalyticsEvent, props?: Props): void {
  *  report. The answer itself lives in Rust. */
 const askedHere = new Set<string>();
 
-/** How long a milestone waits for an API-key install's org before going out
- *  without it. The org arrives with the main window's first activity read;
- *  sending before it would leave the event ungrouped for good. */
+/** How long a milestone waits for the install's org before going out without
+ *  it. See `waitForOrg`. */
 export const ORG_WAIT_MS = 120_000;
 
 /**
@@ -638,6 +724,10 @@ export async function trackMilestone(
         if (askedHere.has(marker)) return resolve(false);
         await waitForOrg();
         if (askedHere.has(marker) || !capturing()) return resolve(false);
+        // The org group on the client, set (or, with no org after the wait,
+        // cleared) right before this capture, so the event carries the org the
+        // install routes for now and never one left from an earlier account.
+        applyGroup();
         askedHere.add(marker);
         let won = false;
         try {
@@ -693,13 +783,8 @@ let everIdentified = false;
 /** The org and auth mode last stored by the sign-in window, for the windows that
  *  never read the account themselves. */
 let storedOrg: string | null = null;
-/** The org an API-key account paired this install with (the install id is
- *  spent on it), and whether the install id is retired. Both stored in Rust. */
-let storedApiKeyOrg: string | null = null;
-let installIdRetired = false;
 /** The identified `sub` the backend holds, which every window follows. */
 let storedSub: string | null = null;
-let storedAuthMode: string | null = null;
 let groupedAs: string | null = null;
 let orgChoices: number | null = null;
 let orgWaiters: Array<() => void> = [];
@@ -709,9 +794,6 @@ function adoptStoredIdentity(stored: AnalyticsIdentity): void {
   storedSub = stored.identified_sub;
   everIdentified = stored.ever_identified;
   storedOrg = stored.org_id;
-  storedAuthMode = stored.auth_mode;
-  storedApiKeyOrg = stored.api_key_org ?? null;
-  installIdRetired = stored.install_id_retired ?? false;
 }
 
 let identityLoad: Promise<void> | null = null;
@@ -735,13 +817,9 @@ function loadIdentity(): Promise<void> {
   return identityLoad;
 }
 
-/** Whether the install id may no longer be the distinct id. */
-function installIdSpent(): boolean {
-  return everIdentified || installIdRetired;
-}
-
 /** Whether posthog-js's own storage has the client as somebody: identified, or
- *  on the (spent) install id. */
+ *  on the install id, which belongs to a person once the install has been
+ *  identified. */
 function persistedAsSomeone(installId: string | null): boolean {
   try {
     return (
@@ -757,14 +835,26 @@ function currentOrg(): string | null {
   return session?.orgId ?? storedOrg;
 }
 
-function currentAuthMode(): string | null {
-  return session?.authMode ?? storedAuthMode;
-}
-
-/** Resolve once the org is known, or at once when there is no org to wait for
- *  (not an API-key install), or after `ORG_WAIT_MS` regardless. */
+/**
+ * Resolve once the install's org is known, or after `ORG_WAIT_MS` regardless.
+ *
+ * Every milestone waits, because the install funnel is aggregated by
+ * organization: an event sent without the group is not in that funnel at all.
+ * On a fresh install the org is normally known by the time anything is
+ * released, since the diagnostics question comes after pairing; what waits is
+ * an API-key install whose org only the main window's activity read learns, a
+ * tray or intro window that learns it from the stored identity, or an install
+ * that has not paired yet.
+ *
+ * **If no org arrives within the bound, the milestone goes out without one.**
+ * It is claimed and sent, ungrouped: it still counts in the person funnel (a
+ * Constellation sign-in) and in plain trends, and it is missing from the
+ * organization funnel, which is the truth for an install that never paired.
+ * Holding it longer would lose it at quit instead, and re-sending it later
+ * under a new timestamp would misdate the step.
+ */
 function waitForOrg(): Promise<void> {
-  if (currentOrg() || currentAuthMode() !== "api_key") return Promise.resolve();
+  if (currentOrg()) return Promise.resolve();
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);
@@ -779,7 +869,7 @@ function waitForOrg(): Promise<void> {
 }
 
 function orgArrived(): void {
-  if (!currentOrg() && currentAuthMode() === "api_key") return;
+  if (!currentOrg()) return;
   const waiters = orgWaiters;
   orgWaiters = [];
   applyGroup();
@@ -810,13 +900,6 @@ export function noteSession(facts: SessionFacts): void {
     identifiedAs = null;
     lastPersisted = "";
   }
-  // Spending and retiring the install id is the core's to decide, never this
-  // window's: it records the org an API-key account paired with from what is
-  // reported here, and retires the install id on its own explicit events
-  // (Reset, logout, a replaced key, the key resolving to another org). A
-  // window inferring "the account went" from what it failed to read would
-  // retire it for good on one keychain hiccup. The decision arrives back here
-  // as `install_id_retired` in the stored record.
   persistIdentity();
   const state = funnelState();
   if (state === "open") applySessionNow();
@@ -843,22 +926,48 @@ function persistIdentity(): void {
     ever_identified: everIdentified,
     org_id: s.signedIn ? s.orgId : null,
     auth_mode: s.authMode,
-    api_key_org: storedApiKeyOrg,
-    install_id_retired: installIdRetired,
   };
   const key = JSON.stringify(next);
   if (key === lastPersisted) return;
   lastPersisted = key;
   storedOrg = next.org_id;
-  storedAuthMode = next.auth_mode;
-  void setAnalyticsIdentity(next).catch(() => {});
+  // A refused save (the core will not store a sub that is not the live
+  // session's) is answered with the stored record, broadcast, which moves this
+  // window back onto it. Forget what was sent, so the next session note is
+  // persisted again rather than deduplicated against a save that never landed.
+  void setAnalyticsIdentity(next).catch(() => {
+    if (lastPersisted === key) lastPersisted = "";
+  });
 }
 
+/** Put the client's `organization` group on the install's org, or take it off
+ *  when there is none, so an event never carries an org left over from an
+ *  account that has gone. Only while the funnel is open: before that, the
+ *  group is held like everything else. */
 function applyGroup(): void {
+  if (funnelState() !== "open") return;
   const org = currentOrg();
-  if (!org || groupedAs === org || funnelState() !== "open") return;
+  if (!org) {
+    if (groupedAs !== null || persistedOrg() !== null) {
+      safely("resetGroups", () => posthog.resetGroups());
+      groupedAs = null;
+    }
+    return;
+  }
+  if (groupedAs === org && persistedOrg() === org) return;
   safely("group", () => posthog.group("organization", org));
   groupedAs = org;
+}
+
+/** The `organization` group posthog-js has registered, which it persists in
+ *  storage every window shares and keeps across launches. */
+function persistedOrg(): string | null {
+  try {
+    const org = posthog.getGroups()?.organization;
+    return typeof org === "string" ? org : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The session's effects, once the funnel is open: identity, group, pairing.
@@ -904,9 +1013,11 @@ function spendSession(): void {
  */
 function applyIdentity(sub: string): void {
   if (identifiedAs === sub) return;
-  // Merge the install id into this person only if it belongs to nobody yet: not
-  // after an earlier identification, and not once an API-key account spent it.
-  if (everIdentified || installIdRetired || storedApiKeyOrg !== null) resetClient();
+  // Merge the install id into this person only if it belongs to nobody yet,
+  // that is, never after an earlier identification. An install that ran with an
+  // API key before this sign-in merges too: nothing ever identified it, so its
+  // install person is nobody's, and this is the person at the machine.
+  if (everIdentified) resetClient();
   safely("identify", () => posthog.identify(sub));
   identifiedAs = sub;
   storedSub = sub;
@@ -950,24 +1061,18 @@ function resetClient(): void {
 function followIdentity(next: AnalyticsIdentity): void {
   storedSub = next.identified_sub;
   storedOrg = next.org_id;
-  storedAuthMode = next.auth_mode;
   everIdentified = everIdentified || next.ever_identified;
-  storedApiKeyOrg = storedApiKeyOrg ?? next.api_key_org ?? null;
-  // Retired in the core (Reset, a replaced key, `gate-connect logout`): leave
-  // the install id now.
-  if (next.install_id_retired && !installIdRetired) retireInstallId();
   // A sign-out is followed whatever the funnel's state: it takes the account's
   // id off what this machine sends next, and sends nothing itself.
   if (!storedSub || funnelState() === "open") syncToStoredIdentity();
+  // A window that never identified itself (it was still holding when another
+  // window merged the install id into the account) is on the install id, which
+  // is that account's person now. Once the account has gone, leave it.
+  if (!storedSub && !identifiedAs && everIdentified && started && persistedAsSomeone(installIdValue)) {
+    resetClient();
+  }
+  applyGroup();
   orgArrived();
-}
-
-/** Stop using the install id as the distinct id: move a client that is on it to
- *  a fresh anonymous id. Sticky, and stored. */
-function retireInstallId(): void {
-  installIdRetired = true;
-  if (started && !identifiedAs) resetClient();
-  lastPersisted = "";
 }
 
 /** Put the client on the identity Rust holds, if it is on another one. */
@@ -1052,6 +1157,7 @@ export function reportConnectionFailure(
   const clean = sanitize({ ...props, reason, context });
   const at = new Date();
   funnel({
+    failure: true,
     run: async () => {
       if (!capturing()) return;
       safely("capture", () =>
@@ -1148,5 +1254,9 @@ export function trackError(
  */
 export function captureException(err: unknown): void {
   const ctx = sanitize(errorContext());
-  send(() => safely("captureException", () => posthog.captureException(err, ctx)));
+  // A rejection with something other than an Error (a Tauri command's string,
+  // most often) is not our bug's stack but a backend message, which can carry
+  // hosts and paths: send its classified title, as `trackError` does.
+  const sendable = err instanceof Error ? err : new Error(classifyError(err, "generic").title);
+  send(() => safely("captureException", () => posthog.captureException(sendable, ctx)));
 }

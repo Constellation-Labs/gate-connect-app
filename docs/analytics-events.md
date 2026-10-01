@@ -29,7 +29,10 @@ of `diagnostics_opted_out`.
     merges the anonymous install person, and what it sent before sign-in, into
     the `sub` person. `identify` rather than `alias`, because the `sub` person
     usually already exists and is identified (it clicked the download), and
-    PostHog will not fold an identified id into another person.
+    PostHog will not fold an identified id into another person. An install
+    that ran with an API key before its first Constellation sign-in merges
+    the same way: nothing ever identified it, so its install person is
+    nobody's until then.
   - The identity is stored in the data dir (`analytics-identity.json`), so
     every later launch bootstraps the `sub` directly as an identified distinct
     id and sends no `$identify`, and every window (the tray, the intro) follows
@@ -39,8 +42,7 @@ of `diagnostics_opted_out`.
     empty id is merged into the new person. The app merges the install id into
     a person at most once per install, and never files a later account B under
     account A's person. Events from the install before B's sign-in stay with
-    A's person, where they were sent. An install id already spent on an API-key
-    account (below) is never merged into a Constellation account either.
+    A's person, where they were sent.
   - **Sign-out** (in the app or `gate-connect logout`) or Reset clears the
     stored identity in the core (`oauth::clear`, which every sign-out path
     reaches), and the app's backend announces it to every window. Each window then resets to a
@@ -58,64 +60,57 @@ of `diagnostics_opted_out`.
     the identity provider or the secret store could not give (offline) all keep
     the identity exactly as it is. Pasting an API key over a Constellation
     sign-in also leaves that identity.
+  - **The core only stores a sub for the live session.** A window's view of the
+    session lags the core's, so `save_identity_in` refuses a save naming a sub
+    that is not the stored token bundle's (`oauth::current`, witnessed on
+    `account.json`), and writes nothing; the app then broadcasts the stored
+    record, which moves the window back onto it. A save in flight when a
+    sign-out ran therefore cannot put the account back. Every writer of
+    `analytics-identity.json` runs its read-modify-write under a process-wide
+    mutex and an advisory lock on `analytics-identity.lock` (`flock` on macOS
+    and Linux, an unshared open on Windows), so the app's windows and
+    `gate-connect logout` cannot lose each other's writes.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the
-  org the gateway resolved the key to (read from `/v1/me/activity`; milestones
-  wait up to two minutes for it so they are not sent ungrouped). Only the id;
+  org the gateway resolved the key to (read from `/v1/me/activity`). Every
+  milestone waits for it, up to two minutes (see Milestones). Only the id;
   the org's name is the dashboard's to set. In PostHog, setting a group turns on
   person processing, so an API-key install gets a person profile keyed on its
   install id once grouped.
-- **API-key installs** are never identified from the app: an API key carries no
-  user. They join the person funnel through a server-side alias: dashboard-api
-  sends `$create_alias` at `first_gateway_request` time, aliasing the activating
-  request's `x-gate-install-id` to the same distinct id as
-  `first_gateway_request` (gate repo, PR AG-960). That alias depends on the
-  install id being the distinct id of an unidentified install, which is why it
-  is. It happens whatever the diagnostics answer is, because the header rides
-  every gateway request, and it links this install, and the events already
-  sent under its id, to that account. The in-app disclosure says so.
-  **The install id is spent once an API-key account has paired** (its org is
-  known), because from then on the gateway may alias it to that key's owner.
-  The core records it (`api_key_org`) from the org the sign-in window reports,
-  which for an API key is only ever the gateway's own answer (the account
-  file's `org_id`, which a pasted key can leave behind from an earlier
-  sign-in, is never used for one). The install id is
-  **retired** only on the core's own explicit events, never inferred by a
-  window from what it failed to read:
-  - Reset or `gate-connect logout` (the forget in `oauth::clear`);
-  - saving a key over an existing one (`account::save`, in Settings or the
-    CLI). This fails closed: a legacy account with no recorded key prefix
-    counts as a replacement whatever the key, and a rotation to a new key of
-    the same owner retires too, because the app cannot tell the owner of a key;
-  - the key resolving to a different org than the one it paired with.
-
-  Retired means the client moves to a fresh anonymous id, and no later launch
-  bootstraps the install id again. An `analytics-identity.json` whose content
-  cannot be parsed also fails closed: it reads as retired and identified, so
-  the install files under a fresh anonymous id from then on. A read that fails
-  for a passing reason (permission, a busy file) makes the app treat the
-  install as retired for that read, but never writes that back: the next read
-  of the unchanged record decides again.
-  A change the CLI makes while the app is open (a logout, a key save) is on disk
-  at once and takes effect in the app at its next account read, or at the next
-  launch; there is no message from the CLI to the running app.
-  **Known limit:** once the install id belongs to a person (a Constellation
-  account identified on this machine, or a paired API-key account), a later
-  API-key account on the same machine is on a fresh anonymous id, and the
-  server alias of the install id, which still rides its requests, cannot join
-  that account to its own person: the install id is already someone else's.
-  Only the `organization` group links its events.
-  **Known limit:** an API-key install records the org it spent its install id
-  on only after a successful activity read. If the app never gets one (the
-  legacy popover shell, or a persistently failing `/v1/me/activity`), Reset or
-  a key replacement does not retire the id, although dashboard-api may already
-  have aliased it.
+- **API-key installs are never tied to a person**, by the app or by anything
+  else: an API key carries no user, and the key's creator is not necessarily
+  the person at this machine. Their events stay on the install id, an
+  anonymous person, and are counted by `organization` (see the funnel below).
+  Reset, a replaced key, or a key that now resolves to another org changes
+  nothing about the install id, because nothing about it belongs to anybody.
+  **Known limit:** an install that ran with an API key and later signs in with
+  Constellation merges its earlier history into that account at the first
+  identification, like any pre-sign-in history. On a machine two people share,
+  that history may be the other person's.
+- An `analytics-identity.json` whose content cannot be parsed fails closed: it
+  reads as identified, so the install files under a fresh anonymous id from
+  then on. A read that fails for a passing reason (permission, a busy file)
+  makes the app treat the install that way for that read, but never writes it
+  back: the next read of the unchanged record decides again. A logout the CLI
+  makes while the app is open is on disk at once and takes effect in the app at
+  its next account read, or at the next launch; there is no message from the
+  CLI to the running app.
   **Known limit:** if the app support directory cannot be resolved, the
   identity reads as the default (fail open) until the next identity broadcast
   corrects it.
 - Never sent: names, emails, API keys, tokens, gateway hosts, file paths, error
-  text. Error events carry a classified title; failure events carry a reason
-  from a closed list.
+  text. Error events carry a classified title (an uncaught rejection that is
+  not an `Error` too); failure events carry a reason from a closed list.
+- **Nothing is captured automatically**, whatever the PostHog project's own
+  settings say. In posthog-js 1.407.2 several features fall back to the
+  project's remote config when the client leaves them undefined (exception
+  autocapture, dead clicks, heatmaps, web vitals), so the client pins every one
+  off by name (`CLIENT_CONFIG` in `analytics.ts`), turns off the remote config
+  and flags requests (`advanced_disable_flags`), and loads no external script
+  (`disable_external_dependency_loading`, which also keeps the toolbar and the
+  recorder out). Surveys, product tours, conversations, web experiments, site
+  apps, session recording, autocapture, page views and console log capture are
+  off too.
 
 ## Consent
 
@@ -141,7 +136,9 @@ change does not widen what they send.
   stops every event at once and opts the client out, and sends one
   `diagnostics_opted_out` (below). The change is broadcast to every window.
 - Turning it back on lifts posthog-js's own persisted opt-out, which outlives a
-  relaunch, and sends PostHog's own `$opt_in`.
+  relaunch, and sends one PostHog `$opt_in`, from the window where it was
+  turned on (the other windows lift theirs silently; posthog-js would otherwise
+  send one per window). A launch that lifts a stale opt-out sends none.
 - A milestone that happens while opted out is spent, not deferred: opting back
   in never reports it late. A milestone that happens while consent is unknown
   (the preference could not be read) is left for a later launch.
@@ -178,7 +175,23 @@ from either.
 Each is sent at most once per install, instantly (not batched). The claim is a
 marker file per milestone under `<data dir>/analytics-milestones/`, created
 with `create_new`, so exactly one of the three windows (or any process) wins it,
-and it is claimed only while the client is actually delivering.
+and it is claimed only while the client is actually delivering. The store is
+built in a staging directory with its `.legacy` marker inside and renamed into
+place, so no start ever sees it half made.
+
+**Every milestone carries the `organization` group.** A milestone that is
+released (or happens) before the install's org is known waits for it, up to
+two minutes (`ORG_WAIT_MS`), and the client's group is set to that org right
+before the capture, so a first launch held until the diagnostics answer goes
+out grouped like the pairing after it, with its own original timestamp. The
+org is usually known by then, because the question comes after pairing; what
+waits is an API-key install whose org only the activity read learns, or a tray
+or intro window that learns it from the stored identity. **If no org arrives
+within the bound, the milestone is sent without one**, and any group left from
+an earlier account is cleared first: it still counts in the person funnel and
+in trends, and is missing from the organization funnel, which is the truth
+for an install that never paired. Nothing is claimed while it waits, so a quit
+during the wait leaves it for the next launch.
 
 An install that ran Gate Connect before this store existed (an `account.json`
 or `preferences.json` already on disk when the store is created) never sends
@@ -200,7 +213,7 @@ a first launch for machines that are not new.
 | `pairing_completed` | `auth_mode` (`oauth`, `api_key`), `org_count` (OAuth, when the picker loaded) | AG-960 milestone. The first time the install is signed in with an org: after the org is chosen (OAuth), or when the gateway first resolves the API key's org. Carries the org group and, for OAuth, the account identity. |
 | `tool_connected` | `tool` (registry slug, or a proxy domain slug such as `anthropic` for Claude Desktop and Cowork), `surface` (`config`, `domain`) | AG-960 milestone, once per tool. The first successful connect of that tool from any switch. |
 | `first_request_proxied` | `source` (`relay`, `gateway`), `tool` (relay only, when the relay named the sender) | AG-960 milestone. `relay`: Gate's relay or engine forwarded a gateway-bound request for a routed tool (the `traffic-observed` report, about 5 seconds after the burst). `gateway`: the gateway listed this install among the ones it has had traffic from, the fallback on Linux where the engine runs in a helper daemon with no observer. |
-| `connection_failed` | `reason`, `context`, `tool` (when known), `detail` (Cowork only) | AG-960. A failure on a connecting, sign-in or pairing step, sent instantly (not batched) once the diagnostics question is answered. At most once per window per reason, context and tool every 5 minutes. |
+| `connection_failed` | `reason`, `context`, `tool` (when known), `detail` (Cowork only) | AG-960. A failure on a connecting, sign-in or pairing step, sent instantly (not batched) once the diagnostics question is answered. At most once per window per reason, context and tool every 5 minutes. While the question is open at most 20 are held, so failures cannot crowd the milestones out of the 100-item hold. |
 | `diagnostics_opted_out` | `source` (`settings`, `onboarding`, `onboarding_skip`) | AG-960. Once per install, the first time sharing is switched off; see Consent. |
 | `popover_opened` | none | The popover shell is reopened from the tray. |
 | `signed_in` | none | A sign-in or API-key save completes (before any org is chosen). |
@@ -237,7 +250,7 @@ Only these keys ever leave the app; any other key is dropped before sending.
 
 | Property | Meaning |
 | --- | --- |
-| `has_account` | An account file exists. |
+| `has_account` | An account file exists. Left out when the account could not be read. |
 | `proxy_available` | This platform has the proxy subsystem. |
 | `routing_on` | The engine is running. |
 | `codex_drifted` | Codex's config was hand-edited away from Gate. |
@@ -326,30 +339,37 @@ its original timestamp, and never if it is answered no or never answered.
 
 ## Building the install funnel in PostHog
 
-No SQL. Product analytics, New insight, Funnels:
+No SQL. Product analytics, New insight, Funnels, **Aggregating by:
+organization**:
 
 1. `setup_download_clicked` (sent by the dashboard)
 2. `app_first_launched`
 3. `pairing_completed`
 4. `first_gateway_request` (sent by the gateway)
 
-- **Aggregated by unique users** this joins end to end for Constellation
-  sign-ins: the dashboard and the gateway file under the Cognito `sub`, and the
-  app's install person is merged into it at the install's first sign-in (once
-  the diagnostics question is answered yes). API-key installs join through the
-  server-side `$create_alias` described under Identity. Use a conversion window
-  of at least 14 days.
-- **Aggregated by `organization`** it covers every account type, including API
-  keys, but step 2 has no org by construction (the app is not paired yet at its
-  first launch), so use the three-step funnel `setup_download_clicked`,
-  `pairing_completed`, `first_gateway_request` there, or add
-  `first_request_proxied` as the app-side last step.
-- **Opted out, not dropped off.** Create a behavioural cohort "Opted out of
-  diagnostics": persons who performed `diagnostics_opted_out` at any time (it is
-  filed under the account's `sub` for a Constellation sign-in, so it lands on the
-  same person as the dashboard and gateway steps). Break the funnel down by that
-  cohort. Opted-out installs stop sending app milestones
-  but still reach step 4, which the gateway sends regardless, so their gap
-  between steps shows in the cohort's own row instead of as drop-off.
+- This is the funnel the ticket asks for, and it covers every account type,
+  API keys included: every app milestone carries the `organization` group
+  (see Milestones), and the dashboard and the gateway send theirs with it
+  (gate repo: dashboard-web's `org-context.tsx` and `setup-analytics.ts`,
+  dashboard-api's `activation.service.ts`). Use
+  a conversion window of at least 14 days. An install that never paired sends
+  its first launch ungrouped, so it is not in this funnel, which is the truth
+  about it.
+- **The person funnel is secondary, and OAuth only.** The same four steps
+  aggregated by unique users join end to end for Constellation sign-ins: the
+  dashboard and the gateway file under the Cognito `sub`, and the app's install
+  person is merged into it at the install's first sign-in (once the question is
+  answered yes). API-key installs are never a person, so they do not appear in
+  it past the dashboard step.
+- **Opted out, not dropped off.** `diagnostics_opted_out` carries the
+  `organization` group too, so the same insight with that event as an extra
+  step, or a trend of it aggregated by organization, shows which orgs have
+  installs that stopped reporting. For the person funnel, create a behavioural
+  cohort "Opted out of diagnostics": persons who performed
+  `diagnostics_opted_out` at any time (filed under the account's `sub` for a
+  Constellation sign-in, so it lands on the same person as the dashboard and
+  gateway steps), and break the funnel down by it. Opted-out installs stop
+  sending app milestones but still reach step 4, which the gateway sends
+  regardless, so their gap shows in their own row instead of as drop-off.
 - Break down by `platform` or `app_version`, or by `reason` on a
   `connection_failed` trend, to see why installs stall between steps 3 and 4.

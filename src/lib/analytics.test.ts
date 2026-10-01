@@ -32,9 +32,20 @@ vi.mock("./config", async (importOriginal) => ({
 
 /** posthog-js as far as these tests need it, with its persisted opt-out. */
 const ph = vi.hoisted(() => {
-  const state = { optedOut: false, distinctId: "anon-1", identified: false };
-  const delivered: { event: string; props: unknown; options: unknown; distinctId: string }[] =
-    [];
+  const state = {
+    optedOut: false,
+    distinctId: "anon-1",
+    identified: false,
+    /** posthog-js's registered `$groups`, which every capture carries. */
+    groups: {} as Record<string, string>,
+  };
+  const delivered: {
+    event: string;
+    props: unknown;
+    options: unknown;
+    distinctId: string;
+    groups: Record<string, string>;
+  }[] = [];
   return { state, delivered };
 });
 
@@ -52,7 +63,13 @@ vi.mock("posthog-js", () => ({
     // Like the real client: a capture while opted out is silently dropped.
     capture: vi.fn((event: string, props: unknown, options: unknown) => {
       if (ph.state.optedOut) return;
-      ph.delivered.push({ event, props, options, distinctId: ph.state.distinctId });
+      ph.delivered.push({
+        event,
+        props,
+        options,
+        distinctId: ph.state.distinctId,
+        groups: { ...ph.state.groups },
+      });
     }),
     captureException: vi.fn(),
     identify: vi.fn((id: string) => {
@@ -65,10 +82,29 @@ vi.mock("posthog-js", () => ({
       ph.state.distinctId = "fresh-random";
       ph.state.identified = false;
       ph.state.optedOut = false;
+      ph.state.groups = {};
     }),
-    group: vi.fn(),
-    opt_in_capturing: vi.fn(() => {
+    group: vi.fn((type: string, key: string) => {
+      ph.state.groups = { ...ph.state.groups, [type]: key };
+    }),
+    resetGroups: vi.fn(() => {
+      ph.state.groups = {};
+    }),
+    getGroups: vi.fn(() => ({ ...ph.state.groups })),
+    // Like the real one: lifts the opt-out, and captures `$opt_in` itself
+    // unless told not to (`posthog-core.js` ~3437 in 1.407.2).
+    opt_in_capturing: vi.fn((options?: { captureEventName?: string | null | false }) => {
       ph.state.optedOut = false;
+      const name = options?.captureEventName;
+      if (name === undefined || name) {
+        ph.delivered.push({
+          event: name || "$opt_in",
+          props: undefined,
+          options: { send_instantly: true },
+          distinctId: ph.state.distinctId,
+          groups: { ...ph.state.groups },
+        });
+      }
     }),
     opt_out_capturing: vi.fn(() => {
       ph.state.optedOut = true;
@@ -103,27 +139,17 @@ function broadcast(event: string, payload: unknown) {
 }
 
 /** What `oauth_sign_out`, `clear_account` and `gate-connect logout` do: the
- *  core's `forget_identity_in` (keep the sticky facts, retire a spent install
- *  id), then the shell's `announce_stored_analytics_identity`. */
+ *  core's `oauth::clear` (the bundle goes, so no sub is live) and
+ *  `forget_identity_in` (keep the sticky bit), then the shell's
+ *  `announce_stored_analytics_identity`. */
 function backendSignsOut() {
-  const prev = rust.identity;
+  rust.liveSub = null;
   rust.identity = {
     identified_sub: null,
-    ever_identified: prev.ever_identified,
+    ever_identified: rust.identity.ever_identified,
     org_id: null,
     auth_mode: null,
-    api_key_org: prev.api_key_org ?? null,
-    install_id_retired: !!prev.install_id_retired || prev.ever_identified || !!prev.api_key_org,
   };
-  broadcast("analytics-identity-changed", { ...rust.identity });
-}
-
-/** What `save_account` with a different key does: `account::save` calls
- *  `retire_spent_install_id`, then the shell announces. */
-function backendReplacesKey() {
-  if (rust.identity.api_key_org && !rust.identity.install_id_retired) {
-    rust.identity = { ...rust.identity, install_id_retired: true };
-  }
   broadcast("analytics-identity-changed", { ...rust.identity });
 }
 
@@ -137,9 +163,10 @@ const rust = vi.hoisted(() => ({
     ever_identified: boolean;
     org_id: string | null;
     auth_mode: string | null;
-    api_key_org?: string | null;
-    install_id_retired?: boolean;
   },
+  /** The stored OAuth bundle's `sub`, for `save_identity`'s live-session check.
+   *  `"any"`: a test that does not care, so any sub is live. */
+  liveSub: "any" as string | null,
 }));
 
 vi.mock("./api", () => ({
@@ -148,21 +175,21 @@ vi.mock("./api", () => ({
   analyticsMilestoneClaim: vi.fn(),
   coworkSettingCheck: vi.fn(),
   analyticsIdentity: vi.fn(async () => ({ ...rust.identity })),
-  // `save_identity_in`'s rules (sticky facts; the core, not the window, spends
-  // the install id on an API-key org and retires it when the org moves), then
-  // `set_analytics_identity`'s emit.
+  // `save_identity_in`'s rules (a sticky `ever_identified`; a sub only for the
+  // live session, refused with nothing written otherwise), then
+  // `set_analytics_identity`'s emit of the stored record either way.
   setAnalyticsIdentity: vi.fn(async (next: typeof rust.identity) => {
-    const prev = rust.identity;
-    const isKey = next.auth_mode === "api_key";
-    const apiKeyOrg = prev.api_key_org ?? (isKey ? next.org_id : null) ?? null;
-    const orgMoved = isKey && !!prev.api_key_org && !!next.org_id && next.org_id !== prev.api_key_org;
-    rust.identity = {
-      ...next,
-      ever_identified: prev.ever_identified || next.ever_identified || !!next.identified_sub,
-      api_key_org: apiKeyOrg,
-      install_id_retired: !!prev.install_id_retired || !!next.install_id_retired || orgMoved,
-    };
+    const live = rust.liveSub === "any" ? next.identified_sub : rust.liveSub;
+    const refused = next.identified_sub !== null && next.identified_sub !== live;
+    if (!refused) {
+      rust.identity = {
+        ...next,
+        ever_identified:
+          rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
+      };
+    }
     broadcast("analytics-identity-changed", { ...rust.identity });
+    if (refused) throw "refusing an analytics identity that is not the live session's";
   }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "1.2.3") }));
@@ -226,10 +253,12 @@ beforeEach(() => {
   ph.state.optedOut = false;
   ph.state.distinctId = "anon-1";
   ph.state.identified = false;
+  ph.state.groups = {};
   ph.delivered.length = 0;
   bus.handlers.clear();
   rust.claimed.clear();
   rust.identity = { identified_sub: null, ever_identified: false, org_id: null, auth_mode: null };
+  rust.liveSub = "any";
   (installId as Mock).mockResolvedValue(INSTALL_ID);
   (analyticsMilestoneClaim as Mock).mockImplementation(async (name: string) => {
     if (rust.claimed.has(name)) return false;
@@ -245,6 +274,16 @@ afterEach(() => {
 });
 
 const PAIRED_OAUTH = { signedIn: true, authMode: "oauth" as const, sub: SUB, orgId: ORG };
+
+/**
+ * An install the sign-in window has already paired, as a window that reads no
+ * account of its own (the tray, the intro) finds it: the org in the stored
+ * record. Every milestone waits for the org (design B of the review), so a test
+ * about something else starts from here rather than waiting out the bound.
+ */
+function pairedRecord() {
+  rust.identity = { identified_sub: null, ever_identified: false, org_id: ORG, auth_mode: "api_key" };
+}
 
 describe("initAnalytics consent", () => {
   it("starts the client when the user has not opted out", async () => {
@@ -382,6 +421,7 @@ describe("item 1: nothing AG-960 added leaves before the question is answered", 
 
 describe("item 2: a persisted opt-out does not outlive a new yes", () => {
   it("lifts a stale posthog-js opt-out once sharing is on, so captures are delivered", async () => {
+    pairedRecord();
     // Launch one: opted out in Settings. posthog-js persists that.
     prefsAre(true);
     let mod = await load();
@@ -598,6 +638,7 @@ describe("item 3: one identity per account, merged at most once", () => {
 
 describe("item 4: consent follows the user into every window", () => {
   it("starts a window that booted opted out when the answer changes elsewhere", async () => {
+    pairedRecord();
     prefsAre(false);
     const tray = await load();
     await tray.initAnalytics();
@@ -627,6 +668,7 @@ describe("item 4: consent follows the user into every window", () => {
   });
 
   it("releases a window's held events when the answer is given elsewhere", async () => {
+    pairedRecord();
     prefsAre(true, false);
     const tray = await load();
     await tray.initAnalytics();
@@ -642,6 +684,7 @@ describe("item 4: consent follows the user into every window", () => {
 
 describe("milestones", () => {
   it("sends app_first_launched once across windows and launches", async () => {
+    pairedRecord();
     prefsAre(true);
     let mod = await load();
     await mod.initAnalytics();
@@ -653,6 +696,7 @@ describe("milestones", () => {
   });
 
   it("sends each milestone once, instantly", async () => {
+    pairedRecord();
     prefsAre(true);
     const { initAnalytics, noteToolConnected, noteTrafficObserved } = await load();
     await initAnalytics();
@@ -670,6 +714,7 @@ describe("milestones", () => {
   });
 
   it("files a gateway-attributed first request under its own source", async () => {
+    pairedRecord();
     prefsAre(true);
     const { initAnalytics, noteGatewayAttributed, noteTrafficObserved } = await load();
     await initAnalytics();
@@ -1137,87 +1182,50 @@ describe("round 3", () => {
     expect(ph.state.distinctId).toBe(SUB);
   });
 
-  /** M4. An API-key install's id may be aliased to the key's owner by the
-   *  gateway; Reset must move the machine off it for good. */
-  it("retires a spent install id on Reset and does not bootstrap it again", async () => {
+  /** Review design C: nothing ties an API-key install to a person any more, so
+   *  nothing retires its install id. Reset, a replaced key and a key that now
+   *  resolves to another org all leave it the distinct id. */
+  it("keeps an API-key install on its install id across Reset and a change of org", async () => {
     prefsAre(true);
     let mod = await load();
     await mod.initAnalytics();
     mod.noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
     await settle();
-    expect(rust.identity.api_key_org).toBe(ORG);
+    mod.noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: "org-b" });
+    await settle();
     expect(ph.state.distinctId).toBe(INSTALL_ID);
 
     backendSignsOut();
     await settle();
-    expect(posthog.reset).toHaveBeenCalledTimes(1);
-    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
+    expect(posthog.reset).not.toHaveBeenCalled();
+    expect(ph.state.distinctId).toBe(INSTALL_ID);
 
     mod = await load();
     await mod.initAnalytics();
-    expect(vi.mocked(posthog.init).mock.calls.at(-1)![1]).not.toHaveProperty("bootstrap");
-  });
-
-  /** Round 4: the window no longer infers that an API-key account went. A
-   *  signed-out reading (resolved or not) retires nothing; only the core's own
-   *  events do (Reset/logout forget, a replaced key, an org move). */
-  it("does not retire a spent install id from a signed-out reading alone", async () => {
-    prefsAre(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
-    await settle();
-    noteSession({ signedIn: false, authMode: "api_key", sub: null, orgId: null });
-    await settle();
-
-    expect(rust.identity.install_id_retired).toBeFalsy();
-    expect(ph.state.distinctId).toBe(INSTALL_ID);
-  });
-
-  it("retires a spent install id when the key is replaced", async () => {
-    prefsAre(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
-    await settle();
-
-    backendReplacesKey();
-    await settle();
-
-    expect(rust.identity.install_id_retired).toBe(true);
-    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
-  });
-
-  it("retires a spent install id when the key's org changes", async () => {
-    prefsAre(true);
-    const { initAnalytics, noteSession } = await load();
-    await initAnalytics();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
-    await settle();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: "org-b" });
-    await settle();
-
-    expect(rust.identity.install_id_retired).toBe(true);
-    expect(ph.state.distinctId).not.toBe(INSTALL_ID);
-  });
-
-  it("does not merge a spent install id into a later Constellation account", async () => {
-    prefsAre(true);
-    rust.identity = {
+    expect(vi.mocked(posthog.init).mock.calls.at(-1)![1]).toMatchObject({
+      bootstrap: { distinctID: INSTALL_ID },
+    });
+    expect(rust.identity).toEqual({
       identified_sub: null,
       ever_identified: false,
-      org_id: ORG,
-      auth_mode: "api_key",
-      api_key_org: ORG,
-    };
+      org_id: null,
+      auth_mode: null,
+    });
+  });
+
+  /** The one path left by which an API-key install's history joins a person:
+   *  the person at the machine signing in with Constellation. Its install
+   *  person was nobody's, so this is the ordinary first identification. */
+  it("merges an install that ran with an API key into its first Constellation account", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: null, ever_identified: false, org_id: ORG, auth_mode: "api_key" };
     const { initAnalytics, noteSession } = await load();
     await initAnalytics();
     noteSession(PAIRED_OAUTH);
     await settle();
 
-    expect(vi.mocked(posthog.reset).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(posthog.identify).mock.invocationCallOrder[0],
-    );
+    expect(posthog.reset).not.toHaveBeenCalled();
+    expect(posthog.identify).toHaveBeenCalledWith(SUB);
   });
 
   /** L2. An API key pasted on a machine identified as A may be someone else's. */
@@ -1232,5 +1240,260 @@ describe("round 3", () => {
     expect(posthog.reset).toHaveBeenCalledTimes(1);
     expect(ph.state.distinctId).not.toBe(SUB);
     expect(rust.identity.identified_sub).toBeNull();
+  });
+});
+
+describe("design B: every milestone carries the organization group", () => {
+  const API_KEY_NO_ORG = { signedIn: true, authMode: "api_key" as const, sub: null, orgId: null };
+
+  function firstLaunch() {
+    return ph.delivered.find((d) => d.event === "app_first_launched");
+  }
+
+  /** OAuth: the org is chosen at sign-in, before the diagnostics step asks. */
+  it("sends a held app_first_launched grouped, OAuth", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession(PAIRED_OAUTH);
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+
+    expect(firstLaunch()?.groups).toEqual({ organization: ORG });
+    expect(firstLaunch()?.distinctId).toBe(SUB);
+    // With its own time, not the release's: it sorts before the pairing.
+    const at = (e: string) =>
+      (ph.delivered.find((d) => d.event === e)!.options as { timestamp: Date }).timestamp.getTime();
+    expect(at("app_first_launched")).toBeLessThanOrEqual(at("pairing_completed"));
+  });
+
+  /** API key: the org is the gateway's answer, which can land after the yes. */
+  it("waits for an API-key install's org before sending app_first_launched", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession(API_KEY_NO_ORG);
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+    expect(firstLaunch()).toBeUndefined();
+    expect(rust.claimed.has("app_first_launched")).toBe(false);
+
+    noteSession({ ...API_KEY_NO_ORG, orgId: ORG });
+    await settle();
+    expect(firstLaunch()?.groups).toEqual({ organization: ORG });
+    expect(firstLaunch()?.distinctId).toBe(INSTALL_ID);
+    expect(posthog.identify).not.toHaveBeenCalled();
+  });
+
+  /** And an API-key install whose org is already known at the answer. */
+  it("sends a held app_first_launched grouped, API key", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession({ ...API_KEY_NO_ORG, orgId: ORG });
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+    expect(firstLaunch()?.groups).toEqual({ organization: ORG });
+    expect(sent("pairing_completed")).toEqual([{ auth_mode: "api_key" }]);
+  });
+
+  /** A window that reads no account (the tray) groups from the stored record. */
+  it("groups a tray's milestone from the stored org", async () => {
+    prefsAre(true);
+    const tray = await load();
+    await tray.initAnalytics();
+    await settle();
+    expect(firstLaunch()).toBeUndefined();
+
+    rust.identity = { ...rust.identity, org_id: ORG, auth_mode: "api_key" };
+    broadcast("analytics-identity-changed", { ...rust.identity });
+    await settle();
+    expect(firstLaunch()?.groups).toEqual({ organization: ORG });
+  });
+
+  /** posthog-js keeps `$groups` in storage every window shares, so the group
+   *  can change under a window; each milestone sets it again right before its
+   *  capture. */
+  it("re-applies the org group right before each milestone's capture", async () => {
+    prefsAre(true);
+    pairedRecord();
+    const { initAnalytics, noteToolConnected } = await load();
+    await initAnalytics();
+    await settle();
+    ph.state.groups = { organization: "org-another-window-wrote" };
+    noteToolConnected("codex", "config");
+    await settle();
+    expect(ph.delivered.find((d) => d.event === "tool_connected")?.groups).toEqual({
+      organization: ORG,
+    });
+  });
+
+  /** The bound, and what it means: sent, ungrouped, never with a stale org. */
+  it("sends it ungrouped after the bound, clearing a group left from before", async () => {
+    vi.useFakeTimers();
+    prefsAre(true);
+    ph.state.groups = { organization: "org-from-an-earlier-account" };
+    const { initAnalytics, ORG_WAIT_MS } = await load();
+    const boot = initAnalytics();
+    await vi.advanceTimersByTimeAsync(0);
+    await boot;
+    await vi.advanceTimersByTimeAsync(ORG_WAIT_MS - 1000);
+    expect(firstLaunch()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(firstLaunch()?.groups).toEqual({});
+    expect(rust.claimed.has("app_first_launched")).toBe(true);
+  });
+});
+
+describe("review item 4: nothing automatic, whatever the project's remote config says", () => {
+  it("pins every remote-config-driven feature off in the init config", async () => {
+    prefsAre(true);
+    const { initAnalytics } = await load();
+    await initAnalytics();
+    const config = vi.mocked(posthog.init).mock.calls[0][1] as unknown as Record<string, unknown>;
+    // The four that fall back to the remote config when undefined.
+    for (const key of ["capture_exceptions", "capture_dead_clicks", "capture_heatmaps", "capture_performance"]) {
+      expect(config[key], key).toBe(false);
+    }
+    for (const key of [
+      "autocapture",
+      "rageclick",
+      "capture_pageview",
+      "capture_pageleave",
+      "enable_recording_console_log",
+      "opt_in_site_apps",
+    ]) {
+      expect(config[key], key).toBe(false);
+    }
+    for (const key of [
+      "advanced_disable_flags",
+      "advanced_disable_feature_flags",
+      "advanced_disable_feature_flags_on_first_load",
+      "disable_external_dependency_loading",
+      "disable_session_recording",
+      "disable_surveys",
+      "disable_surveys_automatic_display",
+      "disable_product_tours",
+      "disable_conversations",
+      "disable_web_experiments",
+    ]) {
+      expect(config[key], key).toBe(true);
+    }
+    expect(config.logs).toEqual({ captureConsoleLogs: false });
+  });
+});
+
+describe("review item 5: one $opt_in, from the window that changed it", () => {
+  function optIns() {
+    return ph.delivered.filter((d) => d.event === "$opt_in");
+  }
+
+  it("sends one $opt_in when sharing comes back on, however many windows run", async () => {
+    prefsAre(true);
+    pairedRecord();
+    const tray = await load();
+    await tray.initAnalytics();
+    const intro = await load();
+    await intro.initAnalytics();
+    const main = await load();
+    await main.initAnalytics();
+    await settle();
+
+    await main.setAnalyticsConsent(false, "settings");
+    broadcast("analytics-consent-changed", { share_diagnostics: false, recorded: true });
+    await settle();
+    await main.setAnalyticsConsent(true, "settings");
+    broadcast("analytics-consent-changed", { share_diagnostics: true, recorded: true });
+    await settle();
+
+    expect(optIns()).toHaveLength(1);
+    // Every window is delivering again all the same.
+    expect(vi.mocked(posthog.opt_in_capturing).mock.calls.length).toBeGreaterThanOrEqual(3);
+    for (const [options] of vi.mocked(posthog.opt_in_capturing).mock.calls) {
+      expect(options).toEqual({ captureEventName: false });
+    }
+  });
+
+  it("lifts a stale opt-out at start without sending $opt_in while the question is open", async () => {
+    prefsAre(true, false);
+    ph.state.optedOut = true;
+    const { initAnalytics } = await load();
+    await initAnalytics();
+    await settle();
+    expect(ph.state.optedOut).toBe(false);
+    expect(optIns()).toEqual([]);
+  });
+
+  it("sends no $opt_in for a first yes that changes nothing", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+    expect(optIns()).toEqual([]);
+  });
+});
+
+describe("review item 2: a save the core refuses moves the window back", () => {
+  it("follows the stored record when the session it identified with has ended", async () => {
+    prefsAre(true);
+    rust.liveSub = null;
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    // A stale session read: still signed in as SUB after the core signed out.
+    noteSession(PAIRED_OAUTH);
+    await settle();
+
+    expect(rust.identity.identified_sub).toBeNull();
+    expect(ph.state.distinctId).not.toBe(SUB);
+    // And the next note is persisted again rather than deduplicated.
+    rust.liveSub = SUB;
+    noteSession({ ...PAIRED_OAUTH });
+    noteSession({ ...PAIRED_OAUTH, orgId: "org-b" });
+    await settle();
+    expect(rust.identity.identified_sub).toBe(SUB);
+  });
+});
+
+describe("minor: the held queue keeps room for milestones", () => {
+  it("does not let repeated connection failures crowd out the milestones", async () => {
+    prefsAre(true, false);
+    const { initAnalytics, noteSession, noteToolConnected, reportConnectionFailure, setAnalyticsConsent } =
+      await load();
+    await initAnalytics();
+    for (let i = 0; i < 150; i++) reportConnectionFailure("offline", "gateway", { tool: `t${i}` });
+    noteSession(PAIRED_OAUTH);
+    noteToolConnected("codex", "config");
+    await setAnalyticsConsent(true, "onboarding");
+    await settle();
+
+    expect(sent("app_first_launched")).toHaveLength(1);
+    expect(sent("pairing_completed")).toHaveLength(1);
+    expect(sent("tool_connected")).toHaveLength(1);
+    expect(sent("connection_failed").length).toBeLessThanOrEqual(20);
+    expect(sent("connection_failed").length).toBeGreaterThan(0);
+  });
+});
+
+describe("minor: an uncaught rejection that is not an Error", () => {
+  it("sends the classified title, not the raw string", async () => {
+    prefsAre(true);
+    const { initAnalytics, captureException } = await load();
+    await initAnalytics();
+    const raw = "connection refused by https://gateway.internal.example:8443";
+    captureException(raw);
+    const [err] = vi.mocked(posthog.captureException).mock.calls[0];
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(classifyError(raw, "generic").title);
+    expect(everythingSent()).not.toContain("gateway.internal.example");
+  });
+
+  it("keeps a real Error, stack and all", async () => {
+    prefsAre(true);
+    const { initAnalytics, captureException } = await load();
+    await initAnalytics();
+    const bug = new TypeError("x is undefined");
+    captureException(bug);
+    expect(vi.mocked(posthog.captureException).mock.calls[0][0]).toBe(bug);
   });
 });

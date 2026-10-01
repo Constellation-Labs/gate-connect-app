@@ -5,16 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *
  * `get_account` rejects when `account.json` or the secret store cannot be read
  * (a keychain error in `has_api_key`). The screens draw that as signed out, and
- * the analytics seam used to take it the same way: an API-key install's id was
- * retired for good, and an OAuth install's stored sub was cleared, on one
- * keychain hiccup.
+ * the analytics seam used to take it the same way: an OAuth install's stored
+ * sub was cleared, and the install moved off its id, on one keychain hiccup.
  *
  * This drives the real chain the shells use - `readAccount` over the real
  * `api.ts` over a faked `invoke`, then `sessionFacts`, then `noteSession` -
  * with `get_account` actually rejecting. Only the backend is fake, and each
  * command answers the way the Rust command does: `set_analytics_identity`
- * applies `core::analytics::save_identity_in`'s rules and emits
- * `analytics-identity-changed`, as `announce_analytics_identity` does.
+ * applies `core::analytics::save_identity_in`'s rules (a sticky
+ * `ever_identified`, and a sub only for the live session) and emits the stored
+ * record as `analytics-identity-changed`, as `announce_analytics_identity`
+ * does.
  */
 vi.mock("./config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config")>()),
@@ -68,8 +69,6 @@ type Identity = {
   ever_identified: boolean;
   org_id: string | null;
   auth_mode: string | null;
-  api_key_org?: string | null;
-  install_id_retired?: boolean;
 };
 
 /** The backend: a command router over `invoke`, the only seam faked. */
@@ -99,22 +98,22 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "analytics_milestone_claim":
         return false;
       case "set_analytics_identity": {
-        // `save_identity_in`'s rules, then the emit.
+        // `save_identity_in`'s rules, then the emit of the stored record.
         const next = args!.identity as Identity;
-        const prev = backend.identity;
-        const isKey = next.auth_mode === "api_key";
-        const orgMoved =
-          isKey && !!prev.api_key_org && !!next.org_id && next.org_id !== prev.api_key_org;
-        backend.identity = {
-          ...next,
-          ever_identified: prev.ever_identified || next.ever_identified || !!next.identified_sub,
-          api_key_org: prev.api_key_org ?? (isKey ? next.org_id : null) ?? null,
-          install_id_retired: !!prev.install_id_retired || !!next.install_id_retired || orgMoved,
-        };
-        backend.saves.push({ ...backend.identity });
+        const live = (backend.oauth as { sub?: string | null } | null)?.sub ?? null;
+        const refused = next.identified_sub !== null && next.identified_sub !== live;
+        if (!refused) {
+          backend.identity = {
+            ...next,
+            ever_identified:
+              backend.identity.ever_identified || next.ever_identified || !!next.identified_sub,
+          };
+          backend.saves.push({ ...backend.identity });
+        }
         for (const h of bus.handlers.get("analytics-identity-changed") ?? []) {
           h({ payload: { ...backend.identity } });
         }
+        if (refused) throw "refusing an analytics identity that is not the live session's";
         return null;
       }
       default:
@@ -175,14 +174,12 @@ beforeEach(async () => {
 });
 
 describe("a rejected account read decides nothing about identity", () => {
-  it("leaves a paired API-key install's id spent but NOT retired", async () => {
+  it("leaves a paired API-key install on its install id and its org", async () => {
     backend.identity = {
       identified_sub: null,
       ever_identified: false,
       org_id: ORG,
       auth_mode: "api_key",
-      api_key_org: ORG,
-      install_id_retired: false,
     };
     backend.account = API_KEY_ACCOUNT;
     const { readAndNote } = await window();
@@ -193,8 +190,7 @@ describe("a rejected account read decides nothing about identity", () => {
     const reading = await readAndNote(null);
 
     expect(reading.unread).toBe(true);
-    expect(backend.identity.install_id_retired).toBe(false);
-    expect(backend.identity.api_key_org).toBe(ORG);
+    expect(backend.identity.ever_identified).toBe(false);
     expect(backend.identity.org_id).toBe(ORG);
     expect(ph.distinctId).toBe(INSTALL_ID);
     const posthog = (await import("posthog-js")).default;
@@ -207,7 +203,6 @@ describe("a rejected account read decides nothing about identity", () => {
       ever_identified: true,
       org_id: ORG,
       auth_mode: "oauth",
-      install_id_retired: true,
     };
     backend.account = OAUTH_ACCOUNT;
     backend.oauth = LIVE_OAUTH;
@@ -233,7 +228,6 @@ describe("a rejected account read decides nothing about identity", () => {
       ever_identified: true,
       org_id: ORG,
       auth_mode: "oauth",
-      install_id_retired: true,
     };
     backend.account = OAUTH_ACCOUNT;
     backend.oauth = LIVE_OAUTH;
@@ -248,16 +242,14 @@ describe("a rejected account read decides nothing about identity", () => {
     expect(ph.distinctId).not.toBe(SUB);
   });
 
-  /** And no reading of the window's own retires an API-key install: only the
-   *  core's explicit events do. */
-  it("does not retire an API-key install's id when the read resolves to no account", async () => {
+  /** And an API-key install that reads as signed out keeps its install id:
+   *  nothing ties it to a person, so there is nothing to move off. */
+  it("keeps an API-key install on its install id when the read resolves to no account", async () => {
     backend.identity = {
       identified_sub: null,
       ever_identified: false,
       org_id: ORG,
       auth_mode: "api_key",
-      api_key_org: ORG,
-      install_id_retired: false,
     };
     backend.account = API_KEY_ACCOUNT;
     const { readAndNote } = await window();
@@ -265,6 +257,7 @@ describe("a rejected account read decides nothing about identity", () => {
     backend.account = null;
     await readAndNote();
 
-    expect(backend.identity.install_id_retired).toBe(false);
+    expect(backend.identity.ever_identified).toBe(false);
+    expect(ph.distinctId).toBe(INSTALL_ID);
   });
 });

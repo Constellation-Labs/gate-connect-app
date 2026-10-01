@@ -1003,17 +1003,14 @@ export interface AnalyticsIdentity {
   ever_identified: boolean;
   org_id: string | null;
   auth_mode: string | null;
-  /** The org an API-key account spent the install id on (sticky). */
-  api_key_org?: string | null;
-  /** The install id belongs to a person already and is no longer used as the
-   *  distinct id (sticky). */
-  install_id_retired?: boolean;
 }
 
 export const analyticsIdentity = () => invoke<AnalyticsIdentity>("analytics_identity");
 
-/** Store a change of analytics identity; the backend broadcasts it to every
- *  window as `analytics-identity-changed`. Called by the sign-in window only. */
+/** Store a change of analytics identity; the backend broadcasts the stored
+ *  record to every window as `analytics-identity-changed`, whether or not the
+ *  save landed. Rejects when the core refuses it: a sub that is not the live
+ *  session's. Called by the sign-in window only. */
 export const setAnalyticsIdentity = (identity: AnalyticsIdentity) =>
   invoke<void>("set_analytics_identity", { identity });
 
