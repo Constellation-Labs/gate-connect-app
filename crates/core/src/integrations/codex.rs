@@ -1079,6 +1079,54 @@ fn is_managed_daemon_command(cmd: &[std::ffi::OsString]) -> bool {
             && rest.get(1).is_some_and(|a| *a == "pid-update-loop"))
 }
 
+/// Whether Codex's managed app-server daemon predates the last change Gate made
+/// to Codex's config, without restarting it. The test
+/// [`refresh_app_server_daemon`] applies, for a caller deciding whether a
+/// refresh is worth waiting for.
+pub fn app_server_daemon_is_stale() -> bool {
+    matches!(daemon_state(), DaemonState::Stale(_))
+}
+
+enum DaemonState {
+    NotRunning,
+    Current,
+    /// Running and older than the config; carries its executable.
+    Stale(std::path::PathBuf),
+}
+
+fn daemon_state() -> DaemonState {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let daemon: Vec<(std::path::PathBuf, u64)> = sys
+        .processes()
+        .values()
+        .filter(|p| {
+            is_codex_name(&p.name().to_string_lossy()) && is_managed_daemon_command(p.cmd())
+        })
+        .filter_map(|p| Some((p.exe()?.to_path_buf(), p.start_time())))
+        .collect();
+    let Some((exe, _)) = daemon.first().cloned() else {
+        return DaemonState::NotRunning;
+    };
+    let started = daemon.iter().map(|(_, t)| *t).max().unwrap_or(0);
+    let changed = config_path()
+        .ok()
+        .and_then(|p| crate::config_changes::changed_at(&p));
+    if changed.is_none_or(|changed| started >= changed) {
+        DaemonState::Current
+    } else {
+        DaemonState::Stale(exe)
+    }
+}
+
 /// What [`refresh_app_server_daemon`] found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DaemonRefresh {
@@ -1106,34 +1154,16 @@ pub enum DaemonRefresh {
 /// path run it on a thread of their own. The restart ends the sessions the
 /// daemon hosts, so callers also decide it only with no Codex session open.
 pub fn refresh_app_server_daemon() -> Result<DaemonRefresh> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_exe(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
-    );
-    let daemon: Vec<(std::path::PathBuf, u64)> = sys
-        .processes()
-        .values()
-        .filter(|p| {
-            is_codex_name(&p.name().to_string_lossy()) && is_managed_daemon_command(p.cmd())
-        })
-        .filter_map(|p| Some((p.exe()?.to_path_buf(), p.start_time())))
-        .collect();
-    let Some((exe, _)) = daemon.first().cloned() else {
-        return Ok(DaemonRefresh::NotRunning);
+    // Serialised: two callers racing here (a save and the idle watcher) would
+    // otherwise start two `daemon restart`s at once. The second waits, then
+    // finds the daemon Current (review on #398).
+    static REFRESH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = REFRESH.lock().unwrap_or_else(|p| p.into_inner());
+    let exe = match daemon_state() {
+        DaemonState::NotRunning => return Ok(DaemonRefresh::NotRunning),
+        DaemonState::Current => return Ok(DaemonRefresh::Current),
+        DaemonState::Stale(exe) => exe,
     };
-    let started = daemon.iter().map(|(_, t)| *t).max().unwrap_or(0);
-    let changed = config_path()
-        .ok()
-        .and_then(|p| crate::config_changes::changed_at(&p));
-    if changed.is_none_or(|changed| started >= changed) {
-        return Ok(DaemonRefresh::Current);
-    }
     let mut child = std::process::Command::new(&exe)
         .args(["app-server", "daemon", "restart"])
         .env("CODEX_HOME", env::codex_config_dir()?)
