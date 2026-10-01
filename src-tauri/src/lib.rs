@@ -1296,7 +1296,7 @@ async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> 
     .map_err(|e| format!("proxy status join error: {e}"))?
 }
 
-/// Read the store Chromium reads, once, for the note the window raises when
+/// Read the browser stores, once, for the note the window raises when
 /// trust is granted somewhere this process could not see it happen.
 ///
 /// Async for the same reason `proxy_status` is, and more so: this is the call

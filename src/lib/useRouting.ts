@@ -140,6 +140,7 @@ export function useRouting({
   proxy,
   onSnapshot,
   onError,
+  onUntrusted,
 }: {
   tools: Tool[];
   proxy: ProxyState | null;
@@ -149,6 +150,9 @@ export function useRouting({
    *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
    *  caller can draw it on that tool's pane rather than across the window. */
   onError?: (error: unknown, context: string, slug?: string) => void;
+  /** The certificate was removed, with the state the removal returned - whose
+   *  `ca_nss_trust` says whether every browser store let go of it. */
+  onUntrusted?: (state: ProxyState) => void;
 }) {
   const [busy, setBusy] = useState(false);
   /**
@@ -761,8 +765,9 @@ export function useRouting({
     setBusy(true);
     try {
       await ask({ kind: "untrust" });
-      await proxyUntrustCa();
+      const state = await proxyUntrustCa();
       track("ca_untrusted");
+      onUntrusted?.(state);
     } catch (e) {
       if (!(e instanceof Declined)) {
         trackError(e, "untrust_ca");
@@ -771,7 +776,7 @@ export function useRouting({
     } finally {
       await settle();
     }
-  }, [busy, ask, settle, onError]);
+  }, [busy, ask, settle, onError, onUntrusted]);
 
   return {
     busy,

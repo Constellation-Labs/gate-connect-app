@@ -114,7 +114,8 @@ export function trayLocationName(p: Platform): string {
  *  look. Both halves have since landed - `system_proxy_linux.rs` also writes
  *  GNOME's `org.gnome.system.proxy` keys, which anything on GLib's proxy
  *  resolver re-reads live (#203), and `ca_linux.rs` installs the CA into the
- *  per-user NSS databases Chromium reads as well as the system store (#215) -
+ *  browsers' own NSS stores as well as the system store (#215, and Firefox
+ *  profiles since #393) -
  *  and this comment's own escape clause said that when they did, Linux would
  *  return what macOS returns.
  *

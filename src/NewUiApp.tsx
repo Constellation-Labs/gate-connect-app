@@ -59,6 +59,7 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
   BAND_LABELS,
+  browserTrustRemovedAdvice,
   browserTrustRestartAdvice,
   buildGroups,
   hintForMember,
@@ -185,6 +186,7 @@ import {
   trackError,
 } from "./lib/analytics";
 import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
+import { useNssWriteRise } from "./lib/useNssWriteRise";
 
 /** A whole reading, for deciding whether a re-read changed anything. Compared by
  * value because the identity never matches: every read builds fresh objects. */
@@ -1229,6 +1231,14 @@ export function NewUiApp() {
       // A write landed, so the verdicts are stale: the tool may now need a
       // reopen, and the relay may have been auto-enabled by the connect.
       void refreshVerdicts();
+    },
+    // The removal's own note, from what it recorded about the browser stores:
+    // "removed, reopen your browsers" or "a browser kept it, here is how to
+    // remove it". `ca_trusted` going false cannot say which, and also flips
+    // on changes Gate did not make.
+    onUntrusted: (state) => {
+      const note = browserTrustRemovedAdvice(platform, state.ca_nss_trust);
+      setBrowserRestart(note ? { ...note, removed: true } : null);
     },
     onError: (e, context, slug) => {
       // `connect` covers both directions of a tool write: the remedy copy is the
@@ -2391,7 +2401,11 @@ export function NewUiApp() {
   );
 
   /**
-   * The one-off note that follows the certificate landing, on Linux.
+   * The note about browsers and Gate's certificate, on Linux: the reopen note
+   * that follows the certificate landing (here, and on a later browser-store
+   * write - see `useNssWriteRise` below), the failure notes, and the note that
+   * follows a removal (raised from the removal's own result, through
+   * `useRouting`'s `onUntrusted`).
    *
    * Driven off `ca_trusted` going false to true rather than off the action that
    * did it, because four paths reach the same place - the master switch, a row's
@@ -2403,12 +2417,13 @@ export function NewUiApp() {
    *
    * Cleared by the user alone, for the reopen sentence: nothing Gate can read
    * afterwards says whether they reopened anything, so a dismissal is the only
-   * thing that can retire it, and it does not come back until trust is removed
-   * and granted again. The *failure* sentences do have something that retires
-   * them - see the effect below.
+   * thing that can retire it. It comes back only on a new trust or a new
+   * browser-store write - each of which leaves another browser to reopen. The
+   * *failure* sentences do have something that retires them - see the effect
+   * below - and a removal retires every note about the certificate landing.
    *
    * `ca_nss_trust` rides along from the same snapshot, and it decides which note
-   * this is: what the store Chromium reads did with the CA is a reading, and it
+   * this is: what the browser stores did with the CA is a reading, and it
    * separates "reopen your browser" from "install certutil" from "a store
    * refused, and the report says which". Read off the *incoming* state rather
    * than a later poll, so the sentence describes the trust change that just
@@ -2417,6 +2432,8 @@ export function NewUiApp() {
   const [browserRestart, setBrowserRestart] = useState<{
     title: string;
     body: string;
+    /** Raised by a removal, which the `ca_trusted` edge must not clear. */
+    removed?: boolean;
   } | null>(null);
   const caTrustedSeen = useRef<boolean | null>(null);
   const nssSeen = useRef<ProxyState["ca_nss_trust"]>(null);
@@ -2424,6 +2441,16 @@ export function NewUiApp() {
     const trusted = proxy?.ca_trusted ?? null;
     const seen = caTrustedSeen.current;
     caTrustedSeen.current = trusted;
+    // The other direction. Any note about the certificate being added is now
+    // the opposite of true, so it goes - but nothing is said here about the
+    // browsers: `ca_trusted` also goes false on a regenerated CA or an anchor
+    // removed outside Gate, with nothing taken out of any browser. A removal
+    // Gate made raises its own note from its own result (`onUntrusted`), and
+    // that one is kept.
+    if (seen === true && trusted === false) {
+      setBrowserRestart((current) => (current?.removed ? current : null));
+      return;
+    }
     if (seen !== false || trusted !== true) return;
     const nss = proxy?.ca_nss_trust ?? null;
     if (nss !== null) {
@@ -2461,7 +2488,12 @@ export function NewUiApp() {
         // A probe that will not run is no reading either, and the note it
         // would have refined is already on screen.
       });
-  }, [proxy, platform]);
+    // `ca_trusted` beside `proxy`, because this effect is about that value and
+    // not about the snapshot's identity. The real backend returns a fresh
+    // object on every read, so for it the two are the same; the e2e fake
+    // returns one object it mutates in place, and some of the suite depends
+    // on that, so keying on the value is what keeps both honest.
+  }, [proxy, proxy?.ca_trusted, platform]);
 
   /**
    * ...and what retires it when the user does what it asked.
@@ -2485,6 +2517,39 @@ export function NewUiApp() {
       was === "tools_missing" || was === "write_failed" || was === "not_written";
     if (wasFailing && nss === "trusted") setBrowserRestart(null);
   }, [proxy]);
+
+  /**
+   * A browser store written while the certificate was already trusted.
+   *
+   * The trust effect above only fires on `ca_trusted` going true, and that
+   * missed the machine this was found on: the system anchor trusted weeks
+   * before, and on a later enable Gate created Chrome's missing database and
+   * wrote a Firefox profile for the first time - two browsers that would go on
+   * refusing every intercepted host until reopened, with nothing on screen
+   * saying so. The note is the one the reading picks, so a write that partly
+   * failed still says which way. Skipped while the certificate is not trusted,
+   * where the trust effect owns the note.
+   *
+   * **Declared after the retire effect on purpose.** React runs effects in
+   * declaration order, and the repair flow - install certutil, turn routing
+   * off and on - lands one snapshot where the reading leaves a failure *and*
+   * a store was written. The retire effect clears the failure note; this then
+   * raises the reopen note the write calls for. The other way round, the
+   * reopen note was raised and wiped in the same commit.
+   *
+   * An equal note already up (the trust effect above raises the same one on a
+   * snapshot that is also a write) is kept as it is, so the identity the
+   * probe's refinement compares against survives.
+   */
+  useNssWriteRise(proxy ? proxy.ca_nss_written_at : null, () => {
+    if (!proxy?.ca_trusted) return;
+    const next = browserTrustRestartAdvice(platform, proxy.ca_nss_trust) ?? null;
+    setBrowserRestart((current) =>
+      current && next && current.title === next.title && current.body === next.body
+        ? current
+        : next,
+    );
+  });
 
   /**
    * The standing note a proxy-routed row carries on Linux.
