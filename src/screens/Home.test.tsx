@@ -285,6 +285,11 @@ describe("Home master toggle", () => {
 describe("Home browser-trust card", () => {
   const CARD = "Your browsers don’t trust the Gate certificate yet.";
 
+  it("names the Primary Password case Retry cannot fix", () => {
+    renderHome({ caNssTrusted: false, domains: [makeDomain()] }, "linux");
+    expect(screen.getByText(/A Firefox\s+profile with a Primary Password/)).toBeTruthy();
+  });
+
   it("shows when the OS trusts the CA and a browser store does not", () => {
     renderHome({ caNssTrusted: false, domains: [makeDomain()] }, "linux");
     expect(screen.getByText(CARD)).toBeTruthy();
@@ -347,6 +352,22 @@ describe("Home browser-restart notice", () => {
   it("yields to the browser-trust card when a store still lacks the CA", () => {
     renderHome({ caNssTrusted: false, browserRestart: true, domains: [makeDomain()] }, "linux");
     expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("stays hidden once the certificate is no longer trusted", () => {
+    renderHome({ caTrusted: false, caNssTrusted: true, browserRestart: true, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("says to restart browsers after the certificate is removed", () => {
+    renderHome({ changeNotice: "removed", domains: [makeDomain()] }, "linux");
+    expect(
+      screen.getByText(
+        "Certificate removed. Quit and reopen any open browser so it stops trusting the certificate.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
   });
 
   it("dismisses", () => {

@@ -232,7 +232,12 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     // is the whole of "curl works, the browsers don't". Silent when the
     // question does not apply.
     if (backend?.ca_nss_trusted === false) {
-      lines.push(row("browser store", "CA MISSING (chromium/firefox)"));
+      lines.push(row("browser store", "CA MISSING"));
+    }
+    // Which store, since "missing" alone cannot tell a Chrome with no database
+    // from a Firefox profile that refused the write.
+    for (const store of backend?.ca_nss_stores ?? []) {
+      lines.push(row("  store", store));
     }
     lines.push(
       row(

@@ -648,8 +648,9 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 println!("Proxy CA trusted machine-wide.");
                 println!("Remove it with `gate-connect proxy untrust-ca --system-trust`.");
             } else {
-                mgr.trust_ca()?;
+                let state = mgr.trust_ca()?;
                 println!("Proxy CA trusted.");
+                print_browser_restart(&state);
             }
         }
         ProxyCmd::UntrustCa { system_trust } => {
@@ -664,6 +665,8 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 mgr.untrust_ca()?;
                 println!("Proxy CA trust removed.");
             }
+            // A running browser keeps the root it loaded at launch.
+            println!("Quit and reopen any open browser so it stops trusting the certificate.");
             if was_routing {
                 println!(
                     "Routing was on and has been stopped: the engine signs with this CA, so it \
@@ -705,7 +708,24 @@ fn print_proxy_state(state: &proxy::ProxyState) {
         }
     );
     print_proxy_domains(&state.domains);
+    print_browser_restart(state);
 }
+
+/// The CLI's counterpart of the app's "quit and reopen" notice: a browser only
+/// reads a newly added root at launch, and a write made in this process never
+/// reaches an open app's counter. Silent when nothing was written (always,
+/// off Linux).
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn print_browser_restart(state: &proxy::ProxyState) {
+    if state.ca_nss_writes > 0 {
+        println!("Certificate added to your browsers. {BROWSER_RESTART}");
+    }
+}
+
+/// The remedy sentence the app uses on every certificate notice, so the two
+/// surfaces say the same thing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const BROWSER_RESTART: &str = "Quit and reopen any open browser so it trusts the certificate.";
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {

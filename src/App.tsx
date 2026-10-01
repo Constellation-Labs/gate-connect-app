@@ -47,6 +47,7 @@ import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
+import { useBrowserRestart } from "./lib/useBrowserRestart";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
@@ -172,7 +173,7 @@ function markRoutingTakeoverSeen(): void {
 /** `trusted` is the one member that is not about routing: the explicit Trust
  *  buttons (Home's certificate card, the family panel's banner) never pass the
  *  certificate pre-flight, so its browser advice lands here on their success. */
-export type ChangeNotice = "on" | "off" | "started" | "pending" | "trusted" | null;
+export type ChangeNotice = "on" | "off" | "started" | "pending" | "trusted" | "removed" | null;
 
 /** Which change notice a member/group toggle earned, from the engine state
  * that actually resulted rather than from the direction of the click.
@@ -297,16 +298,11 @@ export function App() {
   // Firefox profile's). A running browser keeps the store it opened at launch,
   // so nothing changes for it until it restarts - and nothing on screen said
   // so: a fresh Ubuntu install had Chrome and Firefox both rejecting claude.ai
-  // after trust was in place. Raised whenever `ca_nss_writes` goes up,
-  // including on the first reading, since the startup reconcile can write
-  // before any window has asked for anything. Sticky until dismissed.
-  const [browserRestart, setBrowserRestart] = useState(false);
-  const nssWritesSeen = useRef(0);
-  useEffect(() => {
-    const writes = proxy?.ca_nss_writes ?? 0;
-    if (writes > nssWritesSeen.current) setBrowserRestart(true);
-    nssWritesSeen.current = writes;
-  }, [proxy?.ca_nss_writes]);
+  // after trust was in place. Sticky until dismissed or the certificate is
+  // removed; see `useBrowserRestart` for when it rises.
+  const [browserRestart, dismissBrowserRestart] = useBrowserRestart(
+    proxy ? proxy.ca_nss_writes : null,
+  );
 
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
@@ -544,7 +540,7 @@ export function App() {
     if (oauthOffer) track("oauth_offer_shown");
   }, [oauthOffer]);
   useEffect(() => {
-    if (changeNotice && changeNotice !== "trusted") {
+    if (changeNotice && changeNotice !== "trusted" && changeNotice !== "removed") {
       track("routing_notice_shown", { enabled: changeNotice === "on", inline: true });
     }
   }, [changeNotice]);
@@ -1135,6 +1131,10 @@ export function App() {
     try {
       setProxy(await proxyUntrustCa());
       track("ca_untrusted");
+      // "Certificate added to your browsers" is now the opposite of true, and
+      // a running browser keeps the root it loaded at launch until it quits.
+      dismissBrowserRestart();
+      setChangeNotice("removed");
     } catch (err) {
       // Same as trustCa: the classified untrust_ca string reached no screen.
       trackError(err, "untrust_ca");
@@ -1148,7 +1148,7 @@ export function App() {
       proxyBusyRef.current = false;
       setProxyBusy(false);
     }
-  }, []);
+  }, [dismissBrowserRestart]);
 
   // Legacy key accounts can switch to Constellation sign-in from Settings; the
   // OAuth flow flips auth_mode to OAuth on success, then onConnected routes to
@@ -1366,7 +1366,7 @@ export function App() {
         canCloseAgents={!nothingToClose}
         onDismissChangeNotice={() => setChangeNotice(null)}
         browserRestart={browserRestart}
-        onDismissBrowserRestart={() => setBrowserRestart(false)}
+        onDismissBrowserRestart={dismissBrowserRestart}
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click
         // already declared the intent, land directly on the confirm step.

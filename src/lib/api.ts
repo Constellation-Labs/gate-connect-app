@@ -399,6 +399,10 @@ export interface Diagnostics {
    * of "curl works, the browsers don't". `null` where the question does not
    * apply (not Linux, or no such browser here). */
   ca_nss_trusted: boolean | null;
+  /** Linux only: one line per browser store and what it holds ("<path>:
+   * trusted", "…: removed in the browser"), so a report says *which* store.
+   * Empty elsewhere. */
+  ca_nss_stores: string[];
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;
