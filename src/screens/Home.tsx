@@ -648,7 +648,7 @@ export function Home({
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
                 : changeNotice === "trusted"
-                  ? "Certificate trusted. Restart any open browser so it trusts it too."
+                  ? "Certificate trusted. Quit and reopen any open browser so it trusts the certificate."
                   : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
@@ -711,9 +711,7 @@ export function Home({
           <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
             <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-gc-caption font-medium leading-snug text-gc-ink">
-              Certificate added to your browsers.{" "}
-              <span className="font-semibold">Quit and reopen</span> any that are open, or
-              they keep showing a certificate error.
+              Certificate added to your browsers. Quit and reopen any open browser so it trusts the certificate.
             </div>
             <IconButton
               icon="x"

@@ -332,7 +332,7 @@ describe("Home browser-restart notice", () => {
   it("tells the user to quit and reopen their browsers", () => {
     renderHome({ caNssTrusted: true, browserRestart: true, domains: [makeDomain()] }, "linux");
     expect(screen.getByText(NOTICE)).toBeTruthy();
-    expect(screen.getByText("Quit and reopen")).toBeTruthy();
+    expect(screen.getByText(/Quit and reopen any open browser so it trusts the certificate\./)).toBeTruthy();
   });
 
   it("replaces the generic trusted notice rather than stacking on it", () => {
@@ -635,7 +635,7 @@ describe("Home routing-change notice", () => {
     // cached at start.
     const onCloseAgents = vi.fn();
     renderHome({ changeNotice: "trusted", onCloseAgents, domains: [makeDomain()] });
-    expect(screen.getByText(/Certificate trusted\. Restart any open browser/)).toBeTruthy();
+    expect(screen.getByText(/Certificate trusted\. Quit and reopen any open browser/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
     expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
