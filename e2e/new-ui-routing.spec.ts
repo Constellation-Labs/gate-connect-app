@@ -184,7 +184,60 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    await expect(app.page.getByRole("alert")).toBeVisible();
+    // On the app's pane, as the single-app alert (`1426:35788`), and not in
+    // the window-wide banner: the fault is one app's config.
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
+    await expect(app.page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("a connect refused because routing is off is the window's, not the app's", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        connect_tool: "configuring Claude Code: the Gate proxy is not running -- turn routing on",
+      },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+    await expect(app.page.getByRole("alert")).toContainText("Turn on “Route through Gate” first");
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await expect(app.page.getByRole("button", { name: "Dismiss alert" })).toHaveCount(0);
+    // Nor the row's failed-write card: the config was never the problem.
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
+  });
+
+  test("a failed write stays off Overview", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: { connect_tool: "gateway rejected the key" },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+    await app.page.getByRole("button", { name: "Overview" }).click();
+
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+    await expect(app.page.getByRole("alert")).toHaveCount(0);
   });
 });
 
@@ -264,7 +317,7 @@ test.describe("new UI drift repair", () => {
     await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
   });
 
-  test("a failed write says so in the pane, not only in a banner", async ({ boot }) => {
+  test("a failed write says so in the pane, not in a window banner", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -277,15 +330,52 @@ test.describe("new UI drift repair", () => {
     await app.routeApp("ChatGPT / Codex");
 
     // The rail row and the pane header print the phrase alone. The pane's
-    // status card carries the reason, and it outlives the banner - which is
-    // the half of this that still matters.
+    // alert carries the failure and the retry, so the quieter status card
+    // that would say "Configuration update failed" stands down for it.
     //
     // Opened by the section's name: the row is the app, and Codex is inside it.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    // The status card, not the action banner, which can say the same words.
-    const note = app.page.getByRole("status").filter({ hasText: /isn’t protected/ });
-    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
-    await expect(note).toContainText("Configuration update failed");
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
+    await expect(app.page.getByText("failed to write ~/.codex/config.toml")).toBeAttached();
+    await expect(
+      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
+    ).toHaveCount(0);
+  });
+
+  test("the pane alert's switch is the retry", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+    });
+    await app.routeApp("ChatGPT / Codex");
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+
+    const retry = app.page.getByRole("switch", { name: "Try Codex again" });
+    await expect(retry).toBeVisible();
+    await app.page.evaluate(() => {
+      window.__GATE_E2E__.state.failures = {};
+    });
+    await retry.click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+  });
+
+  test("dismissing the pane alert leaves the reason on the status card", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+    });
+    await app.routeApp("ChatGPT / Codex");
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+
+    await app.page.getByRole("button", { name: "Dismiss alert" }).click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+    await expect(
+      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
+    ).toContainText("Configuration update failed");
   });
 
   test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {
@@ -304,7 +394,7 @@ test.describe("new UI drift repair", () => {
     // nowhere on the page and the count below would pass without the retry ever
     // having cleared anything.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.
     // `app.patch` merges objects one level deep, so it cannot *remove* a key;
@@ -314,6 +404,7 @@ test.describe("new UI drift repair", () => {
     });
     await (await app.appSwitch("ChatGPT / Codex")).click();
 
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
 });

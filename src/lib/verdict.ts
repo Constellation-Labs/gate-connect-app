@@ -34,7 +34,7 @@ import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
  * AG-564 and AG-568 both name this state; AG-562's list of five does not include
  * it. Raised on those tickets rather than smuggled into the enum.
  */
-const WRITE_FAILED_DETAIL = "Configuration update failed";
+export const WRITE_FAILED_DETAIL = "Configuration update failed";
 
 /** The reason on a row that has no verdict yet. Not a fault, so the pane draws
  *  no card for it; see `statusNote` in `NewUiApp`. */

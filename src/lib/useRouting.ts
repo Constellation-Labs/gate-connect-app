@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { track, trackError } from "./analytics";
 import { describe, logInfo, logWarn } from "./log";
+import { isRoutingOffRefusal } from "./errors";
 import { TOOL_MANAGED_DOMAINS, cascadeTargets } from "./groups";
 import type { Group } from "./groups";
 
@@ -108,6 +109,15 @@ const HERMES_SLUG = "hermes";
  *  is an answer, not a failure, so it resolves quietly. */
 class Declined extends Error {}
 
+/** A certificate install that failed inside one tool's connect. Reported under
+ *  `trust_ca` and with no slug: the certificate is the whole install's, so
+ *  its failure is not that one app's (review on #390). */
+class TrustFailed extends Error {
+  constructor(readonly cause: unknown) {
+    super("certificate install failed during a connect");
+  }
+}
+
 /**
  * Some members of a family switch failed. Carries their names, because the
  * useful sentence is "couldn't connect Codex and OpenCode", not "couldn't
@@ -135,8 +145,10 @@ export function useRouting({
   proxy: ProxyState | null;
   /** Fresh backend truth after any action, successful or not. */
   onSnapshot: (next: RoutingSnapshot) => void;
-  /** A failure the user should see, already classified by the caller. */
-  onError?: (error: unknown, context: string) => void;
+  /** A failure the user should see, already classified by the caller.
+   *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
+   *  caller can draw it on that tool's pane rather than across the window. */
+  onError?: (error: unknown, context: string, slug?: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   /**
@@ -490,7 +502,11 @@ export function useRouting({
               existingConfig: tool.status.reason,
             });
           }
-          await ensureCaTrusted();
+          try {
+            await ensureCaTrusted();
+          } catch (e) {
+            throw e instanceof Declined ? e : new TrustFailed(e);
+          }
           await connectTool(slug);
           // After the connect, which is what starts the engine. The channel
           // exports the engine's address, so switching it on ahead of a bound
@@ -527,9 +543,22 @@ export function useRouting({
         // there is nothing to report - and in particular the row must not be
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
-          trackError(e, "connect", { tool: slug, routed });
-          onError?.(e, routed ? "connect" : "disconnect");
-          setWriteFailures((prev) => new Set(prev).add(slug));
+          // Unwrapped for telemetry too: `trackError` classifies the error it is
+          // given, and the wrapper's own message matches no branch.
+          if (e instanceof TrustFailed) {
+            trackError(e.cause, "trust_ca", { tool: slug, routed });
+            onError?.(e.cause, "trust_ca");
+          } else {
+            trackError(e, "connect", { tool: slug, routed });
+            onError?.(e, routed ? "connect" : "disconnect", slug);
+          }
+          // Only a fault in this tool's config marks its row. A certificate that
+          // would not install, or an engine that is not running, is the whole
+          // install's: the window banner names it, and "Configuration update
+          // failed" on the row would blame a write that was never the problem
+          // (for the certificate, one never attempted).
+          if (!(e instanceof TrustFailed) && !isRoutingOffRefusal(describe(e)))
+            setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {
         await settle();

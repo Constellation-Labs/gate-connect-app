@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import type { ProxyState, Status, Tool } from "./api";
+import { trackError } from "./analytics";
 import { useRouting, FamilyCascadeError } from "./useRouting";
 import type { Group, GroupMember } from "./groups";
 
@@ -224,6 +225,62 @@ describe("useRouting: the certificate gate", () => {
 });
 
 describe("useRouting: re-sync and failures", () => {
+  it("names the tool a failed connect was for", async () => {
+    (connectTool as Mock).mockRejectedValue(new Error("nope"));
+    const { api, onError } = harness([tool("claude-code", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("claude-code", true);
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), "connect", "claude-code");
+    expect(api.current!.writeFailures.has("claude-code")).toBe(true);
+  });
+
+  it("reports a certificate install that fails inside a connect as the install's", async () => {
+    // Review on #390: the certificate is the whole install's, so its failure
+    // carries no slug and is not drawn on the one app's pane.
+    const refusal = new Error("the Windows certificate trust dialog was cancelled");
+    (proxyTrustCa as Mock).mockRejectedValue(refusal);
+    const { api, onError } = harness(
+      [tool("claude-code", { kind: "detected" })],
+      proxyState({ ca_trusted: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("claude-code", true);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+    });
+
+    expect(connectTool).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(refusal, "trust_ca");
+    expect(trackError).toHaveBeenCalledWith(refusal, "trust_ca", {
+      tool: "claude-code",
+      routed: true,
+    });
+    // Nothing was written, so the row is not marked as a failed write.
+    expect(api.current!.writeFailures.has("claude-code")).toBe(false);
+  });
+
+  it("does not mark the row for a connect refused because routing is off", async () => {
+    // The engine is the whole install's, and the window banner says so; the
+    // row reading "Configuration update failed" would blame the tool's config.
+    const refusal = new Error(
+      "configuring Claude Code: the Gate proxy is not running -- turn routing on",
+    );
+    (connectTool as Mock).mockRejectedValue(refusal);
+    const { api, onError } = harness([tool("claude-code", { kind: "detected" })], proxyState());
+
+    await act(async () => {
+      await api.current!.setAppRouted("claude-code", true);
+    });
+
+    expect(onError).toHaveBeenCalledWith(refusal, "connect", "claude-code");
+    expect(api.current!.writeFailures.has("claude-code")).toBe(false);
+  });
+
   it("re-reads backend truth even when the action fails", async () => {
     // Connecting can flip a provider headline and auto-start the engine, so the
     // rendered state must come from the backend, not from what we asked for.
