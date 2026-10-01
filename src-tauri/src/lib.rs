@@ -454,9 +454,6 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     if done.is_ok() {
         signal_session_changed();
     }
-    // A replaced key retires a spent install id in `account::save`; tell every
-    // window (AG-960).
-    announce_stored_analytics_identity();
     done
 }
 
@@ -2915,19 +2912,29 @@ fn read_auto_enabled_domains(tool: String) -> Vec<String> {
 /// Claim a once-per-install analytics milestone (AG-960). True exactly once per
 /// install across every window and process; see
 /// `gate_connect_core::analytics`. Rejects for a name outside the closed set,
-/// and the webview reads any rejection as "do not send".
+/// and the webview reads any rejection as "do not send". Off the main thread,
+/// like every other command here that touches the disk.
 #[tauri::command]
-fn analytics_milestone_claim(name: String) -> Result<bool, String> {
-    gate_connect_core::analytics::claim(&name).map_err(|e| format!("{e:#}"))
+async fn analytics_milestone_claim(name: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::analytics::claim(&name).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("analytics claim join error: {e}"))?
 }
 
 /// Why local Cowork cannot run on this machine, from Claude Desktop's own
 /// settings, or null when nothing readable says it is off. Read once, after the
-/// Claude Desktop row is connected: a small file read, never on a timer. See
+/// Claude Desktop row is connected: a few small file reads (and the registry on
+/// Windows), never on a timer, and off the main thread, because a redirected
+/// `%APPDATA%` can be slow. See
 /// `gate_connect_core::analytics::cowork_setting_missing`.
 #[tauri::command]
-fn cowork_setting_check() -> Option<&'static str> {
-    gate_connect_core::analytics::cowork_setting_missing()
+async fn cowork_setting_check() -> Option<&'static str> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::analytics::cowork_setting_missing)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
@@ -2952,18 +2959,33 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 /// What this install is identified as in analytics; see
 /// `gate_connect_core::analytics::Identity`.
 #[tauri::command]
-fn analytics_identity() -> gate_connect_core::analytics::Identity {
-    gate_connect_core::analytics::load_identity()
+async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::analytics::load_identity)
+        .await
+        .map_err(|e| format!("analytics identity join error: {e}"))
 }
 
 /// Record a change of analytics identity, and tell every window, so each one's
 /// client follows the same person (AG-960). Called only by the window that
 /// owns sign-in.
+///
+/// The stored identity is announced whether or not the save landed. A refused
+/// save (a sub that is not the live session's, see
+/// `gate_connect_core::analytics::save_identity_in`) is a window acting on a
+/// session that has already ended, and the announcement is what moves it, and
+/// every other window, back onto the record.
 #[tauri::command]
-fn set_analytics_identity(identity: gate_connect_core::analytics::Identity) -> Result<(), String> {
-    gate_connect_core::analytics::save_identity(identity).map_err(|e| format!("{e:#}"))?;
-    announce_analytics_identity(gate_connect_core::analytics::load_identity());
-    Ok(())
+async fn set_analytics_identity(
+    identity: gate_connect_core::analytics::Identity,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let saved =
+            gate_connect_core::analytics::save_identity(identity).map_err(|e| format!("{e:#}"));
+        announce_analytics_identity(gate_connect_core::analytics::load_identity());
+        saved
+    })
+    .await
+    .map_err(|e| format!("analytics identity join error: {e}"))?
 }
 
 /// The event every window's analytics seam listens on to follow a change of
@@ -2981,8 +3003,8 @@ fn announce_analytics_identity(identity: gate_connect_core::analytics::Identity)
 }
 
 /// Tell every window what analytics identity is stored now. The core does the
-/// forgetting and the retiring (`oauth::clear`, `account::save`), so every
-/// caller of those, the CLI included, changes the record; this is the shell's
+/// forgetting (`oauth::clear`), so every caller of it, the CLI included,
+/// changes the record; this is the shell's
 /// half, because only the shell has windows to tell. Without it each window
 /// kept the old account for the rest of the session.
 fn announce_stored_analytics_identity() {
@@ -6772,7 +6794,7 @@ mod tests {
         assert_ne!(source, bundle);
     }
 
-    /// Every command that ends or replaces the account announces the stored
+    /// Every command that ends the account announces the stored
     /// analytics identity, after the core call that changed it (AG-960). A scan
     /// of this file's own source, because the commands need a running app.
     #[test]
@@ -6781,7 +6803,6 @@ mod tests {
         for (start, change) in [
             ("async fn oauth_sign_out()", "oauth::clear()"),
             ("async fn clear_account()", "account::clear()"),
-            ("async fn save_account(", "account::save("),
         ] {
             let at = src.find(start).expect(start);
             let body = &src[at..];

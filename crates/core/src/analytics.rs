@@ -18,7 +18,9 @@
 //! is one more thing to get wrong on three platforms. The file's content is only
 //! a timestamp for a human reading the directory; existence is the fact.
 //!
-//! Nothing here reads a secret, and nothing here touches the network.
+//! Nothing here touches the network. The one secret read is [`save_identity`]'s
+//! check that a sub it is asked to store is the live session's, through the
+//! witnessed `oauth::current`, and only for a save that names a sub.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -133,17 +135,51 @@ pub fn init_in(support: &Path) -> Result<()> {
 }
 
 fn create_store(dir: &Path, legacy: bool) -> Result<()> {
-    match fs::create_dir(dir) {
-        Ok(()) => {}
-        // Another window or process created it between our check and here. It
-        // made the legacy decision; ours would be the same one.
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Ok(()),
-        Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
-    }
-    if legacy {
-        write_marker(&dir.join(LEGACY_MARKER))?;
-    }
-    Ok(())
+    create_store_with(dir, |staging| {
+        if legacy {
+            write_marker(&staging.join(LEGACY_MARKER))?;
+        }
+        Ok(())
+    })
+}
+
+/// Put a complete store at `dir` in one step, or none at all.
+///
+/// The store is built in a staging directory beside it, `.legacy` included,
+/// and renamed into place. Creating `dir` first and writing `.legacy` into it
+/// second left a window in which the directory existed without its marker: a
+/// marker write that failed there (a full disk, an antivirus lock on Windows)
+/// left an upgraded install judged fresh for good, because every later
+/// [`init_in`] sees the directory and returns, and a claim racing between the
+/// two steps saw a fresh store too. Either way the first-occurrence milestones
+/// went out for a machine that had run Gate Connect for months.
+///
+/// Losing the rename to another window or process is not an error: the
+/// winner's store is complete, and its legacy decision is the one that stands.
+/// A rename only replaces an EMPTY directory (POSIX; Windows never replaces
+/// one), and a store is empty only while it is fresh and unclaimed, so the
+/// most a lost race can do is turn a fresh store legacy, which suppresses a
+/// milestone and never duplicates one.
+fn create_store_with(dir: &Path, populate: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = dir
+        .parent()
+        .context("the milestone store has no parent dir")?;
+    let staging = parent.join(format!(
+        ".{STORE_DIR}.staging-{}-{}",
+        std::process::id(),
+        STAGING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
+    let built = populate(&staging).and_then(|()| match fs::rename(&staging, dir) {
+        Ok(()) => Ok(()),
+        Err(_) if dir.is_dir() => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("moving the store into {}", dir.display())),
+    });
+    // Gone already after a successful rename; otherwise the half-built store.
+    let _ = fs::remove_dir_all(&staging);
+    built
 }
 
 fn write_marker(path: &Path) -> Result<bool> {
@@ -387,18 +423,26 @@ pub fn cowork_block_in_config(raw: &str) -> Option<&'static str> {
 /// (`ever_identified`), and on sign-out or an account switch resets the client
 /// instead of merging.
 ///
+/// **Only a Constellation sign-in is ever a person.** An API-key account is
+/// never identified, here or anywhere else: the key's creator is not
+/// necessarily the person at this machine. So nothing about an API-key account
+/// is recorded beyond the org and auth mode the windows group by.
+///
 /// Nothing here is a secret: `sub` is the opaque Cognito id already sent as the
 /// distinct id, and the org id is already the analytics group. The webview only
-/// writes it after the diagnostics answer allows identification, so an install
-/// that never agreed has nothing here but the org it routes for.
+/// writes a sub after the diagnostics answer allows identification, so an
+/// install that never agreed has nothing here but the org it routes for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     /// The Cognito `sub` the analytics client is identified as right now, or
-    /// `None` when it is on the install id.
+    /// `None` when it is not identified.
     #[serde(default)]
     pub identified_sub: Option<String>,
     /// Whether this install has ever been identified with anybody. Sticky: once
-    /// true, a save cannot turn it back.
+    /// true, a save cannot turn it back. It is also what retires the install id
+    /// as a distinct id: once identified, the install id belongs to that
+    /// account's person, so after a sign-out the client moves to a fresh
+    /// anonymous id rather than back onto it.
     #[serde(default)]
     pub ever_identified: bool,
     /// The organization this install routes for, as the owning window last saw
@@ -410,21 +454,14 @@ pub struct Identity {
     /// `"oauth"` or `"api_key"`, beside the org it describes.
     #[serde(default)]
     pub auth_mode: Option<String>,
-    /// The org an API-key account first paired this install with. From then on
-    /// the gateway may alias the install id into that key owner's person
-    /// (dashboard-api's `$create_alias` at `first_gateway_request`), so the
-    /// install id is spent on that account. Sticky once set.
-    #[serde(default)]
-    pub api_key_org: Option<String>,
-    /// Whether the install id must no longer be used as a distinct id: it
-    /// belongs to a person already (identified once, or spent on an API-key
-    /// account that has since gone), and filing a later account under it would
-    /// attach that account to the earlier person. Sticky.
-    #[serde(default)]
-    pub install_id_retired: bool,
 }
 
 const IDENTITY_FILE: &str = "analytics-identity.json";
+
+/// The advisory lock every writer of [`IDENTITY_FILE`] holds, beside it. A
+/// separate file because the record itself is replaced by rename, and a lock on
+/// a file that is renamed over locks nothing the next opener sees.
+const IDENTITY_LOCK_FILE: &str = "analytics-identity.lock";
 
 /// A value from the webview that becomes a PostHog id: bounded, printable,
 /// non-empty. Anything else is dropped rather than stored.
@@ -436,17 +473,17 @@ fn clean_id(v: Option<String>) -> Option<String> {
 /// The stored identity.
 ///
 /// A missing file is a fresh install and reads as the default: never
-/// identified, install id unspent. A file that exists but cannot be read or
-/// parsed **fails closed**: it reads as an install whose id is retired, because
-/// nothing about who it belonged to can be recovered, and assuming "nobody"
-/// would bootstrap an install id that may already be a person's. The cost is
-/// that such an install files under a fresh anonymous id from then on.
+/// identified. A file that exists but cannot be read or parsed **fails
+/// closed**: it reads as an install that has been identified, because nothing
+/// about who it belonged to can be recovered, and assuming "nobody" would
+/// bootstrap an install id that may already be a person's. The cost is that
+/// such an install files under a fresh anonymous id from then on.
 ///
 /// An I/O failure that is not about the content (permission denied, a busy
 /// file, a rename racing the read on Windows) also reads as fail-closed here,
 /// because a reader must answer something; but the writers below refuse to
 /// build on it (see [`read_identity_in`]), so a transient error can never be
-/// written back as a permanent retirement.
+/// written back as a permanent fact.
 pub fn load_identity_in(support: &Path) -> Identity {
     read_identity_in(support).unwrap_or_else(|_| Identity::fail_closed())
 }
@@ -456,6 +493,10 @@ pub fn load_identity_in(support: &Path) -> Identity {
 /// of a read that may succeed a moment later. Content that is there but not a
 /// record (unparseable JSON, bytes that are not UTF-8) still fails closed: that
 /// will not get better on a retry.
+///
+/// A record written by an earlier build of this branch may carry fields this
+/// one no longer has (`api_key_org`, `install_id_retired`); serde ignores
+/// them.
 fn read_identity_in(support: &Path) -> Result<Identity> {
     let path = support.join(IDENTITY_FILE);
     let raw = match fs::read_to_string(&path) {
@@ -471,8 +512,6 @@ fn read_identity_in(support: &Path) -> Result<Identity> {
             org_id: clean_id(i.org_id),
             auth_mode: clean_id(i.auth_mode),
             ever_identified: i.ever_identified,
-            api_key_org: clean_id(i.api_key_org),
-            install_id_retired: i.install_id_retired,
         })
         .unwrap_or_else(Identity::fail_closed))
 }
@@ -482,87 +521,160 @@ impl Identity {
     fn fail_closed() -> Self {
         Identity {
             ever_identified: true,
-            install_id_retired: true,
             ..Identity::default()
         }
     }
 }
 
-/// Store `next`, keeping the sticky facts sticky: `ever_identified` (implied
-/// by a sub), `api_key_org` once set, and `install_id_retired`.
-pub fn save_identity_in(support: &Path, next: Identity) -> Result<()> {
-    let prev = read_identity_in(support)?;
-    let identified_sub = clean_id(next.identified_sub);
-    // The core decides when an API-key account spends the install id, and when
-    // it moves on, from the org the sign-in window reports (which for an API
-    // key is only ever the gateway's own answer). The window's own claims about
-    // `api_key_org` are not trusted.
-    let reported_org = clean_id(next.org_id.clone());
-    let is_key = clean_id(next.auth_mode.clone()).as_deref() == Some("api_key");
-    let api_key_org =
-        prev.api_key_org
-            .clone()
-            .or_else(|| if is_key { reported_org.clone() } else { None });
-    let org_moved = is_key
-        && prev.api_key_org.is_some()
-        && reported_org.is_some()
-        && reported_org != prev.api_key_org;
-    let stored = Identity {
-        ever_identified: prev.ever_identified || next.ever_identified || identified_sub.is_some(),
-        identified_sub,
-        org_id: clean_id(next.org_id),
-        auth_mode: clean_id(next.auth_mode),
-        api_key_org: api_key_org.clone(),
-        install_id_retired: prev.install_id_retired || next.install_id_retired || org_moved,
-    };
+/// Serialises every writer's read-compute-write of the record within this
+/// process. The file lock below would serialise threads too (each takes its own
+/// open file description), but holding the mutex first keeps a thread from
+/// spinning on the Windows lock against its own process.
+static IDENTITY_WRITERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run one writer's whole read-compute-write with the record to itself.
+///
+/// Two layers, because there are two kinds of concurrent writer. The app's
+/// windows reach [`save_identity`] from command threads while a sign-out reaches
+/// [`forget_identity`] from a blocking task, and `gate-connect logout` reaches
+/// the same forget from a process of its own. Without this, a save that read
+/// the record before a forget and wrote after it put the signed-out account
+/// back: the forget was simply lost. The mutex covers the threads; the advisory
+/// lock on [`IDENTITY_LOCK_FILE`] covers the CLI, and is released by the OS if
+/// its holder dies.
+fn with_identity_locked<T>(support: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _threads = IDENTITY_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
-    let body = serde_json::to_vec_pretty(&stored).context("serializing analytics identity")?;
+    let _process = file_lock::exclusive(&support.join(IDENTITY_LOCK_FILE))?;
+    f()
+}
+
+/// A cross-process advisory lock on one file, held until the returned handle is
+/// dropped. No new dependency: `flock(2)` through `libc` on unix, and on
+/// Windows an open with no sharing, which the OS refuses to any other opener
+/// (`ERROR_SHARING_VIOLATION`) until the handle closes.
+mod file_lock {
+    use anyhow::{Context, Result};
+    use std::fs::{File, OpenOptions};
+    use std::path::Path;
+
+    #[cfg(unix)]
+    pub fn exclusive(path: &Path) -> Result<File> {
+        use std::os::fd::AsRawFd;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        loop {
+            // SAFETY: `file` owns a valid fd for the duration of the call.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(file);
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err).with_context(|| format!("locking {}", path.display()));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn exclusive(path: &Path) -> Result<File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant};
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        // A holder keeps it for one small read and write; ten seconds is a
+        // holder that is stuck, and a stuck lock must not hang a sign-out.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(path)
+            {
+                Ok(file) => return Ok(file),
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(e).with_context(|| format!("locking {}", path.display())),
+            }
+        }
+    }
+}
+
+fn write_identity_in(support: &Path, stored: &Identity) -> Result<()> {
+    let body = serde_json::to_vec_pretty(stored).context("serializing analytics identity")?;
     crate::primitives::write_file(&support.join(IDENTITY_FILE), &body, 0o600)
 }
 
-/// The account is gone: drop the identified sub and the org, and retire the
-/// install id if it already belongs to someone (identified once, or spent on an
-/// API-key account). Called from `oauth::clear`, which every sign-out path
-/// reaches - the app's Disconnect and Reset, `gate-connect logout`, the startup
-/// reconcile - so a sign-out the webview never saw still stops the next launch
-/// filing under the old person.
+/// Store `next`, keeping `ever_identified` sticky (and implied by a sub).
+///
+/// **A sub is accepted only for the live session.** `live_sub` answers which
+/// Constellation account is signed in right now (the stored token bundle's
+/// `sub`), and a save naming any other sub, or a sub while nobody is signed in,
+/// is refused with nothing written. The webview's view of the session lags the
+/// core's: a save already in flight when a sign-out ran, or one a window makes
+/// from a session read taken before the sign-out, would otherwise land after
+/// [`forget_identity_in`] and put the account that left back on record, and the
+/// next launch would bootstrap it as identified. Asked inside the lock, so a
+/// forget cannot run between the check and the write; and every sign-out
+/// deletes the bundle before it forgets, so a save the lock lets through after
+/// the deletion finds no live sub.
+///
+/// `live_sub` is not called for a save with no sub, which is what keeps this
+/// off the secret store for every org or auth-mode update.
+pub fn save_identity_in(
+    support: &Path,
+    next: Identity,
+    live_sub: impl FnOnce() -> Option<String>,
+) -> Result<()> {
+    let identified_sub = clean_id(next.identified_sub);
+    with_identity_locked(support, || {
+        let prev = read_identity_in(support)?;
+        if let Some(sub) = identified_sub.as_deref() {
+            if clean_id(live_sub()).as_deref() != Some(sub) {
+                anyhow::bail!("refusing an analytics identity that is not the live session's");
+            }
+        }
+        let stored = Identity {
+            ever_identified: prev.ever_identified
+                || next.ever_identified
+                || identified_sub.is_some(),
+            identified_sub,
+            org_id: clean_id(next.org_id),
+            auth_mode: clean_id(next.auth_mode),
+        };
+        write_identity_in(support, &stored)
+    })
+}
+
+/// The account is gone: drop the identified sub, the org and the auth mode,
+/// keeping `ever_identified`. Called from `oauth::clear`, which every sign-out
+/// path reaches - the app's Disconnect and Reset, `gate-connect logout`, the
+/// startup reconcile - so a sign-out the webview never saw still stops the next
+/// launch filing under the old person.
 pub fn forget_identity_in(support: &Path) -> Result<()> {
-    let prev = read_identity_in(support)?;
-    let retire = prev.install_id_retired || prev.ever_identified || prev.api_key_org.is_some();
-    if prev.identified_sub.is_none() && prev.org_id.is_none() && retire == prev.install_id_retired {
-        return Ok(());
-    }
-    save_identity_in(
-        support,
-        Identity {
-            ever_identified: prev.ever_identified,
-            api_key_org: prev.api_key_org,
-            install_id_retired: retire,
-            ..Identity::default()
-        },
-    )
-}
-
-/// An API key was replaced by a different one: if the install id was spent on
-/// the previous key's account, retire it, so the new key's account is not filed
-/// under the old owner's person. Called from `account::save`.
-pub fn retire_spent_install_id_in(support: &Path) -> Result<()> {
-    let prev = read_identity_in(support)?;
-    if prev.api_key_org.is_none() || prev.install_id_retired {
-        return Ok(());
-    }
-    save_identity_in(
-        support,
-        Identity {
-            install_id_retired: true,
-            ..prev
-        },
-    )
-}
-
-/// [`retire_spent_install_id_in`] against the real data dir.
-pub fn retire_spent_install_id() -> Result<()> {
-    retire_spent_install_id_in(&crate::env::app_support_dir()?)
+    with_identity_locked(support, || {
+        let prev = read_identity_in(support)?;
+        if prev.identified_sub.is_none() && prev.org_id.is_none() && prev.auth_mode.is_none() {
+            return Ok(());
+        }
+        write_identity_in(
+            support,
+            &Identity {
+                ever_identified: prev.ever_identified,
+                ..Identity::default()
+            },
+        )
+    })
 }
 
 /// [`load_identity_in`] against the real data dir.
@@ -572,9 +684,13 @@ pub fn load_identity() -> Identity {
         .unwrap_or_default()
 }
 
-/// [`save_identity_in`] against the real data dir.
+/// [`save_identity_in`] against the real data dir and the stored OAuth session.
+/// The session read is `oauth::current`, witnessed on `account.json`, so it is a
+/// cache hit unless a sign-in or sign-out has moved that file.
 pub fn save_identity(next: Identity) -> Result<()> {
-    save_identity_in(&crate::env::app_support_dir()?, next)
+    save_identity_in(&crate::env::app_support_dir()?, next, || {
+        crate::oauth::current().ok().flatten().and_then(|t| t.sub())
+    })
 }
 
 /// [`forget_identity_in`] against the real data dir.
@@ -936,6 +1052,15 @@ mod tests {
         assert_eq!(strongest_block(std::iter::empty()), None);
     }
 
+    /// No live session: the closure a save with no sub must never need.
+    fn no_session() -> Option<String> {
+        None
+    }
+
+    fn live(sub: &str) -> impl FnOnce() -> Option<String> + '_ {
+        move || Some(sub.to_string())
+    }
+
     #[test]
     fn identity_round_trips_and_first_identification_is_sticky() {
         let dir = scratch("identity");
@@ -947,8 +1072,8 @@ mod tests {
                 org_id: Some("org-1".into()),
                 auth_mode: Some("oauth".into()),
                 ever_identified: false,
-                ..Identity::default()
             },
+            live("sub-a"),
         )
         .unwrap();
         let got = load_identity_in(&dir);
@@ -962,13 +1087,14 @@ mod tests {
         let got = load_identity_in(&dir);
         assert_eq!(got.identified_sub, None);
         assert_eq!(got.org_id, None);
+        assert_eq!(got.auth_mode, None);
         assert!(
             got.ever_identified,
             "sign-out must not make the next sign-in look like the first"
         );
 
         // A save from the webview cannot clear it either.
-        save_identity_in(&dir, Identity::default()).unwrap();
+        save_identity_in(&dir, Identity::default(), no_session).unwrap();
         assert!(load_identity_in(&dir).ever_identified);
     }
 
@@ -978,7 +1104,7 @@ mod tests {
         fs::write(dir.join(IDENTITY_FILE), "{not json").unwrap();
         // Fails closed: nothing can say whose the install id was.
         let got = load_identity_in(&dir);
-        assert!(got.install_id_retired && got.ever_identified);
+        assert!(got.ever_identified);
         assert_eq!(got.identified_sub, None);
         fs::remove_file(dir.join(IDENTITY_FILE)).unwrap();
         save_identity_in(
@@ -988,76 +1114,192 @@ mod tests {
                 org_id: Some("a\nb".into()),
                 auth_mode: Some("x".repeat(200)),
                 ever_identified: false,
-                ..Identity::default()
             },
+            no_session,
         )
         .unwrap();
         assert_eq!(load_identity_in(&dir), Identity::default());
     }
 
-    /// Round 3, M4: an API-key install whose id may have been aliased to the key
-    /// owner is retired when that account goes, and stays retired.
     #[test]
-    fn a_spent_install_id_is_retired_when_its_account_goes() {
-        let dir = scratch("spent");
-        save_identity_in(
-            &dir,
-            Identity {
-                org_id: Some("org-a".into()),
-                auth_mode: Some("api_key".into()),
-                api_key_org: Some("org-a".into()),
-                ..Identity::default()
-            },
+    fn a_missing_identity_is_a_fresh_install_and_a_corrupt_one_fails_closed() {
+        let dir = scratch("identity-fail-closed");
+        assert_eq!(load_identity_in(&dir), Identity::default());
+        fs::write(dir.join(IDENTITY_FILE), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(load_identity_in(&dir).ever_identified);
+    }
+
+    /// A record an earlier build of this branch wrote, with the API-key
+    /// retirement fields it no longer has, is still a record: an unknown field
+    /// is ignored, not a parse failure that would fail closed.
+    #[test]
+    fn a_record_with_the_retired_api_key_fields_still_reads() {
+        let dir = scratch("identity-old-fields");
+        fs::write(
+            dir.join(IDENTITY_FILE),
+            r#"{"identified_sub":null,"ever_identified":false,"org_id":"org-a","auth_mode":"api_key","api_key_org":"org-a","install_id_retired":true}"#,
         )
         .unwrap();
-        assert!(!load_identity_in(&dir).install_id_retired);
-
-        forget_identity_in(&dir).unwrap();
         let got = load_identity_in(&dir);
-        assert!(got.install_id_retired);
-        assert_eq!(got.org_id, None);
-
-        // Sticky against a later save that knows nothing about it.
-        save_identity_in(&dir, Identity::default()).unwrap();
-        assert!(load_identity_in(&dir).install_id_retired);
-        assert_eq!(load_identity_in(&dir).api_key_org.as_deref(), Some("org-a"));
+        assert!(!got.ever_identified);
+        assert_eq!(got.org_id.as_deref(), Some("org-a"));
+        assert_eq!(got.auth_mode.as_deref(), Some("api_key"));
     }
 
+    /// Review item 2: a save naming a sub lands only while that sub is the
+    /// live session's. Nothing is written when it is refused.
     #[test]
-    fn replacing_a_spent_key_retires_the_install_id_and_an_unspent_one_does_not() {
-        let fresh = scratch("unspent");
-        retire_spent_install_id_in(&fresh).unwrap();
-        assert!(!load_identity_in(&fresh).install_id_retired);
+    fn a_sub_is_stored_only_for_the_live_session() {
+        let dir = scratch("identity-live");
+        let with_sub = |sub: &str| Identity {
+            identified_sub: Some(sub.into()),
+            org_id: Some("org-1".into()),
+            auth_mode: Some("oauth".into()),
+            ever_identified: true,
+        };
+        assert!(save_identity_in(&dir, with_sub("sub-a"), no_session).is_err());
+        assert!(
+            !dir.join(IDENTITY_FILE).exists(),
+            "a refused save writes nothing"
+        );
+        assert!(save_identity_in(&dir, with_sub("sub-a"), live("sub-b")).is_err());
+        assert!(!dir.join(IDENTITY_FILE).exists());
+        save_identity_in(&dir, with_sub("sub-a"), live("sub-a")).unwrap();
+        assert_eq!(
+            load_identity_in(&dir).identified_sub.as_deref(),
+            Some("sub-a")
+        );
+    }
 
-        let dir = scratch("replace");
+    /// The race the reviewer described: a window's save was in flight when the
+    /// sign-out ran. The sign-out deleted the bundle and forgot; the late save
+    /// must not put the account back.
+    #[test]
+    fn a_save_that_lands_after_a_sign_out_does_not_restore_the_account() {
+        let dir = scratch("identity-late-save");
+        let signed_in = Identity {
+            identified_sub: Some("sub-a".into()),
+            org_id: Some("org-1".into()),
+            auth_mode: Some("oauth".into()),
+            ever_identified: true,
+        };
+        save_identity_in(&dir, signed_in.clone(), live("sub-a")).unwrap();
+        // `oauth::clear`: the bundle goes first, then the forget.
+        forget_identity_in(&dir).unwrap();
+        assert!(save_identity_in(&dir, signed_in, no_session).is_err());
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub, None);
+        assert_eq!(got.org_id, None);
+        assert!(got.ever_identified);
+    }
+
+    /// The session is consulted only for a save that names a sub, so an org or
+    /// auth-mode update never reads the secret store.
+    #[test]
+    fn a_save_with_no_sub_does_not_ask_for_the_session() {
+        let dir = scratch("identity-no-ask");
         save_identity_in(
             &dir,
             Identity {
-                org_id: Some("org-a".into()),
+                org_id: Some("org-1".into()),
                 auth_mode: Some("api_key".into()),
                 ..Identity::default()
             },
+            || panic!("the session was read for a save with no sub"),
         )
         .unwrap();
-        retire_spent_install_id_in(&dir).unwrap();
-        assert!(load_identity_in(&dir).install_id_retired);
+        assert_eq!(load_identity_in(&dir).org_id.as_deref(), Some("org-1"));
     }
 
+    /// Review item 1, the cross-process half: a writer waits while another
+    /// holder (here an open of the lock file of our own, which `flock` and a
+    /// no-share open both treat as a different holder) has the record.
     #[test]
-    fn a_sign_out_of_an_identified_install_retires_its_install_id() {
-        let dir = scratch("identified-out");
+    fn a_writer_waits_for_the_lock_another_process_holds() {
+        let dir = scratch("identity-flock");
         save_identity_in(
             &dir,
             Identity {
                 identified_sub: Some("sub-a".into()),
+                ever_identified: true,
                 ..Identity::default()
             },
+            live("sub-a"),
         )
         .unwrap();
-        forget_identity_in(&dir).unwrap();
-        let got = load_identity_in(&dir);
-        assert!(got.install_id_retired && got.ever_identified);
-        assert_eq!(got.identified_sub, None);
+        let held = file_lock::exclusive(&dir.join(IDENTITY_LOCK_FILE)).unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let forget = {
+            let (dir, done) = (dir.clone(), done.clone());
+            std::thread::spawn(move || {
+                forget_identity_in(&dir).unwrap();
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the forget ran while another holder had the lock"
+        );
+        assert_eq!(
+            load_identity_in(&dir).identified_sub.as_deref(),
+            Some("sub-a")
+        );
+        drop(held);
+        forget.join().unwrap();
+        assert_eq!(load_identity_in(&dir).identified_sub, None);
+    }
+
+    /// Review item 1, the read-compute-write itself: two writers racing over
+    /// one record, one of them identifying. Unlocked, the other read the record
+    /// before the identification and wrote after it, losing the sticky bit.
+    #[test]
+    fn concurrent_writers_never_lose_a_sticky_fact() {
+        for round in 0..200 {
+            let dir = scratch(&format!("identity-race-{round}"));
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let identify = {
+                let (dir, gate) = (dir.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    save_identity_in(
+                        &dir,
+                        Identity {
+                            identified_sub: Some("sub-a".into()),
+                            ..Identity::default()
+                        },
+                        || Some("sub-a".into()),
+                    )
+                    .unwrap();
+                })
+            };
+            let updates: Vec<_> = (0..2)
+                .map(|_| {
+                    let (dir, gate) = (dir.clone(), gate.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        save_identity_in(
+                            &dir,
+                            Identity {
+                                org_id: Some("org-1".into()),
+                                ..Identity::default()
+                            },
+                            no_session,
+                        )
+                        .unwrap();
+                    })
+                })
+                .collect();
+            identify.join().unwrap();
+            for u in updates {
+                u.join().unwrap();
+            }
+            assert!(
+                load_identity_in(&dir).ever_identified,
+                "round {round}: an identification was lost to a concurrent write"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     /// Round 3, M3: the forget lives in the core, on the path every sign-out
@@ -1070,7 +1312,12 @@ mod tests {
             .find("pub fn clear() -> Result<()> {")
             .expect("oauth::clear");
         let body = &oauth[at..at + oauth[at..].find("\n}\n").expect("end of clear")];
-        assert!(body.contains("crate::analytics::forget_identity()"));
+        let forget = body
+            .find("crate::analytics::forget_identity()")
+            .expect("clear forgets");
+        // After the bundle is deleted, which is what lets `save_identity`'s
+        // live-session check refuse a save that lands after the forget.
+        assert!(body.find("keychain::delete(").expect("the delete") < forget);
 
         let account = include_str!("account.rs").replace("\r\n", "\n");
         let at = account
@@ -1084,102 +1331,29 @@ mod tests {
         assert!(cli[at..].contains("account::clear()?"));
     }
 
-    /// And replacing a key retires a spent install id in the core too.
-    #[test]
-    fn replacing_a_key_reaches_the_retire() {
-        let account = include_str!("account.rs").replace("\r\n", "\n");
-        let at = account.find("pub fn save(").expect("account::save");
-        let body = &account[at..at + account[at..].find("\n}\n").expect("end of save")];
-        let retire = body
-            .find("crate::analytics::retire_spent_install_id()")
-            .expect("save retires");
-        // Before the first fallible write, so a failed save cannot hide it from
-        // the retry (`tests/analytics_key_retire.rs` drives the failure).
-        assert!(retire < body.find("write_account_file(").expect("the write"));
-    }
-
-    #[test]
-    fn a_missing_identity_is_a_fresh_install_and_a_corrupt_one_fails_closed() {
-        let dir = scratch("identity-fail-closed");
-        assert_eq!(load_identity_in(&dir), Identity::default());
-        fs::write(dir.join(IDENTITY_FILE), [0xff, 0xfe, 0x00]).unwrap();
-        assert!(load_identity_in(&dir).install_id_retired);
-    }
-
-    /// Round 4: the core records the org an API-key account spends the install
-    /// id on, and retires it when the key resolves to another org, whatever the
-    /// window claims.
-    #[test]
-    fn the_core_spends_and_retires_from_the_reported_org() {
-        let dir = scratch("org-moved");
-        let key = |org: &str| Identity {
-            org_id: Some(org.into()),
-            auth_mode: Some("api_key".into()),
-            ..Identity::default()
-        };
-        save_identity_in(&dir, key("org-a")).unwrap();
-        let got = load_identity_in(&dir);
-        assert_eq!(got.api_key_org.as_deref(), Some("org-a"));
-        assert!(!got.install_id_retired);
-
-        // The same org again, and an OAuth report, change nothing.
-        save_identity_in(&dir, key("org-a")).unwrap();
-        save_identity_in(
-            &dir,
-            Identity {
-                org_id: Some("org-z".into()),
-                auth_mode: Some("oauth".into()),
-                ..Identity::default()
-            },
-        )
-        .unwrap();
-        assert!(!load_identity_in(&dir).install_id_retired);
-
-        save_identity_in(&dir, key("org-b")).unwrap();
-        assert!(load_identity_in(&dir).install_id_retired);
-    }
-
-    /// A window's own `api_key_org` or a report with no org spends nothing.
-    #[test]
-    fn a_window_cannot_spend_the_install_id_on_its_own_say_so() {
-        let dir = scratch("no-self-spend");
-        save_identity_in(
-            &dir,
-            Identity {
-                api_key_org: Some("org-a".into()),
-                auth_mode: Some("api_key".into()),
-                ..Identity::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(load_identity_in(&dir).api_key_org, None);
-    }
-
     /// Round 5: an identity file that cannot be READ (here, a directory where
     /// the file should be: the read fails with an I/O error, not a parse error)
     /// makes every writer refuse, and writes nothing. Persisting the
-    /// fail-closed value would turn a transient error into a permanent
-    /// retirement.
+    /// fail-closed value would turn a transient error into a permanent fact.
     #[test]
     fn an_unreadable_identity_is_not_written_over() {
         let dir = scratch("identity-io");
         fs::create_dir_all(dir.join(IDENTITY_FILE)).unwrap();
-        assert!(save_identity_in(&dir, Identity::default()).is_err());
+        assert!(save_identity_in(&dir, Identity::default(), no_session).is_err());
         assert!(forget_identity_in(&dir).is_err());
-        assert!(retire_spent_install_id_in(&dir).is_err());
         assert!(dir.join(IDENTITY_FILE).is_dir(), "nothing was written");
         // A reader still answers, and answers closed.
-        assert!(load_identity_in(&dir).install_id_retired);
+        assert!(load_identity_in(&dir).ever_identified);
     }
 
     /// The case the round-5 fix is for: the record is fine, a read of it fails
     /// for a reason that passes (here, permissions), and the write path is
     /// still open - `write_file` replaces by rename, so an unreadable file does
-    /// not stop it. The old code wrote the fail-closed value over a perfectly
-    /// good record, retiring the install id for good.
+    /// not stop it. Writing the fail-closed value over a good record would mark
+    /// an install that was never identified as identified, for good.
     #[cfg(unix)]
     #[test]
-    fn a_transient_read_error_does_not_retire_a_good_record() {
+    fn a_transient_read_error_does_not_change_a_good_record() {
         use std::os::unix::fs::PermissionsExt;
         // Root reads through a 000 mode, which would make this pass vacuously.
         if unsafe { libc::geteuid() } == 0 {
@@ -1193,21 +1367,72 @@ mod tests {
                 auth_mode: Some("api_key".into()),
                 ..Identity::default()
             },
+            no_session,
         )
         .unwrap();
         let file = dir.join(IDENTITY_FILE);
         fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
 
-        assert!(save_identity_in(&dir, Identity::default()).is_err());
+        assert!(save_identity_in(&dir, Identity::default(), no_session).is_err());
         assert!(forget_identity_in(&dir).is_err());
-        assert!(retire_spent_install_id_in(&dir).is_err());
 
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         let got = load_identity_in(&dir);
         assert!(
-            !got.install_id_retired,
-            "a good record must not be retired by a read error"
+            !got.ever_identified,
+            "a good record must not be failed closed by a read error"
         );
-        assert_eq!(got.api_key_org.as_deref(), Some("org-a"));
+        assert_eq!(got.org_id.as_deref(), Some("org-a"));
+    }
+
+    /// Review item 3: a store whose `.legacy` could not be written is not left
+    /// in place, so the next start judges the install again instead of taking
+    /// a half-built store for a fresh one.
+    #[test]
+    fn a_store_that_could_not_be_finished_is_not_left_behind() {
+        let dir = scratch("store-half");
+        fs::write(dir.join("account.json"), "{}").unwrap();
+        let store = dir.join(STORE_DIR);
+        assert!(create_store_with(&store, |_| anyhow::bail!("disk full")).is_err());
+        assert!(!store.exists(), "a half-built store was left in place");
+        // Nor its staging dir.
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("staging"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        // The next start decides again, and an upgraded install is legacy.
+        assert!(!claim_in(&dir, "app_first_launched").unwrap());
+        assert!(store.join(LEGACY_MARKER).is_file());
+    }
+
+    /// And no claim can see a legacy store before its marker is in it: every
+    /// racer on an upgraded install is told the first launch already happened.
+    #[test]
+    fn concurrent_first_claims_on_an_upgraded_install_never_see_it_fresh() {
+        for round in 0..50 {
+            let dir = scratch(&format!("store-race-{round}"));
+            fs::write(dir.join("account.json"), "{}").unwrap();
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let wins = std::sync::Arc::new(AtomicUsize::new(0));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let (dir, gate, wins) = (dir.clone(), gate.clone(), wins.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        if claim_in(&dir, "app_first_launched").expect("no claim errors") {
+                            wins.fetch_add(1, Ordering::Relaxed);
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            assert_eq!(wins.load(Ordering::Relaxed), 0, "round {round}");
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 }
