@@ -6,8 +6,20 @@ import type { Account, OAuthStatus, Org } from "./api";
 import { useSetup } from "./useSetup";
 import { DEFAULT_GATEWAY_BASE_URL } from "./config";
 
-vi.mock("./api", () => ({
-  getAccount: vi.fn(),
+vi.mock("./api", () => {
+  const getAccount = vi.fn();
+  return {
+  getAccount,
+  // The real `readAccount`'s contract over the mocked `getAccount`: a
+  // resolution is an answer, a rejection is unread.
+  readAccount: vi.fn(() =>
+    Promise.resolve()
+      .then(() => getAccount())
+      .then(
+        (account: unknown) => ({ account, unread: false }),
+        (error: unknown) => ({ account: null, unread: true, error }),
+      ),
+  ),
   oauthBeginLogin: vi.fn(),
   oauthListOrgs: vi.fn(),
   oauthSignOut: vi.fn(),
@@ -16,10 +28,18 @@ vi.mock("./api", () => ({
   saveAccount: vi.fn(),
   setDeviceName: vi.fn(),
   setOrg: vi.fn(),
+};
+});
+vi.mock("./analytics", () => ({
+  track: vi.fn(),
+  trackError: vi.fn(),
+  noteOrgChoices: vi.fn(),
+  noteSetupFailure: vi.fn(),
+  noteToolConnected: vi.fn(),
 }));
-vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 vi.mock("./oauthOffer", () => ({ markOAuthOfferSeen: vi.fn() }));
 
+import { noteSetupFailure } from "./analytics";
 import {
   getAccount,
   oauthBeginLogin,
@@ -76,6 +96,8 @@ function harness(initial: {
 }) {
   const api: { current: ReturnType<typeof useSetup> | null } = { current: null };
   const onProxy = vi.fn();
+  /** Every session the hook reported, as the container received it. */
+  const onSession = vi.fn();
 
   function Probe() {
     const [session, setSession] = React.useState<{
@@ -87,14 +109,17 @@ function harness(initial: {
       loaded: initial.loaded ?? true,
       account: session.account,
       oauth: session.oauth,
-      onSession: setSession,
+      onSession: (next) => {
+        onSession(next);
+        setSession(next);
+      },
       onProxy,
       deviceNamed: initial.deviceNamed,
     });
     return null;
   }
   render(<Probe />);
-  return { api, onProxy };
+  return { api, onProxy, onSession };
 }
 
 
@@ -456,5 +481,56 @@ describe("useSetup: finishing", () => {
 
     expect(api.current!.error).toBeTruthy();
     expect(api.current!.stage.kind).toBe("connected");
+  });
+});
+
+describe("useSetup: the pairing steps report their failures (AG-960)", () => {
+  it("files a refused org list under org_list", async () => {
+    (oauthListOrgs as Mock).mockRejectedValue(
+      "gateway /v1/me/orgs returned 401 Unauthorized: {}",
+    );
+    const { api } = harness({
+      account: oauthAccount({ org_id: null, org_name: null }),
+      oauth: SIGNED_IN,
+    });
+
+    await act(async () => {
+      await api.current!.loadOrgs();
+    });
+
+    expect(noteSetupFailure).toHaveBeenCalledWith(
+      "gateway /v1/me/orgs returned 401 Unauthorized: {}",
+      "org_list",
+    );
+  });
+
+  it("files a failed browser sign-in under sign_in", async () => {
+    (oauthBeginLogin as Mock).mockRejectedValue("authorization failed (access_denied)");
+    const { api } = harness({ account: null, oauth: null });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+
+    expect(noteSetupFailure).toHaveBeenCalledWith("authorization failed (access_denied)", "sign_in");
+  });
+});
+
+describe("useSetup: a rejected account read (AG-960 round 4)", () => {
+  /** A secret-store error in `get_account` is not "no account": the session
+   *  callback says the read was unread, so nothing downstream takes it for a
+   *  sign-out. */
+  it("tells the shell the read rejected rather than finding no account", async () => {
+    (oauthBeginLogin as Mock).mockResolvedValue(SIGNED_IN);
+    (getAccount as Mock).mockRejectedValue("reading the secret store: Secret Service unavailable");
+    const { api, onSession } = harness({ account: null, oauth: null });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+
+    expect(onSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ account: null, accountUnread: true }),
+    );
   });
 });

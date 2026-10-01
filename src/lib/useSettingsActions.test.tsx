@@ -5,10 +5,22 @@ import type { Account, Org } from "./api";
 import { useSettingsActions } from "./useSettingsActions";
 
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
-vi.mock("./api", () => ({
+vi.mock("./api", () => {
+  const getAccount = vi.fn();
+  return {
   clearAccount: vi.fn(),
   deviceName: vi.fn(),
-  getAccount: vi.fn(),
+  getAccount,
+  // The real `readAccount`'s contract over the mocked `getAccount`: a
+  // resolution is an answer, a rejection is unread.
+  readAccount: vi.fn(() =>
+    Promise.resolve()
+      .then(() => getAccount())
+      .then(
+        (account: unknown) => ({ account, unread: false }),
+        (error: unknown) => ({ account: null, unread: true, error }),
+      ),
+  ),
   launchAtLoginStatus: vi.fn(),
   oauthBeginLogin: vi.fn(),
   oauthListOrgs: vi.fn(),
@@ -21,7 +33,8 @@ vi.mock("./api", () => ({
   setLaunchAtLogin: vi.fn(),
   setOrg: vi.fn(),
   switchGateway: vi.fn(),
-}));
+};
+});
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -664,6 +677,7 @@ describe("useSettingsActions: the OAuth upgrade", () => {
     expect(onSession).toHaveBeenCalledWith({
       account: expect.objectContaining({ auth_mode: "oauth" }),
       oauth: expect.objectContaining({ signed_in: true }),
+      accountUnread: false,
     });
   });
 

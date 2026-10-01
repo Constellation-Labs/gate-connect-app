@@ -748,7 +748,13 @@ export function DiagnosticsPane({
         title="Share diagnostic data"
         subtitle={
           <>
-            Opt-in to send Gate errors and routing stats to help fix problems.{" "}
+            {/* AG-960: the yes here is also what releases the install funnel,
+             * tied to the org and, for a Constellation sign-in, the account.
+             * Short on purpose; Settings has the full list. */}
+            Opt-in to send Gate errors, routing stats and setup steps to help fix
+            problems, tied to your organization and, if you signed in with
+            Constellation, your account. Saying no or skipping still sends one
+            final note saying so, tied the same way.{" "}
             {/* Medium, and the frame sets it apart on purpose: it is the
              * sentence that says what never leaves the machine. */}
             <span className="font-medium text-base-foreground">

@@ -277,11 +277,28 @@ impl OAuthTokens {
     /// Best-effort email from the id token's payload, for UI display only -
     /// no signature check (the gateway verifies). `None` if absent/unparseable.
     pub fn email(&self) -> Option<String> {
+        self.id_claim("email")
+    }
+
+    /// The Cognito `sub` from the id token: the stable, opaque user id the
+    /// dashboard identifies its PostHog person with, and the one the gateway's
+    /// `first_gateway_request` event is sent under. The app identifies as it on
+    /// sign-in so the person funnel joins the dashboard's download click to the
+    /// gateway's first request (AG-960).
+    ///
+    /// Same terms as [`Self::email`]: unverified, read for attribution only,
+    /// `None` if absent or unparseable. An empty string is `None` too, because
+    /// identifying as "" would merge every such install into one person.
+    pub fn sub(&self) -> Option<String> {
+        self.id_claim("sub").filter(|s| !s.trim().is_empty())
+    }
+
+    fn id_claim(&self, name: &str) -> Option<String> {
         let id = self.id_token.as_deref()?;
         let payload_b64 = id.split('.').nth(1)?;
         let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
         let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-        claims.get("email")?.as_str().map(str::to_string)
+        claims.get(name)?.as_str().map(str::to_string)
     }
 }
 
@@ -515,6 +532,12 @@ pub fn clear() -> Result<()> {
     keychain::delete(&service(), &user)?;
     SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    // The session is gone, so the analytics identity tied to it is too (AG-960).
+    // Here rather than in each caller so every sign-out path forgets it: the
+    // app's Disconnect and Reset, `gate-connect logout` (through
+    // `account::clear`), and the startup reconcile. Best-effort: an analytics
+    // record must never be the reason a sign-out fails.
+    let _ = crate::analytics::forget_identity();
     Ok(())
 }
 
@@ -540,6 +563,49 @@ pub fn live_session() -> Option<OAuthTokens> {
     }
     let cfg = OAuthConfig::from_build_env()?;
     ensure_fresh(&cfg).ok().flatten()
+}
+
+/// What a status read can say about the stored session, keeping apart the two
+/// things [`live_session`]'s `None` conflates (AG-960): the credential is gone
+/// or refused, versus nobody could tell - the identity provider was
+/// unreachable, or the secret store could not be read. The second says nothing
+/// about who is signed in, so a caller deciding "did this person sign out" must
+/// not read it as a sign-out.
+#[derive(Debug)]
+pub enum SessionReading {
+    Live(OAuthTokens),
+    /// No session, or one the identity provider or the gateway refused.
+    SignedOut,
+    /// The session's fate is unknown right now.
+    Unavailable,
+}
+
+/// [`live_session`], classified. See [`SessionReading`].
+pub fn session_reading() -> SessionReading {
+    let Some(cfg) = OAuthConfig::from_build_env() else {
+        return SessionReading::SignedOut;
+    };
+    classify_session(SESSION_REJECTED_BY_GATEWAY.load(Ordering::Relaxed), || {
+        ensure_fresh_classified(&cfg)
+    })
+}
+
+/// The pure half of [`session_reading`]: a gateway rejection is a refusal
+/// whatever the local token says, and only a refusal or an absent bundle is a
+/// sign-out.
+pub fn classify_session(
+    rejected_by_gateway: bool,
+    refresh: impl FnOnce() -> std::result::Result<Option<OAuthTokens>, RefreshError>,
+) -> SessionReading {
+    if rejected_by_gateway {
+        return SessionReading::SignedOut;
+    }
+    match refresh() {
+        Ok(Some(t)) => SessionReading::Live(t),
+        Ok(None) => SessionReading::SignedOut,
+        Err(e) if e.is_refusal() => SessionReading::SignedOut,
+        Err(_) => SessionReading::Unavailable,
+    }
 }
 
 /// The access token to inject into gateway requests right now: the live session's
@@ -1182,5 +1248,83 @@ mod tests {
             client_id: String::new(),
         };
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
+    }
+
+    fn with_id_token(id_token: Option<String>) -> OAuthTokens {
+        OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn sub_read_from_id_token_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"sub":"0b8c1f2e-1111-4222-8333-944455556666","email":"dev@example.test"}"#,
+        );
+        let t = with_id_token(Some(format!("h.{payload}.s")));
+        assert_eq!(
+            t.sub().as_deref(),
+            Some("0b8c1f2e-1111-4222-8333-944455556666")
+        );
+    }
+
+    /// Every malformed shape is `None`, never a panic and never a partial value:
+    /// a wrong sub would merge this install into somebody else's person.
+    #[test]
+    fn sub_is_none_for_malformed_tokens() {
+        let enc = |b: &[u8]| URL_SAFE_NO_PAD.encode(b);
+        for token in [
+            None,
+            Some(String::new()),
+            Some("no-dots-at-all".to_string()),
+            Some("h..s".to_string()),
+            Some("h.!!!not-base64!!!.s".to_string()),
+            Some(format!("h.{}.s", enc(b"not json"))),
+            Some(format!("h.{}.s", enc(br#"{"email":"x@y.z"}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":42}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":""}"#))),
+            Some(format!("h.{}.s", enc(br#"{"sub":"   "}"#))),
+        ] {
+            assert_eq!(with_id_token(token.clone()).sub(), None, "{token:?}");
+        }
+    }
+
+    fn tokens() -> OAuthTokens {
+        with_id_token(None)
+    }
+
+    /// Round 3, M2: only a refused or absent credential is a sign-out. An
+    /// unreachable identity provider or an unreadable secret store is not, or
+    /// every offline launch would sign the analytics identity out.
+    #[test]
+    fn only_a_refusal_or_no_bundle_reads_as_signed_out() {
+        assert!(matches!(
+            classify_session(false, || Ok(Some(tokens()))),
+            SessionReading::Live(_)
+        ));
+        assert!(matches!(
+            classify_session(false, || Ok(None)),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Refused(anyhow::anyhow!(
+                "invalid_grant"
+            )))),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Unavailable(anyhow::anyhow!(
+                "dns"
+            )))),
+            SessionReading::Unavailable
+        ));
+        assert!(matches!(
+            classify_session(true, || Ok(Some(tokens()))),
+            SessionReading::SignedOut
+        ));
     }
 }

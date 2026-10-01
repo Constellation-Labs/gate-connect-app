@@ -13,10 +13,10 @@
  * id the gateway already sees on `x-gate-install-id`; it names a machine, not a
  * person. The two fields the ticket lists that would break that - the
  * installation *name* (the device name, routinely "someone's MacBook") and the
- * selected organization id - are deliberately absent, so `analytics.ts`'s
- * anonymous-only posture and the disclosure's "no name, email, or account
- * identifier" both stay true. A report the user sends by hand carries those,
- * once, on purpose; the automatic stream does not.
+ * selected organization id - are deliberately absent. The device name is never
+ * sent automatically, and the org id travels only as the `organization` group
+ * `analytics.ts` sets once the app is paired (AG-960), never as a field of this
+ * context. A report the user sends by hand carries both, once, on purpose.
  *
  * **A cached snapshot, read synchronously.** This is the `currentPlatform()`
  * pattern, and the reason is harder here: `routingVerdicts()` does network I/O

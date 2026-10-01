@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import {
-  getAccount,
+  readAccount,
   oauthBeginLogin,
   oauthListOrgs,
   oauthSignOut,
@@ -14,7 +14,7 @@ import type { Account, OAuthStatus, Org, ProxyState } from "./api";
 import { DEFAULT_GATEWAY_BASE_URL } from "./config";
 import { isSignedIn, needsOrg } from "./session";
 import { markOAuthOfferSeen } from "./oauthOffer";
-import { track, trackError } from "./analytics";
+import { noteOrgChoices, noteSetupFailure, track, trackError } from "./analytics";
 
 /**
  * First run for the new window UI: sign in, pick an organization, confirm.
@@ -108,7 +108,12 @@ export function useSetup({
   account: Account | null;
   oauth: OAuthStatus | null;
   /** A fresh read of both, after anything that could change either. */
-  onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
+  onSession: (next: {
+    account: Account | null;
+    oauth: OAuthStatus | null;
+    /** The account read rejected (see `readAccount`), as opposed to finding none. */
+    accountUnread?: boolean;
+  }) => void;
   onProxy: (next: ProxyState) => void;
   /** Whether the diagnostic-data question has been answered. `undefined` while the
    * preference read is in flight - not "unanswered", which would flash the step at
@@ -202,21 +207,25 @@ export function useSetup({
     }
     // Confirm a sign-in that happened here; never greet a returning user.
     if (sawSignedOut.current && !confirmationSeen) return { kind: "connected" };
-    // Consent before Overview, and before collection: `lib/analytics.ts` starts at
-    // launch, so the first thing this buys is a person who has been asked. Only
-    // once the answer is known to be missing - `undefined` is the read still being
-    // in flight, and treating that as unanswered would flash the step at someone
-    // who answered months ago.
+    // Consent before Overview. `lib/analytics.ts` starts at launch with the
+    // default (sharing on) for the events that predate AG-960, but holds
+    // everything AG-960 added - the account and org identity, the funnel
+    // milestones, connection failures - until this step is answered, which is
+    // why the step comes after sign-in without the sign-in being reported
+    // first. Only once the answer is known to be missing - `undefined` is the
+    // read still being in flight, and treating that as unanswered would flash
+    // the step at someone who answered months ago.
     if (diagnosticsAnswered === false) return { kind: "diagnostics" };
     return { kind: "ready" };
   })();
 
   const reread = useCallback(async () => {
-    const [acct, oauthState] = await Promise.all([
-      getAccount().catch(() => null),
+    const [reading, oauthState] = await Promise.all([
+      readAccount(),
       oauthStatus().catch(() => null),
     ]);
-    onSession({ account: acct, oauth: oauthState });
+    const acct = reading.account;
+    onSession({ account: acct, oauth: oauthState, accountUnread: reading.unread });
     return { account: acct, oauth: oauthState };
   }, [onSession]);
 
@@ -237,6 +246,7 @@ export function useSetup({
       if (needsOrg(next.account, next.oauth)) setOrgs(null);
     } catch (err) {
       trackError(err, "sign_in");
+      noteSetupFailure(err, "sign_in");
       if (mine === attempt.current) setError(err);
     } finally {
       if (mine === attempt.current) setBusy(false);
@@ -261,6 +271,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "sign_in");
+      noteSetupFailure(err, "sign_in");
     } finally {
       setBusy(false);
     }
@@ -274,6 +285,7 @@ export function useSetup({
     setError(null);
     try {
       const list = await oauthListOrgs();
+      noteOrgChoices(list.length);
       setOrgs(list);
       setSelectedOrgId(list[0]?.orgId);
       if (list.length === 1) {
@@ -288,6 +300,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "generic");
+      noteSetupFailure(err, "org_list");
     }
   }, [reread]);
 
@@ -302,6 +315,7 @@ export function useSetup({
     } catch (err) {
       setError(err);
       trackError(err, "generic");
+      noteSetupFailure(err, "org_select");
     } finally {
       setBusy(false);
     }

@@ -128,6 +128,15 @@ export interface Org {
 export interface OAuthStatus {
   signed_in: boolean;
   email: string | null;
+  /** The id token's Cognito `sub`, the id the dashboard's PostHog person is
+   *  keyed on. Read by the analytics seam only, to join this install to that
+   *  person at sign-in (AG-960); never shown. Optional because an older backend
+   *  does not send it. */
+  sub?: string | null;
+  /** `"live"`, `"signed_out"` (none, or refused) or `"unavailable"` (the
+   *  identity provider or the secret store did not answer). Optional because an
+   *  older backend does not send it. */
+  session?: "live" | "signed_out" | "unavailable";
   /** Access-token expiry as a Unix timestamp; 0 when signed out. */
   expires_at_unix: number;
 }
@@ -142,6 +151,29 @@ export const connectTool = (slug: string) => invoke<Status>("connect_tool", { sl
 export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
 
 export const getAccount = () => invoke<Account | null>("get_account");
+
+/**
+ * An account read that keeps "could not read" apart from "no account".
+ *
+ * `get_account` resolves `null` only when there is no `account.json`; it
+ * REJECTS when the file or the secret store could not be read (a keychain
+ * error in `has_api_key`, say). The screens have always drawn both as signed
+ * out, which is the safe thing to draw. The analytics seam must not decide
+ * anything from the second one, so every read that feeds it goes through this
+ * and passes `unread` along (AG-960).
+ */
+export interface AccountReading {
+  account: Account | null;
+  unread: boolean;
+  /** The rejection, when `unread`, for a caller that reports it. */
+  error?: unknown;
+}
+
+export const readAccount = (): Promise<AccountReading> =>
+  getAccount().then(
+    (account) => ({ account, unread: false }),
+    (error: unknown) => ({ account: null, unread: true, error }),
+  );
 
 /** Leading characters of the stored Gate key, for the reveal control in
  * Settings. Reads the prefix recorded in the account config, not the keychain.
@@ -923,6 +955,39 @@ export const readAutoEnabledDomains = (tool: string) =>
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
 
+/** Claim a once-per-install analytics milestone. Resolves true exactly once per
+ *  install across every window and process (a marker file, `create_new`), false
+ *  after that; rejects when the store cannot answer. See `core::analytics`. */
+export const analyticsMilestoneClaim = (name: string) =>
+  invoke<boolean>("analytics_milestone_claim", { name });
+
+/** Which Claude Desktop setting keeps local Cowork off on this machine, or null.
+ *  `"user"`, `"org_cloud_only"` or `"enterprise"`; see
+ *  `core::analytics::cowork_setting_missing` for what each reads. */
+export const coworkSettingCheck = () => invoke<string | null>("cowork_setting_check");
+
+/** What this install is identified as in analytics, kept beside `install-id`
+ *  so every window and launch agrees (`core::analytics::Identity`). */
+export interface AnalyticsIdentity {
+  identified_sub: string | null;
+  ever_identified: boolean;
+  org_id: string | null;
+  auth_mode: string | null;
+}
+
+export const analyticsIdentity = () => invoke<AnalyticsIdentity>("analytics_identity");
+
+/** Store a change of analytics identity. Called by the sign-in window only.
+ *  - Saved: the backend broadcasts the stored record to every window as
+ *    `analytics-identity-changed`.
+ *  - A sub that is not the live session's: refused, the kept record is
+ *    broadcast, and it rejects with `IDENTITY_NOT_LIVE`.
+ *  - A session that could not be read: refused, nothing is broadcast, and it
+ *    rejects with `IDENTITY_UNCONFIRMED`. A lock timeout or an I/O error is
+ *    not broadcast either, and rejects with its own message. */
+export const setAnalyticsIdentity = (identity: AnalyticsIdentity) =>
+  invoke<void>("set_analytics_identity", { identity });
+
 
 export const setSecurityNotificationSound = (enabled: boolean) =>
   invoke<void>("set_security_notification_sound", { enabled });
@@ -1075,6 +1140,9 @@ export const teardownReport = () => invoke<TeardownReport>("teardown_report");
 export interface BackendError {
   context: string;
   message: string;
+  /** The connection-failure reason the backend decided from the error's type,
+   *  when it had one (`analytics::failure_reason`). Absent otherwise. */
+  reason?: string;
 }
 
 /** Hand over (and clear) **the calling window's** buffered backend errors.

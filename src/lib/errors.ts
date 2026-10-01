@@ -88,6 +88,155 @@ function rawToString(rawInput: unknown): string {
   return String(rawInput);
 }
 
+/**
+ * Whether an error names a loopback bind that failed because the port is taken.
+ *
+ * Prose, because invoke rejections cross the IPC as strings; where the backend
+ * still holds the error value it decides this by type instead
+ * (`core::analytics::failure_reason`, the `reason` on a drained backend error).
+ * The phrases are the ones that reach the webview: the relay's own sentence
+ * ("the relay port N is already in use"), the engine's synthetic `AddrInUse`
+ * ("address in use"), and the OS's own on each platform - "Address already in
+ * use (os error 48)" on macOS, 98 on Linux, and Windows' sentence about socket
+ * addresses with error 10048.
+ */
+function isPortInUse(lc: string): boolean {
+  return (
+    lc.includes("already in use") ||
+    lc.includes("address in use") ||
+    lc.includes("only one usage of each socket address") ||
+    /os error (48|98|10048)\b/.test(lc)
+  );
+}
+
+/**
+ * Why a step of connecting failed, as the closed set the `connection_failed`
+ * analytics event carries (AG-960). Ordered from the most specific cause to the
+ * least, and never the raw text: the reason is a label from this list, so a
+ * host or a path in the message cannot reach the event.
+ *
+ * - `port_in_use`: a loopback port Gate binds is held by another process.
+ * - `cowork_setting_missing`: Claude Desktop keeps local Cowork off, so routing
+ *   the Claude row cannot reach a Cowork task. Never produced from an error
+ *   string; the connect path reads Claude's settings and reports it directly.
+ * - `routing_off`: a proxy-routed tool refused because the engine is not running.
+ * - `ca_trust_declined`: the OS certificate prompt was declined or dismissed.
+ * - `prompt_declined`: another OS prompt (the admin prompt for the system proxy)
+ *   was cancelled.
+ * - `offline`: the gateway could not be reached.
+ * - `auth_rejected`: the gateway refused the session or the key (401, or a
+ *   typed `rejected` code).
+ * - `sign_in_not_completed`: the browser sign-in was declined or abandoned.
+ * - `unknown`: none of the above.
+ */
+export type ConnectionFailureReason =
+  | "port_in_use"
+  | "cowork_setting_missing"
+  | "routing_off"
+  | "ca_trust_declined"
+  | "prompt_declined"
+  | "offline"
+  | "auth_rejected"
+  | "sign_in_not_completed"
+  | "unknown";
+
+export const CONNECTION_FAILURE_REASONS: readonly ConnectionFailureReason[] = [
+  "port_in_use",
+  "cowork_setting_missing",
+  "routing_off",
+  "ca_trust_declined",
+  "prompt_declined",
+  "offline",
+  "auth_rejected",
+  "sign_in_not_completed",
+  "unknown",
+];
+
+/** Read a reason the backend sent (`BackendError.reason`), refusing anything
+ *  outside the closed set rather than passing an unvetted label through. */
+export function knownConnectionFailureReason(value: unknown): ConnectionFailureReason | null {
+  return CONNECTION_FAILURE_REASONS.includes(value as ConnectionFailureReason)
+    ? (value as ConnectionFailureReason)
+    : null;
+}
+
+/**
+ * Map an error to its `connection_failed` reason. The same pattern families as
+ * `classifyError`, in the same order where they overlap, so the reason and the
+ * title a user reads can never disagree about what happened.
+ */
+export function connectionFailureReason(
+  rawInput: unknown,
+  context: ErrorContext,
+): ConnectionFailureReason {
+  const text = rawToString(rawInput);
+  // A typed `gateway_api::FailureCode` envelope, where the command sent one:
+  // the code decides, not the words in its message.
+  const code = failureCodeOf(text);
+  if (code === "rejected") return "auth_rejected";
+  if (code === "offline") return "offline";
+  const lc = text.toLowerCase();
+  if (isPortInUse(lc)) return "port_in_use";
+  if (lc.includes("proxy is not running")) return "routing_off";
+  if (lc.includes("certificate trust dialog was cancelled")) return "ca_trust_declined";
+  // The browser sign-in's own Cancel and its five-minute give-up, ahead of the
+  // prompt and network arms that their words would otherwise match.
+  if (
+    lc.includes("access_denied") ||
+    lc.includes("access denied") ||
+    lc.includes("login redirect") ||
+    lc.includes("waiting for the login")
+  ) {
+    return "sign_in_not_completed";
+  }
+  if (
+    lc.includes("user canceled") ||
+    lc.includes("user cancelled") ||
+    // osascript's cancel code as it prints it - "(-128)" or "error -128" - and
+    // never a bare substring, which a port or an id can contain.
+    /\(-128\)|\berror -128\b/.test(lc) ||
+    (lc.includes("authorization") && lc.includes("denied"))
+  ) {
+    return context === "trust_ca" ? "ca_trust_declined" : "prompt_declined";
+  }
+  if (
+    lc.includes("connection refused") ||
+    lc.includes("dns") ||
+    lc.includes("timed out") ||
+    lc.includes("timeout") ||
+    lc.includes("network is unreachable")
+  ) {
+    return "offline";
+  }
+  if (isUnauthorized(lc)) return "auth_rejected";
+  return "unknown";
+}
+
+/**
+ * A 401 as the backend words one: "returned 401 Unauthorized", "status 401",
+ * "HTTP 401", or the word "unauthorized" on its own. A bare `401` is not
+ * enough: it is a substring of ports (`:40199`) and ids.
+ */
+function isUnauthorized(lc: string): boolean {
+  return (
+    /\bunauthori[sz]ed\b/.test(lc) ||
+    /\b(?:returned|status|http|code)\b[\s:=]*401\b/.test(lc) ||
+    /\b401 unauthori/.test(lc)
+  );
+}
+
+/** The `code` of a JSON failure envelope (`gateway_api::Failure`), if that is
+ *  what the rejection is. */
+function failureCodeOf(text: string): string | null {
+  if (!text.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown };
+    return typeof parsed.code === "string" ? parsed.code : null;
+  } catch {
+    return null;
+  }
+}
+
 export function classifyError(
   rawInput: unknown,
   context: ErrorContext,
@@ -238,6 +387,21 @@ export function classifyError(
     return {
       title: "The browser sign-in was not finished",
       hint: "Gate stopped waiting after five minutes. Try again, and complete the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
+  // One of Gate's loopback ports is held by another process: a second copy of
+  // the app, or `gate-connect proxy relay`. The relay refuses to move off its
+  // persisted port rather than silently strand every tool config pointing at it
+  // (`relay.rs`'s `bind_relay`), so retrying cannot help until the other one
+  // stops - which is what the generic fallback's "Try again" never said. Ahead
+  // of the network branch because none of these words overlap it, and ahead of
+  // nothing else for the same reason.
+  if (isPortInUse(lc)) {
+    return {
+      title: "Gate’s local port is already in use",
+      hint: "Another copy of Gate Connect, or a gate-connect proxy relay, is using it. Quit that one, then try again.",
       raw,
     };
   }

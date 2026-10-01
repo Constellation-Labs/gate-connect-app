@@ -1792,9 +1792,11 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       // Four lists now, and the subtitle can only generalise over them by
       // understating one. The first is gated on the diagnostics toggle; the
       // second rides every routed request whatever it says; the fourth is sent
-      // only on an explicit Send and is the one that is NOT anonymous. So the
-      // subtitle says where the line is rather than claiming one rule.
-      subtitle="Automatic collection is anonymous. A report you send yourself carries more, and is listed last."
+      // only on an explicit Send. So the subtitle says where the line is rather
+      // than claiming one rule: automatic collection can carry the account id
+      // after sign-in, so it says what is and is not in it, not that it is
+      // anonymous.
+      subtitle="Automatic collection never includes your name, email or keys. A report you send yourself carries more, and is listed last."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
@@ -1845,14 +1847,35 @@ export function CollectedDataLists({
       <Wrapper>
         <p className="font-medium text-base-foreground">Sent</p>
         <ul className="mt-1 list-disc pl-4">
+          {/* AG-960. The install id is the PostHog distinct id from the first
+              event. While sharing is on, pairing adds the organization id (the
+              group the install funnel is counted by), and a Constellation
+              sign-in joins the install to the account's opaque id (the Cognito
+              sub the dashboard already uses). An API key is never tied to a
+              person: its creator need not be the one at this machine. This
+              dialog is reached from Settings, where there is a switch rather
+              than a question, so the copy names the switch. */}
           <li>
-            An anonymous device id, generated locally. No name, email, or
-            account identifier.
+            A device id generated on this machine. Once you sign in, and while
+            sharing is on, your organization id too, and your account id if you
+            signed in with Constellation, so setup can be measured from download
+            to first request. Never your name or email.
+          </li>
+          {/* AG-960's opt-out record: at most once per install (a marker the
+              core claims), on the onboarding No and Skip as well as the
+              Settings switch, filed under the account's id (or the device id)
+              with the organization when known. "The first time" is what keeps
+              the sentence true after a second opt-out, which sends nothing. */}
+          <li>
+            The first time you say no, or turn sharing off later, one final note
+            says so, with your organization id, and tied to your account if you
+            signed in with Constellation.
           </li>
           <li>App version and operating system.</li>
           <li>
             Which action happened, from a fixed list - routing turned on or off,
-            an update installed, a dialog shown. Never free text.
+            an app connected, a setup step completed or failed, an update
+            installed. Never free text.
           </li>
           <li>
             A short label for each action: which app or provider it concerned,
@@ -1863,10 +1886,9 @@ export function CollectedDataLists({
             denied&rdquo;. The underlying message stays on this machine.
           </li>
           {/* Errors only, and it says so: this rides a failure and no other
-              event. Anonymous throughout - the two fields that would not be
-              (the device name, the organization id) are deliberately left out
-              of the error context, which is what lets the bullet above still
-              promise no name and no account identifier. */}
+              event. The device name is deliberately left out of the error
+              context, and the organization id rides only as the group named
+              in the first bullet, never as a field here. */}
           <li>
             When something fails, the state Gate was in: your operating system
             version, which tools are installed, whether routing was on, and
@@ -1885,9 +1907,15 @@ export function CollectedDataLists({
           Sent with your traffic, whatever this setting says
         </p>
         <ul className="mt-1 list-disc pl-4">
+          {/* The header rides every routed request whatever the diagnostics
+              answer is. The gateway stores it with each request
+              (`gateway_requests.machine_id`, beside the request's `user_id`),
+              which is how the activity view groups by machine, so the copy says
+              so rather than claiming it is linked to nobody. What it does not
+              do is join this device's diagnostic data to a person. */}
           <li>
-            The same anonymous device id, so your activity view can group
-            requests by machine. It identifies nothing else and authorizes
+            The same device id, stored with each request your account sends, so
+            your activity view can group requests by machine. It authorizes
             nothing.
           </li>
           <li>
@@ -1907,7 +1935,7 @@ export function CollectedDataLists({
         </ul>
       </Wrapper>
       {/* The fourth list, and the reason the three above could stay short.
-          Automatic collection is anonymous and carries no paths; a report the
+          Automatic collection carries no name, email or paths; a report the
           user sends from Settings carries both, because a support thread that
           cannot see the gateway address or find the account is a thread that
           cannot answer the question. Listing it here rather than only in the

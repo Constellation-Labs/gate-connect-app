@@ -14,6 +14,9 @@ pub mod account;
 pub mod activity;
 /// The last overview that landed, held on disk so the pane opens on numbers.
 pub mod activity_cache;
+/// Once-per-install analytics milestones and typed connection-failure reasons,
+/// for the install funnel the webview reports (AG-960).
+pub mod analytics;
 pub mod audit;
 pub mod config_changes;
 pub mod coverage;

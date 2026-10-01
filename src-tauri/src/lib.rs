@@ -310,8 +310,17 @@ struct AccountDto {
 /// an `error_shown` per open; one event per run carries the same signal.
 static ACCOUNT_RECONCILE_REPORTED: AtomicBool = AtomicBool::new(false);
 
+/// Async with the work on the blocking pool: the reconcile can end in
+/// `oauth::clear`, whose identity forget waits on the analytics identity lock,
+/// so on the main thread a save holding it, or a CLI logout, would stall the UI.
 #[tauri::command]
-fn get_account() -> Result<Option<AccountDto>, String> {
+async fn get_account() -> Result<Option<AccountDto>, String> {
+    tauri::async_runtime::spawn_blocking(read_account)
+        .await
+        .map_err(|e| format!("get_account join error: {e}"))?
+}
+
+fn read_account() -> Result<Option<AccountDto>, String> {
     // Reconcile the stored account against its on-disk anchor before reading it,
     // so the first-run-vs-home decision this call drives always sees a
     // consistent view. An uninstall that removed Gate Connect's files but left
@@ -474,6 +483,9 @@ async fn clear_account() -> Result<(), String> {
         security_feed().reset_for_account_change();
         signal_session_changed();
     }
+    // `account::clear` forgot the analytics identity (through `oauth::clear`);
+    // tell every window, so none keeps the account that went (AG-960).
+    announce_stored_analytics_identity();
     done
 }
 
@@ -534,6 +546,16 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
 struct OAuthStatusDto {
     signed_in: bool,
     email: Option<String>,
+    /// The id token's Cognito `sub`, which the webview identifies its PostHog
+    /// person with once signed in so the install funnel joins the dashboard's
+    /// person (AG-960). Not shown anywhere.
+    sub: Option<String>,
+    /// `"live"`, `"signed_out"` (no session, or a refused one) or
+    /// `"unavailable"` (the identity provider or the secret store did not
+    /// answer). `signed_in` is false for both of the last two, as it always was;
+    /// this is what lets the analytics seam tell a sign-out from a machine that
+    /// is only offline (AG-960).
+    session: &'static str,
     /// Access-token expiry as a Unix timestamp; 0 when signed out.
     expires_at_unix: i64,
 }
@@ -543,6 +565,8 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
         Self {
             signed_in: true,
             email: t.email(),
+            sub: t.sub(),
+            session: "live",
             expires_at_unix: t.expires_at_unix,
         }
     }
@@ -557,11 +581,18 @@ fn oauth_status_now() -> Result<OAuthStatusDto, String> {
     // actually riding the legacy API-key fallback. Keeping a running engine's
     // token fresh is the background refresh loop's job (see `run()`), not this
     // read's, so status stays a read that never mutates engine state.
-    Ok(match gate_connect_core::oauth::live_session() {
-        Some(t) => OAuthStatusDto::from(&t),
-        None => OAuthStatusDto {
+    use gate_connect_core::oauth::SessionReading;
+    Ok(match gate_connect_core::oauth::session_reading() {
+        SessionReading::Live(t) => OAuthStatusDto::from(&t),
+        other => OAuthStatusDto {
             signed_in: false,
             email: None,
+            sub: None,
+            session: if matches!(other, SessionReading::Unavailable) {
+                "unavailable"
+            } else {
+                "signed_out"
+            },
             expires_at_unix: 0,
         },
     })
@@ -674,6 +705,8 @@ async fn oauth_sign_out() -> Result<(), String> {
     if done.is_ok() {
         signal_session_changed();
     }
+    // `oauth::clear` forgot the analytics identity; tell every window (AG-960).
+    announce_stored_analytics_identity();
     done
 }
 
@@ -1297,7 +1330,7 @@ async fn proxy_enable<R: tauri::Runtime>(
         refresh_codex_daemon_when_idle("routing on");
         for w in warnings {
             eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
-            report_backend_error(w.component, format!("{:#}", w.error));
+            report_backend_failure(w.component, &w.error);
         }
         // Status re-read rather than enable's own state: the post-enable
         // restore pass can flip domains, and the UI wants the settled set.
@@ -1414,7 +1447,7 @@ async fn proxy_disable<R: tauri::Runtime>(
                 "[gate] proxy disable: {} failed: {:#}",
                 w.component, w.error
             );
-            report_backend_error(w.component, format!("{:#}", w.error));
+            report_backend_failure(w.component, &w.error);
         }
         Ok::<_, String>(state)
     })
@@ -2039,6 +2072,12 @@ impl<R: tauri::Runtime> Drop for StartupEnableSettled<R> {
 struct BackendError {
     context: &'static str,
     message: String,
+    /// The connection-failure reason decided from the error's TYPE, where the
+    /// failure site had the error itself rather than only its text
+    /// (`gate_connect_core::analytics::failure_reason`). `None` leaves the
+    /// webview to classify the message, as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
 
 /// Buffered failures, **per webview label**, because both shells drain.
@@ -2088,6 +2127,21 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// popover to drain it. Capped so a repeating failure can't grow unbounded;
 /// oldest entries drop first.
 fn report_backend_error(context: &'static str, message: String) {
+    queue_backend_error(context, message, None);
+}
+
+/// [`report_backend_error`] for a failure whose error value is in hand, so the
+/// reason it is filed under in analytics comes from its type (an `AddrInUse`
+/// anywhere in the chain) rather than from matching words in the message.
+fn report_backend_failure(context: &'static str, err: &anyhow::Error) {
+    queue_backend_error(
+        context,
+        format!("{err:#}"),
+        gate_connect_core::analytics::failure_reason(err),
+    );
+}
+
+fn queue_backend_error(context: &'static str, message: String, reason: Option<&'static str>) {
     if let Ok(mut guard) = PENDING_BACKEND_ERRORS.lock() {
         let per_label = guard.get_or_insert_with(HashMap::new);
         for label in ERROR_SINK_LABELS {
@@ -2098,6 +2152,7 @@ fn report_backend_error(context: &'static str, message: String) {
             pending.push(BackendError {
                 context,
                 message: message.clone(),
+                reason,
             });
         }
     }
@@ -2939,12 +2994,133 @@ fn read_auto_enabled_domains(tool: String) -> Vec<String> {
     gate_connect_core::preferences::read_auto_enabled_domains(&tool)
 }
 
+/// Claim a once-per-install analytics milestone (AG-960). True exactly once per
+/// install across every window and process; see
+/// `gate_connect_core::analytics`. Rejects for a name outside the closed set,
+/// and the webview reads any rejection as "do not send". Off the main thread,
+/// like every other command here that touches the disk.
+#[tauri::command]
+async fn analytics_milestone_claim(name: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::analytics::claim(&name).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("analytics claim join error: {e}"))?
+}
+
+/// Why local Cowork cannot run on this machine, from Claude Desktop's own
+/// settings, or null when nothing readable says it is off. Read once, after the
+/// Claude Desktop row is connected: a few small file reads (and the registry on
+/// Windows), never on a timer, and off the main thread, because a redirected
+/// `%APPDATA%` can be slow. See
+/// `gate_connect_core::analytics::cowork_setting_missing`.
+#[tauri::command]
+async fn cowork_setting_check() -> Option<&'static str> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::analytics::cowork_setting_missing)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
 #[tauri::command]
 fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
-    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
+    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))?;
+    // Every window runs its own analytics client, and only the one the user
+    // clicked in knows the answer changed. Broadcast it so the tray and the
+    // intro stop (or start) too, instead of acting on the answer they read at
+    // launch until the next one (AG-960).
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit(
+            ANALYTICS_CONSENT_EVENT,
+            serde_json::json!({ "share_diagnostics": enabled, "recorded": true }),
+        );
+    }
+    Ok(())
+}
+
+/// What this install is identified as in analytics; see
+/// `gate_connect_core::analytics::Identity`. First finishes a forget a
+/// sign-out could not land (`forget_identity_if_signed_out`), so a window never
+/// starts as an account that has gone; when it forgot, the other windows are
+/// told too. Best-effort: a failure there leaves the read as it was.
+#[tauri::command]
+async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use gate_connect_core::analytics;
+        let forgot = analytics::forget_identity_if_signed_out().unwrap_or_else(|e| {
+            eprintln!("analytics identity: finishing a forget failed: {e:#}");
+            false
+        });
+        let identity = analytics::load_identity();
+        if forgot {
+            announce_analytics_identity(identity.clone());
+        }
+        identity
+    })
+    .await
+    .map_err(|e| format!("analytics identity join error: {e}"))
+}
+
+/// Record a change of analytics identity, and tell every window, so each one's
+/// client follows the same person (AG-960). Called only by the window that
+/// owns sign-in.
+///
+/// The record is announced from inside the core's lock (`on_stored`), so two
+/// announcements reach the windows in the order of the writes. A save refused
+/// because its sub is not the live session's is announced too: the window is
+/// acting on a session that has ended, and the stored record is what moves it,
+/// and every other window, back. A save whose session could not be READ (the
+/// secret store did not answer) is announced to nobody and rejected with
+/// [`ANALYTICS_IDENTITY_UNCONFIRMED`], which the webview reads as "keep what
+/// you have and try again", not as a sign-out.
+#[tauri::command]
+async fn set_analytics_identity(
+    identity: gate_connect_core::analytics::Identity,
+) -> Result<(), String> {
+    use gate_connect_core::analytics::SaveOutcome;
+    tauri::async_runtime::spawn_blocking(move || match gate_connect_core::analytics::save_identity(
+        identity,
+        |stored| announce_analytics_identity(stored.clone()),
+    ) {
+        Ok(SaveOutcome::Saved) => Ok(()),
+        Ok(SaveOutcome::NotLive) => Err(ANALYTICS_IDENTITY_NOT_LIVE.to_string()),
+        Ok(SaveOutcome::Unconfirmed) => Err(ANALYTICS_IDENTITY_UNCONFIRMED.to_string()),
+        Err(e) => Err(format!("{e:#}")),
+    })
+    .await
+    .map_err(|e| format!("analytics identity join error: {e}"))?
+}
+
+/// The rejection of a save whose sub is not the live session's. Pinned with the
+/// webview by `src/lib/analytics.contract.test.ts`.
+const ANALYTICS_IDENTITY_NOT_LIVE: &str = "analytics-identity-not-live";
+/// The rejection of a save whose session could not be read. Pinned likewise.
+const ANALYTICS_IDENTITY_UNCONFIRMED: &str = "analytics-identity-unconfirmed";
+
+/// The event every window's analytics seam listens on to follow a change of
+/// analytics identity (`src/lib/analytics.ts`). Pinned on both sides by
+/// `src/lib/analytics.contract.test.ts`.
+const ANALYTICS_IDENTITY_EVENT: &str = "analytics-identity-changed";
+/// The event every window listens on to follow a change of the diagnostics
+/// answer made in another window.
+const ANALYTICS_CONSENT_EVENT: &str = "analytics-consent-changed";
+
+fn announce_analytics_identity(identity: gate_connect_core::analytics::Identity) {
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit(ANALYTICS_IDENTITY_EVENT, identity);
+    }
+}
+
+/// Tell every window what analytics identity is stored now. The core does the
+/// forgetting (`oauth::clear`), so every caller of it, the CLI included,
+/// changes the record; this is the shell's
+/// half, because only the shell has windows to tell. Without it each window
+/// kept the old account for the rest of the session.
+fn announce_stored_analytics_identity() {
+    announce_analytics_identity(gate_connect_core::analytics::load_identity());
 }
 
 /// The process name to look for on behalf of one tool.
@@ -5153,6 +5329,10 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            analytics_milestone_claim,
+            cowork_setting_check,
+            analytics_identity,
+            set_analytics_identity,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,
@@ -5217,6 +5397,10 @@ pub fn invoke_handler<R: tauri::Runtime>(
             get_preferences,
             set_notifications,
             set_share_diagnostics,
+            analytics_milestone_claim,
+            cowork_setting_check,
+            analytics_identity,
+            set_analytics_identity,
             record_auto_enabled_domains,
             read_auto_enabled_domains,
             install_id,
@@ -5397,6 +5581,14 @@ pub fn run() {
             // Lets failure sites without a handle of their own nudge the
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
+            // Before any window loads and before anything below writes to the
+            // data dir, so the milestone store judges a fresh install fresh and
+            // an upgraded one legacy (AG-960). Best-effort: a store that cannot
+            // be created only means the webview's claims fail, which it reads
+            // as "do not send".
+            if let Err(e) = gate_connect_core::analytics::init() {
+                eprintln!("[gate] analytics milestone store unavailable: {e:#}");
+            }
 
             // Open the crash-restart session before anything that could itself
             // crash, and decide from the last one whether to keep asking the OS
@@ -5452,7 +5644,7 @@ pub fn run() {
                         }
                         Err(e) => {
                             eprintln!("[gate] status after engine crash failed: {e}");
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                         }
                     }
                 });
@@ -5640,7 +5832,7 @@ pub fn run() {
                     // dead loopback port. A clean disable leaves nothing to do.
                     if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
                         eprintln!("proxy startup reconcile failed: {e}");
-                        report_backend_error("restore_routing", format!("{e:#}"));
+                        report_backend_failure("restore_routing", &e);
                     }
 
                     // A deferred launch-at-login opt-out reaching a login-item
@@ -5672,7 +5864,7 @@ pub fn run() {
                             eprintln!(
                                 "[gate] disabling re-honored routing for the deferred opt-out failed: {e}"
                             );
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                         }
                         complete_pending_autostart_disable(&handle);
                         handle.exit(0);
@@ -5744,7 +5936,7 @@ pub fn run() {
                                     "[gate] startup auto-enable: {} failed: {:#}",
                                     w.component, w.error
                                 );
-                                report_backend_error(w.component, format!("{:#}", w.error));
+                                report_backend_failure(w.component, &w.error);
                             }
                             // Restore-on-any-launch means this can be the
                             // first thing to route on a machine with no login
@@ -5809,7 +6001,7 @@ pub fn run() {
                             // silent launch, open the popover so the user can
                             // finish it. A visible launch already shows it below.
                             eprintln!("[gate] startup auto-enable failed: {e}");
-                            report_backend_error("restore_routing", format!("{e:#}"));
+                            report_backend_failure("restore_routing", &e);
                             if silent_launch {
                                 if let Some(window) = handle.get_webview_window("main") {
                                     POPOVER_PINNED.store(true, Ordering::Release);
@@ -6768,6 +6960,31 @@ mod tests {
              Hermes and which regenerates on every connect"
         );
         assert_ne!(source, bundle);
+    }
+
+    /// Every command that ends the account announces the stored
+    /// analytics identity, after the core call that changed it (AG-960). A scan
+    /// of this file's own source, because the commands need a running app.
+    #[test]
+    fn account_changes_announce_the_analytics_identity_after_the_change() {
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        for (start, change) in [
+            ("async fn oauth_sign_out()", "oauth::clear()"),
+            ("async fn clear_account()", "account::clear()"),
+        ] {
+            let at = src.find(start).expect(start);
+            let body = &src[at..];
+            let end = body[start.len()..]
+                .find("\n#[tauri::command]")
+                .map(|i| i + start.len())
+                .unwrap_or(body.len());
+            let body = &body[..end];
+            let changed = body.find(change).expect(change);
+            let announced = body
+                .find("announce_stored_analytics_identity();")
+                .unwrap_or_else(|| panic!("{start} must announce the identity"));
+            assert!(changed < announced, "{start}: announce after {change}");
+        }
     }
 
     /// Serialises the tests that mutate [`PENDING_BACKEND_ERRORS`].

@@ -18,8 +18,8 @@ import type {
 import {
   deviceName as fetchDeviceName,
   diagnostics as fetchDiagnostics,
-  getAccount,
   getAccountKeyPrefix,
+  readAccount,
   installId as fetchInstallId,
   launchAtLoginStatus,
   listProviders,
@@ -46,6 +46,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { gatewaySawTrafficFromThisMachine, launchProps, sessionFacts } from "./lib/analyticsSession";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -175,6 +176,10 @@ import {
 } from "./lib/diagnosticsUpload";
 import {
   analyticsId,
+  noteGatewayAttributed,
+  noteGatewayFailure,
+  noteSession,
+  noteTrafficObserved,
   setAnalyticsConsent,
   track,
   trackError,
@@ -230,6 +235,10 @@ export function NewUiApp() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
+  /** The last account read REJECTED (see `readAccount`), so `account` being
+   *  null says nothing about whether anyone is signed in. Only the analytics
+   *  seam reads it; the screens draw both as signed out, as they always have. */
+  const [accountUnread, setAccountUnread] = useState(false);
   /**
    * Open a link, and show it in the existing error banner if it fails.
    *
@@ -458,6 +467,7 @@ export function NewUiApp() {
    *  skeletons. */
   const activityPending = activity.view === null && activity.failure === null;
   const {
+    installations,
     current: currentInstallId,
     resolved: installsResolved,
     failure: installsFailure,
@@ -524,6 +534,57 @@ export function NewUiApp() {
    *  so a later, different failure (a retry that failed again) raises it anew. */
   const [dismissedInstallsFailure, setDismissedInstallsFailure] =
     useState<ActivityFailure | null>(null);
+  /**
+   * The install funnel's view of this session (AG-960): who is signed in and
+   * for which org, so events carry the org group and a Constellation sign-in
+   * joins this install to the account's person.
+   *
+   * The org is the account's own for OAuth. An API-key account stores none -
+   * the org is whatever the gateway resolves the key to - so it is read off the
+   * Overview's reading, which is also the first moment the gateway has accepted
+   * the key: that is when an API-key install counts as paired.
+   */
+  // `sessionFacts` holds the rule for what counts as unknown: a rejected account
+  // read, or an OAuth status that could not answer, is never a sign-out.
+  const facts = sessionFacts({
+    account,
+    accountUnread,
+    oauth,
+    apiKeyOrgId: activity.view?.orgId ?? null,
+  });
+  const {
+    orgId: sessionOrgId,
+    signedIn: signedInNow,
+    sub: sessionSub,
+    authMode: sessionAuthMode,
+    sessionUnknown,
+  } = facts;
+  // Only once the first account and OAuth reads are in: before that, "not signed
+  // in" is "not read yet", and the seam treats not signed in as a sign-out.
+  useEffect(() => {
+    if (!loaded) return;
+    noteSession({
+      signedIn: signedInNow,
+      sessionUnknown,
+      authMode: sessionAuthMode,
+      sub: sessionSub,
+      orgId: sessionOrgId,
+    });
+  }, [loaded, signedInNow, sessionUnknown, sessionAuthMode, sessionSub, sessionOrgId]);
+  // The gateway lists this machine among those it has had proxied traffic from:
+  // the `first_request_proxied` signal where the relay cannot report (Linux).
+  // From the rows, not the top-level `current`, which only echoes the read's
+  // own install id; see `gatewaySawTrafficFromThisMachine`.
+  const gatewaySawThisMachine = gatewaySawTrafficFromThisMachine(installations);
+  useEffect(() => {
+    if (gatewaySawThisMachine) noteGatewayAttributed();
+  }, [gatewaySawThisMachine]);
+  // The gateway refused the credential or could not be reached: the connection
+  // step's `auth_rejected` and `offline`, from the typed code rather than prose.
+  const activityFailureCode = activity.failure?.code ?? null;
+  useEffect(() => {
+    if (activityFailureCode) noteGatewayFailure(activityFailureCode);
+  }, [activityFailureCode]);
   const toolActivity = useActivity(
     canRead && openTool !== null && machineKnown,
     currentInstallId,
@@ -671,6 +732,9 @@ export function NewUiApp() {
   // counts as hidden, and that terminal is where the traffic comes from.
   useEffect(() => {
     const unlisten = listen<(string | null)[]>("traffic-observed", (e) => {
+      // Whether or not anyone is looking: the first report is the funnel's
+      // `first_request_proxied` (AG-960), and a hidden window still counts it.
+      noteTrafficObserved(e.payload);
       if (document.hidden) {
         missedWhileHidden.current = [...(missedWhileHidden.current ?? []), ...e.payload];
         return;
@@ -963,7 +1027,7 @@ export function NewUiApp() {
         listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
-        getAccount().catch(() => null),
+        readAccount(),
         oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
       ]);
@@ -975,10 +1039,17 @@ export function NewUiApp() {
       void refreshVerdicts();
         setProviders(p);
       setProxy(px);
-      setAccount(acct);
+      setAccount(acct.account);
+      setAccountUnread(acct.unread);
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
+      // The per-launch counterpart of `app_first_launched`: without it a launch
+      // of this window was invisible, and a funnel had no denominator for
+      // returning users. Only the props the first read already answered; the
+      // removed popover's provider and drift dimensions described a surface
+      // this window does not draw.
+      track("app_launched", launchProps(acct, px));
     })();
   }, []);
 
@@ -994,13 +1065,18 @@ export function NewUiApp() {
    * focus.
    */
   const refreshSession = useCallback(async () => {
-    const [acct, oauthState] = await Promise.all([getAccount(), oauthStatus()]).catch(
+    // `readAccount` never rejects; an unread account is a failed read here, so
+    // it keeps what is on screen (and the analytics seam's `accountUnread`)
+    // exactly as a rejected OAuth read does.
+    const [reading, oauthState] = await Promise.all([readAccount(), oauthStatus()]).catch(
       () => [undefined, undefined] as const,
     );
-    if (acct === undefined || oauthState === undefined) return;
+    if (reading === undefined || reading.unread || oauthState === undefined) return;
+    const acct = reading.account;
     const keep = <T,>(prev: T, next: T) =>
       JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
     setAccount((prev) => keep(prev, acct));
+    setAccountUnread(false);
     setOAuth((prev) => keep(prev, oauthState));
   }, []);
 
@@ -1693,15 +1769,24 @@ export function NewUiApp() {
     ({
       account: a,
       oauth: o,
+      accountUnread: unread,
     }: {
       account: Account | null;
       oauth: OAuthStatus | null;
+      accountUnread?: boolean;
     }) => {
       setAccount(a);
+      setAccountUnread(unread ?? false);
       setOAuth(o);
     },
     [],
   );
+
+  /** A read that resolved: whatever it says, it is an answer. */
+  const onAccountRead = useCallback((a: Account | null) => {
+    setAccount(a);
+    setAccountUnread(false);
+  }, []);
 
   const setup = useSetup({
     loaded,
@@ -1723,7 +1808,7 @@ export function NewUiApp() {
     proxyRunning: proxy?.running ?? false,
     launchAtLogin,
     onLaunchAtLogin: ({ enabled }) => setLaunchAtLogin(enabled),
-    onAccount: setAccount,
+    onAccount: onAccountRead,
     onDeviceName: setDevice,
     onSession,
     onProxy: setProxy,
@@ -2136,7 +2221,7 @@ export function NewUiApp() {
           // opt-out that only takes effect after a restart is not an opt-out, and
           // this happens before the write so a failed write cannot leave the
           // client sending after the user said no.
-          setAnalyticsConsent(next);
+          void setAnalyticsConsent(next, "settings");
           void setShareDiagnostics(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
@@ -2631,7 +2716,7 @@ export function NewUiApp() {
               // since the stage is derived from the stored flag.
               const share = prefs?.share_diagnostics ?? true;
               setDiagnosticsError(null);
-              setAnalyticsConsent(share);
+              void setAnalyticsConsent(share, "onboarding");
               void setShareDiagnostics(share)
                 .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
@@ -2641,7 +2726,7 @@ export function NewUiApp() {
               // off, not left unanswered, or the step would ask again next
               // launch and a skipped default-on would keep collecting.
               setDiagnosticsError(null);
-              setAnalyticsConsent(false);
+              void setAnalyticsConsent(false, "onboarding_skip");
               void setShareDiagnostics(false)
                 .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
