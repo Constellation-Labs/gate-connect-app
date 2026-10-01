@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import type { ProxyState, Status, Tool } from "./api";
+import { trackError } from "./analytics";
 import { useRouting, FamilyCascadeError } from "./useRouting";
 import type { Group, GroupMember } from "./groups";
 
@@ -255,6 +256,10 @@ describe("useRouting: re-sync and failures", () => {
 
     expect(connectTool).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(refusal, "trust_ca");
+    expect(trackError).toHaveBeenCalledWith(refusal, "trust_ca", {
+      tool: "claude-code",
+      routed: true,
+    });
   });
 
   it("re-reads backend truth even when the action fails", async () => {

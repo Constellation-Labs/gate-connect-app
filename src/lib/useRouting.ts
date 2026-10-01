@@ -542,9 +542,15 @@ export function useRouting({
         // there is nothing to report - and in particular the row must not be
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
-          trackError(e, "connect", { tool: slug, routed });
-          if (e instanceof TrustFailed) onError?.(e.cause, "trust_ca");
-          else onError?.(e, routed ? "connect" : "disconnect", slug);
+          // Unwrapped for telemetry too: `trackError` classifies the error it is
+          // given, and the wrapper's own message matches no branch.
+          if (e instanceof TrustFailed) {
+            trackError(e.cause, "trust_ca", { tool: slug, routed });
+            onError?.(e.cause, "trust_ca");
+          } else {
+            trackError(e, "connect", { tool: slug, routed });
+            onError?.(e, routed ? "connect" : "disconnect", slug);
+          }
           setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {
