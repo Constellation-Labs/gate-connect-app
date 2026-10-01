@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { track, trackError } from "./analytics";
 import { describe, logInfo, logWarn } from "./log";
+import { isRoutingOffRefusal } from "./errors";
 import { TOOL_MANAGED_DOMAINS, cascadeTargets } from "./groups";
 import type { Group } from "./groups";
 
@@ -545,10 +546,22 @@ export function useRouting({
         // there is nothing to report - and in particular the row must not be
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
-          trackError(e, "connect", { tool: slug, routed });
-          if (e instanceof TrustFailed) onError?.(e.cause, "trust_ca");
-          else onError?.(e, routed ? "connect" : "disconnect", slug);
-          setWriteFailures((prev) => new Map(prev).set(slug, routed));
+          // Unwrapped for telemetry too: `trackError` classifies the error it is
+          // given, and the wrapper's own message matches no branch.
+          if (e instanceof TrustFailed) {
+            trackError(e.cause, "trust_ca", { tool: slug, routed });
+            onError?.(e.cause, "trust_ca");
+          } else {
+            trackError(e, "connect", { tool: slug, routed });
+            onError?.(e, routed ? "connect" : "disconnect", slug);
+          }
+          // Only a fault in this tool's config marks its row. A certificate that
+          // would not install, or an engine that is not running, is the whole
+          // install's: the window banner names it, and "Configuration update
+          // failed" on the row would blame a write that was never the problem
+          // (for the certificate, one never attempted).
+          if (!(e instanceof TrustFailed) && !isRoutingOffRefusal(describe(e)))
+            setWriteFailures((prev) => new Map(prev).set(slug, routed));
         }
       } finally {
         await settle();
