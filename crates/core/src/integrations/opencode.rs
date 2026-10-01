@@ -914,10 +914,16 @@ fn known_providers_in(
 /// only fail, with "No supported OpenCode providers found". So the test is the
 /// one `connect` applies, and a leftover that names nothing routable leaves
 /// OpenCode under Not installed.
+///
+/// **A file Gate cannot parse still counts.** OpenCode reads `opencode.json`
+/// as JSONC, so a commented config is a working install that strict JSON
+/// rejects. Reading it as Not installed would hide the row with no error;
+/// counting it keeps the row, and `connect` reports the parse failure.
 fn has_routable_setup() -> Result<bool> {
-    let settings = load_settings().ok().flatten().unwrap_or_default();
-    let auth = load_opencode_auth().unwrap_or_default();
-    Ok(!known_providers_in(&settings, &auth).is_empty())
+    let (Ok(settings), Ok(auth)) = (load_settings(), load_opencode_auth()) else {
+        return Ok(true);
+    };
+    Ok(!known_providers_in(&settings.unwrap_or_default(), &auth).is_empty())
 }
 
 /// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`. The

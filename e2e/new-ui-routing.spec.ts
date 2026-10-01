@@ -373,19 +373,48 @@ test.describe("new UI drift repair", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
-      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+      failures: {
+        connect_tool:
+          "Codex isn't logged in yet - run `codex login` first, then retry the Gate Connect connect",
+      },
     });
     await app.routeApp("ChatGPT / Codex");
     const row = app.page.getByRole("button", { name: "ChatGPT / Codex Not routed" });
     await expect(row).toBeVisible();
 
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    // The body is the backend's own sentence, not "Try again".
-    await expect(app.page.getByText("Failed to write ~/.codex/config.toml.")).toBeVisible();
+    // A refusal the window has copy for says what to do, not "Try again".
+    await expect(
+      app.page.getByText("Codex isn’t signed in yet. Run codex login, then turn it on again."),
+    ).toBeVisible();
     await app.page.getByRole("button", { name: "Dismiss alert" }).click();
     await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
     await expect(row).toBeVisible();
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
+  });
+
+  test("a failed turn-off leaves the app Not protected, and says why once dismissed", async ({
+    boot,
+  }) => {
+    // The other direction: the tool is still routed and the click did not
+    // land, so the row must not keep claiming the sweep's reading.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "connected" as const } }],
+      failures: { disconnect_tool: "failed to write ~/.codex/config.toml" },
+    });
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible();
+    await (await app.appSwitch("ChatGPT / Codex")).click();
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Not protected" }),
+    ).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Dismiss alert" }).click();
+    await expect(
+      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
+    ).toContainText("Configuration update failed");
   });
 
   test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {

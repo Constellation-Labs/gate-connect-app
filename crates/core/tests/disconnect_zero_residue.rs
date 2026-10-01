@@ -1157,6 +1157,11 @@ fn an_empty_opencode_config_dir_is_not_an_install() {
         integ.detect().unwrap(),
         "a config naming a routable provider is"
     );
+    fs::write(&cfg, "{\n  // OpenCode reads JSONC\n}").unwrap();
+    assert!(
+        integ.detect().unwrap(),
+        "a config Gate cannot parse is evidence, not absence"
+    );
 }
 
 /// The `opencode.ai` domain an older build turned on goes off once OpenCode is
