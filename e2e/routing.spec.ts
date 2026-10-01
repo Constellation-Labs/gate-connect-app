@@ -199,6 +199,7 @@ test.describe("routing", () => {
         env_export_separable: true,
         forwarder_answering: null,
         ca_nss_trusted: null,
+        ca_nss_writes: 0,
         domains: [
           {
             slug: "anthropic",

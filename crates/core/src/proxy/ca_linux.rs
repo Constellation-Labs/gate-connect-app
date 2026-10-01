@@ -12,13 +12,15 @@
 //! - Fedora/RHEL/openSUSE: drop it in `/etc/pki/ca-trust/source/anchors/` and
 //!   run `update-ca-trust extract`.
 //!
-//! The system store is not the whole job, though. Chromium-based browsers on
-//! Linux never read it - they use their own built-in roots plus a per-user NSS
-//! database at `~/.pki/nssdb` - so a system-only install leaves Chrome and
-//! Chromium failing every intercepted host with `ERR_CERT_AUTHORITY_INVALID`
-//! while Firefox works, because Firefox picks the system anchors up through
-//! p11-kit. So [`ensure_trusted`] writes that database too, unprivileged and
-//! best-effort, via `certutil`.
+//! The system store is not the whole job, though. Browsers on Linux mostly
+//! never read it. Chromium-based ones use their own built-in roots plus a
+//! per-user NSS database at `~/.pki/nssdb`; Firefox uses its own built-in roots
+//! plus each profile's `cert9.db`, and only sees the system anchors where the
+//! distro swaps p11-kit in for those built-ins (Fedora, Arch - not Ubuntu,
+//! whose Firefox is the Mozilla snap). So a system-only install leaves both
+//! failing every intercepted host with `ERR_CERT_AUTHORITY_INVALID` /
+//! `SEC_ERROR_UNKNOWN_ISSUER` while curl is happy, and [`ensure_trusted`]
+//! writes those databases too, unprivileged and best-effort, via `certutil`.
 //!
 //! The privileged step is performed via [`crate::primitives::run_as_admin`]
 //! (sudo in a terminal, polkit/`pkexec` in a GUI session). Tools that ship their
@@ -34,6 +36,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use hudsucker::rcgen::KeyPair;
@@ -315,9 +318,9 @@ const NSS_TOOLS_HINT: &str =
 /// Chromium on Linux does not consult the system CA bundle at all: it uses its
 /// own built-in root store plus this database. So the system anchor the rest of
 /// this module installs leaves every Chromium browser failing the handshake on
-/// intercepted hosts with `ERR_CERT_AUTHORITY_INVALID`, while Firefox works,
-/// because Firefox picks the same system anchors up through p11-kit. That
-/// asymmetry is the whole reason this exists.
+/// intercepted hosts with `ERR_CERT_AUTHORITY_INVALID` while curl is happy.
+/// Firefox has the same problem with stores of its own; see
+/// [`firefox_profile_roots`].
 ///
 /// Enumerated rather than globbed (`~/.var/app/*/.pki/nssdb`) on purpose: a glob
 /// would hand our signing root to every confined app that happens to keep an NSS
@@ -345,17 +348,119 @@ fn nss_db_candidates(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
-/// The subset of [`nss_db_candidates`] that exists. Empty when no Chromium
-/// browser has ever run for this user - the database is created on first
-/// launch, so there is nothing to trust into and nothing to warn about.
+/// Where each Firefox build keeps its profile directories, whether or not they
+/// exist. Pure for the same reason as [`nss_db_candidates`].
+///
+/// Firefox does not read `~/.pki/nssdb`. Every profile has its own `cert9.db`,
+/// and outside the distros that wire p11-kit in place of its built-in roots it
+/// never sees the system anchor either - which is Ubuntu, where the default
+/// Firefox is the Mozilla snap. So without these, Firefox rejects every
+/// intercepted host exactly the way Chromium did.
+fn firefox_profile_roots(home: &Path) -> Vec<PathBuf> {
+    [
+        // Distro packages and Mozilla's own tarball.
+        ".mozilla/firefox",
+        // The snap keeps its profiles under `common`, which survives refreshes,
+        // rather than the per-revision `current`.
+        "snap/firefox/common/.mozilla/firefox",
+        ".var/app/org.mozilla.firefox/.mozilla/firefox",
+    ]
+    .iter()
+    .map(|rel| home.join(rel))
+    .collect()
+}
+
+/// Every Firefox profile under `home` that has a certificate database. Keyed
+/// on `cert9.db` so the siblings Firefox keeps beside its profiles (`Crash
+/// Reports`, `Pending Pings`, `Profile Groups`) are left alone.
+fn firefox_profile_dbs(home: &Path) -> Vec<PathBuf> {
+    firefox_profile_roots(home)
+        .into_iter()
+        .filter_map(|root| fs::read_dir(root).ok())
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok().map(|e| e.path())))
+        .filter(|profile| profile.join("cert9.db").is_file())
+        .collect()
+}
+
+/// Browser launchers whose presence means a Chromium-family browser reads
+/// `~/.pki/nssdb` for this user. Only the distro-packaged ones: a snap or
+/// Flatpak build keeps its database under its own confined HOME, which
+/// [`nss_db_candidates`] covers once that browser has run.
+const CHROMIUM_LAUNCHERS: &[&str] = &[
+    "google-chrome",
+    "google-chrome-stable",
+    "google-chrome-beta",
+    "google-chrome-unstable",
+    "chromium",
+    "brave-browser",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "vivaldi",
+    "vivaldi-stable",
+];
+
+/// Whether any of [`CHROMIUM_LAUNCHERS`] is on `PATH`.
+fn chromium_installed() -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path)
+            .any(|dir| CHROMIUM_LAUNCHERS.iter().any(|bin| dir.join(bin).is_file()))
+    })
+}
+
+/// The user's home, which every per-user store hangs off.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Whether a Chromium browser is installed and `~/.pki/nssdb` is still missing.
+///
+/// Chrome does not always create that database at startup: a fresh Ubuntu VM
+/// with Chrome open on an intercepted host had none, so the app had set up
+/// trust with nowhere to put it. The browser opens the database once it
+/// exists, so [`ensure_trusted_nss`] creates it rather than waiting for one
+/// that may never come.
+fn chromium_db_missing(home: &Path) -> bool {
+    !home.join(".pki/nssdb").is_dir() && chromium_installed()
+}
+
+/// Every browser NSS database that exists for this user: the Chromium ones
+/// from [`nss_db_candidates`] and each Firefox profile. Empty when no browser
+/// has a store here, so there is nothing to trust into.
 fn nss_db_dirs() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    let Some(home) = home_dir() else {
         return Vec::new();
     };
     nss_db_candidates(&home)
         .into_iter()
         .filter(|dir| dir.is_dir())
+        .chain(firefox_profile_dbs(&home))
         .collect()
+}
+
+/// Create an empty, passwordless `sql:` database at `dir` for Chromium to open.
+/// Owner-only, like the one Chrome would have made itself.
+fn create_chromium_db(dir: &Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Err(e) = fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+    {
+        eprintln!(
+            "gate proxy: could not create the NSS store at {dir} ({e}); \
+             Chromium-based browsers will reject intercepted hosts",
+            dir = dir.display(),
+        );
+        return;
+    }
+    if let Err(e) = certutil(dir, &["-N", "--empty-password"]) {
+        eprintln!(
+            "gate proxy: could not initialise the NSS store at {dir} ({e}); \
+             Chromium-based browsers will reject intercepted hosts{hint}",
+            dir = dir.display(),
+            hint = e.tools_hint(),
+        );
+    }
 }
 
 /// Why a `certutil` call did not succeed. The missing-binary case is split out
@@ -441,23 +546,39 @@ fn nss_holds(db: &Path, pem: &str) -> bool {
     nss_entry_pem(db).is_some_and(|held| pem_body(&held) == pem_body(pem))
 }
 
-/// Whether every per-user NSS database found holds our *current* CA, for the
-/// diagnostics report. `Some(false)` beside a `ca_trusted` of true is the state
-/// this module learned the hard way: the OS trusts the root, Chromium does not,
-/// and only Chromium-based browsers fail. A missing `certutil` reads as false,
-/// which is accurate - without it [`ensure_trusted_nss`] never installed
-/// anything.
+/// How many times this process has added the CA to a browser NSS database.
+/// A browser only picks a new root up when it restarts, so the GUI raises its
+/// restart notice whenever this moves - including for the write the startup
+/// reconcile makes before any window has asked for anything, which is why it
+/// counts from zero per process rather than being a flag someone clears.
+static NSS_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// [`NSS_WRITES`], for `ProxyState::ca_nss_writes`.
+pub fn nss_writes() -> u64 {
+    NSS_WRITES.load(Ordering::Relaxed)
+}
+
+/// Whether every browser NSS database holds our *current* CA, for the
+/// diagnostics report and the Home card. `Some(false)` beside a `ca_trusted` of
+/// true is the state this module learned the hard way: the OS trusts the root,
+/// the browsers do not, and only they fail. A missing `certutil` reads as
+/// false, which is accurate - without it [`ensure_trusted_nss`] never installed
+/// anything. So does a Chromium browser with no database yet: that is the
+/// state [`ensure_trusted_nss`] repairs, and reading it as "does not apply"
+/// hid it entirely.
 ///
-/// `None` where the question does not apply: no Chromium browser has ever run
-/// for this user, so there is no database to be in. Also `None` when the cert
-/// itself cannot be read, which `ca_cert_present` already reports.
+/// `None` where the question does not apply: no browser keeps a store for this
+/// user. Also `None` when the cert itself cannot be read, which
+/// `ca_cert_present` already reports.
 pub fn nss_ca_trusted() -> Option<bool> {
+    let home = home_dir()?;
     let dirs = nss_db_dirs();
-    if dirs.is_empty() {
+    let missing = chromium_db_missing(&home);
+    if dirs.is_empty() && !missing {
         return None;
     }
     let pem = cert_path().ok().and_then(|p| fs::read_to_string(p).ok())?;
-    Some(dirs.iter().all(|dir| nss_holds(dir, &pem)))
+    Some(!missing && dirs.iter().all(|dir| nss_holds(dir, &pem)))
 }
 
 /// The base64 payload of a PEM block, with the armour and all whitespace
@@ -472,8 +593,9 @@ fn pem_body(pem: &str) -> String {
         .collect()
 }
 
-/// Add the CA to every per-user NSS database found, so Chromium accepts the
-/// leaves the engine mints.
+/// Add the CA to every browser NSS database, so Chromium and Firefox accept the
+/// leaves the engine mints. Creates `~/.pki/nssdb` first when a Chromium
+/// browser is installed without one (see [`chromium_db_missing`]).
 ///
 /// Best-effort and infallible by design: the system anchor is what trust really
 /// rests on, and a browser-specific store that cannot be written must not fail
@@ -481,6 +603,9 @@ fn pem_body(pem: &str) -> String {
 /// symptom otherwise lands in the browser as a certificate error with nothing
 /// connecting it to Gate.
 fn ensure_trusted_nss() {
+    if let Some(home) = home_dir().filter(|home| chromium_db_missing(home)) {
+        create_chromium_db(&home.join(".pki/nssdb"));
+    }
     let dirs = nss_db_dirs();
     if dirs.is_empty() {
         return;
@@ -515,7 +640,11 @@ fn ensure_trusted_nss() {
         // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME and no
         // object-signing trust. The same flags mkcert uses for the same job.
         let args = ["-A", "-t", "C,,", "-n", ca_common_name(), "-i", &cert_arg];
-        if let Err(e) = certutil(&dir, &args) {
+        let added = certutil(&dir, &args);
+        if added.is_ok() {
+            NSS_WRITES.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Err(e) = added {
             // Say so when the delete landed and the add did not: that leaves the
             // store worse than we found it, and a browser that stopped working
             // *because* of this reads nothing like one that never worked.
@@ -526,7 +655,7 @@ fn ensure_trusted_nss() {
             };
             eprintln!(
                 "gate proxy: could not add the CA to the NSS store at {dir}{dropped} ({e}); \
-                 Chromium-based browsers will reject intercepted hosts{hint}",
+                 the browser reading it will reject intercepted hosts{hint}",
                 dir = dir.display(),
                 hint = e.tools_hint(),
             );
@@ -554,14 +683,14 @@ fn untrust_nss() {
                 if let Err(e) = certutil(&dir, &["-D", "-n", ca_common_name()]) {
                     eprintln!(
                         "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
-                         Chromium-based browsers still trust it",
+                         the browser reading it still trusts it",
                         dir = dir.display(),
                     );
                 }
             }
             Err(e @ CertutilFailure::Missing) => eprintln!(
                 "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
-                 Chromium-based browsers may still trust it - {NSS_TOOLS_HINT}",
+                 the browser reading it may still trust it - {NSS_TOOLS_HINT}",
                 dir = dir.display(),
             ),
             Err(CertutilFailure::Failed(_)) => {}
@@ -723,5 +852,46 @@ mod tests {
         assert!(CertutilFailure::Failed("locked".into())
             .tools_hint()
             .is_empty());
+    }
+
+    /// Ubuntu's default Firefox is the snap, which keeps profiles under its own
+    /// confined HOME and ignores the system anchor. Missing that root is the
+    /// bug this covers: every intercepted host failing in Firefox while curl
+    /// verifies the same leaf fine.
+    #[test]
+    fn the_firefox_roots_cover_the_snap_and_flatpak_homes() {
+        let roots = firefox_profile_roots(std::path::Path::new("/home/u"));
+        for expected in [
+            "/home/u/.mozilla/firefox",
+            "/home/u/snap/firefox/common/.mozilla/firefox",
+            "/home/u/.var/app/org.mozilla.firefox/.mozilla/firefox",
+        ] {
+            assert!(
+                roots.iter().any(|r| r == std::path::Path::new(expected)),
+                "{expected} missing from {roots:?}"
+            );
+        }
+        let home = std::path::Path::new("/tmp/someone");
+        for root in firefox_profile_roots(home) {
+            assert!(root.starts_with(home), "{root:?} escaped {home:?}");
+        }
+    }
+
+    /// A profile root also holds `Crash Reports`, `Pending Pings` and the like.
+    /// certutil pointed at one of those would create a fresh database there
+    /// that nothing reads, so only directories that already have a `cert9.db`
+    /// count - the same rule that keeps the Chromium list from creating stores.
+    #[test]
+    fn the_firefox_dbs_are_only_profiles_with_a_cert_store() {
+        let home = std::env::temp_dir().join(format!("gate_ff_{}", std::process::id()));
+        let root = home.join("snap/firefox/common/.mozilla/firefox");
+        let profile = root.join("qp1tx1a3.default");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("cert9.db"), b"").unwrap();
+        fs::create_dir_all(root.join("Crash Reports")).unwrap();
+
+        let dbs = firefox_profile_dbs(&home);
+        let _ = fs::remove_dir_all(&home);
+        assert_eq!(dbs, vec![profile]);
     }
 }

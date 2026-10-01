@@ -38,6 +38,8 @@ export function Home({
   changeNotice,
   canCloseAgents = true,
   onDismissChangeNotice,
+  browserRestart = false,
+  onDismissBrowserRestart,
   onCloseAgents,
   onEnableRouting,
   staleAgentsHint,
@@ -85,6 +87,10 @@ export function Home({
   onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
+  /** Linux: the certificate was just added to a browser's own store, which a
+   * running browser only reads at launch. Shows the quit-and-reopen notice. */
+  browserRestart?: boolean;
+  onDismissBrowserRestart?: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
   /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
@@ -108,10 +114,10 @@ export function Home({
    * on means browsers and tools are quietly going direct - the one state the
    * count below would otherwise report as fully routed. */
   forwarderAnswering: boolean | null;
-  /** Linux only: whether the per-user NSS store Chromium and Electron read
-   * holds the CA. null where that store does not apply. False beside a trusted
-   * CA means those apps reject every intercepted host while the OS store, and
-   * everything that reads it, is satisfied. */
+  /** Linux only: whether every browser NSS store (Chromium's and each Firefox
+   * profile's) holds the CA. null where those stores do not apply. False
+   * beside a trusted CA means those browsers reject every intercepted host
+   * while the OS store, and everything that reads it, is satisfied. */
   caNssTrusted: boolean | null;
 }) {
   const platform = usePlatform();
@@ -121,9 +127,10 @@ export function Home({
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
   const partial = proxyOn && !caTrusted && anyDomainOn;
-  // The OS trusts the certificate but Chromium's own store does not, so
-  // Chrome and Electron apps show a certificate error on every intercepted
-  // host. Nothing else on screen can show this: every row reads Routed.
+  // The OS trusts the certificate but a browser's own store does not
+  // (Chromium's, or a Firefox profile's), so that browser shows a certificate
+  // error on every intercepted host. Nothing else on screen can show this:
+  // every row reads Routed.
   const chromiumUntrusted = proxyOn && caTrusted && caNssTrusted === false && anyDomainOn;
   // Denominator included so "3 of 8" answers "and what about the rest?"
   // without a scroll; the families below are the itemization.
@@ -206,7 +213,8 @@ export function Home({
         ? "stale"
         : // "Certificate trusted" beside a card saying Chrome does not trust
           // it would be two answers to one question; the card is the true one.
-          changeNotice && !(changeNotice === "trusted" && chromiumUntrusted)
+          // The browser-restart notice says the same thing more precisely.
+        changeNotice && !(changeNotice === "trusted" && (chromiumUntrusted || browserRestart))
           ? "change"
           : null;
 
@@ -573,7 +581,7 @@ export function Home({
                 {trustPending ? "Waiting…" : "Retry"}
               </Button>
               <div className="order-2 min-w-0 flex-1 text-gc-body-sm font-medium leading-snug text-gc-ink">
-                Chrome and apps built on it don&rsquo;t trust the Gate certificate yet.
+                Your browsers don&rsquo;t trust the Gate certificate yet.
               </div>
             </div>
             <p className="mt-2 text-gc-caption leading-snug text-gc-ink-3">
@@ -691,6 +699,27 @@ export function Home({
               aria-label={
                 changeNotice === "trusted" ? "Dismiss certificate notice" : "Dismiss routing notice"
               }
+            />
+          </div>
+        )}
+
+        {/* Its own row rather than a `changeNotice` value: it lands in the same
+            enable that raises "Routing is on", and that notice's remedy
+            (close the tools) is a different job from this one. Hidden while
+            the browser-trust card is up, which is the truer answer then. */}
+        {showProxy && browserRestart && !chromiumUntrusted && (
+          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
+            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
+            <div className="min-w-0 flex-1 text-gc-caption font-medium leading-snug text-gc-ink">
+              Certificate added to your browsers.{" "}
+              <span className="font-semibold">Quit and reopen</span> any that are open, or
+              they keep showing a certificate error.
+            </div>
+            <IconButton
+              icon="x"
+              size={13}
+              onClick={onDismissBrowserRestart}
+              aria-label="Dismiss browser restart notice"
             />
           </div>
         )}

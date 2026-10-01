@@ -58,6 +58,7 @@ const proxy: ProxyState = {
   env_export_separable: false,
   forwarder_answering: null,
   ca_nss_trusted: null,
+  ca_nss_writes: 0,
   domains: [],
 };
 

@@ -126,6 +126,7 @@ impl ProxyManager {
             pac_port: None,
             ca_trusted: ca::is_trusted()?,
             ca_nss_trusted: ca::nss_ca_trusted(),
+            ca_nss_writes: ca::nss_writes(),
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
             // No forwarder on Linux: the daemon outlives the GUI, which is the

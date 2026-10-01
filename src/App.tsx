@@ -293,6 +293,21 @@ export function App() {
   // engine while connect_tool does.
   const [changeNotice, setChangeNotice] = useState<ChangeNotice>(null);
 
+  // Linux: the backend added the CA to a browser's own store (Chromium's or a
+  // Firefox profile's). A running browser keeps the store it opened at launch,
+  // so nothing changes for it until it restarts - and nothing on screen said
+  // so: a fresh Ubuntu install had Chrome and Firefox both rejecting claude.ai
+  // after trust was in place. Raised whenever `ca_nss_writes` goes up,
+  // including on the first reading, since the startup reconcile can write
+  // before any window has asked for anything. Sticky until dismissed.
+  const [browserRestart, setBrowserRestart] = useState(false);
+  const nssWritesSeen = useRef(0);
+  useEffect(() => {
+    const writes = proxy?.ca_nss_writes ?? 0;
+    if (writes > nssWritesSeen.current) setBrowserRestart(true);
+    nssWritesSeen.current = writes;
+  }, [proxy?.ca_nss_writes]);
+
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
   // a build without port persistence, or the persisted port was taken).
@@ -1350,6 +1365,8 @@ export function App() {
         changeNotice={changeNotice}
         canCloseAgents={!nothingToClose}
         onDismissChangeNotice={() => setChangeNotice(null)}
+        browserRestart={browserRestart}
+        onDismissBrowserRestart={() => setBrowserRestart(false)}
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click
         // already declared the intent, land directly on the confirm step.
