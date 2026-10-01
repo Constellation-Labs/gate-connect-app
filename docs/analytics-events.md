@@ -73,9 +73,13 @@ of `diagnostics_opted_out`.
     install id by then. Every writer of `analytics-identity.json` runs its
     read-modify-write under a process-wide mutex and an advisory lock on
     `analytics-identity.lock` (`flock` on macOS and Linux, an unshared open on
-    Windows), waiting at most ten seconds for another holder, so the app's
-    windows and `gate-connect logout` cannot lose each other's writes and a
-    stuck holder cannot hang a sign-out. The record is announced to the
+    Windows), so the app's windows and `gate-connect logout` cannot lose each
+    other's writes. The wait is bounded only against another process: the file
+    lock gives up after ten seconds, so a stuck CLI (or a stuck app, for the
+    CLI) cannot hang a sign-out, while the app's own writers queue on the mutex
+    with no timeout. If a CLI logout's forget gives up while the app's save
+    holds the lock, the record can briefly keep the old sub, until the main
+    window next notes the session as signed out. The record is announced to the
     windows from inside the lock, so announcements follow the order of the
     writes.
 - **Pairing** sets the `organization` group to the org id, once the question

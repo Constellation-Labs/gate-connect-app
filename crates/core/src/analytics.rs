@@ -553,6 +553,14 @@ static IDENTITY_WRITERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// back: the forget was simply lost. The mutex covers the threads; the advisory
 /// lock on [`IDENTITY_LOCK_FILE`] covers the CLI, and is released by the OS if
 /// its holder dies.
+///
+/// **The wait is bounded only against another process.** The mutex has no
+/// timeout: a thread waits for this process's other writers for as long as
+/// they take. The file lock gives up after [`IDENTITY_LOCK_WAIT`], which is the
+/// bound against the CLI (or a second app process). One consequence: if a
+/// `gate-connect logout` forget gives up after those ten seconds while the
+/// app's save holds the lock, the record can briefly keep the old sub, until
+/// the main window next notes the session as signed out and saves again.
 fn with_identity_locked<T>(support: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let _threads = IDENTITY_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
@@ -560,11 +568,12 @@ fn with_identity_locked<T>(support: &Path, f: impl FnOnce() -> Result<T>) -> Res
     f()
 }
 
-/// How long a writer waits for another holder of [`IDENTITY_LOCK_FILE`]. A
-/// holder keeps it for one small read and write (and, for a save naming a sub,
-/// one witnessed session read); ten seconds is a holder that is stuck, and a
-/// stuck lock must not hang a sign-out. On both platforms, so neither can wait
-/// forever.
+/// How long a writer waits for ANOTHER PROCESS holding [`IDENTITY_LOCK_FILE`]
+/// (the CLI, say); writers in this process queue on [`IDENTITY_WRITERS`] with
+/// no timeout. A holder keeps it for one small read and write (and, for a save
+/// naming a sub, one witnessed session read); ten seconds is a holder that is
+/// stuck, and a stuck lock must not hang a sign-out. On both platforms, so
+/// neither can wait forever on another process.
 const IDENTITY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A cross-process advisory lock on one file, held until the returned handle is

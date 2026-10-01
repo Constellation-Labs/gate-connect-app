@@ -951,10 +951,12 @@ function persistIdentity(): void {
       // Not the live session's: the backend has already broadcast the stored
       // record, which moved this window back onto it. Nothing to retry.
       if (String(e).includes(IDENTITY_NOT_LIVE)) return;
-      // The session could not be read (a secret-store hiccup), or the record
-      // could not be written. Nothing says this window is wrong, so it keeps
-      // its identity and tries again, a bounded number of times; a later
-      // session note also retries.
+      // Every other error is retried: the session could not be read (a
+      // secret-store hiccup, `analytics-identity-unconfirmed`), the identity
+      // lock timed out against another process, or the record could not be
+      // read or written. Nothing says this window is wrong, so it keeps its
+      // identity and tries again, a bounded number of times; a later session
+      // note also retries.
       schedulePersistRetry();
     },
   );
