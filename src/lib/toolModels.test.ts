@@ -6,6 +6,7 @@ import {
   formatCredits,
   formatPlan,
   leftGateModelsNotice,
+  modelNamesById,
   stepForChoice,
 } from "./toolModels";
 import type { ToolModels } from "./api";
@@ -190,6 +191,27 @@ describe("leftGateModelsNotice", () => {
     expect(leftGateModelsNotice("Hermes", null)).toBe(
       "You switched Hermes to another model in Hermes, so it is back on App default.",
     );
+  });
+});
+
+describe("modelNamesById", () => {
+  it("indexes the catalogue's display names by canonical id", () => {
+    const names = modelNamesById(
+      adaptModels({
+        data: [
+          { id: "anthropic/claude-opus-5", owned_by: "anthropic", name: "Claude Opus 5" },
+          // No name: `adaptModels` falls back to the id, so the index does too.
+          { id: "openai/gpt-6-luna", owned_by: "openai" },
+        ],
+      }),
+    );
+    expect(names.get("anthropic/claude-opus-5")).toBe("Claude Opus 5");
+    expect(names.get("openai/gpt-6-luna")).toBe("openai/gpt-6-luna");
+    expect(names.get("missing/model")).toBeUndefined();
+  });
+
+  it("is empty, not null, for an unread catalogue", () => {
+    expect(modelNamesById(null).size).toBe(0);
   });
 });
 

@@ -23,6 +23,8 @@
 //! [`crate::activity`] gives: the TypeScript side is the single place that models
 //! each shape, so it cannot drift from a second model here.
 
+use std::io::Read as _;
+
 use anyhow::Context;
 use serde::Serialize;
 
@@ -104,6 +106,9 @@ pub enum Method {
 /// *before* the body is sent and no retry is attempted: a write that failed
 /// midway is the caller's to re-issue, and a silent retry on a non-idempotent
 /// route is how one click becomes two.
+/// The most a control-plane response body may be. See the read in [`call_json`].
+const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
 pub fn call_json(
     method: Method,
     url: String,
@@ -204,15 +209,25 @@ pub fn call_json(
     };
 
     let status = resp.status();
-    let body = match resp.text() {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(Failure::new(
-                FailureCode::Unknown,
-                format!("reading the {url} response body: {e}"),
-            ))
-        }
-    };
+    // Read to a cap, not to the end. The catalogue is the largest body this
+    // fetches - a few hundred rows, well under a megabyte - and it is now read
+    // on every signed-in launch rather than when the picker opens, so a gateway
+    // that answered with something unbounded would be met here rather than in
+    // the UI's `JSON.parse`. Lossy UTF-8, as `text()` was.
+    let mut raw = Vec::new();
+    if let Err(e) = std::io::Read::take(resp, MAX_BODY_BYTES + 1).read_to_end(&mut raw) {
+        return Err(Failure::new(
+            FailureCode::Unknown,
+            format!("reading the {url} response body: {e}"),
+        ));
+    }
+    if raw.len() as u64 > MAX_BODY_BYTES {
+        return Err(Failure::new(
+            FailureCode::Unknown,
+            format!("the {url} response body is larger than {MAX_BODY_BYTES} bytes"),
+        ));
+    }
+    let body = String::from_utf8_lossy(&raw).into_owned();
     if !status.is_success() {
         let code = if status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN

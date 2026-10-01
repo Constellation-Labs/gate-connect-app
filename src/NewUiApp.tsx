@@ -98,6 +98,7 @@ import {
   GATE_MODEL_TOOLS,
   formatCredits,
   leftGateModelsNotice,
+  modelNamesById,
   stepForChoice,
   formatPlan,
   useCredits,
@@ -105,7 +106,7 @@ import {
   useToolModels,
 } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
-import { useToolEvents } from "./lib/toolEvents";
+import { labelEntries, useToolEvents, vendorFromModelId } from "./lib/toolEvents";
 import { machineNotices, memberNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
@@ -602,17 +603,42 @@ export function NewUiApp() {
    *  is not a gap but the true default: the tool picks its own model. */
   const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
   /**
-   * The catalogue, read when the picker needs it OR when a tool is running on a
-   * Gate model.
+   * The catalogue, read as soon as the account can be.
    *
-   * The second case is AG-592: the catalogue is the definition of "available",
-   * so checking whether a chosen model still exists means having it. It is a few
-   * hundred rows, which is why this is not read on every pane - only where a
-   * selection could have gone stale.
+   * It used to wait for the picker, or for a tool running on a Gate model
+   * (AG-592: the catalogue is the definition of "available", so checking whether
+   * a chosen model still exists means having it). Both still hold, but every
+   * table that prints a model now reads it too - the app pane's Recent activity
+   * and the Overview's Security events name their rows from it, the way the
+   * dashboard's Messages list does - and the Overview is drawn with no tool
+   * open. So the deferral has no pane left to spare; it is one read of a few
+   * hundred rows per account either way. (The security table's rows carry the
+   * provider's own id and find a name less often; `SecurityEventsProps.modelNames`
+   * says why.)
+   *
+   * `canRead` alone, not `canRead` or the picker: the picker opens from an app
+   * pane, which needs an account, so the second condition added nothing.
    */
-  const gateModels = useGateModels(
-    modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
-  );
+  const gateModels = useGateModels(canRead, credential);
+  /** Catalogue display names by id, for the two tables above. Empty until the
+   *  catalogue lands, which leaves every row on its id. */
+  const modelNames = useMemo(() => modelNamesById(gateModels.models), [gateModels.models]);
+  /**
+   * Opening the picker retries a catalogue read that failed.
+   *
+   * The picker's failure note says "Close this and try again", and that used to
+   * work because its visibility was the hook's `enabled`: closing and reopening
+   * toggled it, and the toggle re-read. `enabled` is constant now, so the retry
+   * is the opening itself. Keyed on the open edge and on *whether* the read
+   * failed, not on the failure value: a retry that fails again replaces the
+   * failure object but not the boolean, so it does not retry itself.
+   */
+  const pickerOpen = modelOverlay?.kind === "picker";
+  const catalogueFailed = gateModels.failure !== null;
+  const reloadCatalogue = gateModels.reload;
+  useEffect(() => {
+    if (pickerOpen && catalogueFailed) reloadCatalogue();
+  }, [pickerOpen, catalogueFailed, reloadCatalogue]);
   /** The org's Gate credit balance, for the card and the billing confirmation.
    *  Read whenever the account can be read at all, not only while an app pane
    *  is open. It was gated on `openTool !== null`, which was right when the
@@ -813,7 +839,7 @@ export function NewUiApp() {
    */
   const toolEventRows = useMemo(
     () =>
-      (toolEvents.view?.entries ?? []).map((e) => ({
+      labelEntries(toolEvents.view?.entries ?? [], modelNames).map((e) => ({
         ...e,
         onView: () => {
           // `openDashboard` is declared below this memo, so the guard is inlined
@@ -825,7 +851,7 @@ export function NewUiApp() {
           openLink(dash.message(e.id));
         },
       })),
-    [toolEvents.view, dash, openLink],
+    [toolEvents.view, modelNames, dash, openLink],
   );
 
   const loadLaunchAtLogin = useCallback(async () => {
@@ -3109,7 +3135,7 @@ export function NewUiApp() {
             app={{ name: appFor(apps, openTool ?? "")?.name ?? "this app" }}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
-            vendor={modelOverlay.modelIds[0].split("/")[0]}
+            vendor={vendorFromModelId(modelOverlay.modelIds[0]) ?? modelOverlay.modelIds[0]}
             // The whole set, so the dialog can list what the charge covers.
             // AG-590 requires the enabled models be stated before it is accepted.
             modelIds={modelOverlay.modelIds}
@@ -3377,8 +3403,8 @@ export function NewUiApp() {
                 },
                 gateModel: openModelId
                   ? // The whole set, configured-first, for display only. The
-                    // card reads each vendor off the id: the catalogue is only
-                    // loaded while the picker is open.
+                    // card reads each vendor off the id, which is all the mark
+                    // needs and is there before the catalogue lands.
                     { ids: cardModelIds }
                   : null,
                 onChangeModel: () =>
@@ -3588,6 +3614,7 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
+            modelNames,
           }}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we

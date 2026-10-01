@@ -218,3 +218,108 @@ describe("opening an event", () => {
     expect(onRetry).toHaveBeenCalled();
   });
 });
+
+/**
+ * The Model cell draws the catalogue's label where it has one, the way the
+ * dashboard's Messages list does, and the id stays on hover because it is what
+ * the reader can search for. The event itself is never rewritten: `model` on
+ * `SecurityEvent` is the wire contract.
+ */
+describe("the model cell", () => {
+  const names = new Map([["anthropic/claude-opus-4-5", "Claude Opus 4.5"]]);
+  const row: SecurityEvent = { ...blocked, model: "anthropic/claude-opus-4-5" };
+
+  it("names the model from the catalogue and keeps the id on hover", () => {
+    render(section({ events: [row], modelNames: names }));
+    const cell = screen.getByText("Claude Opus 4.5");
+    expect(cell.getAttribute("title")).toBe("anthropic/claude-opus-4-5");
+    expect(screen.queryByText("anthropic/claude-opus-4-5")).toBeNull();
+  });
+
+  it("keeps the id when the catalogue does not list the model, or was not read", () => {
+    render(section({ events: [{ ...row, model: "aion-labs/aion-2-0" }], modelNames: names }));
+    expect(screen.getByText("aion-labs/aion-2-0")).toBeTruthy();
+    cleanup();
+    render(section({ events: [row] }));
+    expect(screen.getByText("anthropic/claude-opus-4-5")).toBeTruthy();
+  });
+
+  it("still says unattributed for a row with no model", () => {
+    render(section({ events: [{ ...row, model: null }], modelNames: names }));
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
+  });
+
+  it("reads the pipeline's unknown sentinel as no model", () => {
+    // `resolved_model` holds the literal on rows whose body could not be read,
+    // and the security bus passes it through where tool-events maps it to null.
+    render(section({ events: [{ ...row, model: "unknown" }], modelNames: names }));
+    expect(screen.queryByText("unknown")).toBeNull();
+    expect(screen.queryByTitle("unknown")).toBeNull();
+  });
+});
+
+/**
+ * The provider mark beside the model (`1402:18017`), and the order it falls
+ * back in. The security bus passes `provider` through raw, so it is a marketplace
+ * account string or the pipeline's `unknown` on a large share of rows; a chain
+ * that stopped at the provider would draw a cube beside a model id that names
+ * its vendor plainly.
+ */
+describe("the model cell's provider mark", () => {
+  const ANTHROPIC = 'svg path[fill="#E8704E"]';
+  const CUBE = 'svg[data-icon="cube"]';
+  const row: SecurityEvent = { ...blocked, model: "anthropic/claude-opus-4-5" };
+
+  it("draws the provider's brand mark, and names the provider for a screen reader", () => {
+    const { container } = render(section({ events: [row] }));
+    expect(container.querySelector(ANTHROPIC)).toBeTruthy();
+    expect(screen.getByText("anthropic", { selector: ".sr-only" })).toBeTruthy();
+  });
+
+  it("falls back to the model id's namespace when the provider has no mark", () => {
+    const { container } = render(
+      section({ events: [{ ...row, provider: "openai_compatible:Marcus OpenRouter" }] }),
+    );
+    expect(container.querySelector(ANTHROPIC)).toBeTruthy();
+    expect(container.querySelector(CUBE)).toBeNull();
+  });
+
+  it("draws the namespace's mark and says nothing when no provider was named", () => {
+    const { container } = render(section({ events: [{ ...row, provider: null }] }));
+    expect(container.querySelector(ANTHROPIC)).toBeTruthy();
+    // The header row keeps its own hidden "Action" label; the rows say nothing.
+    expect(container.querySelector("tbody .sr-only")).toBeNull();
+  });
+
+  it("reads the pipeline's unknown sentinel as no provider", () => {
+    const { container } = render(section({ events: [{ ...row, provider: "unknown" }] }));
+    expect(container.querySelector(ANTHROPIC)).toBeTruthy();
+    expect(screen.queryByText("unknown")).toBeNull();
+  });
+
+  it("draws the cube when the provider is named but unmapped and the id names no vendor", () => {
+    // The third step of the chain: nothing to draw a brand for, but a provider
+    // was named, so the slot is a glyph rather than left empty.
+    const { container } = render(
+      section({ events: [{ ...row, provider: "openai_compatible:Marcus OpenRouter", model: "gpt-5" }] }),
+    );
+    expect(container.querySelector(CUBE)).toBeTruthy();
+    expect(screen.getByTitle("openai_compatible:Marcus OpenRouter")).toBeTruthy();
+  });
+
+  it("draws the cube for a vendor with no published mark", () => {
+    const { container } = render(
+      section({ events: [{ ...row, provider: null, model: "sao10k/l3-euryale-70b" }] }),
+    );
+    expect(container.querySelector(CUBE)).toBeTruthy();
+  });
+
+  it("leaves the slot empty when nothing names a vendor", () => {
+    render(section({ events: [{ ...row, provider: null, model: "gpt-5" }] }));
+    // The cell, not the row: the Category glyph and the View button draw SVGs
+    // of their own in other cells.
+    const cell = screen.getByTitle("gpt-5").parentElement!;
+    expect(cell.querySelector("svg")).toBeNull();
+    expect(cell.querySelector('[aria-hidden="true"]')).toBeTruthy();
+  });
+});

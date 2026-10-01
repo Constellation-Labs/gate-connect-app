@@ -336,6 +336,23 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
 }
 
 /**
+ * The catalogue's display names, keyed by canonical id.
+ *
+ * What lets a request row say "Claude Opus 4.5" where the gateway sent
+ * `anthropic/claude-opus-4-5`. The dashboard's Messages list and this app
+ * disagree on no spelling here because neither invents one: `name` is the
+ * catalogue's own `display_name`, read once per session by {@link useGateModels}
+ * and looked up here rather than asked for again per row.
+ *
+ * An unread catalogue gives an empty index, so a row looked up against it keeps
+ * its id. Empty rather than null: every caller wants exactly that fallback, and
+ * a `Map` that is always there is one branch fewer at each.
+ */
+export function modelNamesById(catalogue: GateModel[] | null): ReadonlyMap<string, string> {
+  return new Map((catalogue ?? []).map((m) => [m.id, m.name]));
+}
+
+/**
  * This install's model choices, plus a writer.
  *
  * Keeps `useActivity`'s generation guard for the same reason: a reply from a
@@ -500,16 +517,27 @@ export function useToolModels(
 }
 
 /**
- * The catalogue, read once the picker needs it.
+ * The catalogue, read once per account.
  *
- * Its own hook rather than part of {@link useToolModels}: the list is large,
- * unchanging within a session, and only the picker wants it, so loading it with
- * the preferences would make every pane open pay for a dialog that is usually
- * never raised.
+ * Its own hook rather than part of {@link useToolModels}: the list is large and
+ * unchanging within a session, so it is read once and held, where the
+ * preferences are re-read after every write.
  *
- * `enabled` is what defers it. Pass the picker's own visibility.
+ * `enabled` is what defers it. It was the picker's own visibility, and is now
+ * whether the account can be read at all, since the request tables name their
+ * rows from the catalogue too. That makes `enabled` constant for a signed-in
+ * session, so two things the toggling used to do are explicit now. A failed
+ * read is not retried here - `models` stays null, the effect below does not
+ * re-run, and the caller retries through `reload` at the moment it has a
+ * reason to (the picker opening, in `NewUiApp`). And `credential` identifies
+ * the account: when it changes the held catalogue is dropped and read again,
+ * because a different gateway, or a different org on one, has a different
+ * catalogue and the rows of the new account must not be labelled from the old.
  */
-export function useGateModels(enabled: boolean): {
+export function useGateModels(
+  enabled: boolean,
+  credential = "",
+): {
   models: GateModel[] | null;
   failure: ActivityFailure | null;
   loading: boolean;
@@ -539,12 +567,24 @@ export function useGateModels(enabled: boolean): {
       });
   }, [enabled]);
 
-  // Once per session, not once per opening: the catalogue is large and
+  // Once per account, not once per opening: the catalogue is large and
   // unchanging within a session (see the doc above), so re-fetching 300+ models
   // every time the picker is raised buys nothing.
+  //
+  // One effect for the forgetting and the reading, keyed on the account. A new
+  // credential drops the held catalogue, disowns a read of the old one still in
+  // flight - so a late answer for the previous gateway cannot land under the new
+  // one's name - and reads again. The two were separate effects, the second
+  // keyed on `models` being null, and a credential change during the first read
+  // left `models` null and unchanged, so the second never ran. A failure changes
+  // nothing this depends on, so it does not retry itself.
   useEffect(() => {
-    if (enabled && models === null) reload();
-  }, [enabled, models, reload]);
+    attempt.current += 1;
+    setModels(null);
+    setFailure(null);
+    setLoading(false);
+    if (enabled) reload();
+  }, [enabled, credential, reload]);
   return { models, failure, loading, reload };
 }
 

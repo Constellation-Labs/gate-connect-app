@@ -272,6 +272,25 @@ describe("AppPane recent activity", () => {
     expect(within(feed).getByText("anthropic")).toBeTruthy();
   });
 
+  it("falls back to the model's own vendor mark when the provider has none", () => {
+    // Same chain as the Security events table, since the two share `VendorMark`.
+    const { container } = render(
+      pane({
+        activity: [
+          {
+            ...entry,
+            provider: "openai_compatible:Marcus OpenRouter",
+            modelId: "anthropic/claude-opus-4-5",
+            vendor: "anthropic",
+          },
+        ],
+      }),
+    );
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy();
+    // The words still belong to the provider the gateway named.
+    expect(screen.getByTitle("openai_compatible:Marcus OpenRouter")).toBeTruthy();
+  });
+
   it("keeps the model id on hover when the cell draws the gateway's label", () => {
     // AG-951: the label can be a prettified id, so the id stays reachable.
     render(

@@ -2,7 +2,8 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, OutlineButton, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
-import { providerMarkFor } from "./ProviderMark";
+import { VendorMark, providerMarkFor } from "./ProviderMark";
+import { vendorFromModelId } from "../../lib/toolEvents";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 import { STATUS_TEXT } from "./Sidebar";
@@ -384,60 +385,6 @@ function AppStatusLine({
 }
 
 /**
- * The upstream's mark beside the model (Figma 272:3282).
- *
- * The real brand mark now that `ProviderMark` carries them; this used to be a
- * one-letter monogram because the repo held no provider logos. Unmapped vendors
- * fall back to the cube, which is the `Icon / Boxes` the frames draw in the same
- * slot - a letter tile read as a different kind of thing entirely.
- *
- * Renders an empty slot when the provider is unknown, rather than a question
- * mark: the model name beside it already carries the row, and the spacer keeps
- * the column aligned.
- *
- * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
- * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
- * element is reachable by mouse and by nothing else, which would make the
- * provider the one thing on the row a screen reader could not get at. The
- * tooltip stays for pointer users.
- */
-function VendorMark({
-  provider,
-  vendor,
-}: {
-  /** What the gateway said served the request, and the only thing this row is
-   *  allowed to put into words. Null when it named none. */
-  provider: string | null;
-  /** The namespace whose mark to draw - the provider where there is one, the
-   *  model id's own namespace otherwise. See `ToolEventRow.vendor`. */
-  vendor: string | null;
-}) {
-  if (!vendor) return <span aria-hidden className="size-4 shrink-0" />;
-  return (
-    <>
-      <span
-        aria-hidden
-        // Only where the gateway named it. A derived vendor draws its mark and
-        // says nothing: the mark sits beside the model id it was taken from, so
-        // it identifies the model, while a tooltip would be asserting who
-        // served a request that may never have reached anyone.
-        title={provider ?? undefined}
-        // `base.foreground`, not the muted grey the Overview's row glyphs take.
-        // A brand mark is not a glyph: the colour ones carry their own fills and
-        // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
-        // inception, relace) inherit it - so muting the wrapper rendered OpenAI
-        // grey here and inked in the picker, while Moonshot, which hard-codes
-        // black, stayed black in both. Same ink as `dialogs.tsx`'s row now.
-        className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
-      >
-        {providerMarkFor(vendor) ?? <Icon name="cube" size={16} />}
-      </span>
-      {provider && <span className="sr-only">{provider}</span>}
-    </>
-  );
-}
-
-/**
  * The Model selection card (Figma `Flows / App`).
  *
  * Three things this deliberately does not do.
@@ -704,7 +651,10 @@ function ModelSelection({
                   className="grid grid-cols-2 gap-x-4 gap-y-3 p-3"
                 >
                   {gateModel.ids.map((id) => {
-                    const vendor = id.split("/")[0];
+                    // The id itself when it carries no namespace: the eyebrow
+                    // has to print something, and that is what the split this
+                    // replaced produced.
+                    const vendor = vendorFromModelId(id) ?? id;
                     return (
                       <li key={id} className="flex min-w-0 items-center gap-3">
                         <span

@@ -12,7 +12,8 @@ call site has ever passed**. `NewUiApp.tsx:3481-3494` builds the pane's model
 object as `{ vendor, ids }` with no `logo`; `NewUiApp.tsx:3192` passes the
 catalogue straight through, and `lib/toolModels.ts`'s `GateModel` has no logo
 field to pass. The activity table draws a grey one-letter monogram instead
-(`VendorMark`, `AppPane.tsx:365-379`), whose own comment says "this repo carries
+(`VendorMark`, then at `AppPane.tsx:365-379`; since 2026-10-01 it lives in
+`ProviderMark.tsx` and both request tables share it), whose own comment said "this repo carries
 no provider logos ... swap this for the real SVGs when they land".
 
 Logged as **M16** in `docs/review-figma-dialogs-app.md:414-423`.
@@ -217,9 +218,10 @@ hand-rescaling is the step most likely to introduce a silent shape error.
 Resolve the mark **at the render site**, from the `vendor` the component already
 holds, rather than plumbing a `ReactNode` down from `NewUiApp`. `NewUiApp`
 derives the vendor by `id.split("/")[0]` in two places already (`:3209`, `:3489`)
-purely because the catalogue is only loaded while the picker is open - adding a
-third derivation there to build a `logo` node repeats that workaround for no
-gain. So **remove `logo?: ReactNode`** from `GateModelOption` (`dialogs.tsx:899`)
+purely because, at the time, the catalogue was only loaded while the picker was
+open (it is read whenever the account can be, since 2026-10-01, because the
+request tables name their rows from it) - adding a third derivation there to
+build a `logo` node repeats that workaround for no gain. So **remove `logo?: ReactNode`** from `GateModelOption` (`dialogs.tsx:899`)
 and `GateModel` (`AppPane.tsx:52-53`), and the unused `vendorLogo` prop from
 `UseGateModelDialog` (`dialogs.tsx:1430`, `:1450`). None has ever been passed;
 the review doc already flags them as dead.
@@ -229,9 +231,9 @@ the review doc already flags them as dead.
 | `dialogs.tsx:1124` (picker row) | `model.logo ?? <Icon name="cube" size={16} />` | `providerMarkFor(model.vendor) ?? <Icon name="cube" size={16} />` |
 | `dialogs.tsx:1470` (`UseGateModelDialog`) | `vendorLogo ?? <Icon name="cube" size={16} />` | `providerMarkFor(vendor, 20) ?? <Icon name="cube" size={20} />` - the frame's 20px |
 | `AppPane.tsx:540` (Current Gate model) | `gateModel.logo ?? <Icon name="cube" size={16} />` | `providerMarkFor(gateModel.vendor) ?? ...` |
-| `AppPane.tsx:868` (`VendorMark`, activity) | grey letter monogram | `providerMarkFor(provider) ?? <Icon name="cube" size={16} />` |
+| `AppPane.tsx:868` (`VendorMark`, activity; now `ProviderMark.tsx`) | grey letter monogram | `providerMarkFor(provider) ?? <Icon name="cube" size={16} />` |
 
-`VendorMark` (`AppPane.tsx:347-379`) keeps its two other behaviours verbatim: the
+`VendorMark` (`AppPane.tsx:347-379` then; `ProviderMark.tsx` now) keeps its two other behaviours verbatim: the
 empty `size-4` spacer when `provider` is null, and the `sr-only` provider name
 beside the `aria-hidden` glyph. Only the glyph changes; rewrite the doc comment,
 which currently asserts the repo has no provider logos.
