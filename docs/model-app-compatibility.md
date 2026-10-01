@@ -15,8 +15,9 @@ rather than editing an old one, so the history stays.
 | `result` | `works`, `fails`, or `fails silently` (a success status with no answer) |
 | `symptom` | What the user sees, with the error text |
 | `cause` | Why, once known |
-| `status` | `ok`, `open`, `mitigated`, or `open: risk assumed` |
+| `status` | One of `ok`, `open`, `mitigated` or `accepted` (a known failure we live with), and nothing else, so it filters cleanly |
 | `source` | How it was found |
+| `notes` | Anything else: how it was mitigated, who it was escalated to |
 
 ## How the 2026-10-01 Claude Code rows were tested
 
@@ -31,11 +32,11 @@ the live failure.
 
 | Result | Models | Cause |
 |---|---|---|
-| Works | claude-opus-5, claude-sonnet-5, gemini-3-1-flash-lite, deepseek-v4-1-flash, deepseek-v4-flash, kimi-k2-6, glm-5-2, grok-4-6 | |
-| 400 error | muse-spark-1-1, 1-2, 1-3 | Refuses a schema pattern with a NUL escape (`^[^\0]*$`) in Claude Code's Artifact tool |
-| Empty reply, no error | gpt-5.6-terra, gpt-6-1-sol, gpt-6-luna | Same pattern |
-| 403 error | deepseek/r1, deepseek/v3, devstral-2-123b | Refuses Claude Code's prompt caching |
-| 404 error | qwen3-235b-a22b-instruct-2507 | Listed in the catalogue but never served, even outside Claude Code |
+| Works | anthropic/claude-opus-5, anthropic/claude-sonnet-5, google/gemini-3-1-flash-lite, deepseek/deepseek-v4-1-flash, deepseek/deepseek-v4-flash, moonshotai/kimi-k2-6, z-ai/glm-5-2, x-ai/grok-4-6 | |
+| 400 error | meta-llama/muse-spark-1-1, meta-llama/muse-spark-1-2, meta-llama/muse-spark-1-3 | Refuses a schema pattern with a NUL escape (`^[^\0]*$`) in Claude Code's Artifact tool |
+| Empty reply, no error | openai/gpt-5.6-terra, openai/gpt-6-1-sol, openai/gpt-6-luna | Same pattern |
+| 403 error | deepseek/r1, deepseek/v3, mistralai/devstral-2-123b | Refuses Claude Code's prompt caching |
+| 404 error | qwen/qwen3-235b-a22b-instruct-2507 | Listed in the catalogue but never served, even outside Claude Code |
 
 Eight models work, so the failures are a risk we assume rather than a reason
 to escalate. Two are still worth raising with the gateway team: the OpenAI
@@ -87,6 +88,19 @@ Where it would live: in the gateway (the `gate` repo), in the step that
 converts Anthropic requests for other providers. It would fix every app that
 sends a schema like this, not only Claude Code.
 
+For whoever implements it:
+
+- **The pattern is nested.** The failing one is `file_paths.items.pattern`, so
+  the walk has to go into `items`, `properties`, `anyOf` and the rest, not stop
+  at the top of each tool's schema.
+- **NUL has more than one spelling.** After JSON decoding the same rule can
+  arrive as `\0`, `\x00`, `\u0000` or the NUL character itself. Matching "the
+  regex can match or excludes NUL", or at least listing those spellings, keeps
+  the rule from missing the next tool that writes it differently.
+- **Only the keyword.** A `pattern` whose value is a string is the schema
+  keyword. A tool input that is itself named `pattern` (Claude Code's Grep)
+  sits under `properties` as an object and must be left alone.
+
 **Not in Gate Connect, by decision.** #400 did this on Gate Connect's Gate
 models route and was closed in review: Gate Connect forwards requests
 faithfully, so any model that works with an app works through Gate Connect,
@@ -108,9 +122,7 @@ says how to run it and how to capture a request.
 
 ## Open questions to escalate
 
-- **NUL escape in a schema pattern** (`^[^\0]*$`). Muse Spark refuses it with
-  a 400. OpenAI models answer 200 with nothing in them. The gateway could
-  drop or rewrite that pattern before forwarding, which would fix both.
+- **NUL escape in a schema pattern.** See the NUL-escape section above.
 - **Prompt caching** (`cache_control`). Some upstreams refuse it, so every
   Claude Code request to them fails. The gateway could strip it for those.
 - **Catalogue entries with no route**, such as

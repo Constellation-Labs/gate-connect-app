@@ -1,27 +1,26 @@
-date,app,app_version,model,result,symptom,cause,status,source
-2026-09-29,Codex,0.159.3,meta-llama/muse-spark-1-1,fails,"400 ""custom tools are not supported on this endpoint""",Model has no freeform (custom) tool support; Codex sends apply_patch as a freeform tool,mitigated: Gate's Codex catalog drops freeform apply_patch and code mode for models without freeform support,live QA on #382
-2026-09-29,Codex,0.159.3,openai/gpt-5.6-terra,works,,,ok,live QA on #382
-2026-09-29,Hermes,,several Gate models,works,,,ok,live QA on #382
-2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-1,fails,"400 ""Invalid JSON schema: {...""pattern"":""^[^\\0]*$""...} is not valid under any of the schemas listed in the 'anyOf' keyword""",Upstream rejects a JSON Schema pattern containing a NUL escape (\0). Claude Code's Artifact tool uses one (file_paths items). Built-in tools alone work,open: risk assumed,replay of a captured Claude Code request on staging
-2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-2,fails,same as muse-spark-1-1,same as muse-spark-1-1,open: risk assumed,replay on staging; also hit in a live session (compaction failed)
-2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-3,fails,same as muse-spark-1-1,same as muse-spark-1-1,open: risk assumed,replay on staging
-2026-10-01,Claude Code,2.1.287,openai/gpt-5.6-terra,fails silently,"200 with empty content and 0 tokens (stop_reason max_tokens), no error",Same NUL-escape pattern in the Artifact tool. Without it the model answers and calls tools,open: escalated to the gateway team (nothing tells the user),replay on staging
-2026-10-01,Claude Code,2.1.287,openai/gpt-6-1-sol,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open,replay on staging
-2026-10-01,Claude Code,2.1.287,openai/gpt-6-luna,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open,replay on staging
-2026-10-01,Claude Code,2.1.287,deepseek/r1,fails,"403 ""You invoked an unsupported model or your request did not allow prompt caching""",Upstream rejects Claude Code's prompt-caching markers (cache_control). A plain request works,open,replay on staging
-2026-10-01,Claude Code,2.1.287,deepseek/v3,fails,same as deepseek/r1,same as deepseek/r1,open,replay on staging
-2026-10-01,Claude Code,2.1.287,mistralai/devstral-2-123b,fails,same as deepseek/r1,same as deepseek/r1,open,replay on staging
-2026-10-01,Claude Code,2.1.287,qwen/qwen3-235b-a22b-instruct-2507,fails,404 with an empty body,Listed in the catalogue but not served on /v1/messages; fails without Claude Code too,open: gateway or catalogue issue,replay on staging
-2026-10-01,Claude Code,2.1.287,anthropic/claude-opus-5,works,,,ok,replay on staging (accepts and calls Bash)
-2026-10-01,Claude Code,2.1.287,anthropic/claude-sonnet-5,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,google/gemini-3-1-flash-lite,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-1-flash,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-flash,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,moonshotai/kimi-k2-6,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,z-ai/glm-5-2,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,x-ai/grok-4-6,works,,,ok,replay on staging
-2026-10-01,Claude Code,2.1.287,openai/gpt-sol-latest,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open: escalated to the gateway team,live replay on staging; same direct and through Gate Connect
-2026-10-01,Claude Code,2.1.287,anthropic/claude-opus-5-5,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash
-2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-1-flash,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash
-2026-10-01,Claude Code,2.1.287,qwen/qwen3-8-flash,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash
-2026-10-01,Claude Code,2.1.287,moonshotai/kimi-k3,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash
+date,app,app_version,model,result,symptom,cause,status,source,notes,notes
+2026-09-29,Codex,0.159.3,meta-llama/muse-spark-1-1,fails,"400 ""custom tools are not supported on this endpoint""",Model has no freeform (custom) tool support; Codex sends apply_patch as a freeform tool,mitigated,live QA on #382,Gate's Codex catalog drops freeform apply_patch and code mode for models without freeform support,Gate's Codex catalog drops freeform apply_patch and code mode for models without freeform support
+2026-09-29,Codex,0.159.3,openai/gpt-5.6-terra,works,,,ok,live QA on #382,,
+2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-1,fails,"400 ""Invalid JSON schema: {...""pattern"":""^[^\\0]*$""...} is not valid under any of the schemas listed in the 'anyOf' keyword""",Upstream rejects a JSON Schema pattern containing a NUL escape (\0). Claude Code's Artifact tool uses one (file_paths items). Built-in tools alone work,accepted,replay of a captured Claude Code request on staging,,
+2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-2,fails,same as muse-spark-1-1,same as muse-spark-1-1,accepted,replay on staging; also hit in a live session (compaction failed),,
+2026-10-01,Claude Code,2.1.287,meta-llama/muse-spark-1-3,fails,same as muse-spark-1-1,same as muse-spark-1-1,accepted,replay on staging,,
+2026-10-01,Claude Code,2.1.287,openai/gpt-5.6-terra,fails silently,"200 with empty content and 0 tokens (stop_reason max_tokens), no error",Same NUL-escape pattern in the Artifact tool. Without it the model answers and calls tools,open,replay on staging,escalated to the gateway team (nothing tells the user),escalated to the gateway team (nothing tells the user)
+2026-10-01,Claude Code,2.1.287,openai/gpt-6-1-sol,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open,replay on staging,,
+2026-10-01,Claude Code,2.1.287,openai/gpt-6-luna,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open,replay on staging,,
+2026-10-01,Claude Code,2.1.287,deepseek/r1,fails,"403 ""You invoked an unsupported model or your request did not allow prompt caching""",Upstream rejects Claude Code's prompt-caching markers (cache_control). A plain request works,open,replay on staging,,
+2026-10-01,Claude Code,2.1.287,deepseek/v3,fails,same as deepseek/r1,same as deepseek/r1,open,replay on staging,,
+2026-10-01,Claude Code,2.1.287,mistralai/devstral-2-123b,fails,same as deepseek/r1,same as deepseek/r1,open,replay on staging,,
+2026-10-01,Claude Code,2.1.287,qwen/qwen3-235b-a22b-instruct-2507,fails,404 with an empty body,Listed in the catalogue but not served on /v1/messages; fails without Claude Code too,open,replay on staging,gateway or catalogue issue,gateway or catalogue issue
+2026-10-01,Claude Code,2.1.287,anthropic/claude-opus-5,works,,,ok,replay on staging (accepts and calls Bash),,
+2026-10-01,Claude Code,2.1.287,anthropic/claude-sonnet-5,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,google/gemini-3-1-flash-lite,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-1-flash,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-flash,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,moonshotai/kimi-k2-6,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,z-ai/glm-5-2,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,x-ai/grok-4-6,works,,,ok,replay on staging,,
+2026-10-01,Claude Code,2.1.287,openai/gpt-sol-latest,fails silently,same as gpt-5.6-terra,same as gpt-5.6-terra,open,live replay on staging; same direct and through Gate Connect,escalated to the gateway team,escalated to the gateway team
+2026-10-01,Claude Code,2.1.287,anthropic/claude-opus-5-5,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash,,
+2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-1-flash,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash,,
+2026-10-01,Claude Code,2.1.287,qwen/qwen3-8-flash,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash,,
+2026-10-01,Claude Code,2.1.287,moonshotai/kimi-k3,works,,,ok,live replay on staging; same direct and through Gate Connect; calls Bash,,
