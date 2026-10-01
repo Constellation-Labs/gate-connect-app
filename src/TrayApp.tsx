@@ -900,12 +900,6 @@ export function TrayApp() {
     <Tray
       engine={proxy ? { running: proxy.running, starting } : undefined}
       groups={trayGroups}
-      // Reported, not offered. The window's Settings pane owns this control -
-      // the tray reports what the window decides and introduces no concept of
-      // its own, the same rule the routing card follows.
-      cli={
-        proxy?.env_export_separable ? { on: proxy.env_export_opted_in } : undefined
-      }
       rootRef={root}
       // Same chain as the window's rail. `account.org_name` is OAuth-only, so
       // on an api-key account this footer had nothing to name and asserted the

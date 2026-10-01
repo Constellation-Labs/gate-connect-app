@@ -15,8 +15,8 @@ import { routingState, showsFraction } from "../../lib/routingState";
  * 400x700 quick-status surface the tray icon toggles, beside the full 1024x720
  * window. Header lockup with an "Expand app" hand-off, one routing status card,
  * the same grouped rows the window's rail draws - at tray width, with a
- * status line per row - the command-line tools switch, and a footer naming the organization in front of an overflow
- * menu.
+ * status line per row - and a footer naming the organization in front of an
+ * overflow menu.
  *
  * Presentational, like `Sidebar`: every piece of state arrives as a prop so
  * the tray shell (`TrayApp`) owns data fetching and dispatch. Row and group
@@ -63,7 +63,6 @@ import { routingState, showsFraction } from "../../lib/routingState";
 export function Tray({
   engine,
   groups,
-  cli,
   orgName,
   onSwitchOrg,
   signedOut,
@@ -86,12 +85,6 @@ export function Tray({
    * all that separates "not yet" from "didn't". */
   engine?: { running: boolean; starting: boolean };
   groups: SidebarGroup[];
-  /** The shell-environment channel, drawn as its own card ("Command-line
-   * tools"). Absent on Linux, where those variables are the system proxy and
-   * cannot be declined separately. */
-  /** Reported, not offered: the window's Settings pane owns this control.
-   *  See {@link CliCard}. */
-  cli?: { on: boolean };
   orgName: string;
   /** Open the organization selector (AG-582). The tray does not own one - it
    *  hands over to the window, which does. Omit and the footer draws the org as
@@ -185,9 +178,6 @@ export function Tray({
             {groups.map((group) => (
               <TrayGroup key={group.id} group={group} onToggleApp={onToggleApp} />
             ))}
-
-
-            {cli && <CliCard cli={cli} />}
           </div>
         </div>
       )}
@@ -495,39 +485,6 @@ function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
     >
       {logo ?? name.charAt(0)}
     </span>
-  );
-}
-
-/** The shell-environment channel as the tray draws it (735:37341), with the
- * frame's own copy - shorter than the rail card's, and naming the mechanism
- * (`HTTPS_PROXY`) outright.
- *
- * **A status card, not a switch**, which is the same call the routing card makes
- * one section up and for the same reason: the tray reports what the window
- * decides, and it introduces no concept of its own. Two switches for one
- * machine-wide setting is what AG-893 reported, and the window's Settings pane
- * is where a setting belongs.
- *
- * The frame draws a switch here. So does every tray frame for the routing card,
- * at opacity 0 - see this file's header. The drawn control is kept as the
- * drawn LAYOUT and rendered as state, rather than as a second control that can
- * disagree with the first. */
-function CliCard({ cli }: { cli: { on: boolean } }) {
-  return (
-    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card py-3 pl-3 pr-2">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <p className="text-sm font-medium leading-5 tracking-label-14 text-base-foreground">Command-line tools</p>
-        <p className="text-base-xs leading-4 text-base-muted-foreground">
-          Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
-        </p>
-      </div>
-      {/* The same vocabulary the rows use for a state they report rather than
-        * offer, so the card reads as a reading and not as a control someone
-        * failed to wire. */}
-      <span className="shrink-0 text-base-xs font-medium leading-4 tracking-label-12 text-base-muted-foreground">
-        {cli.on ? "On" : "Off"}
-      </span>
-    </div>
   );
 }
 

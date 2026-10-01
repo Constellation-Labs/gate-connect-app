@@ -21,7 +21,7 @@ describe("OpenCodeEnvDialog", () => {
     // who reads only the title still learns the second one.
     render(<OpenCodeEnvDialog onCancel={noop} onConfirm={noop} />);
     expect(
-      screen.getByRole("heading", { name: /also turns on Command-line tools/i }),
+      screen.getByRole("heading", { name: /Route OpenCode and your terminal through Gate\?/i }),
     ).toBeTruthy();
   });
 
@@ -68,7 +68,7 @@ describe("OpenCodeEnvDialog", () => {
     const onCancel = vi.fn();
     render(<OpenCodeEnvDialog onCancel={onCancel} onConfirm={onConfirm} />);
 
-    screen.getByRole("button", { name: "Turn both on" }).click();
+    screen.getByRole("button", { name: "Turn on" }).click();
     expect(onConfirm).toHaveBeenCalledOnce();
 
     screen.getByRole("button", { name: "Cancel" }).click();

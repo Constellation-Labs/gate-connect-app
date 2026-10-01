@@ -2143,26 +2143,6 @@ export function NewUiApp() {
         plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
         planUnreadable: credits.failure !== null,
         onRetryPlan: credits.reload,
-        // The machine-wide shell proxy, which used to be a card in the rail
-        // and a row in the app list. Absent on Linux, where these variables are
-        // the system proxy and cannot be declined without turning routing off -
-        // the same condition the rail card carried.
-        shellProxy:
-          proxy?.env_export_separable
-            ? {
-                on: proxy.env_export_opted_in,
-                // The same flag the rail's switches carry. `setEnvExport`
-                // returns early while any other routing call is in flight, so
-                // without it a click lands on nothing and the switch does not
-                // move - and this is a machine-wide write someone plausibly
-                // makes right after flipping an app.
-                busy: routingBusy,
-                onToggle: () => {
-                  setActionError(null);
-                  void routing.setEnvExport(!proxy.env_export_opted_in);
-                },
-              }
-            : undefined,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
