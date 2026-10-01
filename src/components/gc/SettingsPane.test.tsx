@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
 import { cleanup, render, screen } from "@testing-library/react";
 import { buildSettingsSections, SettingsPane } from "./SettingsPane";
 
@@ -367,64 +366,5 @@ describe("the Gate plan row", () => {
     expect(row.unavailable).toBeDefined();
     row.unavailable!.onRetry();
     expect(onRetryPlan).toHaveBeenCalled();
-  });
-});
-
-describe("the command-line tools row", () => {
-  const shellRow = (overrides: Parameters<typeof sections>[0] = {}) =>
-    sections(overrides)
-      .find((s) => s.id === "connection")!
-      .rows.find((r) => r.id === "shell-proxy");
-
-  it("puts the machine-wide channel in Settings, not the app list", () => {
-    // AG-893. It used to be a card in the rail and a row in the app list, both
-    // describing the same coverage in different words. The rail is a list of
-    // apps and this is a setting, so there is one control now and it is here.
-    const onToggle = vi.fn();
-    const row = shellRow({ shellProxy: { on: true, onToggle } })!;
-
-    expect(row.label).toBe("Command-line tools");
-    expect(row.toggle?.on).toBe(true);
-    row.toggle!.onToggle();
-    expect(onToggle).toHaveBeenCalled();
-  });
-
-  it("carries the in-flight flag through to the switch", () => {
-    // `setEnvExport` returns early while `useRouting` is busy, so a switch that
-    // does not know it would swallow the click and stay put. Every rail switch
-    // already reports this; the control moving to Settings must not lose it.
-    expect(shellRow({ shellProxy: { on: true, busy: true, onToggle: noop } })!.toggle?.busy).toBe(
-      true,
-    );
-    expect(shellRow({ shellProxy: { on: true, onToggle: noop } })!.toggle?.busy).toBeUndefined();
-  });
-
-  it("says what it reaches and what it costs", () => {
-    // Neither old control did. "Terminal" and "command line tools that follow
-    // your proxy settings" said neither, and the certificate half was stated
-    // nowhere at all.
-    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
-
-    expect(row.description).toMatch(/every program you start from now on/);
-    expect(row.description).toMatch(/certificate/i);
-    // Not "Required by OpenCode": OpenCode's configured providers route
-    // through a `baseURL` rewrite and need none of this. The dialog that
-    // couples the two is where the real reason is said.
-    expect(row.description).not.toMatch(/OpenCode/);
-  });
-
-  it("draws the same coverage sentence the popover's Terminal blurb does", () => {
-    // AG-893 was one control described two ways. The first fix described it a
-    // third ("afterwards" here, "after your next login" in the popover), so the
-    // sentence is one exported string and this pins that both surfaces read it.
-    const row = shellRow({ shellProxy: { on: false, onToggle: noop } })!;
-
-    expect(row.description).toBe(SHELL_CHANNEL_COVERAGE);
-  });
-
-  it("is absent where the platform cannot offer it separately", () => {
-    // Linux: these variables ARE the system proxy, so declining them means
-    // turning routing off, which is a different control.
-    expect(shellRow({ shellProxy: undefined })).toBeUndefined();
   });
 });

@@ -3,7 +3,6 @@ import { BaseSwitch, Card, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import type { AuthMode } from "../../lib/api";
-import { SHELL_CHANNEL_COVERAGE } from "../../lib/groups";
 
 /**
  * The Settings pane (Figma `Flows / Settings`).
@@ -130,7 +129,6 @@ export function buildSettingsSections({
   onRenameDevice,
   onCopyInstallId,
   onUpgradePlan,
-  shellProxy,
   onReplaceKey,
   onSwitchToGateAccount,
   signInNote,
@@ -208,10 +206,6 @@ export function buildSettingsSections({
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
-  /** The machine-wide shell proxy channel, or undefined where the platform
-   *  cannot offer it separately (Linux, where these variables ARE the system
-   *  proxy). The window owns this control; the tray reports it. */
-  shellProxy?: { on: boolean; busy?: boolean; onToggle: () => void };
   onReplaceKey?: () => void;
   /** Offered only to an account still on a pasted key. The popover has carried
    * this since it shipped (`screens/Settings.tsx`); the new shell had only the
@@ -370,50 +364,6 @@ export function buildSettingsSections({
                 } as SettingsRow,
               ]
             : []),
-        // Machine-wide, so Settings rather than the app list - the rail is a
-        // list of apps and this is not one (AG-893, and `isSettingsManaged`).
-        // Placed in Connection because it decides HOW traffic reaches Gate,
-        // which is what the rest of this section is about.
-        //
-        // Undrawn by the file: no frame carries this row, because the file draws
-        // it as a card in the rail, which is where it should not be. The tray's
-        // own card (`735:37341`) IS drawn and keeps its copy, as a status
-        // display - the tray reports what the window decides.
-        //
-        // Absent on Linux, where these variables are the system proxy and cannot
-        // be declined without turning routing off.
-        ...(shellProxy
-          ? [
-              {
-                id: "shell-proxy",
-                icon: "squareCode" as IconName,
-                label: "Command-line tools",
-                // The two facts a reader needs and neither control used to
-                // give: what it reaches, and what it costs. "Terminal" and
-                // "command line tools that follow your proxy settings" said
-                // neither. The certificate half was stated nowhere at all.
-                //
-                // The shared sentence, so this row and the popover's blurb
-                // cannot describe one control two ways again. It no longer
-                // says "Required by OpenCode": OpenCode's configured providers
-                // route through a `baseURL` rewrite and need none of this
-                // (`useRouting.ts`, the `opencode-env` doc). The channel is
-                // what covers a provider added later, and `OpenCodeEnvDialog`
-                // is the place that explains that, at the moment it applies.
-                description: SHELL_CHANNEL_COVERAGE,
-                toggle: {
-                  on: shellProxy.on,
-                  // Shared with every app switch: this is `useRouting`'s one
-                  // `busy` flag, and `setEnvExport` returns early on it. A
-                  // machine-wide `launchctl setenv` round trip is exactly the
-                  // click someone makes right after flipping an app, so the
-                  // swallowed case is reachable rather than theoretical.
-                  busy: shellProxy.busy,
-                  onToggle: shellProxy.onToggle,
-                },
-              } as SettingsRow,
-            ]
-          : []),
         ...(certificate
           ? [
               {

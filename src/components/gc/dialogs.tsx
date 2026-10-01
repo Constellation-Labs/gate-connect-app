@@ -1582,12 +1582,12 @@ export function OpenCodeEnvDialog({
       // No terminal glyph in the set; `squareCode` is the closest thing to the
       // shell this dialog is about.
       icon="squareCode"
-      // "Command-line tools" is the Settings row's label, which is where the
-      // control lives now (AG-893). "Terminal tools" was the rail row's name,
-      // and the rail no longer has one.
-      title="Turning on OpenCode also turns on Command-line tools"
+      // Names the effect, not a control: the Settings row this used to point
+      // at ("Command-line tools", AG-893) went on 2026-10-01, and the rail's
+      // "Terminal tools" row before it, so there is no label left to borrow.
+      title="Route OpenCode and your terminal through Gate?"
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Turn both on", onClick: onConfirm }}
+      primary={{ label: "Turn on", onClick: onConfirm }}
       onDismiss={onCancel}
     >
       {/* Why OpenCode asks, then what saying yes reaches. The first sentence
