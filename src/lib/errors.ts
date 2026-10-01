@@ -280,6 +280,16 @@ export function classifyError(
     };
   }
 
+  // A tool write the integration refused in its own words: "No supported
+  // OpenCode providers found to route through Gate. Run ...". Those sentences
+  // are written to be read and say what to do, so the body is the first of
+  // them rather than "Try again", which hid the instruction behind Details
+  // (staging QA, 2026-09-30). The title stays the generic one.
+  if (context === "connect") {
+    const sentence = instructionIn(raw);
+    if (sentence) return { title: "Couldn’t connect this tool", hint: sentence, raw };
+  }
+
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     // The write already succeeded; only the re-read of it failed, so this says
@@ -317,4 +327,24 @@ export function classifyError(
     hint: "Try again. If it keeps failing, the details below help when reporting it.",
     raw,
   };
+}
+
+/**
+ * The first sentence of a backend error, when the error is one sentence of
+ * ours rather than a chain of them.
+ *
+ * Rust errors cross as `{e:#}`, which joins each context to its cause with
+ * ": " ("writing ~/.codex/config.toml: Permission denied (os error 13)"). A
+ * chain like that is a path and an OS code, not an instruction, so it is
+ * refused here and keeps the generic "Try again". Only a refusal an
+ * integration wrote as a sentence for the user gets through.
+ */
+export function instructionIn(raw: string): string | null {
+  const text = raw.trim();
+  if (text === "" || text.length > 400) return null;
+  if (/:\s/.test(text) || /os error/i.test(text)) return null;
+  const end = text.search(/[.!?](\s|$)/);
+  const first = (end === -1 ? text : text.slice(0, end)).trim();
+  if (first.length < 12) return null;
+  return `${first.charAt(0).toUpperCase()}${first.slice(1)}.`;
 }

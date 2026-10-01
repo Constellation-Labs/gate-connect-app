@@ -72,7 +72,8 @@ export function verdictStatus(
   // Outranks the sweep. The sweep describes the state on disk, which after a
   // failed write is the state from *before* the user acted - true, and not the
   // thing they need to know. What they need to know is that their click did not
-  // land.
+  // land. Callers pass it only for a failed turn-off: a tool whose turn-on
+  // failed was never routed, and "Not protected" would claim it had been.
   if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
   if (!verdict) return { kind: "not-protected", detail: CHECKING_DETAIL };
   switch (verdict.state) {

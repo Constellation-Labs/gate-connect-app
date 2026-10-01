@@ -309,7 +309,9 @@ test.describe("new UI drift repair", () => {
     // Opened by the section's name: the row is the app, and Codex is inside it.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
     await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
-    await expect(app.page.getByText("failed to write ~/.codex/config.toml")).toBeAttached();
+    await expect(
+      app.page.getByText("failed to write ~/.codex/config.toml", { exact: true }),
+    ).toBeAttached();
     await expect(
       app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
     ).toHaveCount(0);
@@ -335,20 +337,28 @@ test.describe("new UI drift repair", () => {
     await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
   });
 
-  test("dismissing the pane alert leaves the reason on the status card", async ({ boot }) => {
+  test("a failed turn-on leaves the app Not routed, before and after dismissing", async ({
+    boot,
+  }) => {
+    // Staging QA, 2026-09-30: a switch flipped on for an app that could not be
+    // routed left its row on "Not protected" - a claim about an app that was
+    // never routed - until Gate Connect was restarted.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
       failures: { connect_tool: "failed to write ~/.codex/config.toml" },
     });
     await app.routeApp("ChatGPT / Codex");
-    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    const row = app.page.getByRole("button", { name: "ChatGPT / Codex Not routed" });
+    await expect(row).toBeVisible();
 
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    // The body is the backend's own sentence, not "Try again".
+    await expect(app.page.getByText("Failed to write ~/.codex/config.toml.")).toBeVisible();
     await app.page.getByRole("button", { name: "Dismiss alert" }).click();
     await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
-    await expect(
-      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
-    ).toContainText("Configuration update failed");
+    await expect(row).toBeVisible();
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
 
   test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {

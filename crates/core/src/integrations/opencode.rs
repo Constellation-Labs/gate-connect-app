@@ -267,7 +267,8 @@ impl Integration for OpenCode {
         // The packaged paths, then PATH, then the bin directories a login
         // shell adds and a GUI process does not inherit - see
         // `integrations::binaries`. Failing all three, a config file or a
-        // login still counts: see `has_routable_setup`.
+        // login naming a provider Gate routes still counts: see
+        // `has_routable_setup`.
         let (well_known, names) = self.binary();
         if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
@@ -456,19 +457,7 @@ impl Integration for OpenCode {
         // Figure out which well-known providers to route through Gate:
         // anything the user has either pre-configured in opencode.json OR
         // logged into via `opencode auth login`.
-        let configured_in_settings: Vec<&str> = settings
-            .get("provider")
-            .and_then(|v| v.as_object())
-            .map(|m| m.keys().map(String::as_str).collect())
-            .unwrap_or_default();
-        let configured_in_auth: Vec<&str> = auth.keys().map(String::as_str).collect();
-
-        let candidates: Vec<&KnownProvider> = KNOWN_PROVIDERS
-            .iter()
-            .filter(|p| {
-                configured_in_settings.contains(&p.id) || configured_in_auth.contains(&p.id)
-            })
-            .collect();
+        let candidates = known_providers_in(&settings, &auth);
 
         // Local-protection guard: if a candidate has an existing
         // non-public `baseURL`, skip it - the user pointed it at a
@@ -894,17 +883,41 @@ fn load_opencode_auth() -> Result<Map<String, Value>> {
 
 use super::json_config::ensure_object;
 
+/// The well-known providers named by the config's `provider` block or by the
+/// login store: what `connect` would route, before the local-endpoint guard.
+fn known_providers_in(
+    settings: &Map<String, Value>,
+    auth: &Map<String, Value>,
+) -> Vec<&'static KnownProvider> {
+    let configured = |id: &str| {
+        settings
+            .get("provider")
+            .and_then(|v| v.as_object())
+            .is_some_and(|m| m.contains_key(id))
+            || auth.contains_key(id)
+    };
+    KNOWN_PROVIDERS
+        .iter()
+        .filter(|p| configured(p.id))
+        .collect()
+}
+
 /// The fallback for an OpenCode whose binary Gate cannot find (a Volta, asdf
-/// or npx install): the two files `connect` reads to find a provider to route,
-/// the config and the login store.
+/// or npx install): the two files `connect` reads, and only when they name a
+/// provider it could route.
 ///
-/// **Not the config directory.** That was the test until a machine with no
-/// OpenCode on it kept an OpenCode row: `~/.config/opencode` survives an
-/// uninstall, empty, and Gate's own disconnect removes `opencode.json` and
-/// leaves the directory. An empty directory is no evidence of an install, and
-/// `connect` refuses one anyway ("No supported OpenCode providers found").
+/// **Not the config directory**, and **not the bare files either.** The
+/// directory survives an uninstall, empty, and Gate's own disconnect leaves it.
+/// The files can outlive an install too, holding `{}` or providers Gate does
+/// not route, and reading their mere existence as an install drew an OpenCode
+/// row on a machine without OpenCode (staging QA, 2026-09-30): its switch could
+/// only fail, with "No supported OpenCode providers found". So the test is the
+/// one `connect` applies, and a leftover that names nothing routable leaves
+/// OpenCode under Not installed.
 fn has_routable_setup() -> Result<bool> {
-    Ok(settings_path()?.exists() || env::opencode_auth_path()?.exists())
+    let settings = load_settings().ok().flatten().unwrap_or_default();
+    let auth = load_opencode_auth().unwrap_or_default();
+    Ok(!known_providers_in(&settings, &auth).is_empty())
 }
 
 /// The proxy domain for OpenCode's own Zen / Go host, `opencode.ai`. The

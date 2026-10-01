@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { backendErrorContext, classifyError } from "./errors";
+import { backendErrorContext, classifyError, instructionIn } from "./errors";
 
 // These tests assert the *contract* of classifyError rather than exact copy,
 // so they stay green as the wording is tuned. The load-bearing guarantees:
@@ -305,5 +305,49 @@ describe("an unfinished browser sign-in", () => {
     );
 
     expect(c.title).not.toMatch(/reach the gateway/i);
+  });
+});
+
+describe("a tool write refused in the integration's own words", () => {
+  it("keeps the title and takes the first sentence as the body", () => {
+    const raw =
+      "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic` first, then re-run connect.";
+    const c = classifyError(raw, "connect");
+    expect(c.title).toBe("Couldn’t connect this tool");
+    expect(c.hint).toBe("No supported OpenCode providers found to route through Gate.");
+    expect(c.raw).toBe(raw);
+  });
+
+  it("ends a sentence the backend left open", () => {
+    const c = classifyError(
+      "OpenCode is not installed on this machine - install it from https://opencode.ai first",
+      "connect",
+    );
+    expect(c.hint).toBe(
+      "OpenCode is not installed on this machine - install it from https://opencode.ai first.",
+    );
+  });
+
+  it("keeps Try again for a context chain or an OS error", () => {
+    for (const raw of [
+      "writing /Users/x/.codex/config.toml: Permission denied (os error 13)",
+      "Permission denied (os error 13)",
+    ]) {
+      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\./);
+    }
+  });
+
+  it("leaves every other action's copy alone", () => {
+    expect(
+      classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
+        .hint,
+    ).toMatch(/^Try again\./);
+  });
+});
+
+describe("instructionIn", () => {
+  it("refuses what is too short to instruct anyone", () => {
+    expect(instructionIn("failed")).toBeNull();
+    expect(instructionIn("")).toBeNull();
   });
 });
