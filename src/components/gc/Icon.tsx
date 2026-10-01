@@ -529,6 +529,8 @@ export function Icon({
 }) {
   return (
     <svg
+      // Which glyph this is, for a test to ask by name rather than by path data.
+      data-icon={name}
       width={size}
       height={size}
       viewBox="0 0 24 24"
