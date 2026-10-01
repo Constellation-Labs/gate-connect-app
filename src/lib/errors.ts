@@ -120,7 +120,7 @@ export function classifyError(
   // un-routed. Without this branch the generic fallback answers "try again",
   // which is precisely wrong - retrying cannot help until routing is on, and
   // the one sentence that says so is buried in the details disclosure.
-  if (lc.includes("proxy is not running")) {
+  if (isRoutingOffRefusal(raw)) {
     return {
       title: "Turn on “Route through Gate” first",
       hint: "This tool sends all of its traffic through Gate’s local proxy, so routing has to be on before it can be connected.",
@@ -347,4 +347,13 @@ export function instructionIn(raw: string): string | null {
   const first = (end === -1 ? text : text.slice(0, end)).trim();
   if (first.length < 12) return null;
   return `${first.charAt(0).toUpperCase()}${first.slice(1)}.`;
+}
+
+/**
+ * A tool's connect refused because routing is off. The fix is the whole
+ * install's ("Turn on Route through Gate first"), so the window says it rather
+ * than one app's pane (review on #390).
+ */
+export function isRoutingOffRefusal(raw: string): boolean {
+  return raw.toLowerCase().includes("proxy is not running");
 }

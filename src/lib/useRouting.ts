@@ -108,6 +108,15 @@ const HERMES_SLUG = "hermes";
  *  is an answer, not a failure, so it resolves quietly. */
 class Declined extends Error {}
 
+/** A certificate install that failed inside one tool's connect. Reported under
+ *  `trust_ca` and with no slug: the certificate is the whole install's, so
+ *  its failure is not that one app's (review on #390). */
+class TrustFailed extends Error {
+  constructor(readonly cause: unknown) {
+    super("certificate install failed during a connect");
+  }
+}
+
 /**
  * Some members of a family switch failed. Carries their names, because the
  * useful sentence is "couldn't connect Codex and OpenCode", not "couldn't
@@ -495,7 +504,11 @@ export function useRouting({
               existingConfig: tool.status.reason,
             });
           }
-          await ensureCaTrusted();
+          try {
+            await ensureCaTrusted();
+          } catch (e) {
+            throw e instanceof Declined ? e : new TrustFailed(e);
+          }
           await connectTool(slug);
           // After the connect, which is what starts the engine. The channel
           // exports the engine's address, so switching it on ahead of a bound
@@ -533,7 +546,8 @@ export function useRouting({
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
           trackError(e, "connect", { tool: slug, routed });
-          onError?.(e, routed ? "connect" : "disconnect", slug);
+          if (e instanceof TrustFailed) onError?.(e.cause, "trust_ca");
+          else onError?.(e, routed ? "connect" : "disconnect", slug);
           setWriteFailures((prev) => new Map(prev).set(slug, routed));
         }
       } finally {

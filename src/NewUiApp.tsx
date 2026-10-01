@@ -52,7 +52,7 @@ import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
-import { classifyError } from "./lib/errors";
+import { classifyError, isRoutingOffRefusal } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
@@ -1171,7 +1171,14 @@ export function NewUiApp() {
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
       const classified = classifyError(e, ctx);
       // One tool's write: its pane, not the window. See `toolWriteErrors`.
-      if (slug && (context === "connect" || context === "disconnect")) {
+      // Not a refusal whose fix is the whole install's: routing being off is
+      // said in the window. (A certificate failure inside a connect arrives as
+      // `trust_ca` with no slug, so it never reaches here.)
+      if (
+        slug &&
+        (context === "connect" || context === "disconnect") &&
+        !isRoutingOffRefusal(classified.raw)
+      ) {
         setToolWriteErrors((prev) => ({
           ...prev,
           [slug]: { error: classified, routed: context === "connect" },
@@ -2446,6 +2453,19 @@ export function NewUiApp() {
   }, [view, openTool, verdicts, apps, runningApps]);
 
   /**
+   * The open pane's failed tool write, if one of its members has one. First
+   * member wins: a section is one app, and one card says what failed.
+   */
+  const paneWriteError = useMemo(() => {
+    if (view.kind !== "app") return null;
+    for (const key of sectionMemberKeys(view.slug)) {
+      const failure = toolWriteErrors[key];
+      if (failure && routing.writeFailures.has(key)) return { slug: key, ...failure };
+    }
+    return null;
+  }, [view, toolWriteErrors, routing.writeFailures]);
+
+  /**
    * Why the open app is not protected.
    *
    * The rail and the pane header print the three drawn phrases alone
@@ -2462,18 +2482,6 @@ export function NewUiApp() {
    * Nothing for "Checking" either: the sweep has not answered, and a card
    * saying the app isn't protected would be a claim nobody measured.
    */
-  /**
-   * The open pane's failed tool write, if one of its members has one. First
-   * member wins: a section is one app, and one card says what failed.
-   */
-  const paneWriteError = useMemo(() => {
-    if (view.kind !== "app") return null;
-    for (const key of sectionMemberKeys(view.slug)) {
-      const failure = toolWriteErrors[key];
-      if (failure && routing.writeFailures.has(key)) return { slug: key, ...failure };
-    }
-    return null;
-  }, [view, toolWriteErrors, routing.writeFailures]);
 
   const statusNote = useMemo(() => {
     if (view.kind !== "app") return undefined;
