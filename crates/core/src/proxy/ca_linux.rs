@@ -35,7 +35,8 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -554,7 +555,11 @@ fn create_chromium_db(dir: &Path) {
         );
         return;
     }
-    if let Err(e) = certutil(dir, &["-N", "--empty-password"]) {
+    let created = StoreCopy::open(dir).and_then(|copy| {
+        certutil(copy.path(), &["-N", "--empty-password"])?;
+        copy.commit()
+    });
+    if let Err(e) = created {
         eprintln!(
             "gate proxy: could not initialise the NSS store at {dir} ({e}); \
              Chromium-based browsers will reject intercepted hosts{hint}",
@@ -707,6 +712,250 @@ fn nss_trust_attrs<'a>(listing: &'a str, nickname: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The files of an NSS `sql:` database that certutil reads and writes. The
+/// directory's third file, `pkcs11.txt`, is the module database, and is
+/// deliberately not among them; see [`StoreCopy`].
+const NSS_DB_FILES: [&str; 2] = ["cert9.db", "key4.db"];
+
+/// One store file as copied: its bytes and permission bits.
+type Original = (Vec<u8>, u32);
+
+/// A private working copy of one browser store. Every certutil call in this
+/// module runs against one of these, never against a store in place.
+///
+/// **Why not in place.** NSS opening a `sql:` directory reads that directory's
+/// `pkcs11.txt` as its module database and `dlopen`s every `library=` line in
+/// it, read-only or not, and certutil has no flag to skip it. Two of the
+/// Firefox roots and several Chromium ones belong to a snap or Flatpak browser,
+/// which can write that file, so certutil run in place would load whatever
+/// library a compromised sandbox named - unconfined, in the user's session, one
+/// call from the Secret Service and this CA's private key. The copy is a fresh
+/// 0700 directory with no `pkcs11.txt`, so NSS uses its built-in defaults and
+/// loads nothing it was told to.
+///
+/// **And why through one directory handle.** The store is opened once with
+/// `O_NOFOLLOW`, and both files are read and written relative to that handle,
+/// `O_NOFOLLOW` too. A symlinked store, `cert9.db` or `key4.db` is refused
+/// rather than followed, and a directory swapped for a symlink between our
+/// calls changes nothing, because the handle still names the directory we
+/// opened. Before this, certutil reopened the store by path for up to a dozen
+/// runs, and a dangling `key4.db` link made NSS create a file wherever it
+/// pointed.
+///
+/// Written back by [`StoreCopy::commit`]: per file, only where the copy
+/// changed, as a temp file in the store renamed over the original - and only
+/// while the original still holds what we copied, so a browser that wrote its
+/// store meanwhile is not overwritten with an older copy. A browser with the
+/// store open keeps the file it opened until it restarts, which is when it
+/// would read our change anyway; anything it writes before then lands in the
+/// file it has open, not the one we put in place.
+struct StoreCopy {
+    dir: OwnedFd,
+    work: PathBuf,
+    /// What each of [`NSS_DB_FILES`] held when copied.
+    originals: Vec<(&'static str, Option<Original>)>,
+}
+
+impl StoreCopy {
+    fn open(store: &Path) -> std::result::Result<Self, CertutilFailure> {
+        Self::try_open(store).map_err(|e| {
+            CertutilFailure::Failed(format!("could not copy {}: {e}", store.display()))
+        })
+    }
+
+    fn try_open(store: &Path) -> std::io::Result<Self> {
+        let mut copy = Self {
+            dir: open_dir_nofollow(store)?,
+            work: new_work_dir()?,
+            originals: Vec::new(),
+        };
+        // From here a failure drops `copy`, which removes the work directory.
+        for name in NSS_DB_FILES {
+            let original = read_at(&copy.dir, name)?;
+            if let Some((bytes, _)) = &original {
+                fs::write(copy.work.join(name), bytes)?;
+            }
+            copy.originals.push((name, original));
+        }
+        Ok(copy)
+    }
+
+    /// The directory to hand certutil.
+    fn path(&self) -> &Path {
+        &self.work
+    }
+
+    fn commit(&self) -> std::result::Result<(), CertutilFailure> {
+        self.try_commit()
+            .map_err(|e| CertutilFailure::Failed(format!("could not write the store back: {e}")))
+    }
+
+    fn try_commit(&self) -> std::io::Result<()> {
+        for (name, original) in &self.originals {
+            let bytes = match fs::read(self.work.join(name)) {
+                Ok(bytes) => bytes,
+                // certutil did not produce this file, so there is nothing of
+                // ours to put in the store.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            let before = original.as_ref().map(|(bytes, _)| bytes.as_slice());
+            if before == Some(bytes.as_slice()) {
+                continue;
+            }
+            let now = read_at(&self.dir, name)?.map(|(bytes, _)| bytes);
+            if now.as_deref() != before {
+                return Err(std::io::Error::other(format!(
+                    "{name} changed while Gate was writing it; try again"
+                )));
+            }
+            let mode = original.as_ref().map_or(0o600, |(_, mode)| *mode);
+            write_at(&self.dir, name, &bytes, mode)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StoreCopy {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.work);
+    }
+}
+
+/// A fresh, private directory for one [`StoreCopy`], under the app's own data
+/// directory rather than `/tmp`: owner-only, no other user's files beside it,
+/// and not a directory a snap or Flatpak browser can write unless it was given
+/// the whole home - at which point it could write `~/.bashrc` too.
+fn new_work_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = env::app_support_dir()
+        .map_err(std::io::Error::other)?
+        .join("proxy")
+        .join("nss-work");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&parent)?;
+    let work = parent.join(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Left by a run that crashed under the same process id.
+    let _ = fs::remove_dir_all(&work);
+    fs::DirBuilder::new().mode(0o700).create(&work)?;
+    Ok(work)
+}
+
+fn c_string(bytes: &[u8]) -> std::io::Result<std::ffi::CString> {
+    std::ffi::CString::new(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has a NUL byte"))
+}
+
+/// Open `path` as a directory, refusing a symlink in its last component.
+fn open_dir_nofollow(path: &Path) -> std::io::Result<OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = c_string(path.as_os_str().as_bytes())?;
+    // SAFETY: `path` is a NUL-terminated string that outlives the call.
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and nothing else owns it.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open `name` inside `dir`, never following a symlink.
+fn open_at(
+    dir: &OwnedFd,
+    name: &str,
+    flags: libc::c_int,
+    mode: libc::c_uint,
+) -> std::io::Result<fs::File> {
+    let name = c_string(name.as_bytes())?;
+    // SAFETY: `dir` is an open directory and `name` a NUL-terminated string,
+    // both alive for the call.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and nothing else owns it.
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+/// The bytes and permission bits of the regular file `name` in `dir`,
+/// or `None` where there is no such file. A symlink there is an error.
+fn read_at(dir: &OwnedFd, name: &str) -> std::io::Result<Option<(Vec<u8>, u32)>> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut file = match open_at(dir, name, libc::O_RDONLY, 0) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other(format!(
+            "{name} is not a regular file"
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some((bytes, meta.permissions().mode() & 0o777)))
+}
+
+/// Replace `name` in `dir` with `bytes`: a temp file beside it, synced, then
+/// renamed over it, so a browser opening the store sees the old file or the
+/// new one and never half of either.
+fn write_at(dir: &OwnedFd, name: &str, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    let tmp = format!(".gate-{name}.{}.tmp", std::process::id());
+    let tmp_c = c_string(tmp.as_bytes())?;
+    let name_c = c_string(name.as_bytes())?;
+    // A temp file left by a crash under the same process id.
+    // SAFETY: `dir` is open and `tmp_c` NUL-terminated, both alive for the call.
+    unsafe { libc::unlinkat(dir.as_raw_fd(), tmp_c.as_ptr(), 0) };
+    let mut file = open_at(
+        dir,
+        &tmp,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        mode,
+    )?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    let renamed = written.and_then(|()| {
+        // SAFETY: as above; `renameat` replaces the entry and follows nothing.
+        let rc = unsafe {
+            libc::renameat(
+                dir.as_raw_fd(),
+                tmp_c.as_ptr(),
+                dir.as_raw_fd(),
+                name_c.as_ptr(),
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    });
+    if renamed.is_err() {
+        // SAFETY: as above.
+        unsafe { libc::unlinkat(dir.as_raw_fd(), tmp_c.as_ptr(), 0) };
+    }
+    renamed
+}
+
 /// What one browser store holds under our nickname.
 #[derive(Debug, PartialEq)]
 enum NssEntry {
@@ -724,8 +973,18 @@ enum NssEntry {
     Unknown(CertutilFailure),
 }
 
-/// Read what `db` holds under our nickname.
-fn nss_entry(db: &Path, pem: &str) -> NssEntry {
+/// Read what the store at `dir` holds under our nickname, through a
+/// [`StoreCopy`] - never in place.
+fn nss_entry(dir: &Path, pem: &str) -> NssEntry {
+    match StoreCopy::open(dir) {
+        Ok(copy) => nss_entry_in(copy.path(), pem),
+        Err(e) => NssEntry::Unknown(e),
+    }
+}
+
+/// Read what the database at `db` - a [`StoreCopy`]'s directory - holds under
+/// our nickname.
+fn nss_entry_in(db: &Path, pem: &str) -> NssEntry {
     let listing = match certutil_output(db, &["-L"]) {
         Ok(listing) => listing,
         Err(e) => return NssEntry::Unknown(e),
@@ -1001,26 +1260,31 @@ fn ensure_trusted_nss() {
             }
             NssAction::Adopt => record_in_nss_ledger(&mut ledger, &dir),
             NssAction::Write => {
-                let dropped = drop_nss_entries(&dir);
                 // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME
                 // and no object-signing trust. The same flags mkcert uses for
                 // the same job.
                 let args = ["-A", "-t", "C,,", "-n", ca_common_name(), "-i", &cert_arg];
-                match certutil(&dir, &args) {
+                // On a private copy, committed only once the copy holds the
+                // CA: see `StoreCopy` for why certutil never runs in place. A
+                // failure anywhere leaves the store exactly as it was.
+                let written = StoreCopy::open(&dir).and_then(|copy| {
+                    drop_nss_entries(copy.path());
+                    certutil(copy.path(), &args)?;
+                    match nss_entry_in(copy.path(), &cert_pem) {
+                        NssEntry::Trusted => copy.commit(),
+                        NssEntry::Unknown(e) => Err(e),
+                        _ => Err(CertutilFailure::Failed(
+                            "certutil -A reported success and the store does not hold the CA"
+                                .to_string(),
+                        )),
+                    }
+                });
+                match written {
                     Ok(()) => {
                         NSS_WRITES.fetch_add(1, Ordering::Relaxed);
                         record_in_nss_ledger(&mut ledger, &dir);
                     }
                     Err(e) => {
-                        // Say so when the delete landed and the add did not:
-                        // that leaves the store worse than we found it, and a
-                        // browser that stopped working *because* of this reads
-                        // nothing like one that never worked.
-                        let dropped = if dropped {
-                            ", and the entry that was there has been dropped"
-                        } else {
-                            ""
-                        };
                         // A refusal from certutil itself is most often a
                         // Firefox Primary Password: changing trust needs it,
                         // and stdin is closed.
@@ -1032,8 +1296,8 @@ fn ensure_trusted_nss() {
                                 .to_string(),
                         };
                         eprintln!(
-                            "gate proxy: could not add the CA to the NSS store at {dir}{dropped} \
-                             ({e}); the browser reading it will reject intercepted hosts{hint}",
+                            "gate proxy: could not add the CA to the NSS store at {dir} ({e}); \
+                             the browser reading it will reject intercepted hosts{hint}",
                             dir = dir.display(),
                         );
                     }
@@ -1061,13 +1325,26 @@ fn untrust_nss() {
         return;
     };
     for dir in browsers.stores() {
-        match certutil_output(&dir, &["-L"]) {
+        // Through a private copy, like every certutil call here; see
+        // `StoreCopy`. A store that cannot be copied is one we could not even
+        // look in, which is the missing-certutil case's sibling.
+        let copy = match StoreCopy::open(&dir) {
+            Ok(copy) => copy,
+            Err(e) => {
+                eprintln!(
+                    "gate proxy: could not open the NSS store at {dir} to remove the CA ({e}); \
+                     the browser reading it may still trust it",
+                    dir = dir.display(),
+                );
+                continue;
+            }
+        };
+        match certutil_output(copy.path(), &["-L"]) {
             Ok(listing) if !nss_trust_attrs(&listing, ca_common_name()).is_empty() => {
-                drop_nss_entries(&dir);
-                let left = certutil_output(&dir, &["-L"])
-                    .map(|listing| !nss_trust_attrs(&listing, ca_common_name()).is_empty())
-                    .unwrap_or(true);
-                if left {
+                drop_nss_entries(copy.path());
+                let gone = certutil_output(copy.path(), &["-L"])
+                    .is_ok_and(|listing| nss_trust_attrs(&listing, ca_common_name()).is_empty());
+                if !gone || copy.commit().is_err() {
                     eprintln!(
                         "gate proxy: could not remove the CA from the NSS store at {dir}; \
                          the browser reading it still trusts it",
@@ -1399,11 +1676,108 @@ mod tests {
     fn the_created_chromium_db_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let home = scratch("mode");
+        let _support = SupportDir::new(&home);
         let db = home.join(".pki/nssdb");
         create_chromium_db(&db);
         let mode = fs::metadata(&db).map(|m| m.permissions().mode() & 0o777);
         let _ = fs::remove_dir_all(&home);
         assert_eq!(mode.unwrap(), 0o700);
+    }
+
+    /// Points the app data directory - where a [`StoreCopy`] makes its work
+    /// directory - at a scratch folder for one test, under the lock every
+    /// path-redirecting test takes.
+    struct SupportDir {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SupportDir {
+        fn new(root: &Path) -> Self {
+            let lock = crate::env::path_env_lock();
+            crate::env::set_app_support_dir_for_tests(Some(root.join("support")));
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for SupportDir {
+        fn drop(&mut self) {
+            crate::env::set_app_support_dir_for_tests(None);
+        }
+    }
+
+    /// The sandbox escape the copy exists for: NSS loads every `library=` in
+    /// a store's `pkcs11.txt`, and a snap or Flatpak browser can write that
+    /// file. The directory certutil is handed must be a different one, with no
+    /// `pkcs11.txt` in it.
+    #[test]
+    fn a_store_copy_leaves_the_module_database_behind() {
+        let root = scratch("modules");
+        let _support = SupportDir::new(&root);
+        let store = root.join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("cert9.db"), b"cert").unwrap();
+        fs::write(store.join("key4.db"), b"key").unwrap();
+        fs::write(store.join("pkcs11.txt"), "library=/nonexistent/evil.so\n").unwrap();
+
+        let copy = StoreCopy::open(&store).expect("open");
+        let work = copy.path().to_path_buf();
+        assert_ne!(work, store);
+        assert_eq!(fs::read(work.join("cert9.db")).unwrap(), b"cert");
+        assert_eq!(fs::read(work.join("key4.db")).unwrap(), b"key");
+        assert!(!work.join("pkcs11.txt").exists());
+        drop(copy);
+        assert!(!work.exists(), "the work directory outlived the copy");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A symlinked store or `key4.db` is refused rather than followed: NSS
+    /// would otherwise create or open whatever file it points at.
+    #[test]
+    fn a_store_copy_refuses_symlinks() {
+        let root = scratch("links");
+        let _support = SupportDir::new(&root);
+        let store = root.join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("cert9.db"), b"cert").unwrap();
+        std::os::unix::fs::symlink(root.join("target"), store.join("key4.db")).unwrap();
+        assert!(StoreCopy::open(&store).is_err());
+        assert!(!root.join("target").exists());
+
+        let linked = root.join("linked-store");
+        std::os::unix::fs::symlink(&store, &linked).unwrap();
+        fs::remove_file(store.join("key4.db")).unwrap();
+        assert!(
+            StoreCopy::open(&linked).is_err(),
+            "a symlinked store was followed"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The commit writes back only what changed, and refuses to overwrite a
+    /// store the browser wrote meanwhile.
+    #[test]
+    fn a_store_copy_commits_changes_and_refuses_a_store_that_moved() {
+        let root = scratch("commit");
+        let _support = SupportDir::new(&root);
+        let store = root.join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("cert9.db"), b"old").unwrap();
+        fs::write(store.join("key4.db"), b"key").unwrap();
+
+        let copy = StoreCopy::open(&store).expect("open");
+        fs::write(copy.path().join("cert9.db"), b"new").unwrap();
+        copy.commit().expect("commit");
+        assert_eq!(fs::read(store.join("cert9.db")).unwrap(), b"new");
+        assert_eq!(fs::read(store.join("key4.db")).unwrap(), b"key");
+        drop(copy);
+
+        let copy = StoreCopy::open(&store).expect("open");
+        fs::write(copy.path().join("cert9.db"), b"ours").unwrap();
+        fs::write(store.join("cert9.db"), b"the browser's").unwrap();
+        assert!(copy.commit().is_err(), "an older copy overwrote the store");
+        assert_eq!(fs::read(store.join("cert9.db")).unwrap(), b"the browser's");
+        drop(copy);
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// The policy that keeps a CA the user removed in a browser removed: a
