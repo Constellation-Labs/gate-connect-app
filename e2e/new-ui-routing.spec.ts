@@ -214,6 +214,8 @@ test.describe("new UI routing", () => {
     await expect(app.page.getByRole("alert")).toContainText("Turn on “Route through Gate” first");
     await app.page.getByRole("button", { name: "Claude" }).first().click();
     await expect(app.page.getByRole("button", { name: "Dismiss alert" })).toHaveCount(0);
+    // Nor the row's failed-write card: the config was never the problem.
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
 
   test("a failed write stays off Overview", async ({ boot }) => {

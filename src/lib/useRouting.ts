@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { track, trackError } from "./analytics";
 import { describe, logInfo, logWarn } from "./log";
+import { isRoutingOffRefusal } from "./errors";
 import { TOOL_MANAGED_DOMAINS, cascadeTargets } from "./groups";
 import type { Group } from "./groups";
 
@@ -551,7 +552,13 @@ export function useRouting({
             trackError(e, "connect", { tool: slug, routed });
             onError?.(e, routed ? "connect" : "disconnect", slug);
           }
-          setWriteFailures((prev) => new Set(prev).add(slug));
+          // Only a fault in this tool's config marks its row. A certificate that
+          // would not install, or an engine that is not running, is the whole
+          // install's: the window banner names it, and "Configuration update
+          // failed" on the row would blame a write that was never the problem
+          // (for the certificate, one never attempted).
+          if (!(e instanceof TrustFailed) && !isRoutingOffRefusal(describe(e)))
+            setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {
         await settle();
