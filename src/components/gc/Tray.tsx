@@ -474,7 +474,7 @@ function ActivityLine({
 /** Thousands separated: a four-figure message count is ordinary, and `1032` at
  *  `base-2xs` is not scannable. */
 function messagesLabel(count: number): string {
-  if (count === 0) return "No messages";
+  if (count === 0) return "No recent messages";
   return count === 1 ? "1 message" : `${count.toLocaleString()} messages`;
 }
 

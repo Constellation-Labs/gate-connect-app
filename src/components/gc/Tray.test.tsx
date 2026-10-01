@@ -617,7 +617,7 @@ describe("the row message count", () => {
       groups: withFigures({ messages: { kind: "count", count: 0, measuredAt: "14:03" } }),
     });
 
-    expect(row("Claude Code")).toContain("No messages");
+    expect(row("Claude Code")).toContain("No recent messages");
   });
 
   it("holds a place for a figure still being read", () => {
