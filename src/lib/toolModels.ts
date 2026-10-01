@@ -200,7 +200,8 @@ export function leftGateModelsNotice(appName: string, toModel: string | null): s
 export type ModelChoiceStep =
   /** Hand the app to Gate for this set, confirming billing first if needed. */
   | { kind: "activate"; modelIds: string[] }
-  /** Gate model with nothing enabled yet: the picker comes first. */
+  /** Gate model with nothing enabled yet, or a remembered set over the limit:
+   *  the picker comes first. */
   | { kind: "pick" }
   /** App default, remembering this set for the Gate radio to name. */
   | { kind: "remember"; modelIds: string[] };
@@ -214,8 +215,13 @@ export type ModelChoiceStep =
  */
 export function stepForChoice(choice: "app" | "gate", modelIds: string[]): ModelChoiceStep {
   if (choice === "app") return { kind: "remember", modelIds: [...modelIds] };
-  // Gate cannot serve a model nobody enabled.
-  return modelIds.length > 0 ? { kind: "activate", modelIds: [...modelIds] } : { kind: "pick" };
+  // Gate cannot serve a model nobody enabled. Nor more than the limit: a set
+  // remembered from before it existed would be refused by the backend, so the
+  // picker opens on it instead and Apply waits until it is trimmed (review on
+  // #388).
+  return modelIds.length > 0 && modelIds.length <= MAX_GATE_MODELS
+    ? { kind: "activate", modelIds: [...modelIds] }
+    : { kind: "pick" };
 }
 
 /** The outcome of one {@link useToolModels} save. */

@@ -430,6 +430,17 @@ describe("stepForChoice", () => {
     expect(stepForChoice("gate", [])).toEqual({ kind: "pick" });
   });
 
+  it("opens the picker on a remembered set over the limit, which the backend refuses", () => {
+    const five = ["a/1", "a/2", "a/3", "a/4", "a/5"];
+    expect(stepForChoice("gate", five)).toEqual({ kind: "pick" });
+    expect(stepForChoice("gate", five.slice(0, 4))).toEqual({
+      kind: "activate",
+      modelIds: five.slice(0, 4),
+    });
+    // App default still keeps all of it.
+    expect(stepForChoice("app", five)).toEqual({ kind: "remember", modelIds: five });
+  });
+
   it("remembers nothing when nothing was chosen", () => {
     expect(stepForChoice("app", [])).toEqual({ kind: "remember", modelIds: [] });
   });

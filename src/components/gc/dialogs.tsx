@@ -1094,7 +1094,7 @@ export function ModelPickerDialog({
             type="button"
             onClick={() => setDraft([])}
             disabled={emptyDraft}
-            className="rounded-sm text-sm font-medium leading-5 text-base-primary underline-offset-2 enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="rounded-control text-sm font-medium leading-5 text-base-primary underline-offset-2 enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Clear selections
           </button>

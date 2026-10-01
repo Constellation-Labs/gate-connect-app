@@ -38,8 +38,9 @@ export interface GateModel {
    * single model row, and following that drew a heading over exactly one id
    * while five more were enabled, which reads as the card having lost them.
    * The 2026-09-29 redraw (`1410:31957`) draws the set as a grid, one cell per
-   * model with its own vendor and mark, which is what this renders. At most
-   * `MAX_GATE_MODELS`, so the grid is at most two rows.
+   * model with its own vendor and mark, which is what this renders. A choice
+   * made now is at most `MAX_GATE_MODELS`, so two rows; a set stored before
+   * the limit existed can still draw more until it is trimmed.
    *
    * Each model's vendor is read off its id's namespace rather than carried
    * here: the catalogue is loaded only while the picker is open.
@@ -47,6 +48,12 @@ export interface GateModel {
   ids: string[];
 }
 
+
+/** A card's action button: base's geometry from the Figma audit (h-8,
+ *  rounded-control, the moulded shadow). Shared by `InfoRow`'s actions and the
+ *  Gate models grid's "Choose models", so the two cannot drift. */
+const CARD_ACTION_BUTTON =
+  "flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary";
 
 /** Anchor for the Tokens saved counter's jump target on this pane. */
 const RECENT_ACTIVITY_SECTION_ID = "recent-activity";
@@ -721,7 +728,7 @@ function ModelSelection({
                     type="button"
                     onClick={onChangeModel}
                     disabled={busy}
-                    className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                    className={CARD_ACTION_BUTTON}
                   >
                     Choose models
                   </button>
@@ -871,7 +878,7 @@ function InfoRow({
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className={CARD_ACTION_BUTTON}
         >
           {action.label}
           {action.external && <Icon name="squareArrowOutUpRight" size={16} />}

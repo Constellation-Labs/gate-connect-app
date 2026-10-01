@@ -343,6 +343,35 @@ test.describe("new UI model picker search and set", () => {
     await expect(dialog.getByRole("checkbox")).toHaveCount(1);
   });
 
+  test("App default with a remembered set over the limit opens the picker to trim it", async ({
+    boot,
+  }) => {
+    // Review on #388: the Gate radio used to save the remembered set as it was,
+    // and the backend refused anything over four.
+    const five = [
+      ...many,
+      { id: "moonshot/kimi-k3", owned_by: "moonshot", name: "Kimi K3", tags: ["tool-use"] },
+    ];
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: five,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "tool", model_ids: five.map((m) => m.id) } },
+      },
+    });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("5 of 4 models selected")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeDisabled();
+    expect(await app.lastCall("set_tool_model")).toBeNull();
+
+    await dialog.getByRole("checkbox", { name: five[4].id }).click();
+    await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeEnabled();
+  });
+
   test("stops at four models, and Clear selections starts over", async ({ boot }) => {
     const five = [
       ...many,
