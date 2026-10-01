@@ -370,6 +370,16 @@ test.describe("new UI model picker search and set", () => {
 
     await dialog.getByRole("checkbox", { name: five[4].id }).click();
     await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeEnabled();
+
+    // Trimmed, Apply hands the app to Gate: the picker was opened to activate,
+    // and billing was already accepted, so the four go straight through.
+    await dialog.getByRole("button", { name: "Apply selections" }).click();
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "claude-code",
+      source: "gate",
+      modelIds: many.map((m) => m.id),
+    });
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
   test("stops at four models, and Clear selections starts over", async ({ boot }) => {
