@@ -2878,14 +2878,17 @@ export function NewUiApp() {
         onDismiss={() => setDismissedInstallsFailure(installsFailure)}
       />
     ) : browserRestart ? (
-      // Bottom of the chain, and neutral where the two above are amber or
-      // red: each of those names something still to be fixed in Gate's own
-      // routing, while this is a step outside the app that the user may
-      // already have taken. It must never displace one of them.
+      // Bottom of the chain, so it never displaces the two above, which name
+      // something still to be fixed in Gate's own routing. Amber, though, not
+      // neutral: a browser left open across the trust change rejects every
+      // host Gate intercepts - the same failure `ReopenAlert` warns about for
+      // a tool - and the failure variants are faults outright. See
+      // `NoteBanner`'s `tone`.
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
         onDismiss={() => setBrowserRestart(null)}
+        tone="warning"
       />
     ) : undefined;
 

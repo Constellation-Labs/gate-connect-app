@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { AlertBanner, ReopenAlert, RoutingBanner } from "./banners";
+import { AlertBanner, NoteBanner, ReopenAlert, RoutingBanner } from "./banners";
 
 afterEach(cleanup);
 
@@ -148,5 +148,26 @@ describe("AlertBanner", () => {
   it("draws no Details without one", () => {
     render(<AlertBanner {...props} />);
     expect(screen.queryByText("Details")).toBeNull();
+  });
+});
+
+/**
+ * The shell note, neutral by default and amber when what it says is a fault if
+ * ignored - the browser-certificate note, which sits beside `ReopenAlert` and
+ * means the same thing for a browser.
+ */
+describe("NoteBanner", () => {
+  const props = { title: "Browsers already open need reopening", body: "Quit and reopen.", onDismiss: () => {} };
+
+  it("draws the info glyph and no tile by default", () => {
+    const { container } = render(<NoteBanner {...props} />);
+    expect(container.querySelector(".from-amber-50")).toBeNull();
+    expect(screen.getByText(props.title)).toBeTruthy();
+  });
+
+  it("draws the amber warning tile when it is a warning", () => {
+    const { container } = render(<NoteBanner {...props} tone="warning" />);
+    expect(container.querySelector(".from-amber-50.border-amber-300")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(props.body);
   });
 });
