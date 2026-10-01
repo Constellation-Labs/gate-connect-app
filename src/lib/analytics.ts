@@ -255,7 +255,7 @@ const HELD_CAP = 100;
 /**
  * How many of `HELD_CAP` connection failures may take. A failure repeats (an
  * `offline` gateway read every five minutes, for as long as the question goes
- * unanswered, which in the legacy shell is forever), while each milestone is
+ * unanswered, which on an install that never answers is forever), while each milestone is
  * held once; without a share of its own, failures alone could fill the queue
  * and leave no room for the milestones the funnel is built from.
  */

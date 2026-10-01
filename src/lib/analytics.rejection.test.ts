@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * the analytics seam used to take it the same way: an OAuth install's stored
  * sub was cleared, and the install moved off its id, on one keychain hiccup.
  *
- * This drives the real chain the shells use - `readAccount` over the real
+ * This drives the real chain the window uses - `readAccount` over the real
  * `api.ts` over a faked `invoke`, then `sessionFacts`, then `noteSession` -
  * with `get_account` actually rejecting. Only the backend is fake, and each
  * command answers the way the Rust command does: `set_analytics_identity`
@@ -150,7 +150,7 @@ async function window() {
   const { sessionFacts } = await import("./analyticsSession");
   await analytics.initAnalytics();
   await settle();
-  /** What the shells do on every account read: read, then tell the seam. */
+  /** What the window does on every account read: read, then tell the seam. */
   const readAndNote = async (apiKeyOrgId: string | null = null) => {
     const reading = await api.readAccount();
     const oauth = await api.oauthStatus().catch(() => null);

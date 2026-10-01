@@ -5,8 +5,8 @@ import { isSignedIn } from "./session";
 
 /**
  * What the sign-in window tells the analytics seam about the session, from
- * what it has read (AG-960). One function for both shells, so the rule for
- * "unknown" cannot drift between them.
+ * what it has read (AG-960). One function, so the rule for "unknown" lives
+ * in one place and its tests drive the same code the window runs.
  *
  * `sessionUnknown` is the rule that matters. Nothing the seam does on a
  * sign-out may follow from a read that could not answer:

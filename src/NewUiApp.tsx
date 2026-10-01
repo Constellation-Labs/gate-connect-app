@@ -1042,12 +1042,11 @@ export function NewUiApp() {
       setOAuth(oauthState);
       setVersion(v);
       setLoaded(true);
-      // The per-launch counterpart of `app_first_launched`, and the popover's
-      // own launch event: this shell never sent it, so a launch of the default
-      // UI was invisible, and a funnel had no denominator for returning users.
-      // Only the props the first read already answered; the popover's
-      // provider and drift dimensions describe a surface this shell does not
-      // draw.
+      // The per-launch counterpart of `app_first_launched`: without it a launch
+      // of this window was invisible, and a funnel had no denominator for
+      // returning users. Only the props the first read already answered; the
+      // removed popover's provider and drift dimensions described a surface
+      // this window does not draw.
       track("app_launched", launchProps(acct, px));
     })();
   }, []);

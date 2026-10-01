@@ -161,14 +161,17 @@ so a send that fails is lost rather than retried, because a duplicate would
 count one install's opt-out twice while a lost one only leaves it looking like a
 drop-off.
 
-## The legacy popover shell
+## Events with no sender
 
-The popover shell (`App.tsx`, reachable with `VITE_NEW_UI=0` or `gcNewUi(false)`)
-has no diagnostics step, so on an install whose question was never answered its
-AG-960 events stay held and are never sent. That is intentional: the funnel is
-reported by the default window shell, and the legacy shell keeps only the base
-events it always sent. An install that answered in the window shell reports
-from either.
+The popover shell (`App.tsx`) was removed in #383, and with it the only call
+sites of eight events: `popover_opened`, `proxy_enabled`, `proxy_disabled`,
+`ca_trusted`, `update_shown`, `update_dismissed`, `stale_agents_shown` and
+`oauth_offer_shown`. Their names stay in `AnalyticsEvent`, and so in the table
+below, because the inventory test keeps the two in step; nothing in the app
+sends them now, so PostHog only holds them from builds before that removal. The
+same goes for the `provider_count`, `codex_drifted` and `launch_at_login`
+props, which only that shell's `app_launched` carried. Every AG-960 event is
+sent by the main window (`NewUiApp`), the onboarding window or the tray window.
 
 ## Milestones
 
@@ -208,35 +211,35 @@ a first launch for machines that are not new.
 
 | Event | Properties | When it fires |
 | --- | --- | --- |
-| `app_launched` | `has_account`, `proxy_available`, `routing_on`; the popover shell also sends `provider_count`, `codex_drifted`, `launch_at_login` | Every launch, once the first state read lands. |
+| `app_launched` | `has_account`, `proxy_available`, `routing_on` (builds before #383 also sent `provider_count`, `codex_drifted`, `launch_at_login` from the popover shell) | Every launch, once the first state read lands. |
 | `app_first_launched` | none beyond the super-properties | AG-960 milestone. The first launch of a fresh install. |
 | `pairing_completed` | `auth_mode` (`oauth`, `api_key`), `org_count` (OAuth, when the picker loaded) | AG-960 milestone. The first time the install is signed in with an org: after the org is chosen (OAuth), or when the gateway first resolves the API key's org. Carries the org group and, for OAuth, the account identity. |
 | `tool_connected` | `tool` (registry slug, or a proxy domain slug such as `anthropic` for Claude Desktop and Cowork), `surface` (`config`, `domain`) | AG-960 milestone, once per tool. The first successful connect of that tool from any switch. |
 | `first_request_proxied` | `source` (`relay`, `gateway`), `tool` (relay only, when the relay named the sender) | AG-960 milestone. `relay`: Gate's relay or engine forwarded a gateway-bound request for a routed tool (the `traffic-observed` report, about 5 seconds after the burst). `gateway`: the gateway listed this install among the ones it has had traffic from, the fallback on Linux where the engine runs in a helper daemon with no observer. |
 | `connection_failed` | `reason`, `context`, `tool` (when known), `detail` (Cowork only) | AG-960. A failure on a connecting, sign-in or pairing step, sent instantly (not batched) once the diagnostics question is answered. At most once per window per reason, context and tool every 5 minutes. While the question is open at most 20 are held, so failures cannot crowd the milestones out of the 100-item hold. |
 | `diagnostics_opted_out` | `source` (`settings`, `onboarding`, `onboarding_skip`) | AG-960. Once per install, the first time sharing is switched off; see Consent. |
-| `popover_opened` | none | The popover shell is reopened from the tray. |
+| `popover_opened` | none | Not sent since #383 (see Events with no sender). The popover shell was reopened from the tray. |
 | `signed_in` | none | A sign-in or API-key save completes (before any org is chosen). |
 | `workspace_forgotten` | none | Reset completes. |
 | `key_replaced` | none | The API key is replaced. |
-| `proxy_enabled` | `source` (`toggle`, `restored`) | Popover shell: routing turned on, or restored at launch. |
-| `proxy_disabled` | `source` | Popover shell: routing turned off. |
+| `proxy_enabled` | `source` (`toggle`, `restored`) | Not sent since #383. Popover shell: routing turned on, or restored at launch. |
+| `proxy_disabled` | `source` | Not sent since #383. Popover shell: routing turned off. |
 | `domain_toggled` | `domain`, `routed` or `enabled` | A proxy domain row is switched. |
 | `tool_toggled` | `tool`, `routed` | A config tool is switched. |
 | `group_toggled` | `provider`, `enabled` | A family switch is used. |
-| `ca_trusted` | none | Popover shell: the certificate is trusted. |
+| `ca_trusted` | none | Not sent since #383. Popover shell: the certificate is trusted. |
 | `ca_untrusted` | none | The certificate is removed from the trust store. |
 | `env_export_enabled` | none | The command-line environment channel is turned on. |
 | `env_export_disabled` | none | It is turned off. |
 | `tour_completed` | `source` | The intro tour is finished. |
 | `tour_skipped` | `source`, `step` | The intro tour is skipped. |
-| `update_shown` | `source` (`banner`, `panel`) | An update is offered. |
+| `update_shown` | `source` (`banner`, `panel`) | Not sent since #383. An update is offered. |
 | `update_installed` | none | An update is installed. |
-| `update_dismissed` | `source` | An update offer is dismissed. |
+| `update_dismissed` | `source` | Not sent since #383. An update offer is dismissed. |
 | `agents_closed` | `count`, `restarted` | Running tools were closed or restarted from Gate. |
-| `stale_agents_shown` | none | The stale-agents hint is shown. |
+| `stale_agents_shown` | none | Not sent since #383. The stale-agents hint is shown. |
 | `routing_notice_shown` | `enabled`, `inline` | The routing change notice is shown. |
-| `oauth_offer_shown` | none | The offer to move a key account to sign-in is shown. |
+| `oauth_offer_shown` | none | Not sent since #383. The offer to move a key account to sign-in is shown. |
 | `oauth_offer_accepted` | none | That offer is accepted. |
 | `launch_at_login_toggled` | `enabled` | Launch at login is switched. |
 | `error_shown` | `context`, `title`, plus the error context (`install_id`, `os_version`, `tools_detected`, `verdict_states`, `feed_state`, `routing_on`) and the call site's `tool`, `domain`, `provider`, `routed`, `enabled` | Any user-facing failure. Paired with a PostHog exception carrying the same title. |
@@ -253,14 +256,14 @@ Only these keys ever leave the app; any other key is dropped before sending.
 | `has_account` | An account file exists. Left out when the account could not be read. |
 | `proxy_available` | This platform has the proxy subsystem. |
 | `routing_on` | The engine is running. |
-| `codex_drifted` | Codex's config was hand-edited away from Gate. |
+| `codex_drifted` | Codex's config was hand-edited away from Gate (popover launch, before #383). |
 | `provider` | Family or provider group id. |
-| `provider_count` | Enabled providers (popover launch). |
+| `provider_count` | Enabled providers (popover launch, before #383). |
 | `domain` | Proxy domain slug. |
 | `tool` | Tool or domain slug. |
 | `routed` | The switch's new state. |
 | `enabled` | The switch's new state (older call sites). |
-| `launch_at_login` | Launch at login is on. |
+| `launch_at_login` | Launch at login is on (popover launch, before #383). |
 | `context` | Which action failed, from a closed list (`ErrorContext`), or `gateway` for a failed gateway read. |
 | `title` | The classified error title. |
 | `source` | Where an action came from (per event, above). |
