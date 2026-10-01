@@ -66,7 +66,7 @@ const proxyState = (over: Partial<ProxyState> = {}): ProxyState => ({
   pac_port: null,
   ca_trusted: true,
   ca_nss_trust: null,
-  ca_nss_writes: 0,
+  ca_nss_written_at: 0,
   browser_proxy_channel: false,
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: false,

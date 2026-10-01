@@ -142,7 +142,7 @@ impl ProxyManager {
             // per-store refusals behind it are the report's business, not this
             // snapshot's - `status` is polled and every poll would clone them.
             ca_nss_trust: ca::recorded_nss_trust().map(|r| r.outcome),
-            ca_nss_writes: ca::nss_writes(),
+            ca_nss_written_at: ca::nss_written_at(),
             browser_proxy_channel: system_proxy::browser_proxy_channel(),
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),

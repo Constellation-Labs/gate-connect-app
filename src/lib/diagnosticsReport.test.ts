@@ -51,7 +51,7 @@ const proxy: ProxyState = {
   pac_port: null,
   ca_trusted: true,
   ca_nss_trust: null,
-  ca_nss_writes: 0,
+  ca_nss_written_at: 0,
   browser_proxy_channel: false,
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
@@ -273,7 +273,7 @@ describe("buildDiagnosticsReport", () => {
 
   it("flags a CA the browser's own store is missing", () => {
     // The certificate line still says trusted, because the OS store holds it.
-    // Only this line explains why Chrome rejects what Firefox accepts.
+    // Only this line explains why the browsers reject what curl accepts.
     const text = report({ backend: { ...backend, ca_nss_trusted: "absent" } });
     expect(text).toContain("certificate     trusted");
     expect(text).toContain("browser store   CA MISSING");

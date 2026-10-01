@@ -357,7 +357,7 @@ impl<O: DesktopOps> DesktopManager<O> {
             // `DesktopOps` for that reason - there is nothing per-platform to
             // ask - and `diagnostics.rs` answers the same question the same way.
             ca_nss_trust: None,
-            ca_nss_writes: 0,
+            ca_nss_written_at: 0,
             // And for the same reason, in the other direction: the PAC goes in
             // the OS proxy setting, which *is* the browser's proxy setting on
             // both of these. Not a question about the session here, as it is on

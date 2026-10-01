@@ -4,6 +4,7 @@ import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
   BAND_LABELS,
+  BROWSER_REMOVED_RESTART,
   BROWSER_RESTART,
   SECTIONS,
   browserTrustRemovedAdvice,
@@ -876,11 +877,29 @@ describe("browserTrustRestartAdvice", () => {
   });
 
   it("says to quit and reopen after a removal too, on Linux only", () => {
-    expect(browserTrustRemovedAdvice("linux")?.body).toContain(
-      "Quit and reopen any open browser so it stops trusting the certificate.",
-    );
-    expect(browserTrustRemovedAdvice("macos")).toBeUndefined();
-    expect(browserTrustRemovedAdvice("windows")).toBeUndefined();
+    expect(browserTrustRemovedAdvice("linux", null)?.body).toContain(BROWSER_REMOVED_RESTART);
+    expect(browserTrustRemovedAdvice("macos", null)).toBeUndefined();
+    expect(browserTrustRemovedAdvice("windows", null)).toBeUndefined();
+  });
+
+  it("does not say the browsers let go of a root one of them kept", () => {
+    // The removal's own reading decides it. A failure is a Gate root still
+    // trusted in a browser while everything else says it is gone, so it must
+    // never get the "removed" sentence, and it says where to remove it by hand.
+    for (const nss of ["tools_missing", "write_failed"] as const) {
+      const note = browserTrustRemovedAdvice("linux", nss);
+      expect(note?.title).not.toBe("Certificate removed");
+      expect(note?.body).not.toContain("removed its certificate from your browsers");
+      expect(note?.body).toContain("certificate settings");
+    }
+    expect(browserTrustRemovedAdvice("linux", "tools_missing")?.body).toContain("certutil");
+  });
+
+  it("claims the browsers only when a browser write was recorded", () => {
+    // No reading is `ca_trusted` alone: the system store took it, and nothing
+    // says any browser store did.
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain("and your browsers");
+    expect(browserTrustRestartAdvice("linux", null)?.body).not.toContain("your browsers");
   });
 
   it("falls back to the reopen note when there is no reading", () => {

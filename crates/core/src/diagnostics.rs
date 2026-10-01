@@ -40,12 +40,13 @@ pub struct Diagnostics {
     /// mint leaves from.
     pub ca_cert_path: Option<String>,
     pub ca_cert_present: bool,
-    /// Linux only: what every per-user NSS database found holds, **probed
-    /// now**. Chromium-based browsers read that store and never the system one,
-    /// so `Absent` next to a `ca_trusted` of true is exactly the "Firefox
-    /// works, Chrome doesn't" report, and it is invisible from the popover.
-    /// `None` where the question does not apply: not Linux, or no Chromium
-    /// browser has ever run for this user.
+    /// Linux only: what every browser NSS database found holds, Chromium's and
+    /// each Firefox profile's, **probed now**. Neither reads the system store
+    /// (Firefox only does on the p11-kit distros, not Ubuntu), so `Absent` next
+    /// to a `ca_trusted` of true is exactly the "curl works, the browsers
+    /// don't" report, and nothing else on screen shows it. `None` where the
+    /// question does not apply: not Linux, or no browser keeps a store here and
+    /// no Chromium is waiting for one.
     ///
     /// [`crate::proxy::NssProbe`] rather than a bool because a store that could
     /// not be opened - locked by another NSS client, on a stalled mount, or
@@ -128,7 +129,7 @@ pub fn collect() -> Diagnostics {
     }
 }
 
-/// A live read of the store Chromium reads. Three answers rather than a bool -
+/// A live read of the browser stores. Three answers rather than a bool -
 /// see [`crate::proxy::NssProbe`]: a database that could not be opened is not a
 /// database that does not hold the CA, and this line is printed as a fact.
 #[cfg(target_os = "linux")]

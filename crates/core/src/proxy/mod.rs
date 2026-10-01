@@ -1452,13 +1452,14 @@ pub fn wait_for_shutdown() -> anyhow::Result<()> {
     })
 }
 
-/// Read the store Chromium reads, once, off the polled path.
+/// Read the browser stores - Chromium's and each Firefox profile's - once, off
+/// the polled path.
 ///
 /// For the one moment `status` cannot answer for: `ca_trusted` has just gone
 /// true and [`ProxyState::ca_nss_trust`] is `None`, because the write that
 /// turned it true happened somewhere this process cannot see - the CLI's
-/// `proxy trust-ca`, or `--system-trust`, which installs the system anchor and
-/// touches no Chromium store at all. The UI raises a note on that transition,
+/// `proxy trust-ca` or `--system-trust`, whose record is keyed to a CA this
+/// process may not share, or a store that appeared after the write. The UI raises a note on that transition,
 /// and its fall-through sentence tells the user to reopen their browser; on a
 /// machine with no `certutil` that is advice which cannot work.
 ///
@@ -2653,8 +2654,9 @@ impl ProxyDomain {
     }
 }
 
-/// What the per-user NSS store Chromium reads holds, and when it does not hold
-/// our CA, **why** - because the two reasons want opposite things from the user.
+/// What the browsers' own NSS stores hold - Chromium's database and each
+/// Firefox profile's - and when they do not hold our CA, **why**, because the
+/// two reasons want opposite things from the user.
 ///
 /// A bare boolean was not enough, and shipping one was a bug: `ToolsMissing` is
 /// fixed by installing a package and `WriteFailed` is not, so a UI holding only
@@ -2680,12 +2682,12 @@ pub enum NssTrust {
     /// changes nothing here; the log line names the store and the reason.
     WriteFailed,
     /// The databases answered and at least one simply does not hold the CA,
-    /// with nothing having refused: nobody wrote it. Reachable only from
-    /// [`ca::probe_nss_trust`], never from a write, and the state
-    /// `proxy trust-ca --system-trust` leaves behind - it installs the system
-    /// anchor and no Chromium store. A retry is the fix, which is what makes
-    /// this a different sentence from `WriteFailed`: there is no refusal to go
-    /// and read, and no package to install.
+    /// with nothing having refused: nobody wrote it - a store that appeared
+    /// after the last write, or a Chromium installed with no database yet.
+    /// Reachable only from [`ca::probe_nss_trust`], never from a write. A retry
+    /// is the fix, which is what makes this a different sentence from
+    /// `WriteFailed`: there is no refusal to go and read, and no package to
+    /// install.
     NotWritten,
 }
 
@@ -2698,7 +2700,7 @@ pub enum NssTrust {
 /// says one could not be read at all - no `certutil`, a locked database, a call
 /// killed at its deadline - and a report that prints the first when it means
 /// the second is manufacturing a positive claim out of the absence of a
-/// reading. `None` on the wire keeps its meaning: no Chromium store exists on
+/// reading. `None` on the wire keeps its meaning: no browser keeps a store on
 /// this machine, so the question does not apply.
 ///
 /// `Absent` outranks `Unreadable` when both are found: one store definitely
@@ -2770,8 +2772,8 @@ pub struct ProxyState {
     /// apart, all of which look like Gate breaking HTTPS. Trusted and
     /// `Trusted`: the stores are right, so a browser still failing is older
     /// than the write and reopening it is the fix. Trusted and anything else:
-    /// Chromium cannot validate an intercepted host at all, and which sentence
-    /// helps depends on the variant.
+    /// the browsers cannot validate an intercepted host at all, and which
+    /// sentence helps depends on the variant.
     ///
     /// **Recorded at write time, never probed here.** `status` is polled - the
     /// window re-reads it on every `tools-changed` and every visibility edge -
@@ -2790,19 +2792,21 @@ pub struct ProxyState {
     /// the certificate it describes.
     ///
     /// `None` is still reachable, and still means nobody has looked: a machine
-    /// with no Chromium store, a record written for a different CA, or a first
-    /// run before any write. The UI answers it by probing once, off the polled
+    /// with no browser store, a record written for a different CA, or a first
+    /// run before any write. The one record served with no CA at all is a
+    /// removal that failed, so the window can say a browser kept the root. The UI answers it by probing once, off the polled
     /// path, on the transition that would raise the note - see
     /// `ca::probe_nss_trust`.
     #[serde(default)]
     pub ca_nss_trust: Option<NssTrust>,
-    /// Linux only: how many browser stores this process has added the CA to
-    /// (see `ca_linux::nss_writes`). The window raises its "quit and reopen"
-    /// note when this goes up, which catches a store written on an enable
-    /// where `ca_trusted` was already true - a Chromium database just created,
-    /// a Firefox profile seen for the first time. Always 0 elsewhere.
+    /// Linux only: when this process last added the CA to a browser store, in
+    /// milliseconds since the epoch, 0 if never (see `ca_linux::nss_written_at`).
+    /// The window raises its "quit and reopen" note when this rises, which
+    /// catches a store written on an enable where `ca_trusted` was already
+    /// true - a Chromium database just created, a Firefox profile seen for the
+    /// first time. Always 0 elsewhere.
     #[serde(default)]
-    pub ca_nss_writes: u64,
+    pub ca_nss_written_at: u64,
     /// Whether the system proxy Gate writes is one a browser reads *live*, and
     /// therefore whether a host-matched row covers the same site in a browser.
     ///

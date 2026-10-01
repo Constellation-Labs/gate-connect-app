@@ -146,11 +146,11 @@ export function sectionHint(group: Group): string | undefined {
  * restart for no reason. It had its own note, `PROXY_REOPEN_ADVICE`, removed
  * with the other advisory banners on 2026-09-24. This one is about the trust
  * store, which is read once at process start.
- * `ca_linux.rs` installs the CA into the per-user NSS databases Chromium reads
- * and into the system bundle Firefox picks up through p11-kit, and neither is
- * consulted again by a running process - so a browser that was open when the CA
- * landed fails every intercepted host with `ERR_CERT_AUTHORITY_INVALID` and
- * looks like Gate breaking the web rather than like a step left to do.
+ * `ca_linux.rs` installs the CA into each browser's own NSS store - Chromium's
+ * per-user database and every Firefox profile's - and no running process reads
+ * its store again, so a browser that was open when the CA landed fails every
+ * intercepted host with a certificate error and looks like Gate breaking the
+ * web rather than like a step left to do.
  *
  * Linux-only for the same reason as the advice above, and the same kind of
  * reason: macOS trusts in the login keychain and Windows in the per-user root
@@ -190,7 +190,7 @@ export function sectionHint(group: Group): string | undefined {
  * The failure cases are still raised on the transition rather than standing,
  * even though they describe conditions that persist. That is a deliberate
  * limit: a standing notice needs somewhere to live and something to retire it,
- * and the honest home for "Chromium cannot see the CA" is the certificate
+ * and the honest home for "the browsers cannot see the CA" is the certificate
  * section in Settings rather than a banner nobody can clear. Until it has one,
  * the diagnostics report is where the state is legible.
  *
@@ -236,34 +236,65 @@ export function browserTrustRestartAdvice(
       body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one and Gate has not written those, so turn routing off and on again to add it. Command-line tools are unaffected.`,
     };
   }
+  // `trusted` is a write that landed in the browser stores; no reading at all
+  // is only `ca_trusted`, so it claims the system store and nothing more.
   return {
     title: "Browsers already open need reopening",
-    body: `Gate has added its certificate to your ${store} and your browsers. A browser reads its certificates when it starts. ${BROWSER_RESTART}`,
+    body:
+      nss === "trusted"
+        ? `Gate has added its certificate to your ${store} and your browsers. A browser reads its certificates when it starts. ${BROWSER_RESTART}`
+        : `Gate has added its certificate to your ${store}. A browser reads its certificates when it starts. ${BROWSER_RESTART}`,
   };
 }
 
 /**
- * The one sentence every certificate note ends on, so the window, the CLI and
- * every variant above say the same thing. "Quit and reopen" rather than
+ * The sentence the notes that ask for a reopen end on, so the window, the CLI
+ * and those variants say the same thing. "Quit and reopen" rather than
  * "restart": closing the last window leaves some browsers running, and that
- * process keeps the certificates it loaded at launch.
+ * process keeps the certificates it loaded at launch. The CLI carries a copy
+ * (`crates/cli/src/main.rs`); the two move together.
  */
 export const BROWSER_RESTART = "Quit and reopen any open browser so it trusts the certificate.";
 
+/** The removal's counterpart of {@link BROWSER_RESTART}, mirrored the same way. */
+export const BROWSER_REMOVED_RESTART =
+  "Quit and reopen any open browser so it stops trusting the certificate.";
+
 /**
- * The note raised when the certificate is removed. Linux only, for the reason
- * `browserTrustRestartAdvice` is: a running browser there keeps the stores it
- * read at launch, so one that is still open goes on trusting a root that has
- * been taken out of them. macOS and Windows re-evaluate trust for a running
- * process.
+ * The note raised when the user removes the certificate, from what the removal
+ * itself recorded - never from `ca_trusted` going false, which a regenerated
+ * CA or a system anchor removed outside Gate does too, with nothing taken out
+ * of any browser.
+ *
+ * Linux only, for the reason `browserTrustRestartAdvice` is: a running browser
+ * there keeps the stores it read at launch, so one that is still open goes on
+ * trusting a root that has been taken out of them. macOS and Windows
+ * re-evaluate trust for a running process.
+ *
+ * `nss` is the removal's reading. A failure is the one outcome with a security
+ * edge - a Gate root still trusted in a browser while everything else says it
+ * is gone - so it gets its own sentence, and where to remove it by hand.
  */
 export function browserTrustRemovedAdvice(
   platform: Platform,
+  nss: ProxyState["ca_nss_trust"],
 ): { title: string; body: string } | undefined {
   if (platform !== "linux") return undefined;
+  if (nss === "tools_missing") {
+    return {
+      title: "A browser may still trust Gate’s certificate",
+      body: "Gate removed its certificate from your certificate store, but needs certutil to remove it from the browsers’ own stores and it is not installed. Remove the Gate Connect certificate in each browser’s certificate settings.",
+    };
+  }
+  if (nss === "write_failed" || nss === "not_written") {
+    return {
+      title: "A browser still trusts Gate’s certificate",
+      body: "Gate removed its certificate from your certificate store, but at least one browser’s own store would not let go of it. Remove the Gate Connect certificate in that browser’s certificate settings.",
+    };
+  }
   return {
     title: "Certificate removed",
-    body: "Gate removed its certificate from your browsers. Quit and reopen any open browser so it stops trusting the certificate.",
+    body: `Gate removed its certificate from your browsers. ${BROWSER_REMOVED_RESTART}`,
   };
 }
 
