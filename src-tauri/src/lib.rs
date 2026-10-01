@@ -3850,16 +3850,70 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
 ///
 /// On a thread of its own: the restart can take seconds, and the callers are a
 /// save the user is watching, a close, and the startup thread.
+///
+/// A refresh skipped for an open session is not dropped: it is owed, and
+/// [`retry_owed_codex_refresh`] makes it once the last session closes. Without
+/// that, a user who quit Codex themselves rather than through the restart
+/// notice reopened it on the old daemon, whose model list is the one from
+/// before the change, and only a terminal command could fix it (staging QA on
+/// alpha.12, 2026-10-01).
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn refresh_codex_daemon_when_idle(why: &'static str) {
     std::thread::spawn(move || {
-        let mut open_sessions = 0u32;
-        for_each_agent_process(&["codex"], |_| open_sessions += 1);
-        if open_sessions > 0 {
+        if codex_sessions_open() {
+            CODEX_REFRESH_OWED.store(true, Ordering::Relaxed);
+            retry_owed_codex_refresh();
             return;
         }
+        CODEX_REFRESH_OWED.store(false, Ordering::Relaxed);
         if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
             eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+        }
+    });
+}
+
+/// A Codex daemon refresh was skipped because a session was open.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static CODEX_REFRESH_OWED: AtomicBool = AtomicBool::new(false);
+
+/// How often an owed refresh looks for the last Codex session to close. Short,
+/// because a user who quits Codex to pick up a change reopens it straight away,
+/// and a reopen that beats the refresh lands on the old daemon. Only polled
+/// while a refresh is owed.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const CODEX_REFRESH_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn codex_sessions_open() -> bool {
+    let mut open = false;
+    for_each_agent_process(&["codex"], |_| open = true);
+    open
+}
+
+/// Make the owed refresh once no Codex session is open. One watcher at a time;
+/// it ends when nothing is owed any more, so an idle app scans nothing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn retry_owed_codex_refresh() {
+    static WATCHING: AtomicBool = AtomicBool::new(false);
+    if WATCHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| {
+        while CODEX_REFRESH_OWED.load(Ordering::Relaxed) {
+            std::thread::sleep(CODEX_REFRESH_POLL);
+            if codex_sessions_open() {
+                continue;
+            }
+            CODEX_REFRESH_OWED.store(false, Ordering::Relaxed);
+            if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
+                eprintln!("[gate] last Codex session closed: could not refresh the Codex app server: {e:#}");
+            }
+        }
+        WATCHING.store(false, Ordering::Release);
+        // A refresh owed again between the loop's last check and the flag
+        // clearing would otherwise wait for the next caller.
+        if CODEX_REFRESH_OWED.load(Ordering::Relaxed) {
+            retry_owed_codex_refresh();
         }
     });
 }
