@@ -110,10 +110,12 @@ describe("adaptEvents", () => {
    * agree; the rules below are about not overriding anything more authoritative.
    */
   describe("labelEntries", () => {
-    const names = new Map([
-      ["anthropic/claude-opus-4-5", "Claude Opus 4.5"],
-      ["openai/gpt-6-luna", "GPT-6 Luna"],
-    ]);
+    const table: Record<string, { name: string; vendor: string }> = {
+      "anthropic/claude-opus-4-5": { name: "Claude Opus 4.5", vendor: "anthropic" },
+      "openai/gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
+      "gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
+    };
+    const names = (id: string) => table[id];
     const entries = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries;
 
     it("names a row from the catalogue when the gateway sent only the id", () => {
@@ -144,7 +146,20 @@ describe("adaptEvents", () => {
 
     it("changes nothing while the catalogue is unread", () => {
       const before = entries({ model: "openai/gpt-6-luna" });
-      expect(labelEntries(before, new Map())).toEqual(before);
+      expect(labelEntries(before, () => undefined)).toEqual(before);
+    });
+
+    it("takes the catalogue's vendor for a bare id, so the mark can be drawn", () => {
+      const [row] = labelEntries(entries({ provider: null, model: "gpt-6-luna" }), names);
+      expect(row.model).toBe("GPT-6 Luna");
+      expect(row.vendor).toBe("openai");
+      // Still not a claim about who served it.
+      expect(row.provider).toBeNull();
+    });
+
+    it("does not override a vendor the id already named", () => {
+      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), names);
+      expect(row.vendor).toBe("anthropic");
     });
   });
 

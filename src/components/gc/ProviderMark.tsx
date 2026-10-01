@@ -471,6 +471,7 @@ export function providerNameFor(vendor: string): ProviderName | undefined {
 export function VendorMark({
   provider,
   vendor,
+  size = 16,
 }: {
   /** What the gateway said served the request, and the only thing this row is
    *  allowed to put into words. Null when it named none. */
@@ -478,23 +479,28 @@ export function VendorMark({
   /** The namespace to fall back to for the mark - the model id's own, where the
    *  provider has no mark or was not named. See `ToolEventRow.vendor`. */
   vendor: string | null;
+  /** The glyph's size: 16 on the app pane's rows (272:3282), 20 on the Security
+   *  events table (`1402:18017` draws `anthropic 1` at 20). */
+  size?: number;
 }) {
-  if (!provider && !vendor) return <span aria-hidden className="size-4 shrink-0" />;
+  const box = { width: size, height: size };
+  if (!provider && !vendor) return <span aria-hidden className="shrink-0" style={box} />;
   const mark =
-    (provider ? providerMarkFor(provider) : undefined) ??
-    (vendor ? providerMarkFor(vendor) : undefined) ?? <Icon name="cube" size={16} />;
+    (provider ? providerMarkFor(provider, size) : undefined) ??
+    (vendor ? providerMarkFor(vendor, size) : undefined) ?? <Icon name="cube" size={size} />;
   return (
     <>
       <span
         aria-hidden
         title={provider ?? undefined}
+        style={box}
         // `base.foreground`, not the muted grey the Overview's row glyphs take.
         // A brand mark is not a glyph: the colour ones carry their own fills and
         // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
         // inception, relace) inherit it - so muting the wrapper rendered OpenAI
         // grey here and inked in the picker, while Moonshot, which hard-codes
         // black, stayed black in both. Same ink as `dialogs.tsx`'s row.
-        className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
+        className="flex shrink-0 items-center justify-center text-base-foreground"
       >
         {mark}
       </span>

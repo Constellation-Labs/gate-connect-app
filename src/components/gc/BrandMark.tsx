@@ -162,3 +162,57 @@ export function brandMarkForSection(
   const key = [...memberKeys, id].find((k) => BRAND_BY_SLUG[k]);
   return key ? brandMarkFor(key, size) : undefined;
 }
+
+
+/**
+ * The gateway's platform ids that are not registry slugs, onto the slug whose
+ * mark they take. `SecurityEvent.tool` is the gateway's attribution
+ * (`platform-registry.ts`), which names surfaces this app has no row for -
+ * the Claude and ChatGPT desktop apps, the web chats, the Codex desktop app -
+ * and the mark says whose product it is, which is the same answer for each.
+ * A platform neither here nor in `BRAND_BY_SLUG` (Cursor, Aider, Cline) has
+ * no mark and keeps its slot empty.
+ */
+const TOOL_ALIASES: Record<string, string> = {
+  "claude-desktop": "anthropic",
+  "chatgpt-desktop": "chatgpt",
+  "chatgpt-web": "chatgpt",
+  "codex-desktop": "codex",
+};
+
+/**
+ * Ink for a mark drawn on a light row rather than the rail's dark tile.
+ *
+ * `BrandMark`'s paths take `currentColor` so the tile can ink them `#F9FAFB`,
+ * and on white they would come out `base.foreground`. The Security events
+ * frame draws the Claude Code logo in colour instead - `#E8704E`, sampled off
+ * `1402:18014`, the Anthropic colour `ProviderMark` carries - so the two
+ * Claude marks take it. Every other mark is drawn by no frame on a light row
+ * and keeps the ink until one does.
+ */
+const TOOL_INK: Partial<Record<BrandName, string>> = {
+  claude: "#E8704E",
+  claudeCode: "#E8704E",
+};
+
+/**
+ * The mark for a tool on a light row, coloured where a frame colours it.
+ *
+ * `Object.hasOwn` rather than a bare index, for the reason `providerNameFor`
+ * gives: the slug is the gateway's string, and a row naming its tool
+ * `constructor` must not reach a prototype member.
+ */
+export function toolMarkFor(slug: string, size?: number): JSX.Element | undefined {
+  const key = Object.hasOwn(TOOL_ALIASES, slug) ? TOOL_ALIASES[slug] : slug;
+  const name = Object.hasOwn(BRAND_BY_SLUG, key) ? BRAND_BY_SLUG[key] : undefined;
+  if (!name) return undefined;
+  const ink = TOOL_INK[name];
+  const mark = <BrandMark name={name} size={size} />;
+  return ink ? (
+    <span className="inline-flex" style={{ color: ink }}>
+      {mark}
+    </span>
+  ) : (
+    mark
+  );
+}

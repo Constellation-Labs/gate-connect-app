@@ -6,7 +6,7 @@ import {
   formatCredits,
   formatPlan,
   leftGateModelsNotice,
-  modelNamesById,
+  modelLabelsFor,
   stepForChoice,
 } from "./toolModels";
 import type { ToolModels } from "./api";
@@ -194,24 +194,50 @@ describe("leftGateModelsNotice", () => {
   });
 });
 
-describe("modelNamesById", () => {
-  it("indexes the catalogue's display names by canonical id", () => {
-    const names = modelNamesById(
-      adaptModels({
-        data: [
-          { id: "anthropic/claude-opus-5", owned_by: "anthropic", name: "Claude Opus 5" },
-          // No name: `adaptModels` falls back to the id, so the index does too.
-          { id: "openai/gpt-6-luna", owned_by: "openai" },
-        ],
-      }),
-    );
-    expect(names.get("anthropic/claude-opus-5")).toBe("Claude Opus 5");
-    expect(names.get("openai/gpt-6-luna")).toBe("openai/gpt-6-luna");
-    expect(names.get("missing/model")).toBeUndefined();
+describe("modelLabelsFor", () => {
+  const labels = modelLabelsFor(
+    adaptModels({
+      data: [
+        { id: "anthropic/claude-opus-5", owned_by: "anthropic", name: "Claude Opus 5" },
+        // No name: `adaptModels` falls back to the id, so the lookup does too.
+        { id: "openai/gpt-6-luna", owned_by: "openai" },
+        // Two vendors, one native spelling.
+        { id: "meta-llama/llama-4-scout", owned_by: "meta-llama", name: "Llama 4 Scout" },
+        { id: "together/llama-4-scout", owned_by: "together", name: "Llama 4 Scout (Together)" },
+      ],
+    }),
+  );
+
+  it("answers a canonical id with the catalogue's name and vendor", () => {
+    expect(labels("anthropic/claude-opus-5")).toEqual({ name: "Claude Opus 5", vendor: "anthropic" });
+    expect(labels("openai/gpt-6-luna")).toEqual({ name: "openai/gpt-6-luna", vendor: "openai" });
+    expect(labels("missing/model")).toBeUndefined();
   });
 
-  it("is empty, not null, for an unread catalogue", () => {
-    expect(modelNamesById(null).size).toBe(0);
+  it("answers the provider's own spelling, which is the canonical id without its vendor", () => {
+    // What the security feed carries: `resolved_model` on Anthropic Direct.
+    expect(labels("claude-opus-5")).toEqual({ name: "Claude Opus 5", vendor: "anthropic" });
+    // Dated, as Anthropic also spells them.
+    expect(labels("claude-opus-5-20260514")).toEqual({ name: "Claude Opus 5", vendor: "anthropic" });
+  });
+
+  it("does not name a native spelling two vendors share", () => {
+    // Naming it would be choosing a vendor, which is the guess this refuses.
+    expect(labels("llama-4-scout")).toBeUndefined();
+  });
+
+  it("does not treat a namespaced id it does not list as a native spelling", () => {
+    expect(labels("bedrock/claude-opus-5")).toBeUndefined();
+  });
+
+  it("does not answer a wrapped id", () => {
+    // Bedrock's region and version wrapping is the gateway's to undo, by
+    // sending the canonical id on the event.
+    expect(labels("us.anthropic.claude-opus-5-20260514-v1:0")).toBeUndefined();
+  });
+
+  it("finds nothing for an unread catalogue", () => {
+    expect(modelLabelsFor(null)("anthropic/claude-opus-5")).toBeUndefined();
   });
 });
 

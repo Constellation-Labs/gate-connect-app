@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SecurityEvents } from "./SecurityEvents";
 import type { SecurityEvent } from "../../lib/api";
+import { adaptModels, modelLabelsFor } from "../../lib/toolModels";
 
 afterEach(cleanup);
 
@@ -226,18 +227,22 @@ describe("opening an event", () => {
  * `SecurityEvent` is the wire contract.
  */
 describe("the model cell", () => {
-  const names = new Map([["anthropic/claude-opus-4-5", "Claude Opus 4.5"]]);
+  const names = modelLabelsFor(
+    adaptModels({
+      data: [{ id: "anthropic/claude-opus-4-5", owned_by: "anthropic", name: "Claude Opus 4.5" }],
+    }),
+  );
   const row: SecurityEvent = { ...blocked, model: "anthropic/claude-opus-4-5" };
 
   it("names the model from the catalogue and keeps the id on hover", () => {
-    render(section({ events: [row], modelNames: names }));
+    render(section({ events: [row], modelLabels: names }));
     const cell = screen.getByText("Claude Opus 4.5");
     expect(cell.getAttribute("title")).toBe("anthropic/claude-opus-4-5");
     expect(screen.queryByText("anthropic/claude-opus-4-5")).toBeNull();
   });
 
   it("keeps the id when the catalogue does not list the model, or was not read", () => {
-    render(section({ events: [{ ...row, model: "aion-labs/aion-2-0" }], modelNames: names }));
+    render(section({ events: [{ ...row, model: "aion-labs/aion-2-0" }], modelLabels: names }));
     expect(screen.getByText("aion-labs/aion-2-0")).toBeTruthy();
     cleanup();
     render(section({ events: [row] }));
@@ -245,16 +250,75 @@ describe("the model cell", () => {
   });
 
   it("still says unattributed for a row with no model", () => {
-    render(section({ events: [{ ...row, model: null }], modelNames: names }));
+    render(section({ events: [{ ...row, model: null }], modelLabels: names }));
     expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
 
   it("reads the pipeline's unknown sentinel as no model", () => {
     // `resolved_model` holds the literal on rows whose body could not be read,
     // and the security bus passes it through where tool-events maps it to null.
-    render(section({ events: [{ ...row, model: "unknown" }], modelNames: names }));
+    render(section({ events: [{ ...row, model: "unknown" }], modelLabels: names }));
     expect(screen.queryByText("unknown")).toBeNull();
     expect(screen.queryByTitle("unknown")).toBeNull();
+  });
+
+  it("names a provider-native id from the catalogue, and draws its vendor's mark", () => {
+    // What the security feed actually carries: `resolved_model`, which on
+    // Anthropic Direct is the canonical id without its vendor. This is the row
+    // the Overview showed as an id while the app pane showed a name.
+    const { container } = render(
+      section({ events: [{ ...row, provider: null, model: "claude-opus-4-5" }], modelLabels: names }),
+    );
+    expect(screen.getByText("Claude Opus 4.5")).toBeTruthy();
+    expect(screen.getByTitle("claude-opus-4-5")).toBeTruthy();
+    expect(container.querySelector('svg path[fill="#E8704E"]')).toBeTruthy();
+  });
+});
+
+/**
+ * The Tool cell (`1402:18013`): the tool's logo in colour at 20px and its
+ * product name, where it printed the gateway's slug alone.
+ */
+describe("the tool cell", () => {
+  const toolNames = new Map([["claude-code", "Claude Code"]]);
+
+  it("draws the tool's mark and product name, with the slug on hover", () => {
+    const { container } = render(section({ events: [blocked], toolNames }));
+    expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByTitle("claude-code")).toBeTruthy();
+    expect(screen.queryByText("claude-code")).toBeNull();
+    // The Claude Code mark, in the colour the frame draws it (`1402:18014`).
+    const mark = container.querySelector('[style*="E8704E"], [style*="232, 112, 78"]');
+    expect(mark).toBeTruthy();
+    expect(mark!.querySelector("svg")).toBeTruthy();
+  });
+
+  it("prints the slug when the registry has no name for it", () => {
+    render(section({ events: [{ ...blocked, tool: "cursor" }], toolNames }));
+    expect(screen.getByText("cursor")).toBeTruthy();
+  });
+
+  it("gives a gateway platform id the mark of the product it belongs to", () => {
+    render(section({ events: [{ ...blocked, tool: "codex-desktop" }] }));
+    const cell = screen.getByTitle("codex-desktop").parentElement!;
+    expect(cell.querySelector("svg")).toBeTruthy();
+  });
+
+  it("keeps the slot empty for a platform with no mark", () => {
+    render(section({ events: [{ ...blocked, tool: "cursor" }] }));
+    const cell = screen.getByTitle("cursor").parentElement!;
+    expect(cell.querySelector("svg")).toBeNull();
+  });
+
+  it("does not reach a prototype member for a hostile slug", () => {
+    render(section({ events: [{ ...blocked, tool: "constructor" }] }));
+    const cell = screen.getByTitle("constructor").parentElement!;
+    expect(cell.querySelector("svg")).toBeNull();
+  });
+
+  it("still says unattributed for a row with no tool", () => {
+    render(section({ events: [{ ...blocked, tool: null }], toolNames }));
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
 });
 
