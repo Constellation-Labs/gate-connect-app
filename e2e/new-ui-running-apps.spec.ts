@@ -250,9 +250,14 @@ test.describe("new UI running apps", () => {
     await expect(dialog).toContainText("You reopen Codex yourself");
   });
 
-  test("a tool that comes back is verified before it reads as routing", async ({ boot }) => {
-    // AG-566 AC 8: it is the reopen that gets checked. The tool is closed, then
-    // launched again, and only then does the account call it applied.
+  test("a tool that comes back ends the flow with nothing drawn", async ({ boot }) => {
+    // AG-566 AC 8 (it is the reopen that gets checked) is pinned in
+    // `useRunningApps.test.tsx`: "does not call a closed tool verified" and
+    // "verifies once a new process is up". Nothing on screen tells the
+    // verified reopen apart any more - the all-clear dialog went with #389, and
+    // the rail reads the sweep, which already says Protected for this config
+    // before the reopen (review on #389) - so this checks only that no dialog
+    // is drawn on either side of it.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [CODEX],
@@ -262,19 +267,13 @@ test.describe("new UI running apps", () => {
     await app.routeApp("ChatGPT / Codex");
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
-    // Nothing on screen while Gate waits for the user: this stage draws no
-    // dialog, and the rail carries it.
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
 
-    // The user opens it again. The verified reopen reads as routing on the
-    // rail, and no all-clear dialog follows ("Change is ready" is not in the
-    // Figma, and went on 2026-09-30).
+    // The user opens it again. No all-clear follows ("Change is ready" is not
+    // in the Figma, and went on 2026-09-30).
     await app.patch({ runningAgentNames: ["codex"] });
-
-    await expect(
-      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => app.lastCall("running_agents"), { timeout: 15_000 }).not.toBeNull();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
