@@ -69,6 +69,7 @@ export interface ProxyFixture {
   env_export_separable: boolean;
   forwarder_answering: boolean | null;
   ca_nss_trusted: boolean | null;
+  ca_nss_writes: number;
   domains: DomainFixture[];
 }
 
@@ -260,6 +261,7 @@ export function defaultState(): BackendState {
       env_export_separable: true,
       forwarder_answering: null,
       ca_nss_trusted: null,
+      ca_nss_writes: 0,
       domains: [
         { ...ANTHROPIC_DOMAIN },
         { ...CLAUDE_WEB_DOMAIN },

@@ -38,6 +38,8 @@ export function Home({
   changeNotice,
   canCloseAgents = true,
   onDismissChangeNotice,
+  browserRestart = false,
+  onDismissBrowserRestart,
   onCloseAgents,
   onEnableRouting,
   staleAgentsHint,
@@ -85,6 +87,11 @@ export function Home({
   onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
+  /** Linux: the certificate was just added to a browser's own store, which a
+   * running browser only reads at launch. Shows the quit-and-reopen notice
+   * while the certificate is trusted. */
+  browserRestart?: boolean;
+  onDismissBrowserRestart?: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
   /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
@@ -108,10 +115,10 @@ export function Home({
    * on means browsers and tools are quietly going direct - the one state the
    * count below would otherwise report as fully routed. */
   forwarderAnswering: boolean | null;
-  /** Linux only: whether the per-user NSS store Chromium and Electron read
-   * holds the CA. null where that store does not apply. False beside a trusted
-   * CA means those apps reject every intercepted host while the OS store, and
-   * everything that reads it, is satisfied. */
+  /** Linux only: whether every browser NSS store (Chromium's and each Firefox
+   * profile's) holds the CA. null where those stores do not apply. False
+   * beside a trusted CA means those browsers reject every intercepted host
+   * while the OS store, and everything that reads it, is satisfied. */
   caNssTrusted: boolean | null;
 }) {
   const platform = usePlatform();
@@ -121,10 +128,15 @@ export function Home({
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
   const partial = proxyOn && !caTrusted && anyDomainOn;
-  // The OS trusts the certificate but Chromium's own store does not, so
-  // Chrome and Electron apps show a certificate error on every intercepted
-  // host. Nothing else on screen can show this: every row reads Routed.
-  const chromiumUntrusted = proxyOn && caTrusted && caNssTrusted === false && anyDomainOn;
+  // The OS trusts the certificate but a browser's own store does not
+  // (Chromium's, or a Firefox profile's), so that browser shows a certificate
+  // error on every intercepted host. Nothing else on screen can show this:
+  // every row reads Routed.
+  const browserUntrusted = proxyOn && caTrusted && caNssTrusted === false && anyDomainOn;
+  // "Certificate added to your browsers" only while the certificate is
+  // trusted: after a removal it would be the opposite of true. Yields to the
+  // card above, which is the truer answer while a store still lacks it.
+  const showBrowserRestart = showProxy && browserRestart && caTrusted && !browserUntrusted;
   // Denominator included so "3 of 8" answers "and what about the rest?"
   // without a scroll; the families below are the itemization.
   const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
@@ -204,9 +216,10 @@ export function Home({
       ? null
       : staleAgentsHint
         ? "stale"
-        : // "Certificate trusted" beside a card saying Chrome does not trust
+        : // "Certificate trusted" beside a card saying the browsers do not trust
           // it would be two answers to one question; the card is the true one.
-          changeNotice && !(changeNotice === "trusted" && chromiumUntrusted)
+          // The browser-restart notice says the same thing more precisely.
+          changeNotice && !(changeNotice === "trusted" && (browserUntrusted || showBrowserRestart))
           ? "change"
           : null;
 
@@ -547,14 +560,18 @@ export function Home({
           </div>
         )}
 
-        {/* The same certificate, trusted by the OS and missing from the store
-            Chromium reads (`ca_linux::ensure_trusted_nss`). That write is
-            best-effort and used to fail silently, so the only symptom was a
-            browser certificate error with nothing pointing back at Gate.
-            Retry is the ordinary trust action: with the system anchor current
-            it raises no prompt and only rewrites the Chromium store. The
-            package hint covers the one cause Retry cannot fix. */}
-        {showProxy && chromiumUntrusted && (
+        {/* The same certificate, trusted by the OS and missing from a store a
+            browser reads: Chromium's, or a Firefox profile's
+            (`ca_linux::ensure_trusted_nss`). That write is best-effort and used
+            to fail silently, so the only symptom was a browser certificate
+            error with nothing pointing back at Gate. Retry is the ordinary
+            trust action: with the system anchor current it raises no prompt,
+            creates Chromium's database if it is missing, and writes every
+            browser store that should hold the CA - never one the user took it
+            out of. The hint covers the two causes Retry cannot fix: no
+            certutil, and a Firefox Primary Password, which certutil needs and
+            cannot be given. */}
+        {showProxy && browserUntrusted && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
               <div className="order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning-deep">
@@ -573,13 +590,15 @@ export function Home({
                 {trustPending ? "Waiting…" : "Retry"}
               </Button>
               <div className="order-2 min-w-0 flex-1 text-gc-body-sm font-medium leading-snug text-gc-ink">
-                Chrome and apps built on it don&rsquo;t trust the Gate certificate yet.
+                Your browsers don&rsquo;t trust the Gate certificate yet.
               </div>
             </div>
             <p className="mt-2 text-gc-caption leading-snug text-gc-ink-3">
               If this stays after a retry, install{" "}
               <span className="font-mono">libnss3-tools</span> (on Fedora,{" "}
-              <span className="font-mono">nss-tools</span>) and retry.
+              <span className="font-mono">nss-tools</span>) and retry. A Firefox
+              profile with a Primary Password needs the certificate imported in
+              Firefox&rsquo;s own settings.
             </p>
           </div>
         )}
@@ -640,7 +659,9 @@ export function Home({
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
                 : changeNotice === "trusted"
-                  ? "Certificate trusted. Restart any open browser so it trusts it too."
+                  ? "Certificate trusted. Quit and reopen any open browser so it trusts the certificate."
+                  : changeNotice === "removed"
+                    ? "Certificate removed. Quit and reopen any open browser so it stops trusting the certificate."
                   : changeNotice === "started"
                   ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
@@ -656,7 +677,10 @@ export function Home({
                   reloading is the whole fix - the banner would otherwise state
                   a problem and offer nothing, which is the state this notice
                   exists to prevent. */}
-              {!canCloseAgents && changeNotice !== "pending" && changeNotice !== "trusted" && (
+              {!canCloseAgents &&
+                  changeNotice !== "pending" &&
+                  changeNotice !== "trusted" &&
+                  changeNotice !== "removed" && (
                 <> Reload any pages you have open.</>
               )}
             </div>
@@ -675,7 +699,7 @@ export function Home({
               >
                 Turn on routing
               </button>
-            ) : changeNotice === "trusted" || !canCloseAgents ? null : (
+            ) : changeNotice === "trusted" || changeNotice === "removed" || !canCloseAgents ? null : (
               <button
                 type="button"
                 onClick={onCloseAgents}
@@ -689,8 +713,29 @@ export function Home({
               size={13}
               onClick={onDismissChangeNotice}
               aria-label={
-                changeNotice === "trusted" ? "Dismiss certificate notice" : "Dismiss routing notice"
+                changeNotice === "trusted" || changeNotice === "removed"
+                  ? "Dismiss certificate notice"
+                  : "Dismiss routing notice"
               }
+            />
+          </div>
+        )}
+
+        {/* Its own row rather than a `changeNotice` value: it lands in the same
+            enable that raises "Routing is on", and that notice's remedy
+            (close the tools) is a different job from this one. Hidden while
+            the browser-trust card is up, which is the truer answer then. */}
+        {showBrowserRestart && (
+          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
+            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
+            <div className="min-w-0 flex-1 text-gc-caption font-medium leading-snug text-gc-ink">
+              Certificate added to your browsers. Quit and reopen any open browser so it trusts the certificate.
+            </div>
+            <IconButton
+              icon="x"
+              size={13}
+              onClick={onDismissBrowserRestart}
+              aria-label="Dismiss browser restart notice"
             />
           </div>
         )}

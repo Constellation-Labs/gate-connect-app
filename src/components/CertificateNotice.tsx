@@ -348,7 +348,7 @@ export function CertificateNotice({
           {" "}
           {trustStoreName(platform)} needs to trust its certificate. It is made
           here, never leaves your computer, and you can remove it in Settings.
-          Restart any open browser so it trusts the certificate.
+          Afterwards, quit and reopen any open browser so it trusts the certificate.
         </p>
         {/* The handoff sentence, in the same words Home's card and the family
             panel's banner use, so the three surfaces do not describe one

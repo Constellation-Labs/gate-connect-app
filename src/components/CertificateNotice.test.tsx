@@ -70,7 +70,7 @@ describe("CertificateNotice depicts the prompt the platform actually raises", ()
     // is up (the only moment the user may act on it), and that it stays scoped
     // to "any open browser" rather than ordering a restart of nothing.
     renderNotice({ platform: "macos", pending });
-    expect(screen.getByText(/Restart any open browser so it trusts the certificate\./)).toBeTruthy();
+    expect(screen.getByText(/Afterwards, quit and reopen any open browser so it trusts the certificate\./)).toBeTruthy();
   });
 
   it("hides every depiction from the accessibility tree, caption included", () => {

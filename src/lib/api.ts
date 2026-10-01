@@ -158,10 +158,15 @@ export interface ProxyState {
    * on screen can show: routing is on, and browsers and tools are going direct
    * because their addresses fall back rather than fail. */
   forwarder_answering: boolean | null;
-  /** Linux only: whether the per-user NSS store Chromium and Electron read
-   * holds the CA. null off Linux or where no such store exists. false beside a
-   * true `ca_trusted` is "the OS trusts it, Chrome does not". */
+  /** Linux only: whether every browser NSS store (Chromium's and each
+   * Firefox profile's) holds the CA. null off Linux or where no such store
+   * exists. false beside a true `ca_trusted` is "the OS trusts it, the
+   * browsers do not". */
   ca_nss_trusted: boolean | null;
+  /** Linux only: how many times this process has added the CA to a browser
+   * store. Home's "restart your browser" notice fires when it goes up, since
+   * a browser only sees a new root after a restart. Always 0 elsewhere. */
+  ca_nss_writes: number;
   domains: ProxyDomain[];
 }
 
@@ -388,11 +393,16 @@ export interface Diagnostics {
   /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
    * a real state and otherwise invisible. */
   ca_cert_present: boolean;
-  /** Linux only: whether the per-user NSS store Chromium reads holds the CA.
-   * Chromium never reads the system store, so this and `ca_trusted`
-   * disagreeing is the whole of "Firefox works, Chrome doesn't". `null` where
-   * the question does not apply (not Linux, or no such browser here). */
+  /** Linux only: whether every browser NSS store holds the CA. Chromium never
+   * reads the system store, and Firefox only does where the distro wires
+   * p11-kit in (not Ubuntu), so this and `ca_trusted` disagreeing is the whole
+   * of "curl works, the browsers don't". `null` where the question does not
+   * apply (not Linux, or no such browser here). */
   ca_nss_trusted: boolean | null;
+  /** Linux only: one line per browser store and what it holds ("<path>:
+   * trusted", "…: removed in the browser"), so a report says *which* store.
+   * Empty elsewhere. */
+  ca_nss_stores: string[];
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;

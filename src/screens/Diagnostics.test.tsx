@@ -34,6 +34,7 @@ const backend: BackendDiagnostics = {
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
   ca_nss_trusted: true,
+  ca_nss_stores: [],
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -58,6 +59,7 @@ const proxy: ProxyState = {
   env_export_separable: false,
   forwarder_answering: null,
   ca_nss_trusted: null,
+  ca_nss_writes: 0,
   domains: [],
 };
 

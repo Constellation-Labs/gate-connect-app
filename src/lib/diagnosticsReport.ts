@@ -227,12 +227,17 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     if (backend && proxy.ca_trusted && !backend.ca_cert_present) {
       lines.push(row("cert file", "MISSING on disk"));
     }
-    // Linux only: Chromium-based browsers read a per-user NSS store and never
-    // the system one, so the certificate above reading "trusted" while this
-    // line appears is the whole of "Firefox works, Chrome doesn't". Silent when
-    // the question does not apply.
+    // Linux only: browsers read per-user NSS stores rather than the system
+    // one, so the certificate above reading "trusted" while this line appears
+    // is the whole of "curl works, the browsers don't". Silent when the
+    // question does not apply.
     if (backend?.ca_nss_trusted === false) {
-      lines.push(row("browser store", "CA MISSING (chromium)"));
+      lines.push(row("browser store", "CA MISSING"));
+    }
+    // Which store, since "missing" alone cannot tell a Chrome with no database
+    // from a Firefox profile that refused the write.
+    for (const store of backend?.ca_nss_stores ?? []) {
+      lines.push(row("  store", store));
     }
     lines.push(
       row(

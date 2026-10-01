@@ -21,6 +21,7 @@ const backend: Diagnostics = {
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
   ca_nss_trusted: true,
+  ca_nss_stores: [],
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -51,6 +52,7 @@ const proxy: ProxyState = {
   env_export_separable: false,
   forwarder_answering: null,
   ca_nss_trusted: null,
+  ca_nss_writes: 0,
   domains: [
     {
       slug: "anthropic",
@@ -237,10 +239,22 @@ describe("buildDiagnosticsReport", () => {
 
   it("flags a CA the browser's own store is missing", () => {
     // The certificate line still says trusted, because the OS store holds it.
-    // Only this line explains why Chrome rejects what Firefox accepts.
+    // Only this line explains why the browsers reject what curl accepts.
     const text = report({ backend: { ...backend, ca_nss_trusted: false } });
     expect(text).toContain("certificate     trusted");
-    expect(text).toContain("browser store   CA MISSING (chromium)");
+    expect(text).toContain("browser store   CA MISSING");
+  });
+
+  it("names each browser store and what it holds", () => {
+    const text = report({
+      backend: {
+        ...backend,
+        ca_nss_trusted: false,
+        ca_nss_stores: ["/home/x/.pki/nssdb: trusted", "/home/x/.mozilla/firefox/a.default: missing"],
+      },
+    });
+    expect(text).toContain("/home/x/.pki/nssdb: trusted");
+    expect(text).toContain("/home/x/.mozilla/firefox/a.default: missing");
   });
 
   it("says nothing about the browser store where the question does not apply", () => {

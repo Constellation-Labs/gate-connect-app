@@ -40,13 +40,16 @@ pub struct Diagnostics {
     /// mint leaves from.
     pub ca_cert_path: Option<String>,
     pub ca_cert_present: bool,
-    /// Linux only: whether every per-user NSS database found holds our current
-    /// CA. Chromium-based browsers read that store and never the system one, so
-    /// `Some(false)` next to a `ca_trusted` of true is exactly the "Firefox
-    /// works, Chrome doesn't" report, and it is invisible from the popover.
-    /// `None` where the question does not apply: not Linux, or no Chromium
-    /// browser has ever run for this user.
+    /// Linux only: whether every browser NSS database holds our current CA.
+    /// Chromium and (outside the p11-kit distros) Firefox read those stores
+    /// rather than the system one, so `Some(false)` next to a `ca_trusted` of
+    /// true is exactly the "curl works, the browsers don't" report. `None`
+    /// where the question does not apply: not Linux, or no browser keeps a
+    /// store for this user.
     pub ca_nss_trusted: Option<bool>,
+    /// Linux only: one line per browser store and what it holds, so a report
+    /// with `ca_nss_trusted` false says *which* store. Empty elsewhere.
+    pub ca_nss_stores: Vec<String>,
     /// The persisted "routing should be on" intent. Compared against the live
     /// `running` flag it answers the commonest report we get: routing was on
     /// yesterday and the app came back with it off.
@@ -85,12 +88,23 @@ pub fn collect() -> Diagnostics {
         ca_cert_present: ca_cert_path.as_ref().is_some_and(|p| p.exists()),
         ca_cert_path: ca_cert_path.map(|p| p.display().to_string()),
         ca_nss_trusted: ca_nss_trusted(),
+        ca_nss_stores: ca_nss_stores(),
         routing_intent: crate::proxy::intent::load_intent(),
         persisted_engine_proxy_url: crate::proxy::persisted_engine_proxy_url(),
         relay_base_url: crate::proxy::relay_base_url(),
         exported_proxy_url: crate::proxy::exported_proxy_url(),
         system_proxy: system_proxy_summary(),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn ca_nss_stores() -> Vec<String> {
+    crate::proxy::ca::nss_store_report()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ca_nss_stores() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(target_os = "linux")]

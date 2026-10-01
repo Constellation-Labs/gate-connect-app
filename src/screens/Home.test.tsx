@@ -282,15 +282,20 @@ describe("Home master toggle", () => {
   });
 });
 
-describe("Home Chromium-trust card", () => {
-  const CARD = "Chrome and apps built on it don’t trust the Gate certificate yet.";
+describe("Home browser-trust card", () => {
+  const CARD = "Your browsers don’t trust the Gate certificate yet.";
 
-  it("shows when the OS trusts the CA and Chromium's store does not", () => {
+  it("names the Primary Password case Retry cannot fix", () => {
+    renderHome({ caNssTrusted: false, domains: [makeDomain()] }, "linux");
+    expect(screen.getByText(/A Firefox\s+profile with a Primary Password/)).toBeTruthy();
+  });
+
+  it("shows when the OS trusts the CA and a browser store does not", () => {
     renderHome({ caNssTrusted: false, domains: [makeDomain()] }, "linux");
     expect(screen.getByText(CARD)).toBeTruthy();
   });
 
-  it("stays hidden when Chromium's store is fine or does not apply", () => {
+  it("stays hidden when the browser stores are fine or do not apply", () => {
     renderHome({ caNssTrusted: true, domains: [makeDomain()] }, "linux");
     expect(screen.queryByText(CARD)).toBeNull();
     cleanup();
@@ -323,6 +328,56 @@ describe("Home Chromium-trust card", () => {
     renderHome({ caNssTrusted: false, domains: [makeDomain()], changeNotice: "trusted" }, "linux");
     expect(screen.getByText(CARD)).toBeTruthy();
     expect(screen.queryByText(/Certificate trusted/)).toBeNull();
+  });
+});
+
+describe("Home browser-restart notice", () => {
+  const NOTICE = /Certificate added to your browsers/;
+
+  it("tells the user to quit and reopen their browsers", () => {
+    renderHome({ caNssTrusted: true, browserRestart: true, domains: [makeDomain()] }, "linux");
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+    expect(screen.getByText(/Quit and reopen any open browser so it trusts the certificate\./)).toBeTruthy();
+  });
+
+  it("replaces the generic trusted notice rather than stacking on it", () => {
+    renderHome(
+      { caNssTrusted: true, browserRestart: true, changeNotice: "trusted", domains: [makeDomain()] },
+      "linux",
+    );
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+    expect(screen.queryByText(/Certificate trusted/)).toBeNull();
+  });
+
+  it("yields to the browser-trust card when a store still lacks the CA", () => {
+    renderHome({ caNssTrusted: false, browserRestart: true, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("stays hidden once the certificate is no longer trusted", () => {
+    renderHome({ caTrusted: false, caNssTrusted: true, browserRestart: true, domains: [makeDomain()] }, "linux");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("says to restart browsers after the certificate is removed", () => {
+    renderHome({ changeNotice: "removed", domains: [makeDomain()] }, "linux");
+    expect(
+      screen.getByText(
+        "Certificate removed. Quit and reopen any open browser so it stops trusting the certificate.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
+  });
+
+  it("dismisses", () => {
+    const onDismissBrowserRestart = vi.fn();
+    renderHome(
+      { caNssTrusted: true, browserRestart: true, onDismissBrowserRestart, domains: [makeDomain()] },
+      "linux",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss browser restart notice" }));
+    expect(onDismissBrowserRestart).toHaveBeenCalledOnce();
   });
 });
 
@@ -601,7 +656,7 @@ describe("Home routing-change notice", () => {
     // cached at start.
     const onCloseAgents = vi.fn();
     renderHome({ changeNotice: "trusted", onCloseAgents, domains: [makeDomain()] });
-    expect(screen.getByText(/Certificate trusted\. Restart any open browser/)).toBeTruthy();
+    expect(screen.getByText(/Certificate trusted\. Quit and reopen any open browser/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restart them…" })).toBeNull();
     expect(screen.queryByText(/Reload any pages you have open\./)).toBeNull();
     expect(screen.getByRole("button", { name: "Dismiss certificate notice" })).toBeTruthy();
