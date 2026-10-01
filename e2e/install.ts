@@ -874,7 +874,13 @@ export function installFakeTauri(state: BackendState): void {
     const handler = commands[cmd];
     if (handler) {
       try {
-        return Promise.resolve(handler(args ?? {}));
+        // A copy, as real IPC gives: the Rust side serializes a fresh value on
+        // every call. Handing back the live state object let the app read a
+        // later write through an earlier result - a stale snapshot whose
+        // `ca_trusted` flipped under it - and that hid a real bug: a section
+        // cascade that asked the certificate question again for every member.
+        const result = handler(args ?? {});
+        return Promise.resolve(result === undefined ? result : structuredClone(result));
       } catch (err) {
         return Promise.reject(String(err));
       }
