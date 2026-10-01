@@ -871,7 +871,7 @@ boolean for one invented 520) is gone and `Modal` takes `width`:
 | Width | Dialogs |
 | --- | --- |
 | 480 | Rename device `143:67735`, Replace API key `177:74869`, Disconnect Gate `143:70617` |
-| 512 | Switch organization `130:55314`, Organization switched, Change is ready `134:61659`, Use a Gate model `130:48278` |
+| 512 | Switch organization `130:55314`, Organization switched, Use a Gate model `130:48278` (Change is ready `134:61659` was here; removed, see #389) |
 | 544 | Reset Gate Connect `177:74223`, alone |
 | 600 | Review config `130:57442`, Apply changes, Close apps, Diagnostics report `363:9027`, Choose model `665:18400` |
 
@@ -1826,17 +1826,17 @@ The seven, and how they map onto the template:
 | Review `<app>` configuration | warning | `DETECTED` amber | Keep existing config / Replace config and protect |
 | Apply changes to running apps | warning | `OPEN` green | Close affected apps / I will reopen later |
 | Close affected apps now? | warning | `OPEN` green | Go back / **Close `<app>`** (red) |
-| Change is ready | success | - | Done |
+| ~~Change is ready~~ | success | - | Done. Removed 2026-09-30 (#389): not in the Figma, and `134:61659` no longer exists |
 | Use a Gate model for `<app>`? | neutral | `PAYG` | Keep App default / Use Gate credits |
 
 Note that "Apply changes to running apps" makes the *less* destructive option
 primary: `I will reopen later` is the filled button, `Close affected apps` the
 outline one.
 
-`src/components/gc/dialogs.tsx` holds the seven concrete dialogs -
+`src/components/gc/dialogs.tsx` holds the six concrete dialogs -
 `SwitchOrganizationDialog`, `OrganizationSwitchedDialog`, `ReviewConfigDialog`,
-`ApplyChangesDialog`, `CloseAppsDialog`, `ChangeReadyDialog`,
-`UseGateModelDialog`. Copy lives with them rather than in the shell, so it stays
+`ApplyChangesDialog`, `CloseAppsDialog`, `UseGateModelDialog`. A seventh,
+`ChangeReadyDialog`, went on 2026-09-30 (#389). Copy lives with them rather than in the shell, so it stays
 next to the design it came from and the shell supplies only names and handlers.
 
 `ModalSubject` grew a `variant`: `subject` names a thing and describes it (bold

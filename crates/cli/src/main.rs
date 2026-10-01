@@ -91,7 +91,8 @@ enum Command {
     Model {
         /// Tool slug, e.g. `codex`.
         tool: String,
-        /// Gate model ids, comma-separated, e.g. `openai/gpt-5.6-luna,anthropic/claude-opus-5`.
+        /// Gate model ids, comma-separated, at most 4, e.g.
+        /// `openai/gpt-5.6-luna,anthropic/claude-opus-5`.
         #[arg(long, value_delimiter = ',', conflicts_with = "app_default")]
         gate: Vec<String>,
         /// Go back to the tool's own model.
