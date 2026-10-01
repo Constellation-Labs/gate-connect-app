@@ -167,22 +167,55 @@ fn session_effects_suppressed() -> bool {
     crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some()
 }
 
+/// How long a session-facing command gets before it is killed.
+///
+/// These are `gsettings` and `systemctl` calls against the session bus. A
+/// second is already far past the point where one is going to succeed, and
+/// every one of them runs where a user is waiting on a switch: a dbus peer
+/// that does not answer blocks in the call rather than failing it, which is
+/// the hang this bounds.
+const SESSION_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Run a session-facing command for its effect only: silent on success, silent
 /// when the binary simply is not there (a desktop that ships neither systemd nor
 /// GNOME), a diagnostic on anything else. Never fails the caller - the drop-in
 /// and the GNOME keys are the durable state, and these commands only carry "on"
 /// and "off" into the session that is already running.
-fn run_best_effort(program: &str, args: &[&str]) {
-    match std::process::Command::new(program).args(args).output() {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => eprintln!(
-            "[gate] {program} {} exited {}: {}",
-            args.first().copied().unwrap_or(""),
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // tool absent; fine
-        Err(e) => eprintln!("[gate] could not run {program}: {e}"),
+///
+/// Returns whether the command is known to have succeeded, which
+/// [`gsettings_apply`] reads and the rest of the callers ignore.
+///
+/// Bounded on the same argument as [`gsettings_get`], and for the writes rather
+/// than the reads: `gsettings set` talks to the same dconf peer that `gsettings
+/// get` does, six times per enable and once more per key on the off path.
+/// Leaving the writes unbounded closed half of a hang.
+fn run_best_effort(program: &str, args: &[&str]) -> bool {
+    let mut cmd = std::process::Command::new(crate::primitives::system_program(program));
+    cmd.args(args);
+    match crate::primitives::output_bounded(cmd, SESSION_CMD_TIMEOUT) {
+        Ok(Some(out)) if out.status.success() => true,
+        Ok(Some(out)) => {
+            eprintln!(
+                "[gate] {program} {} exited {}: {}",
+                args.first().copied().unwrap_or(""),
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Ok(None) => {
+            eprintln!(
+                "[gate] {program} {} did not finish within {}s and was killed",
+                args.first().copied().unwrap_or(""),
+                SESSION_CMD_TIMEOUT.as_secs()
+            );
+            false
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false, // tool absent; fine
+        Err(e) => {
+            eprintln!("[gate] could not run {program}: {e}");
+            false
+        }
     }
 }
 
@@ -201,17 +234,26 @@ fn push_to_session(assignments: &[(&'static str, String)]) {
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
         return; // no graphical session bus to update; drop-in covers next login
     }
-    let mut cmd = std::process::Command::new("dbus-update-activation-environment");
+    let mut cmd = std::process::Command::new(crate::primitives::system_program(
+        "dbus-update-activation-environment",
+    ));
     cmd.arg("--systemd");
     for (key, value) in assignments {
         cmd.arg(format!("{key}={value}"));
     }
-    match cmd.output() {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => eprintln!(
+    // Bounded like the `gsettings` calls, and against the same peer: this one
+    // talks to the session bus by definition, and it sits on the enable path
+    // between the engine coming up and the switch settling.
+    match crate::primitives::output_bounded(cmd, SESSION_CMD_TIMEOUT) {
+        Ok(Some(out)) if out.status.success() => {}
+        Ok(Some(out)) => eprintln!(
             "[gate] live proxy env push exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Ok(None) => eprintln!(
+            "[gate] live proxy env push did not finish within {}s and was killed",
+            SESSION_CMD_TIMEOUT.as_secs()
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // tool absent; fine
         Err(e) => eprintln!("[gate] could not run dbus-update-activation-environment: {e}"),
@@ -268,18 +310,130 @@ const GNOME_KEYS: [(&str, &str); 6] = [
 /// variables point at (see [`super::proxy_env`]).
 const ENGINE_HOST_GVARIANT: &str = "'127.0.0.1'";
 
-/// Read one key, or `None` if `gsettings` or the schema is missing (i.e. not a
-/// GNOME session).
-fn gsettings_get(schema: &str, key: &str) -> Option<String> {
-    let out = std::process::Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+/// What one `gsettings get` came back with.
+///
+/// The three-way split exists because [`browser_proxy_channel`] caches its
+/// answer, and caching "we did not get one" as "no" is how a GNOME session that
+/// was slow at login lost the browser sentence for the rest of the process.
+enum GsettingsAnswer {
+    /// The key read, with its GVariant text.
+    Value(String),
+    /// `gsettings` answered, and the answer is no: no such schema or key, or
+    /// no `gsettings` on this machine at all. A conclusive negative.
+    Absent,
+    /// No answer. The call was killed at the deadline, or could not be run for
+    /// a reason other than the binary being missing.
+    NoAnswer,
 }
+
+/// Read one key.
+///
+/// Bounded for the same reason `certutil` is, and through the same helper:
+/// `gsettings` talks to dbus, a peer that does not answer blocks in the call
+/// rather than failing it, and [`browser_proxy_channel`] below puts this on the
+/// path `status` is polled from.
+///
+/// Short next to certutil's five seconds: this is a settings lookup against a
+/// session bus, so a second is already far past the point where it is going to
+/// succeed.
+fn gsettings_answer(schema: &str, key: &str) -> GsettingsAnswer {
+    let mut cmd = std::process::Command::new(crate::primitives::system_program("gsettings"));
+    cmd.args(["get", schema, key]);
+    match crate::primitives::output_bounded(cmd, SESSION_CMD_TIMEOUT) {
+        Ok(Some(out)) if out.status.success() => {
+            GsettingsAnswer::Value(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        // It ran and refused: on this path that is "no such schema", which is
+        // the whole question `browser_proxy_channel` is asking.
+        Ok(Some(_)) => GsettingsAnswer::Absent,
+        Ok(None) => GsettingsAnswer::NoAnswer,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => GsettingsAnswer::Absent,
+        Err(_) => GsettingsAnswer::NoAnswer,
+    }
+}
+
+/// Read one key, or `None` if it did not read - for the callers that treat a
+/// missing schema and an unanswered call alike.
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    match gsettings_answer(schema, key) {
+        GsettingsAnswer::Value(value) => Some(value),
+        GsettingsAnswer::Absent | GsettingsAnswer::NoAnswer => None,
+    }
+}
+
+/// Whether this session has the channel a running browser reads.
+///
+/// The module's two channels are not equivalent from a browser's point of view.
+/// GNOME's keys are re-read live by everything on GLib's proxy resolver; the
+/// `environment.d` drop-in reaches a process only at launch. So on a session
+/// with no `org.gnome.system.proxy` schema - KDE, a bare WM - Gate points
+/// nothing at the engine that a browser already running will notice, and the UI
+/// must not claim the browser is covered. This is the reading behind that copy.
+///
+/// Probes `mode` for the same reason [`gsettings_capture`] treats a single
+/// unreadable key as "not GNOME": the binary and the schema have to both be
+/// there, and one `gsettings get` answers both questions.
+///
+/// **Only a conclusive answer is cached.** The cache is there because `status`
+/// is polled, which is precisely where a per-call subprocess does damage, and
+/// because the answer cannot change under us - a desktop session does not gain
+/// the schema while its apps are running. Neither argument covers a call that
+/// was killed at its deadline or could not be run: a GNOME session whose first
+/// `status` at login raced a cold `gsettings` past a second used to latch
+/// `false` for the life of the process, and the browser sentence never came
+/// back. A non-answer now returns the safe direction and leaves the cell unset,
+/// so the next poll asks again.
+///
+/// **A schema that reads is not a write that landed.** `gsettings_apply` is
+/// best-effort, and on a desktop with dconf locked by a system profile every
+/// one of its writes exits non-zero while `mode` still reads perfectly - which
+/// would put "Gate is inspecting your browser" over a browser pointed at
+/// nothing. So an apply that could not write `mode` turns this off for the rest
+/// of the process. What that does not cover is an apply performed by another
+/// process, the CLI's `proxy on`: the GUI has no record of it and falls back to
+/// the schema reading alone, which is where this started.
+///
+/// False under the test seam, which is accurate rather than defensive: the seam
+/// skips every gsettings write, so nothing in the session points at the engine.
+pub fn browser_proxy_channel() -> bool {
+    static CHANNEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if session_effects_suppressed() {
+        return false;
+    }
+    if MODE_WRITE_REFUSED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    if let Some(cached) = CHANNEL.get() {
+        return *cached;
+    }
+    match channel_reading(gsettings_answer("org.gnome.system.proxy", "mode")) {
+        Some(reading) => *CHANNEL.get_or_init(|| reading),
+        // Uncached on purpose. The safe direction is to withhold the sentence,
+        // not to remember withholding it.
+        None => false,
+    }
+}
+
+/// Whether a `mode` answer settles the question, and how.
+///
+/// `None` is "ask again next time". Pure and split out so the rule that caused
+/// the bug - which answers may be latched - is pinnable without a session bus
+/// to be slow at.
+fn channel_reading(answer: GsettingsAnswer) -> Option<bool> {
+    match answer {
+        GsettingsAnswer::Value(_) => Some(true),
+        GsettingsAnswer::Absent => Some(false),
+        GsettingsAnswer::NoAnswer => None,
+    }
+}
+
+/// Whether the last [`gsettings_apply`] in this process failed to write `mode`.
+///
+/// One-way: a session that refuses the write once refuses it for the same
+/// reason every time, and the value backs a claim about interception, where
+/// the cost of being wrong is asymmetric.
+static MODE_WRITE_REFUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Capture [`GNOME_KEYS`] so the off path can put them back verbatim.
 ///
@@ -332,7 +486,16 @@ fn gsettings_apply(port: u16) {
         ("org.gnome.system.proxy.https", "port", port.as_str()),
         ("org.gnome.system.proxy", "mode", "'manual'"),
     ] {
-        run_best_effort("gsettings", &["set", schema, key, value]);
+        let wrote = run_best_effort("gsettings", &["set", schema, key, value]);
+        // `mode` is the key that makes the other five live, so it is the one
+        // whose refusal means nothing in this session points a browser at the
+        // engine. Recorded rather than logged and forgotten, because
+        // `browser_proxy_channel` is about to be asked to claim otherwise: the
+        // schema still reads on a desktop with dconf locked by a system
+        // profile, and the write is the half that failed.
+        if key == "mode" && !wrote {
+            MODE_WRITE_REFUSED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
@@ -360,10 +523,12 @@ fn gsettings_off(prior: Option<&[GsettingsEntry]>) {
         // Nothing recorded: a pre-upgrade snapshot, a non-GNOME session, or a
         // capture that failed. The mode is what makes the host and port live, so
         // clearing it stops routing and leaves the rest for the user to inspect.
-        None => run_best_effort(
-            "gsettings",
-            &["set", "org.gnome.system.proxy", "mode", "'none'"],
-        ),
+        None => {
+            run_best_effort(
+                "gsettings",
+                &["set", "org.gnome.system.proxy", "mode", "'none'"],
+            );
+        }
     }
 }
 
@@ -512,6 +677,34 @@ fn off(prior_gnome: Option<&[GsettingsEntry]>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a conclusive answer may be latched.
+    ///
+    /// The bug this pins: `gsettings get` folded a killed call and a
+    /// transient dbus failure into the same `None` a missing schema gives, and
+    /// the `OnceLock` then held that `false` for the life of the process. A
+    /// GNOME session that was slow at login lost the browser sentence until
+    /// the app was restarted, with nothing on screen saying why.
+    #[test]
+    fn only_a_conclusive_gsettings_answer_is_worth_caching() {
+        assert_eq!(
+            channel_reading(GsettingsAnswer::Value("'none'".into())),
+            Some(true),
+            "the schema read, so this session has the channel - whatever the \
+             mode currently says"
+        );
+        assert_eq!(
+            channel_reading(GsettingsAnswer::Absent),
+            Some(false),
+            "gsettings answered and there is no such schema: a real no"
+        );
+        assert_eq!(
+            channel_reading(GsettingsAnswer::NoAnswer),
+            None,
+            "a killed or unrunnable call is not an answer, and latching it is \
+             a claim withheld for the life of the process"
+        );
+    }
 
     fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
         // These tests mutate process-global state (XDG_CONFIG_HOME and the

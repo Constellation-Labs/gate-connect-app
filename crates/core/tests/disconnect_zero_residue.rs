@@ -35,11 +35,23 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 /// values in place would let a test escape its temp home and edit the
 /// developer's real `~/.config/opencode/opencode.json`.
 ///
-/// And pins `GATE_CONNECT_TEST_HOME`, because `$HOME` redirects nothing on
-/// Windows: `dirs` reads Known Folders there, so `app_support_dir()` would
-/// resolve the runner's real `%LOCALAPPDATA%\Gate Connect` and let one test's
-/// seeded CA leak into the next. That seam is the portable override - see
-/// `env::test_home_override`.
+/// **And `GATE_CONNECT_TEST_HOME`, which is the only one of the four that works
+/// on Windows.** `env::app_support_dir` and `env::home` consult that seam first
+/// and otherwise fall through to `dirs`, which reads Known Folders rather than
+/// the environment - `env.rs` says so where the seam is defined. So on Windows
+/// the three variables above redirected nothing: `seed_ca_cert` wrote the CA
+/// into the runner's real `%LOCALAPPDATA%\Gate Connect`, `Drop` deleted only
+/// the temp dir, and the file outlived the test that made it. The next test to
+/// run found a CA it had deliberately not seeded.
+///
+/// That is what made `claude_code_connect_refuses_when_the_ca_is_missing` fail
+/// on Windows and nowhere else, and only sometimes: `HOME_LOCK` serialises these
+/// tests but cannot un-write a file in a shared location, and the harness picks
+/// the order. It failed exactly when a seeding test was scheduled first.
+///
+/// The same hole pointed `claude_code_settings_path` at the runner's real
+/// profile, so these tests were reading and deleting a `~/.claude/settings.json`
+/// that only happened to be absent on a fresh runner.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
@@ -66,6 +78,22 @@ impl TempHome {
         let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         let prev_test_home = std::env::var("GATE_CONNECT_TEST_HOME").ok();
         std::env::set_var("HOME", &dir);
+        // The seam, not just HOME - and it was already set here, which is what
+        // this comment is for rather than a second `set_var`.
+        //
+        // `env::tool_path_override` ignores every published tool-dir variable
+        // while `GATE_CONNECT_TEST_HOME` is set, so an ambient `CODEX_HOME` or
+        // `OPENCODE_CONFIG_DIR` - Orca exports both - cannot punch through the
+        // temp home. That is what makes the XDG pins below redundant: they are
+        // belt and braces from before the seam existed, kept because removing a
+        // guard from the one suite whose job is proving nothing is left behind
+        // needs a better reason than tidiness.
+        //
+        // The incident that motivates the seam belongs to `codex_billing_mode`,
+        // not to this file, and is written up at `crates/core/src/env.rs`. A
+        // previous version of this comment claimed it happened here and credited
+        // the protection to a line that was a duplicate of the one above it,
+        // which would have invited the next reader to delete the real one.
         std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
         std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
         std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
@@ -162,6 +190,7 @@ fn seed_ca_cert() {
 fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
+        billing_mode: Default::default(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }
@@ -422,10 +451,11 @@ fn claude_code_connect_writes_the_ca_and_disconnect_takes_it_away() {
 
 /// A reconnect with Gate's values already in place must not touch the file.
 ///
-/// The file belongs to Claude Code, so a reconcile that changes nothing Gate
-/// owns has no business rewriting it. The file is reformatted between the two
-/// connects: a rewrite would pretty-print it back, so unchanged bytes prove
-/// nothing was written.
+/// The file is Claude Code's and the user's, laid out however they last saved
+/// it, and a reconnect that changes none of Gate's values has no business
+/// re-laying it out. The file is reformatted between the two connects: a
+/// rewrite would pretty-print it back, so unchanged bytes prove nothing was
+/// written.
 #[test]
 fn claude_code_reconnect_with_our_values_in_place_leaves_the_file_alone() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -699,7 +729,7 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     // the upstream hint on the bare host the catalog knows.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        connected.contains("http://127.0.0.1:9977/__gate/t/opencode/openrouter/v1"),
         "openrouter baseURL must keep the slug + /v1: {connected}"
     );
     assert!(
@@ -836,9 +866,12 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::write(&launcher, "#!/bin/sh\n").unwrap();
 
-    // A config.yaml and an .env holding the user's own key. Neither the model
-    // block nor the key may be touched: Hermes routes via the proxy now, so
-    // there is no base_url to rewrite and no provider to discover.
+    // A config.yaml and an .env holding the user's own key. The user's model
+    // block and key may not be touched: Hermes routes via the proxy now, so
+    // there is no base_url to rewrite and no provider to discover. Connect does
+    // add one line - `model.extra_headers.x-gate-tool`, which is what names
+    // Hermes on the wire - and disconnect has to take exactly that back out,
+    // which is the assertion at the end of this test.
     let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let original_cfg =
@@ -863,11 +896,20 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         env_body.contains("HERMES_CA_BUNDLE="),
         "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
     );
-    assert_eq!(
-        fs::read_to_string(&cfg).unwrap(),
-        original_cfg,
-        "config.yaml must not be touched at all"
+    // The one line connect writes there, and nothing else: the user's own keys
+    // survive verbatim, which is what a surgical edit buys over a YAML
+    // round-trip.
+    let cfg_body = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        cfg_body.contains("x-gate-tool: hermes"),
+        "Hermes must be named in its own config, or nothing can attribute it: {cfg_body}"
     );
+    for line in original_cfg.lines() {
+        assert!(
+            cfg_body.contains(line),
+            "the user's config must survive the edit, lost {line:?}: {cfg_body}"
+        );
+    }
 
     // A re-connect has to be a no-op that succeeds, not a refusal: it is how a
     // drifted Hermes is repaired, including unattended by `reconcile_enabled`.
@@ -906,10 +948,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         after.contains("OPENROUTER_API_KEY=sk-user"),
         "the user's own key must survive: {after}"
     );
+    // Byte-identical, not merely equivalent. A disconnect that left an empty
+    // `extra_headers:` block behind, or reflowed the file, would be residue in
+    // a file Gate does not own - and this is the only test that would notice.
     assert_eq!(
         fs::read_to_string(&cfg).unwrap(),
         original_cfg,
-        "config.yaml must still be untouched after disconnect"
+        "config.yaml must come back byte for byte after disconnect"
     );
     assert!(
         !env::app_support_dir()
@@ -1019,11 +1064,6 @@ fn only_gates_own_changes_move_the_reopen_bound() {
 }
 
 /// Not only Claude Code: every integration writes through the same record.
-///
-/// Connect and disconnect only. A reconnect over OpenCode's own config is
-/// refused on this branch - `looks_local` reads the relay base URL it wrote as
-/// a private endpoint - so the no-op and relayout cases the Claude Code test
-/// covers cannot be driven through OpenCode here.
 #[test]
 fn opencode_changes_are_recorded_too() {
     use gate_connect_core::config_changes::changed_at;
@@ -1044,17 +1084,179 @@ fn opencode_changes_are_recorded_too() {
 
     let integ = find(ToolId::OpenCode).unwrap();
     integ.connect(&connect_input(9977)).unwrap();
-    assert!(
-        changed_at(&cfg).is_some_and(|t| t > 0),
-        "connect is a change"
-    );
+    assert!(changed_at(&cfg).is_some_and(|t| t > 0));
 
     let store = env::app_support_dir().unwrap().join("config-changes.json");
     let key = cfg.display().to_string();
     fs::write(&store, serde_json::json!({ key: 0 }).to_string()).unwrap();
-    integ.disconnect().unwrap();
-    assert!(
-        changed_at(&cfg).is_some_and(|t| t > 0),
-        "disconnect is a change"
+    integ.connect(&connect_input(9977)).unwrap();
+    assert_eq!(
+        changed_at(&cfg),
+        Some(0),
+        "a no-op reconnect is not a change"
     );
+
+    // The tool saving the same values in its own layout: different bytes, the
+    // same config, so still not a change a running process missed.
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    fs::write(&cfg, serde_json::to_string(&value).unwrap()).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    assert_eq!(changed_at(&cfg), Some(0), "a relayout is not a change");
+}
+
+/// A leftover `~/.config/opencode` is not an install: OpenCode leaves it
+/// behind, empty, and so does Gate's own disconnect. Nor is a config file or a
+/// login that names nothing `connect` could route: those outlive an install
+/// too, and the row they drew had a switch that could only fail. A config or a
+/// login naming a provider Gate routes is an install.
+#[test]
+fn an_empty_opencode_config_dir_is_not_an_install() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    let integ = find(ToolId::OpenCode).unwrap();
+    if integ.detect().unwrap() {
+        eprintln!("skipped: an opencode binary on this machine answers before the fallback");
+        return;
+    }
+
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "an empty directory is not OpenCode"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+
+    // Nothing Gate reads, so nothing `connect` could route.
+    fs::write(dir.join("opencode.jsonc"), "{}").unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "a .jsonc Gate never reads is not an install"
+    );
+
+    let auth = env::opencode_auth_path().unwrap();
+    fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    fs::write(&auth, "{}").unwrap();
+    assert!(!integ.detect().unwrap(), "an empty login store is not");
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+    fs::write(&auth, r#"{"llamacpp":{"type":"api","key":"x"}}"#).unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "a login for a provider Gate does not route is not"
+    );
+    fs::write(&auth, r#"{"anthropic":{"type":"api","key":"x"}}"#).unwrap();
+    assert!(integ.detect().unwrap(), "a login Gate can route is");
+    fs::remove_file(&auth).unwrap();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::write(&cfg, "{}").unwrap();
+    assert!(!integ.detect().unwrap(), "an empty config file is not");
+    fs::write(&cfg, r#"{"provider":{"openrouter":{}}}"#).unwrap();
+    assert!(
+        integ.detect().unwrap(),
+        "a config naming a routable provider is"
+    );
+    fs::write(&cfg, "{\n  // OpenCode reads JSONC\n}").unwrap();
+    assert!(
+        integ.detect().unwrap(),
+        "a config Gate cannot parse is evidence, not absence"
+    );
+}
+
+/// The `opencode.ai` domain an older build turned on goes off once OpenCode is
+/// gone, and a later choice to turn it back on is left alone.
+#[test]
+fn the_opencode_domain_is_switched_off_once_without_opencode() {
+    use gate_connect_core::integrations::opencode::switch_off_orphaned_domain;
+    use gate_connect_core::proxy::config;
+
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    if find(ToolId::OpenCode).unwrap().detect().unwrap() {
+        eprintln!("skipped: an opencode binary on this machine answers before the fallback");
+        return;
+    }
+    let enabled = || {
+        config::load_domains()
+            .unwrap()
+            .iter()
+            .any(|d| d.slug == "opencode" && d.enabled)
+    };
+
+    fs::create_dir_all(env::opencode_config_dir().unwrap()).unwrap();
+    fs::write(
+        env::opencode_config_path().unwrap(),
+        r#"{"provider":{"opencode":{}}}"#,
+    )
+    .unwrap();
+    config::set_enabled("opencode", true).unwrap();
+    assert!(!switch_off_orphaned_domain().unwrap());
+    assert!(enabled(), "installed, so the domain is the user's to keep");
+
+    fs::remove_file(env::opencode_config_path().unwrap()).unwrap();
+    assert!(switch_off_orphaned_domain().unwrap());
+    assert!(!enabled(), "no OpenCode, so nothing rides the domain");
+
+    config::set_enabled("opencode", true).unwrap();
+    assert!(!switch_off_orphaned_domain().unwrap());
+    assert!(
+        enabled(),
+        "turned back on after the cleanup ran, so it stays on"
+    );
+}
+
+/// A sidecar outliving its `opencode.json` describes nothing, and is removed
+/// when Gate sees the file gone. A reinstall then reads Detected rather than
+/// Drifted, and its connect snapshots the new file, so the disconnect after it
+/// restores the new file and not the one that was deleted.
+#[test]
+fn a_reinstalled_opencode_does_not_inherit_the_old_sidecar() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    let _relay = bind_seeded_port(9977);
+    seed_routing_intent();
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{"provider":{"openrouter":{"options":{"baseURL":"https://old.example.com/v1"}}}}"#,
+    )
+    .unwrap();
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+    let sidecar = env::app_support_dir().unwrap().join("opencode-state.json");
+    assert!(sidecar.exists());
+
+    // Uninstalled: the config goes, and the status check the file watch runs
+    // clears the sidecar that described it.
+    fs::remove_file(&cfg).unwrap();
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+    assert!(
+        !sidecar.exists(),
+        "a sidecar without its config describes nothing"
+    );
+
+    // Reinstalled with a config of its own.
+    fs::write(
+        &cfg,
+        r#"{"provider":{"openrouter":{"options":{"baseURL":"https://new.example.com/v1"}}}}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(integ.status().unwrap(), Status::Detected),
+        "a sidecar from before the reinstall is not drift: {:?}",
+        integ.status()
+    );
+
+    integ.connect(&connect_input(9977)).unwrap();
+    integ.disconnect().unwrap();
+    let after = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        after.contains("https://new.example.com/v1") && !after.contains("old.example.com"),
+        "disconnect must restore the reinstalled config, not the deleted one: {after}"
+    );
+    assert!(!sidecar.exists());
 }

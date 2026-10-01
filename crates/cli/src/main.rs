@@ -57,6 +57,17 @@ enum Command {
     /// aborts the sign-out), then removes the stored base URL and the keychain
     /// entry.
     Logout,
+    /// Show or change who pays the upstream provider.
+    ///
+    /// `byok` (the default) forwards each tool's own provider credential and
+    /// the provider bills you directly. `payg` sends neither, so Gate routes
+    /// through your workspace's provider accounts and debits its prepaid
+    /// balance - top up in the dashboard first, since a funded balance is what
+    /// activates it. Run with no argument to print the current mode.
+    BillingMode {
+        /// `byok` or `payg`. Omit to print the current mode.
+        mode: Option<String>,
+    },
     /// Show the currently signed-in gateway URL, if any.
     Whoami,
     /// List supported tools and their current state.
@@ -70,6 +81,28 @@ enum Command {
     Connect { tool: String },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
+    /// Choose the model a tool runs on.
+    ///
+    /// `--gate` writes Gate models into the tool's own config: the first is its
+    /// default, and the whole set is what its own model picker offers. They are
+    /// served by Gate on your organization's credits, and a model outside the
+    /// set is refused. `--app-default` puts the tool back on its own model. With
+    /// neither, prints the current choice and what the tool's config holds.
+    Model {
+        /// Tool slug, e.g. `codex`.
+        tool: String,
+        /// Gate model ids, comma-separated, at most 4, e.g.
+        /// `openai/gpt-5.6-luna,anthropic/claude-opus-5`.
+        #[arg(long, value_delimiter = ',', conflicts_with = "app_default")]
+        gate: Vec<String>,
+        /// Go back to the tool's own model.
+        #[arg(long)]
+        app_default: bool,
+        /// Accept that Gate models are billed to your organization's Gate
+        /// credits. Needed once per install, the first time `--gate` is used.
+        #[arg(long)]
+        accept_paid: bool,
+    },
     /// Manage the built-in MITM proxy that routes config-less apps
     /// (Claude Desktop, ChatGPT, …) and command-line tools through the Gate
     /// gateway. Enabling installs a local CA and points the system proxy at a
@@ -93,9 +126,9 @@ enum ProxyCmd {
     ///
     /// On macOS and Windows the engine lives in this process, so the command
     /// stays in the foreground hosting it. Stopping it (Ctrl-C, closing the
-    /// terminal, or SIGTERM on macOS) puts tools whose config names this
-    /// process's relay or engine back on their own settings, then stops
-    /// routing and restores the prior system-proxy state. Returning instead
+    /// terminal, or SIGTERM on macOS) removes Gate from every tool's config, as
+    /// quitting the app does, then stops routing and restores the prior
+    /// system-proxy state. The next enable reconnects the tools. Returning instead
     /// would take the engine down with the process and leave the system proxy
     /// pointed at a port nothing answers.
     Enable {
@@ -184,6 +217,13 @@ fn main() -> Result<()> {
         Command::Status { tool } => cmd_status(&tool),
         Command::Connect { tool } => cmd_connect(&tool),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
+        Command::Model {
+            tool,
+            gate,
+            app_default,
+            accept_paid,
+        } => cmd_model(&tool, gate, app_default, accept_paid),
+        Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
     };
@@ -351,8 +391,65 @@ fn cmd_logout() -> Result<()> {
 
 fn cmd_whoami() -> Result<()> {
     match account::load_base_url()? {
-        Some(url) => println!("Signed in: {url}"),
+        Some(url) => {
+            println!("Signed in: {url}");
+            // Who pays is not visible anywhere else on a headless machine, and
+            // it decides whether traffic spends the workspace balance.
+            println!(
+                "Billing:   {}",
+                billing_mode_label(account::billing_mode()?)
+            );
+        }
         None => println!("Not signed in. Run `gate-connect login --base-url … --api-key …`."),
+    }
+    Ok(())
+}
+
+fn billing_mode_label(mode: account::BillingMode) -> &'static str {
+    match mode {
+        account::BillingMode::Byok => "byok (your own provider keys)",
+        account::BillingMode::Payg => "payg (billed to your Gate balance)",
+    }
+}
+
+/// Print or switch the account's billing mode.
+///
+/// Switching rewrites nothing on its own beyond the account file: the relay and
+/// the MITM engine read the mode per request, so routing follows immediately in
+/// whichever process hosts them - except that Codex's provider block encodes
+/// the mode, so it needs a reconnect, and this says so rather than silently
+/// leaving it on the old shape.
+fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
+    let Some(requested) = mode else {
+        println!("{}", billing_mode_label(account::billing_mode()?));
+        return Ok(());
+    };
+    let mode = match requested.to_ascii_lowercase().as_str() {
+        "byok" => account::BillingMode::Byok,
+        "payg" => account::BillingMode::Payg,
+        other => anyhow::bail!("unknown billing mode {other:?} - expected `byok` or `payg`"),
+    };
+    account::set_billing_mode(mode)?;
+    println!("Billing mode: {}", billing_mode_label(mode));
+
+    // Codex is the one config integration whose file depends on the mode.
+    if matches!(
+        registry::find(ToolId::Codex).map(|i| i.status()),
+        Some(Ok(Status::Connected))
+            | Some(Ok(Status::Drifted(_)))
+            | Some(Ok(Status::Overridden(_)))
+    ) {
+        println!(
+            "note: run `gate-connect connect codex` to rewrite its provider block for this mode."
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous mode until it is toggled off and on."
+            );
+        }
     }
     Ok(())
 }
@@ -411,10 +508,11 @@ fn cmd_connect(tool: &str) -> Result<()> {
     let integ = resolve(tool)?;
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
+        billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         // `tool_proxy_url`, not the engine's own address: a config written here
         // has to name what the GUI writes, or the two disagree about the same
-        // install and a plain quit reverts whatever this wrote.
+        // install and this one names a port that stops answering with its host.
         engine_proxy_url: gate_connect_core::proxy::tool_proxy_url(),
     };
     integ.connect(&input)?;
@@ -458,7 +556,7 @@ fn cmd_connect(tool: &str) -> Result<()> {
         ToolId::Hermes => {
             println!("  1. Quit any running `hermes` sessions.");
             println!(
-                "  2. Re-run `hermes` - it reads ~/.hermes/.env on launch and sends its traffic through Gate's local proxy. Your config.yaml is not touched."
+                "  2. Re-run `hermes` - it reads ~/.hermes/.env on launch and sends its traffic through Gate's local proxy. Your providers in config.yaml are not repointed; Gate only names Hermes there, and adds its own provider if you choose Gate models (`gate-connect model hermes`)."
             );
             println!(
                 "  3. Your upstream credentials are untouched. Gate injects its own in flight and forwards each request to the original upstream."
@@ -475,6 +573,89 @@ fn cmd_connect(tool: &str) -> Result<()> {
                 "  3. This is machine-wide: git, curl and npm go through Gate's proxy too. It blind-tunnels anything Gate does not intercept, and `gate-connect disconnect env-proxy` takes it back out."
             );
         }
+    }
+    Ok(())
+}
+
+fn cmd_model(tool: &str, gate: Vec<String>, app_default: bool, accept_paid: bool) -> Result<()> {
+    use gate_connect_core::preferences::{self, ModelSource};
+    use gate_connect_core::registry::GateModelState;
+    use gate_connect_core::tool_models;
+
+    let integ = resolve(tool)?;
+    if !integ.supports_gate_models() {
+        anyhow::bail!("{} does not support Gate models yet", integ.display_name());
+    }
+    let slug = integ.id().slug();
+    let name = integ.display_name();
+
+    if gate.is_empty() && !app_default {
+        let view = tool_models::states().remove(slug);
+        if let Some(v) = view.as_ref().filter(|v| v.left_gate_models.is_some()) {
+            let to = v.left_gate_models.clone().flatten();
+            println!(
+                "{name} was moved off Gate models from inside {name}{}; it is back on its own model.",
+                to.map(|m| format!(" (to {m})")).unwrap_or_default()
+            );
+        }
+        let prefs = preferences::load();
+        match prefs.tool_models.get(slug) {
+            Some(c) if c.source == ModelSource::Gate => {
+                println!("Choice: Gate models {}", c.model_ids.join(", "))
+            }
+            Some(c) if !c.model_ids.is_empty() => println!(
+                "Choice: App default (remembered Gate models: {})",
+                c.model_ids.join(", ")
+            ),
+            _ => println!("Choice: App default"),
+        }
+        match view.map(|v| v.state) {
+            Some(GateModelState::Applied { model }) => {
+                println!("{name}'s config: on Gate models, starting on {model}")
+            }
+            Some(GateModelState::Drifted { model }) => println!(
+                "{name}'s config: moved off Gate models{}",
+                model.map(|m| format!(" (names {m})")).unwrap_or_default()
+            ),
+            _ => println!("{name}'s config: its own model"),
+        }
+        return Ok(());
+    }
+
+    let (source, ids) = if app_default {
+        let kept = preferences::load()
+            .tool_models
+            .get(slug)
+            .map(|c| c.model_ids.clone())
+            .unwrap_or_default();
+        (ModelSource::Tool, kept)
+    } else {
+        if preferences::load().gate_model_paid_ack_unix.is_none() && !accept_paid {
+            anyhow::bail!(
+                "Gate models are billed to your organization's Gate credits. Re-run with \
+                 --accept-paid to confirm."
+            );
+        }
+        (ModelSource::Gate, gate)
+    };
+    let meta = match source {
+        ModelSource::Gate => gate_connect_core::gate_models::catalogue_json()
+            .map(|json| tool_models::meta_from_catalogue(&json, &ids))
+            .unwrap_or_default(),
+        ModelSource::Tool => Vec::new(),
+    };
+    let applied = tool_models::choose(integ.id(), source, ids.clone(), accept_paid, meta)?;
+    let what = match source {
+        ModelSource::Gate => format!("Gate models {}", ids.join(", ")),
+        ModelSource::Tool => "its own model".to_string(),
+    };
+    if applied {
+        println!("{name} is set to {what}. Restart running {name} sessions to pick it up.");
+    } else {
+        println!(
+            "{name} is set to {what}. Gate is not managing {name}'s config right now, so it \
+             applies the next time you run `gate-connect connect {slug}`."
+        );
     }
     Ok(())
 }
@@ -551,9 +732,8 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 );
                 #[cfg(not(target_os = "linux"))]
                 println!(
-                    "Hosting the proxy engine. Press Ctrl-C to stop: tools pointed at this \
-                     process go back on their own settings, and the previous system-proxy \
-                     settings are restored."
+                    "Hosting the proxy engine. Press Ctrl-C to stop: Gate is removed from \
+                     tool configs, and the previous system-proxy settings are restored."
                 );
                 proxy::wait_for_shutdown().context(
                     "waiting for a stop signal failed with routing still on; run \
@@ -567,22 +747,29 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 // `routing::disable` alone parks the engine so configs naming
                 // its relay keep answering, which only helps a process that
                 // stays alive; on macOS and Windows the relay lives here and
-                // goes with us. So first put those tools back on their own
-                // settings, as the app's quit does (`quit_app`); the next
-                // enable or app launch reconnects them. Linux skips it, as the
-                // app does: the daemon outlives us and keeps answering.
+                // goes with us. So first take Gate out of every tool's config
+                // and drain the forwarder, exactly as the app's quit does
+                // (`quit_app`); the next enable or app launch reconnects them.
+                // Linux skips it, as the app does: the daemon outlives us and
+                // keeps answering.
                 #[cfg(not(target_os = "linux"))]
-                match gate_connect_core::provider::revert_stranded_configs_for_quit() {
-                    Ok(names) if names.len() == 1 => println!(
-                        "Put {} back on its own settings; it reconnects the next time routing is enabled.",
-                        names[0]
+                match gate_connect_core::provider::snapshot_and_disable_everything_for_exit() {
+                    Ok(teardown) => {
+                        gate_connect_core::proxy::forwarder::drain();
+                        if !teardown.failed.is_empty() {
+                            eprintln!(
+                                "note: failed to remove Gate from the {} config(s); edit them by hand.",
+                                teardown.failed.join(", ")
+                            );
+                        } else if teardown.managed > 0 {
+                            println!(
+                                "Removed Gate from tool configs; they reconnect the next time routing is enabled."
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "note: failed to remove Gate from tool configs ({e:#}); edit them by hand."
                     ),
-                    Ok(names) if !names.is_empty() => println!(
-                        "Put {} back on their own settings; they reconnect the next time routing is enabled.",
-                        names.join(", ")
-                    ),
-                    Ok(_) => {}
-                    Err(e) => eprintln!("note: putting tools back on their own settings failed: {e:#}"),
                 }
                 disable_routing().context(
                     "restoring the system proxy failed; run `gate-connect proxy disable` to \
@@ -634,6 +821,25 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
             }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
+            // The GUI raises a dialog before this exact act, because a row whose
+            // credential does not cascade carries the session the operator is
+            // already signed in with rather than a key Gate brokers. The CLI
+            // cannot ask - the toggle has happened by the time anything could -
+            // so it says what it did. The table below carries the same two facts
+            // in its columns, and somebody toggling one domain by name never
+            // reads it.
+            if enabled {
+                if let Some(d) = st.domains.iter().find(|d| d.slug == slug) {
+                    if !d.credential.cascades() {
+                        println!(
+                            "note: {slug} carries the credential you are already signed in with, \
+                             not a key Gate brokers. Gate now records and inspects that traffic \
+                             on {}.",
+                            d.hosts.join(", ")
+                        );
+                    }
+                }
+            }
             print_proxy_domains(&st.domains);
         }
         ProxyCmd::TrustCa { system_trust } => {
@@ -709,7 +915,15 @@ fn print_proxy_state(state: &proxy::ProxyState) {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
-    println!("{:<12} {:<6} NAME", "PROVIDER", "STATE");
+    // Client, scope and credential beside the flag, for the same reason the
+    // diagnostics report carries them: on/off alone does not say who a row is
+    // for, what else flipping it touches, or whether Gate supplies the key.
+    // A `claude-web off` with none of that is what sent a support thread
+    // looking in the wrong place.
+    println!(
+        "{:<14} {:<6} {:<15} {:<8} {:<10} NAME",
+        "DOMAIN", "STATE", "CLIENT", "SCOPE", "CREDENTIAL"
+    );
     for d in domains {
         let state = if !d.supported {
             "n/a"
@@ -718,7 +932,40 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
         } else {
             "off"
         };
-        println!("{:<12} {:<6} {}", d.slug, state, d.display_name);
+        println!(
+            "{:<14} {:<6} {:<15} {:<8} {:<10} {}",
+            d.slug,
+            state,
+            d.client.slug(),
+            scope_word(d.scope),
+            credential_word(d.credential),
+            d.display_name
+        );
+    }
+}
+
+/// One word per [`Scope`], for the table above.
+///
+/// Spelled out here rather than derived from the serde name so the CLI's
+/// vocabulary is a deliberate choice: "host" is the one a reader has to
+/// understand, because it is the one that reaches past the row's own name.
+fn scope_word(scope: gate_connect_core::taxonomy::Scope) -> &'static str {
+    use gate_connect_core::taxonomy::Scope;
+    match scope {
+        Scope::Host => "host",
+        Scope::Client => "client",
+        Scope::Machine => "machine",
+    }
+}
+
+/// One word per [`Credential`]. `brokered` is also the answer to "will a
+/// provider switch turn this on".
+fn credential_word(credential: gate_connect_core::taxonomy::Credential) -> &'static str {
+    use gate_connect_core::taxonomy::Credential;
+    match credential {
+        Credential::Brokered => "brokered",
+        Credential::Additive => "additive",
+        Credential::Observed => "observed",
     }
 }
 

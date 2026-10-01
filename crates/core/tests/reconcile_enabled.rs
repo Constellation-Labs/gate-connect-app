@@ -13,6 +13,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod common;
+
+use common::RelayStub;
 use gate_connect_core::proxy::config;
 use gate_connect_core::registry::{find, Status, ToolId};
 use gate_connect_core::{account, env, provider};
@@ -76,14 +79,16 @@ fn sign_in() {
 /// and bind the forward-proxy port for real. Claude Code uses that port so its
 /// Anthropic base URL stays canonical; the relay port remains seeded because
 /// provider reconciliation uses it as its general liveness prerequisite.///
-/// The listener is returned rather than dropped because the seeded files are
+/// The stub is returned rather than dropped because the seeded files are
 /// only half of what a live proxy looks like: `engine_proxy_url()` probes the
 /// port before handing it out, so a caller that lets this fall out of scope is
-/// describing a crashed engine, not a running one. Bound on an ephemeral port
-/// so concurrent test binaries cannot collide.
-fn bind_proxy_ports() -> std::net::TcpListener {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+/// describing a crashed engine, not a running one. A stub rather than a bare
+/// bind because `relay_listening()` asks the listener to prove it can read the
+/// 0600 token. Bound on an ephemeral port so concurrent test binaries cannot
+/// collide.
+fn bind_proxy_ports() -> RelayStub {
+    let listener = RelayStub::bind(0);
+    let port = listener.port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
@@ -136,10 +141,7 @@ fn tool_installed_after_enable_is_configured() {
     )
     .unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
-    let expected_proxy = format!(
-        "http://gate-claude-code:route@127.0.0.1:{}",
-        proxy.local_addr().unwrap().port()
-    );
+    let expected_proxy = format!("http://gate-claude-code:route@127.0.0.1:{}", proxy.port());
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
         Some(expected_proxy.as_str())
@@ -366,10 +368,7 @@ fn stale_managed_config_is_reapplied() {
     let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
     let settings: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
-    let expected_proxy = format!(
-        "http://gate-claude-code:route@127.0.0.1:{}",
-        proxy.local_addr().unwrap().port()
-    );
+    let expected_proxy = format!("http://gate-claude-code:route@127.0.0.1:{}", proxy.port());
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
         Some(expected_proxy.as_str())
@@ -393,4 +392,332 @@ fn managed_drift_without_relay_is_left_alone() {
     assert!(matches!(claude_status(), Status::Drifted(_)));
     let after = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
     assert_eq!(before, after);
+}
+
+// ---------------------------------------------------------------------------
+// Codex. The provider pass is the only path that could reach it - it is mapped
+// to the `openai` provider, so `reconcile_unmapped_tools` skips it by
+// construction - which makes `domains_enabled_persisted(openai)` the gate on
+// everything below.
+// ---------------------------------------------------------------------------
+
+/// Make Codex look installed, logged in, and connected by an older build: the
+/// base URL shape we wrote before the tool marker existed, plus the
+/// `[_gate_connect]` marker saying it was ours. This is [`Status::Drifted`]
+/// under the marker shape.
+fn install_codex_with_stale_managed_config(relay_port: u16) {
+    let dir = env::codex_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        env::codex_auth_json_path().unwrap(),
+        r#"{"auth_mode":"apikey"}"#,
+    )
+    .unwrap();
+    let stale = format!(
+        r#"model_provider = "gate"
+
+[model_providers.gate]
+name = "Gate"
+base_url = "http://127.0.0.1:{relay_port}/openai/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[_gate_connect]
+previous_model_provider_absent = true
+"#
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), stale).unwrap();
+}
+
+fn codex_status() -> Status {
+    find(ToolId::Codex).unwrap().status().unwrap()
+}
+
+fn codex_config() -> String {
+    fs::read_to_string(env::codex_config_toml_path().unwrap()).unwrap()
+}
+
+#[test]
+fn codex_stale_managed_config_is_reapplied() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_codex_with_stale_managed_config(port);
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(find(ToolId::Codex).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_status(), Status::Connected);
+    assert!(
+        codex_config().contains(&format!("http://127.0.0.1:{port}/__gate/t/codex/openai/v1")),
+        "the stale base URL should have been rewritten with the tool marker: {}",
+        codex_config()
+    );
+}
+
+/// Turning Codex off by hand is an instruction, not drift to repair.
+///
+/// `model_provider = "openai"` is what a user writes to stop routing Codex
+/// through Gate without running disconnect, and `status` reports it as
+/// `Drifted` because our block is still sitting there. The marker alone cannot
+/// tell that apart from our own stale write - it records who created the block,
+/// not who wrote the values in it now - which is why `config_is_managed` asks
+/// the second question too.
+#[test]
+fn codex_hand_edited_off_gate_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_codex_with_stale_managed_config(port);
+    let hand_edited =
+        codex_config().replace(r#"model_provider = "gate""#, r#"model_provider = "openai""#);
+    fs::write(env::codex_config_toml_path().unwrap(), &hand_edited).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "a config pointed away from Gate is not ours to reapply"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), hand_edited, "the hand edit was reverted");
+}
+
+/// The same question about the other value the user can change: our block, our
+/// marker, but `base_url` repointed at their own gateway.
+#[test]
+fn codex_repointed_base_url_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_codex_with_stale_managed_config(port);
+    let repointed = codex_config().replace(
+        &format!("http://127.0.0.1:{port}/openai/v1"),
+        "https://gateway.example.com/v1",
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), &repointed).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(!find(ToolId::Codex).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), repointed, "the hand edit was reverted");
+}
+
+/// A disconnected tool stays disconnected across the sweep's drift half.
+///
+/// This is the load-bearing half of letting managed drift repair itself without
+/// consulting the provider switch: `disconnect` removes the marker, so the
+/// question `config_is_managed` asks answers "no" for every tool the user has
+/// deliberately turned off, whatever its provider's domains say.
+#[test]
+fn codex_disconnected_is_not_reconnected_by_the_drift_half() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_codex_with_stale_managed_config(port);
+    find(ToolId::Codex).unwrap().disconnect().unwrap();
+    let after_disconnect = codex_config();
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "the disconnect stub must not read as a config we manage"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(
+        codex_config(),
+        after_disconnect,
+        "a disconnected Codex was reconnected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode. No provider maps it, so it takes the drift half via
+// `reconcile_unmapped_tools`. Its own local-protection guard is what used to
+// make that unreachable.
+// ---------------------------------------------------------------------------
+
+/// Route OpenCode through Gate for real, then wind its baseURL back to the
+/// shape an older build wrote - no tool marker - which is what every existing
+/// install holds on the first launch after this change.
+fn install_opencode_with_stale_managed_config(relay_port: u16) {
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        env::opencode_config_path().unwrap(),
+        r#"{
+  "provider": {
+    "anthropic": {
+      "options": { "apiKey": "{env:ANTHROPIC_API_KEY}" },
+      "models": { "claude-haiku-4-5": {} }
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ
+        .connect(&gate_connect_core::registry::ConnectInput {
+            gateway_base_url: "https://gw.example.com".into(),
+            billing_mode: Default::default(),
+            relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
+            engine_proxy_url: None,
+        })
+        .expect("connect opencode");
+
+    let raw = fs::read_to_string(env::opencode_config_path().unwrap()).unwrap();
+    let stale = raw.replace(
+        &format!("http://127.0.0.1:{relay_port}/__gate/t/opencode/"),
+        &format!("http://127.0.0.1:{relay_port}/"),
+    );
+    assert_ne!(raw, stale, "the connect write should have carried a marker");
+    fs::write(env::opencode_config_path().unwrap(), stale).unwrap();
+}
+
+fn opencode_config() -> String {
+    fs::read_to_string(env::opencode_config_path().unwrap()).unwrap()
+}
+
+/// An OpenCode install written before the tool marker repairs itself.
+///
+/// The obstacle was its own local-protection guard: `connect` skips a provider
+/// whose current baseURL `looks_local`, and Gate's relay is on 127.0.0.1, so
+/// every already-connected provider was filtered out and the re-apply bailed
+/// with "No supported OpenCode providers found". Not a corner case - a re-apply
+/// is *always* over a baseURL of ours, so the guard fired on 100% of connected
+/// installs and none of them could ever pick up a new relay port either.
+#[test]
+fn opencode_stale_managed_config_is_reapplied() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_opencode_with_stale_managed_config(port);
+    assert!(matches!(
+        find(ToolId::OpenCode).unwrap().status().unwrap(),
+        Status::Drifted(_)
+    ));
+    assert!(find(ToolId::OpenCode).unwrap().config_is_managed().unwrap());
+
+    provider::reconcile_enabled().unwrap();
+
+    assert!(
+        opencode_config().contains(&format!("http://127.0.0.1:{port}/__gate/t/opencode/")),
+        "the stale base URL should have been rewritten with the tool marker: {}",
+        opencode_config()
+    );
+}
+
+/// The guard the exemption above has to keep: a provider inside the allowlist
+/// that the user pointed at their own local server is still left alone, because
+/// the sidecar has no record of us ever writing it.
+#[test]
+fn opencode_leaves_a_users_own_local_endpoint_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    let dir = env::opencode_config_dir().unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    let own = r#"{
+  "provider": {
+    "anthropic": {
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" }
+    }
+  }
+}
+"#;
+    fs::write(env::opencode_config_path().unwrap(), own).unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    let err = integ
+        .connect(&gate_connect_core::registry::ConnectInput {
+            gateway_base_url: "https://gw.example.com".into(),
+            billing_mode: Default::default(),
+            relay_base_url: Some(format!("http://127.0.0.1:{port}")),
+            engine_proxy_url: None,
+        })
+        .expect_err("a local endpoint we never wrote is not ours to repoint");
+    assert!(
+        err.to_string().contains("No supported OpenCode providers"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        opencode_config(),
+        own,
+        "the user's own endpoint was rewritten"
+    );
+}
+
+/// The guard's other half, for Codex: our block, our marker, our pointer, but a
+/// `base_url` the user aimed at their own local server.
+///
+/// A loopback test would call this ours, because the user's own server is on
+/// 127.0.0.1 too, and hand the reapply a licence to take the config back. The
+/// question has to be "is this a URL we would have written", not "is this
+/// address local".
+#[test]
+fn codex_repointed_at_a_local_server_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_codex_with_stale_managed_config(port);
+    let repointed = codex_config().replace(
+        &format!("http://127.0.0.1:{port}/openai/v1"),
+        "http://127.0.0.1:11434/v1",
+    );
+    fs::write(env::codex_config_toml_path().unwrap(), &repointed).unwrap();
+    assert!(matches!(codex_status(), Status::Drifted(_)));
+    assert!(
+        !find(ToolId::Codex).unwrap().config_is_managed().unwrap(),
+        "a local endpoint we never wrote is not ours to reapply"
+    );
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(codex_config(), repointed, "the hand edit was reverted");
+}
+
+/// Same for OpenCode, and this is the one the sidecar test would have failed:
+/// the provider IS recorded there, because we connected it, and the user has
+/// since pointed it somewhere of their own.
+#[test]
+fn opencode_repointed_at_a_local_server_is_not_silently_reverted() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    let port = proxy.port();
+    install_opencode_with_stale_managed_config(port);
+    let raw = opencode_config();
+    let repointed = raw.replace(
+        &format!("http://127.0.0.1:{port}/anthropic/v1"),
+        "http://127.0.0.1:11434/v1",
+    );
+    assert_ne!(raw, repointed, "the stale config should name anthropic");
+    fs::write(env::opencode_config_path().unwrap(), &repointed).unwrap();
+
+    provider::reconcile_enabled().unwrap();
+
+    assert_eq!(
+        opencode_config(),
+        repointed,
+        "the user's own endpoint was taken back"
+    );
 }

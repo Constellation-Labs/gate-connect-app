@@ -18,7 +18,6 @@ export type ErrorContext =
   | "save_api_key"
   | "update"
   | "close_agents"
-  | "quit_disable"
   | "proxy_toggle"
   | "provider_toggle"
   | "trust_ca"
@@ -27,6 +26,16 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  /** Opening a link in the user's browser failed: an opener-ACL miss, no
+   *  browser, a sandbox refusal. Its own context because the remedy is nothing
+   *  to do with Gate - the user can still copy the address - and because it used
+   *  to vanish into a console nobody reads. */
+  | "open_external"
+  /** The re-read that follows a routing write. Its own context because a failed
+   *  resync is not a failed write - the write landed, and only the view of it is
+   *  stale. It used to be invisible: thrown from a `finally` into a `void` call
+   *  site, where it took every switch in the app down with it. */
+  | "resync"
   | "provider_disable"
   | "provider_reconcile"
   | "routing_intent"
@@ -55,21 +64,6 @@ export interface ClassifiedError {
   title: string;
   hint: string;
   raw: string;
-}
-
-/** The user pressed Not now on the certificate pre-flight (`CertificateNotice`).
- *
- * Thrown rather than returned because it has to abort the caller from inside
- * `ensureCaTrusted`, exactly as a failed trust does - but it must never reach
- * `classifyError`. A refused OS dialog is a surprise worth explaining; declining
- * our own screen is a choice the user made on purpose, one second ago, and
- * answering it with a red note explaining what they just decided is the app
- * arguing with them. Callers guard their catch on this and abort silently. */
-export class TrustDeclined extends Error {
-  constructor() {
-    super("certificate trust declined by the user");
-    this.name = "TrustDeclined";
-  }
 }
 
 /**
@@ -126,7 +120,7 @@ export function classifyError(
   // un-routed. Without this branch the generic fallback answers "try again",
   // which is precisely wrong - retrying cannot help until routing is on, and
   // the one sentence that says so is buried in the details disclosure.
-  if (lc.includes("proxy is not running")) {
+  if (isRoutingOffRefusal(raw)) {
     return {
       title: "Turn on “Route through Gate” first",
       hint: "This tool sends all of its traffic through Gate’s local proxy, so routing has to be on before it can be connected.",
@@ -149,6 +143,25 @@ export function classifyError(
     };
   }
 
+  // The sign-in page's own Cancel, which is a browser button and not a system
+  // prompt.
+  //
+  // Ahead of the prompt branch below, and that order is the fix: Cognito
+  // answers a declined authorization with `access_denied`, `oauth.rs` wraps it
+  // as "authorization failed (access_denied)", and the branch below matches
+  // "authorization" AND "denied" - so pressing Cancel in the browser produced
+  // "The system prompt was cancelled - approve your system password prompt",
+  // naming a dialog the user never saw. It is the same misdiagnosis as the
+  // timeout one below, on the likelier path: declining takes a click, walking
+  // away takes five minutes.
+  if (lc.includes("access_denied") || lc.includes("access denied")) {
+    return {
+      title: "The sign-in was declined",
+      hint: "Try again and approve the sign-in in the browser window that opens.",
+      raw,
+    };
+  }
+
   // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
   // credential prompts report their own cancels through the same branch).
   if (
@@ -157,16 +170,23 @@ export function classifyError(
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
-    // The verb has to name the button the user actually pressed. A cancelled
+    // The verb has to name the control the user actually touched. A cancelled
     // certificate prompt used to say "Click Connect again" next to a button
-    // labelled Trust certificate.
-    // The two toggle contexts fire from a role=switch, not a button, and they
-    // are the paths a user actually hits: the enable path prompts for admin
-    // every time the system proxy changes. They fell through to "Connect",
-    // which names no control on Home. Switches get "Flip", buttons get
-    // "Click".
+    // labelled Trust certificate. Switches get "Flip", buttons get "Click".
+    //
+    // Starting the engine and trusting the certificate are each reached from
+    // more than one control - a notice's switch, setup's button, the dialog in
+    // front of a connect - so those two say what to do again rather than name
+    // one control and be wrong about the others.
+    const retryHints: Partial<Record<ErrorContext, string>> = {
+      proxy_toggle: "Turn routing on again and approve your system password prompt.",
+      trust_ca: "Try again and approve your system password prompt.",
+    };
+    const retryHint = retryHints[context];
+    if (retryHint) {
+      return { title: "The system prompt was cancelled", hint: retryHint, raw };
+    }
     const switchNames: Partial<Record<ErrorContext, string>> = {
-      proxy_toggle: "the Routing switch",
       provider_toggle: "that switch",
     };
     const switchName = switchNames[context];
@@ -182,17 +202,11 @@ export function classifyError(
         ? "Reset"
         : context === "sign_out"
           ? "Sign out"
-          : context === "trust_ca"
-            ? // "Trust", not "Trust certificate": both buttons that raise this
-              // prompt (Home's certificate card, the family panel's banner) are
-              // labelled Trust, and this hint's whole job is naming the control
-              // the user pressed.
-              "Trust"
-            : context === "untrust_ca"
-              ? "Remove"
-              : context === "close_agents" || context === "quit_disable"
-                ? "Close everything"
-                : "Connect";
+          : context === "untrust_ca"
+            ? "Remove"
+            : context === "close_agents"
+              ? "Close everything"
+              : "Connect";
     return {
       title: "The system prompt was cancelled",
       hint: `Click ${verb} again and approve your system password prompt.`,
@@ -206,6 +220,24 @@ export function classifyError(
     return {
       title: `The system blocked access to ${store}`,
       hint: `Allow Gate Connect to use ${store} in your OS privacy settings, then try again.`,
+      raw,
+    };
+  }
+
+  // The browser login was never finished.
+  //
+  // Ahead of the network branch on purpose: `oauth.rs` gives up after
+  // `LOGIN_TIMEOUT_SECS` with "timed out waiting for the login redirect", and
+  // that sentence contains "timed out", so the connectivity arm below claimed
+  // it and told the user to check that they were online and that the gateway
+  // URL was right. Neither was the problem - the gateway was never asked. The
+  // most common cause is the one that produced this: the sign-in page opened in
+  // a browser profile the person was not signed into, and they walked away from
+  // it.
+  if (lc.includes("login redirect") || lc.includes("waiting for the login")) {
+    return {
+      title: "The browser sign-in was not finished",
+      hint: "Gate stopped waiting after five minutes. Try again, and complete the sign-in in the browser window that opens.",
       raw,
     };
   }
@@ -248,16 +280,32 @@ export function classifyError(
     };
   }
 
+  // A tool write an integration refused for a reason the user can fix: "No
+  // supported OpenCode providers found to route through Gate. Run ...". The
+  // body says what to do rather than "Try again", which hid the instruction
+  // behind Details (staging QA, 2026-09-30). The title stays the generic one.
+  if (context === "connect") {
+    const hint = connectRefusalHint(raw);
+    if (hint) return { title: "Couldn’t connect this tool", hint, raw };
+  }
+
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
-    sign_in: "Couldn’t save your account",
+    // The write already succeeded; only the re-read of it failed, so this says
+    // the rows may be stale rather than implying the change did not land.
+    resync: "Couldn’t refresh what’s on screen",
+    open_external: "Couldn’t open that link",
+    // Three of the four `sign_in` call sites are browser flows, not writes:
+    // the OAuth offer, Settings’ switch to a Gate account, and first run’s
+    // sign-in. "Couldn’t save your account" described the fourth and read as
+    // a non sequitur after a Cognito round-trip that never saved anything.
+    sign_in: "Couldn’t complete sign-in",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",
     forget: "Couldn’t reset Gate Connect",
     save_api_key: "Couldn’t save the API key",
     update: "Couldn’t install the update",
     close_agents: "Couldn’t restart the running tools and apps",
-    quit_disable: "Couldn’t disconnect the tools",
     proxy_toggle: "Couldn’t toggle routing",
     provider_toggle: "Couldn’t change that app’s routing",
     trust_ca: "Couldn’t trust the certificate",
@@ -278,4 +326,60 @@ export function classifyError(
     hint: "Try again. If it keeps failing, the details below help when reporting it.",
     raw,
   };
+}
+
+/**
+ * The window's copy for a connect an integration refused, by the refusal's
+ * own wording. `null` for anything not listed, which keeps "Try again".
+ *
+ * A list, not a test of the message's shape: a backend message reaches the
+ * body only once someone has written copy for it. Reading any one-sentence
+ * error as an instruction also let through paths ("failed to write
+ * ~/.codex/config.toml"), parser output and network errors. And the backend's
+ * own sentences are written for the CLI ("then re-run connect"), so the window
+ * says it in its own words. The patterns follow the `bail!`s in
+ * `crates/core/src/integrations/`; a reworded refusal falls back to "Try
+ * again", with the full text still under Details.
+ */
+const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
+  [
+    /^No supported OpenCode providers found to route through Gate\b/,
+    () =>
+      "OpenCode isn’t signed in to a provider Gate can route. Run opencode auth login, then turn OpenCode on again.",
+  ],
+  [
+    /^None of the configured OpenCode providers can route through Gate yet \(([^)]*)\)/,
+    (m) => `None of OpenCode’s providers can route through Gate yet (${m[1]}).`,
+  ],
+  [
+    /^Codex isn't logged in yet\b/,
+    () => "Codex isn’t signed in yet. Run codex login, then turn it on again.",
+  ],
+  [
+    /^Hermes already has its own proxy settings in ~\/\.hermes\/\.env\b/,
+    () =>
+      "Hermes already has its own proxy settings in ~/.hermes/.env, and Gate left them alone. Remove them to route Hermes through Gate.",
+  ],
+  [
+    /^(Claude Code|Codex|OpenCode|OpenClaw|Hermes) is not installed\b/,
+    (m) => `${m[1]} isn’t installed on this machine. Install it, then turn it on again.`,
+  ],
+];
+
+export function connectRefusalHint(raw: string): string | null {
+  const text = raw.trim();
+  for (const [pattern, hint] of CONNECT_REFUSALS) {
+    const m = text.match(pattern);
+    if (m) return hint(m);
+  }
+  return null;
+}
+
+/**
+ * A tool's connect refused because routing is off. The fix is the whole
+ * install's ("Turn on Route through Gate first"), so the window says it rather
+ * than one app's pane (review on #390).
+ */
+export function isRoutingOffRefusal(raw: string): boolean {
+  return raw.toLowerCase().includes("proxy is not running");
 }

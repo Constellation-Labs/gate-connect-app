@@ -22,9 +22,16 @@ use hyper_util::rt::TokioIo;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
 use tokio::net::TcpListener;
 
+use gate_connect_core::account::BillingMode;
 use gate_connect_core::proxy;
 use gate_connect_core::proxy::default_domains;
 use gate_connect_core::proxy::engine::{self, EngineConfig};
+
+/// Serializes the tests that use the process-global `GATE_CONNECT_TEST_UPSTREAM`
+/// seam. It names one upstream for the whole process, and each engine captures
+/// its value at construction, so two of these running concurrently would point
+/// one test's relay at the other's mock upstream.
+static UPSTREAM_SEAM: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// One request the mock gateway received, reduced to what we assert on.
 #[derive(Clone)]
@@ -153,12 +160,29 @@ fn boot_engine_owned(
     org_id: &str,
     owner_uid: Option<u32>,
 ) -> engine::RunningEngine {
+    boot_engine_full(
+        gateway_base_url,
+        oauth_token,
+        org_id,
+        owner_uid,
+        BillingMode::Byok,
+    )
+}
+
+fn boot_engine_full(
+    gateway_base_url: String,
+    oauth_token: &str,
+    org_id: &str,
+    owner_uid: Option<u32>,
+    billing_mode: BillingMode,
+) -> engine::RunningEngine {
     boot_engine_with(
         gateway_base_url,
         "sk-gw-test",
         oauth_token,
         org_id,
         owner_uid,
+        billing_mode,
     )
 }
 
@@ -168,6 +192,7 @@ fn boot_engine_with(
     oauth_token: &str,
     org_id: &str,
     owner_uid: Option<u32>,
+    billing_mode: BillingMode,
 ) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     engine::start(
@@ -176,6 +201,7 @@ fn boot_engine_with(
             api_key: api_key.into(),
             oauth_token: oauth_token.into(),
             org_id: org_id.into(),
+            billing_mode,
             domains: default_domains(),
             ca_cert_pem,
             ca_key_pem,
@@ -518,6 +544,7 @@ async fn relay_refuses_non_owner_peer() {
 /// hosts, so a loopback mock could never pass validation otherwise.
 #[tokio::test]
 async fn relay_forwards_direct_when_not_intercepting() {
+    let _seam = UPSTREAM_SEAM.lock().await;
     let gateway = start_mock_gateway().await;
     // A second capturing server, standing in for the tool's real upstream.
     let upstream = start_mock_gateway().await;
@@ -604,6 +631,229 @@ async fn relay_forwards_direct_when_not_intercepting() {
         upstream.captured.lock().unwrap().len(),
         1,
         "the second request must not go direct"
+    );
+}
+
+/// The relay's unauthenticated liveness path: answered by the relay itself, with
+/// a 204 and no body, without the request ever reaching the gateway.
+///
+/// It proves that a relay of ours serves this port at all, and deliberately not
+/// *who* is answering - anything that accepts on the port can return a 204. The
+/// status probes ask `gate_connect_paths::RELAY_HEALTH_PATH` instead, where only
+/// a process that can read the 0600 token can reply; `probe_relay_route` used to
+/// ask here and was moved for exactly that reason.
+#[tokio::test]
+async fn relay_answers_its_own_health_path_without_calling_the_gateway() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}{}",
+            engine.relay_port(),
+            gate_connect_core::proxy::RELAY_LIVENESS_PATH
+        ))
+        .send()
+        .await
+        .expect("health request should succeed");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the health path must answer 204"
+    );
+    assert_eq!(
+        resp.bytes().await.unwrap().len(),
+        0,
+        "the health path must carry no body"
+    );
+
+    engine.stop();
+
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "a health check must never reach the gateway, let alone spend a token"
+    );
+}
+
+/// A POST to the health path is a misconfigured tool, not a health check, so it
+/// falls through to the catalog resolver and is refused there rather than being
+/// answered 204.
+#[tokio::test]
+async fn relay_health_path_is_get_only() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}{}",
+            engine.relay_port(),
+            gate_connect_core::proxy::RELAY_LIVENESS_PATH
+        ))
+        .send()
+        .await
+        .expect("request should complete");
+
+    assert_ne!(
+        resp.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "only GET is the health check"
+    );
+
+    engine.stop();
+}
+
+/// PAYG through the relay: the tool sends its own provider credential (which is
+/// all a CLI tool has), and what reaches the gateway must carry neither that
+/// credential nor an upstream hint. Those two absences are the entire contract -
+/// with either one present the gateway routes BYOK, and with the credential
+/// present but no hint it refuses the request outright.
+#[tokio::test]
+async fn relay_in_payg_sends_no_upstream_hint_and_no_client_credential() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/anthropic/v1/messages",
+            engine.relay_port()
+        ))
+        // What Claude Code / Cowork actually send, and what we must remove.
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .header("x-api-key", "sk-ant-api03-app-key")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "relay returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "expected exactly one gateway request");
+    let r = &reqs[0];
+    // The slug is stripped, leaving the gateway-native path the reseller router
+    // expects.
+    assert_eq!(r.path, "/v1/messages");
+    // We still say who the workspace is.
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        None,
+        "the hint's absence is what selects reseller routing"
+    );
+    assert_eq!(
+        r.header("authorization"),
+        None,
+        "a provider token here is read as passthrough and forces BYOK"
+    );
+    assert_eq!(r.header("x-api-key"), None);
+}
+
+/// PAYG applies per domain. A consumer-chat surface is authenticated by a
+/// session cookie and covered by the user's own subscription, so it keeps its
+/// BYOK shape even while the account bills through Gate - stripping its
+/// credential would break it and route nothing.
+#[tokio::test]
+async fn relay_in_payg_leaves_an_ineligible_domain_on_the_byok_shape() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/claude-web/organizations/o/chat_conversations/c/completion",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer session-token")
+        .json(&serde_json::json!({ "prompt": "hi" }))
+        .send()
+        .await
+        .expect("relay request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "relay returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        Some("https://claude.ai/api"),
+        "an ineligible domain keeps routing BYOK"
+    );
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer session-token"),
+        "and keeps the credential that is the only thing authenticating it"
+    );
+}
+
+/// A passthrough hop is untouched by the mode. Those are account/metadata paths
+/// that go to the real upstream under the tool's own identity, so stripping the
+/// credential there would simply 401 - and no Gate header may leak either way.
+/// Uses the loopback test-upstream seam, since a real passthrough target is not
+/// reachable from a test.
+#[tokio::test]
+async fn relay_in_payg_does_not_touch_a_passthrough_hop() {
+    let _seam = UPSTREAM_SEAM.lock().await;
+    let gateway = start_mock_gateway().await;
+    let upstream = start_mock_gateway().await;
+    std::env::set_var("GATE_CONNECT_TEST_UPSTREAM", &upstream.base_url);
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    // The test-upstream entry rewrites `/v1/` only, so this path is classified
+    // as passthrough and forwarded to the upstream itself.
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/test-upstream/oauth/token",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("passthrough request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "passthrough returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+    std::env::remove_var("GATE_CONNECT_TEST_UPSTREAM");
+
+    let up = upstream.captured.lock().unwrap().clone();
+    assert_eq!(up.len(), 1, "the request must reach the real upstream");
+    assert_eq!(
+        up[0].header("authorization"),
+        Some("Bearer sk-ant-oat01-app-token"),
+        "PAYG must not strip the only credential a passthrough hop has"
+    );
+    assert_eq!(up[0].header("x-gate-api-key"), None);
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "a non-inference path must never reach the gateway"
     );
 }
 
@@ -788,6 +1038,132 @@ async fn relay_retries_only_once() {
     );
 }
 
+/// The retry rebuilds the whole rewrite, not just the bearer: under PAYG the
+/// served shape - no upstream hint, none of the tool's own credential - has to
+/// hold on the second attempt too, or the retry is billed to the org and
+/// forwarded to the tool's provider at once.
+#[tokio::test]
+async fn relay_retries_a_refused_bearer_in_payg_keeping_the_served_shape() {
+    hold_session_check_open();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine_full(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+        None,
+        BillingMode::Payg,
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/anthropic/v1/messages",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .header("x-api-key", "sk-ant-api03-app-key")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("the relay answers");
+    assert!(
+        resp.status().is_success(),
+        "the tool must not see the refusal: got {}",
+        resp.status()
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one refused attempt, one retry");
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+    for (n, r) in reqs.iter().enumerate() {
+        assert_eq!(r.path, "/v1/messages", "attempt {n}");
+        assert_eq!(r.header("x-gate-upstream-url"), None, "attempt {n}");
+        assert_eq!(r.header("authorization"), None, "attempt {n}");
+        assert_eq!(r.header("x-api-key"), None, "attempt {n}");
+    }
+}
+
+/// An app-support dir holding one stored choice, Codex on a Gate model, for
+/// the whole binary. The override is process-global and the other tests here
+/// boot engines concurrently, so it is set once and never reset rather than
+/// swapped per test. Only the Gate-model test names Codex, so no other request
+/// in this binary picks the choice up.
+fn gate_model_home() {
+    static HOME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("gc-relay-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp app-support dir");
+        gate_connect_core::env::set_app_support_dir_for_tests(Some(dir));
+        gate_connect_core::preferences::reset_cache_for_tests();
+        gate_connect_core::preferences::set_tool_model(
+            "codex",
+            gate_connect_core::preferences::ModelSource::Gate,
+            vec!["openai/gpt-4o".into()],
+            true,
+            vec![],
+        )
+        .expect("store the choice");
+    });
+}
+
+/// A refused bearer on the Gate models route is retried like any other, and
+/// the retry is served the same way as the first attempt: Payg, no upstream
+/// hint, and none of the tool's own credential.
+#[tokio::test]
+async fn relay_retries_a_refused_bearer_on_a_gate_model_keeping_the_served_path() {
+    hold_session_check_open();
+    gate_model_home();
+    let gateway = start_mock_gateway().await;
+    gateway.refuse("x-gate-authorization", "Bearer stale-token");
+    let engine = Arc::new(boot_engine(
+        gateway.base_url.clone(),
+        "stale-token",
+        "org-uuid-1",
+    ));
+    let push = push_verdict_after_first_attempt(&engine, &gateway, "fresh-token");
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/__gate/t/codex/gate/v1/responses",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer chatgpt-subscription-token")
+        .json(&serde_json::json!({ "model": "openai/gpt-4o", "input": [] }))
+        .send()
+        .await
+        .expect("the relay answers");
+    assert!(
+        resp.status().is_success(),
+        "the tool must not see the refusal: got {}",
+        resp.status()
+    );
+
+    push.await.unwrap();
+    stop(engine);
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 2, "one refused attempt, one retry");
+    assert_eq!(
+        reqs[1].header("x-gate-authorization"),
+        Some("Bearer fresh-token")
+    );
+    for (n, r) in reqs.iter().enumerate() {
+        assert_eq!(r.path, "/v1/responses", "attempt {n}");
+        assert_eq!(r.header("x-gate-model"), None, "attempt {n}");
+        assert_eq!(r.header("x-gate-upstream-url"), None, "attempt {n}");
+        assert_eq!(r.header("authorization"), None, "attempt {n}");
+    }
+}
+
 /// A refused legacy key is a different problem with a different fix, and not
 /// ours to recover: the 401 goes straight to the tool, with no wait and no
 /// retry.
@@ -853,7 +1229,14 @@ async fn relay_does_not_retry_a_refused_caller_key_while_signed_in() {
 #[tokio::test]
 async fn relay_refuses_locally_when_signed_out() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine_with(gateway.base_url.clone(), "", "", "", None);
+    let engine = boot_engine_with(
+        gateway.base_url.clone(),
+        "",
+        "",
+        "",
+        None,
+        BillingMode::Byok,
+    );
 
     let resp = post_messages(engine.relay_port(), &[]).await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
@@ -900,7 +1283,14 @@ async fn relay_refuses_locally_when_signed_out() {
 #[tokio::test]
 async fn relay_serves_a_caller_supplied_key_while_signed_out() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine_with(gateway.base_url.clone(), "", "", "", None);
+    let engine = boot_engine_with(
+        gateway.base_url.clone(),
+        "",
+        "",
+        "",
+        None,
+        BillingMode::Byok,
+    );
 
     let resp = post_messages(engine.relay_port(), &[("x-gate-api-key", "sk-gw-caller")]).await;
     assert!(resp.status().is_success(), "got {}", resp.status());

@@ -46,10 +46,6 @@ describe("classifyError", () => {
     });
 
     it("names the button the user actually pressed", () => {
-      // "Trust", the label both certificate buttons actually carry (Home's card
-      // and the family panel's banner). It used to say "Trust certificate",
-      // which was the label when this branch was written.
-      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Trust");
       expect(classifyError("User canceled (-128)", "forget").hint).toContain("Reset");
     });
 
@@ -145,15 +141,18 @@ describe("backendErrorContext", () => {
 });
 
 describe("cancelled prompt names the control the user actually touched", () => {
-  // These two contexts fire from a role=switch, not a button, and they are the
-  // paths users actually hit: the enable path prompts for admin every time the
-  // system proxy changes. They used to fall through to "Click Connect again",
-  // and there is no Connect button on Home.
-  it("names the Routing switch for the master toggle", () => {
-    const hint = classifyError("User canceled (-128)", "proxy_toggle").hint;
-    expect(hint).toContain("the Routing switch");
-    expect(hint).not.toContain("Connect");
-    expect(hint).not.toContain("Click");
+  // Starting the engine and trusting the certificate are each reached from a
+  // switch, a button and a dialog, so neither may name one of them. Both used
+  // to name controls the window does not have: "the Routing switch", and a
+  // "Trust" button, with "Click Connect again" before that.
+  it("says what to do again for the engine and the certificate", () => {
+    for (const context of ["proxy_toggle", "trust_ca"] as const) {
+      const hint = classifyError("User canceled (-128)", context).hint;
+      expect(hint).toContain("again");
+      expect(hint).not.toContain("Connect");
+      expect(hint).not.toContain("Click");
+      expect(hint).not.toContain("Routing switch");
+    }
   });
 
   it("names a switch for a member toggle", () => {
@@ -163,7 +162,6 @@ describe("cancelled prompt names the control the user actually touched", () => {
   });
 
   it("still says Click for the paths that really are buttons", () => {
-    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Click Trust");
     expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
   });
 });
@@ -215,5 +213,143 @@ describe("classifyError: a proxy-routed tool with routing off", () => {
 
   it("keeps the backend sentence available in the details", () => {
     expect(classifyError(RAW, "connect").raw).toContain("proxy is not running");
+  });
+});
+
+/**
+ * Opening a link is the one failure that used to disappear entirely.
+ *
+ * `openExternal` caught the rejection so it would not become an unhandled
+ * promise, then wrote it to `console.error` - a webview console nobody can read
+ * after the fact. An opener-ACL miss therefore looked exactly like a dead
+ * button, which is how the dashboard link stayed broken.
+ */
+describe("open_external", () => {
+  it("has copy that names what failed without blaming Gate", () => {
+    // The remedy is nothing to do with the app: the address can still be
+    // copied. So the title says the link would not open, not that something
+    // broke.
+    const c = classifyError(new Error("url not allowed by ACL"), "open_external");
+    expect(c.title).toMatch(/open that link/i);
+    expect(c.title.length).toBeGreaterThan(0);
+  });
+
+  it("classifies whatever the opener plugin threw", () => {
+    // Tauri rejects with a plain string, not an Error.
+    const c = classifyError("forbidden path", "open_external");
+    expect(c.title.length).toBeGreaterThan(0);
+    expect(c.raw).toContain("forbidden path");
+  });
+});
+
+/**
+ * An abandoned browser sign-in is not a network fault.
+ *
+ * `oauth.rs` gives up with "timed out waiting for the login redirect", and the
+ * connectivity branch matches any message containing "timed out" - so the one
+ * failure whose cause is entirely inside the browser was reported as the
+ * gateway being unreachable, sending the reader to check a URL that was never
+ * asked for anything. Found on the release build by abandoning a sign-in that
+ * had opened in the wrong browser profile.
+ */
+describe("an unfinished browser sign-in", () => {
+  it("is not reported as the gateway being unreachable", () => {
+    const c = classifyError(
+      new Error("timed out waiting for the login redirect"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/reach the gateway/i);
+    expect(c.title).toMatch(/sign-in/i);
+    expect(c.hint).not.toMatch(/gateway URL/i);
+  });
+
+  it("still calls a real connectivity failure what it is", () => {
+    // The branch below it has to keep working: this one is narrowed to the
+    // login's own sentence, not to every timeout.
+    const c = classifyError(new Error("connection timed out"), "sign_in");
+
+    expect(c.title).toMatch(/reach the gateway/i);
+  });
+
+  it("names the browser's own Cancel, not a system password prompt", () => {
+    // Cognito answers a declined authorization with `access_denied`, which
+    // `oauth.rs` wraps as "authorization failed (access_denied)". The
+    // prompt-cancelled branch matches "authorization" AND "denied", so this
+    // used to tell the user to approve a system password prompt they never
+    // saw - the same misdiagnosis as the timeout, on the likelier path.
+    const c = classifyError(
+      new Error("authorization failed (access_denied)"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/system prompt/i);
+    expect(c.hint).not.toMatch(/password prompt/i);
+    expect(c.title).toMatch(/declined/i);
+  });
+
+  it("still calls a real cancelled system prompt what it is", () => {
+    // The branch below must keep working: trusting the CA raises an actual OS
+    // prompt, and cancelling that one really is a system prompt.
+    const c = classifyError(new Error("User canceled the operation"), "trust_ca");
+
+    expect(c.title).toMatch(/system prompt/i);
+  });
+
+  it("says nothing about the gateway when the user stopped it themselves", () => {
+    // `cancel_login`'s message. It deliberately avoids "cancelled", which the
+    // system-prompt branch above claims.
+    const c = classifyError(
+      new Error("the browser sign-in was stopped from Gate Connect"),
+      "sign_in",
+    );
+
+    expect(c.title).not.toMatch(/reach the gateway/i);
+  });
+});
+
+describe("a connect an integration refused for a reason the user can fix", () => {
+  it("keeps the title and says what to do, in the window's words", () => {
+    const raw =
+      "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic|openai|openrouter|opencode|opencode-go` first, then re-run connect.";
+    const c = classifyError(raw, "connect");
+    expect(c.title).toBe("Couldn’t connect this tool");
+    expect(c.hint).toMatch(/opencode auth login/);
+    expect(c.hint).not.toMatch(/re-run connect/);
+    expect(c.raw).toBe(raw);
+  });
+
+  it("carries the providers an off-catalogue refusal names", () => {
+    const c = classifyError(
+      "None of the configured OpenCode providers can route through Gate yet (llamacpp, ollama). Gate has no upstream domain for them.",
+      "connect",
+    );
+    expect(c.hint).toMatch(/\(llamacpp, ollama\)/);
+  });
+
+  it("names the tool a not-installed refusal names", () => {
+    const c = classifyError(
+      "OpenClaw is not installed on this machine -- install it from https://docs.openclaw.ai first",
+      "connect",
+    );
+    expect(c.hint).toMatch(/^OpenClaw isn’t installed/);
+  });
+
+  it("keeps Try again for anything not on the list", () => {
+    for (const raw of [
+      "failed to write ~/.codex/config.toml",
+      "writing /Users/x/.codex/config.toml: Permission denied (os error 13)",
+      "expected value at line 1 column 1",
+      "error sending request for url (https://gw.example/v1)",
+    ]) {
+      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\./);
+    }
+  });
+
+  it("leaves every other action's copy alone", () => {
+    expect(
+      classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
+        .hint,
+    ).toMatch(/^Try again\./);
   });
 });

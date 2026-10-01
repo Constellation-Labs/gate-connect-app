@@ -229,7 +229,7 @@ fn codex_connect_then_disconnect() {
         "pointer not set: {body}"
     );
     assert!(
-        body.contains(&format!("{RELAY_URL}/openai/v1")),
+        body.contains(&format!("{RELAY_URL}/__gate/t/codex/openai/v1")),
         "relay base URL missing: {body}"
     );
     assert!(
@@ -299,7 +299,7 @@ wire_api = "responses"
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{RELAY_URL}/openai/v1")),
+        body.contains(&format!("{RELAY_URL}/__gate/t/codex/openai/v1")),
         "managed relay base URL missing: {body}"
     );
     assert!(

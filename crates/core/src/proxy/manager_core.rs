@@ -294,6 +294,22 @@ impl<O: DesktopOps> DesktopManager<O> {
             .unwrap_or(false)
     }
 
+    /// Whether an engine is serving, from this process or another: the
+    /// `running` half of [`status`](Self::status) without the rest.
+    ///
+    /// Without `ca_is_trusted` in particular, which is the point. That probe
+    /// shells out (`certutil` on Windows, `security verify-cert` on macOS), and
+    /// the provider sweep asks this question several times per provider - on
+    /// the quit path too, where [`disable_quiet`](Self::disable_quiet) already
+    /// explains why a child process is the one thing not to spawn.
+    pub fn is_running(&self) -> bool {
+        self.engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .is_some()
+            || self.ops.engine_hosted_elsewhere().is_some()
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let (port, pac_port) = self
@@ -336,10 +352,19 @@ impl<O: DesktopOps> DesktopManager<O> {
             port,
             pac_port,
             ca_trusted: self.ops.ca_is_trusted()?,
-            // Browsers here read the OS store, so there is no second one.
-            ca_nss_trusted: None,
+            // No second store to disagree with the first: macOS and Windows put
+            // user-added roots where the browser already looks. Not a seam on
+            // `DesktopOps` for that reason - there is nothing per-platform to
+            // ask - and `diagnostics.rs` answers the same question the same way.
+            ca_nss_trust: None,
+            // And for the same reason, in the other direction: the PAC goes in
+            // the OS proxy setting, which *is* the browser's proxy setting on
+            // both of these. Not a question about the session here, as it is on
+            // Linux, so it is not a seam either.
+            browser_proxy_channel: true,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            relay_base_url: crate::proxy::relay_base_url(),
             forwarder_answering,
             domains: config::load_domains()?,
         })
@@ -566,6 +591,10 @@ impl<O: DesktopOps> DesktopManager<O> {
                 oauth_token: crate::oauth::access_token_for_injection(),
                 // Selected org, injected as X-Gate-Org-Id alongside the token.
                 org_id: crate::account::org_id_for_injection(),
+                // Who pays: `Payg` drops the upstream hint and the tool's own
+                // credential on the rewrite path. A later switch pushes an
+                // update via `refresh_mode`.
+                billing_mode: account.billing_mode,
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem,
                 ca_key_pem: ca.key_pem,
@@ -827,6 +856,14 @@ impl<O: DesktopOps> DesktopManager<O> {
     /// Toggle a domain. If the engine is running, the new rules are pushed
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
+        self.set_domain_quiet(slug, enabled)?;
+        self.status()
+    }
+
+    /// [`set_domain`](Self::set_domain) without the status it returns, for a
+    /// caller that would discard it: computing one runs the trust probe
+    /// [`is_running`](Self::is_running) exists to avoid.
+    pub fn set_domain_quiet(&self, slug: &str, enabled: bool) -> Result<()> {
         let domains = config::set_enabled(slug, enabled)?;
         if let Some(running) = self
             .engine
@@ -836,7 +873,7 @@ impl<O: DesktopOps> DesktopManager<O> {
         {
             running.update_domains(&domains);
         }
-        self.status()
+        Ok(())
     }
 
     /// Push a rotated Gate API key into the running engine, if any - the
@@ -879,6 +916,22 @@ impl<O: DesktopOps> DesktopManager<O> {
             .as_ref()
         {
             running.update_org(org_id);
+        }
+    }
+
+    /// Push a changed billing mode into the running engine (and the relay it
+    /// hosts), if any. Used when the user switches BYOK/PAYG so the new request
+    /// shape reaches in-flight routing without a restart. Reads the mode from
+    /// disk rather than taking it as an argument, so a live engine can never be
+    /// routing under a mode the account does not hold.
+    pub fn refresh_mode(&self) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_mode(crate::account::billing_mode_for_injection());
         }
     }
 
@@ -950,10 +1003,11 @@ impl<O: DesktopOps> DesktopManager<O> {
     ///   untrust are separate steps, and holding the engine lock across a trust
     ///   store change would stall every status read behind a dialog. So the
     ///   engine is checked again afterwards and stopped if one came up.
-    /// - **Routing stays off across a restart.** Startup re-enables routing
-    ///   when the stored intent says it was on; left alone, the next launch
-    ///   would turn it back on and ask to trust a new root. Cleared only when
-    ///   this actually stopped routing.
+    /// - **The stored intent says routing is off.** It records what is true
+    ///   right now - `autostart_optout` and diagnostics read it that way - and
+    ///   after this, routing is off. Cleared only when this actually stopped
+    ///   routing. (Routing follows the app, so the next launch turns it back on
+    ///   and asks to trust a new root regardless; that is intended.)
     fn untrust_with(&self, untrust: impl FnOnce() -> Result<()>) -> Result<ProxyState> {
         let (was_routing, stopped) = self.prepare_untrust();
         untrust()?;
@@ -2012,6 +2066,10 @@ mod tests {
 
         mgr.set_detached(true); // no-op by contract
         assert!(!mgr.list_domains().expect("domains").is_empty());
+        // `is_running` is `status().running` without the trust probe, so the
+        // two must agree on either side of an enable.
+        assert!(!mgr.is_running());
+        assert_eq!(mgr.is_running(), mgr.status().expect("status").running);
 
         mgr.trust_ca().expect("trust");
         mgr.trust_ca_system().expect("system trust");
@@ -2020,9 +2078,13 @@ mod tests {
         // Live updates against a running engine: push-only, must not error
         // or take the engine down.
         mgr.set_domain("anthropic", true).expect("set_domain");
+        mgr.set_domain_quiet("anthropic", false)
+            .expect("set_domain_quiet");
+        assert!(mgr.is_running());
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
         mgr.refresh_org("org-uuid-2");
+        mgr.refresh_mode();
         mgr.refresh_cf_clearance("cf-clearance-cookie");
         assert!(mgr.status().expect("status").running);
 

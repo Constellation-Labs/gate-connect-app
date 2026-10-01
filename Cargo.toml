@@ -134,6 +134,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # them here lets us reference the exact same types.
 http = "1"
 time = "0.3"
+# Reads the gateway's `Date` header so a refused session can be logged with
+# how far off the local clock was (`org::clock_skew_secs`). Already in the
+# tree via hyper.
+httpdate = "1"
 serde_yaml = "0.9"
 gate-connect-core = { path = "crates/core" }
 # OAuth (Cognito) support in the shipped binary. `reqwest` (blocking, rustls,
@@ -150,3 +154,10 @@ reqwest = { version = "0.13", default-features = false, features = [
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
+# Backs `tool_watch`, the filesystem watch behind the `tools-changed` event: a
+# tool installed while a window is open is the one reading the frontend cannot
+# be told about, and this replaces the 5s detection poll both shells used to
+# run. Native backend per OS (inotify / FSEvents / ReadDirectoryChangesW);
+# default features, which is the fsevent backend on macOS and std channels
+# everywhere - no crossbeam, no async runtime.
+notify = "8"

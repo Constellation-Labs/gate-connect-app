@@ -261,6 +261,23 @@ pub const TEST_UPSTREAM_SLUG: &str = "test-upstream";
 /// a build that does keeps working through the forwarder.
 pub const RELAY_TOOL_PATH_PREFIX: &str = "/__gate/t/";
 
+/// The segment after the tool marker that selects Gate's own models route
+/// (`/__gate/t/<tool>/gate/v1/...`), in the slot a catalog slug occupies on the
+/// other routes. Shared so the engine's relay serves it and the forwarder
+/// recognises it: with the app closed there is no Gate to serve it, and the
+/// forwarder must say so rather than read it as an unknown provider.
+pub const RELAY_GATE_SERVED_SLUG: &str = "gate";
+
+/// Does `target` name the Gate models route, whatever the tool?
+pub fn is_gate_served_target(target: &str) -> bool {
+    let Some(rest) = target.strip_prefix(RELAY_TOOL_PATH_PREFIX) else {
+        return false;
+    };
+    let mut segments = rest.splitn(3, '/');
+    let _tool = segments.next();
+    segments.next() == Some(RELAY_GATE_SERVED_SLUG)
+}
+
 /// Every catalog slug a relay base URL may name, and the upstream it forwards
 /// to when Gate is not routing it.
 ///
@@ -685,6 +702,20 @@ pub fn parse_proof(head: &[u8], expected: &str) -> Option<Vec<(String, String)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gate_models_route_is_recognised_for_any_tool_and_nothing_else() {
+        assert!(is_gate_served_target("/__gate/t/codex/gate/v1/responses"));
+        assert!(is_gate_served_target(
+            "/__gate/t/hermes/gate/v1/chat/completions"
+        ));
+        assert!(!is_gate_served_target(
+            "/__gate/t/codex/openai/v1/responses"
+        ));
+        assert!(!is_gate_served_target("/gate/v1/responses"));
+        assert!(!is_gate_served_target("/__gate/t/gate"));
+        assert!(!is_gate_served_target("/__gate/t/codex/gateway/v1"));
+    }
 
     /// The path seam is an environment variable, which is process-global, so
     /// tests that set it cannot overlap. `core` carries the same lock for the

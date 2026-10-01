@@ -10,7 +10,7 @@
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
-//! **`config.yaml` is never written.** Hermes loads `$HERMES_HOME/.env` at CLI
+//! **Routing is never written to `config.yaml`.** Hermes loads `$HERMES_HOME/.env` at CLI
 //! startup (`hermes_cli/env_loader.py`, called from `cli.py`) before any client
 //! is constructed, and `agent/process_bootstrap.py` reads `HTTPS_PROXY` /
 //! `HTTP_PROXY` / `ALL_PROXY` (plus lower-case) from the environment, honouring
@@ -32,8 +32,37 @@
 //! protection the old `is_local_url` guard gave, expressed where Hermes can
 //! actually act on it.
 //!
-//! **`config.yaml` is read once, to say what Gate will see - never to change
-//! it.** A correct `.env` is only half of being visible: the engine MITMs a host
+//! **`config.yaml` is read to say what Gate will see, and written only to name
+//! Hermes on the wire.** The distinction is the one the paragraph above draws.
+//! `model.base_url` is a routing directive, and writing it was per-endpoint, so
+//! a config change routed around Gate while status said Connected - that is
+//! what `.env` replaced and it stays replaced. `model.extra_headers` decides
+//! nothing about where a request goes: it adds `x-gate-tool: hermes`, which the
+//! engine reads and consumes, and if it is missing the request routes exactly
+//! the same and arrives unattributed. So the rule that banned the base_url
+//! write does not reach this one, and the header is the only signal the engine
+//! can have for Hermes - no base URL means no path marker, and its User-Agent
+//! is `python-httpx/...` because it is a Python program.
+//!
+//! The write is surgical (`yaml_block`) rather than a `serde_yaml` round-trip,
+//! because a round-trip returns a semantically equal document with every
+//! comment gone, and this is a file the user wrote. A shape that editor will
+//! not touch is left alone, costing the label and nothing else.
+//!
+//! **Gate models are the one thing that selects an endpoint in `config.yaml`,
+//! and it is Gate's own.** When the user puts Hermes on Gate models, Gate adds a
+//! `providers.gate-connect` entry - the relay's Gate models route, chat
+//! completions, the enabled set as a fixed list with discovery off - and selects
+//! it with `model.provider` and `model.default`, so `hermes model` and `/model`
+//! offer exactly the set and Hermes names the model it runs. This is not the
+//! `model.base_url` redirect above coming back: that pointed the user's own
+//! providers at Gate behind their back; this adds a provider the user chose, by
+//! name, and every value it replaces is snapshotted in the sidecar and put back
+//! on App default or disconnect unless the user has since changed it in Hermes.
+//! The same surgical editor does it, and it refuses the same shapes - here as an
+//! error, because the user asked for these models and a silent skip would leave
+//! the pane claiming a model Hermes is not on.
+//! A correct `.env` is only half of being visible: the engine MITMs a host
 //! only while an enabled catalog domain claims it, and Hermes' documented default
 //! upstream (`openrouter.ai`) ships off, so the traffic can be routed through
 //! Gate and blind-tunnelled past it at the same time. Connecting Hermes must not
@@ -72,12 +101,18 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::integrations::binaries;
 use crate::integrations::dotenv;
-use crate::registry::{ConnectInput, Integration, Mechanism, Status, ToolId};
+use crate::integrations::precedence::Override;
+use crate::integrations::yaml_block;
+use crate::registry::{ConnectInput, GateModelState, Integration, Mechanism, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
+/// The row label. Hermes is its own family on the ledger, so the heading
+/// says "Hermes" and this says which of its surfaces the row is.
+const ROW_LABEL: &str = "CLI";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
@@ -113,6 +148,41 @@ struct State {
     /// Whether connect created `.env` itself.
     #[serde(default)]
     env_file_created: bool,
+    /// What the `config.yaml` header edit had to create, so disconnect takes
+    /// back exactly that. Absent on a state file written before the header
+    /// existed, which reads as "we wrote nothing there" - correct, because we
+    /// had not.
+    #[serde(default)]
+    header_created: Option<yaml_block::Created>,
+    /// What Gate models changed in `config.yaml`, while they are applied.
+    /// `None` is Hermes on its own model as far as Gate is concerned.
+    #[serde(default)]
+    gate_models: Option<GateModels>,
+    /// How `model:` looked before Gate models, kept after they were taken out
+    /// when the tool header still held the block open: the header's removal
+    /// on disconnect is then what puts it back (a fresh install's `model: ""`).
+    #[serde(default)]
+    model_shape_before_gate_models: Option<yaml_block::ParentShape>,
+}
+
+/// The record behind Gate models in `config.yaml`: what Gate wrote, and what it
+/// replaced, so going back to Hermes' own model restores the user's values
+/// rather than a guess at them.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GateModels {
+    /// The set Gate last wrote, in the user's order.
+    written: Vec<String>,
+    /// `model.<key>` as it was before Gate models, per [`MODEL_KEYS`]: `None`
+    /// for a key that was not set.
+    #[serde(default)]
+    previous: BTreeMap<String, Option<String>>,
+    /// How `model:` itself looked, since a fresh install's `model: ""` has to
+    /// come back as exactly that.
+    #[serde(default)]
+    model_shape: yaml_block::ParentShape,
+    /// How `providers:` looked, for the same reason.
+    #[serde(default)]
+    providers_shape: yaml_block::ParentShape,
 }
 
 fn default_version() -> u8 {
@@ -130,6 +200,34 @@ impl Integration for Hermes {
         DISPLAY_NAME
     }
 
+    fn client(&self) -> crate::taxonomy::Client {
+        crate::taxonomy::Client::Hermes
+    }
+
+    /// AG-932: the rail asks this on every poll, so a row can say it is routed
+    /// and not inspected rather than claiming Protected over traffic Gate
+    /// never sees. Same reading `connect` has printed to stderr since this
+    /// integration was written; the window simply never had it.
+    fn upstream_coverage(&self) -> Option<crate::coverage::UpstreamCoverage> {
+        let coverage = upstream_coverage();
+        (!coverage.is_covered()).then_some(coverage)
+    }
+
+    fn row_label(&self) -> &'static str {
+        ROW_LABEL
+    }
+
+    fn binary(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        // `launcher_on_path` already walks PATH for these names; this is the
+        // same knowledge, shared so the version probe and the detector cannot
+        // disagree about what the binary is called.
+        #[cfg(windows)]
+        const NAMES: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat", "hermes"];
+        #[cfg(not(windows))]
+        const NAMES: &[&str] = &["hermes"];
+        (CLI_BIN_PATHS, NAMES)
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }
@@ -138,14 +236,32 @@ impl Integration for Hermes {
         DEFAULT_UPSTREAM_URL
     }
 
+    fn config_location(&self) -> Option<String> {
+        env_file_path().ok().map(|p| p.display().to_string())
+    }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // `launcher_on_path` has no path to watch - a `$PATH` entry is not a
+        // location - so a Hermes somewhere unusual is the one install this
+        // cannot report. The window's read on focus is what covers it.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(launcher_paths().unwrap_or_default());
+        paths.extend(crate::env::hermes_config_dir());
+        paths.extend(crate::env::hermes_config_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
-        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+        // `resolve_binary` subsumes what `launcher_on_path` did by hand - the
+        // same PATH walk for the same names - and adds the packaged paths and
+        // the shell bin directories a GUI process does not inherit.
+        // `launcher_paths` stays: those are Hermes-specific locations no
+        // generic search knows about.
+        let (well_known, names) = self.binary();
+        if binaries::resolve_binary(well_known, names).is_some() {
             return Ok(true);
         }
-        if launcher_paths()?.iter().any(|p| p.exists()) {
-            return Ok(true);
-        }
-        Ok(launcher_on_path())
+        Ok(launcher_paths()?.iter().any(|p| p.exists()))
     }
 
     fn config_is_managed(&self) -> Result<bool> {
@@ -164,6 +280,28 @@ impl Integration for Hermes {
         Mechanism::ForwardProxy
     }
 
+    fn supports_gate_models(&self) -> bool {
+        true
+    }
+
+    /// Gate models live in `config.yaml` and routing in `.env`, so this is
+    /// the config half of `disconnect` and nothing more.
+    fn leave_gate_models(&self, _input: &ConnectInput) -> Result<()> {
+        let Some(mut state) = load_state()? else {
+            return Ok(());
+        };
+        revert_gate_models(&mut state)?;
+        save_state(&state)
+    }
+
+    fn gate_model_state(&self) -> Result<GateModelState> {
+        let Some(gm) = load_state()?.and_then(|s| s.gate_models) else {
+            return Ok(GateModelState::NotApplied);
+        };
+        let body = read_config_body()?;
+        Ok(gate_model_state_of(&body, &gm))
+    }
+
     fn configured_addresses(&self) -> Result<Vec<String>> {
         Ok(configured_proxy()?.into_iter().collect())
     }
@@ -172,14 +310,37 @@ impl Integration for Hermes {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
         }
-        if load_state()?.is_none() {
+        let Some(state) = load_state()? else {
             return Ok(Status::Detected);
+        };
+        // The stored choice and `config.yaml` must agree about Gate models, or
+        // the row would read Protected over a Hermes whose every request the
+        // Gate models route refuses - still on Gate's provider after the
+        // choice went back to App default and the fix-up failed - or over one
+        // whose chosen models never reached its config (review on #382). The
+        // proxy checks below cannot see either: routing is in `.env`.
+        let chosen = crate::preferences::gate_models_for(ToolId::Hermes.slug()).is_some();
+        match (state.gate_models.is_some(), chosen) {
+            (true, false) => {
+                return Ok(Status::Drifted(
+                    "Hermes is still on Gate models in config.yaml although Gate Connect has it \
+                     on its own model, so its requests are refused"
+                        .into(),
+                ))
+            }
+            (false, true) => {
+                return Ok(Status::Drifted(
+                    "the Gate models chosen for Hermes are not in its config.yaml yet".into(),
+                ))
+            }
+            _ => {}
         }
         let configured = configured_proxy()?.unwrap_or_default();
         Ok(compute_status(
             &configured,
             &crate::proxy::tool_proxy_identity_urls(),
             crate::proxy::address_health(&configured),
+            crate::proxy::exported_proxy_url().as_deref(),
         ))
     }
 
@@ -228,6 +389,28 @@ impl Integration for Hermes {
             }
         }
 
+        // Gate models are settled before anything is written. Drift first: a
+        // config the user moved off them is theirs, so no Gate models apply.
+        // Then the two things that can refuse - no relay, a config shape the
+        // editor will not touch - are found out now, while refusing still
+        // leaves nothing behind (review on #382).
+        if let Some(gm) = &state.gate_models {
+            if drifted(gm) {
+                crate::preferences::fall_back_to_tool_model(ToolId::Hermes.slug())?;
+            }
+        }
+        let gate_ids = crate::preferences::gate_models_for(ToolId::Hermes.slug());
+        let gate_relay = match &gate_ids {
+            Some(ids) => {
+                let relay = input.relay_base_url.clone().context(
+                    "the Gate relay is not running -- Hermes reaches Gate models through it",
+                )?;
+                plan_gate_models(&state, ids, &relay, &read_config_body()?)?;
+                Some(relay)
+            }
+            None => None,
+        };
+
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
@@ -261,18 +444,63 @@ impl Integration for Hermes {
             );
         }
 
-        // Preserve the ORIGINAL record across re-connects: a second connect
-        // must not claim credit for variables the first one added.
+        // Name Hermes on its own requests. This is the one signal the engine
+        // can have for it: Hermes has no base URL for us to write, so there is
+        // no path marker, and its User-Agent is `python-httpx/...` because it
+        // is a Python program - `client_tool`'s needle for it has never once
+        // fired. A header Gate writes into a file only Hermes reads is evidence
+        // of our own making, which is the same standard the relay marker meets.
+        //
+        // `extra_headers` rather than `default_headers`: the two are merged and
+        // aliases of each other, so writing the one the user is less likely to
+        // be keeping means never having to edit a block that is theirs.
+        //
+        // Best-effort on purpose. A config shape `yaml_block` will not edit, or
+        // no write permission, costs the attribution and nothing else - the
+        // routing above is what makes Hermes work, and refusing to connect over
+        // a label would be the wrong trade. `status` reports it.
+        // Recorded at once: from here on `.env` holds variables of ours, and a
+        // failure below must not leave them without a sidecar that owns them.
         if state.added_vars.is_empty() {
             state.version = 2;
-            state.added_vars = applied.added;
+            state.added_vars = applied.added.clone();
             state.env_file_created = applied.file_created;
         }
-        // The values, unlike the list above, are replaced every time: they are
+        state.written_vars = applied.owned_values.clone().into_iter().collect();
+        save_state(&state)?;
+
+        let header_created = write_tool_header()
+            .map_err(|e| {
+                eprintln!("note: could not name Hermes in its config ({e:#}); its traffic will be recorded as unattributed.");
+            })
+            .ok()
+            .flatten();
+        // Same rule as `added_vars` below, and the same trap: on a re-connect
+        // the header is already there and correct, so `write_tool_header`
+        // reports creating nothing - and assigning that would erase the record
+        // of what the FIRST connect created. Disconnect reads this to know how
+        // much to take back out, so erasing it strands our block in the user's
+        // config forever.
+        if state.header_created.is_none() {
+            state.header_created = header_created;
+        }
+
+        // Gate models: Hermes' own provider list and default model, pointed at
+        // the relay's Gate models route. Unlike the header above this is not
+        // best-effort - the user asked for these models, and a config Gate
+        // could not write them into has to say so rather than leave Hermes on
+        // a model the pane claims it is not on.
+        match (&gate_ids, &gate_relay) {
+            (Some(ids), Some(relay)) => apply_gate_models(&mut state, ids, relay)?,
+            _ => revert_gate_models(&mut state)?,
+        }
+
+        // Preserve the ORIGINAL record across re-connects: a second connect
+        // must not claim credit for variables the first one added.
+        // The values, unlike `added_vars`, are replaced every time: they are
         // what the file holds now, not who put it there. Recorded even when
         // nothing changed, so a sidecar that predates the field stops relying
         // on ownership by key after a single connect.
-        state.written_vars = applied.owned_values.into_iter().collect();
         save_state(&state)?;
 
         // Naming what moved matters more on a repair than on a first connect.
@@ -304,9 +532,32 @@ impl Integration for Hermes {
     }
 
     fn disconnect(&self) -> Result<()> {
-        let Some(state) = load_state()? else {
+        let Some(mut state) = load_state()? else {
             return Ok(());
         };
+        // The tool header comes out FIRST: it sits inside `model:`, and while it
+        // is there the Gate models revert cannot tell that the block is back to
+        // nothing of the user's - a fresh install's `model: ""` would come back
+        // as a bare `model:`. Only if we wrote one; a `None` is a connect that
+        // predates the header or one whose write was refused.
+        if let Some(created) = state.header_created.take() {
+            remove_tool_header(created)?;
+            save_state(&state)?;
+        }
+        // Then Hermes' own model, while the sidecar still says what it was.
+        // Saved at once, so a failure below cannot leave a sidecar that claims
+        // Gate models are still applied over a restored config.
+        if state.gate_models.is_some() {
+            revert_gate_models(&mut state)?;
+            save_state(&state)?;
+        }
+        if let Some(shape) = state.model_shape_before_gate_models.take() {
+            let before = read_config_body()?;
+            let after = yaml_block::tidy_parent(&before, "model", &shape);
+            if after != before {
+                write_config(&crate::env::hermes_config_path()?, &after)?;
+            }
+        }
         dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
         // Only drop the sidecar once the file is back: losing it first would
         // leave our variables in place while status reports the tool clean.
@@ -317,18 +568,19 @@ impl Integration for Hermes {
 /// Pure drift evaluation, split out of [`Hermes::status`] so all four states are
 /// testable without a live engine.
 ///
-/// `expected` is our proxy address from the persisted port (identity: a config
-/// pointing here is ours even while routing is off); `running` is whether the
-/// engine is actually up. They are separate because "pointed at us but the
-/// engine is down" is a broken tool, not a cosmetic mismatch, and it is reported
-/// as drift rather than Connected so the master-off sweep still disconnects it.
 /// `ours` is every proxy address that belongs to Gate, preferred first - see
 /// [`crate::proxy::tool_proxy_identity_urls`] and the note on OpenClaw's
-/// equivalent, which this mirrors.
+/// equivalent, which this mirrors. `health` is whether the address the config
+/// names is answering and routing, which is a question about a different
+/// process now that tool configs name the forwarder.
+///
+/// `exported` is the login environment's own `HTTPS_PROXY`, and it is asked only
+/// where the answer would otherwise be Connected - see [`environment_override`].
 fn compute_status(
     configured: &str,
     ours: &[String],
     health: crate::proxy::AddressHealth,
+    exported: Option<&str>,
 ) -> Status {
     let Some(expected) = ours.first() else {
         return Status::Drifted(
@@ -351,7 +603,13 @@ fn compute_status(
     // address in the file answering nothing, which the engine being up cannot
     // rule out now that tool configs name the forwarder.
     match health {
-        crate::proxy::AddressHealth::Routing => Status::Connected,
+        // Routed as far as the address goes, so this is where a higher-ranked
+        // configuration layer is the only thing left that can be sending the
+        // traffic elsewhere.
+        crate::proxy::AddressHealth::Routing => match environment_override(configured, exported) {
+            Some(o) => o.into_status(),
+            None => Status::Connected,
+        },
         crate::proxy::AddressHealth::Parked => Status::Drifted(format!(
             "routing is off, so Hermes reaches its provider directly through {configured:?} \
              rather than through Gate -- turn routing on to route it"
@@ -361,6 +619,36 @@ fn compute_status(
              turn routing on, or disconnect Hermes to put its own settings back"
         )),
     }
+}
+
+/// The login environment, when it holds a different `HTTPS_PROXY` than the one
+/// we wrote into `~/.hermes/.env`.
+///
+/// Hermes loads that file with python-dotenv, which does not replace a variable
+/// the process already has: `load_dotenv()` defaults to `override=False`. So a
+/// shell that already exports `HTTPS_PROXY` - a corporate egress proxy, another
+/// tool's setup - wins, our line is inert, and Hermes' traffic goes to whatever
+/// that names. The file says one thing and the wire does another, which is the
+/// whole of AG-674.
+///
+/// Read from the OS rather than from what we last wrote
+/// ([`crate::proxy::exported_proxy_url`] asks `launchctl` / the registry / the
+/// drop-in), because a record of our own write cannot contradict us and this
+/// check exists precisely to be contradicted. The usual case is agreement:
+/// Gate's own environment export puts the same address there, and the same
+/// address is not a conflict.
+fn environment_override(configured: &str, exported: Option<&str>) -> Option<Override> {
+    let exported = exported?;
+    if exported == configured {
+        return None;
+    }
+    Some(Override::new(
+        "the HTTPS_PROXY exported into your login environment",
+        format!(
+            "is {exported:?}, and Hermes keeps an already-set variable over the {configured:?} in \
+             its .env"
+        ),
+    ))
 }
 
 /// The proxy Hermes is currently pointed at, per its own `.env`.
@@ -386,6 +674,12 @@ fn url_host(url: &str) -> String {
         .split_once("://")
         .map_or(lowered.as_str(), |(_, r)| r);
     let authority = rest.split('/').next().unwrap_or("");
+    // Userinfo goes first. A hand-written `https://user:token@host/` is a shape
+    // this reads, and the host is the only part that may travel any further:
+    // this value crosses IPC into the window and lands in the log.
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     authority
         .strip_prefix('[')
         .and_then(|a| a.split(']').next())
@@ -396,20 +690,26 @@ fn url_host(url: &str) -> String {
 /// What Gate will and won't see of this Hermes install, for the notes `connect`
 /// prints.
 ///
-/// Read-only on purpose. Which hosts the engine intercepts is the user's axis -
-/// the provider rows and `proxy domain` - and this integration's axis is only
-/// whether Hermes points at the proxy. Enabling a domain from here would widen
-/// what Gate MITMs for every other client on the machine as a side effect of
-/// connecting one tool, and for a domain a provider claims it would flip that
-/// provider's state too, which `provider::reconcile_enabled` reads as licence to
-/// configure that provider's tools. So this reports, and nothing more.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Coverage {
-    /// Hosts a catalog entry covers, but whose switch is off: `(host, slug)`.
-    switched_off: Vec<(String, String)>,
-    /// Hosts no catalog entry claims, which Gate cannot route at all.
-    unknown: Vec<String>,
-}
+/// Read-only on purpose, and the distinction is worth stating precisely because
+/// it decides where the fix for this belongs.
+///
+/// Which hosts the engine intercepts is the user's axis - the provider rows and
+/// `proxy domain` - and this integration's axis is only whether Hermes points at
+/// the proxy. Enabling a domain from *here* would widen what Gate MITMs for
+/// every other client on the machine as a side effect of connecting one tool,
+/// and for a domain a provider claims it would flip that provider's state too,
+/// which `provider::reconcile_enabled` reads as licence to configure that
+/// provider's tools. So this reports, and nothing more.
+///
+/// **That is an argument against doing it silently, not against asking.** A
+/// surface that puts the question to the person and acts on their answer has
+/// made it their axis, which is the whole objection satisfied.
+/// `OpenCodeEnvDialog` is the same shape already shipped, and a broader one:
+/// one switch, a second and wider effect, disclosed, confirmed. Hermes needs
+/// exactly that and could not have it while this type was private to a
+/// `connect` that prints to stderr - the window has never been able to see any
+/// of this.
+pub use crate::coverage::{SwitchedOff, UpstreamCoverage as Coverage};
 
 impl Coverage {
     /// The lines `connect` prints, or nothing at all when every upstream is
@@ -421,13 +721,24 @@ impl Coverage {
             let list = self
                 .switched_off
                 .iter()
-                .map(|(host, slug)| format!("{host} (`gate-connect proxy domain {slug} on`)"))
+                .map(|s| {
+                    format!(
+                        "{} (`gate-connect proxy domain {} on`)",
+                        s.hosts.join(", "),
+                        s.slug
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
-            out.push(format!(
-                "note: Hermes is routed through Gate, but Gate is not inspecting its provider \
-                 yet -- {list}."
-            ));
+            // Two openings, because they are two facts: a provider the person
+            // wrote into `config.yaml`, or the one Hermes falls back to when
+            // they wrote none.
+            let subject = if self.defaulted {
+                "Hermes names no provider in config.yaml, so it will call its default"
+            } else {
+                "Hermes is routed through Gate, but Gate is not inspecting its provider yet"
+            };
+            out.push(format!("note: {subject} -- {list}."));
         }
         if !self.unknown.is_empty() {
             out.push(format!(
@@ -440,20 +751,49 @@ impl Coverage {
     }
 }
 
-fn upstream_coverage() -> Coverage {
+/// What Gate will and will not see of this Hermes install.
+///
+/// Public so the window can raise the question at the moment it matters, which
+/// is the click that turns Hermes on. Reads the catalog and `config.yaml` fresh
+/// on every call and holds no state, because both move underneath: the person
+/// repoints Hermes at a different provider, or a domain is flipped elsewhere -
+/// removing and re-trusting a certificate reset `openrouter` to off on the
+/// machine that prompted this, hours after Hermes was connected.
+pub fn upstream_coverage() -> Coverage {
     // Fall back to the built-in catalog rather than an empty one: on an
     // unreadable domains file the slugs are still right and only the enabled
     // flags are guesses, which beats reporting every host as unroutable.
     let catalog =
         crate::proxy::config::load_domains().unwrap_or_else(|_| crate::proxy::default_domains());
-    coverage_of(&catalog, &config_base_urls())
+    coverage_from(&catalog, config_base_urls())
 }
 
-/// The lookup behind [`upstream_coverage`], over an explicit catalog and URL
-/// list so it is testable without a `$HOME`.
+/// [`upstream_coverage`] over explicit inputs, so the default and the flag that
+/// records it are testable without a `$HOME`.
+///
+/// `None` is a config that named nothing, and it is reported as Hermes'
+/// documented default *and marked as such* - the default is the best guess at
+/// what an unconfigured install will call, and the mark is what lets a caller
+/// say "Hermes' default" rather than "your config" about it.
+fn coverage_from(
+    catalog: &[crate::proxy::ProxyDomain],
+    configured: Option<Vec<String>>,
+) -> Coverage {
+    let (urls, defaulted) = configured
+        .map(|urls| (urls, false))
+        .unwrap_or_else(|| (vec![DEFAULT_UPSTREAM_URL.to_string()], true));
+    Coverage {
+        defaulted,
+        ..coverage_of(catalog, &urls)
+    }
+}
+
+/// The lookup behind [`coverage_from`], over an explicit catalog and URL list.
 ///
 /// Loopback hosts are absent from both lists: `NO_PROXY` exempts them, so a
 /// self-hosted provider is reached directly and never passes the engine at all.
+/// Keyed by slug, not host: two hosts one row claims are one switch, and a
+/// caller that named the row per host would ask about it twice.
 fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
     let mut coverage = Coverage::default();
     for url in urls {
@@ -464,9 +804,16 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
         match crate::proxy::domain_claiming_host(catalog, &host) {
             Some(d) if d.enabled => {}
             Some(d) => {
-                let claim = (host, d.slug.clone());
-                if !coverage.switched_off.contains(&claim) {
-                    coverage.switched_off.push(claim);
+                if let Some(entry) = coverage.switched_off.iter_mut().find(|s| s.slug == d.slug) {
+                    if !entry.hosts.contains(&host) {
+                        entry.hosts.push(host);
+                    }
+                } else {
+                    coverage.switched_off.push(SwitchedOff {
+                        slug: d.slug.clone(),
+                        hosts: vec![host],
+                        tools: tools_switched_on_by(&d.slug),
+                    });
                 }
             }
             None => {
@@ -479,10 +826,346 @@ fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Covera
     coverage
 }
 
+/// The tools an enabled `slug` licenses [`crate::provider::reconcile_enabled`]
+/// to connect: every provider whose cascade includes the domain, and every tool
+/// that provider maps. Names rather than ids, because the only reader is a
+/// sentence put to the person.
+///
+/// Deduplicated, though today it cannot repeat: no two providers share a
+/// cascade domain or a tool. That disjointness is a property of the catalog,
+/// not of this function, and a sentence naming a tool twice is the failure a
+/// reader would otherwise have to re-derive the catalog to rule out.
+fn tools_switched_on_by(slug: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for name in crate::provider::providers()
+        .iter()
+        .filter(|p| crate::provider::cascade_domains(p).contains(&slug))
+        .flat_map(|p| p.tool_ids.iter().copied())
+        .filter_map(|id| crate::registry::find(id).map(|integ| integ.display_name().to_string()))
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// Keys a Hermes endpoint can be written under. `base_url`, `api` and `url` are
 /// documented aliases of one another (see
 /// `docs/harness-integration-validation.md`, H6), so all three have to be read.
 const BASE_URL_KEYS: &[&str] = &["base_url", "api", "url"];
+
+/// Where the tool header lives in `config.yaml`, and what it says.
+///
+/// `model.extra_headers` is global - "sent on every request to an
+/// OpenAI-compatible endpoint" - unlike the per-provider `extra_headers`, which
+/// is scoped to one named entry. That distinction is the whole choice: a
+/// per-endpoint setting is what made the old `model.base_url` rewrite unsafe,
+/// because adding a provider silently routed around it. A header that is missing
+/// costs a label; one that is missing *only sometimes* would be worse than
+/// either.
+const HEADER_PARENT: &str = "model";
+const HEADER_CHILD: &str = "extra_headers";
+
+/// Write the header, returning what had to be created for it.
+///
+/// `None` means there was nothing to do or nothing we could safely do; the error
+/// arm is reserved for I/O, so a refused shape is not reported as a failure.
+fn write_tool_header() -> Result<Option<yaml_block::Created>> {
+    let path = crate::env::hermes_config_path()?;
+    let before = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let (after, edit) = match yaml_block::set_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        ToolId::Hermes.slug(),
+    ) {
+        Ok(result) => result,
+        Err(refusal) => {
+            // A shape the editor will not touch. Said once, plainly, because
+            // the user's only visible symptom is otherwise a tool that routes
+            // but never appears by name.
+            eprintln!(
+                "note: left ~/.hermes/config.yaml alone ({refusal:?}); Hermes will route through \
+                 Gate but its traffic will be recorded as unattributed."
+            );
+            return Ok(None);
+        }
+    };
+    match edit {
+        // Already ours and already right - and on a re-connect that is the
+        // usual answer, so it must not rewrite the file to say so.
+        yaml_block::Edit::Unchanged => Ok(None),
+        yaml_block::Edit::Refreshed => {
+            write_config(&path, &after)?;
+            Ok(None)
+        }
+        yaml_block::Edit::Inserted(created) => {
+            write_config(&path, &after)?;
+            Ok(Some(created))
+        }
+    }
+}
+
+/// Take the header back out, per what connect recorded creating.
+fn remove_tool_header(created: yaml_block::Created) -> Result<()> {
+    let path = crate::env::hermes_config_path()?;
+    let Ok(before) = std::fs::read_to_string(&path) else {
+        // Gone already; nothing of ours is left in a file that is not there.
+        return Ok(());
+    };
+    let after = yaml_block::remove_nested(
+        &before,
+        HEADER_PARENT,
+        HEADER_CHILD,
+        crate::proxy::GATE_TOOL_HEADER,
+        created,
+    );
+    if after != before {
+        write_config(&path, &after)?;
+    }
+    Ok(())
+}
+
+/// Gate's provider entry in `config.yaml`. Not a built-in Hermes id - a name
+/// that matched one would be claimed by the built-in and never resolve.
+const GATE_PROVIDER: &str = "gate-connect";
+const GATE_PROVIDER_NAME: &str = "Gate Connect";
+
+/// The `model.*` keys Gate models touch, and so snapshot and restore.
+/// `base_url` and `api_mode` are pointed at our provider too: the named
+/// provider supplies both on the main chat path, and a stale OpenRouter
+/// `base_url` is still read by parts of Hermes that are not.
+const MODEL_KEYS: &[&str] = &["provider", "default", "base_url", "api_mode"];
+
+/// Does `model.provider` name Gate's provider? Hermes' own `hermes model`
+/// writes it as `custom:gate-connect`, its `/model` as `gate-connect`.
+fn is_gate_provider(value: &str) -> bool {
+    let v = value.trim().to_ascii_lowercase();
+    v == GATE_PROVIDER || v == format!("custom:{GATE_PROVIDER}")
+}
+
+fn read_config_body() -> Result<String> {
+    let path = crate::env::hermes_config_path()?;
+    match std::fs::read_to_string(&path) {
+        Ok(body) => Ok(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn refused(what: &str, why: yaml_block::Refusal) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Hermes' config.yaml writes {what} in a shape Gate will not edit safely ({why:?}). \
+         Choose the model in Hermes instead, or simplify that entry and try again."
+    )
+}
+
+/// What `config.yaml` says, given what Gate wrote. Applied means Hermes is on
+/// Gate's provider with one of the set as its default; anything else is the
+/// user moving it, from inside Hermes.
+fn gate_model_state_of(body: &str, gm: &GateModels) -> GateModelState {
+    let get = |key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
+    let model = get("default");
+    let on_provider = get("provider").is_some_and(|p| is_gate_provider(&p));
+    let has_block = yaml_block::has_child(body, "providers", GATE_PROVIDER);
+    match model {
+        Some(m) if on_provider && has_block && gm.written.contains(&m) => {
+            GateModelState::Applied { model: m }
+        }
+        model => GateModelState::Drifted { model },
+    }
+}
+
+fn drifted(gm: &GateModels) -> bool {
+    read_config_body()
+        .map(|body| {
+            matches!(
+                gate_model_state_of(&body, gm),
+                GateModelState::Drifted { .. }
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// The `providers.gate-connect` body: the served route, chat completions, the
+/// set as a fixed list with discovery off - which is what makes `hermes model`
+/// and `/model` offer exactly these - and the tool header, scoped to this
+/// provider as well so it survives Hermes rewriting the `model:` block.
+fn provider_block(relay: &str, ids: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        format!("name: {GATE_PROVIDER_NAME}"),
+        format!(
+            "api: {}",
+            crate::proxy::gate_served::relay_base_url(relay, ToolId::Hermes)
+        ),
+        "api_mode: chat_completions".to_string(),
+        "discover_models: false".to_string(),
+        "models:".to_string(),
+    ];
+    lines.extend(ids.iter().map(|id| format!("  - {id}")));
+    lines.push("extra_headers:".to_string());
+    lines.push(format!("  {}: hermes", crate::proxy::GATE_TOOL_HEADER));
+    lines
+}
+
+/// Write the Gate models into `config.yaml`, snapshotting Hermes' own values
+/// the first time.
+///
+/// The default is the first of the set, unless Hermes is already on one of the
+/// set and the set has not changed: then the user picked it in Hermes' own
+/// picker, and a reconnect must not take it back.
+fn apply_gate_models(state: &mut State, ids: &[String], relay: &str) -> Result<()> {
+    let before = read_config_body()?;
+    let (body, gm) = plan_gate_models(state, ids, relay, &before)?;
+    if body != before {
+        write_config(&crate::env::hermes_config_path()?, &body)?;
+    }
+    state.gate_models = Some(gm);
+    // Folded into the record now; see `State::model_shape_before_gate_models`.
+    state.model_shape_before_gate_models = None;
+    Ok(())
+}
+
+/// What [`apply_gate_models`] would write, without writing it: the new body and
+/// the record. Pure, so `connect` can find out BEFORE touching `.env` whether
+/// this config is one Gate can edit - a refusal after the `.env` write used to
+/// leave proxy variables in place with no sidecar owning them.
+fn plan_gate_models(
+    state: &State,
+    ids: &[String],
+    relay: &str,
+    before: &str,
+) -> Result<(String, GateModels)> {
+    let first = ids.first().context("a Gate model set cannot be empty")?;
+    let current = yaml_block::get_child(before, "model", "default")
+        .map_err(|e| refused("model.default", e))?;
+    let default = match (&state.gate_models, &current) {
+        (Some(gm), Some(c)) if gm.written.as_slice() == ids && ids.contains(c) => c.clone(),
+        _ => first.clone(),
+    };
+
+    let mut gm = match &state.gate_models {
+        Some(gm) => gm.clone(),
+        None => {
+            let mut previous = BTreeMap::new();
+            for key in MODEL_KEYS {
+                let value = yaml_block::get_child(before, "model", key)
+                    .map_err(|e| refused(&format!("model.{key}"), e))?;
+                previous.insert((*key).to_string(), value);
+            }
+            // A shape an earlier App default could not put back (the header
+            // was still there) is the one to restore, not today's `model:`.
+            let model_shape = match &state.model_shape_before_gate_models {
+                Some(shape) => shape.clone(),
+                None => {
+                    yaml_block::parent_shape(before, "model").map_err(|e| refused("model", e))?
+                }
+            };
+            GateModels {
+                written: Vec::new(),
+                previous,
+                model_shape,
+                providers_shape: yaml_block::parent_shape(before, "providers")
+                    .map_err(|e| refused("providers", e))?,
+            }
+        }
+    };
+
+    let mut body = before.to_string();
+    body = yaml_block::set_child(&body, "model", "provider", Some(GATE_PROVIDER))
+        .map_err(|e| refused("model.provider", e))?;
+    body = yaml_block::set_child(&body, "model", "default", Some(&default))
+        .map_err(|e| refused("model.default", e))?;
+    // Set rather than removed, to what Hermes' own `/model` writes for our
+    // provider: the named provider decides the endpoint on the main chat path,
+    // but other readers still look at `model.base_url`, and an edit in place is
+    // one a restore can reverse byte for byte.
+    let served = crate::proxy::gate_served::relay_base_url(relay, ToolId::Hermes);
+    body = yaml_block::set_child(&body, "model", "base_url", Some(&served))
+        .map_err(|e| refused("model.base_url", e))?;
+    body = yaml_block::set_child(&body, "model", "api_mode", Some("chat_completions"))
+        .map_err(|e| refused("model.api_mode", e))?;
+    body = yaml_block::set_block(
+        &body,
+        "providers",
+        GATE_PROVIDER,
+        Some(&provider_block(relay, ids)),
+    )
+    .map_err(|e| refused("providers", e))?;
+    gm.written = ids.to_vec();
+    Ok((body, gm))
+}
+
+/// Put Hermes' own model back, if Gate models were applied.
+///
+/// Compare-and-restore, key by key: a value is put back only while it is still
+/// the one Gate wrote (Hermes' own `/model` writes the same values for our
+/// provider, so those count). Anything else is the user's choice made in Hermes
+/// after Gate wrote, and it stays.
+fn revert_gate_models(state: &mut State) -> Result<()> {
+    let Some(gm) = state.gate_models.clone() else {
+        return Ok(());
+    };
+    let before = read_config_body()?;
+    let mut body = before.clone();
+    let current = |body: &str, key: &str| yaml_block::get_child(body, "model", key).ok().flatten();
+    let still_ours = |key: &str, value: Option<&str>| match key {
+        "provider" => value.is_some_and(is_gate_provider),
+        "default" => value.is_none_or(|v| gm.written.iter().any(|w| w == v)),
+        "base_url" => {
+            value.is_none_or(|v| crate::proxy::gate_served::is_relay_base_url(v, ToolId::Hermes))
+        }
+        "api_mode" => value.is_none_or(|v| v == "chat_completions"),
+        _ => false,
+    };
+    for key in MODEL_KEYS {
+        let now = current(&body, key);
+        if !still_ours(key, now.as_deref()) {
+            continue;
+        }
+        let previous = gm.previous.get(*key).cloned().flatten();
+        if previous == now {
+            continue;
+        }
+        body = yaml_block::set_child(&body, "model", key, previous.as_deref())
+            .map_err(|e| refused(&format!("model.{key}"), e))?;
+    }
+    body = yaml_block::tidy_parent(&body, "model", &gm.model_shape);
+    // Still a block (the tool header lives in it) although it was empty or
+    // absent before Gate models: nothing here can put it back yet. Keep the
+    // shape so the header's removal on disconnect can, and so a later Gate
+    // models apply snapshots the original rather than this `model:`.
+    if gm.model_shape != yaml_block::ParentShape::Block
+        && yaml_block::parent_shape(&body, "model").ok() == Some(yaml_block::ParentShape::Block)
+    {
+        state.model_shape_before_gate_models = Some(gm.model_shape.clone());
+    }
+    body = yaml_block::set_block(&body, "providers", GATE_PROVIDER, None)
+        .map_err(|e| refused("providers", e))?;
+    body = yaml_block::tidy_parent(&body, "providers", &gm.providers_shape);
+    if body != before {
+        write_config(&crate::env::hermes_config_path()?, &body)?;
+    }
+    state.gate_models = None;
+    Ok(())
+}
+
+/// 0o600 like the `.env` beside it: this file can hold `${VAR}`-interpolated
+/// header values, and the upstream example uses that for access tokens.
+fn write_config(path: &std::path::Path, body: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    crate::config_changes::write(path, body.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
+}
 
 /// `config.yaml` as YAML, or `None` if it is absent or does not parse. Never an
 /// error: nothing here is load-bearing enough to fail a connect over.
@@ -498,17 +1181,15 @@ fn parsed_config() -> Option<serde_yaml::Value> {
 /// at request time - the same reason the `model.base_url` rewrite this
 /// integration used to do was retired.
 ///
-/// Falls back to [`DEFAULT_UPSTREAM_URL`] when the file names nothing, is
-/// missing, or does not parse. That is Hermes' own documented default, so it is
-/// the best available guess at what an unconfigured install will call.
-fn config_base_urls() -> Vec<String> {
-    let mut urls = parsed_config()
+/// `None` when the file names nothing, is missing, or does not parse. The
+/// caller substitutes [`DEFAULT_UPSTREAM_URL`] - Hermes' own documented default,
+/// and the best available guess at what an unconfigured install will call - and
+/// records that it did, because the two are different claims about the person's
+/// machine.
+fn config_base_urls() -> Option<Vec<String>> {
+    parsed_config()
         .map(|root| base_urls_in(&root))
-        .unwrap_or_default();
-    if urls.is_empty() {
-        urls.push(DEFAULT_UPSTREAM_URL.to_string());
-    }
-    urls
+        .filter(|urls| !urls.is_empty())
 }
 
 /// The endpoint-collecting half of [`config_base_urls`], over an already-parsed
@@ -560,29 +1241,6 @@ fn launcher_paths() -> Result<Vec<PathBuf>> {
         home.join(".local/bin/hermes"),
         crate::env::hermes_config_dir()?.join("bin/hermes"),
     ])
-}
-
-/// Whether a `hermes` executable is reachable on `$PATH`.
-///
-/// A supplement to [`launcher_paths`], never a replacement: launched from Finder
-/// or launchd the app inherits a minimal `PATH` that excludes `~/.local/bin`, so
-/// this would miss the standard install in exactly the case that matters. It
-/// covers the reverse - Hermes somewhere unusual (a venv, `/opt`, a scratch
-/// HOME) that the absolute paths don't know about.
-fn launcher_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        if dir.as_os_str().is_empty() {
-            return false;
-        }
-        #[cfg(target_os = "windows")]
-        let names: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat"];
-        #[cfg(not(target_os = "windows"))]
-        let names: &[&str] = &["hermes"];
-        names.iter().any(|n| dir.join(n).is_file())
-    })
 }
 
 fn state_path() -> Result<PathBuf> {
@@ -655,7 +1313,12 @@ mod tests {
         );
         assert_eq!(
             coverage.switched_off,
-            vec![("openrouter.ai".to_string(), "openrouter".to_string())]
+            vec![SwitchedOff {
+                slug: "openrouter".to_string(),
+                hosts: vec!["openrouter.ai".to_string()],
+                // Proxy-only: `tool_ids` is empty, so a yes reaches no tool.
+                tools: vec![],
+            }]
         );
 
         let notes = coverage.notes();
@@ -712,6 +1375,77 @@ mod tests {
     }
 
     #[test]
+    fn two_hosts_of_one_provider_are_one_switch() {
+        // A row that claims two hosts is still one switch. Reported per host,
+        // the window would read "Turn on OpenRouter and OpenRouter too?" and
+        // flip the same domain twice.
+        let mut catalog = catalog_with("anthropic");
+        let row = catalog
+            .iter_mut()
+            .find(|d| d.slug == "openrouter")
+            .expect("openrouter is in the built-in catalog");
+        row.hosts.push("api.openrouter.example".to_string());
+        let coverage = coverage_of(
+            &catalog,
+            &urls(&[
+                "https://openrouter.ai/api/v1",
+                "https://api.openrouter.example/v1",
+            ]),
+        );
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(
+            coverage.switched_off[0].hosts,
+            vec![
+                "openrouter.ai".to_string(),
+                "api.openrouter.example".to_string()
+            ],
+            "both hosts, under the one slug"
+        );
+    }
+
+    #[test]
+    fn a_provider_with_tools_names_what_else_its_switch_reaches() {
+        // `anthropic` is a cascade domain of the Anthropic provider, whose
+        // `tool_ids` is Claude Code. Enabling it for Hermes' sake hands
+        // `reconcile_enabled` licence to connect Claude Code at the next
+        // launch, and the dialog has to say so - the switch does not.
+        let coverage = coverage_of(
+            &catalog_with("openrouter"),
+            &urls(&["https://api.anthropic.com/v1"]),
+        );
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.switched_off[0].slug, "anthropic");
+        assert_eq!(
+            coverage.switched_off[0].tools,
+            vec!["Claude Code".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_config_that_names_nothing_is_reported_as_the_default_and_marked() {
+        // Missing, unparseable and empty all arrive here as `None`. Hermes will
+        // call OpenRouter in every one of those cases, so the row is right;
+        // what would be wrong is a sentence saying "your config uses" about a
+        // file nobody read, and `defaulted` is what lets the caller avoid it.
+        let coverage = coverage_from(&catalog_with("anthropic"), None);
+        assert!(coverage.defaulted);
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.switched_off[0].slug, "openrouter");
+        assert!(
+            coverage.notes()[0].contains("names no provider"),
+            "the CLI note says which claim it is making: {}",
+            coverage.notes()[0]
+        );
+
+        let configured = coverage_from(
+            &catalog_with("anthropic"),
+            Some(urls(&["https://openrouter.ai/api/v1"])),
+        );
+        assert!(!configured.defaulted);
+        assert!(configured.notes()[0].contains("routed through Gate"));
+    }
+
+    #[test]
     fn every_endpoint_shape_in_config_yaml_is_found() {
         let root: serde_yaml::Value = serde_yaml::from_str(
             "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n\
@@ -754,6 +1488,10 @@ mod tests {
             ("http://192.168.1.9:8080/v1", "192.168.1.9"),
             ("http://[::1]:8080/v1", "::1"),
             ("  https://api.openai.com  ", "api.openai.com"),
+            // Userinfo is a shape a hand-written URL can take, and the host is
+            // the only part allowed to travel on: this value crosses IPC.
+            ("https://user:s3cret@openrouter.ai/api/v1", "openrouter.ai"),
+            ("https://token@[::1]:8080/v1", "::1"),
         ] {
             assert_eq!(url_host(url), host, "for {url}");
         }
@@ -766,14 +1504,24 @@ mod tests {
         let none: [String; 0] = [];
 
         assert_eq!(
-            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing),
+            compute_status(
+                ours,
+                &mine,
+                crate::proxy::AddressHealth::Routing,
+                Some(ours)
+            ),
+            Status::Connected
+        );
+        // Nothing exported at all is the other agreeing shape.
+        assert_eq!(
+            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing, None),
             Status::Connected
         );
 
         // Pointed at us, address answering, engine parked: Hermes reaches its
         // provider but not through Gate, so this must never read as Connected
         // and must not claim the address is dead.
-        match compute_status(ours, &mine, crate::proxy::AddressHealth::Parked) {
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Parked, None) {
             Status::Drifted(m) => {
                 assert!(m.contains("routing is off"), "unexpected message: {m}");
                 assert!(m.contains("directly"), "must say where traffic goes: {m}");
@@ -784,7 +1532,7 @@ mod tests {
         // Pointed at us and nothing is listening: no egress at all. Separate
         // from the parked case because the engine being up cannot rule it out
         // now that the config names the forwarder.
-        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead) {
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead, None) {
             Status::Drifted(m) => {
                 assert!(
                     m.contains("nothing is listening"),
@@ -800,14 +1548,36 @@ mod tests {
             "http://proxy.corp.example:3128",
             &mine,
             crate::proxy::AddressHealth::Routing,
+            None,
         ) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
-        match compute_status(ours, &none, crate::proxy::AddressHealth::Dead) {
+        match compute_status(ours, &none, crate::proxy::AddressHealth::Dead, None) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
+        }
+    }
+
+    /// AG-674's disagreement case for Hermes. Our four variables are in
+    /// `~/.hermes/.env` and correct, the engine is up - and the shell Hermes
+    /// starts from already exports a different proxy, which python-dotenv will
+    /// not replace. The `.env` is right and the wire is somebody else's.
+    #[test]
+    fn an_exported_proxy_beats_the_env_file_we_wrote() {
+        let ours = "http://127.0.0.1:9977";
+        match compute_status(
+            ours,
+            &[ours.to_string()],
+            crate::proxy::AddressHealth::Routing,
+            Some("http://proxy.corp.example:3128"),
+        ) {
+            Status::Overridden(m) => {
+                assert!(m.contains("proxy.corp.example:3128"), "unexpected: {m}");
+                assert!(m.contains("HTTPS_PROXY"), "must name the variable: {m}");
+            }
+            other => panic!("expected an override, got {other:?}"),
         }
     }
 
@@ -822,11 +1592,16 @@ mod tests {
         let ours = [forwarder.clone(), engine.clone()];
 
         assert_eq!(
-            compute_status(&engine, &ours, crate::proxy::AddressHealth::Routing),
+            compute_status(&engine, &ours, crate::proxy::AddressHealth::Routing, None),
             Status::Connected
         );
         assert_eq!(
-            compute_status(&forwarder, &ours, crate::proxy::AddressHealth::Routing),
+            compute_status(
+                &forwarder,
+                &ours,
+                crate::proxy::AddressHealth::Routing,
+                None
+            ),
             Status::Connected
         );
 
@@ -834,6 +1609,7 @@ mod tests {
             "http://proxy.corp.example:3128",
             &ours,
             crate::proxy::AddressHealth::Routing,
+            None,
         ) {
             Status::Drifted(m) => {
                 assert!(
@@ -878,7 +1654,7 @@ mod address_health_tests {
     fn a_dead_address_is_never_connected_however_the_engine_is_doing() {
         let ours = "http://127.0.0.1:9977";
         let mine = [ours.to_string()];
-        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead) {
+        match compute_status(ours, &mine, crate::proxy::AddressHealth::Dead, None) {
             Status::Drifted(m) => {
                 assert!(m.contains("nothing is listening"), "unexpected: {m}");
                 assert!(m.contains(ours), "must name the address: {m}");
@@ -886,7 +1662,7 @@ mod address_health_tests {
             other => panic!("expected drift, got {other:?}"),
         }
         assert_eq!(
-            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing),
+            compute_status(ours, &mine, crate::proxy::AddressHealth::Routing, None),
             Status::Connected
         );
     }

@@ -25,7 +25,7 @@
      deliberately target. Declaring it here covers every button, present and
      future, without asking each call site to remember. */
   button:focus-visible {
-    outline: 2px solid theme("colors.gc.accent");
+    outline: 2px solid theme("colors.base.primary");
     outline-offset: 2px;
   }
   /* Transparent shell so the Tauri window's rounded-corner transparency
@@ -68,7 +68,7 @@
      This was a blanket `animation-duration: 0.01ms` / `transition-duration:
      0.01ms` on every element, which measured 137 elements collapsed to
      1e-05s against 10 animated in the default state. It took the popover's
-     directional grammar with it. `SCREEN_DEPTH` in App.tsx exists so a push
+     directional grammar with it. `SCREEN_DEPTH` in App.tsx existed so a push
      and a pop differ, and DESIGN.md is explicit that in one 380px room
      "direction is the only navigational metaphor available: without it a push
      and a pop look identical". Zeroing every duration did not soften that
@@ -85,7 +85,7 @@
         `backdrop-filter`, so a colour, shadow or opacity change still eases
         while the Switch thumb's 18px slide arrives instantly. One rule, and
         it covers any translate added later without needing to know about it.
-     2. The three animations that travel cross-fade in place instead. They
+     2. The animations that travel cross-fade in place instead. They
         keep saying "this changed" - which is the part that carries meaning -
         and stop saying it by moving 28px.
 
@@ -108,8 +108,7 @@
     }
 
     .ob-slide-in-fwd,
-    .ob-slide-in-back,
-    .gc-panel-in {
+    .ob-slide-in-back {
       animation-name: gc-fade-in !important;
       animation-duration: 120ms !important;
       animation-timing-function: linear !important;
@@ -163,62 +162,13 @@
   }
 }
 
-/* ─── Update panel takeover ──────────────────────────────────────────────
-   The update panel slides up over the room when a new version is ready;
-   the reduced-motion guard above collapses it to instant. */
-@layer components {
-  .gc-panel-in {
-    animation: gc-panel-in 240ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
-  }
-}
-
-@keyframes gc-panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* Keyboard focus must never land under the sticky panel header. Tab-wrap
-   inside the scroll region used to scroll the target flush to the top of the
-   container, which is exactly where PopHeader/SubHeader sits. The bottom margin
-   clears the 22px fold fade below, so a control tabbed to the bottom edge keeps
-   its focus ring at full strength instead of arriving half-faded. */
-.gc-scroll :is(a, button, input, select, textarea, [tabindex]):focus-visible {
-  scroll-margin-top: 56px;
-  scroll-margin-bottom: 28px;
-}
-
-/* The fold. The body is the only scrolling region in the popover and the
-   credential footer sits directly beneath it wearing a hairline, so a row that
-   ran past the bottom was cut by a hard line: at 360x520 a key account's
-   Settings hides 120px of 607 (Help, and Reset Gate Connect) behind what reads
-   as the end of the content, and Home's fourth family survived as a 6px sliver
-   between two borders. Fading the last 22px says "there is more" in the one
-   vocabulary this app already uses for a cropped edge (see the tour's
-   mask-image crops), rather than adding a scrim, an arrow, or a shadow the
-   design system does not own.
-
-   Applied only while something is actually below, so a fully-scrolled panel
-   keeps its last line at full strength. Both spellings: WKWebView needs the
-   prefix. */
-.gc-scroll-more {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
-}
-
 /* Programmatic initial focus, made visible.
 
-   Every control in the popover draws its ring with `:focus-visible`, and a
+   Every control in the app draws its ring with `:focus-visible`, and a
    browser will not match that pseudo-class for focus it did not observe the
-   user request. So the two takeovers that deliberately land focus on the safe
-   option - QuitConfirm's Cancel and RoutingChangeNotice's Got it - painted no
-   ring on it: the panel pointed at a control the user could not see was
-   selected, in the exact place DESIGN.md says the safe option must be the
+   user request. So the takeover that deliberately lands focus on the safe
+   option - RoutingChangeNotice's Got it - painted no ring on it: the panel
+   pointed at a control the user could not see was selected, in the exact place DESIGN.md says the safe option must be the
    equal of the buttons it sits with.
 
    `useFocusTrap` sets `data-initial-focus` on whatever it focused and clears it
@@ -226,6 +176,20 @@
    over; after that `:focus-visible` is back in charge. Matches the ring the
    rest of the app uses (2px accent, 2px offset). */
 [data-initial-focus]:focus {
-  outline: 2px solid theme("colors.gc.accent");
+  outline: 2px solid theme("colors.base.primary");
   outline-offset: 2px;
+}
+
+/* ...but not on a field that draws its own focus.
+
+   The rule above exists for the safe BUTTON a takeover lands on. A text field
+   carries the focus itself - the drawn state is the border at `base/primary`
+   (`143:67751`) - so the ring was a second, detached box around a control that
+   was already saying it had focus, in `gc.accent` rather than the new UI's ink.
+   It was the first thing on screen in every dialog that opens on a field, which
+   is how it read as an error state. */
+input[data-initial-focus]:focus,
+textarea[data-initial-focus]:focus,
+select[data-initial-focus]:focus {
+  outline: none;
 }

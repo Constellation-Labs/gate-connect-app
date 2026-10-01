@@ -34,6 +34,7 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 http.workspace = true
 time.workspace = true
+httpdate.workspace = true
 
 # Cognito OAuth (`oauth` module) for the app's own gateway auth. `reqwest`
 # (blocking, rustls) calls the Cognito token endpoint; `sha2` + `base64`
@@ -42,6 +43,15 @@ reqwest.workspace = true
 sha2.workspace = true
 base64.workspace = true
 rand.workspace = true
+
+# `notify` watches the tool config files and binaries whose appearance changes
+# what detection answers, so the windows can be told instead of polling. See
+# `tool_watch`.
+notify.workspace = true
+
+# `sysinfo` reads the machine's hostname - the fallback `preferences::device_name`
+# resolves to when the user hasn't named this device.
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 
 # CLI reverse-proxy relay (`proxy::relay`): a plaintext loopback HTTP server
 # CLI tools point their base URL at, so the credential is injected live per

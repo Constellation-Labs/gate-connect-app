@@ -975,11 +975,17 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
     assert!(quiet.is_err(), "an idle splice ends");
     assert!(started.elapsed() < Duration::from_secs(5));
 
+    // The busy half gets its own, longer idle window. With the 300ms one, a
+    // byte every 100ms left a 3x margin, and a loaded CI runner stretching one
+    // sleep past 300ms made the splice close as idle - correctly - and the test
+    // fail (seen on macOS). A byte every 50ms against 1s is a 20x margin, and
+    // 45 of them still run past two idle periods in total.
+    let busy_idle = Duration::from_secs(1);
     let (mut client, mut tool) = pair().await;
     let (mut engine, mut gate) = pair().await;
     let talk = tokio::spawn(async move {
-        for _ in 0..6 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        for _ in 0..45 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
             tool.write_all(b"x").await.unwrap();
             let mut one = [0u8; 1];
             gate.read_exact(&mut one).await.unwrap();
@@ -988,7 +994,7 @@ async fn a_spliced_connection_is_closed_only_when_idle() {
         drop(tool);
         drop(gate);
     });
-    splice(&mut client, &mut engine, idle, not_retiring())
+    splice(&mut client, &mut engine, busy_idle, not_retiring())
         .await
         .expect("a splice that keeps moving runs to its close");
     talk.await.unwrap();
@@ -1065,4 +1071,28 @@ async fn a_proof_with_trailing_bytes_is_not_trusted() {
     .await;
     assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
     assert!(!reply.contains("forged"), "{reply}");
+}
+
+/// A tool on Gate models names Gate's own route, which has no provider behind
+/// it: with the app closed it gets a 503 saying so, not to be retried, and
+/// nothing reaches any origin.
+#[tokio::test]
+async fn the_gate_models_route_says_gate_connect_is_closed() {
+    let (origin_port, seen) = origin(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let port = start_relay(Some(dead_port()), table(origin_port)).await;
+
+    let reply = roundtrip(
+        port,
+        b"POST /__gate/t/codex/gate/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          Content-Length: 2\r\n\r\n{}",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+    assert!(reply.contains("X-Should-Retry: false\r\n"), "{reply}");
+    assert!(reply.contains("Gate models"), "{reply}");
+    assert!(
+        reply.contains("\"code\":\"gate_connect_not_running\""),
+        "{reply}"
+    );
+    drop(seen);
 }

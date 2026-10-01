@@ -294,7 +294,22 @@ pub(crate) fn read_var(path: &Path, key: &str) -> Result<Option<String>> {
 mod tests {
     use super::*;
 
-    fn tmp() -> std::path::PathBuf {
+    /// Holds the app-support redirect for one test, and clears it on drop.
+    ///
+    /// `add_vars` and `remove_vars` stamp `config-changes.json` under the
+    /// app-support dir, so without the redirect every run of these tests
+    /// stamped the developer's real one. The redirect is process-global, hence
+    /// `crate::env::path_env_lock`, released after the override is cleared.
+    struct Store(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for Store {
+        fn drop(&mut self) {
+            crate::env::set_app_support_dir_for_tests(None);
+        }
+    }
+
+    fn tmp() -> (Store, std::path::PathBuf) {
+        let lock = crate::env::path_env_lock();
         let mut p = std::env::temp_dir();
         p.push(format!(
             "gate-dotenv-{}-{:?}",
@@ -303,7 +318,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        p.join(".env")
+        crate::env::set_app_support_dir_for_tests(Some(p.join("app-support")));
+        (Store(lock), p.join(".env"))
     }
 
     /// A key a previous connect wrote, with the value it left on disk.
@@ -316,7 +332,7 @@ mod tests {
 
     #[test]
     fn adds_only_missing_keys_and_never_clobbers_the_users() {
-        let path = tmp();
+        let (_store, path) = tmp();
         // The user already routes through a corporate proxy and has a key.
         fs::write(
             &path,
@@ -372,7 +388,7 @@ mod tests {
     /// is why it has to be passed in rather than inferred here.
     #[test]
     fn a_stale_value_of_ours_is_refreshed_and_the_users_is_not() {
-        let path = tmp();
+        let (store, path) = tmp();
         fs::write(
             &path,
             "OPENROUTER_API_KEY=sk-user\nHTTPS_PROXY=http://127.0.0.1:9977\nHERMES_CA_BUNDLE=/old/ca.pem\n",
@@ -414,8 +430,10 @@ mod tests {
         // unattended re-connect would look like a repair.
         assert!(!applied.refreshed.contains(&"HERMES_CA_BUNDLE".to_string()));
 
-        // The same staleness on a key the user owns is left alone.
-        let path = tmp();
+        // The same staleness on a key the user owns is left alone. A fresh
+        // file, so the first one's hold on the store goes first.
+        drop(store);
+        let (_store, path) = tmp();
         fs::write(&path, "HTTPS_PROXY=http://corp:3128\n").unwrap();
         let applied = add_vars(
             &path,
@@ -434,7 +452,7 @@ mod tests {
 
     #[test]
     fn a_file_we_created_is_removed_again() {
-        let path = tmp();
+        let (_store, path) = tmp();
         let applied = add_vars(
             &path,
             &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
@@ -453,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_file_we_created_survives_if_the_user_added_to_it() {
-        let path = tmp();
+        let (_store, path) = tmp();
         let applied = add_vars(
             &path,
             &[("HTTPS_PROXY", "http://127.0.0.1:9977".into())],
@@ -474,7 +492,7 @@ mod tests {
 
     #[test]
     fn recognises_export_and_quoted_forms() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "export HTTPS_PROXY=\"http://corp:3128\"\n").unwrap();
         // `export`-prefixed counts as already set.
         let applied = add_vars(
@@ -503,7 +521,7 @@ mod tests {
     /// while the line still holds what we left there.
     #[test]
     fn a_value_the_user_edited_is_no_longer_ours() {
-        let path = tmp();
+        let (_store, path) = tmp();
         // We wrote :9977 on a previous connect. The user has since repointed it
         // at a proxy of their own, on the same key.
         fs::write(&path, "HTTPS_PROXY=http://127.0.0.1:8080\n").unwrap();
@@ -532,7 +550,7 @@ mod tests {
     /// A sidecar written before values were recorded still repairs, once.
     #[test]
     fn a_key_owned_without_a_recorded_value_is_refreshed_once() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "HTTPS_PROXY=http://127.0.0.1:9977\n").unwrap();
 
         let legacy = Owned {
@@ -566,7 +584,7 @@ mod tests {
     /// launch: rule 1 broken in a way no Unix test could see.
     #[test]
     fn a_crlf_file_keeps_its_line_endings() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(
             &path,
             "OPENROUTER_API_KEY=sk-user\r\nHTTPS_PROXY=http://127.0.0.1:9977\r\n",
@@ -600,7 +618,7 @@ mod tests {
     /// status read Connected and the unattended repair never ran again.
     #[test]
     fn a_duplicate_assignment_of_ours_collapses() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(
             &path,
             "HTTPS_PROXY=http://127.0.0.1:45981\nUSER_KEY=v\nHTTPS_PROXY=http://127.0.0.1:9977\n",
@@ -646,7 +664,7 @@ mod tests {
     /// change that never happened.
     #[test]
     fn an_export_line_of_ours_keeps_its_form() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "export HTTPS_PROXY=\"http://127.0.0.1:9977\"\n").unwrap();
 
         let applied = add_vars(
@@ -680,7 +698,7 @@ mod tests {
     /// A file with no trailing newline gains one line, not a joined line.
     #[test]
     fn a_file_without_a_trailing_newline_is_appended_to_cleanly() {
-        let path = tmp();
+        let (_store, path) = tmp();
         fs::write(&path, "USER_KEY=v").unwrap();
 
         add_vars(&path, &[("NO_PROXY", "localhost".into())], &[]).unwrap();
