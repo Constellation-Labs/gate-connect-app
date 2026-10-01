@@ -6022,6 +6022,12 @@ pub fn run() {
                             .map(|s| s.running)
                             .unwrap_or(false);
                         update_tray_status(&refresh_handle, running);
+                        // Tell a mounted window too, as `signal_session_dead`
+                        // does: otherwise one that stays focused never re-reads
+                        // the session and keeps its old screen up.
+                        if dead {
+                            let _ = refresh_handle.emit("session-signin-required", ());
+                        }
                         // First tick that finds the session dead: nudge the user
                         // with a system notification on macOS + Linux, so the
                         // dead session is noticed even when the popover is closed
