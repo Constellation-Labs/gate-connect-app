@@ -253,9 +253,10 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     if (backend && proxy.ca_trusted && !backend.ca_cert_present) {
       lines.push(row("cert file", "MISSING on disk"));
     }
-    // Linux only: Chromium-based browsers read a per-user NSS store and never
-    // the system one, so the certificate above reading "trusted" while this
-    // line appears is the whole of "Firefox works, Chrome doesn't". Silent when
+    // Linux only: browsers read per-user NSS stores rather than the system one
+    // (Chromium's database, each Firefox profile's), so the certificate above
+    // reading "trusted" while this line appears is the whole of "curl works,
+    // the browsers don't". Silent when
     // the question does not apply, and silent when the store holds it - that is
     // what the line above already says.
     //
@@ -265,9 +266,15 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
     // absence of a reading - which is the one thing this report must not do,
     // because it is the sentence a support engineer acts on.
     if (backend?.ca_nss_trusted === "absent") {
-      lines.push(row("browser store", "CA MISSING (chromium)"));
+      lines.push(row("browser store", "CA MISSING"));
     } else if (backend?.ca_nss_trusted === "unreadable") {
-      lines.push(row("browser store", "could not be read (chromium)"));
+      lines.push(row("browser store", "could not be read"));
+    }
+    // Which store, Chromium's or a Firefox profile's, and what it holds. The
+    // line above is a fold, and a store the user changed in the browser is not
+    // a fault in it, so this is the only place that one shows.
+    for (const store of backend?.ca_nss_stores ?? []) {
+      lines.push(row("  store", store));
     }
     // What the write itself saw, which is the only place the cause lives. The
     // line above is `all()` over the stores and probed now, so it cannot

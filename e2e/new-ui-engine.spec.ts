@@ -197,6 +197,36 @@ test.describe("new UI certificate and diagnostics", () => {
     await expect.poll(() => app.lastCall("proxy_untrust_ca")).not.toBeNull();
   });
 
+  test("on Linux, a browser-store write says to quit and reopen browsers", async ({ boot }) => {
+    // The system anchor already trusted, and a store written on this enable -
+    // Chrome's database just created, a Firefox profile seen for the first
+    // time. `ca_trusted` never flips, so only the write count can raise this.
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true, ca_nss_trust: "trusted", ca_nss_writes: 1 },
+    });
+
+    await expect(app.page.getByText("Browsers already open need reopening")).toBeVisible();
+    await expect(
+      app.page.getByText("Quit and reopen any open browser so it trusts the certificate."),
+    ).toBeVisible();
+  });
+
+  test("on Linux, removing the certificate says to quit and reopen browsers", async ({ boot }) => {
+    const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: true } });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).last().click();
+
+    await expect(app.page.getByText("Certificate removed", { exact: true })).toBeVisible();
+    await expect(
+      app.page.getByText("Quit and reopen any open browser so it stops trusting the certificate.", {
+        exact: false,
+      }),
+    ).toBeVisible();
+  });
+
   test("an untrusted certificate is not offered for removal", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: false } });
 

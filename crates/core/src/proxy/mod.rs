@@ -2796,6 +2796,13 @@ pub struct ProxyState {
     /// `ca::probe_nss_trust`.
     #[serde(default)]
     pub ca_nss_trust: Option<NssTrust>,
+    /// Linux only: how many browser stores this process has added the CA to
+    /// (see `ca_linux::nss_writes`). The window raises its "quit and reopen"
+    /// note when this goes up, which catches a store written on an enable
+    /// where `ca_trusted` was already true - a Chromium database just created,
+    /// a Firefox profile seen for the first time. Always 0 elsewhere.
+    #[serde(default)]
+    pub ca_nss_writes: u64,
     /// Whether the system proxy Gate writes is one a browser reads *live*, and
     /// therefore whether a host-matched row covers the same site in a browser.
     ///

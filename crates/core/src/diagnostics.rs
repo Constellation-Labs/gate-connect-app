@@ -74,6 +74,12 @@ pub struct Diagnostics {
     /// keyed by the certificate's fingerprint, so a regenerated root retires
     /// the reading that described the old one rather than carrying it forward.
     pub ca_nss_write: Option<crate::proxy::NssReading>,
+    /// Linux only: one line per browser store and what it holds right now -
+    /// Chromium's databases and each Firefox profile. The two fields above are
+    /// folds and a record; this is the itemisation, and the only place a store
+    /// the user changed in the browser shows, since no reading counts that as a
+    /// fault. Empty elsewhere.
+    pub ca_nss_stores: Vec<String>,
     /// The persisted "routing should be on" intent. Compared against the live
     /// `running` flag it answers the commonest report we get: routing was on
     /// yesterday and the app came back with it off.
@@ -113,6 +119,7 @@ pub fn collect() -> Diagnostics {
         ca_cert_path: ca_cert_path.map(|p| p.display().to_string()),
         ca_nss_trusted: ca_nss_trusted(),
         ca_nss_write: ca_nss_write(),
+        ca_nss_stores: ca_nss_stores(),
         routing_intent: crate::proxy::intent::load_intent(),
         persisted_engine_proxy_url: crate::proxy::persisted_engine_proxy_url(),
         relay_base_url: crate::proxy::relay_base_url(),
@@ -149,6 +156,16 @@ fn ca_nss_write() -> Option<crate::proxy::NssReading> {
 #[cfg(not(target_os = "linux"))]
 fn ca_nss_write() -> Option<crate::proxy::NssReading> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn ca_nss_stores() -> Vec<String> {
+    crate::proxy::ca::nss_store_report()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ca_nss_stores() -> Vec<String> {
+    Vec::new()
 }
 
 /// The OS marketing name and version, on its own.

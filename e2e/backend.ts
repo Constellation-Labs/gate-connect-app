@@ -141,6 +141,11 @@ export interface ProxyFixture {
   env_export_opted_in: boolean;
   env_export_separable: boolean;
   forwarder_answering: boolean | null;
+  /** Linux: what the last browser-store write recorded. Absent reads as null. */
+  ca_nss_trust?: "trusted" | "tools_missing" | "write_failed" | "not_written" | null;
+  /** Linux: browser stores this process has written the CA to. Absent reads
+      as 0. */
+  ca_nss_writes?: number;
   domains: DomainFixture[];
 }
 

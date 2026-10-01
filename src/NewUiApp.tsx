@@ -58,6 +58,7 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
   BAND_LABELS,
+  browserTrustRemovedAdvice,
   browserTrustRestartAdvice,
   buildGroups,
   hintForMember,
@@ -180,6 +181,7 @@ import {
   trackError,
 } from "./lib/analytics";
 import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
+import { useNssWriteRise } from "./lib/useNssWriteRise";
 
 /** A whole reading, for deciding whether a re-read changed anything. Compared by
  * value because the identity never matches: every read builds fresh objects. */
@@ -2339,6 +2341,13 @@ export function NewUiApp() {
     const trusted = proxy?.ca_trusted ?? null;
     const seen = caTrustedSeen.current;
     caTrustedSeen.current = trusted;
+    // The other direction: the certificate was removed. Any note about it
+    // being added is now the opposite of true, and a browser still open keeps
+    // trusting the root it read at launch, so that is what to say instead.
+    if (seen === true && trusted === false) {
+      setBrowserRestart(browserTrustRemovedAdvice(platform) ?? null);
+      return;
+    }
     if (seen !== false || trusted !== true) return;
     const nss = proxy?.ca_nss_trust ?? null;
     if (nss !== null) {
@@ -2376,7 +2385,27 @@ export function NewUiApp() {
         // A probe that will not run is no reading either, and the note it
         // would have refined is already on screen.
       });
-  }, [proxy, platform]);
+    // `ca_trusted` beside `proxy`: a status that mutates the snapshot it
+    // already returned (the e2e mock does) keeps the object's identity while
+    // the trust it reports changes, and this effect is about that value.
+  }, [proxy, proxy?.ca_trusted, platform]);
+
+  /**
+   * A browser store written while the certificate was already trusted.
+   *
+   * The effect above only fires on `ca_trusted` going true, and that missed
+   * the machine this was found on: the system anchor trusted weeks before, and
+   * on a later enable Gate created Chrome's missing database and wrote a
+   * Firefox profile for the first time - two browsers that would go on refusing
+   * every intercepted host until reopened, with nothing on screen saying so.
+   * The note is the one the reading picks, so a write that partly failed still
+   * says which way. Skipped while the certificate is not trusted, where the
+   * effect above owns the note.
+   */
+  useNssWriteRise(proxy ? proxy.ca_nss_writes : null, () => {
+    if (!proxy?.ca_trusted) return;
+    setBrowserRestart(browserTrustRestartAdvice(platform, proxy.ca_nss_trust) ?? null);
+  });
 
   /**
    * ...and what retires it when the user does what it asked.

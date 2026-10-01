@@ -205,13 +205,16 @@ export function browserTrustRestartAdvice(
 ): { title: string; body: string } | undefined {
   if (platform !== "linux") return undefined;
   const store = trustStoreName(platform);
-  // Named one by one rather than as "Chromium-based", which is a fact about
-  // engines and not a thing anybody has in their dock.
-  const family = "Chrome, Chromium, Brave, Edge and Vivaldi";
+  // Named rather than "Chromium-based", which is a fact about engines and not
+  // a thing anybody has in their dock. Firefox is in it: outside the distros
+  // that wire p11-kit in (Fedora, Arch), it reads its own per-profile store
+  // and never the system one - Ubuntu's snap Firefox refused claude.ai beside
+  // Chrome on the machine this was measured on.
+  const family = "Chrome, Firefox and other browsers";
   if (nss === "tools_missing") {
     return {
-      title: "Chromium-based browsers can’t see the certificate",
-      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one, and Gate needs certutil to write it. Install it (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools), then turn routing off and on again. Firefox and command-line tools are unaffected.`,
+      title: "Your browsers can’t see the certificate",
+      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one, and Gate needs certutil to write it. Install it (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools), then turn routing off and on again. Command-line tools are unaffected.`,
     };
   }
   if (nss === "write_failed") {
@@ -220,7 +223,7 @@ export function browserTrustRestartAdvice(
       // prints a line per entry, so the title must not undercount what the
       // body and the report both say.
       title: "A browser certificate store refused the certificate",
-      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why. Once it is unlocked, turn routing off and on again to retry. Any browser that did take it still needs a full quit and reopen; Firefox and command-line tools are unaffected.`,
+      body: `Gate added its certificate to your ${store}, but at least one of the separate stores ${family} keep would not take it. The diagnostics report names which one and why; a Firefox profile with a Primary Password needs the certificate imported in Firefox’s own settings. Once it is fixed, turn routing off and on again to retry. ${BROWSER_RESTART}`,
     };
   }
   if (nss === "not_written") {
@@ -229,13 +232,38 @@ export function browserTrustRestartAdvice(
     // Neither of the sentences above fits - there is no store to go and read
     // about in the report, and no package to install.
     return {
-      title: "Chromium-based browsers don’t have the certificate yet",
-      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one and Gate has not written those, so turn routing off and on again to add it. Firefox and command-line tools are unaffected.`,
+      title: "Your browsers don’t have the certificate yet",
+      body: `Gate added its certificate to your ${store}, but ${family} each keep a separate one and Gate has not written those, so turn routing off and on again to add it. Command-line tools are unaffected.`,
     };
   }
   return {
     title: "Browsers already open need reopening",
-    body: `Gate has added its certificate to your ${store}. A browser reads that when it starts, so one that was already open will reject Gate’s traffic until you quit it completely and open it again.`,
+    body: `Gate has added its certificate to your ${store} and your browsers. A browser reads its certificates when it starts. ${BROWSER_RESTART}`,
+  };
+}
+
+/**
+ * The one sentence every certificate note ends on, so the window, the CLI and
+ * every variant above say the same thing. "Quit and reopen" rather than
+ * "restart": closing the last window leaves some browsers running, and that
+ * process keeps the certificates it loaded at launch.
+ */
+export const BROWSER_RESTART = "Quit and reopen any open browser so it trusts the certificate.";
+
+/**
+ * The note raised when the certificate is removed. Linux only, for the reason
+ * `browserTrustRestartAdvice` is: a running browser there keeps the stores it
+ * read at launch, so one that is still open goes on trusting a root that has
+ * been taken out of them. macOS and Windows re-evaluate trust for a running
+ * process.
+ */
+export function browserTrustRemovedAdvice(
+  platform: Platform,
+): { title: string; body: string } | undefined {
+  if (platform !== "linux") return undefined;
+  return {
+    title: "Certificate removed",
+    body: "Gate removed its certificate from your browsers. Quit and reopen any open browser so it stops trusting the certificate.",
   };
 }
 

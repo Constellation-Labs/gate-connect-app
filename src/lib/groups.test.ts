@@ -4,7 +4,9 @@ import type { Band, Group, GroupMember } from "./groups";
 import { sectionStatus } from "./verdict";
 import {
   BAND_LABELS,
+  BROWSER_RESTART,
   SECTIONS,
+  browserTrustRemovedAdvice,
   browserTrustRestartAdvice,
   buildGroups,
   cascadeTargets,
@@ -761,8 +763,8 @@ describe("cascadeTargets", () => {
  */
 describe("browserTrustRestartAdvice", () => {
   it("is Linux-only, because that is where the trust store is read once", () => {
-    // Chromium reads `~/.pki/nssdb` and Firefox the system bundle through
-    // p11-kit, both at process start (`ca_linux.rs`). macOS and Windows
+    // Chromium reads `~/.pki/nssdb` and Firefox its profile's `cert9.db`, both
+    // at process start (`ca_linux.rs`). macOS and Windows
     // re-evaluate trust for a running process, so naming browsers there would
     // be caution rather than mechanism.
     expect(browserTrustRestartAdvice("linux", "trusted")).toBeDefined();
@@ -784,7 +786,7 @@ describe("browserTrustRestartAdvice", () => {
     // Reopening a window in a process that is still running changes nothing:
     // the NSS read happened at startup. A browser told to "reload" would fail
     // exactly as before and read as Gate being broken.
-    expect(browserTrustRestartAdvice("linux", "trusted")?.body).toContain(
+    expect(browserTrustRestartAdvice("linux", "trusted")?.body.toLowerCase()).toContain(
       "quit",
     );
   });
@@ -807,7 +809,7 @@ describe("browserTrustRestartAdvice", () => {
     // the browsers whose store took it are working and still need the quit.
     // Withholding that sentence left them with no true instruction at all.
     expect(browserTrustRestartAdvice("linux", "write_failed")?.body).toContain(
-      "quit and reopen",
+      "Quit and reopen",
     );
   });
 
@@ -850,16 +852,35 @@ describe("browserTrustRestartAdvice", () => {
     expect(advice?.body).toContain("at least one");
   });
 
-  it("says who is unaffected, because most of the machine is", () => {
-    // The system anchor still serves Firefox and `NODE_EXTRA_CA_CERTS` still
-    // serves the Node CLIs, so this is one family of browsers rather than
-    // routing being broken - and a note that did not say so would read as the
-    // latter.
-    for (const nss of ["tools_missing", "write_failed"] as const) {
+  it("says who is unaffected, and does not count Firefox among them", () => {
+    // The system anchor still serves curl and git, and `NODE_EXTRA_CA_CERTS`
+    // the Node CLIs, so this is the browsers rather than routing being broken -
+    // and a note that did not say so would read as the latter. Firefox used to
+    // be named here too, on the belief that it reads the system anchor through
+    // p11-kit; Ubuntu's snap Firefox does not, and refused claude.ai beside
+    // Chrome on the machine that found it.
+    for (const nss of ["tools_missing", "not_written"] as const) {
       expect(browserTrustRestartAdvice("linux", nss)?.body).toContain(
-        "Firefox and command-line tools are unaffected",
+        "Command-line tools are unaffected",
       );
     }
+    for (const nss of ["tools_missing", "write_failed", "not_written", "trusted", null] as const) {
+      expect(browserTrustRestartAdvice("linux", nss)?.body).not.toMatch(/Firefox[^.]*unaffected/);
+    }
+  });
+
+  it("ends every note that asks for a reopen on the one shared sentence", () => {
+    for (const nss of ["write_failed", "trusted", null] as const) {
+      expect(browserTrustRestartAdvice("linux", nss)?.body).toContain(BROWSER_RESTART);
+    }
+  });
+
+  it("says to quit and reopen after a removal too, on Linux only", () => {
+    expect(browserTrustRemovedAdvice("linux")?.body).toContain(
+      "Quit and reopen any open browser so it stops trusting the certificate.",
+    );
+    expect(browserTrustRemovedAdvice("macos")).toBeUndefined();
+    expect(browserTrustRemovedAdvice("windows")).toBeUndefined();
   });
 
   it("falls back to the reopen note when there is no reading", () => {

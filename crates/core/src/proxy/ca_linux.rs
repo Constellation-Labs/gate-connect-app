@@ -12,13 +12,15 @@
 //! - Fedora/RHEL/openSUSE: drop it in `/etc/pki/ca-trust/source/anchors/` and
 //!   run `update-ca-trust extract`.
 //!
-//! The system store is not the whole job, though. Chromium-based browsers on
-//! Linux never read it - they use their own built-in roots plus a per-user NSS
-//! database at `~/.pki/nssdb` - so a system-only install leaves Chrome and
-//! Chromium failing every intercepted host with `ERR_CERT_AUTHORITY_INVALID`
-//! while Firefox works, because Firefox picks the system anchors up through
-//! p11-kit. So [`ensure_trusted`] writes that database too, unprivileged and
-//! best-effort, via `certutil`.
+//! The system store is not the whole job, though. Browsers on Linux mostly
+//! never read it. Chromium-based ones use their own built-in roots plus a
+//! per-user NSS database at `~/.pki/nssdb`; Firefox uses its own built-in roots
+//! plus each profile's `cert9.db`, and only sees the system anchors where the
+//! distro swaps p11-kit in for those built-ins (Fedora, Arch - not Ubuntu,
+//! whose Firefox is the Mozilla snap). So a system-only install leaves both
+//! failing every intercepted host with `ERR_CERT_AUTHORITY_INVALID` /
+//! `SEC_ERROR_UNKNOWN_ISSUER` while curl is happy, and [`ensure_trusted`]
+//! writes those databases too, unprivileged and best-effort, via `certutil`.
 //!
 //! The privileged step is performed via [`crate::primitives::run_as_admin`]
 //! (sudo in a terminal, polkit/`pkexec` in a GUI session). Tools that ship their
@@ -31,9 +33,11 @@
 //! blind-tunnelled, never MITM'd), and the private key never leaves the secret
 //! store. Linux counterpart of the macOS [`super::ca`] module.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
@@ -273,13 +277,18 @@ pub fn untrust() -> Result<()> {
 }
 
 /// Remove the CA's trust without a prompt. The headless counterpart of
-/// [`untrust`]: same anchor, same rebuild, non-interactive escalation.
+/// [`untrust`]: same anchor, same rebuild, non-interactive escalation. The
+/// browser stores go too: [`ensure_trusted_system`] writes them, and so may the
+/// GUI or a plain `trust-ca`, and `--system-trust` is the removal the CLI names
+/// for this host. That step needs no privilege, so it keeps to the no-prompt
+/// contract.
 pub fn untrust_system() -> Result<()> {
     let store = trust_store()?;
     if store.anchor.exists() {
         run_as_root_noninteractive(&anchor_remove_script(&store))
             .context("removing the proxy CA from the system trust store")?;
     }
+    untrust_nss();
     remove_ca_material()
 }
 
@@ -333,15 +342,18 @@ const NSS_TOOLS_HINT: &str =
 /// Chromium on Linux does not consult the system CA bundle at all: it uses its
 /// own built-in root store plus this database. So the system anchor the rest of
 /// this module installs leaves every Chromium browser failing the handshake on
-/// intercepted hosts with `ERR_CERT_AUTHORITY_INVALID`, while Firefox works,
-/// because Firefox picks the same system anchors up through p11-kit. That
-/// asymmetry is the whole reason this exists.
+/// intercepted hosts with `ERR_CERT_AUTHORITY_INVALID` while curl is happy.
+/// Firefox has the same problem with stores of its own; see
+/// [`firefox_profile_roots`].
 ///
 /// Enumerated rather than globbed (`~/.var/app/*/.pki/nssdb`) on purpose: a glob
 /// would hand our signing root to every confined app that happens to keep an NSS
 /// database, browser or not, and the trust here is meant to stay narrow. The
 /// cost is that a Chromium-family browser missing from this list fails exactly
-/// the way the bug did, so a new one belongs here.
+/// the way the bug did, so a new one belongs here. The first entry is the
+/// exception to "narrow": `~/.pki/nssdb` is the shared per-user NSS default, so
+/// any NSS program that opens it (Evolution, an NSS-built curl) trusts what it
+/// holds - the same programs the system anchor already reaches through p11-kit.
 fn nss_db_candidates(home: &Path) -> Vec<PathBuf> {
     [
         // Distro packages (.deb/.rpm) and anything else running with the real
@@ -363,35 +375,222 @@ fn nss_db_candidates(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// Where each Firefox build keeps its profile directories, whether or not they
+/// exist. Pure for the same reason as [`nss_db_candidates`].
+///
+/// Firefox does not read `~/.pki/nssdb`. Every profile has its own `cert9.db`,
+/// and outside the distros that wire p11-kit in place of its built-in roots it
+/// never sees the system anchor either - which is Ubuntu, where the default
+/// Firefox is the Mozilla snap. So without these, Firefox rejects every
+/// intercepted host exactly the way Chromium did: measured on a fresh Ubuntu VM,
+/// the snap Firefox and the Google Chrome .deb both refusing claude.ai while
+/// curl through the engine verified the same leaf.
+fn firefox_profile_roots(home: &Path) -> Vec<PathBuf> {
+    [
+        // Distro packages and Mozilla's own tarball.
+        ".mozilla/firefox",
+        // The snap keeps its profiles under `common`, which survives refreshes,
+        // rather than the per-revision `current`.
+        "snap/firefox/common/.mozilla/firefox",
+        ".var/app/org.mozilla.firefox/.mozilla/firefox",
+    ]
+    .iter()
+    .map(|rel| home.join(rel))
+    .collect()
+}
+
+/// The profile directories a `profiles.ini` names, resolved against `root`.
+/// Pure, so it is testable without a Firefox.
+///
+/// A relative `Path=` has to be a single plain component: anything with a
+/// separator or `..` could walk out of `root`. An absolute one - a profile the
+/// user moved with Firefox's profile manager - counts only when
+/// `allow_absolute`, which the caller grants for the unconfined root alone. A
+/// snap or Flatpak Firefox can write its own `profiles.ini`, and an absolute
+/// path there would let the sandbox choose where this unconfined process runs
+/// certutil.
+fn firefox_ini_profiles(ini: &str, root: &Path, allow_absolute: bool) -> Vec<PathBuf> {
+    // (Path=, IsRelative) per section. `[Install…]` sections carry `Default=`
+    // rather than `Path=`, so they fall out as `None`.
+    let mut sections: Vec<(Option<&str>, bool)> = Vec::new();
+    for line in ini.lines().map(str::trim) {
+        if line.starts_with('[') {
+            sections.push((None, true));
+        } else if let (Some(section), Some((key, value))) =
+            (sections.last_mut(), line.split_once('='))
+        {
+            match key.trim() {
+                "Path" => section.0 = Some(value.trim()),
+                "IsRelative" => section.1 = value.trim() != "0",
+                _ => {}
+            }
+        }
+    }
+    sections
+        .into_iter()
+        .filter_map(|(path, relative)| {
+            let path = Path::new(path?);
+            if relative {
+                let mut parts = path.components();
+                let single = matches!(
+                    (parts.next(), parts.next()),
+                    (Some(std::path::Component::Normal(_)), None)
+                );
+                single.then(|| root.join(path))
+            } else {
+                (allow_absolute && path.is_absolute()).then(|| path.to_path_buf())
+            }
+        })
+        .collect()
+}
+
+/// Whether `dir` is a real directory holding a real `cert9.db`, with neither
+/// one a symlink. Two of the Firefox roots belong to a confined browser, which
+/// can plant `profile -> /anywhere`; following it would point the unconfined
+/// certutil at a directory the sandbox picked.
+fn is_profile_store(dir: &Path) -> bool {
+    fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
+        && fs::symlink_metadata(dir.join("cert9.db")).is_ok_and(|m| m.is_file())
+}
+
+/// Every Firefox profile under `home` that has a certificate database: the
+/// direct children of each root, plus whatever its `profiles.ini` names (see
+/// [`firefox_ini_profiles`]). Keyed on `cert9.db` so the siblings Firefox keeps
+/// beside its profiles (`Crash Reports`, `Pending Pings`, `Profile Groups`) are
+/// left alone.
+fn firefox_profile_dbs(home: &Path) -> Vec<PathBuf> {
+    let unconfined = home.join(".mozilla/firefox");
+    let mut profiles = Vec::new();
+    for root in firefox_profile_roots(home) {
+        if let Ok(entries) = fs::read_dir(&root) {
+            profiles.extend(entries.filter_map(|entry| entry.ok().map(|e| e.path())));
+        }
+        if let Ok(ini) = fs::read_to_string(root.join("profiles.ini")) {
+            profiles.extend(firefox_ini_profiles(&ini, &root, root == unconfined));
+        }
+    }
+    profiles.retain(|p| is_profile_store(p));
+    profiles.sort();
+    profiles.dedup();
+    profiles
+}
+
+/// Launcher names of the Chromium-family browsers that read `~/.pki/nssdb`.
+/// A snap build can put a launcher of the same name on `PATH`
+/// (`/snap/bin/chromium`), but it reads a database under its own confined HOME
+/// instead, so [`chromium_on_path`] skips launchers that resolve to `snap`
+/// itself. Flatpak exports use reverse-DNS names, which never match.
+const CHROMIUM_LAUNCHERS: &[&str] = &[
+    "google-chrome",
+    "google-chrome-stable",
+    "google-chrome-beta",
+    "google-chrome-unstable",
+    "chromium",
+    "brave-browser",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "vivaldi",
+    "vivaldi-stable",
+];
+
+/// Whether any of [`CHROMIUM_LAUNCHERS`] is on `path` as something other than a
+/// snap shim. Takes the `PATH` value so it is testable.
+fn chromium_on_path(path: &OsStr) -> bool {
+    std::env::split_paths(path).any(|dir| {
+        CHROMIUM_LAUNCHERS.iter().any(|bin| {
+            let launcher = dir.join(bin);
+            launcher.is_file()
+                && !fs::canonicalize(&launcher)
+                    .is_ok_and(|target| target.file_name().is_some_and(|n| n == "snap"))
+        })
+    })
+}
+
+/// Test seam: whether a Chromium browser counts as installed. `false` unless a
+/// test says otherwise, so the suite does not depend on what the machine
+/// running it has on `PATH` - a CI runner with Chrome installed would otherwise
+/// send every NSS fixture through the database creation below.
+#[cfg(test)]
+static CHROMIUM_INSTALLED_OVERRIDE: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Whether a Chromium-family browser that reads `~/.pki/nssdb` is installed.
+fn chromium_installed() -> bool {
+    #[cfg(test)]
+    return CHROMIUM_INSTALLED_OVERRIDE
+        .lock()
+        .expect("chromium override mutex poisoned")
+        .unwrap_or(false);
+    #[cfg(not(test))]
+    std::env::var_os("PATH").is_some_and(|path| chromium_on_path(&path))
+}
+
 /// Test seam: the home [`nss_db_dirs`] enumerates under, absent in every normal
 /// build. A `Mutex` static rather than a `HOME` mutation for the same reason
 /// [`CERTUTIL_OVERRIDE`] is one.
 #[cfg(test)]
 static NSS_HOME_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// The subset of [`nss_db_candidates`] that exists. Empty when no Chromium
-/// browser has ever run for this user - the database is created on first
-/// launch, so there is nothing to trust into and nothing to warn about.
+/// The home every browser store hangs off.
 ///
 /// [`env::home`] rather than `$HOME` directly, so the e2e harness's redirected
 /// home redirects this too. Reading the variable raw left the one path in this
 /// module that could reach the developer's own `~/.pki/nssdb` from a test run.
-fn nss_db_dirs() -> Vec<PathBuf> {
+fn nss_home() -> Option<PathBuf> {
     #[cfg(test)]
-    let home = NSS_HOME_OVERRIDE
+    if let Some(home) = NSS_HOME_OVERRIDE
         .lock()
         .expect("nss home override mutex poisoned")
-        .clone();
-    #[cfg(not(test))]
-    let home: Option<PathBuf> = None;
-    let home = match home.map(Ok).unwrap_or_else(env::home) {
-        Ok(home) => home,
-        Err(_) => return Vec::new(),
+        .clone()
+    {
+        return Some(home);
+    }
+    env::home().ok()
+}
+
+/// `~/.pki/nssdb`, the database a distro-packaged Chromium reads.
+fn chromium_db(home: &Path) -> PathBuf {
+    home.join(".pki/nssdb")
+}
+
+/// Whether a Chromium browser is installed and `~/.pki/nssdb` has no database
+/// yet.
+///
+/// Chrome does not always create it at startup: a fresh Ubuntu VM with Chrome
+/// open on an intercepted host had none, so trust was set up with nowhere to
+/// put it, every candidate filtered out, and the reading said nothing applied.
+/// The browser opens the database once it exists, so [`ensure_trusted_nss`]
+/// creates it rather than waiting for one that may never come. Keyed on
+/// `cert9.db` rather than the directory, so a creation that got as far as
+/// `mkdir` - certutil missing, say - is retried once the user installs it,
+/// instead of leaving an empty directory that reads as done forever.
+fn chromium_db_missing(home: &Path) -> bool {
+    !chromium_db(home).join("cert9.db").is_file() && chromium_installed()
+}
+
+/// Every browser NSS database that exists for this user: the Chromium ones
+/// from [`nss_db_candidates`] and each Firefox profile. Empty when no browser
+/// has a store here, so there is nothing to trust into.
+fn nss_db_dirs() -> Vec<PathBuf> {
+    let Some(home) = nss_home() else {
+        return Vec::new();
     };
     nss_db_candidates(&home)
         .into_iter()
         .filter(|dir| dir.is_dir())
+        .chain(firefox_profile_dbs(&home))
         .collect()
+}
+
+/// Create an empty, passwordless `sql:` database at `dir` for Chromium to open.
+/// Owner-only, like the one Chrome would have made itself.
+fn create_chromium_db(dir: &Path) -> std::result::Result<(), CertutilFailure> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| CertutilFailure::Failed(format!("creating {}: {e}", dir.display())))?;
+    certutil(dir, &["-N", "--empty-password"])
 }
 
 /// Why a `certutil` call did not succeed. The missing-binary case is split out
@@ -552,6 +751,10 @@ enum NssEntry {
     /// It is, with these trust flags: certutil's three comma-separated fields,
     /// e.g. `C,,` for the SSL-CA trust the add asks for.
     Present { flags: String },
+    /// More than once. `certutil -A` appends under a duplicate nickname rather
+    /// than replacing, so an add that ran without its delete leaves two, and
+    /// the export then prints both and matches neither.
+    Duplicated,
 }
 
 impl NssEntry {
@@ -569,7 +772,7 @@ impl NssEntry {
     /// over. The flags the add asks for are `C,,`.
     fn ssl_ca_trusted(&self) -> bool {
         match self {
-            Self::Absent => false,
+            Self::Absent | Self::Duplicated => false,
             Self::Present { flags } => flags.split(',').next().is_some_and(|ssl| ssl.contains('C')),
         }
     }
@@ -596,6 +799,7 @@ impl NssEntry {
 /// ```
 fn nss_lookup(db: &Path) -> std::result::Result<NssEntry, CertutilFailure> {
     let listing = certutil_output(db, &["-L"])?;
+    let mut found = None;
     for line in listing.lines() {
         let Some((nickname, flags)) = line.rsplit_once(char::is_whitespace) else {
             continue;
@@ -605,12 +809,15 @@ fn nss_lookup(db: &Path) -> std::result::Result<NssEntry, CertutilFailure> {
         // not a row.
         let nickname = nickname.trim();
         if nickname == ca_common_name() {
-            return Ok(NssEntry::Present {
+            if found.is_some() {
+                return Ok(NssEntry::Duplicated);
+            }
+            found = Some(NssEntry::Present {
                 flags: flags.trim().to_string(),
             });
         }
     }
-    Ok(NssEntry::Absent)
+    Ok(found.unwrap_or(NssEntry::Absent))
 }
 
 /// Whether `db` holds exactly the certificate in `pem` under our nickname,
@@ -623,12 +830,79 @@ fn nss_lookup(db: &Path) -> std::result::Result<NssEntry, CertutilFailure> {
 /// `Err` is not `false`. A caller that wants "rewrite it then" can treat the
 /// two alike; a caller that reports a reading to a person cannot.
 fn nss_holds(db: &Path, pem: &str) -> std::result::Result<bool, CertutilFailure> {
-    let entry = nss_lookup(db)?;
-    if !entry.ssl_ca_trusted() {
-        return Ok(false);
-    }
+    nss_state(db, pem).map(|state| state == NssState::Trusted)
+}
+
+/// What one store holds under our nickname, compared against the current CA.
+#[derive(Debug, PartialEq)]
+enum NssState {
+    /// Exactly our current CA, trusted to identify websites.
+    Trusted,
+    /// Our current CA with the website trust taken off - which only a
+    /// certificate manager does, Gate never adds it that way.
+    Distrusted,
+    /// Something under our nickname that is not exactly our current CA once: a
+    /// root from before a regeneration, or a duplicated entry.
+    Stale,
+    /// Nothing under our nickname.
+    Absent,
+}
+
+/// Read [`NssState`] for `db`. One listing, plus an export when the nickname is
+/// there once.
+fn nss_state(db: &Path, pem: &str) -> std::result::Result<NssState, CertutilFailure> {
+    let entry = match nss_lookup(db)? {
+        NssEntry::Absent => return Ok(NssState::Absent),
+        NssEntry::Duplicated => return Ok(NssState::Stale),
+        entry => entry,
+    };
     let held = certutil_output(db, &["-L", "-n", ca_common_name(), "-a"])?;
-    Ok(pem_body(&held) == pem_body(pem))
+    Ok(if pem_body(&held) != pem_body(pem) {
+        NssState::Stale
+    } else if entry.ssl_ca_trusted() {
+        NssState::Trusted
+    } else {
+        NssState::Distrusted
+    })
+}
+
+/// What [`ensure_trusted_nss`] does with a store it could read.
+#[derive(Debug, PartialEq)]
+enum NssAction {
+    /// Nothing to the store; record it if it is not recorded yet.
+    Keep,
+    /// Nothing at all: the user changed this store in the browser.
+    Leave,
+    /// Add our CA, replacing whatever is under our nickname.
+    Write,
+}
+
+/// Decide what to do with a store from what it holds and whether this CA is
+/// recorded in it (see [`nss_ledger_path`]). Pure, so the policy is testable
+/// without certutil.
+///
+/// A recorded store that no longer holds our CA, or holds it distrusted, was
+/// changed in the browser's own certificate manager after Gate wrote it, and
+/// putting it back on the next enable would overrule the user on a root that
+/// can sign for the intercepted hosts. So it is left alone. An *unrecorded*
+/// distrusted entry is rewritten: nothing says the user made it, and it is the
+/// state that fails every intercepted host while looking identical to an
+/// exporter. A stale entry is ours and outdated, so it is rewritten whatever
+/// the record says.
+fn nss_action(state: &NssState, recorded: bool) -> NssAction {
+    match state {
+        NssState::Trusted => NssAction::Keep,
+        NssState::Distrusted | NssState::Absent if recorded => NssAction::Leave,
+        NssState::Distrusted | NssState::Absent | NssState::Stale => NssAction::Write,
+    }
+}
+
+/// Whether a store is as it should be, for the readings. A store left alone by
+/// [`nss_action`] counts as fine: the surfaces that read this offer a retry,
+/// and the retry deliberately does not override the user, so a store it would
+/// never touch must not keep reporting a fault.
+fn nss_store_ok(state: &NssState, recorded: bool) -> bool {
+    nss_action(state, recorded) != NssAction::Write
 }
 
 /// What a live read of every per-user NSS database found says about our CA, for
@@ -643,15 +917,23 @@ fn nss_holds(db: &Path, pem: &str) -> std::result::Result<bool, CertutilFailure>
 /// not on the polled path - `status` serves [`recorded_nss_trust`] instead.
 pub fn nss_ca_trusted() -> Option<NssProbe> {
     let dirs = nss_db_dirs();
-    if dirs.is_empty() {
+    // A Chromium with no database yet is a store missing the CA, not a store
+    // that does not apply: it is the state `ensure_trusted_nss` repairs, and
+    // reading it as `None` hid it from every surface.
+    let missing = nss_home().is_some_and(|home| chromium_db_missing(&home));
+    if dirs.is_empty() && !missing {
         return None;
     }
     let pem = cert_path().ok().and_then(|p| fs::read_to_string(p).ok())?;
+    if missing {
+        return Some(NssProbe::Absent);
+    }
+    let ledger = read_nss_ledger();
     let mut unreadable = false;
     for dir in dirs {
-        match nss_holds(&dir, &pem) {
-            Ok(true) => {}
-            Ok(false) => return Some(NssProbe::Absent),
+        match nss_state(&dir, &pem) {
+            Ok(state) if nss_store_ok(&state, ledger.contains(&dir)) => {}
+            Ok(_) => return Some(NssProbe::Absent),
             Err(_) => unreadable = true,
         }
     }
@@ -678,15 +960,17 @@ pub fn nss_ca_trusted() -> Option<NssProbe> {
 /// to be left with.
 pub fn probe_nss_trust() -> Option<NssTrust> {
     let dirs = nss_db_dirs();
-    if dirs.is_empty() {
+    let missing = nss_home().is_some_and(|home| chromium_db_missing(&home));
+    if dirs.is_empty() && !missing {
         return None;
     }
     let pem = cert_path().ok().and_then(|p| fs::read_to_string(p).ok())?;
-    let mut absent = false;
+    let ledger = read_nss_ledger();
+    let mut absent = missing;
     for dir in dirs {
-        match nss_holds(&dir, &pem) {
-            Ok(true) => {}
-            Ok(false) => absent = true,
+        match nss_state(&dir, &pem) {
+            Ok(state) if nss_store_ok(&state, ledger.contains(&dir)) => {}
+            Ok(_) => absent = true,
             // The one failure with its own sentence, and it is about the
             // machine rather than the store: no certutil, nothing was written
             // anywhere, and a package install is the fix.
@@ -834,6 +1118,140 @@ pub fn recorded_nss_trust() -> Option<NssReading> {
     (record.cert_fingerprint == cert_fingerprint()?).then_some(record.reading)
 }
 
+/// The stores this CA has been written to or found in, and the CA they are a
+/// record of. What tells "never had it" from "had it and the user took it out"
+/// (see [`nss_action`]). Keyed to the certificate the way [`NssRecord`] is, so
+/// a regenerated root starts a new record: a new root is a new question, for a
+/// store the user pruned the old one from as much as any other.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NssLedger {
+    cert_fingerprint: String,
+    stores: Vec<PathBuf>,
+}
+
+/// Where [`NssLedger`] lives, beside [`nss_record_path`] for the same reason.
+fn nss_ledger_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?
+        .join("proxy")
+        .join("nss-stores.json"))
+}
+
+/// The recorded stores for the current CA. Empty for every way of not having a
+/// record, including one written for a different CA.
+fn read_nss_ledger() -> Vec<PathBuf> {
+    let Some(fingerprint) = cert_fingerprint() else {
+        return Vec::new();
+    };
+    nss_ledger_path()
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<NssLedger>(&raw).ok())
+        .filter(|ledger| ledger.cert_fingerprint == fingerprint)
+        .map(|ledger| ledger.stores)
+        .unwrap_or_default()
+}
+
+/// Add `dir` to the record, in memory and on disk. Best-effort like
+/// [`record_nss_trust`]: a record that cannot be written costs the next enable
+/// the knowledge that a later removal was the user's, and must not fail this
+/// one.
+fn record_in_nss_ledger(stores: &mut Vec<PathBuf>, dir: &Path) {
+    if stores.iter().any(|d| d == dir) {
+        return;
+    }
+    stores.push(dir.to_path_buf());
+    let Some(cert_fingerprint) = cert_fingerprint() else {
+        return;
+    };
+    let ledger = NssLedger {
+        cert_fingerprint,
+        stores: stores.clone(),
+    };
+    let written = nss_ledger_path().and_then(|path| {
+        let raw = serde_json::to_string_pretty(&ledger)?;
+        crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+    });
+    if let Err(e) = written {
+        eprintln!(
+            "gate proxy: could not record the browser stores holding the CA ({e:#}); \
+             a CA removed in a browser may be added back on the next enable"
+        );
+    }
+}
+
+/// Forget every recorded store. An untrust is the user asking for the CA gone
+/// everywhere, so the next trust starts from no record.
+fn clear_nss_ledger() {
+    if let Ok(path) = nss_ledger_path() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// How many browser stores this process has added the CA to.
+///
+/// The window raises its "quit and reopen" note when `ca_trusted` goes true,
+/// and that misses the case the Ubuntu report was: the system anchor trusted
+/// long ago, and a browser store written on a later enable - a Chromium
+/// database just created, a Firefox profile seen for the first time. A browser
+/// only reads its store at launch, so each write is news; the window watches
+/// this go up. Per process, so a write made by the CLI does not move the
+/// window's count - the CLI prints its own sentence for that. It counts stores,
+/// not trust actions, and the window only ever asks whether it went up.
+static NSS_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// [`NSS_WRITES`], for `ProxyState::ca_nss_writes`.
+pub fn nss_writes() -> u64 {
+    NSS_WRITES.load(Ordering::Relaxed)
+}
+
+/// One line per browser store and what it holds, for the diagnostics report.
+/// The reading says whether anything is wrong and the refusals name a store
+/// that refused; this also names the ones the user changed in the browser,
+/// which no reading counts as a fault, and a Chromium database that is not
+/// there yet. Shells out per store, so it belongs on the report, not the poll.
+pub fn nss_store_report() -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(home) = nss_home().filter(|home| chromium_db_missing(home)) {
+        lines.push(format!(
+            "{}: no database yet (a Chromium browser is installed)",
+            chromium_db(&home).display()
+        ));
+    }
+    let Some(pem) = cert_path().ok().and_then(|p| fs::read_to_string(p).ok()) else {
+        return lines;
+    };
+    let ledger = read_nss_ledger();
+    for dir in nss_db_dirs() {
+        let recorded = ledger.contains(&dir);
+        let state = match nss_state(&dir, &pem) {
+            Ok(NssState::Trusted) => "trusted".to_string(),
+            Ok(NssState::Distrusted) if recorded => "distrusted in the browser".to_string(),
+            Ok(NssState::Distrusted) => "present without website trust".to_string(),
+            Ok(NssState::Stale) => "outdated".to_string(),
+            Ok(NssState::Absent) if recorded => "removed in the browser".to_string(),
+            Ok(NssState::Absent) => "missing".to_string(),
+            Err(e) => format!("unreadable ({})", one_line_capped(&e.to_string())),
+        };
+        lines.push(format!("{}: {state}", dir.display()));
+    }
+    lines
+}
+
+/// Delete every entry under our nickname in `db`, returning whether any went.
+/// `certutil -D` removes one entry per call, and a store can hold more than one
+/// (see [`NssEntry::Duplicated`]). Bounded, because a store that keeps
+/// reporting success is broken in a way more calls will not fix.
+fn drop_nss_entries(db: &Path) -> bool {
+    let mut dropped = false;
+    for _ in 0..8 {
+        if certutil(db, &["-D", "-n", ca_common_name()]).is_err() {
+            break;
+        }
+        dropped = true;
+    }
+    dropped
+}
+
 /// Fold one store's failure into the machine's answer.
 ///
 /// `ToolsMissing` outranks `WriteFailed` and is never overwritten by it: a
@@ -851,8 +1269,11 @@ fn degrade(outcome: NssTrust, failure: &CertutilFailure) -> NssTrust {
     }
 }
 
-/// Add the CA to every per-user NSS database found, so Chromium accepts the
-/// leaves the engine mints.
+/// Add the CA to every browser NSS database that should have it, so Chromium
+/// and Firefox accept the leaves the engine mints. Creates `~/.pki/nssdb`
+/// first when a Chromium browser is installed without one (see
+/// [`chromium_db_missing`]), and leaves alone a store the user changed in the
+/// browser (see [`nss_action`]).
 ///
 /// Best-effort and infallible by design: the system anchor is what trust really
 /// rests on, and a browser-specific store that cannot be written must not fail
@@ -860,8 +1281,14 @@ fn degrade(outcome: NssTrust, failure: &CertutilFailure) -> NssTrust {
 /// symptom otherwise lands in the browser as a certificate error with nothing
 /// connecting it to Gate.
 fn ensure_trusted_nss() {
+    // Before the enumeration, so a database made here is one of the stores
+    // written below. Its failure is held for the reading rather than dropped:
+    // with no other store on the machine it is the only answer there is.
+    let created = nss_home()
+        .filter(|home| chromium_db_missing(home))
+        .map(|home| (chromium_db(&home), create_chromium_db(&chromium_db(&home))));
     let dirs = nss_db_dirs();
-    if dirs.is_empty() {
+    if dirs.is_empty() && !matches!(created, Some((_, Err(_)))) {
         // No such store on this machine, so there is nothing to report about
         // one. Cleared rather than left alone: a browser installed and removed
         // between two enables would otherwise leave its verdict standing.
@@ -891,20 +1318,45 @@ fn ensure_trusted_nss() {
     // The stores that refused, for the report the copy sends people to. Only
     // the `Failed` cause is collected - see `NssRefusal`.
     let mut refusals: Vec<NssRefusal> = Vec::new();
+    if let Some((db, Err(e))) = &created {
+        outcome = degrade(outcome, e);
+        if matches!(e, CertutilFailure::Failed(_)) {
+            refusals.push(NssRefusal {
+                store: db.display().to_string(),
+                reason: e.to_string(),
+            });
+        }
+        eprintln!(
+            "gate proxy: could not create the NSS store at {db} ({e}); \
+             Chromium-based browsers will reject intercepted hosts{hint}",
+            db = db.display(),
+            hint = e.tools_hint(),
+        );
+    }
+    let mut ledger = read_nss_ledger();
     for dir in dirs {
         // Nothing to do where the database already holds exactly our current
-        // CA, trusted for SSL. Worth the extra call: the rewrite below is
-        // briefly destructive, and skipping it keeps that window out of the
-        // common path altogether. A store that cannot be read is not skipped -
-        // it is rewritten, and the rewrite's own failure is what gets reported.
-        if nss_holds(&dir, &cert_pem).unwrap_or(false) {
-            continue;
+        // CA, trusted for SSL, or where the user changed it in the browser.
+        // Worth the extra call: the rewrite below is briefly destructive, and
+        // skipping it keeps that window out of the common path altogether. A
+        // store that cannot be read is not skipped - it is rewritten, and the
+        // rewrite's own failure is what gets reported.
+        if let Ok(state) = nss_state(&dir, &cert_pem) {
+            match nss_action(&state, ledger.contains(&dir)) {
+                NssAction::Keep => {
+                    record_in_nss_ledger(&mut ledger, &dir);
+                    continue;
+                }
+                NssAction::Leave => continue,
+                NssAction::Write => {}
+            }
         }
-        // Delete first. `certutil -A` appends under a duplicate nickname rather
-        // than replacing, so a regenerated CA would leave the stale root sitting
-        // in the database beside the new one, and the browser would keep
-        // offering both. A missing entry fails here, harmlessly.
-        let dropped = certutil(&dir, &["-D", "-n", ca_common_name()]).is_ok();
+        // Delete first, every copy. `certutil -A` appends under a duplicate
+        // nickname rather than replacing, so a regenerated CA would leave the
+        // stale root sitting in the database beside the new one, and the
+        // browser would keep offering both. A missing entry fails here,
+        // harmlessly.
+        let dropped = drop_nss_entries(&dir);
         // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME and no
         // object-signing trust. The same flags mkcert uses for the same job.
         let args = ["-A", "-t", "C,,", "-n", ca_common_name(), "-i", &cert_arg];
@@ -915,7 +1367,11 @@ fn ensure_trusted_nss() {
         // difference between a verdict and an inference.
         let written = certutil(&dir, &args).and_then(|()| nss_holds(&dir, &cert_pem));
         let failure = match written {
-            Ok(true) => None,
+            Ok(true) => {
+                NSS_WRITES.fetch_add(1, Ordering::Relaxed);
+                record_in_nss_ledger(&mut ledger, &dir);
+                None
+            }
             Ok(false) => Some(CertutilFailure::Failed(
                 "certutil -A reported success and the store does not hold the CA".to_string(),
             )),
@@ -937,11 +1393,18 @@ fn ensure_trusted_nss() {
             } else {
                 ""
             };
+            // A refusal from certutil itself is most often a Firefox Primary
+            // Password: changing trust needs it, and stdin is closed.
+            let hint = match &e {
+                CertutilFailure::Missing => e.tools_hint(),
+                CertutilFailure::Failed(_) => " - if this is a Firefox profile with a Primary \
+                     Password, import the certificate in Firefox's own certificate settings"
+                    .to_string(),
+            };
             eprintln!(
                 "gate proxy: could not add the CA to the NSS store at {dir}{dropped} ({e}); \
-                 Chromium-based browsers will reject intercepted hosts{hint}",
+                 the browser reading it will reject intercepted hosts{hint}",
                 dir = dir.display(),
-                hint = e.tools_hint(),
             );
         }
     }
@@ -955,7 +1418,7 @@ fn ensure_trusted_nss() {
     record_nss_trust(Some(NssReading { outcome, refusals }));
 }
 
-/// Drop the CA from every per-user NSS database.
+/// Drop the CA from every browser NSS database.
 ///
 /// Best-effort like the install, but not silent: an entry that survives an
 /// explicit untrust leaves a root that can sign for any host trusted in the
@@ -978,21 +1441,35 @@ fn untrust_nss() {
     for dir in nss_db_dirs() {
         match nss_lookup(&dir) {
             Ok(NssEntry::Absent) => {}
-            Ok(NssEntry::Present { .. }) => {
-                if let Err(e) = certutil(&dir, &["-D", "-n", ca_common_name()]) {
-                    failure = Some(NssTrust::WriteFailed);
-                    eprintln!(
-                        "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
-                         Chromium-based browsers still trust it",
-                        dir = dir.display(),
-                    );
+            Ok(NssEntry::Present { .. } | NssEntry::Duplicated) => {
+                // Every copy, then a read-back: a duplicated entry needs one
+                // `-D` per copy, and "the delete ran" is not "it is gone".
+                drop_nss_entries(&dir);
+                match nss_lookup(&dir) {
+                    Ok(NssEntry::Absent) => {}
+                    Ok(_) => {
+                        failure = Some(NssTrust::WriteFailed);
+                        eprintln!(
+                            "gate proxy: could not remove the CA from the NSS store at {dir}; \
+                             the browser reading it still trusts it",
+                            dir = dir.display(),
+                        );
+                    }
+                    Err(e) => {
+                        failure = Some(degrade(failure.unwrap_or(NssTrust::WriteFailed), &e));
+                        eprintln!(
+                            "gate proxy: could not read the NSS store at {dir} after removing the \
+                             CA ({e}); the browser reading it may still trust it",
+                            dir = dir.display(),
+                        );
+                    }
                 }
             }
             Err(e @ CertutilFailure::Missing) => {
                 failure = Some(NssTrust::ToolsMissing);
                 eprintln!(
                     "gate proxy: could not remove the CA from the NSS store at {dir} ({e}); \
-                     Chromium-based browsers may still trust it - {NSS_TOOLS_HINT}",
+                     the browser reading it may still trust it - {NSS_TOOLS_HINT}",
                     dir = dir.display(),
                 );
             }
@@ -1000,7 +1477,7 @@ fn untrust_nss() {
                 failure = Some(NssTrust::WriteFailed);
                 eprintln!(
                     "gate proxy: could not read the NSS store at {dir} to remove the CA ({e}); \
-                     Chromium-based browsers may still trust it",
+                     the browser reading it may still trust it",
                     dir = dir.display(),
                 );
             }
@@ -1019,6 +1496,7 @@ fn untrust_nss() {
         outcome,
         refusals: Vec::new(),
     }));
+    clear_nss_ledger();
 }
 
 /// Full teardown for an explicit removal: drop the private key from the secret
@@ -1246,6 +1724,9 @@ mod tests {
             *NSS_HOME_OVERRIDE
                 .lock()
                 .expect("nss home override mutex poisoned") = None;
+            *CHROMIUM_INSTALLED_OVERRIDE
+                .lock()
+                .expect("chromium override mutex poisoned") = None;
             crate::env::set_app_support_dir_for_tests(None);
             let _ = fs::remove_dir_all(&self.root);
         }
@@ -1307,6 +1788,10 @@ case "$3" in
     if [ -f '{marker_s}' ]; then rm -f '{marker_s}'; exit 0; fi
     echo 'certutil: could not find cert to delete' >&2
     exit 255
+    ;;
+  -N)
+    touch "${{2#sql:}}/cert9.db"
+    exit 0
     ;;
 esac
 exit 0
@@ -1572,7 +2057,9 @@ exit 0
         // round - the same call the three shim tests above make.
         match nss_lookup(&fixture.db) {
             Ok(NssEntry::Present { flags }) => assert_eq!(flags, "CT,c,"),
-            Ok(NssEntry::Absent) => panic!("the entry is right there in the listing"),
+            Ok(NssEntry::Absent | NssEntry::Duplicated) => {
+                panic!("the entry is right there in the listing, once")
+            }
             Err(e) => panic!("the shim answers: {e}"),
         }
     }
@@ -1786,5 +2273,276 @@ exit 0
         assert!(CertutilFailure::Failed("locked".into())
             .tools_hint()
             .is_empty());
+    }
+
+    /// The browser-store write counter, read as a delta: it is process-wide,
+    /// and every fixture test holds the path lock, so nothing else moves it
+    /// while one runs.
+    fn writes_during(f: impl FnOnce()) -> u64 {
+        let before = nss_writes();
+        f();
+        nss_writes() - before
+    }
+
+    /// A store the user took the CA out of after Gate wrote it is theirs: the
+    /// next enable leaves it out, and the reading does not call it a fault -
+    /// the retry the window offers would not override them either.
+    #[test]
+    fn a_store_the_user_emptied_stays_empty() {
+        let fixture = NssFixture::new("pruned", false, store_shim("C,,", Add::Lands));
+        assert_eq!(writes_during(ensure_trusted_nss), 1);
+        assert!(fixture.store_holds());
+        // The certificate manager's Delete.
+        fs::remove_file(&fixture.marker).expect("remove the entry");
+        assert_eq!(writes_during(ensure_trusted_nss), 0);
+        assert!(
+            !fixture.store_holds(),
+            "a removal in the browser is put back"
+        );
+        let reading = recorded_nss_trust().expect("a write records a reading");
+        assert_eq!(reading.outcome, NssTrust::Trusted);
+        assert_eq!(probe_nss_trust(), Some(NssTrust::Trusted));
+    }
+
+    /// ...and an untrust is the user asking for it gone everywhere, so the
+    /// record goes with it and the next trust writes every store again.
+    #[test]
+    fn an_untrust_forgets_which_stores_held_it() {
+        let fixture = NssFixture::new("forget", false, store_shim("C,,", Add::Lands));
+        ensure_trusted_nss();
+        untrust_nss();
+        assert!(!fixture.store_holds());
+        assert_eq!(writes_during(ensure_trusted_nss), 1);
+        assert!(fixture.store_holds());
+    }
+
+    /// A store already holding the CA is recorded without a write, so a later
+    /// removal in the browser is recognised as one even though Gate never
+    /// wrote that store in this record's life.
+    #[test]
+    fn a_store_found_holding_the_ca_is_recorded_without_a_write() {
+        let fixture = NssFixture::new("adopt", true, store_shim("C,,", Add::Lands));
+        assert_eq!(writes_during(ensure_trusted_nss), 0);
+        assert_eq!(read_nss_ledger(), vec![fixture.db.clone()]);
+    }
+
+    /// The measured bug: Chrome installed, `~/.pki/nssdb` never created, and
+    /// every candidate filtered out, so nothing was written and nothing was
+    /// said. Now the database is made, written, and counted.
+    #[test]
+    fn a_chromium_with_no_database_gets_one() {
+        let fixture = NssFixture::new("create", false, store_shim("C,,", Add::Lands));
+        fs::remove_dir_all(&fixture.db).expect("start with no database");
+        assert_eq!(probe_nss_trust(), None, "no Chromium, nothing applies");
+        *CHROMIUM_INSTALLED_OVERRIDE
+            .lock()
+            .expect("chromium override mutex poisoned") = Some(true);
+        assert_eq!(nss_ca_trusted(), Some(NssProbe::Absent));
+        assert_eq!(probe_nss_trust(), Some(NssTrust::NotWritten));
+        assert_eq!(writes_during(ensure_trusted_nss), 1);
+        assert!(fixture.db.join("cert9.db").is_file());
+        assert!(fixture.store_holds());
+        assert_eq!(
+            recorded_nss_trust().map(|r| r.outcome),
+            Some(NssTrust::Trusted)
+        );
+    }
+
+    /// The database we create stands in for the one Chrome would have made,
+    /// which is owner-only. The directory is made before certutil runs, so a
+    /// missing certutil still leaves it - and the reading says so rather than
+    /// that nothing applies.
+    #[test]
+    fn the_created_database_is_owner_only_and_a_failed_init_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = NssFixture::new("mode", false, |_, _| String::new());
+        fs::remove_dir_all(&fixture.db).expect("start with no database");
+        *CHROMIUM_INSTALLED_OVERRIDE
+            .lock()
+            .expect("chromium override mutex poisoned") = Some(true);
+        *CERTUTIL_OVERRIDE
+            .lock()
+            .expect("certutil override mutex poisoned") =
+            Some(PathBuf::from("/nonexistent/certutil"));
+        ensure_trusted_nss();
+        let mode = fs::metadata(&fixture.db).map(|m| m.permissions().mode() & 0o777);
+        assert_eq!(mode.expect("the directory was made"), 0o700);
+        assert_eq!(
+            recorded_nss_trust().map(|r| r.outcome),
+            Some(NssTrust::ToolsMissing)
+        );
+        // Keyed on `cert9.db`, so the half-made directory is still missing and
+        // the creation runs again once certutil is there.
+        assert!(chromium_db_missing(&fixture.root.join("home")));
+    }
+
+    /// Two entries under our nickname - an add that ran without its delete -
+    /// read as one stale store, and every copy goes before the add.
+    #[test]
+    fn a_duplicated_entry_is_stale_and_fully_replaced() {
+        let fixture = NssFixture::new("dup", false, |cert, marker| {
+            let (cert, marker) = (cert.display(), marker.display());
+            format!(
+                r#"
+case "$3" in
+  -L)
+    if [ "$4" = "-n" ]; then cat '{cert}'; exit 0; fi
+    echo 'Certificate Nickname                             Trust Attributes'
+    echo ''
+    n=$(cat '{marker}' 2>/dev/null || echo 2)
+    i=0; while [ $i -lt $n ]; do echo '{nick}                             C,,'; i=$((i+1)); done
+    exit 0
+    ;;
+  -D)
+    n=$(cat '{marker}' 2>/dev/null || echo 2)
+    [ $n -gt 0 ] || exit 255
+    echo $((n-1)) > '{marker}'; exit 0
+    ;;
+  -A)
+    n=$(cat '{marker}' 2>/dev/null || echo 2)
+    echo $((n+1)) > '{marker}'; exit 0
+    ;;
+esac
+exit 0
+"#,
+                nick = ca_common_name(),
+            )
+        });
+        assert!(matches!(nss_lookup(&fixture.db), Ok(NssEntry::Duplicated)));
+        ensure_trusted_nss();
+        assert_eq!(
+            fs::read_to_string(&fixture.marker).expect("count").trim(),
+            "1",
+            "both copies dropped, one added"
+        );
+        assert_eq!(
+            recorded_nss_trust().map(|r| r.outcome),
+            Some(NssTrust::Trusted)
+        );
+    }
+
+    /// The policy table: a recorded store the user emptied or distrusted is
+    /// left alone and not held against them; an unrecorded one is written, as
+    /// is a stale entry whatever the record says.
+    #[test]
+    fn the_store_policy_respects_only_what_the_user_did() {
+        use NssAction::*;
+        let cases = [
+            (NssState::Trusted, false, Keep, true),
+            (NssState::Trusted, true, Keep, true),
+            (NssState::Distrusted, false, Write, false),
+            (NssState::Distrusted, true, Leave, true),
+            (NssState::Absent, false, Write, false),
+            (NssState::Absent, true, Leave, true),
+            (NssState::Stale, false, Write, false),
+            (NssState::Stale, true, Write, false),
+        ];
+        for (state, recorded, action, ok) in cases {
+            assert_eq!(
+                nss_action(&state, recorded),
+                action,
+                "{state:?} recorded={recorded}"
+            );
+            assert_eq!(
+                nss_store_ok(&state, recorded),
+                ok,
+                "{state:?} recorded={recorded}"
+            );
+        }
+    }
+
+    /// A fresh directory under the temp root, unique per test.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gate-nss-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    /// Ubuntu's default Firefox is the snap, which keeps profiles under its own
+    /// confined HOME and ignores the system anchor.
+    #[test]
+    fn the_firefox_roots_cover_the_snap_and_flatpak_homes() {
+        let roots = firefox_profile_roots(Path::new("/home/u"));
+        for expected in [
+            "/home/u/.mozilla/firefox",
+            "/home/u/snap/firefox/common/.mozilla/firefox",
+            "/home/u/.var/app/org.mozilla.firefox/.mozilla/firefox",
+        ] {
+            assert!(
+                roots.iter().any(|r| r == Path::new(expected)),
+                "{expected} missing from {roots:?}"
+            );
+        }
+        let home = Path::new("/tmp/someone");
+        for root in firefox_profile_roots(home) {
+            assert!(root.starts_with(home), "{root:?} escaped {home:?}");
+        }
+    }
+
+    /// Only real profile directories with a real `cert9.db` count: not the
+    /// siblings Firefox keeps beside its profiles, and not a symlink a confined
+    /// Firefox could plant to steer the unconfined certutil.
+    #[test]
+    fn the_firefox_dbs_are_real_profiles_with_a_cert_store() {
+        let home = scratch("ff");
+        let root = home.join("snap/firefox/common/.mozilla/firefox");
+        let profile = root.join("qp1tx1a3.default");
+        fs::create_dir_all(&profile).expect("profile");
+        fs::write(profile.join("cert9.db"), b"").expect("cert9");
+        fs::create_dir_all(root.join("Crash Reports")).expect("sibling");
+        let elsewhere = home.join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("elsewhere");
+        fs::write(elsewhere.join("cert9.db"), b"").expect("cert9");
+        std::os::unix::fs::symlink(&elsewhere, root.join("planted.default")).expect("link");
+
+        let dbs = firefox_profile_dbs(&home);
+        let _ = fs::remove_dir_all(&home);
+        assert_eq!(dbs, vec![profile]);
+    }
+
+    /// `profiles.ini` names profiles the directory listing would not show: a
+    /// relative one, or an absolute one the user moved. Only a single plain
+    /// component counts as relative, and an absolute path only where the caller
+    /// allows it (the unconfined root).
+    #[test]
+    fn the_profiles_ini_paths_stay_inside_what_the_caller_allows() {
+        let root = Path::new("/home/u/.mozilla/firefox");
+        let ini = "[Install4F96D1932A9F858E]\nDefault=a.default\n\n\
+                   [Profile0]\nName=a\nIsRelative=1\nPath=a.default\n\n\
+                   [Profile1]\nIsRelative=0\nPath=/data/ff/b\n\n\
+                   [Profile2]\nIsRelative=1\nPath=../escape\n\n\
+                   [Profile3]\nIsRelative=1\nPath=nested/c\n";
+        assert_eq!(
+            firefox_ini_profiles(ini, root, true),
+            vec![root.join("a.default"), PathBuf::from("/data/ff/b")]
+        );
+        assert_eq!(
+            firefox_ini_profiles(ini, root, false),
+            vec![root.join("a.default")]
+        );
+    }
+
+    /// A launcher on PATH means Chromium reads `~/.pki/nssdb`, except a snap
+    /// shim of the same name, which resolves to `snap` and reads a database in
+    /// its own confined HOME.
+    #[test]
+    fn a_chromium_launcher_counts_unless_it_is_a_snap_shim() {
+        let dir = scratch("path");
+        let real = dir.join("real");
+        let snapbin = dir.join("snapbin");
+        fs::create_dir_all(&real).expect("real");
+        fs::create_dir_all(&snapbin).expect("snapbin");
+        fs::write(real.join("google-chrome"), b"").expect("launcher");
+        fs::write(dir.join("snap"), b"").expect("snap");
+        std::os::unix::fs::symlink(dir.join("snap"), snapbin.join("chromium")).expect("link");
+
+        let found = chromium_on_path(real.as_os_str());
+        let shim = chromium_on_path(snapbin.as_os_str());
+        let empty = chromium_on_path(dir.as_os_str());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(found);
+        assert!(!shim);
+        assert!(!empty);
     }
 }
