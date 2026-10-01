@@ -51,7 +51,7 @@ import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { forwardBackendErrors } from "./lib/backendErrors";
-import { sessionFacts } from "./lib/analyticsSession";
+import { launchProps, sessionFacts } from "./lib/analyticsSession";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
 import { HermesProviderNotice } from "./components/HermesProviderNotice";
@@ -483,9 +483,8 @@ export function App() {
         getCurrentWindow().hide().catch(() => {});
       }
       track("app_launched", {
-        has_account: !!acct,
-        proxy_available: px !== null,
-        routing_on: px?.running ?? false,
+        // Same rule as the window shell's `launchProps`: no answer, no prop.
+        ...launchProps(reading, px),
         provider_count: provs.filter((p) => p.enabled).length,
         // Sizes the hand-written-Gate-setup population (see codexDrifted).
         codex_drifted: toolList.some((t) => t.slug === "codex" && t.status.kind === "drifted"),

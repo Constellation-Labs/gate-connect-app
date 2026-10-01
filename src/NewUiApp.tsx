@@ -46,7 +46,7 @@ import {
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
-import { sessionFacts } from "./lib/analyticsSession";
+import { gatewaySawTrafficFromThisMachine, launchProps, sessionFacts } from "./lib/analyticsSession";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
@@ -457,6 +457,7 @@ export function NewUiApp() {
    *  skeletons. */
   const activityPending = activity.view === null && activity.failure === null;
   const {
+    installations,
     current: currentInstallId,
     resolved: installsResolved,
     failure: installsFailure,
@@ -558,11 +559,14 @@ export function NewUiApp() {
       orgId: sessionOrgId,
     });
   }, [loaded, signedInNow, sessionUnknown, sessionAuthMode, sessionSub, sessionOrgId]);
-  // The gateway names this machine once a request from it has arrived: the
-  // `first_request_proxied` signal where the relay cannot report (Linux).
+  // The gateway lists this machine among those it has had proxied traffic from:
+  // the `first_request_proxied` signal where the relay cannot report (Linux).
+  // From the rows, not the top-level `current`, which only echoes the read's
+  // own install id; see `gatewaySawTrafficFromThisMachine`.
+  const gatewaySawThisMachine = gatewaySawTrafficFromThisMachine(installations);
   useEffect(() => {
-    if (installsResolved && currentInstallId !== null) noteGatewayAttributed();
-  }, [installsResolved, currentInstallId]);
+    if (gatewaySawThisMachine) noteGatewayAttributed();
+  }, [gatewaySawThisMachine]);
   // The gateway refused the credential or could not be reached: the connection
   // step's `auth_rejected` and `offline`, from the typed code rather than prose.
   const activityFailureCode = activity.failure?.code ?? null;
@@ -1064,11 +1068,7 @@ export function NewUiApp() {
       // Only the props the first read already answered; the popover's
       // provider and drift dimensions describe a surface this shell does not
       // draw.
-      track("app_launched", {
-        has_account: acct.account !== null,
-        proxy_available: px !== null,
-        routing_on: px?.running ?? false,
-      });
+      track("app_launched", launchProps(acct, px));
     })();
   }, []);
 
