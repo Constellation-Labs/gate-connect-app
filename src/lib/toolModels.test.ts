@@ -204,6 +204,12 @@ describe("modelLabelsFor", () => {
         // Two vendors, one native spelling.
         { id: "meta-llama/llama-4-scout", owned_by: "meta-llama", name: "Llama 4 Scout" },
         { id: "together/llama-4-scout", owned_by: "together", name: "Llama 4 Scout (Together)" },
+        // The free catalogue's alias for a paid row.
+        { id: "constellation/claude-opus-5", owned_by: "constellation", name: "constellation/claude-opus-5" },
+        // Ambiguous dated, unique undated.
+        { id: "a/dated-20260101", owned_by: "a", name: "A dated" },
+        { id: "b/dated-20260101", owned_by: "b", name: "B dated" },
+        { id: "c/dated", owned_by: "c", name: "C" },
       ],
     }),
   );
@@ -224,6 +230,25 @@ describe("modelLabelsFor", () => {
   it("does not name a native spelling two vendors share", () => {
     // Naming it would be choosing a vendor, which is the guess this refuses.
     expect(labels("llama-4-scout")).toBeUndefined();
+  });
+
+  it("does not count the free catalogue's alias as a second vendor", () => {
+    // `constellation/claude-opus-5` shares the native spelling of the Anthropic
+    // row; without this the headline case stayed an id on any free model.
+    expect(labels("claude-opus-5")).toEqual({ name: "Claude Opus 5", vendor: "anthropic" });
+    // The alias is still answered by its own id.
+    expect(labels("constellation/claude-opus-5")?.vendor).toBe("constellation");
+  });
+
+  it("keeps an ambiguous dated spelling an id rather than trying it undated", () => {
+    expect(labels("dated-20260101")).toBeUndefined();
+    expect(labels("dated")).toEqual({ name: "C", vendor: "c" });
+  });
+
+  it("undoes only Anthropic's date, not other providers' suffixes", () => {
+    expect(labels("claude-opus-5-2026-05-14")).toBeUndefined();
+    expect(labels("claude-opus-5-001")).toBeUndefined();
+    expect(labels("claude-opus-5@001")).toBeUndefined();
   });
 
   it("does not treat a namespaced id it does not list as a native spelling", () => {

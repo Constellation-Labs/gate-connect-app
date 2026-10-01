@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
 import { attributed, vendorFromModelId } from "../../lib/toolEvents";
 import type { ModelLabels } from "../../lib/toolModels";
-import { toolMarkFor } from "./BrandMark";
+import { ToolMark } from "./BrandMark";
 import { VendorMark } from "./ProviderMark";
 import { BADGE_STYLES, Card, CardHeader, EmptyNote, GUARDRAIL_INK, OutlineButton, Pill, Skeleton } from "./base";
 import type { IconName } from "./Icon";
@@ -344,7 +344,6 @@ export function SecurityEvents({
                 const provider = attributed(e.provider);
                 const model = attributed(e.model);
                 const label = model === null ? undefined : modelLabels?.(model);
-                const toolMark = e.tool === null ? undefined : toolMarkFor(e.tool, 20);
                 return (
                   // 56px rows with a full-width divider, 16px cells, `copy/14`
                   // sans throughout (`1402:18003`). The time was mono 12px until
@@ -353,8 +352,8 @@ export function SecurityEvents({
                   // already said so. The frame draws a coloured tool logo
                   // beside the tool (`1402:18014`, 20px) and the provider mark
                   // beside the model (`1402:18017`, 20px); both are drawn, the
-                  // first from `toolMarkFor`, the second from the provider, the
-                  // id's namespace or the catalogue - see `VendorMark`.
+                  // first by `ToolMark`, the second by `VendorMark` from the
+                  // provider, the id's namespace or the catalogue.
                   <tr key={e.id} className="h-14 border-t border-base-border">
                     <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                       {eventTime(e.at)}
@@ -366,28 +365,22 @@ export function SecurityEvents({
                       {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
                     </td>
                     <td className="max-w-0 pl-4">
-                      {e.tool === null ? (
-                        <span className="text-sm leading-5 text-base-foreground">{UNATTRIBUTED}</span>
-                      ) : (
-                        <span className="flex items-center gap-2">
-                          {/* The mark is decorative; the name beside it is the
-                              text. A tool with no mark keeps the slot so the
-                              names in the column line up. */}
-                          <span
-                            aria-hidden
-                            className="flex size-5 shrink-0 items-center justify-center text-base-foreground"
-                          >
-                            {toolMark}
-                          </span>
-                          {/* The slug on hover, as the model cell keeps its id. */}
-                          <span
-                            className="truncate text-sm leading-5 text-base-foreground"
-                            title={e.tool}
-                          >
-                            {toolNames?.get(e.tool) ?? e.tool}
-                          </span>
+                      <span className="flex items-center gap-2">
+                        {/* An unattributed row keeps the slot too, so its dash
+                            sits where the model cell's does. */}
+                        {e.tool === null ? (
+                          <span aria-hidden className="size-5 shrink-0" />
+                        ) : (
+                          <ToolMark slug={e.tool} size={20} />
+                        )}
+                        {/* The slug on hover, as the model cell keeps its id. */}
+                        <span
+                          className="truncate text-sm leading-5 text-base-foreground"
+                          title={e.tool ?? undefined}
+                        >
+                          {e.tool === null ? UNATTRIBUTED : (toolNames?.get(e.tool) ?? e.tool)}
                         </span>
-                      )}
+                      </span>
                     </td>
                     <td className="max-w-0 pl-4">
                       <span className="flex items-center gap-2">

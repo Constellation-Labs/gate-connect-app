@@ -66,9 +66,10 @@ export interface ActivityEntry {
    *  A reading. It is what the row is allowed to *say*: the tooltip and the
    *  screen-reader text come from here and nowhere else. */
   provider: string | null;
-  /** The model id's own namespace, which `VendorMark` draws when `provider`
-   *  has no mark - because the gateway named none, or named a marketplace
-   *  account no mark is keyed on.
+  /** The namespace `VendorMark` draws when `provider` has no mark - because
+   *  the gateway named none, or named a marketplace account no mark is keyed
+   *  on. The model id's own where it has one; where it does not, `labelEntries`
+   *  fills it from the catalogue entry that names the model.
    *
    *  Separate from `provider` because it is not the same claim: it identifies
    *  *the model beside it* and not who served the request. It used to hold the
@@ -76,8 +77,8 @@ export interface ActivityEntry {
    *  Security events table began sharing it, so that a named provider with no
    *  mark of its own still falls through to the model's. Rows with no provider
    *  are disproportionately the ones that never reached one - blocked, or
-   *  failed before routing - so
-   *  announcing a derived value as the upstream would put "Anthropic" in a
+   *  failed before routing - so announcing a derived value as the upstream
+   *  would put "Anthropic" in a
    *  screen reader beside a `blocked` pill for a request Anthropic never saw.
    *  The mark is decorative and sits next to the id it came from; the words
    *  are not, so they stay with `provider`. */

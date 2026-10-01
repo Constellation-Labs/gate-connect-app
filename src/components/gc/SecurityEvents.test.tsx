@@ -227,7 +227,7 @@ describe("opening an event", () => {
  * `SecurityEvent` is the wire contract.
  */
 describe("the model cell", () => {
-  const names = modelLabelsFor(
+  const catalogue = modelLabelsFor(
     adaptModels({
       data: [{ id: "anthropic/claude-opus-4-5", owned_by: "anthropic", name: "Claude Opus 4.5" }],
     }),
@@ -235,14 +235,14 @@ describe("the model cell", () => {
   const row: SecurityEvent = { ...blocked, model: "anthropic/claude-opus-4-5" };
 
   it("names the model from the catalogue and keeps the id on hover", () => {
-    render(section({ events: [row], modelLabels: names }));
+    render(section({ events: [row], modelLabels: catalogue }));
     const cell = screen.getByText("Claude Opus 4.5");
     expect(cell.getAttribute("title")).toBe("anthropic/claude-opus-4-5");
     expect(screen.queryByText("anthropic/claude-opus-4-5")).toBeNull();
   });
 
   it("keeps the id when the catalogue does not list the model, or was not read", () => {
-    render(section({ events: [{ ...row, model: "aion-labs/aion-2-0" }], modelLabels: names }));
+    render(section({ events: [{ ...row, model: "aion-labs/aion-2-0" }], modelLabels: catalogue }));
     expect(screen.getByText("aion-labs/aion-2-0")).toBeTruthy();
     cleanup();
     render(section({ events: [row] }));
@@ -250,14 +250,14 @@ describe("the model cell", () => {
   });
 
   it("still says unattributed for a row with no model", () => {
-    render(section({ events: [{ ...row, model: null }], modelLabels: names }));
+    render(section({ events: [{ ...row, model: null }], modelLabels: catalogue }));
     expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
 
   it("reads the pipeline's unknown sentinel as no model", () => {
     // `resolved_model` holds the literal on rows whose body could not be read,
     // and the security bus passes it through where tool-events maps it to null.
-    render(section({ events: [{ ...row, model: "unknown" }], modelLabels: names }));
+    render(section({ events: [{ ...row, model: "unknown" }], modelLabels: catalogue }));
     expect(screen.queryByText("unknown")).toBeNull();
     expect(screen.queryByTitle("unknown")).toBeNull();
   });
@@ -267,7 +267,7 @@ describe("the model cell", () => {
     // Anthropic Direct is the canonical id without its vendor. This is the row
     // the Overview showed as an id while the app pane showed a name.
     const { container } = render(
-      section({ events: [{ ...row, provider: null, model: "claude-opus-4-5" }], modelLabels: names }),
+      section({ events: [{ ...row, provider: null, model: "claude-opus-4-5" }], modelLabels: catalogue }),
     );
     expect(screen.getByText("Claude Opus 4.5")).toBeTruthy();
     expect(screen.getByTitle("claude-opus-4-5")).toBeTruthy();
@@ -288,9 +288,10 @@ describe("the tool cell", () => {
     expect(screen.getByTitle("claude-code")).toBeTruthy();
     expect(screen.queryByText("claude-code")).toBeNull();
     // The Claude Code mark, in the colour the frame draws it (`1402:18014`).
-    const mark = container.querySelector('[style*="E8704E"], [style*="232, 112, 78"]');
-    expect(mark).toBeTruthy();
-    expect(mark!.querySelector("svg")).toBeTruthy();
+    const slot = screen.getByTitle("claude-code").previousElementSibling as HTMLElement;
+    expect(slot.querySelector("svg")).toBeTruthy();
+    expect(slot.style.color).toBe("rgb(232, 112, 78)");
+    void container;
   });
 
   it("prints the slug when the registry has no name for it", () => {
@@ -298,16 +299,31 @@ describe("the tool cell", () => {
     expect(screen.getByText("cursor")).toBeTruthy();
   });
 
-  it("gives a gateway platform id the mark of the product it belongs to", () => {
-    render(section({ events: [{ ...blocked, tool: "codex-desktop" }] }));
-    const cell = screen.getByTitle("codex-desktop").parentElement!;
-    expect(cell.querySelector("svg")).toBeTruthy();
+  it("gives Claude Desktop the Claude mark, in colour", () => {
+    // `claude-desktop` is the one `taxonomy::Client` id that is not a registry
+    // slug; it takes the starburst the `anthropic` domain draws.
+    render(section({ events: [{ ...blocked, tool: "claude-desktop" }] }));
+    const slot = screen.getByTitle("claude-desktop").previousElementSibling as HTMLElement;
+    expect(slot.querySelector("svg")).toBeTruthy();
+    expect(slot.style.color).toBe("rgb(232, 112, 78)");
   });
 
-  it("keeps the slot empty for a platform with no mark", () => {
-    render(section({ events: [{ ...blocked, tool: "cursor" }] }));
-    const cell = screen.getByTitle("cursor").parentElement!;
+  it("draws the other clients' marks in the row's ink, as no frame colours them", () => {
+    for (const tool of ["codex", "chatgpt", "opencode", "openclaw"]) {
+      cleanup();
+      render(section({ events: [{ ...blocked, tool }] }));
+      const slot = screen.getByTitle(tool).previousElementSibling as HTMLElement;
+      expect(slot.querySelector("svg"), tool).toBeTruthy();
+      expect(slot.style.color, tool).toBe("");
+    }
+  });
+
+  it("keeps the slot empty for a client with no mark", () => {
+    // Hermes has none in the rail either.
+    render(section({ events: [{ ...blocked, tool: "hermes" }] }));
+    const cell = screen.getByTitle("hermes").parentElement!;
     expect(cell.querySelector("svg")).toBeNull();
+    expect(cell.querySelector('[aria-hidden="true"]')).toBeTruthy();
   });
 
   it("does not reach a prototype member for a hostile slug", () => {
@@ -316,9 +332,13 @@ describe("the tool cell", () => {
     expect(cell.querySelector("svg")).toBeNull();
   });
 
-  it("still says unattributed for a row with no tool", () => {
+  it("still says unattributed for a row with no tool, behind the same slot", () => {
     render(section({ events: [{ ...blocked, tool: null }], toolNames }));
-    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
+    const dashes = screen.getAllByText("-");
+    expect(dashes.length).toBeGreaterThan(0);
+    // The dash sits where a name would, so the column's left edge holds.
+    const dash = dashes.find((d) => d.parentElement?.querySelector('[aria-hidden="true"]'));
+    expect(dash).toBeTruthy();
   });
 });
 

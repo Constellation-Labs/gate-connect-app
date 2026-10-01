@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { MARK_SLOT, type MarkSize } from "./markSize";
 
 /**
  * Brand marks for the rail's app tiles and the app pane's header tile (Figma
@@ -163,21 +164,20 @@ export function brandMarkForSection(
   return key ? brandMarkFor(key, size) : undefined;
 }
 
-
 /**
- * The gateway's platform ids that are not registry slugs, onto the slug whose
- * mark they take. `SecurityEvent.tool` is the gateway's attribution
- * (`platform-registry.ts`), which names surfaces this app has no row for -
- * the Claude and ChatGPT desktop apps, the web chats, the Codex desktop app -
- * and the mark says whose product it is, which is the same answer for each.
- * A platform neither here nor in `BRAND_BY_SLUG` (Cursor, Aider, Cline) has
- * no mark and keeps its slot empty.
+ * Client ids that are not registry slugs, onto the slug whose mark they take.
+ *
+ * `SecurityEvent.tool` is the `x-gate-client` header this app stamps on the
+ * traffic it routes, so its vocabulary is `taxonomy::Client` on the Rust side
+ * (`claude-code`, `claude-desktop`, `codex`, `chatgpt`, `opencode`, `openclaw`,
+ * `hermes`, `any-app`), not the gateway's wider platform registry: a Cursor or
+ * Aider request never arrives on this install-scoped feed. Every one of those
+ * but `claude-desktop` is already a `BRAND_BY_SLUG` key, and `claude-desktop`
+ * takes the Claude starburst the `anthropic` domain draws. `hermes` and
+ * `any-app` have no mark and keep their slot empty, as in the rail.
  */
 const TOOL_ALIASES: Record<string, string> = {
   "claude-desktop": "anthropic",
-  "chatgpt-desktop": "chatgpt",
-  "chatgpt-web": "chatgpt",
-  "codex-desktop": "codex",
 };
 
 /**
@@ -196,23 +196,28 @@ const TOOL_INK: Partial<Record<BrandName, string>> = {
 };
 
 /**
- * The mark for a tool on a light row, coloured where a frame colours it.
+ * A tool's mark on a light row, in a slot that stays whether or not there is a
+ * mark to fill it, so the names in the column line up.
+ *
+ * The counterpart of `VendorMark` for the Tool cell (`1402:18014` draws the
+ * logo at 20px). Decorative: the product name beside it is the text, so the
+ * slot is `aria-hidden` and carries no title.
  *
  * `Object.hasOwn` rather than a bare index, for the reason `providerNameFor`
- * gives: the slug is the gateway's string, and a row naming its tool
+ * gives: the slug is a string off the wire, and a row naming its tool
  * `constructor` must not reach a prototype member.
  */
-export function toolMarkFor(slug: string, size?: number): JSX.Element | undefined {
+export function ToolMark({ slug, size }: { slug: string; size: MarkSize }) {
   const key = Object.hasOwn(TOOL_ALIASES, slug) ? TOOL_ALIASES[slug] : slug;
   const name = Object.hasOwn(BRAND_BY_SLUG, key) ? BRAND_BY_SLUG[key] : undefined;
-  if (!name) return undefined;
-  const ink = TOOL_INK[name];
-  const mark = <BrandMark name={name} size={size} />;
-  return ink ? (
-    <span className="inline-flex" style={{ color: ink }}>
-      {mark}
+  const ink = name ? TOOL_INK[name] : undefined;
+  return (
+    <span
+      aria-hidden
+      className={`flex shrink-0 items-center justify-center text-base-foreground ${MARK_SLOT[size]}`}
+      style={ink ? { color: ink } : undefined}
+    >
+      {name && <BrandMark name={name} size={size} />}
     </span>
-  ) : (
-    mark
   );
 }

@@ -1,5 +1,6 @@
 import { useId, type JSX } from "react";
 import { Icon } from "./Icon";
+import { MARK_SLOT, type MarkSize } from "./markSize";
 
 /**
  * Full-colour provider marks, drawn beside a model id (Figma
@@ -476,15 +477,15 @@ export function VendorMark({
   /** What the gateway said served the request, and the only thing this row is
    *  allowed to put into words. Null when it named none. */
   provider: string | null;
-  /** The namespace to fall back to for the mark - the model id's own, where the
-   *  provider has no mark or was not named. See `ToolEventRow.vendor`. */
+  /** The namespace to fall back to for the mark where the provider has no
+   *  mark or was not named: the model id's own, or the catalogue's for an id
+   *  that carries none. See `ActivityEntry.vendor`. */
   vendor: string | null;
-  /** The glyph's size: 16 on the app pane's rows (272:3282), 20 on the Security
-   *  events table (`1402:18017` draws `anthropic 1` at 20). */
-  size?: number;
+  /** 16 on the app pane's rows, 20 on the Security events table. */
+  size?: MarkSize;
 }) {
-  const box = { width: size, height: size };
-  if (!provider && !vendor) return <span aria-hidden className="shrink-0" style={box} />;
+  const slot = MARK_SLOT[size];
+  if (!provider && !vendor) return <span aria-hidden className={`shrink-0 ${slot}`} />;
   const mark =
     (provider ? providerMarkFor(provider, size) : undefined) ??
     (vendor ? providerMarkFor(vendor, size) : undefined) ?? <Icon name="cube" size={size} />;
@@ -493,14 +494,13 @@ export function VendorMark({
       <span
         aria-hidden
         title={provider ?? undefined}
-        style={box}
         // `base.foreground`, not the muted grey the Overview's row glyphs take.
         // A brand mark is not a glyph: the colour ones carry their own fills and
         // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
         // inception, relace) inherit it - so muting the wrapper rendered OpenAI
         // grey here and inked in the picker, while Moonshot, which hard-codes
         // black, stayed black in both. Same ink as `dialogs.tsx`'s row.
-        className="flex shrink-0 items-center justify-center text-base-foreground"
+        className={`flex shrink-0 items-center justify-center text-base-foreground ${slot}`}
       >
         {mark}
       </span>

@@ -346,6 +346,9 @@ export interface ModelLabel {
 /** The catalogue as a lookup, from an id a request row carries. */
 export type ModelLabels = (id: string) => ModelLabel | undefined;
 
+/** The `owned_by` of the free catalogue's alias rows (`constellation/<name>`). */
+const FREE_ALIAS_VENDOR = "constellation";
+
 /**
  * The catalogue, indexed for the request tables.
  *
@@ -361,15 +364,27 @@ export type ModelLabels = (id: string) => ModelLabel | undefined;
  * upstream was actually called with, which canonical resolution has rewritten
  * to the provider's spelling - `claude-opus-4-5` on Anthropic Direct, `gpt-5`
  * on OpenAI. That is the canonical id with its vendor taken off, so a bare id
- * is matched against the catalogue's ids by their part after the slash, and
- * with a trailing `-YYYYMMDD` removed when the provider dates its ids. Matching
- * the catalogue is not inferring a vendor from a model family: the row is
- * named only when exactly one catalogue entry has that native spelling, and an
- * ambiguous one - two vendors publishing the same model - stays an id.
+ * is matched against the catalogue's ids by their part after the slash.
+ * Matching the catalogue is not inferring a vendor from a model family: the
+ * row is named only when exactly one catalogue entry has that native spelling,
+ * and an ambiguous one - two vendors publishing the same model - stays an id.
  *
- * Not answered: Bedrock's `us.anthropic.claude-...-v1:0` and any other id with
- * region and version wrapped around it. Those keep the id until the gateway
- * sends the canonical one on the security event, which is the real fix.
+ * Two refinements to that rule. The free catalogue lists every free model a
+ * second time as `constellation/<name>`, the same native spelling under the
+ * gateway's own namespace, which would make every model with a free alias
+ * ambiguous - the Anthropic Direct row this exists for among them. Those rows
+ * do not count towards ambiguity, since they are the gateway's name for
+ * another vendor's model rather than a vendor. And Anthropic dates some of its
+ * ids (`claude-opus-4-5-20260514`), so a bare id that matches nothing is tried
+ * again with a trailing `-YYYYMMDD` taken off; only the row's id is stripped,
+ * never the catalogue's, and an ambiguous spelling stays ambiguous under
+ * either form. No other provider's suffix is undone: OpenAI's `-YYYY-MM-DD`
+ * snapshots, Gemini's `-001` builds and Vertex's `@` versions all keep the id.
+ *
+ * Not answered either: Bedrock's `us.anthropic.claude-...-v1:0` and any other
+ * id with region and version wrapped around it. Those keep the id until the
+ * gateway sends the canonical one on the security event, which is the real
+ * fix for every case this does not cover.
  *
  * An unread catalogue gives a lookup that finds nothing, so every row keeps its
  * id. A function that is always there rather than a nullable map: every caller
@@ -382,6 +397,7 @@ export function modelLabelsFor(catalogue: GateModel[] | null): ModelLabels {
   for (const m of catalogue ?? []) {
     const label = { name: m.name, vendor: m.vendor };
     byId.set(m.id, label);
+    if (m.vendor === FREE_ALIAS_VENDOR) continue;
     const slash = m.id.indexOf("/");
     if (slash <= 0) continue;
     const native = m.id.slice(slash + 1);
@@ -393,7 +409,10 @@ export function modelLabelsFor(catalogue: GateModel[] | null): ModelLabels {
     // A namespaced id the catalogue does not list is not a native spelling of
     // anything; only a bare id is.
     if (id.includes("/")) return undefined;
-    return byNative.get(id) ?? byNative.get(id.replace(/-\d{8}$/, "")) ?? undefined;
+    // `has`, not `??`: an ambiguous spelling is stored as null and must stay the
+    // answer, rather than fall through to the undated lookup.
+    if (byNative.has(id)) return byNative.get(id) ?? undefined;
+    return byNative.get(id.replace(/-\d{8}$/, "")) ?? undefined;
   };
 }
 

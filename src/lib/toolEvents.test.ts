@@ -115,11 +115,11 @@ describe("adaptEvents", () => {
       "openai/gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
       "gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
     };
-    const names = (id: string) => table[id];
+    const catalogue = (id: string) => table[id];
     const entries = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries;
 
     it("names a row from the catalogue when the gateway sent only the id", () => {
-      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), names);
+      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), catalogue);
       expect(row.model).toBe("Claude Opus 4.5");
       // The id is still the hover, and still what the reader can search for.
       expect(row.modelId).toBe("anthropic/claude-opus-4-5");
@@ -128,18 +128,18 @@ describe("adaptEvents", () => {
     it("keeps the gateway's own label when it sent one", () => {
       const [row] = labelEntries(
         entries({ model: "anthropic/claude-opus-4-5", modelName: "Claude Opus 4 5" }),
-        names,
+        catalogue,
       );
       expect(row.model).toBe("Claude Opus 4 5");
     });
 
     it("keeps the id for a model the catalogue does not list", () => {
-      const [row] = labelEntries(entries({ model: "aion-labs/aion-2-0" }), names);
+      const [row] = labelEntries(entries({ model: "aion-labs/aion-2-0" }), catalogue);
       expect(row.model).toBe("aion-labs/aion-2-0");
     });
 
     it("leaves an unattributed row alone", () => {
-      const [row] = labelEntries(entries({ model: null }), names);
+      const [row] = labelEntries(entries({ model: null }), catalogue);
       expect(row.model).toBe("Unknown model");
       expect(row.modelId).toBeNull();
     });
@@ -150,7 +150,7 @@ describe("adaptEvents", () => {
     });
 
     it("takes the catalogue's vendor for a bare id, so the mark can be drawn", () => {
-      const [row] = labelEntries(entries({ provider: null, model: "gpt-6-luna" }), names);
+      const [row] = labelEntries(entries({ provider: null, model: "gpt-6-luna" }), catalogue);
       expect(row.model).toBe("GPT-6 Luna");
       expect(row.vendor).toBe("openai");
       // Still not a claim about who served it.
@@ -158,8 +158,38 @@ describe("adaptEvents", () => {
     });
 
     it("does not override a vendor the id already named", () => {
-      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), names);
+      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), catalogue);
       expect(row.vendor).toBe("anthropic");
+    });
+
+    it("fills the vendor on a row the gateway labelled, without touching the label", () => {
+      const [row] = labelEntries(
+        entries({ provider: null, model: "gpt-6-luna", modelName: "GPT-6 (Luna)" }),
+        catalogue,
+      );
+      expect(row.model).toBe("GPT-6 (Luna)");
+      expect(row.vendor).toBe("openai");
+    });
+
+    it("returns the same entry when it has nothing to add", () => {
+      // So a memoised consumer sees no change where there was none.
+      const before = entries({ model: "aion-labs/aion-2-0" });
+      expect(labelEntries(before, catalogue)[0]).toBe(before[0]);
+    });
+
+    it("fills the vendor on a row the gateway labelled, without touching the label", () => {
+      const [row] = labelEntries(
+        entries({ provider: null, model: "gpt-6-luna", modelName: "GPT-6 (Luna)" }),
+        catalogue,
+      );
+      expect(row.model).toBe("GPT-6 (Luna)");
+      expect(row.vendor).toBe("openai");
+    });
+
+    it("returns the same entry when it has nothing to add", () => {
+      // So a memoised consumer sees no change where there was none.
+      const before = entries({ model: "aion-labs/aion-2-0" });
+      expect(labelEntries(before, catalogue)[0]).toBe(before[0]);
     });
   });
 
