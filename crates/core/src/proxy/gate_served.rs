@@ -167,18 +167,69 @@ pub(crate) fn check_model(
 /// served, and a tool configured with fallbacks keeps working on it.
 const ROUTING_OVERRIDES: &[&str] = &["provider", "models", "route"];
 
-/// The body without any [`ROUTING_OVERRIDES`], or `None` when it has none.
-pub(crate) fn without_routing_overrides(body: &[u8]) -> Option<Vec<u8>> {
+/// The body as it is forwarded: without any [`ROUTING_OVERRIDES`], and without
+/// any tool-schema `pattern` a Gate model refuses (see
+/// [`drop_nul_patterns`]). `None` when there is nothing to change, so the
+/// caller forwards the bytes it received.
+pub(crate) fn for_gateway(body: &[u8]) -> Option<Vec<u8>> {
     let mut v: serde_json::Value = serde_json::from_slice(body).ok()?;
     let obj = v.as_object_mut()?;
-    let removed = ROUTING_OVERRIDES
+    let mut changed = ROUTING_OVERRIDES
         .iter()
         .filter(|k| obj.remove(**k).is_some())
-        .count();
-    if removed == 0 {
+        .count()
+        > 0;
+    if let Some(tools) = obj.get_mut("tools") {
+        changed |= drop_nul_patterns(tools);
+    }
+    if !changed {
         return None;
     }
     serde_json::to_vec(&v).ok()
+}
+
+/// Delete every JSON Schema `pattern` whose regex matches on a NUL character,
+/// anywhere under `tools`. Returns whether any went.
+///
+/// Claude Code's Artifact tool declares file paths as `"pattern": "^[^\0]*$"`
+/// ("no NUL character"). Muse Spark refuses the whole request over it ("Invalid
+/// JSON schema ... is not valid under any of the schemas listed in the 'anyOf'
+/// keyword"), and OpenAI models answer 200 with nothing in it; with the
+/// pattern gone both answer and call tools (staging replay, 2026-10-01, see
+/// `docs/model-app-compatibility.md`).
+///
+/// Safe to drop: a `pattern` only guides what the model writes, the app still
+/// validates the input when it runs the tool, and no model writes a NUL into a
+/// path. Only a STRING `pattern` is a schema keyword; a tool input that is
+/// itself named `pattern` (Claude Code's Grep) sits under `properties` as an
+/// object, and is left alone.
+fn drop_nul_patterns(v: &mut serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut changed = map
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .is_some_and(matches_nul)
+                && map.remove("pattern").is_some();
+            for child in map.values_mut() {
+                changed |= drop_nul_patterns(child);
+            }
+            changed
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, item| drop_nul_patterns(item) | changed),
+        _ => false,
+    }
+}
+
+/// Whether a regex source names the NUL character: `\0`, `\x00`, `\u0000`, or
+/// the character itself.
+fn matches_nul(pattern: &str) -> bool {
+    pattern.contains('\0')
+        || pattern.contains("\\0")
+        || pattern.contains("\\x00")
+        || pattern.contains("\\u0000")
 }
 
 /// An OpenAI-shaped error body. Codex, Hermes and the OpenAI SDKs all surface
@@ -286,10 +337,84 @@ mod tests {
     fn routing_overrides_are_dropped_and_nothing_else_is() {
         let body = br#"{"model":"a/b","provider":{"order":["x"]},"models":["c/d"],"route":"fallback","input":"hi"}"#;
         let out: serde_json::Value =
-            serde_json::from_slice(&without_routing_overrides(body).expect("had some")).unwrap();
+            serde_json::from_slice(&for_gateway(body).expect("had some")).unwrap();
         assert_eq!(out, serde_json::json!({"model":"a/b","input":"hi"}));
-        assert!(without_routing_overrides(br#"{"model":"a/b"}"#).is_none());
-        assert!(without_routing_overrides(b"not json").is_none());
+        assert!(for_gateway(br#"{"model":"a/b"}"#).is_none());
+        assert!(for_gateway(b"not json").is_none());
+    }
+
+    #[test]
+    fn a_nul_pattern_in_a_tool_schema_is_dropped() {
+        // Claude Code's Artifact tool, Anthropic shape.
+        let body = serde_json::json!({
+            "model": "meta-llama/muse-spark-1-2",
+            "tools": [{
+                "name": "Artifact",
+                "input_schema": {"type": "object", "properties": {
+                    "file_paths": {"type": "array", "items": {
+                        "maxLength": 1024, "minLength": 1,
+                        "pattern": "^[^\\0]*$", "type": "string"
+                    }}
+                }}
+            }]
+        });
+        let out: serde_json::Value =
+            serde_json::from_slice(&for_gateway(body.to_string().as_bytes()).unwrap()).unwrap();
+        let item = &out["tools"][0]["input_schema"]["properties"]["file_paths"]["items"];
+        assert!(item.get("pattern").is_none(), "{item}");
+        assert_eq!(item["maxLength"], 1024, "the rest of the schema stays");
+        assert_eq!(out["model"], "meta-llama/muse-spark-1-2");
+    }
+
+    #[test]
+    fn other_patterns_and_inputs_named_pattern_are_kept() {
+        // A plain regex is accepted upstream, and Grep's input called `pattern`
+        // is a property, not the keyword.
+        let body = serde_json::json!({
+            "tools": [
+                {"name": "Grep", "input_schema": {"type": "object",
+                    "properties": {"pattern": {"type": "string", "description": "regex"}},
+                    "required": ["pattern"]}},
+                {"type": "function", "function": {"name": "f", "parameters": {
+                    "type": "object", "properties": {"id": {"type": "string", "pattern": "^[a-z]+$"}}}}}
+            ]
+        });
+        assert_eq!(
+            for_gateway(body.to_string().as_bytes()),
+            None,
+            "nothing to change"
+        );
+    }
+
+    #[test]
+    fn nul_patterns_are_found_in_every_tool_shape_and_spelling() {
+        for pattern in ["^[^\\0]*$", "^[^\\x00]+$", "^[^\\u0000]*$", "^[^\u{0}]*$"] {
+            for tools in [
+                // OpenAI chat
+                serde_json::json!([{"type": "function", "function": {"name": "f",
+                    "parameters": {"properties": {"p": {"type": "string", "pattern": pattern}}}}}]),
+                // OpenAI Responses
+                serde_json::json!([{"type": "function", "name": "f",
+                    "parameters": {"properties": {"p": {"anyOf": [{"type": "string", "pattern": pattern}, {"type": "null"}]}}}}]),
+            ] {
+                let body = serde_json::json!({"tools": tools});
+                let out = for_gateway(body.to_string().as_bytes())
+                    .unwrap_or_else(|| panic!("{pattern:?} was not dropped"));
+                assert!(
+                    !String::from_utf8(out).unwrap().contains("pattern"),
+                    "{pattern:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn messages_are_never_rewritten() {
+        // Only `tools` is a schema. A user who pastes a schema into a prompt
+        // sends it as text, and it reaches the model as sent.
+        let body = serde_json::json!({"messages": [{"role": "user",
+            "content": {"pattern": "^[^\\0]*$"}}]});
+        assert_eq!(for_gateway(body.to_string().as_bytes()), None);
     }
 
     #[test]

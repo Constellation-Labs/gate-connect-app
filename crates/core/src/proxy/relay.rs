@@ -857,10 +857,10 @@ async fn proxy(
                 &refusal.message,
             ));
         }
-        // Nor any routing override in the body; see `without_routing_overrides`.
-        // The length changes with it, so the caller's `content-length` goes and
-        // the client computes its own.
-        if let Some(stripped) = super::gate_served::without_routing_overrides(&body) {
+        // Nor any routing override, nor a tool-schema pattern a Gate model
+        // refuses; see `for_gateway`. The length changes with it, so the
+        // caller's `content-length` goes and the client computes its own.
+        if let Some(stripped) = super::gate_served::for_gateway(&body) {
             body = Bytes::from(stripped);
             headers.remove(hyper::header::CONTENT_LENGTH);
             attempt.remove(hyper::header::CONTENT_LENGTH);

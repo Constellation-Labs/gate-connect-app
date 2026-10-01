@@ -39,8 +39,8 @@ the live failure.
 
 Eight models work, so the failures are a risk we assume rather than a reason
 to escalate. Two are still worth raising with the gateway team: the OpenAI
-models fail silently (an empty answer, not an error), and one gateway change
-would fix both them and Muse Spark (below).
+models fail silently (an empty answer, not an error), and one change fixes
+both them and Muse Spark. That change is now in Gate Connect (below).
 
 ## The NUL-escape pattern, and dropping it before forwarding
 
@@ -72,9 +72,19 @@ Why it is safe:
   Spark and the OpenAI models answered and called tools correctly in the
   staging replay.
 
-Where it would live: in the gateway (the `gate` repo), in the step that
-converts Anthropic requests for other providers, not in Gate Connect. It would
-fix every app that sends a schema like this, not only Claude Code.
+**Done in Gate Connect.** Every app on Gate models (Codex, Hermes, Claude
+Code) sends through the relay's Gate models route, which already rewrites the
+body before forwarding (it drops routing overrides). It now drops a NUL-escape
+`pattern` under `tools` too (`gate_served::for_gateway`). Only a string
+`pattern` is the schema keyword, so a tool input that is itself named
+`pattern` (Claude Code's Grep) is left alone. Verified live on staging with
+`crates/core/tests/live_tool_schema_replay.rs`: all six failing models answer
+and call tools through the route, and claude-sonnet-5 is unchanged.
+
+Still open for the gateway: a request that does not come through Gate
+Connect's Gate models route (another client, or an app on its own model under
+a PAYG org) is not rewritten, so the same fix in the gateway's Anthropic
+conversion would cover everyone.
 
 The tradeoff: the gateway quietly edits what the app sent, and it fixes one
 specific case. If another tool uses another regex these providers dislike, it
@@ -83,9 +93,8 @@ than treated as settled.
 
 ## Open questions to escalate
 
-- **NUL escape in a schema pattern** (`^[^\0]*$`). Muse Spark refuses it with
-  a 400. OpenAI models answer 200 with nothing in them. The gateway could
-  drop or rewrite that pattern before forwarding, which would fix both.
+- **NUL escape in a schema pattern** (`^[^\0]*$`). Fixed for apps on Gate
+  models in Gate Connect (above); the gateway could do the same for everyone.
 - **Prompt caching** (`cache_control`). Some upstreams refuse it, so every
   Claude Code request to them fails. The gateway could strip it for those.
 - **Catalogue entries with no route**, such as

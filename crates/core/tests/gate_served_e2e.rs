@@ -398,6 +398,62 @@ async fn the_route_drops_the_tools_own_credentials_and_provider_pins() {
     assert_eq!(sent["model"], "anthropic/claude-opus-5");
 }
 
+/// Claude Code's Artifact tool declares file paths with a NUL-escape pattern
+/// that Muse Spark refuses and OpenAI models answer empty. The served route
+/// forwards the request without it, and everything else as sent - including a
+/// Grep input that is itself named `pattern` (docs/model-app-compatibility.md).
+#[tokio::test]
+async fn the_route_drops_a_nul_pattern_from_tool_schemas() {
+    let _s = SERIAL.lock().await;
+    let _home = TempHome::set();
+    preferences::set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["meta-llama/muse-spark-1-2".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(gateway.base_url.clone());
+
+    let resp = reqwest::Client::new()
+        .post(url(
+            &engine,
+            "/__gate/t/claude-code/gate/v1/messages?beta=true",
+        ))
+        .json(&serde_json::json!({
+            "model": "meta-llama/muse-spark-1-2",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"name": "Artifact", "input_schema": {"type": "object", "properties": {
+                    "file_paths": {"type": "array", "items": {
+                        "maxLength": 1024, "minLength": 1,
+                        "pattern": "^[^\\0]*$", "type": "string"}}}}},
+                {"name": "Grep", "input_schema": {"type": "object",
+                    "properties": {"pattern": {"type": "string"}},
+                    "required": ["pattern"]}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let sent: serde_json::Value = serde_json::from_str(&reqs[0].body).unwrap();
+    let item = &sent["tools"][0]["input_schema"]["properties"]["file_paths"]["items"];
+    assert!(item.get("pattern").is_none(), "{item}");
+    assert_eq!(item["maxLength"], 1024);
+    assert_eq!(
+        sent["tools"][1]["input_schema"]["properties"]["pattern"]["type"], "string",
+        "Grep's input named pattern stays"
+    );
+    assert_eq!(sent["model"], "meta-llama/muse-spark-1-2");
+}
+
 /// The route serves only a tool that supports Gate models, and only once this
 /// install has accepted paid use; a set stored without either is refused
 /// before the gateway (review on #382).
