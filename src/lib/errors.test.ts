@@ -307,3 +307,49 @@ describe("an unfinished browser sign-in", () => {
     expect(c.title).not.toMatch(/reach the gateway/i);
   });
 });
+
+describe("a connect an integration refused for a reason the user can fix", () => {
+  it("keeps the title and says what to do, in the window's words", () => {
+    const raw =
+      "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic|openai|openrouter|opencode|opencode-go` first, then re-run connect.";
+    const c = classifyError(raw, "connect");
+    expect(c.title).toBe("Couldn’t connect this tool");
+    expect(c.hint).toMatch(/opencode auth login/);
+    expect(c.hint).not.toMatch(/re-run connect/);
+    expect(c.raw).toBe(raw);
+  });
+
+  it("carries the providers an off-catalogue refusal names", () => {
+    const c = classifyError(
+      "None of the configured OpenCode providers can route through Gate yet (llamacpp, ollama). Gate has no upstream domain for them.",
+      "connect",
+    );
+    expect(c.hint).toMatch(/\(llamacpp, ollama\)/);
+  });
+
+  it("names the tool a not-installed refusal names", () => {
+    const c = classifyError(
+      "OpenClaw is not installed on this machine -- install it from https://docs.openclaw.ai first",
+      "connect",
+    );
+    expect(c.hint).toMatch(/^OpenClaw isn’t installed/);
+  });
+
+  it("keeps Try again for anything not on the list", () => {
+    for (const raw of [
+      "failed to write ~/.codex/config.toml",
+      "writing /Users/x/.codex/config.toml: Permission denied (os error 13)",
+      "expected value at line 1 column 1",
+      "error sending request for url (https://gw.example/v1)",
+    ]) {
+      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\./);
+    }
+  });
+
+  it("leaves every other action's copy alone", () => {
+    expect(
+      classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
+        .hint,
+    ).toMatch(/^Try again\./);
+  });
+});

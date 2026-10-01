@@ -280,6 +280,15 @@ export function classifyError(
     };
   }
 
+  // A tool write an integration refused for a reason the user can fix: "No
+  // supported OpenCode providers found to route through Gate. Run ...". The
+  // body says what to do rather than "Try again", which hid the instruction
+  // behind Details (staging QA, 2026-09-30). The title stays the generic one.
+  if (context === "connect") {
+    const hint = connectRefusalHint(raw);
+    if (hint) return { title: "Couldn’t connect this tool", hint, raw };
+  }
+
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     // The write already succeeded; only the re-read of it failed, so this says
@@ -317,6 +326,53 @@ export function classifyError(
     hint: "Try again. If it keeps failing, the details below help when reporting it.",
     raw,
   };
+}
+
+/**
+ * The window's copy for a connect an integration refused, by the refusal's
+ * own wording. `null` for anything not listed, which keeps "Try again".
+ *
+ * A list, not a test of the message's shape: a backend message reaches the
+ * body only once someone has written copy for it. Reading any one-sentence
+ * error as an instruction also let through paths ("failed to write
+ * ~/.codex/config.toml"), parser output and network errors. And the backend's
+ * own sentences are written for the CLI ("then re-run connect"), so the window
+ * says it in its own words. The patterns follow the `bail!`s in
+ * `crates/core/src/integrations/`; a reworded refusal falls back to "Try
+ * again", with the full text still under Details.
+ */
+const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
+  [
+    /^No supported OpenCode providers found to route through Gate\b/,
+    () =>
+      "OpenCode isn’t signed in to a provider Gate can route. Run opencode auth login, then turn OpenCode on again.",
+  ],
+  [
+    /^None of the configured OpenCode providers can route through Gate yet \(([^)]*)\)/,
+    (m) => `None of OpenCode’s providers can route through Gate yet (${m[1]}).`,
+  ],
+  [
+    /^Codex isn't logged in yet\b/,
+    () => "Codex isn’t signed in yet. Run codex login, then turn it on again.",
+  ],
+  [
+    /^Hermes already has its own proxy settings in ~\/\.hermes\/\.env\b/,
+    () =>
+      "Hermes already has its own proxy settings in ~/.hermes/.env, and Gate left them alone. Remove them to route Hermes through Gate.",
+  ],
+  [
+    /^(Claude Code|Codex|OpenCode|OpenClaw|Hermes) is not installed\b/,
+    (m) => `${m[1]} isn’t installed on this machine. Install it, then turn it on again.`,
+  ],
+];
+
+export function connectRefusalHint(raw: string): string | null {
+  const text = raw.trim();
+  for (const [pattern, hint] of CONNECT_REFUSALS) {
+    const m = text.match(pattern);
+    if (m) return hint(m);
+  }
+  return null;
 }
 
 /**

@@ -152,7 +152,8 @@ export function useRouting({
 }) {
   const [busy, setBusy] = useState(false);
   /**
-   * Slugs whose last config write failed.
+   * Slugs whose last config write failed, each with the direction that was
+   * asked for (`true` for a connect).
    *
    * Without this, a failed write left the row asserting whatever it said before:
    * the error went to a transient banner, and the status line - which is the
@@ -165,7 +166,9 @@ export function useRouting({
    * succeeds. Not persisted: a failure that survived a restart would outlive
    * whatever caused it.
    */
-  const [writeFailures, setWriteFailures] = useState<ReadonlySet<string>>(new Set());
+  const [writeFailures, setWriteFailures] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
   const [prompt, setPrompt] = useState<RoutingPrompt | null>(null);
   // The pending gate's resolver. A promise the dialog completes, so the action
   // reads as a straight sequence rather than a callback chain.
@@ -533,7 +536,7 @@ export function useRouting({
         changed = true;
         setWriteFailures((prev) => {
           if (!prev.has(slug)) return prev;
-          const next = new Set(prev);
+          const next = new Map(prev);
           next.delete(slug);
           return next;
         });
@@ -558,7 +561,7 @@ export function useRouting({
           // failed" on the row would blame a write that was never the problem
           // (for the certificate, one never attempted).
           if (!(e instanceof TrustFailed) && !isRoutingOffRefusal(describe(e)))
-            setWriteFailures((prev) => new Set(prev).add(slug));
+            setWriteFailures((prev) => new Map(prev).set(slug, routed));
         }
       } finally {
         await settle();

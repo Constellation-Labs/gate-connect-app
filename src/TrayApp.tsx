@@ -678,7 +678,11 @@ export function TrayApp() {
           slug: t.slug,
           name: t.name,
           status: verdictStatus(verdicts.get(t.slug), {
-            writeFailed: routing.writeFailures.has(t.slug),
+            // Only a failed turn-OFF: the tool is still routed and the click
+            // did not land. A failed turn-on leaves a tool that was never
+            // routed, so the sweep's own reading (Not routed) is the true one;
+            // the pane's alert says the write failed.
+            writeFailed: routing.writeFailures.get(t.slug) === false,
             // Same reading the window's rail takes, so the two surfaces
             // cannot disagree about whether a row is inspected. AG-932.
             coverage: t.coverage,

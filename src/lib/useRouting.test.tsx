@@ -234,7 +234,7 @@ describe("useRouting: re-sync and failures", () => {
     });
 
     expect(onError).toHaveBeenCalledWith(expect.any(Error), "connect", "claude-code");
-    expect(api.current!.writeFailures.has("claude-code")).toBe(true);
+    expect(api.current!.writeFailures.get("claude-code")).toBe(true);
   });
 
   it("reports a certificate install that fails inside a connect as the install's", async () => {
