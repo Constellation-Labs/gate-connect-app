@@ -191,6 +191,31 @@ test.describe("new UI routing", () => {
     await expect(app.page.getByRole("alert")).toHaveCount(0);
   });
 
+  test("a connect refused because routing is off is the window's, not the app's", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        connect_tool: "configuring Claude Code: the Gate proxy is not running -- turn routing on",
+      },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+    await expect(app.page.getByRole("alert")).toContainText("Turn on “Route through Gate” first");
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await expect(app.page.getByRole("button", { name: "Dismiss alert" })).toHaveCount(0);
+  });
+
   test("a failed write stays off Overview", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
@@ -315,7 +340,7 @@ test.describe("new UI drift repair", () => {
     ).toHaveCount(0);
   });
 
-  test("the pane alert's switch is the retry, and dismissing it keeps the row's state", async ({
+  test("the pane alert's switch is the retry", async ({
     boot,
   }) => {
     const app = await boot({
