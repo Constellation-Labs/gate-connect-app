@@ -171,24 +171,11 @@ describe("adaptEvents", () => {
       expect(row.vendor).toBe("openai");
     });
 
-    it("returns the same entry when it has nothing to add", () => {
-      // So a memoised consumer sees no change where there was none.
-      const before = entries({ model: "aion-labs/aion-2-0" });
-      expect(labelEntries(before, catalogue)[0]).toBe(before[0]);
-    });
-
-    it("fills the vendor on a row the gateway labelled, without touching the label", () => {
-      const [row] = labelEntries(
-        entries({ provider: null, model: "gpt-6-luna", modelName: "GPT-6 (Luna)" }),
-        catalogue,
-      );
-      expect(row.model).toBe("GPT-6 (Luna)");
-      expect(row.vendor).toBe("openai");
-    });
-
-    it("returns the same entry when it has nothing to add", () => {
-      // So a memoised consumer sees no change where there was none.
-      const before = entries({ model: "aion-labs/aion-2-0" });
+    it("returns the same entry when the catalogue has nothing to add", () => {
+      // Listed, so the lookup answers; but the gateway labelled it and the id
+      // already names its vendor, so neither field changes. A memoised
+      // consumer must see no change where there was none.
+      const before = entries({ model: "anthropic/claude-opus-4-5", modelName: "Claude Opus 4 5" });
       expect(labelEntries(before, catalogue)[0]).toBe(before[0]);
     });
   });

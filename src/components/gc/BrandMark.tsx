@@ -181,6 +181,22 @@ const TOOL_ALIASES: Record<string, string> = {
 };
 
 /**
+ * Product names for the client ids that have no registry row, so the Tool cell
+ * names them beside their mark rather than printing the slug. Every other id
+ * `taxonomy::Client` can send is a registry slug and takes `Tool.product_name`.
+ */
+const CLIENT_NAMES: Record<string, string> = {
+  "claude-desktop": "Claude Desktop",
+  chatgpt: "ChatGPT",
+  "any-app": "Any app",
+};
+
+/** A client id's product name when the registry has none, guarded as `ToolMark` is. */
+export function clientNameFor(slug: string): string | undefined {
+  return Object.hasOwn(CLIENT_NAMES, slug) ? CLIENT_NAMES[slug] : undefined;
+}
+
+/**
  * Ink for a mark drawn on a light row rather than the rail's dark tile.
  *
  * `BrandMark`'s paths take `currentColor` so the tile can ink them `#F9FAFB`,

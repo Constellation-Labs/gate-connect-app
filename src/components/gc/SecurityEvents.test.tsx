@@ -283,7 +283,7 @@ describe("the tool cell", () => {
   const toolNames = new Map([["claude-code", "Claude Code"]]);
 
   it("draws the tool's mark and product name, with the slug on hover", () => {
-    const { container } = render(section({ events: [blocked], toolNames }));
+    render(section({ events: [blocked], toolNames }));
     expect(screen.getByText("Claude Code")).toBeTruthy();
     expect(screen.getByTitle("claude-code")).toBeTruthy();
     expect(screen.queryByText("claude-code")).toBeNull();
@@ -291,12 +291,24 @@ describe("the tool cell", () => {
     const slot = screen.getByTitle("claude-code").previousElementSibling as HTMLElement;
     expect(slot.querySelector("svg")).toBeTruthy();
     expect(slot.style.color).toBe("rgb(232, 112, 78)");
-    void container;
   });
 
-  it("prints the slug when the registry has no name for it", () => {
-    render(section({ events: [{ ...blocked, tool: "cursor" }], toolNames }));
-    expect(screen.getByText("cursor")).toBeTruthy();
+  it("names the clients the registry has no row for", () => {
+    for (const [tool, name] of [
+      ["claude-desktop", "Claude Desktop"],
+      ["chatgpt", "ChatGPT"],
+      ["any-app", "Any app"],
+    ]) {
+      cleanup();
+      render(section({ events: [{ ...blocked, tool }], toolNames }));
+      expect(screen.getByText(name), tool).toBeTruthy();
+      expect(screen.getByTitle(tool), tool).toBeTruthy();
+    }
+  });
+
+  it("prints the id when nothing names it", () => {
+    render(section({ events: [{ ...blocked, tool: "some-new-client" }], toolNames }));
+    expect(screen.getByText("some-new-client")).toBeTruthy();
   });
 
   it("gives Claude Desktop the Claude mark, in colour", () => {
@@ -327,9 +339,14 @@ describe("the tool cell", () => {
   });
 
   it("does not reach a prototype member for a hostile slug", () => {
-    render(section({ events: [{ ...blocked, tool: "constructor" }] }));
-    const cell = screen.getByTitle("constructor").parentElement!;
-    expect(cell.querySelector("svg")).toBeNull();
+    for (const tool of ["constructor", "__proto__", "hasOwnProperty"]) {
+      cleanup();
+      render(section({ events: [{ ...blocked, tool }] }));
+      const cell = screen.getByTitle(tool).parentElement!;
+      expect(cell.querySelector("svg"), tool).toBeNull();
+      // Printed as its id, not as a function's source.
+      expect(screen.getByText(tool), tool).toBeTruthy();
+    }
   });
 
   it("still says unattributed for a row with no tool, behind the same slot", () => {
@@ -339,6 +356,8 @@ describe("the tool cell", () => {
     // The dash sits where a name would, so the column's left edge holds.
     const dash = dashes.find((d) => d.parentElement?.querySelector('[aria-hidden="true"]'));
     expect(dash).toBeTruthy();
+    // The same 20px slot the mark takes on an attributed row.
+    expect(dash!.parentElement!.querySelector('[aria-hidden="true"]')!.className).toContain("size-5");
   });
 });
 

@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
 import { attributed, vendorFromModelId } from "../../lib/toolEvents";
 import type { ModelLabels } from "../../lib/toolModels";
-import { ToolMark } from "./BrandMark";
+import { ToolMark, clientNameFor } from "./BrandMark";
+import { MARK_SLOT } from "./markSize";
 import { VendorMark } from "./ProviderMark";
 import { BADGE_STYLES, Card, CardHeader, EmptyNote, GUARDRAIL_INK, OutlineButton, Pill, Skeleton } from "./base";
 import type { IconName } from "./Icon";
@@ -193,10 +194,10 @@ export interface SecurityEventsProps {
    *  the id stays on hover. */
   modelLabels?: ModelLabels;
   /** Product names by tool slug ("Claude Code" for `claude-code`), from the
-   *  registry's `Tool.product_name`, for the Tool cell. The gateway sends its
-   *  own platform id, which for the tools this app routes is the registry slug;
-   *  a platform the registry has no row for (`claude-desktop`, `cursor`) is not
-   *  in the map and prints as its id. */
+   *  registry's `Tool.product_name`, for the Tool cell. The event's `tool` is
+   *  the `x-gate-client` id this app stamps (`taxonomy::Client`); the three of
+   *  those with no registry row take `clientNameFor`, and anything else prints
+   *  as its id. */
   toolNames?: ReadonlyMap<string, string>;
 }
 
@@ -369,7 +370,7 @@ export function SecurityEvents({
                         {/* An unattributed row keeps the slot too, so its dash
                             sits where the model cell's does. */}
                         {e.tool === null ? (
-                          <span aria-hidden className="size-5 shrink-0" />
+                          <span aria-hidden className={`shrink-0 ${MARK_SLOT[20]}`} />
                         ) : (
                           <ToolMark slug={e.tool} size={20} />
                         )}
@@ -378,7 +379,9 @@ export function SecurityEvents({
                           className="truncate text-sm leading-5 text-base-foreground"
                           title={e.tool ?? undefined}
                         >
-                          {e.tool === null ? UNATTRIBUTED : (toolNames?.get(e.tool) ?? e.tool)}
+                          {e.tool === null
+                            ? UNATTRIBUTED
+                            : (toolNames?.get(e.tool) ?? clientNameFor(e.tool) ?? e.tool)}
                         </span>
                       </span>
                     </td>

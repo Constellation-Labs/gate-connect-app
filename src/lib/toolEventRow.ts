@@ -78,8 +78,8 @@ export interface ActivityEntry {
    *  mark of its own still falls through to the model's. Rows with no provider
    *  are disproportionately the ones that never reached one - blocked, or
    *  failed before routing - so announcing a derived value as the upstream
-   *  would put "Anthropic" in a
-   *  screen reader beside a `blocked` pill for a request Anthropic never saw.
+   *  would put "Anthropic" in a screen reader beside a `blocked` pill for a
+   *  request Anthropic never saw.
    *  The mark is decorative and sits next to the id it came from; the words
    *  are not, so they stay with `provider`. */
   vendor: string | null;
