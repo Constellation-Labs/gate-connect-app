@@ -37,6 +37,15 @@ use crate::registry::{self, GateModelState, ToolId};
 /// calls back in here.
 static FLOW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The most Gate models one tool can be put on at once.
+///
+/// A product limit, not a technical one (design, 2026-09-30): the picker stops
+/// at this many, and [`choose`] refuses more, so the CLI and anything else that
+/// stores a choice cannot go past what the window allows. Only a Gate choice is
+/// held to it. App default keeps whatever set it remembers, so a set stored
+/// before the limit existed can still be put back on the tool's own model.
+pub const MAX_GATE_MODELS: usize = 4;
+
 fn flow_guard() -> std::sync::MutexGuard<'static, ()> {
     FLOW_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -74,6 +83,12 @@ pub fn choose(
     acknowledge_paid_use: bool,
     meta: Vec<(String, GateModelMeta)>,
 ) -> Result<bool> {
+    if source == ModelSource::Gate && model_ids.len() > MAX_GATE_MODELS {
+        anyhow::bail!(
+            "{} Gate models were chosen, and a tool can use at most {MAX_GATE_MODELS}",
+            model_ids.len()
+        );
+    }
     let _guard = flow_guard();
     let integ = registry::find(tool);
     let supported = integ.as_ref().is_some_and(|i| i.supports_gate_models());

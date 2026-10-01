@@ -30,29 +30,30 @@ export type {
 import type { ActivityEntry } from "../../lib/toolEventRow";
 
 export interface GateModel {
-  /** Model vendor, e.g. "anthropic". */
-  vendor: string;
   /**
-   * Every enabled model, in the user's order.
+   * Every enabled model, in display order: the one the app's config starts on
+   * first.
    *
-   * The whole set, not the first of it. Figma 228:89517 draws this card with a
-   * single model row, and following that drew a heading reading "Current Gate
-   * models" over exactly one id - which reads as the card having lost five of
-   * them, because that is indistinguishable from what it would look like if it
-   * had. A count in the heading is not worth a list the user cannot see.
+   * The whole set, not the first of it. Figma 228:89517 drew this card with a
+   * single model row, and following that drew a heading over exactly one id
+   * while five more were enabled, which reads as the card having lost them.
+   * The 2026-09-29 redraw (`1410:31957`) draws the set as a grid, one cell per
+   * model with its own vendor and mark, which is what this renders. A choice
+   * made now is at most `MAX_GATE_MODELS`, so two rows; a set stored before
+   * the limit existed can still draw more until it is trimmed.
    *
-   * Supersedes the earlier `alsoEnabled` count, which drove only the heading's
-   * plural: a number that says "and five others" without naming them answers
-   * the wrong half of the question.
-   *
-   * Listed the way the confirmation dialog lists a set (130:48278): stacked, and
-   * with no vendor mark once there is more than one, since a single glyph cannot
-   * stand for several vendors and repeating it per line would claim each id
-   * belongs to the first one's.
+   * Each model's vendor is read off its id's namespace rather than carried
+   * here: the catalogue is loaded only while the picker is open.
    */
   ids: string[];
 }
 
+
+/** A card's action button: base's geometry from the Figma audit (h-8,
+ *  rounded-control, the moulded shadow). Shared by `InfoRow`'s actions and the
+ *  Gate models grid's "Choose models", so the two cannot drift. */
+const CARD_ACTION_BUTTON =
+  "flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary";
 
 /** Anchor for the Tokens saved counter's jump target on this pane. */
 const RECENT_ACTIVITY_SECTION_ID = "recent-activity";
@@ -692,34 +693,47 @@ function ModelSelection({
                 No Gate model chosen yet. Choose one to write it into {appName}&apos;s config.
               </EmptyNote>
             ) : (
-              <InfoRow
-                // No mark for a set: see `GateModel.ids`.
-                icon={
-                  gateModel.ids.length === 1
-                    ? (providerMarkFor(gateModel.vendor) ?? <Icon name="cube" size={16} />)
-                    : undefined
-                }
-                actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
-              >
-                {gateModel.ids.length === 1 ? (
-                  <>
-                    <p className="text-base-2xs leading-4 text-base-muted-foreground">
-                      {gateModel.vendor}
-                    </p>
-                    <p className="text-sm leading-5 text-base-foreground">
-                      {gateModel.ids[0]}
-                    </p>
-                  </>
-                ) : (
-                  <ul className="flex flex-col gap-1">
-                    {gateModel.ids.map((id) => (
-                      <li key={id} className="truncate text-sm leading-5 text-base-foreground">
-                        {id}
+              // `1410:31957`: the set as a two-column grid, each cell a
+              // vendor mark over vendor and id, and one footer under a rule
+              // with the card's only action. The count the footer used to
+              // carry ("N of M models enabled") went with the redraw: the
+              // cells state the set, and the picker states the limit.
+              <div className="rounded-control border border-base-border">
+                <ul
+                  aria-label={`Gate models for ${appName}`}
+                  className="grid grid-cols-2 gap-x-4 gap-y-3 p-3"
+                >
+                  {gateModel.ids.map((id) => {
+                    const vendor = id.split("/")[0];
+                    return (
+                      <li key={id} className="flex min-w-0 items-center gap-3">
+                        <span
+                          aria-hidden
+                          className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
+                        >
+                          {providerMarkFor(vendor) ?? <Icon name="cube" size={16} />}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-base-2xs leading-4 text-base-muted-foreground">
+                            {vendor}
+                          </p>
+                          <p className="truncate text-sm leading-5 text-base-foreground">{id}</p>
+                        </div>
                       </li>
-                    ))}
-                  </ul>
-                )}
-              </InfoRow>
+                    );
+                  })}
+                </ul>
+                <div className="flex justify-end border-t border-base-border p-3">
+                  <button
+                    type="button"
+                    onClick={onChangeModel}
+                    disabled={busy}
+                    className={CARD_ACTION_BUTTON}
+                  >
+                    Choose models
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -864,7 +878,7 @@ function InfoRow({
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className={CARD_ACTION_BUTTON}
         >
           {action.label}
           {action.external && <Icon name="squareArrowOutUpRight" size={16} />}

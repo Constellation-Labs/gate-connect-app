@@ -116,6 +116,7 @@ export function Modal({
   children,
   secondary,
   primary,
+  footerStart,
   closeButton,
   onDismiss,
   onClose,
@@ -134,6 +135,10 @@ export function Modal({
   children?: ReactNode;
   secondary?: ModalButton;
   primary?: ModalButton;
+  /** A control at the footer's left edge, across from the buttons. Only the
+   *  model picker draws one: "Clear selections" as a text link
+   *  (`1410:31315`). Drawn only alongside a footer button. */
+  footerStart?: ReactNode;
   /** Draw a close X in the top-right corner (Figma 139:66759).
    *
    *  Opt-in because most dialogs here end in a button row, and a second way out
@@ -302,7 +307,8 @@ export function Modal({
           // `whitespace-nowrap` alone stops the label wrapping but still lets
           // the flex item shrink under it, so the text overflows its own box
           // instead of the row wrapping.
-          <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-3">
+          <div className="mt-6 flex shrink-0 flex-wrap items-center justify-end gap-3">
+            {footerStart && <div className="mr-auto">{footerStart}</div>}
             {secondary && (
               // `disabled` is honoured here the same way the other two honour
               // it. It used to be silently ignored, which made `ModalButton`'s
