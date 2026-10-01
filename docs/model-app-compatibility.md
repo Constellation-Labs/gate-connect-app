@@ -27,6 +27,60 @@ request to call the Bash tool. The Artifact tool's `file_paths` schema, which
 interactive sessions load and `claude -p` does not, was added to reproduce
 the live failure.
 
+## Claude Code on Gate models (2026-10-01)
+
+| Result | Models | Cause |
+|---|---|---|
+| Works | claude-opus-5, claude-sonnet-5, gemini-3-1-flash-lite, deepseek-v4-1-flash, deepseek-v4-flash, kimi-k2-6, glm-5-2, grok-4-6 | |
+| 400 error | muse-spark-1-1, 1-2, 1-3 | Refuses a schema pattern with a NUL escape (`^[^\0]*$`) in Claude Code's Artifact tool |
+| Empty reply, no error | gpt-5.6-terra, gpt-6-1-sol, gpt-6-luna | Same pattern |
+| 403 error | deepseek/r1, deepseek/v3, devstral-2-123b | Refuses Claude Code's prompt caching |
+| 404 error | qwen3-235b-a22b-instruct-2507 | Listed in the catalogue but never served, even outside Claude Code |
+
+Eight models work, so the failures are a risk we assume rather than a reason
+to escalate. Two are still worth raising with the gateway team: the OpenAI
+models fail silently (an empty answer, not an error), and one gateway change
+would fix both them and Muse Spark (below).
+
+## The NUL-escape pattern, and dropping it before forwarding
+
+Claude Code describes each tool's inputs as a JSON Schema. One tool
+(Artifact) says file paths must match the regex `^[^\0]*$`, meaning "no NUL
+character". Muse Spark refuses the whole request because of that one rule
+(400); the OpenAI models accept it and come back empty.
+
+The gateway could walk the tool schemas before forwarding and delete any
+`pattern` whose regex contains `\0`:
+
+```json
+{"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\0]*$"}
+```
+
+becomes
+
+```json
+{"type": "string", "minLength": 1, "maxLength": 1024}
+```
+
+Why it is safe:
+
+- **The rule does almost nothing.** A file path with a NUL character
+  essentially never happens, and the model never sends one.
+- **Nothing breaks without it.** A `pattern` only guides what the model
+  writes; Claude Code still validates the tool's input when it runs the tool.
+- **Tested.** With the pattern removed, or replaced by a plain one, Muse
+  Spark and the OpenAI models answered and called tools correctly in the
+  staging replay.
+
+Where it would live: in the gateway (the `gate` repo), in the step that
+converts Anthropic requests for other providers, not in Gate Connect. It would
+fix every app that sends a schema like this, not only Claude Code.
+
+The tradeoff: the gateway quietly edits what the app sent, and it fixes one
+specific case. If another tool uses another regex these providers dislike, it
+needs another rule. That is why it is raised with the gateway team rather
+than treated as settled.
+
 ## Open questions to escalate
 
 - **NUL escape in a schema pattern** (`^[^\0]*$`). Muse Spark refuses it with
