@@ -78,9 +78,11 @@ of `diagnostics_opted_out`.
     lock gives up after ten seconds, so a stuck CLI (or a stuck app, for the
     CLI) cannot hang a sign-out, while the app's own writers queue on the mutex
     with no timeout. If a CLI logout's forget gives up while the app's save
-    holds the lock, the record can briefly keep the old sub, until the main
-    window next notes the session as signed out. The record is announced to the
-    windows from inside the lock, so announcements follow the order of the
+    holds the lock, the record keeps the old sub until the main window next
+    notes the session as signed out, or at the latest until the next launch,
+    whose first identity read finds no account and finishes the forget. The
+    record is announced to the windows from inside the lock, so announcements
+    follow the order of the
     writes.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the

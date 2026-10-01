@@ -77,7 +77,7 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     expect(funnel).toMatch(/Aggregating by:\s+organization/);
   });
 
-  /** Review design A: no server-side alias ties an API-key install to anyone,
+  /** No server-side alias ties an API-key install to anyone,
    *  so neither the inventory nor the disclosure may say one does. */
   it("claims no server-side link of the device id, and discloses the opt-out note", () => {
     const dialogs = readFileSync(resolve(root, "src/components/gc/dialogs.tsx"), "utf8").replace(/\r\n/g, "\n");
@@ -85,16 +85,18 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     expect(dialogs).not.toContain("$create_alias");
     expect(dialogs).not.toMatch(/key&rsquo;s account/);
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
-    // Review items 6 and 7: the copy names the switch, and the no and the Skip.
+    // The copy names the switch, and the no and the Skip.
     expect(dialogs).toMatch(/Once you sign in, and while\s+sharing is on/);
     // Once per install, so the copy says "the first time".
     expect(dialogs).toMatch(/The first time you say no, or turn sharing off later, one final note/);
-    // Review follow-up M3: the gateway does store the device id with requests.
+    // The gateway does store the device id with requests.
     expect(dialogs).toMatch(/stored with each request your account sends/);
     expect(dialogs).not.toMatch(/does not use it to tie this device/);
     const setup = readFileSync(resolve(root, "src/components/gc/setup.tsx"), "utf8").replace(/\r\n/g, "\n");
-    // Review item 10: the onboarding step says what the yes ties events to.
+    // The onboarding step says what the yes ties events to.
     expect(setup).toMatch(/tied to your organization and, if you signed in with\s+Constellation, your account\./);
+    // And that a no or a Skip still sends its one final note.
+    expect(setup).toMatch(/Saying no or skipping still sends one\s+final note saying so, tied the same way\./);
     const upload = readFileSync(resolve(root, "src/lib/diagnosticsUpload.ts"), "utf8").replace(/\r\n/g, "\n");
     expect(upload).not.toMatch(/anonymous posture/);
   });

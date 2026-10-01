@@ -282,9 +282,9 @@ impl OAuthTokens {
 
     /// The Cognito `sub` from the id token: the stable, opaque user id the
     /// dashboard identifies its PostHog person with, and the one the gateway's
-    /// `first_gateway_request` event is sent under. The app aliases its install
-    /// person to it so the install funnel joins the dashboard's download click to
-    /// the gateway's first request (AG-960).
+    /// `first_gateway_request` event is sent under. The app identifies as it on
+    /// sign-in so the person funnel joins the dashboard's download click to the
+    /// gateway's first request (AG-960).
     ///
     /// Same terms as [`Self::email`]: unverified, read for attribution only,
     /// `None` if absent or unparseable. An empty string is `None` too, because

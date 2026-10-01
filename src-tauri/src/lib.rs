@@ -310,8 +310,17 @@ struct AccountDto {
 /// an `error_shown` per open; one event per run carries the same signal.
 static ACCOUNT_RECONCILE_REPORTED: AtomicBool = AtomicBool::new(false);
 
+/// Async with the work on the blocking pool: the reconcile can end in
+/// `oauth::clear`, whose identity forget waits on the analytics identity lock,
+/// so on the main thread a save holding it, or a CLI logout, would stall the UI.
 #[tauri::command]
-fn get_account() -> Result<Option<AccountDto>, String> {
+async fn get_account() -> Result<Option<AccountDto>, String> {
+    tauri::async_runtime::spawn_blocking(read_account)
+        .await
+        .map_err(|e| format!("get_account join error: {e}"))?
+}
+
+fn read_account() -> Result<Option<AccountDto>, String> {
     // Reconcile the stored account against its on-disk anchor before reading it,
     // so the first-run-vs-home decision this call drives always sees a
     // consistent view. An uninstall that removed Gate Connect's files but left
@@ -3033,12 +3042,26 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 }
 
 /// What this install is identified as in analytics; see
-/// `gate_connect_core::analytics::Identity`.
+/// `gate_connect_core::analytics::Identity`. First finishes a forget a
+/// sign-out could not land (`forget_identity_if_signed_out`), so a window never
+/// starts as an account that has gone; when it forgot, the other windows are
+/// told too. Best-effort: a failure there leaves the read as it was.
 #[tauri::command]
 async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::analytics::load_identity)
-        .await
-        .map_err(|e| format!("analytics identity join error: {e}"))
+    tauri::async_runtime::spawn_blocking(|| {
+        use gate_connect_core::analytics;
+        let forgot = analytics::forget_identity_if_signed_out().unwrap_or_else(|e| {
+            eprintln!("analytics identity: finishing a forget failed: {e:#}");
+            false
+        });
+        let identity = analytics::load_identity();
+        if forgot {
+            announce_analytics_identity(identity.clone());
+        }
+        identity
+    })
+    .await
+    .map_err(|e| format!("analytics identity join error: {e}"))
 }
 
 /// Record a change of analytics identity, and tell every window, so each one's

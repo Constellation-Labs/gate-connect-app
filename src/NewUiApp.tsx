@@ -552,11 +552,13 @@ export function NewUiApp() {
     oauth,
     apiKeyOrgId: activity.view?.orgId ?? null,
   });
-  const sessionOrgId = facts.orgId;
-  const signedInNow = facts.signedIn;
-  const sessionSub = facts.sub;
-  const sessionAuthMode = facts.authMode;
-  const sessionUnknown = facts.sessionUnknown ?? false;
+  const {
+    orgId: sessionOrgId,
+    signedIn: signedInNow,
+    sub: sessionSub,
+    authMode: sessionAuthMode,
+    sessionUnknown,
+  } = facts;
   // Only once the first account and OAuth reads are in: before that, "not signed
   // in" is "not read yet", and the seam treats not signed in as a sign-out.
   useEffect(() => {

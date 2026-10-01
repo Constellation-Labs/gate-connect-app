@@ -719,6 +719,13 @@ export async function trackMilestone(
     heldMarkers.add(marker);
   }
   return new Promise<boolean>((resolve) => {
+    // Spent, not deferred: claimed and not sent, so a later opt-in cannot
+    // report it late.
+    const spendMarker = async () => {
+      askedHere.add(marker);
+      await analyticsMilestoneClaim(marker).catch(() => false);
+      resolve(false);
+    };
     funnel({
       run: async () => {
         if (askedHere.has(marker)) return resolve(false);
@@ -727,11 +734,7 @@ export async function trackMilestone(
         // Sharing went off during the wait: this happened while the user had
         // said no, so it is spent like any refused milestone, not deferred to
         // a later opt-in.
-        if (consent === false) {
-          askedHere.add(marker);
-          await analyticsMilestoneClaim(marker).catch(() => false);
-          return resolve(false);
-        }
+        if (consent === false) return spendMarker();
         if (!capturing()) return resolve(false);
         // The org group on the client, set (or, with no org after the wait,
         // cleared) right before this capture, so the event carries the org the
@@ -752,9 +755,7 @@ export async function trackMilestone(
       },
       spend: async () => {
         if (askedHere.has(marker)) return resolve(false);
-        askedHere.add(marker);
-        await analyticsMilestoneClaim(marker).catch(() => false);
-        resolve(false);
+        await spendMarker();
       },
     });
     // Held or closed: settled from this caller's point of view.
@@ -765,7 +766,7 @@ export async function trackMilestone(
 // ---------------------------------------------------------------------------
 // Session and identity
 
-/** What the shell knows about the signed-in session. */
+/** What the main window knows about the signed-in session. */
 export interface SessionFacts {
   /** A usable credential and, for OAuth, an organization. */
   signedIn: boolean;
@@ -775,7 +776,7 @@ export interface SessionFacts {
    * (`OAuthStatus.session === "unavailable"`). `signedIn` is false then, and it
    * is NOT a sign-out: an offline launch must keep the identity it has.
    */
-  sessionUnknown?: boolean;
+  sessionUnknown: boolean;
   authMode: AuthMode | null;
   /** The Cognito `sub`, for an OAuth session. */
   sub: string | null;
@@ -792,6 +793,7 @@ let everIdentified = false;
 /** The org and auth mode last stored by the sign-in window, for the windows that
  *  never read the account themselves. */
 let storedOrg: string | null = null;
+let storedAuthMode: string | null = null;
 /** The identified `sub` the backend holds, which every window follows. */
 let storedSub: string | null = null;
 let groupedAs: string | null = null;
@@ -803,6 +805,7 @@ function adoptStoredIdentity(stored: AnalyticsIdentity): void {
   storedSub = stored.identified_sub;
   everIdentified = stored.ever_identified;
   storedOrg = stored.org_id;
+  storedAuthMode = stored.auth_mode;
 }
 
 let identityLoad: Promise<void> | null = null;
@@ -887,7 +890,7 @@ function orgArrived(): void {
 
 /**
  * Tell the seam who is signed in. Called by the window that owns sign-in (the
- * main window, in either shell) whenever account, OAuth or activity state
+ * main window) whenever account, OAuth or activity state
  * changes; cheap and idempotent. The other windows follow the stored identity
  * the backend broadcasts, not their own reads.
  */
@@ -933,13 +936,14 @@ function persistIdentity(): void {
   const next: AnalyticsIdentity = {
     identified_sub: identifiedAs,
     ever_identified: everIdentified,
-    org_id: s.signedIn ? s.orgId : null,
+    org_id: s.signedIn ? (s.orgId ?? keptApiKeyOrg(s)) : null,
     auth_mode: s.authMode,
   };
   const key = JSON.stringify(next);
   if (key === lastPersisted) return;
   lastPersisted = key;
   storedOrg = next.org_id;
+  storedAuthMode = next.auth_mode;
   void setAnalyticsIdentity(next).then(
     () => {
       persistRetries = 0;
@@ -955,11 +959,25 @@ function persistIdentity(): void {
       // secret-store hiccup, `analytics-identity-unconfirmed`), the identity
       // lock timed out against another process, or the record could not be
       // read or written. Nothing says this window is wrong, so it keeps its
-      // identity and tries again, a bounded number of times; a later session
-      // note also retries.
+      // identity and tries again, a bounded number of times. After that it
+      // waits for a session note that changes something, which may not come
+      // this session: the record then keeps what it had, which can only mean
+      // fewer events tied to the account, never wrong ones.
       schedulePersistRetry();
     },
   );
+}
+
+/**
+ * The org to keep for an API-key session the gateway has not resolved yet: the
+ * one the last answer for an API key stored. Until the Overview's activity read
+ * lands, and for the whole session when it cannot (offline, a rejected key),
+ * the session's `orgId` is null, and writing that would wipe the org every
+ * window and the next launch group by. Only an org stored under an API key is
+ * kept: one an OAuth sign-in left behind is not this key's.
+ */
+function keptApiKeyOrg(s: SessionFacts): string | null {
+  return s.authMode === "api_key" && storedAuthMode === "api_key" ? storedOrg : null;
 }
 
 /** The backend's rejections of `set_analytics_identity`, pinned against
@@ -973,6 +991,11 @@ const PERSIST_RETRY_MAX = 3;
 let persistRetries = 0;
 let persistRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** A timer that can read a secret: a save naming a sub checks it against the
+ *  stored session, and after an unconfirmed read nothing is cached, so each
+ *  retry is a fresh secret-store session. That is why it is capped at
+ *  `PERSIST_RETRY_MAX` and never repeats on its own; see "Never read a secret
+ *  on a timer" in CLAUDE.md before loosening it. */
 function schedulePersistRetry(): void {
   if (persistRetryTimer !== null || persistRetries >= PERSIST_RETRY_MAX) return;
   persistRetries += 1;
@@ -1103,6 +1126,7 @@ function resetClient(): void {
 function followIdentity(next: AnalyticsIdentity): void {
   storedSub = next.identified_sub;
   storedOrg = next.org_id;
+  storedAuthMode = next.auth_mode;
   everIdentified = everIdentified || next.ever_identified;
   // A sign-out is followed whatever the funnel's state: it takes the account's
   // id off what this machine sends next, and sends nothing itself.
@@ -1232,7 +1256,7 @@ async function reportCoworkSetting(): Promise<void> {
 }
 
 /**
- * A gateway read the shell made failed with a typed `FailureCode`: `rejected`
+ * A gateway read the main window made failed with a typed `FailureCode`: `rejected`
  * (the gateway refused the credential) is `auth_rejected`, `offline` is
  * `offline`. `signed_out` is not either: it means there was no credential to
  * send, which is a state of the app, not a failure of the connection.

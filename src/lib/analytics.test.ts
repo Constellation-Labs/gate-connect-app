@@ -289,7 +289,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const PAIRED_OAUTH = { signedIn: true, authMode: "oauth" as const, sub: SUB, orgId: ORG };
+const PAIRED_OAUTH = { signedIn: true, sessionUnknown: false, authMode: "oauth" as const, sub: SUB, orgId: ORG };
 
 /**
  * An install the sign-in window has already paired, as a window that reads no
@@ -334,7 +334,7 @@ describe("initAnalytics consent", () => {
   });
 });
 
-describe("item 1: nothing AG-960 added leaves before the question is answered", () => {
+describe("nothing AG-960 added leaves before the question is answered", () => {
   /** The real fresh-install default, and the order the new UI asks in: sign-in,
    *  org, device, confirmation, and only then the diagnostics step. */
   it("holds identity, group and every milestone while the answer is missing", async () => {
@@ -435,7 +435,7 @@ describe("item 1: nothing AG-960 added leaves before the question is answered", 
   });
 });
 
-describe("item 2: a persisted opt-out does not outlive a new yes", () => {
+describe("a persisted opt-out does not outlive a new yes", () => {
   it("lifts a stale posthog-js opt-out once sharing is on, so captures are delivered", async () => {
     pairedRecord();
     // Launch one: opted out in Settings. posthog-js persists that.
@@ -474,7 +474,7 @@ describe("item 2: a persisted opt-out does not outlive a new yes", () => {
   });
 });
 
-describe("item 3: one identity per account, merged at most once", () => {
+describe("one identity per account, merged at most once", () => {
   it("bootstraps a stored identified sub without sending $identify", async () => {
     prefsAre(true);
     rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
@@ -520,7 +520,7 @@ describe("item 3: one identity per account, merged at most once", () => {
   });
 
   /**
-   * M1. The backend's `oauth_sign_out` forgets the identity and emits it
+   * The backend's `oauth_sign_out` forgets the identity and emits it
    * (`forget_analytics_identity`, pinned in `src-tauri/src/lib.rs`'s tests and
    * by `analytics.contract.test.ts`). Once identified, the install id belongs
    * to that account's person, so the client must NOT go back to it.
@@ -566,7 +566,7 @@ describe("item 3: one identity per account, merged at most once", () => {
     await settle();
     expect(rust.identity.identified_sub).toBe(SUB);
 
-    noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    noteSession({ signedIn: false, sessionUnknown: false, authMode: "oauth", sub: null, orgId: ORG });
     await settle();
 
     expect(rust.identity.identified_sub).toBeNull();
@@ -590,12 +590,12 @@ describe("item 3: one identity per account, merged at most once", () => {
     // the old sub back.
     expect(posthog.reset).toHaveBeenCalledTimes(2);
     expect(rust.identity.identified_sub).toBeNull();
-    main.noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    main.noteSession({ signedIn: false, sessionUnknown: false, authMode: "oauth", sub: null, orgId: ORG });
     await settle();
     expect(rust.identity.identified_sub).toBeNull();
   });
 
-  /** M3. `reset` deletes posthog-js's persisted opt-out in shared storage. */
+  /** `reset` deletes posthog-js's persisted opt-out in shared storage. */
   it("keeps an opted-out install opted out across a reset", async () => {
     prefsAre(true);
     rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
@@ -652,7 +652,7 @@ describe("item 3: one identity per account, merged at most once", () => {
   });
 });
 
-describe("item 4: consent follows the user into every window", () => {
+describe("consent follows the user into every window", () => {
   it("starts a window that booted opted out when the answer changes elsewhere", async () => {
     pairedRecord();
     prefsAre(false);
@@ -760,8 +760,8 @@ describe("milestones", () => {
   });
 });
 
-describe("item 11: an API-key install waits for its org", () => {
-  const API_KEY_NO_ORG = { signedIn: true, authMode: "api_key" as const, sub: null, orgId: null };
+describe("an API-key install waits for its org", () => {
+  const API_KEY_NO_ORG = { signedIn: true, sessionUnknown: false, authMode: "api_key" as const, sub: null, orgId: null };
 
   it("holds a milestone until the org lands, then sends it grouped", async () => {
     prefsAre(true);
@@ -796,7 +796,7 @@ describe("item 11: an API-key install waits for its org", () => {
   });
 });
 
-describe("item 7 and 10: the opt-out record", () => {
+describe("the opt-out record", () => {
   it("is sent once, under the account without merging the install, with the org", async () => {
     // The onboarding Skip: signed in, question never answered, so the install
     // was never identified - and must not be merged by the record either.
@@ -822,7 +822,7 @@ describe("item 7 and 10: the opt-out record", () => {
     prefsAre(true);
     const { initAnalytics, noteSession, setAnalyticsConsent } = await load();
     await initAnalytics();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    noteSession({ signedIn: true, sessionUnknown: false, authMode: "api_key", sub: null, orgId: ORG });
     await setAnalyticsConsent(false, "settings");
     await settle();
     expect(posted()[0]).toMatchObject({ distinct_id: INSTALL_ID, properties: { source: "settings" } });
@@ -896,7 +896,7 @@ describe("connection_failed: a reason from a closed list", () => {
     ["error sending request: connection refused", "connect", "offline"],
     ["gateway answered 401 Unauthorized", "provider_toggle", "auth_rejected"],
     ["disk quota exceeded writing /Users/x/.codex/config.toml", "connect", "unknown"],
-    // Item 12: numbers inside ports and ids are not a status code or a cancel.
+    // Numbers inside ports and ids are not a status code or a cancel.
     ["listener 127.0.0.1:40199 closed unexpectedly", "connect", "unknown"],
     ["session 5a401b7c failed to start", "provider_toggle", "unknown"],
     ["request c0a8-128e failed", "trust_ca", "unknown"],
@@ -944,7 +944,7 @@ describe("connection_failed: a reason from a closed list", () => {
     expect(sent("connection_failed")).toHaveLength(2);
   });
 
-  /** Item 5: no credential to send is a state of the app, not a refusal. */
+  /** No credential to send is a state of the app, not a refusal. */
   it("does not file a signed-out read at all", async () => {
     const { noteGatewayFailure } = await running();
     noteGatewayFailure("signed_out");
@@ -965,7 +965,7 @@ describe("connection_failed: a reason from a closed list", () => {
     ]);
   });
 
-  /** Item 6: the sign-in and pairing steps. */
+  /** The sign-in and pairing steps. */
   it("files sign-in and pairing failures with typed reasons", async () => {
     const { noteSetupFailure } = await running();
     noteSetupFailure("gateway /v1/me/orgs returned 401 Unauthorized: {}", "org_list");
@@ -1143,8 +1143,8 @@ describe("the held queue", () => {
   });
 });
 
-describe("round 3", () => {
-  /** M1. The sign-out happened in a launch with no client (opted out), so
+describe("identity across sign-out, opt-in and unreadable sessions", () => {
+  /** The sign-out happened in a launch with no client (opted out), so
    *  posthog-js's storage still has the client identified as A. */
   it("does not resume the old account's id when a signed-out install opts back in", async () => {
     prefsAre(false);
@@ -1153,7 +1153,7 @@ describe("round 3", () => {
     ph.state.identified = true;
     const { initAnalytics, noteSession, setAnalyticsConsent, track } = await load();
     await initAnalytics();
-    noteSession({ signedIn: false, authMode: "oauth", sub: null, orgId: ORG });
+    noteSession({ signedIn: false, sessionUnknown: false, authMode: "oauth", sub: null, orgId: ORG });
     await settle();
 
     await setAnalyticsConsent(true, "settings");
@@ -1183,7 +1183,7 @@ describe("round 3", () => {
     expect(posthog.identify).not.toHaveBeenCalled();
   });
 
-  /** M2. Offline, or the status IPC failed: signed in reads false, and the
+  /** Offline, or the status IPC failed: signed in reads false, and the
    *  identity must stay. */
   it("keeps the identity when the session could not be read", async () => {
     prefsAre(true);
@@ -1198,16 +1198,16 @@ describe("round 3", () => {
     expect(ph.state.distinctId).toBe(SUB);
   });
 
-  /** Review design C: nothing ties an API-key install to a person any more, so
+  /** Nothing ties an API-key install to a person any more, so
    *  nothing retires its install id. Reset, a replaced key and a key that now
    *  resolves to another org all leave it the distinct id. */
   it("keeps an API-key install on its install id across Reset and a change of org", async () => {
     prefsAre(true);
     let mod = await load();
     await mod.initAnalytics();
-    mod.noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: ORG });
+    mod.noteSession({ signedIn: true, sessionUnknown: false, authMode: "api_key", sub: null, orgId: ORG });
     await settle();
-    mod.noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: "org-b" });
+    mod.noteSession({ signedIn: true, sessionUnknown: false, authMode: "api_key", sub: null, orgId: "org-b" });
     await settle();
     expect(ph.state.distinctId).toBe(INSTALL_ID);
 
@@ -1244,13 +1244,13 @@ describe("round 3", () => {
     expect(posthog.identify).toHaveBeenCalledWith(SUB);
   });
 
-  /** L2. An API key pasted on a machine identified as A may be someone else's. */
+  /** An API key pasted on a machine identified as A may be someone else's. */
   it("leaves the Constellation identity when the account switches to an API key", async () => {
     prefsAre(true);
     rust.identity = { identified_sub: SUB, ever_identified: true, org_id: ORG, auth_mode: "oauth" };
     const { initAnalytics, noteSession } = await load();
     await initAnalytics();
-    noteSession({ signedIn: true, authMode: "api_key", sub: null, orgId: null });
+    noteSession({ signedIn: true, sessionUnknown: false, authMode: "api_key", sub: null, orgId: null });
     await settle();
 
     expect(posthog.reset).toHaveBeenCalledTimes(1);
@@ -1259,8 +1259,8 @@ describe("round 3", () => {
   });
 });
 
-describe("design B: every milestone carries the organization group", () => {
-  const API_KEY_NO_ORG = { signedIn: true, authMode: "api_key" as const, sub: null, orgId: null };
+describe("every milestone carries the organization group", () => {
+  const API_KEY_NO_ORG = { signedIn: true, sessionUnknown: false, authMode: "api_key" as const, sub: null, orgId: null };
 
   function firstLaunch() {
     return ph.delivered.find((d) => d.event === "app_first_launched");
@@ -1327,6 +1327,34 @@ describe("design B: every milestone carries the organization group", () => {
     expect(firstLaunch()?.groups).toEqual({ organization: ORG });
   });
 
+  /** An API-key relaunch: until the gateway answers, or all session when it
+   *  cannot, the org the last answer stored stays, here and in the record. */
+  it("keeps an API-key install's stored org until the gateway answers", async () => {
+    prefsAre(true);
+    pairedRecord();
+    const { initAnalytics, noteSession, noteGatewayFailure } = await load();
+    await initAnalytics();
+    noteSession(API_KEY_NO_ORG);
+    noteGatewayFailure("offline");
+    await settle();
+
+    expect(rust.identity.org_id).toBe(ORG);
+    expect(posthog.resetGroups).not.toHaveBeenCalled();
+    expect(ph.delivered.find((d) => d.event === "connection_failed")?.groups).toEqual({ organization: ORG });
+  });
+
+  /** Never an org an OAuth sign-in left behind: a pasted key may be another org's. */
+  it("does not keep an OAuth sign-in's org for an API-key session", async () => {
+    prefsAre(true);
+    rust.identity = { identified_sub: null, ever_identified: false, org_id: ORG, auth_mode: "oauth" };
+    const { initAnalytics, noteSession } = await load();
+    await initAnalytics();
+    noteSession(API_KEY_NO_ORG);
+    await settle();
+
+    expect(rust.identity.org_id).toBeNull();
+  });
+
   /** posthog-js keeps `$groups` in storage every window shares, so the group
    *  can change under a window; each milestone sets it again right before its
    *  capture. */
@@ -1361,7 +1389,7 @@ describe("design B: every milestone carries the organization group", () => {
   });
 });
 
-describe("review item 4: nothing automatic, whatever the project's remote config says", () => {
+describe("nothing automatic, whatever the project's remote config says", () => {
   it("pins every remote-config-driven feature off in the init config", async () => {
     prefsAre(true);
     const { initAnalytics } = await load();
@@ -1399,7 +1427,7 @@ describe("review item 4: nothing automatic, whatever the project's remote config
   });
 });
 
-describe("review item 5: one $opt_in, from the window that changed it", () => {
+describe("one $opt_in, from the window that changed it", () => {
   function optIns() {
     return ph.delivered.filter((d) => d.event === "$opt_in");
   }
@@ -1450,7 +1478,7 @@ describe("review item 5: one $opt_in, from the window that changed it", () => {
   });
 });
 
-describe("review item 2: a save the core refuses moves the window back", () => {
+describe("a save the core refuses moves the window back", () => {
   it("follows the stored record when the session it identified with has ended", async () => {
     prefsAre(true);
     rust.liveSub = null;
@@ -1471,7 +1499,7 @@ describe("review item 2: a save the core refuses moves the window back", () => {
   });
 });
 
-describe("minor: the held queue keeps room for milestones", () => {
+describe("the held queue keeps room for milestones", () => {
   it("does not let repeated connection failures crowd out the milestones", async () => {
     prefsAre(true, false);
     const { initAnalytics, noteSession, noteToolConnected, reportConnectionFailure, setAnalyticsConsent } =
@@ -1491,7 +1519,7 @@ describe("minor: the held queue keeps room for milestones", () => {
   });
 });
 
-describe("minor: an uncaught rejection that is not an Error", () => {
+describe("an uncaught rejection that is not an Error", () => {
   it("sends the classified title, not the raw string", async () => {
     prefsAre(true);
     const { initAnalytics, captureException } = await load();
@@ -1514,7 +1542,7 @@ describe("minor: an uncaught rejection that is not an Error", () => {
   });
 });
 
-describe("review follow-up M2: an unreadable session is not a sign-out", () => {
+describe("an unreadable session is not a sign-out", () => {
   it("keeps the window identified, records the merge, and retries the save", async () => {
     vi.useFakeTimers();
     prefsAre(true);
@@ -1558,10 +1586,10 @@ describe("review follow-up M2: an unreadable session is not a sign-out", () => {
   });
 });
 
-describe("review follow-up L1: opting out during the org wait spends the milestone", () => {
+describe("opting out during the org wait spends the milestone", () => {
   it("claims it unsent, so a later opt-in cannot report it late", async () => {
     prefsAre(true);
-    const API_KEY = { signedIn: true, authMode: "api_key" as const, sub: null };
+    const API_KEY = { signedIn: true, sessionUnknown: false, authMode: "api_key" as const, sub: null };
     const { initAnalytics, noteSession, noteToolConnected, setAnalyticsConsent } = await load();
     await initAnalytics();
     noteSession({ ...API_KEY, orgId: null });

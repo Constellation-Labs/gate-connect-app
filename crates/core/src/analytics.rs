@@ -503,11 +503,8 @@ pub fn load_identity_in(support: &Path) -> Identity {
 /// so the caller writes nothing, rather than persisting the fail-closed value
 /// of a read that may succeed a moment later. Content that is there but not a
 /// record (unparseable JSON, bytes that are not UTF-8) still fails closed: that
-/// will not get better on a retry.
-///
-/// A record written by an earlier build of this branch may carry fields this
-/// one no longer has (`api_key_org`, `install_id_retired`); serde ignores
-/// them.
+/// will not get better on a retry. A field this build does not know is
+/// ignored, so a record from another build still reads.
 fn read_identity_in(support: &Path) -> Result<Identity> {
     let path = support.join(IDENTITY_FILE);
     let raw = match fs::read_to_string(&path) {
@@ -559,8 +556,10 @@ static IDENTITY_WRITERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// they take. The file lock gives up after [`IDENTITY_LOCK_WAIT`], which is the
 /// bound against the CLI (or a second app process). One consequence: if a
 /// `gate-connect logout` forget gives up after those ten seconds while the
-/// app's save holds the lock, the record can briefly keep the old sub, until
-/// the main window next notes the session as signed out and saves again.
+/// app's save holds the lock, the record keeps the old sub until the main
+/// window next notes the session as signed out and saves again, or at the
+/// latest until the next launch, whose first identity read finishes the forget
+/// ([`forget_identity_if_signed_out`]).
 fn with_identity_locked<T>(support: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let _threads = IDENTITY_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
@@ -754,6 +753,41 @@ pub fn forget_identity_in(support: &Path) -> Result<()> {
                 ..Identity::default()
             },
         )
+    })
+}
+
+/// Finish a forget that a sign-out could not land: the record still names a
+/// sub, but there is no account any more. A `gate-connect logout` whose forget
+/// gave up on the lock leaves exactly that, and nothing else would clear it
+/// before the next launch bootstraps the client as the old account. The check
+/// reads `account.json` (no secret) and runs inside the lock, so a sign-in that
+/// lands between the check and the write cannot have its sub wiped. `Ok(true)`
+/// when it forgot.
+pub fn forget_identity_if_signed_out_in(
+    support: &Path,
+    has_account: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
+    with_identity_locked(support, || {
+        let prev = read_identity_in(support)?;
+        if prev.identified_sub.is_none() || has_account()? {
+            return Ok(false);
+        }
+        write_identity_in(
+            support,
+            &Identity {
+                ever_identified: prev.ever_identified,
+                ..Identity::default()
+            },
+        )?;
+        Ok(true)
+    })
+}
+
+/// [`forget_identity_if_signed_out_in`] against the real data dir and
+/// `account.json`.
+pub fn forget_identity_if_signed_out() -> Result<bool> {
+    forget_identity_if_signed_out_in(&crate::env::app_support_dir()?, || {
+        Ok(crate::account::load_base_url()?.is_some())
     })
 }
 
@@ -1224,15 +1258,14 @@ mod tests {
         assert!(load_identity_in(&dir).ever_identified);
     }
 
-    /// A record an earlier build of this branch wrote, with the API-key
-    /// retirement fields it no longer has, is still a record: an unknown field
-    /// is ignored, not a parse failure that would fail closed.
+    /// A record with a field this build does not know is still a record: the
+    /// unknown field is ignored, not a parse failure that would fail closed.
     #[test]
-    fn a_record_with_the_retired_api_key_fields_still_reads() {
-        let dir = scratch("identity-old-fields");
+    fn a_record_with_an_unknown_field_still_reads() {
+        let dir = scratch("identity-unknown-field");
         fs::write(
             dir.join(IDENTITY_FILE),
-            r#"{"identified_sub":null,"ever_identified":false,"org_id":"org-a","auth_mode":"api_key","api_key_org":"org-a","install_id_retired":true}"#,
+            r#"{"identified_sub":null,"ever_identified":false,"org_id":"org-a","auth_mode":"api_key","some_later_field":true}"#,
         )
         .unwrap();
         let got = load_identity_in(&dir);
@@ -1241,7 +1274,33 @@ mod tests {
         assert_eq!(got.auth_mode.as_deref(), Some("api_key"));
     }
 
-    /// Review item 2: a save naming a sub lands only while that sub is the
+    /// A sub left on record after the account went (a CLI logout whose forget
+    /// timed out) is forgot at the next check; with an account, or with no sub,
+    /// nothing is written.
+    #[test]
+    fn a_sub_without_an_account_is_forgotten() {
+        let dir = scratch("identity-orphan-sub");
+        let signed_in = Identity {
+            identified_sub: Some("sub-a".into()),
+            org_id: Some("org-1".into()),
+            auth_mode: Some("oauth".into()),
+            ever_identified: true,
+        };
+        write_identity_in(&dir, &signed_in).unwrap();
+        assert!(!forget_identity_if_signed_out_in(&dir, || Ok(true)).unwrap());
+        assert_eq!(load_identity_in(&dir), signed_in);
+
+        assert!(forget_identity_if_signed_out_in(&dir, || Ok(false)).unwrap());
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub, None);
+        assert_eq!(got.org_id, None);
+        assert!(got.ever_identified, "the sticky bit stays");
+
+        // No sub on record: nothing to finish, whatever the account says.
+        assert!(!forget_identity_if_signed_out_in(&dir, || Ok(false)).unwrap());
+    }
+
+    /// A save naming a sub lands only while that sub is the
     /// live session's. Nothing is written when it is refused.
     #[test]
     fn a_sub_is_stored_only_for_the_live_session() {
@@ -1323,7 +1382,7 @@ mod tests {
         assert_eq!(load_identity_in(&dir).org_id.as_deref(), Some("org-1"));
     }
 
-    /// Review item 1, the cross-process half: a writer waits while another
+    /// The cross-process half: a writer waits while another
     /// holder (here an open of the lock file of our own, which `flock` and a
     /// no-share open both treat as a different holder) has the record.
     #[test]
@@ -1362,7 +1421,7 @@ mod tests {
         assert_eq!(load_identity_in(&dir).identified_sub, None);
     }
 
-    /// Review item 1, the read-compute-write itself: two writers racing over
+    /// The read-compute-write itself: two writers racing over
     /// one record, one of them identifying. Unlocked, the other read the record
     /// before the identification and wrote after it, losing the sticky bit.
     #[test]
@@ -1414,7 +1473,7 @@ mod tests {
         }
     }
 
-    /// Round 3, M3: the forget lives in the core, on the path every sign-out
+    /// The forget lives in the core, on the path every sign-out
     /// takes, so `gate-connect logout` forgets too. `account::clear` is what the
     /// CLI's logout and the app's Reset call, and it reaches `oauth::clear`.
     #[test]
@@ -1443,7 +1502,7 @@ mod tests {
         assert!(cli[at..].contains("account::clear()?"));
     }
 
-    /// Round 5: an identity file that cannot be READ (here, a directory where
+    /// An identity file that cannot be READ (here, a directory where
     /// the file should be: the read fails with an I/O error, not a parse error)
     /// makes every writer refuse, and writes nothing. Persisting the
     /// fail-closed value would turn a transient error into a permanent fact.
@@ -1497,7 +1556,7 @@ mod tests {
         assert_eq!(got.org_id.as_deref(), Some("org-a"));
     }
 
-    /// Review item 3: a store whose `.legacy` could not be written is not left
+    /// A store whose `.legacy` could not be written is not left
     /// in place, so the next start judges the install again instead of taking
     /// a half-built store for a fresh one.
     #[test]
@@ -1548,7 +1607,7 @@ mod tests {
         }
     }
 
-    /// Review follow-up M2: a session that could not be READ is not a
+    /// A session that could not be READ is not a
     /// sign-out. Nothing about the sub is written, nobody is told, and the
     /// sticky bit the window asked for is kept.
     #[test]
@@ -1612,7 +1671,7 @@ mod tests {
         assert_eq!(told, Some(got));
     }
 
-    /// L3: the announcement carries the record that was written, made while
+    /// The announcement carries the record that was written, made while
     /// the lock is still held, so announcements follow the order of writes.
     #[test]
     fn a_save_announces_from_inside_the_lock() {
@@ -1641,7 +1700,7 @@ mod tests {
         assert_eq!(told, Some(load_identity_in(&dir)));
     }
 
-    /// L2: a stuck holder costs a writer the bound, never forever.
+    /// A stuck holder costs a writer the bound, never forever.
     #[test]
     fn a_stuck_lock_holder_times_out_instead_of_hanging() {
         let dir = scratch("identity-lock-deadline");
@@ -1655,7 +1714,7 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(5), "waited {took:?}");
     }
 
-    /// Review follow-up M1: a store in place is never an empty directory, so a
+    /// A store in place is never an empty directory, so a
     /// racing creator's rename cannot replace it.
     #[test]
     fn every_store_carries_its_sentinel() {

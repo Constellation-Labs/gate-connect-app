@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
  * A build with no PostHog key (every dev build, `pnpm app:local`) has no
  * destination, so nothing may leave and nothing may be spent - including the
  * opt-out record, which goes by `fetch` rather than through the client and so
- * did not inherit the client's own no-key no-op (AG-960, review round 2).
+ * did not inherit the client's own no-key no-op (AG-960).
  */
 vi.mock("./config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config")>()),
@@ -32,7 +32,7 @@ describe("a build with no PostHog key", () => {
     const fetchMock = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", fetchMock);
     await initAnalytics();
-    noteSession({ signedIn: true, authMode: "oauth", sub: "sub-a", orgId: "org-1" });
+    noteSession({ signedIn: true, sessionUnknown: false, authMode: "oauth", sub: "sub-a", orgId: "org-1" });
 
     // Answered yes at onboarding, then switched off in Settings: a real
     // transition from sharing to not, which is what records an opt-out.

@@ -1793,9 +1793,9 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       // understating one. The first is gated on the diagnostics toggle; the
       // second rides every routed request whatever it says; the fourth is sent
       // only on an explicit Send. So the subtitle says where the line is rather
-      // than claiming one rule. It said "Automatic collection is anonymous"
-      // until AG-960 tied events to the account id after sign-in, which made
-      // that untrue; it now says what is and is not in it.
+      // than claiming one rule: automatic collection can carry the account id
+      // after sign-in, so it says what is and is not in it, not that it is
+      // anonymous.
       subtitle="Automatic collection never includes your name, email or keys. A report you send yourself carries more, and is listed last."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Round 4 (AG-960): a REJECTED account read must decide nothing.
+ * AG-960: a REJECTED account read must decide nothing.
  *
  * `get_account` rejects when `account.json` or the secret store cannot be read
  * (a keychain error in `has_api_key`). The screens draw that as signed out, and

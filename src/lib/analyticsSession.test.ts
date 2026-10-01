@@ -12,7 +12,7 @@ const base: Account = {
 } as unknown as Account;
 
 describe("sessionFacts", () => {
-  /** Round 5, L3: pasting a key over a Constellation sign-in leaves the old
+  /** Pasting a key over a Constellation sign-in leaves the old
    *  sign-in's org in `account.json`. That org is not the key's, and every
    *  milestone is grouped by whatever org is reported. */
   it("reports only the gateway's org for an API key, never a stale account org", () => {
@@ -42,7 +42,7 @@ const row = (over: Partial<Installation>): Installation => ({
   ...over,
 });
 
-describe("gatewaySawTrafficFromThisMachine (review item 8)", () => {
+describe("gatewaySawTrafficFromThisMachine", () => {
   /** The response the reviewer asked about: the gateway echoes this read's own
    *  install id as the top-level `current`, and no row is this machine. */
   it("is false when only the echoed top-level id names this machine", () => {
@@ -63,7 +63,7 @@ describe("gatewaySawTrafficFromThisMachine (review item 8)", () => {
   });
 });
 
-describe("launchProps (review item 9)", () => {
+describe("launchProps", () => {
   it("omits has_account when the account read failed", () => {
     const props = launchProps({ account: null, unread: true }, null);
     expect(props).not.toHaveProperty("has_account");

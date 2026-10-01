@@ -977,10 +977,14 @@ export interface AnalyticsIdentity {
 
 export const analyticsIdentity = () => invoke<AnalyticsIdentity>("analytics_identity");
 
-/** Store a change of analytics identity; the backend broadcasts the stored
- *  record to every window as `analytics-identity-changed`, whether or not the
- *  save landed. Rejects when the core refuses it: a sub that is not the live
- *  session's. Called by the sign-in window only. */
+/** Store a change of analytics identity. Called by the sign-in window only.
+ *  - Saved: the backend broadcasts the stored record to every window as
+ *    `analytics-identity-changed`.
+ *  - A sub that is not the live session's: refused, the kept record is
+ *    broadcast, and it rejects with `IDENTITY_NOT_LIVE`.
+ *  - A session that could not be read: refused, nothing is broadcast, and it
+ *    rejects with `IDENTITY_UNCONFIRMED`. A lock timeout or an I/O error is
+ *    not broadcast either, and rejects with its own message. */
 export const setAnalyticsIdentity = (identity: AnalyticsIdentity) =>
   invoke<void>("set_analytics_identity", { identity });
 
