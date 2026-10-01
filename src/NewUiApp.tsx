@@ -48,7 +48,7 @@ import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useSectionRouting } from "./lib/useSectionRouting";
 import { useRunningApps } from "./lib/useRunningApps";
-import { allSettled, allVerified, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
+import { allSettled, REOPEN_IDLE_WATCH_MS } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -117,7 +117,6 @@ import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   reopenSubjects,
   ApplyChangesDialog,
-  ChangeReadyDialog,
   CloseAppsDialog,
   ModelPickerDialog,
   TeardownLeftBehindDialog,
@@ -1211,20 +1210,17 @@ export function NewUiApp() {
   });
 
   /**
-   * The reopen flow draws a dialog for every stage but one: `work` shows only
-   * "Change is ready", once every tool verifies. Until then the stage runs with
-   * nothing on screen, so the rail carries it, and a CLI waiting for its user to
-   * reopen it can stay there indefinitely.
+   * The reopen flow draws a dialog for the offer and the confirmation only.
+   * `work` runs with nothing on screen, so the rail carries it, and a CLI
+   * waiting for its user to reopen it can stay there indefinitely. It used to
+   * end on a "Change is ready" dialog once every tool verified; that dialog is
+   * not in the Figma and went on 2026-09-30, by the user's decision.
    */
   const reopenDialogShown =
-    runningApps.stage !== null &&
-    (runningApps.stage.kind !== "work" || allVerified(runningApps.stage.tools));
-  /** Every tool is done and they did not all verify: nothing will be drawn, so
-   * end the flow. */
+    runningApps.stage !== null && runningApps.stage.kind !== "work";
+  /** Every tool is done: nothing is drawn for the outcome, so end the flow. */
   const reopenOutcomeUndrawn =
-    runningApps.stage?.kind === "work" &&
-    allSettled(runningApps.stage.tools) &&
-    !allVerified(runningApps.stage.tools);
+    runningApps.stage?.kind === "work" && allSettled(runningApps.stage.tools);
   const { dismiss: dismissRunningApps } = runningApps;
   useEffect(() => {
     if (reopenOutcomeUndrawn) dismissRunningApps();
@@ -2878,17 +2874,6 @@ export function NewUiApp() {
             onGoBack={runningApps.goBack}
             onCloseApps={() => void runningApps.closeApps()}
           />
-        ) : runningApps.stage?.kind === "work" &&
-          allVerified(runningApps.stage.tools) ? (
-          // The all-clear is the one outcome drawn for this stage. Anything else
-          // is left to the rail, and `useRunningApps` ends the stage for it.
-          <ChangeReadyDialog
-            app={{
-              name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
-            }}
-            plural={runningApps.stage.tools.length !== 1}
-            onDone={runningApps.dismiss}
-          />
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog
             // A real catalogue now, read from the gateway. Still empty on a
@@ -3490,21 +3475,12 @@ function toDialogOrg(org: Org): DialogOrganization {
   };
 }
 
-/**
- * `ChangeReadyDialog` names one subject ("Codex closed successfully"), so naming
- * a single app when that is what was closed, and staying vague when it was
- * several, beats asserting something that was not true.
- */
 /** "Couldn't connect Codex", or "Couldn't connect 2 of 4: Codex, OpenCode". */
 function cascadeTitle(e: FamilyCascadeError): string {
   const verb = e.routed ? "connect" : "disconnect";
   return e.names.length === 1
     ? `Couldn't ${verb} ${e.names[0]}`
     : `Couldn't ${verb} ${e.names.length} of ${e.attempted}: ${e.names.join(", ")}`;
-}
-
-function closedLabel(apps: string[]): string {
-  return apps.length === 1 ? apps[0] : "The affected apps";
 }
 
 /**
