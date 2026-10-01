@@ -26,3 +26,8 @@ date,app,app_version,model,result,symptom,cause,status,source
 2026-10-01,Claude Code,2.1.287,openai/gpt-5.6-terra,works,,NUL-escape pattern dropped by Gate Connect's Gate models route,mitigated: Gate Connect drops it before forwarding,live replay through the relay on staging (live_tool_schema_replay)
 2026-10-01,Claude Code,2.1.287,openai/gpt-6-1-sol,works,,NUL-escape pattern dropped by Gate Connect's Gate models route,mitigated: Gate Connect drops it before forwarding,live replay through the relay on staging (live_tool_schema_replay)
 2026-10-01,Claude Code,2.1.287,openai/gpt-6-luna,works,,NUL-escape pattern dropped by Gate Connect's Gate models route,mitigated: Gate Connect drops it before forwarding,live replay through the relay on staging (live_tool_schema_replay)
+2026-10-01,Claude Code,2.1.287,openai/gpt-sol-latest,works,,Without Gate Connect it fails silently (200 empty) on the NUL-escape pattern; the Gate models route drops it,mitigated: Gate Connect drops it before forwarding,live replay through the relay on staging; calls Bash
+2026-10-01,Claude Code,2.1.287,anthropic/claude-opus-5-5,works,,,ok,live replay through the relay on staging; calls Bash
+2026-10-01,Claude Code,2.1.287,deepseek/deepseek-v4-1-flash,works,,,ok,live replay through the relay on staging; calls Bash
+2026-10-01,Claude Code,2.1.287,qwen/qwen3-8-flash,works,,,ok,live replay through the relay on staging; calls Bash
+2026-10-01,Claude Code,2.1.287,moonshotai/kimi-k3,works,,,ok,live replay through the relay on staging; calls Bash
