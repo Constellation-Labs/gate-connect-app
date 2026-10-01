@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ANALYTICS_CONSENT_EVENT, ANALYTICS_IDENTITY_EVENT } from "./analytics";
+import {
+  ANALYTICS_CONSENT_EVENT,
+  ANALYTICS_IDENTITY_EVENT,
+  IDENTITY_NOT_LIVE,
+  IDENTITY_UNCONFIRMED,
+} from "./analytics";
 
 /**
  * The webview follows two backend broadcasts, and `analytics.test.ts` drives
@@ -53,13 +58,12 @@ describe("the analytics broadcasts the backend emits", () => {
     );
   });
 
-  it("announces the identity after a window stores a new one, landed or refused", () => {
+  it("announces from inside the save, and rejects with the names the webview reads", () => {
     const b = body("fn set_analytics_identity(");
-    expect(b).toContain("announce_analytics_identity(");
-    // The refusal is what `analytics.test.ts` fakes as "broadcast, then reject":
-    // the save's error must not return before the announcement.
-    expect(b).not.toMatch(/save_identity\(identity\)[^;]*\?;/);
-    expect(b.indexOf("announce_analytics_identity(")).toBeLessThan(b.lastIndexOf("saved"));
+    // Announced through the core's `on_stored`, inside its lock.
+    expect(b).toMatch(/save_identity\(\s*identity,\s*\|stored\|\s*\{?\s*announce_analytics_identity\(stored\.clone\(\)\)/);
+    expect(lib).toContain(`const ANALYTICS_IDENTITY_NOT_LIVE: &str = "${IDENTITY_NOT_LIVE}";`);
+    expect(lib).toContain(`const ANALYTICS_IDENTITY_UNCONFIRMED: &str = "${IDENTITY_UNCONFIRMED}";`);
     expect(body("fn announce_analytics_identity(")).toContain("emit(ANALYTICS_IDENTITY_EVENT, identity)");
   });
 

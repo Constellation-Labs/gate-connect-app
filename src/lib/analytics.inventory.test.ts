@@ -87,7 +87,11 @@ describe("docs/analytics-events.md stays in step with the code", () => {
     expect(dialogs).not.toMatch(/Automatic collection is anonymous\./);
     // Review items 6 and 7: the copy names the switch, and the no and the Skip.
     expect(dialogs).toMatch(/Once you sign in, and while\s+sharing is on/);
-    expect(dialogs).toMatch(/Saying no, or turning sharing off later, sends one final note/);
+    // Once per install, so the copy says "the first time".
+    expect(dialogs).toMatch(/The first time you say no, or turn sharing off later, one final note/);
+    // Review follow-up M3: the gateway does store the device id with requests.
+    expect(dialogs).toMatch(/stored with each request your account sends/);
+    expect(dialogs).not.toMatch(/does not use it to tie this device/);
     const setup = readFileSync(resolve(root, "src/components/gc/setup.tsx"), "utf8").replace(/\r\n/g, "\n");
     // Review item 10: the onboarding step says what the yes ties events to.
     expect(setup).toMatch(/tied to your organization and, if you signed in with\s+Constellation, your account\./);

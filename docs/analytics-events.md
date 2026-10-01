@@ -63,13 +63,21 @@ of `diagnostics_opted_out`.
   - **The core only stores a sub for the live session.** A window's view of the
     session lags the core's, so `save_identity_in` refuses a save naming a sub
     that is not the stored token bundle's (`oauth::current`, witnessed on
-    `account.json`), and writes nothing; the app then broadcasts the stored
-    record, which moves the window back onto it. A save in flight when a
-    sign-out ran therefore cannot put the account back. Every writer of
-    `analytics-identity.json` runs its read-modify-write under a process-wide
-    mutex and an advisory lock on `analytics-identity.lock` (`flock` on macOS
-    and Linux, an unshared open on Windows), so the app's windows and
-    `gate-connect logout` cannot lose each other's writes.
+    `account.json`), and the app broadcasts the stored record, which moves the
+    window back onto it. A save in flight when a sign-out ran therefore cannot
+    put the account back. A session that could not be READ (the secret store
+    did not answer) is a different refusal: nothing is broadcast, the window
+    keeps its identity, and it retries the save (three times, 15 seconds apart,
+    and again at its next session note). Either refusal still stores a
+    requested `ever_identified`, because the client has already merged the
+    install id by then. Every writer of `analytics-identity.json` runs its
+    read-modify-write under a process-wide mutex and an advisory lock on
+    `analytics-identity.lock` (`flock` on macOS and Linux, an unshared open on
+    Windows), waiting at most ten seconds for another holder, so the app's
+    windows and `gate-connect logout` cannot lose each other's writes and a
+    stuck holder cannot hang a sign-out. The record is announced to the
+    windows from inside the lock, so announcements follow the order of the
+    writes.
 - **Pairing** sets the `organization` group to the org id, once the question
   is answered yes: the org chosen at sign-in, or for an API-key account the
   org the gateway resolved the key to (read from `/v1/me/activity`). Every
@@ -179,8 +187,10 @@ Each is sent at most once per install, instantly (not batched). The claim is a
 marker file per milestone under `<data dir>/analytics-milestones/`, created
 with `create_new`, so exactly one of the three windows (or any process) wins it,
 and it is claimed only while the client is actually delivering. The store is
-built in a staging directory with its `.legacy` marker inside and renamed into
-place, so no start ever sees it half made.
+built in a staging directory with its `.store` sentinel (and `.legacy` marker,
+when legacy) inside and renamed into place, so no start ever sees it half made,
+and a store in place is never an empty directory that a racing creator's
+rename could replace.
 
 **Every milestone carries the `organization` group.** A milestone that is
 released (or happens) before the install's org is known waits for it, up to
@@ -194,7 +204,8 @@ within the bound, the milestone is sent without one**, and any group left from
 an earlier account is cleared first: it still counts in the person funnel and
 in trends, and is missing from the organization funnel, which is the truth
 for an install that never paired. Nothing is claimed while it waits, so a quit
-during the wait leaves it for the next launch.
+during the wait leaves it for the next launch; if sharing is switched off
+during the wait, the milestone is spent unsent, like any other.
 
 An install that ran Gate Connect before this store existed (an `account.json`
 or `preferences.json` already on disk when the store is created) never sends

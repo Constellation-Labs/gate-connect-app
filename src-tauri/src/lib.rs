@@ -3045,24 +3045,37 @@ async fn analytics_identity() -> Result<gate_connect_core::analytics::Identity, 
 /// client follows the same person (AG-960). Called only by the window that
 /// owns sign-in.
 ///
-/// The stored identity is announced whether or not the save landed. A refused
-/// save (a sub that is not the live session's, see
-/// `gate_connect_core::analytics::save_identity_in`) is a window acting on a
-/// session that has already ended, and the announcement is what moves it, and
-/// every other window, back onto the record.
+/// The record is announced from inside the core's lock (`on_stored`), so two
+/// announcements reach the windows in the order of the writes. A save refused
+/// because its sub is not the live session's is announced too: the window is
+/// acting on a session that has ended, and the stored record is what moves it,
+/// and every other window, back. A save whose session could not be READ (the
+/// secret store did not answer) is announced to nobody and rejected with
+/// [`ANALYTICS_IDENTITY_UNCONFIRMED`], which the webview reads as "keep what
+/// you have and try again", not as a sign-out.
 #[tauri::command]
 async fn set_analytics_identity(
     identity: gate_connect_core::analytics::Identity,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let saved =
-            gate_connect_core::analytics::save_identity(identity).map_err(|e| format!("{e:#}"));
-        announce_analytics_identity(gate_connect_core::analytics::load_identity());
-        saved
+    use gate_connect_core::analytics::SaveOutcome;
+    tauri::async_runtime::spawn_blocking(move || match gate_connect_core::analytics::save_identity(
+        identity,
+        |stored| announce_analytics_identity(stored.clone()),
+    ) {
+        Ok(SaveOutcome::Saved) => Ok(()),
+        Ok(SaveOutcome::NotLive) => Err(ANALYTICS_IDENTITY_NOT_LIVE.to_string()),
+        Ok(SaveOutcome::Unconfirmed) => Err(ANALYTICS_IDENTITY_UNCONFIRMED.to_string()),
+        Err(e) => Err(format!("{e:#}")),
     })
     .await
     .map_err(|e| format!("analytics identity join error: {e}"))?
 }
+
+/// The rejection of a save whose sub is not the live session's. Pinned with the
+/// webview by `src/lib/analytics.contract.test.ts`.
+const ANALYTICS_IDENTITY_NOT_LIVE: &str = "analytics-identity-not-live";
+/// The rejection of a save whose session could not be read. Pinned likewise.
+const ANALYTICS_IDENTITY_UNCONFIRMED: &str = "analytics-identity-unconfirmed";
 
 /// The event every window's analytics seam listens on to follow a change of
 /// analytics identity (`src/lib/analytics.ts`). Pinned on both sides by

@@ -167,6 +167,8 @@ const rust = vi.hoisted(() => ({
   /** The stored OAuth bundle's `sub`, for `save_identity`'s live-session check.
    *  `"any"`: a test that does not care, so any sub is live. */
   liveSub: "any" as string | null,
+  /** The secret store does not answer the live-session read. */
+  liveUnreadable: false,
 }));
 
 vi.mock("./api", () => ({
@@ -178,25 +180,38 @@ vi.mock("./api", () => ({
   // `save_identity_in`'s rules (a sticky `ever_identified`; a sub only for the
   // live session, refused with nothing written otherwise), then
   // `set_analytics_identity`'s emit of the stored record either way.
+  // A refusal still keeps a requested `ever_identified`; a not-live one is
+  // announced, an unconfirmed one (unreadable session) is not.
   setAnalyticsIdentity: vi.fn(async (next: typeof rust.identity) => {
-    const live = rust.liveSub === "any" ? next.identified_sub : rust.liveSub;
-    const refused = next.identified_sub !== null && next.identified_sub !== live;
-    if (!refused) {
-      rust.identity = {
-        ...next,
-        ever_identified:
-          rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
-      };
+    const asksSub = next.identified_sub !== null;
+    if (asksSub && rust.liveUnreadable) {
+      rust.identity = { ...rust.identity, ever_identified: rust.identity.ever_identified || next.ever_identified };
+      throw "analytics-identity-unconfirmed";
     }
+    const live = rust.liveSub === "any" ? next.identified_sub : rust.liveSub;
+    if (asksSub && next.identified_sub !== live) {
+      rust.identity = { ...rust.identity, ever_identified: rust.identity.ever_identified || next.ever_identified };
+      broadcast("analytics-identity-changed", { ...rust.identity });
+      throw "analytics-identity-not-live";
+    }
+    rust.identity = {
+      ...next,
+      ever_identified: rust.identity.ever_identified || next.ever_identified || !!next.identified_sub,
+    };
     broadcast("analytics-identity-changed", { ...rust.identity });
-    if (refused) throw "refusing an analytics identity that is not the live session's";
   }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "1.2.3") }));
 vi.mock("./platform", () => ({ fetchPlatform: vi.fn(async () => "linux") }));
 
 import posthog from "posthog-js";
-import { analyticsMilestoneClaim, coworkSettingCheck, getPreferences, installId } from "./api";
+import {
+  analyticsMilestoneClaim,
+  coworkSettingCheck,
+  getPreferences,
+  installId,
+  setAnalyticsIdentity,
+} from "./api";
 import { classifyError, type ConnectionFailureReason, type ErrorContext } from "./errors";
 
 const INSTALL_ID = "3f0c9a52-7d1e-4b8a-9c2f-1a2b3c4d5e6f";
@@ -259,6 +274,7 @@ beforeEach(() => {
   rust.claimed.clear();
   rust.identity = { identified_sub: null, ever_identified: false, org_id: null, auth_mode: null };
   rust.liveSub = "any";
+  rust.liveUnreadable = false;
   (installId as Mock).mockResolvedValue(INSTALL_ID);
   (analyticsMilestoneClaim as Mock).mockImplementation(async (name: string) => {
     if (rust.claimed.has(name)) return false;
@@ -1495,5 +1511,73 @@ describe("minor: an uncaught rejection that is not an Error", () => {
     const bug = new TypeError("x is undefined");
     captureException(bug);
     expect(vi.mocked(posthog.captureException).mock.calls[0][0]).toBe(bug);
+  });
+});
+
+describe("review follow-up M2: an unreadable session is not a sign-out", () => {
+  it("keeps the window identified, records the merge, and retries the save", async () => {
+    vi.useFakeTimers();
+    prefsAre(true);
+    rust.liveUnreadable = true;
+    const { initAnalytics, noteSession, PERSIST_RETRY_MS } = await load();
+    const boot = initAnalytics();
+    await vi.advanceTimersByTimeAsync(0);
+    await boot;
+    noteSession(PAIRED_OAUTH);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(posthog.identify).toHaveBeenCalledWith(SUB);
+    expect(posthog.reset).not.toHaveBeenCalled();
+    expect(ph.state.distinctId).toBe(SUB);
+    // The client merged the install id, and the core kept that much.
+    expect(rust.identity.ever_identified).toBe(true);
+    expect(rust.identity.identified_sub).toBeNull();
+
+    // The secret store answers again; the bounded retry lands the save.
+    rust.liveUnreadable = false;
+    await vi.advanceTimersByTimeAsync(PERSIST_RETRY_MS + 10);
+    expect(rust.identity.identified_sub).toBe(SUB);
+    expect(posthog.reset).not.toHaveBeenCalled();
+  });
+
+  it("gives up retrying after a bound", async () => {
+    vi.useFakeTimers();
+    prefsAre(true);
+    rust.liveUnreadable = true;
+    const { initAnalytics, noteSession, PERSIST_RETRY_MS } = await load();
+    const boot = initAnalytics();
+    await vi.advanceTimersByTimeAsync(0);
+    await boot;
+    noteSession(PAIRED_OAUTH);
+    await vi.advanceTimersByTimeAsync(PERSIST_RETRY_MS * 10);
+    // The first save plus three retries.
+    const subSaves = vi
+      .mocked(setAnalyticsIdentity)
+      .mock.calls.filter(([id]) => (id as { identified_sub: string | null }).identified_sub === SUB);
+    expect(subSaves).toHaveLength(4);
+  });
+});
+
+describe("review follow-up L1: opting out during the org wait spends the milestone", () => {
+  it("claims it unsent, so a later opt-in cannot report it late", async () => {
+    prefsAre(true);
+    const API_KEY = { signedIn: true, authMode: "api_key" as const, sub: null };
+    const { initAnalytics, noteSession, noteToolConnected, setAnalyticsConsent } = await load();
+    await initAnalytics();
+    noteSession({ ...API_KEY, orgId: null });
+    noteToolConnected("codex", "config");
+    await settle();
+    expect(rust.claimed.has("tool_connected.codex")).toBe(false);
+
+    await setAnalyticsConsent(false, "settings");
+    noteSession({ ...API_KEY, orgId: ORG });
+    await settle();
+    expect(rust.claimed.has("tool_connected.codex")).toBe(true);
+    expect(sent("tool_connected")).toEqual([]);
+
+    await setAnalyticsConsent(true, "settings");
+    noteToolConnected("codex", "config");
+    await settle();
+    expect(sent("tool_connected")).toEqual([]);
   });
 });

@@ -723,7 +723,16 @@ export async function trackMilestone(
       run: async () => {
         if (askedHere.has(marker)) return resolve(false);
         await waitForOrg();
-        if (askedHere.has(marker) || !capturing()) return resolve(false);
+        if (askedHere.has(marker)) return resolve(false);
+        // Sharing went off during the wait: this happened while the user had
+        // said no, so it is spent like any refused milestone, not deferred to
+        // a later opt-in.
+        if (consent === false) {
+          askedHere.add(marker);
+          await analyticsMilestoneClaim(marker).catch(() => false);
+          return resolve(false);
+        }
+        if (!capturing()) return resolve(false);
         // The org group on the client, set (or, with no org after the wait,
         // cleared) right before this capture, so the event carries the org the
         // install routes for now and never one left from an earlier account.
@@ -931,13 +940,44 @@ function persistIdentity(): void {
   if (key === lastPersisted) return;
   lastPersisted = key;
   storedOrg = next.org_id;
-  // A refused save (the core will not store a sub that is not the live
-  // session's) is answered with the stored record, broadcast, which moves this
-  // window back onto it. Forget what was sent, so the next session note is
-  // persisted again rather than deduplicated against a save that never landed.
-  void setAnalyticsIdentity(next).catch(() => {
-    if (lastPersisted === key) lastPersisted = "";
-  });
+  void setAnalyticsIdentity(next).then(
+    () => {
+      persistRetries = 0;
+    },
+    (e: unknown) => {
+      // Forget what was sent either way, so the next session note persists
+      // again rather than being deduplicated against a save that never landed.
+      if (lastPersisted === key) lastPersisted = "";
+      // Not the live session's: the backend has already broadcast the stored
+      // record, which moved this window back onto it. Nothing to retry.
+      if (String(e).includes(IDENTITY_NOT_LIVE)) return;
+      // The session could not be read (a secret-store hiccup), or the record
+      // could not be written. Nothing says this window is wrong, so it keeps
+      // its identity and tries again, a bounded number of times; a later
+      // session note also retries.
+      schedulePersistRetry();
+    },
+  );
+}
+
+/** The backend's rejections of `set_analytics_identity`, pinned against
+ *  `src-tauri/src/lib.rs` by `analytics.contract.test.ts`. */
+export const IDENTITY_NOT_LIVE = "analytics-identity-not-live";
+export const IDENTITY_UNCONFIRMED = "analytics-identity-unconfirmed";
+/** How often, and how far apart, a save that could not be confirmed is
+ *  retried before waiting for the next session note. */
+export const PERSIST_RETRY_MS = 15_000;
+const PERSIST_RETRY_MAX = 3;
+let persistRetries = 0;
+let persistRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersistRetry(): void {
+  if (persistRetryTimer !== null || persistRetries >= PERSIST_RETRY_MAX) return;
+  persistRetries += 1;
+  persistRetryTimer = setTimeout(() => {
+    persistRetryTimer = null;
+    persistIdentity();
+  }, PERSIST_RETRY_MS);
 }
 
 /** Put the client's `organization` group on the install's org, or take it off

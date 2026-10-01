@@ -1861,12 +1861,14 @@ export function CollectedDataLists({
             signed in with Constellation, so setup can be measured from download
             to first request. Never your name or email.
           </li>
-          {/* AG-960's opt-out record: once per install, on the onboarding No and
-              Skip as well as the Settings switch, filed under the account's id
-              (or the device id) with the organization when known. */}
+          {/* AG-960's opt-out record: at most once per install (a marker the
+              core claims), on the onboarding No and Skip as well as the
+              Settings switch, filed under the account's id (or the device id)
+              with the organization when known. "The first time" is what keeps
+              the sentence true after a second opt-out, which sends nothing. */}
           <li>
-            Saying no, or turning sharing off later, sends one final note saying
-            so, with your organization id, and tied to your account if you
+            The first time you say no, or turn sharing off later, one final note
+            says so, with your organization id, and tied to your account if you
             signed in with Constellation.
           </li>
           <li>App version and operating system.</li>
@@ -1906,12 +1908,15 @@ export function CollectedDataLists({
         </p>
         <ul className="mt-1 list-disc pl-4">
           {/* The header rides every routed request whatever the diagnostics
-              answer is, so it must not be what ties a device to a person, and
-              it is not: nothing on the gateway side links it to an account. */}
+              answer is. The gateway stores it with each request
+              (`gateway_requests.machine_id`, beside the request's `user_id`),
+              which is how the activity view groups by machine, so the copy says
+              so rather than claiming it is linked to nobody. What it does not
+              do is join this device's diagnostic data to a person. */}
           <li>
-            The same device id, so your activity view can group requests by
-            machine. Gate does not use it to tie this device to a person, and it
-            authorizes nothing.
+            The same device id, stored with each request your account sends, so
+            your activity view can group requests by machine. It authorizes
+            nothing.
           </li>
           <li>
             Which app made the request, when Gate can tell from the request

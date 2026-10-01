@@ -34,6 +34,10 @@ const STORE_DIR: &str = "analytics-milestones";
 /// before this store existed. See [`init_in`].
 const LEGACY_MARKER: &str = ".legacy";
 
+/// Present in every store from the moment it is built, so a store in place is
+/// never an empty directory. See [`create_store_with`].
+const STORE_SENTINEL: &str = ".store";
+
 /// Milestones that record the FIRST time something happened on this install.
 ///
 /// On an install that predates the store they are never claimable, because the
@@ -154,12 +158,17 @@ fn create_store(dir: &Path, legacy: bool) -> Result<()> {
 /// two steps saw a fresh store too. Either way the first-occurrence milestones
 /// went out for a machine that had run Gate Connect for months.
 ///
+/// **The staging dir is never empty.** On macOS and Linux `rename(2)` of a
+/// directory onto an existing EMPTY directory replaces it, so an empty fresh
+/// store could be swapped out by a racing creator while another thread was
+/// creating a marker inside it: that marker landed in the orphaned directory,
+/// or failed with ENOENT. Every store therefore carries [`STORE_SENTINEL`] from
+/// birth, which makes the target non-empty, and a rename onto a store that is
+/// already in place fails (ENOTEMPTY / EEXIST on POSIX; Windows never replaces
+/// a directory at all).
+///
 /// Losing the rename to another window or process is not an error: the
 /// winner's store is complete, and its legacy decision is the one that stands.
-/// A rename only replaces an EMPTY directory (POSIX; Windows never replaces
-/// one), and a store is empty only while it is fresh and unclaimed, so the
-/// most a lost race can do is turn a fresh store legacy, which suppresses a
-/// milestone and never duplicates one.
 fn create_store_with(dir: &Path, populate: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = dir
@@ -172,11 +181,13 @@ fn create_store_with(dir: &Path, populate: impl FnOnce(&Path) -> Result<()>) -> 
     ));
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    let built = populate(&staging).and_then(|()| match fs::rename(&staging, dir) {
-        Ok(()) => Ok(()),
-        Err(_) if dir.is_dir() => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("moving the store into {}", dir.display())),
-    });
+    let built = write_marker(&staging.join(STORE_SENTINEL))
+        .and_then(|_| populate(&staging))
+        .and_then(|()| match fs::rename(&staging, dir) {
+            Ok(()) => Ok(()),
+            Err(_) if dir.is_dir() => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("moving the store into {}", dir.display())),
+        });
     // Gone already after a successful rename; otherwise the half-built store.
     let _ = fs::remove_dir_all(&staging);
     built
@@ -545,9 +556,16 @@ static IDENTITY_WRITERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn with_identity_locked<T>(support: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let _threads = IDENTITY_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(support).with_context(|| format!("creating {}", support.display()))?;
-    let _process = file_lock::exclusive(&support.join(IDENTITY_LOCK_FILE))?;
+    let _process = file_lock::exclusive(&support.join(IDENTITY_LOCK_FILE), IDENTITY_LOCK_WAIT)?;
     f()
 }
+
+/// How long a writer waits for another holder of [`IDENTITY_LOCK_FILE`]. A
+/// holder keeps it for one small read and write (and, for a save naming a sub,
+/// one witnessed session read); ten seconds is a holder that is stuck, and a
+/// stuck lock must not hang a sign-out. On both platforms, so neither can wait
+/// forever.
+const IDENTITY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A cross-process advisory lock on one file, held until the returned handle is
 /// dropped. No new dependency: `flock(2)` through `libc` on unix, and on
@@ -558,8 +576,12 @@ mod file_lock {
     use std::fs::{File, OpenOptions};
     use std::path::Path;
 
+    use std::time::{Duration, Instant};
+
+    /// Polled rather than blocking (`LOCK_NB`), so a stuck holder costs at
+    /// most `wait`, the same bound as on Windows.
     #[cfg(unix)]
-    pub fn exclusive(path: &Path) -> Result<File> {
+    pub fn exclusive(path: &Path, wait: Duration) -> Result<File> {
         use std::os::fd::AsRawFd;
         let file = OpenOptions::new()
             .create(true)
@@ -568,26 +590,28 @@ mod file_lock {
             .write(true)
             .open(path)
             .with_context(|| format!("opening {}", path.display()))?;
+        let deadline = Instant::now() + wait;
         loop {
             // SAFETY: `file` owns a valid fd for the duration of the call.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
                 return Ok(file);
             }
             let err = std::io::Error::last_os_error();
-            if err.kind() != std::io::ErrorKind::Interrupted {
-                return Err(err).with_context(|| format!("locking {}", path.display()));
+            match err.kind() {
+                std::io::ErrorKind::Interrupted => {}
+                std::io::ErrorKind::WouldBlock if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => return Err(err).with_context(|| format!("locking {}", path.display())),
             }
         }
     }
 
     #[cfg(windows)]
-    pub fn exclusive(path: &Path) -> Result<File> {
+    pub fn exclusive(path: &Path, wait: Duration) -> Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
-        use std::time::{Duration, Instant};
         const ERROR_SHARING_VIOLATION: i32 = 32;
-        // A holder keeps it for one small read and write; ten seconds is a
-        // holder that is stuck, and a stuck lock must not hang a sign-out.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + wait;
         loop {
             match OpenOptions::new()
                 .create(true)
@@ -615,33 +639,78 @@ fn write_identity_in(support: &Path, stored: &Identity) -> Result<()> {
     crate::primitives::write_file(&support.join(IDENTITY_FILE), &body, 0o600)
 }
 
+/// What [`save_identity_in`] did with a save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Stored as asked (sticky facts kept).
+    Saved,
+    /// Refused: the save named a sub that is not the live session's, or a sub
+    /// while nobody is signed in. The window is acting on a session that has
+    /// ended, so the caller tells it what is stored.
+    NotLive,
+    /// Refused: the session could not be read (the secret store did not
+    /// answer). Nothing is known to be wrong with the window's view, so the
+    /// caller tells it nothing and it tries again.
+    Unconfirmed,
+}
+
 /// Store `next`, keeping `ever_identified` sticky (and implied by a sub).
 ///
 /// **A sub is accepted only for the live session.** `live_sub` answers which
 /// Constellation account is signed in right now (the stored token bundle's
-/// `sub`), and a save naming any other sub, or a sub while nobody is signed in,
-/// is refused with nothing written. The webview's view of the session lags the
-/// core's: a save already in flight when a sign-out ran, or one a window makes
-/// from a session read taken before the sign-out, would otherwise land after
-/// [`forget_identity_in`] and put the account that left back on record, and the
-/// next launch would bootstrap it as identified. Asked inside the lock, so a
-/// forget cannot run between the check and the write; and every sign-out
-/// deletes the bundle before it forgets, so a save the lock lets through after
-/// the deletion finds no live sub.
+/// `sub`): `Ok(None)` for nobody, `Err` when the secret store could not say.
+/// The webview's view of the session lags the core's: a save already in flight
+/// when a sign-out ran, or one a window makes from a session read taken before
+/// the sign-out, would otherwise land after [`forget_identity_in`] and put the
+/// account that left back on record, and the next launch would bootstrap it as
+/// identified. Asked inside the lock, so a forget cannot run between the check
+/// and the write; and every sign-out deletes the bundle before it forgets, so a
+/// save the lock lets through after the deletion finds no live sub.
+///
+/// The two refusals differ on purpose. Another sub, or nobody, is
+/// [`SaveOutcome::NotLive`]. A session that could not be read is
+/// [`SaveOutcome::Unconfirmed`]: one keychain hiccup must not sign a window
+/// out of an identity that may be perfectly live. **Either way a requested
+/// `ever_identified` is still stored**: it is monotonic, and when the window
+/// asks for it the client has already merged the install id into a person, so
+/// forgetting it would let a later launch bootstrap the install id again.
+///
+/// `on_stored` is called, still inside the lock, with the record now on disk,
+/// for a save that landed and for a [`SaveOutcome::NotLive`]; announcing from
+/// inside the lock is what keeps two announcements in the order of the writes.
+/// It is not called for [`SaveOutcome::Unconfirmed`].
 ///
 /// `live_sub` is not called for a save with no sub, which is what keeps this
 /// off the secret store for every org or auth-mode update.
 pub fn save_identity_in(
     support: &Path,
     next: Identity,
-    live_sub: impl FnOnce() -> Option<String>,
-) -> Result<()> {
+    live_sub: impl FnOnce() -> Result<Option<String>>,
+    on_stored: impl FnOnce(&Identity),
+) -> Result<SaveOutcome> {
     let identified_sub = clean_id(next.identified_sub);
     with_identity_locked(support, || {
         let prev = read_identity_in(support)?;
         if let Some(sub) = identified_sub.as_deref() {
-            if clean_id(live_sub()).as_deref() != Some(sub) {
-                anyhow::bail!("refusing an analytics identity that is not the live session's");
+            let refusal = match live_sub() {
+                Err(_) => Some(SaveOutcome::Unconfirmed),
+                Ok(live) if clean_id(live.clone()).as_deref() != Some(sub) => {
+                    Some(SaveOutcome::NotLive)
+                }
+                Ok(_) => None,
+            };
+            if let Some(refusal) = refusal {
+                let kept = Identity {
+                    ever_identified: prev.ever_identified || next.ever_identified,
+                    ..prev.clone()
+                };
+                if kept != prev {
+                    write_identity_in(support, &kept)?;
+                }
+                if refusal == SaveOutcome::NotLive {
+                    on_stored(&kept);
+                }
+                return Ok(refusal);
             }
         }
         let stored = Identity {
@@ -652,7 +721,9 @@ pub fn save_identity_in(
             org_id: clean_id(next.org_id),
             auth_mode: clean_id(next.auth_mode),
         };
-        write_identity_in(support, &stored)
+        write_identity_in(support, &stored)?;
+        on_stored(&stored);
+        Ok(SaveOutcome::Saved)
     })
 }
 
@@ -686,11 +757,16 @@ pub fn load_identity() -> Identity {
 
 /// [`save_identity_in`] against the real data dir and the stored OAuth session.
 /// The session read is `oauth::current`, witnessed on `account.json`, so it is a
-/// cache hit unless a sign-in or sign-out has moved that file.
-pub fn save_identity(next: Identity) -> Result<()> {
-    save_identity_in(&crate::env::app_support_dir()?, next, || {
-        crate::oauth::current().ok().flatten().and_then(|t| t.sub())
-    })
+/// cache hit unless a sign-in or sign-out has moved that file; an error from it
+/// (the secret store did not answer) is [`SaveOutcome::Unconfirmed`], not a
+/// sign-out.
+pub fn save_identity(next: Identity, on_stored: impl FnOnce(&Identity)) -> Result<SaveOutcome> {
+    save_identity_in(
+        &crate::env::app_support_dir()?,
+        next,
+        || Ok(crate::oauth::current()?.and_then(|t| t.sub())),
+        on_stored,
+    )
 }
 
 /// [`forget_identity_in`] against the real data dir.
@@ -885,6 +961,7 @@ mod tests {
             "tool_connected.a/b",
             "tool_connected.a\\b",
             ".legacy",
+            ".store",
         ] {
             assert!(!is_known_milestone(bad), "{bad:?} must not be a milestone");
             assert!(
@@ -1053,19 +1130,28 @@ mod tests {
     }
 
     /// No live session: the closure a save with no sub must never need.
-    fn no_session() -> Option<String> {
-        None
+    fn no_session() -> Result<Option<String>> {
+        Ok(None)
     }
 
-    fn live(sub: &str) -> impl FnOnce() -> Option<String> + '_ {
-        move || Some(sub.to_string())
+    fn live(sub: &str) -> impl FnOnce() -> Result<Option<String>> + '_ {
+        move || Ok(Some(sub.to_string()))
+    }
+
+    /// [`save_identity_in`] with nobody to announce to.
+    fn save(
+        dir: &Path,
+        next: Identity,
+        live_sub: impl FnOnce() -> Result<Option<String>>,
+    ) -> Result<SaveOutcome> {
+        save_identity_in(dir, next, live_sub, |_| {})
     }
 
     #[test]
     fn identity_round_trips_and_first_identification_is_sticky() {
         let dir = scratch("identity");
         assert_eq!(load_identity_in(&dir), Identity::default());
-        save_identity_in(
+        save(
             &dir,
             Identity {
                 identified_sub: Some("sub-a".into()),
@@ -1094,7 +1180,7 @@ mod tests {
         );
 
         // A save from the webview cannot clear it either.
-        save_identity_in(&dir, Identity::default(), no_session).unwrap();
+        save(&dir, Identity::default(), no_session).unwrap();
         assert!(load_identity_in(&dir).ever_identified);
     }
 
@@ -1107,7 +1193,7 @@ mod tests {
         assert!(got.ever_identified);
         assert_eq!(got.identified_sub, None);
         fs::remove_file(dir.join(IDENTITY_FILE)).unwrap();
-        save_identity_in(
+        save(
             &dir,
             Identity {
                 identified_sub: Some("  ".into()),
@@ -1157,14 +1243,28 @@ mod tests {
             auth_mode: Some("oauth".into()),
             ever_identified: true,
         };
-        assert!(save_identity_in(&dir, with_sub("sub-a"), no_session).is_err());
+        // Not asking for the sticky bit, so a refusal has nothing to keep.
+        let not_live = Identity {
+            ever_identified: false,
+            ..with_sub("sub-a")
+        };
+        assert_eq!(
+            save(&dir, not_live.clone(), no_session).unwrap(),
+            SaveOutcome::NotLive
+        );
         assert!(
             !dir.join(IDENTITY_FILE).exists(),
             "a refused save writes nothing"
         );
-        assert!(save_identity_in(&dir, with_sub("sub-a"), live("sub-b")).is_err());
+        assert_eq!(
+            save(&dir, not_live, live("sub-b")).unwrap(),
+            SaveOutcome::NotLive
+        );
         assert!(!dir.join(IDENTITY_FILE).exists());
-        save_identity_in(&dir, with_sub("sub-a"), live("sub-a")).unwrap();
+        assert_eq!(
+            save(&dir, with_sub("sub-a"), live("sub-a")).unwrap(),
+            SaveOutcome::Saved
+        );
         assert_eq!(
             load_identity_in(&dir).identified_sub.as_deref(),
             Some("sub-a")
@@ -1183,10 +1283,13 @@ mod tests {
             auth_mode: Some("oauth".into()),
             ever_identified: true,
         };
-        save_identity_in(&dir, signed_in.clone(), live("sub-a")).unwrap();
+        save(&dir, signed_in.clone(), live("sub-a")).unwrap();
         // `oauth::clear`: the bundle goes first, then the forget.
         forget_identity_in(&dir).unwrap();
-        assert!(save_identity_in(&dir, signed_in, no_session).is_err());
+        assert_eq!(
+            save(&dir, signed_in, no_session).unwrap(),
+            SaveOutcome::NotLive
+        );
         let got = load_identity_in(&dir);
         assert_eq!(got.identified_sub, None);
         assert_eq!(got.org_id, None);
@@ -1198,7 +1301,7 @@ mod tests {
     #[test]
     fn a_save_with_no_sub_does_not_ask_for_the_session() {
         let dir = scratch("identity-no-ask");
-        save_identity_in(
+        save(
             &dir,
             Identity {
                 org_id: Some("org-1".into()),
@@ -1217,7 +1320,7 @@ mod tests {
     #[test]
     fn a_writer_waits_for_the_lock_another_process_holds() {
         let dir = scratch("identity-flock");
-        save_identity_in(
+        save(
             &dir,
             Identity {
                 identified_sub: Some("sub-a".into()),
@@ -1227,7 +1330,7 @@ mod tests {
             live("sub-a"),
         )
         .unwrap();
-        let held = file_lock::exclusive(&dir.join(IDENTITY_LOCK_FILE)).unwrap();
+        let held = file_lock::exclusive(&dir.join(IDENTITY_LOCK_FILE), IDENTITY_LOCK_WAIT).unwrap();
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let forget = {
             let (dir, done) = (dir.clone(), done.clone());
@@ -1262,13 +1365,13 @@ mod tests {
                 let (dir, gate) = (dir.clone(), gate.clone());
                 std::thread::spawn(move || {
                     gate.wait();
-                    save_identity_in(
+                    save(
                         &dir,
                         Identity {
                             identified_sub: Some("sub-a".into()),
                             ..Identity::default()
                         },
-                        || Some("sub-a".into()),
+                        || Ok(Some("sub-a".into())),
                     )
                     .unwrap();
                 })
@@ -1278,7 +1381,7 @@ mod tests {
                     let (dir, gate) = (dir.clone(), gate.clone());
                     std::thread::spawn(move || {
                         gate.wait();
-                        save_identity_in(
+                        save(
                             &dir,
                             Identity {
                                 org_id: Some("org-1".into()),
@@ -1339,7 +1442,7 @@ mod tests {
     fn an_unreadable_identity_is_not_written_over() {
         let dir = scratch("identity-io");
         fs::create_dir_all(dir.join(IDENTITY_FILE)).unwrap();
-        assert!(save_identity_in(&dir, Identity::default(), no_session).is_err());
+        assert!(save(&dir, Identity::default(), no_session).is_err());
         assert!(forget_identity_in(&dir).is_err());
         assert!(dir.join(IDENTITY_FILE).is_dir(), "nothing was written");
         // A reader still answers, and answers closed.
@@ -1360,7 +1463,7 @@ mod tests {
             return;
         }
         let dir = scratch("identity-eacces");
-        save_identity_in(
+        save(
             &dir,
             Identity {
                 org_id: Some("org-a".into()),
@@ -1373,7 +1476,7 @@ mod tests {
         let file = dir.join(IDENTITY_FILE);
         fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
 
-        assert!(save_identity_in(&dir, Identity::default(), no_session).is_err());
+        assert!(save(&dir, Identity::default(), no_session).is_err());
         assert!(forget_identity_in(&dir).is_err());
 
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1434,5 +1537,126 @@ mod tests {
             assert_eq!(wins.load(Ordering::Relaxed), 0, "round {round}");
             let _ = fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Review follow-up M2: a session that could not be READ is not a
+    /// sign-out. Nothing about the sub is written, nobody is told, and the
+    /// sticky bit the window asked for is kept.
+    #[test]
+    fn an_unreadable_session_is_unconfirmed_and_keeps_the_sticky_bit() {
+        let dir = scratch("identity-unreadable-session");
+        save(
+            &dir,
+            Identity {
+                org_id: Some("org-1".into()),
+                auth_mode: Some("oauth".into()),
+                ..Identity::default()
+            },
+            no_session,
+        )
+        .unwrap();
+        let mut told = None;
+        let outcome = save_identity_in(
+            &dir,
+            Identity {
+                identified_sub: Some("sub-a".into()),
+                ever_identified: true,
+                org_id: Some("org-1".into()),
+                auth_mode: Some("oauth".into()),
+            },
+            || anyhow::bail!("Secret Service unavailable"),
+            |rec| told = Some(rec.clone()),
+        )
+        .unwrap();
+        assert_eq!(outcome, SaveOutcome::Unconfirmed);
+        assert_eq!(told, None, "an unconfirmed save announces nothing");
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub, None);
+        assert_eq!(got.org_id.as_deref(), Some("org-1"));
+        assert!(
+            got.ever_identified,
+            "the merge already happened client-side"
+        );
+    }
+
+    /// And a save refused as not live keeps the sticky bit too, and announces
+    /// the record it left on disk.
+    #[test]
+    fn a_not_live_refusal_keeps_the_sticky_bit_and_announces_the_record() {
+        let dir = scratch("identity-not-live-sticky");
+        let mut told = None;
+        let outcome = save_identity_in(
+            &dir,
+            Identity {
+                identified_sub: Some("sub-a".into()),
+                ever_identified: true,
+                ..Identity::default()
+            },
+            no_session,
+            |rec| told = Some(rec.clone()),
+        )
+        .unwrap();
+        assert_eq!(outcome, SaveOutcome::NotLive);
+        let got = load_identity_in(&dir);
+        assert_eq!(got.identified_sub, None);
+        assert!(got.ever_identified);
+        assert_eq!(told, Some(got));
+    }
+
+    /// L3: the announcement carries the record that was written, made while
+    /// the lock is still held, so announcements follow the order of writes.
+    #[test]
+    fn a_save_announces_from_inside_the_lock() {
+        let dir = scratch("identity-announce-locked");
+        let mut told = None;
+        save_identity_in(
+            &dir,
+            Identity {
+                org_id: Some("org-1".into()),
+                ..Identity::default()
+            },
+            no_session,
+            |rec| {
+                assert!(
+                    file_lock::exclusive(
+                        &dir.join(IDENTITY_LOCK_FILE),
+                        std::time::Duration::from_millis(50)
+                    )
+                    .is_err(),
+                    "announced after the lock was released"
+                );
+                told = Some(rec.clone());
+            },
+        )
+        .unwrap();
+        assert_eq!(told, Some(load_identity_in(&dir)));
+    }
+
+    /// L2: a stuck holder costs a writer the bound, never forever.
+    #[test]
+    fn a_stuck_lock_holder_times_out_instead_of_hanging() {
+        let dir = scratch("identity-lock-deadline");
+        let path = dir.join(IDENTITY_LOCK_FILE);
+        let _held = file_lock::exclusive(&path, IDENTITY_LOCK_WAIT).unwrap();
+        let wait = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        assert!(file_lock::exclusive(&path, wait).is_err());
+        let took = started.elapsed();
+        assert!(took >= wait, "gave up after {took:?}");
+        assert!(took < std::time::Duration::from_secs(5), "waited {took:?}");
+    }
+
+    /// Review follow-up M1: a store in place is never an empty directory, so a
+    /// racing creator's rename cannot replace it.
+    #[test]
+    fn every_store_carries_its_sentinel() {
+        let fresh = scratch("store-sentinel-fresh");
+        init_in(&fresh).unwrap();
+        assert!(fresh.join(STORE_DIR).join(STORE_SENTINEL).is_file());
+        let legacy = scratch("store-sentinel-legacy");
+        fs::write(legacy.join("account.json"), "{}").unwrap();
+        init_in(&legacy).unwrap();
+        assert!(legacy.join(STORE_DIR).join(STORE_SENTINEL).is_file());
+        assert!(legacy.join(STORE_DIR).join(LEGACY_MARKER).is_file());
     }
 }
