@@ -42,6 +42,17 @@ to escalate. Two are still worth raising with the gateway team: the OpenAI
 models fail silently (an empty answer, not an error), and one gateway change
 would fix both them and Muse Spark (below).
 
+The working test list, rerun with the live replay below. Each model answers
+and calls the Bash tool, with the same result direct and through Gate Connect:
+
+| Model | Result |
+|---|---|
+| anthropic/claude-opus-5-5 | Works |
+| openai/gpt-sol-latest | Empty reply, no error (the OpenAI case above) |
+| deepseek/deepseek-v4-1-flash | Works |
+| qwen/qwen3-8-flash | Works |
+| moonshotai/kimi-k3 | Works |
+
 ## The NUL-escape pattern, and dropping it before forwarding
 
 Claude Code describes each tool's inputs as a JSON Schema. One tool
@@ -73,13 +84,27 @@ Why it is safe:
   staging replay.
 
 Where it would live: in the gateway (the `gate` repo), in the step that
-converts Anthropic requests for other providers, not in Gate Connect. It would
-fix every app that sends a schema like this, not only Claude Code.
+converts Anthropic requests for other providers. It would fix every app that
+sends a schema like this, not only Claude Code.
+
+**Not in Gate Connect, by decision.** #400 did this on Gate Connect's Gate
+models route and was closed in review: Gate Connect forwards requests
+faithfully, so any model that works with an app works through Gate Connect,
+and it does not patch a model and app incompatibility that exists without it.
+These models fail the same way sent straight to the gateway.
 
 The tradeoff: the gateway quietly edits what the app sent, and it fixes one
 specific case. If another tool uses another regex these providers dislike, it
 needs another rule. That is why it is raised with the gateway team rather
 than treated as settled.
+
+## Checking that Gate Connect forwards faithfully
+
+`crates/core/tests/live_tool_schema_replay.rs` (ignored by default) sends a
+captured request for each model twice: straight to the gateway, and through
+the relay's Gate models route. It fails if Gate Connect changed the outcome. A
+model that fails both ways is a row here, not a test failure. Its module doc
+says how to run it and how to capture a request.
 
 ## Open questions to escalate
 
