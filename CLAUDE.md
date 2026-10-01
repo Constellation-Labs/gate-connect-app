@@ -251,10 +251,15 @@ one-to-one so any value can be traced back without guessing.
   glyph at `neutral-500` beside a `#030712` label reads as disabled, and
   `AppPane`'s row frames resolve `base/card` + `base/border` + `base/foreground`
   (`683:20439`) at 36px around a 20px glyph.
-  **It is a per-surface rule, not a global one.** The Overview policy and
-  savings tables draw their row glyphs at `base/muted-foreground` #6b7280
-  (`116:26721`), deliberately quieter than the label beside them. Resolve the
-  node before applying either half of this.
+  **It is a per-surface rule, not a global one.** The Overview Token savings
+  table draws its row glyphs at `base/muted-foreground` #6b7280 (`1402:18323`),
+  deliberately quieter than the label beside them. **The Policies table beside
+  it does not, since the 2026-09-29 redraw**: its three guardrail glyphs are in
+  colour, sampled red-700 / green-700 / blue-700 off `1390:13599`, and the
+  Overview feed's Category cell takes the same three for the same guardrails.
+  Both are 24px on the table rows (20 in the feed). Resolve the node before
+  applying any of this; the old `116:26721` reading was one table generalised
+  to two.
   **A model row is a third case, and takes neither ink**: it draws the
   provider's own full-colour brand mark (`src/components/gc/ProviderMark.tsx`),
   because the frames do - `anthropic 2` is `#E8704E`, `deepseek-color 1`
@@ -320,9 +325,15 @@ one-to-one so any value can be traced back without guessing.
   `text-base-xs`, `text-sm` and `text-base`: size and tracking are one text
   style, and splitting them is what let `label/14` render at both 0% and -1%.
   The named `tracking-label-12` / `-14` tokens are the same values and stay.
-  **`heading/16` is a different style at -1%**, so card and section headings
-  keep `tracking-heading-16` and the -2% default is for `copy/16`. The lockup
-  is neither, and keeps its measured literal.
+  **`heading/16` is a different style at -1%**, so section headings keep
+  `tracking-heading-16` and the -2% default is for `copy/16`. The lockup is
+  neither, and keeps its measured literal. **Card titles are `heading/18` since
+  the 2026-09-29 redraw** (`1402:17918`, `1390:13642`, `1410:28124`): `text-lg
+  leading-6 tracking-heading-18`, on Policies, Token savings, Messages, Model
+  selection and both Recent activity cards. A table card puts that title in a
+  header row (`CardHeader` in `base.tsx`) with the Manage button at its right
+  and a full-width rule under it; the footer link that used to sit under the
+  rows is gone, and every row divider spans the card.
   **The heading ramp does not share one tracking, so never reach for
   `tracking-heading` by size proximity.** `heading/18` is -1% (-0.18px) and
   `heading/14` is **0%** - the one named heading step with no tracking at all -
@@ -456,9 +467,11 @@ deliberate reversal of an earlier "no dashboard" rule.
   redefines Tailwind's `blue` as an OKLCH ramp for the old ink system, so
   those classes render the wrong colour. Use `base.primary`,
   `blue-ribbon-*`, or the semantic `chart.*` group.
-- **Font sizes go in rem, never px.** `useTextScale` scales the whole ramp
-  from the root, and a px literal opts that call site out of it entirely.
-  Use the `base-*` / `gc-*` `fontSize` tokens.
+- **Font sizes go in rem, never px.** Text scaling works by scaling the whole
+  ramp from the root, and a px literal opts that call site out of it entirely.
+  The popover's `useTextScale` did this and went with it on 2026-09-30; the
+  window has no scaling yet, and keeping the ramp in rem is what lets it come
+  back as one root change. Use the `base-*` `fontSize` tokens.
 - **The design names shadows on Tailwind v4's scale; this repo is on
   v3.4.** Figma `shadow/sm` is v3's default `shadow`, not `shadow-sm`.
   The `base-*` shadow tokens absorb the mapping; shift any new value one
@@ -510,9 +523,9 @@ deliberate reversal of an earlier "no dashboard" rule.
   entirely, CI skips it, and it was found on a dev box only because a daemon
   had been accumulating for three weeks. It reaches production users harder
   than developers.
-- **The `gc.*` palette and `gc/ui.tsx` are still live**, backing the
-  popover screens until they are retired. Don't delete them, and don't
-  reach for them in new UI either.
+- **The `gc.*` palette and `gc/ui.tsx` are gone**, with the popover
+  (2026-09-30). `components/gc/` is the new UI's own folder despite the name;
+  the tokens are `base.*`.
 
 ## Running the app locally
 
@@ -578,15 +591,10 @@ built.
 still open, and the values sampled from Figma. Read it before starting UI
 work.
 
-Both shells exist in one build, and **the new window UI is the default**.
-`gcNewUi(false)` in devtools returns to the popover, or `VITE_NEW_UI=0` at
-build time; see `src/lib/newUi.ts`, which is the authority. This file said
-the popover was still the shipping default until 2026-09-01, which was
-wrong and is the kind of error that decides whether a change is treated as
-user-facing: anything landing in the new shell ships to production users.
-
-The new shell's routing actions are still inert until they are wired
-through drift review and certificate trust, which is why the popover
-remains reachable at all.
+**The popover shell is gone** (2026-09-30): `App.tsx`, the `screens/` it
+drove and its takeovers were deleted, along with `src/lib/newUi.ts`, the
+`gcNewUi` devtools switch and `VITE_NEW_UI`. The main window always renders
+`NewUiApp`; the onboarding and tray windows keep their own content
+(`src/main.tsx`). Anything that lands in the window ships to production users.
 
 NOTE: never use "—"

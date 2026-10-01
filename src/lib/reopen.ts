@@ -1,5 +1,4 @@
 import type { RunningAgent, Verdict } from "./api";
-import { appForMember } from "./groups";
 
 /**
  * The vocabulary of the reopen flow: what a tool is doing right now, what the
@@ -62,22 +61,6 @@ export type ReopenStage =
   /** It came back, and the check could not confirm where its traffic goes. */
   | "verify_failed";
 
-/** What the stage is, in the user's words. */
-export const REOPEN_STAGE_LABEL: Record<ReopenStage, string> = {
-  applying: "Applying",
-  reopen_required: "Reopen required",
-  closing: "Closing",
-  awaiting_reopen: "Reopen required",
-  reopening: "Reopening",
-  verifying: "Verifying",
-  reopened: "Reopened",
-  routing: "Routing through Gate",
-  not_routed: "On its own settings",
-  close_failed: "Could not close",
-  config_failed: "Configuration failed",
-  verify_failed: "Verification failed",
-};
-
 /**
  * The line under the stage: what it means for this tool.
  *
@@ -88,8 +71,8 @@ export const REOPEN_STAGE_LABEL: Record<ReopenStage, string> = {
 export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   applying: "Writing this tool's configuration.",
   reopen_required:
-    "Running, and still using the route it started with.",
-  closing: "Asking this tool to close so it can pick up its new route.",
+    "Running, and still using the settings it started with.",
+  closing: "Asking this tool to close so it can pick up its new configuration.",
   awaiting_reopen:
     "Closed. Open it again and Gate will check its route.",
   reopening: "Gate is starting this tool again.",
@@ -99,7 +82,7 @@ export const REOPEN_STAGE_DETAIL: Record<ReopenStage, string> = {
   routing: "Open, and its traffic is going through Gate.",
   not_routed: "Open, and its traffic is going to its own upstream.",
   close_failed:
-    "Gate could not close it, so it is still using the route it started with.",
+    "Gate could not close it, so it is still using the settings it started with.",
   config_failed:
     "Gate could not write this tool's configuration, so nothing changed for it.",
   verify_failed:
@@ -125,7 +108,7 @@ export const REOPEN_IDLE_WATCH_MS = 10_000;
 /** Why any of this is necessary, in one sentence. Shared by every surface that
  *  raises the flow, so the reason cannot be phrased two ways. */
 export const WHY_REOPEN =
-  "A tool reads its configuration when it starts, so one that was already running keeps the route it launched with until it is opened again.";
+  "A tool reads its configuration when it starts, so one that was already running keeps the settings it launched with until it is opened again.";
 
 /**
  * Waiting on the person, not on Gate.
@@ -172,26 +155,6 @@ export type ReopenBucket =
   | "config_failed"
   | "verify_failed";
 
-export const REOPEN_BUCKET_TITLE: Record<ReopenBucket, string> = {
-  verified: "Applied and verified",
-  reopened: "Reopened, not checked",
-  manual_reopen: "Waiting for you to reopen",
-  close_failed: "Could not be closed or reopened",
-  config_failed: "Configuration failed",
-  verify_failed: "Verification failed",
-};
-
-export const REOPEN_BUCKET_BLURB: Record<ReopenBucket, string> = {
-  verified: "Gate checked these after they came back.",
-  reopened:
-    "Gate closed and reopened these. They ride the system proxy rather than a config file, so there is no per-tool reading to take.",
-  manual_reopen:
-    "Their configuration is saved. Open each one and Gate finishes the check.",
-  close_failed: "These are still running on the route they started with.",
-  config_failed: "Nothing was written for these, so they are unchanged.",
-  verify_failed: "These are open, and Gate could not confirm their route.",
-};
-
 /** Which bucket a stage lands in, or `null` while the tool is still in flight. */
 export function bucketOf(stage: ReopenStage): ReopenBucket | null {
   switch (stage) {
@@ -211,75 +174,6 @@ export function bucketOf(stage: ReopenStage): ReopenBucket | null {
       return "verify_failed";
     default:
       return null;
-  }
-}
-
-/**
- * One action, on one tool.
- *
- * Deliberately not {@link import("./api").VerdictNextAction}: that set answers
- * "this tool is not routing, what now" for a row on the rail, and this one
- * answers "this step of the operation did not land". They overlap on Reopen
- * tool and separate everywhere else.
- */
-export type ReopenAction =
-  | "reopen_tool"
-  | "retry_application"
-  | "retry_verification"
-  | "use_tool_defaults"
-  | "view_diagnostics"
-  | "contact_support";
-
-/** AG-566's own words for each, so the control and the ticket agree. */
-export const REOPEN_ACTION_LABEL: Record<ReopenAction, string> = {
-  reopen_tool: "Reopen tool",
-  retry_application: "Retry application",
-  retry_verification: "Retry verification",
-  use_tool_defaults: "Use tool defaults",
-  view_diagnostics: "View diagnostics",
-  contact_support: "Contact support",
-};
-
-/**
- * What a row offers, in the order it offers it: the thing most likely to fix
- * this stage first, the escape hatch after it, and the two that only ever
- * report - diagnostics and support - last.
- *
- * A resolved row offers nothing. Its stage says the tool is where the user
- * asked it to be, and a button beside that would invite them to redo work that
- * already landed.
- */
-export function actionsFor(stage: ReopenStage): ReopenAction[] {
-  switch (stage) {
-    case "reopen_required":
-      // Running, on the old route: the process is the thing in the way, and
-      // offering to deal with it is something Gate can actually do.
-      return ["reopen_tool", "view_diagnostics"];
-    case "awaiting_reopen":
-      // Closed, and only the user can start it again. A "Reopen tool" button
-      // here would be an instruction dressed up as a control - and so, it turns
-      // out, was the "Retry verification" that used to sit here: the watch
-      // already re-reads both probes on a tick, and the shells now keep
-      // sweeping after this dialog is dismissed, so the reopen moves the row
-      // whether or not anybody presses anything. A refresh button beside a
-      // reading that refreshes itself teaches the user it does not.
-      return ["view_diagnostics"];
-    case "close_failed":
-      // No `contact_support` (AG-898). Support belongs where Gate has
-      // established the user cannot resolve it themselves, and nothing here
-      // establishes that: a process Gate could not signal is one the person can
-      // close from their own window. `view_diagnostics` is still the way to
-      // carry this to somebody, and it is the honest one - it hands over a
-      // reading rather than opening a ticket about a routing check.
-      return ["reopen_tool", "view_diagnostics"];
-    case "config_failed":
-      return ["retry_application", "use_tool_defaults", "view_diagnostics"];
-    case "verify_failed":
-      // Four actions, one of which was `contact_support`, on the row for a tool
-      // whose own retry had not been tried yet. See the note above.
-      return ["retry_verification", "use_tool_defaults", "view_diagnostics"];
-    default:
-      return [];
   }
 }
 
@@ -461,122 +355,7 @@ export function nextStage(
   }
 }
 
-/** The rows the result groups, in a fixed order: what worked, what the user
- *  still has to do, then the three failures. Empty buckets are dropped rather
- *  than drawn as a heading with nothing under it. */
-export function reopenBuckets(
-  tools: ReopenTool[],
-): { key: ReopenBucket; title: string; blurb: string; tools: ReopenTool[] }[] {
-  const order: ReopenBucket[] = [
-    "verified",
-    "reopened",
-    "manual_reopen",
-    "close_failed",
-    "config_failed",
-    "verify_failed",
-  ];
-  return order
-    .map((key) => ({
-      key,
-      title: REOPEN_BUCKET_TITLE[key],
-      blurb: REOPEN_BUCKET_BLURB[key],
-      tools: tools.filter((t) => bucketOf(t.stage) === key),
-    }))
-    .filter((bucket) => bucket.tools.length > 0);
-}
-
 /** Every tool has settled, so the flow can stop watching. */
 export function allSettled(tools: ReopenTool[]): boolean {
   return tools.every((t) => isTerminal(t.stage));
-}
-
-/** Everything landed and was checked, which is the one outcome that needs no
- *  account of itself - the design draws "Change is ready" for it. */
-export function allVerified(tools: ReopenTool[]): boolean {
-  return tools.length > 0 && tools.every((t) => bucketOf(t.stage) === "verified");
-}
-
-/**
- * How much a stage wants the reader's attention, lowest first.
- *
- * Only ever used to pick which member speaks for an app (AG-898). The order is
- * the question "does this need me?", not the order of the flow: a failure
- * outranks a wait, a wait outranks work in flight, and a settled good reading
- * comes last. Two members of one app rarely disagree; when they do, the app has
- * to report the half that is worse, because reporting the better half is how a
- * dialog tells somebody everything is fine while their editor is not routed.
- */
-const STAGE_SEVERITY: Record<ReopenStage, number> = {
-  config_failed: 0,
-  close_failed: 1,
-  verify_failed: 2,
-  reopen_required: 3,
-  awaiting_reopen: 4,
-  applying: 5,
-  closing: 6,
-  reopening: 7,
-  verifying: 8,
-  reopened: 9,
-  not_routed: 10,
-  routing: 11,
-};
-
-/** One app, and the surfaces of it this flow touched. */
-export interface ReopenAppRow<T extends ReopenTool = ReopenTool> {
-  /** The section id, or the lone tool's slug when no section claims it. */
-  id: string;
-  name: string;
-  /** The member the row reports, and whose slug its actions carry. */
-  lead: T;
-  /** Every member of this app in the flow, in the order they arrived. */
-  members: T[];
-  /** Whether the members disagree about their stage, so the surface knows to
-   *  account for them individually rather than let the lead speak for all. */
-  mixed: boolean;
-}
-
-/**
- * One row per app, not one per running process (AG-898).
- *
- * The flow is handed surfaces: Codex has a config file, the ChatGPT desktop app
- * has a chat turn and a Work endpoint, and the scan reports each separately. The
- * rail has called those one app named "ChatGPT / Codex" since `SECTIONS` was
- * written, and a dialog that lists them apart contradicts the surface the user
- * just came from.
- *
- * **Actions stay per slug.** AG-566 AC 10 requires that retrying one tool never
- * repeats the change for another, so the row carries `lead` rather than a set,
- * and every control the surface draws takes `lead.slug`. Merging rows changes
- * what is *shown*, never what a button does.
- *
- * Generic in the row type so a shell that has decorated its tools - with brand
- * marks, in `reopenSubjects` - keeps the decoration.
- */
-export function reopenAppRows<T extends ReopenTool>(tools: T[]): ReopenAppRow<T>[] {
-  const order: string[] = [];
-  const byApp = new Map<string, { name: string; members: T[] }>();
-  for (const tool of tools) {
-    const app = appForMember(tool.slug);
-    const id = app?.id ?? tool.slug;
-    const existing = byApp.get(id);
-    if (existing) {
-      existing.members.push(tool);
-      continue;
-    }
-    order.push(id);
-    byApp.set(id, { name: app?.name ?? tool.name, members: [tool] });
-  }
-  return order.map((id) => {
-    const { name, members } = byApp.get(id)!;
-    const lead = members.reduce((worst, t) =>
-      STAGE_SEVERITY[t.stage] < STAGE_SEVERITY[worst.stage] ? t : worst,
-    );
-    return {
-      id,
-      name,
-      lead,
-      members,
-      mixed: members.some((t) => t.stage !== lead.stage),
-    };
-  });
 }

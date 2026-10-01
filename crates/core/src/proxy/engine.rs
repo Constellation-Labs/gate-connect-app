@@ -45,11 +45,14 @@ pub struct EngineConfig {
     /// Gate gateway base URL - the rewrite target authority.
     pub gateway_base_url: String,
     /// Gate API key, injected as `X-Gate-Api-Key` when no OAuth token is set
-    /// (the legacy credential).
+    /// (the legacy credential). Empty for an OAuth account
+    /// (`account::load`), where a request with no live token is refused here
+    /// ([`signed_out_response`]) rather than sent under a key.
     pub api_key: String,
     /// Cognito access token. When non-empty it's injected as
     /// `X-Gate-Authorization: Bearer <token>` *instead of* the API key;
-    /// empty means fall back to `api_key`. Hot-swappable via
+    /// empty means no live session: fall back to `api_key` when there is one,
+    /// else refuse the request. Hot-swappable via
     /// [`RunningEngine::update_token`].
     pub oauth_token: String,
     /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
@@ -515,7 +518,7 @@ struct GateHandler {
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
     /// Live-updatable Cognito access token. Empty string means "unset" -
-    /// fall back to `api_key`.
+    /// fall back to `api_key`, or refuse the request when that is empty too.
     token: watch::Receiver<Arc<str>>,
     /// Live-updatable selected org UUID. Empty string means "none selected";
     /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
@@ -1063,6 +1066,15 @@ impl HttpHandler for GateHandler {
                 } else {
                     let api_key = self.api_key.borrow().clone();
                     let token = self.token.borrow().clone();
+                    if super::lacks_gate_credential(req.headers(), &api_key, &token) {
+                        // See `lacks_gate_credential`. The dead session itself
+                        // was already raised by the refresh loop when it
+                        // pushed the empty token; this only answers the tool.
+                        if debug_log() {
+                            eprintln!("[gate-proxy] {path} -> refused: signed out");
+                        }
+                        return RequestOrResponse::Response(signed_out_response());
+                    }
                     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
                     let org = self.org.borrow().clone();
                     let org_id = (!org.is_empty()).then(|| org.as_ref());
@@ -1426,6 +1438,23 @@ fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
         ))
         // Infallible: every part is a static, pre-validated value.
         .expect("static decline response builds")
+}
+
+/// The response a routed request gets when
+/// [`lacks_gate_credential`](crate::proxy::lacks_gate_credential) holds.
+/// Shaped like [`decline_upgrade_response`], and for the same reason; the body
+/// is [`crate::proxy::signed_out_body`], the one the relay's 401 carries, and
+/// so are the headers.
+fn signed_out_response() -> hudsucker::hyper::Response<Body> {
+    let mut builder =
+        hudsucker::hyper::Response::builder().status(hudsucker::hyper::StatusCode::UNAUTHORIZED);
+    for (name, value) in crate::proxy::SIGNED_OUT_HEADERS {
+        builder = builder.header(name, HeaderValue::from_static(value));
+    }
+    builder
+        .body(Body::from(crate::proxy::signed_out_body()))
+        // Infallible: the status and headers are static, the body is a String.
+        .expect("signed-out response builds")
 }
 
 /// The response the app gets in place of a Cloudflare interstitial, once
@@ -1969,9 +1998,9 @@ pub(crate) fn apply_rewrite<T>(
 
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
-    // Credential first: `inject_gate_credential` is what stamps the model header
-    // (through `inject_attribution`), so asking whether this request is served
-    // before it runs would always answer no.
+    // Credential and attribution in one call (`inject_gate_credential` runs
+    // `inject_attribution`), which is also what strips a caller's `x-gate-model`
+    // before anything reaches the gateway.
     // The engine's half of the established-tool pair. There is no base URL here
     // to carry a marker - this is a forward proxy - so the tool names itself in
     // a header Gate wrote into its own config instead. Read before the call,
@@ -1990,69 +2019,21 @@ pub(crate) fn apply_rewrite<T>(
     // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
     // under the caller's own credential (BYOK), without it the gateway resolves
     // one of the org's provider accounts and debits its balance. Nothing else in
-    // the request says which it is.
-    //
-    // Two independent things ask Gate to serve, and either is enough: the org
-    // routes this domain pay-as-you-go, or the user put this tool on a Gate
-    // model - read back from the header `inject_model_choice` has just stamped,
-    // rather than derived a second time. See the relay's copy of this branch;
-    // the two paths must agree, because a tool can reach Gate through either.
-    //
-    // The Gate-model half additionally turns on the PATH, and that is the
-    // difference between a served request and a hung one: the gateway can only
-    // answer for the routes it implements, and withholding the hint on any other
-    // leaves it with nothing to forward to and nothing to answer with, so the
-    // caller waits. PAYG is not gated that way - the org routes that domain and
-    // its forwarded path is already a shape the gateway serves. See `serve_path`.
-    let model_serve_path = if super::serves_gate_model(req.headers()) {
-        super::serve_path(req.uri().path())
-    } else {
-        None
-    };
-
-    if let Some(gateway_path) = model_serve_path {
-        // Onto the servable path, keeping the query. `/codex/responses` is
-        // answered at `/v1/responses`: the same wire format, under a route the
-        // gateway implements.
-        let query = req.uri().query().map(str::to_string);
-        let mut parts = req.uri().clone().into_parts();
-        parts.path_and_query = Some(
-            match query.as_deref() {
-                Some(q) => format!("{gateway_path}?{q}"),
-                None => gateway_path.to_string(),
-            }
-            .parse()
-            .context("rebuilding request path onto the servable gateway route")?,
-        );
-        *req.uri_mut() = Uri::from_parts(parts).context("rebuilding served request URI")?;
-    }
-
+    // the request says which it is, and on this path only the org's billing mode
+    // decides it. A Gate model the user chose for a tool is written into that
+    // tool's own config and reaches Gate on the relay's served route
+    // (`gate_served`); it never turns on anything this engine reads.
     let headers = req.headers_mut();
-    if mode == BillingMode::Byok && model_serve_path.is_none() {
+    if mode == BillingMode::Byok {
         headers.insert(
             super::UPSTREAM_URL_HEADER,
             HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
         );
-        // The model header goes too. It is not a label: its own contract says it
-        // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
-        // this tool on a Gate model. Leaving it on a forwarded request states
-        // both "Gate serves this, bill the org" and "send this to my own
-        // provider under my own key" at once, and the body's model would be
-        // rewritten to a Gate id the tool's own provider has never heard of.
-        // Unreachable before the serve rewrite existed, because the request hung
-        // instead of falling back; reachable now on any path Gate does not
-        // serve, such as `count_tokens`.
-        headers.remove(super::GATE_MODEL_HEADER);
     } else {
         // REMOVED, not merely left unwritten: a caller cannot smuggle BYOK back
-        // in on a served rewrite, which would both escape the serve routing and
-        // aim the gateway at a host of the caller's choosing.
+        // in on a served rewrite, which would both escape PAYG and aim the
+        // gateway at a host of the caller's choosing.
         headers.remove(super::UPSTREAM_URL_HEADER);
-        // The tool's own key goes with it - on a served request the model, the
-        // provider and the bill are all Gate's. `inject_gate_credential` has
-        // already done this for PAYG; this covers the Gate-model case, where the
-        // org is still BYOK.
-        super::strip_client_auth(headers);
     }
     Ok(injected_oauth)
 }

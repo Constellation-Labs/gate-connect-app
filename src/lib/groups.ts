@@ -239,45 +239,6 @@ export function browserTrustRestartAdvice(
   };
 }
 
-/**
- * The rows a browser tab can arrive on.
- *
- * Keyed by member key, like {@link MEMBER_HINTS} and for the same reason: no
- * catalog field carries this. `chatgpt-apps` and `chatgpt` are both
- * `Client::ChatGpt`, both `Credential::Additive` and both `Scope::Host`
- * (`proxy/catalog.rs`), so the taxonomy cannot tell them apart, and the slug is
- * the only thing that can. A field on `ProxyDomain` is the real answer and this
- * table is a stand-in for it; adding one is a catalog change and wants the
- * backend, so it is raised rather than done here.
- *
- * The distinction is worth having because the REMEDY turns on it. A page keeps
- * the connection it opened before the PAC named the host, so it bypasses Gate
- * until it is reloaded; a program reads its route at launch, so it has to be
- * closed. Telling one user the other's remedy names something they cannot do.
- *
- * Every entry here is `additive`. That is not the rule - `anthropic` is a host
- * row too and nobody browses `api.anthropic.com` - it is what happens to be
- * true of the two surfaces a person visits in a browser.
- */
-const BROWSER_SURFACE_ROWS: ReadonlySet<string> = new Set([
-  // claude.ai, and the Claude desktop app's chat sharing that host.
-  "claude-web",
-  // chatgpt.com, and the ChatGPT desktop app's chat turn.
-  "chatgpt-apps",
-]);
-
-/**
- * Whether a browser tab can be sitting on this row's hosts right now.
- *
- * The one row this exists to exclude is `chatgpt` ("Subscription"), whose
- * clients are Codex through the relay and the ChatGPT app's Work mode - two
- * programs, no tab. It reads as a chat surface on every field the ledger
- * carries, which is exactly why the answer is written down rather than derived.
- */
-export function hasBrowserSurface(member: GroupMember): boolean {
-  return BROWSER_SURFACE_ROWS.has(member.key);
-}
-
 export type MemberAttention =
   | "error"
   | "drifted"
@@ -956,24 +917,6 @@ function intended(m: GroupMember): boolean {
   return m.desired || m.attention === "drifted";
 }
 
-
-/**
- * The app a routable surface belongs to, or null when no section claims it.
- *
- * The inverse of {@link sectionMemberKeys}, and exported for the same reason:
- * a caller holding a slug but no built ledger still needs to know which app the
- * user thinks it is. The reopen flow is that caller - it is handed running
- * processes, one per surface, and AG-898 asks it to report one outcome per app
- * rather than listing Codex and ChatGPT as two.
- *
- * Reads {@link SECTIONS} directly rather than a built `Group[]`, because the
- * mapping from surface to app is static: what `buildGroups` adds is which
- * members exist on this machine, which is not a question this answers.
- */
-export function appForMember(key: string): { id: string; name: string } | null {
-  const section = SECTIONS.find((s) => s.members.includes(key));
-  return section ? { id: section.id, name: section.name } : null;
-}
 
 /** The member keys a section claims, in draw order, or **`[id]` itself** for
  *  an id no section owns - which is a section `buildGroups` synthesised for an

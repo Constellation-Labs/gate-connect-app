@@ -215,7 +215,10 @@ function Stat({
   return (
     <Tag
       {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
-      className={`flex-1 p-4 text-left ${divided ? "border-l border-base-border" : ""}${
+      // The cell divider is a 12% black line, not `base.border`
+      // (`card/kpi-card` 1390:13632 draws `rgba(0,0,0,0.12)` on its right edge).
+      // An arbitrary value rather than a token: no Figma variable names it.
+      className={`flex-1 p-4 text-left ${divided ? "border-l border-black/[0.12]" : ""}${
         onSelect ? " transition hover:bg-gray-50" : ""
       }`}
     >
@@ -294,7 +297,9 @@ export function MessagesChart({
   const empty = !pending && !unavailable && !unattributed && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
+      {/* `heading/18` since the 2026-09-29 redraw (`1390:13642`), as on every
+        * card title in the Overview and App frames. */}
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
@@ -346,8 +351,8 @@ export function MessagesChart({
         // `bars` frame is 108 tall and the tallest stack inside it is 88, with
         // the 20px tick row below (`706:10513` -> `706:10564`, and the same 88
         // in `864:3510`). This was `h-28`, 112px, which stretched every bar by
-        // a quarter against identical proportional data. In rem so
-        // `useTextScale` still carries it.
+        // a quarter against identical proportional data. In rem so root-level
+        // text scaling carries it.
         className="relative mt-5 flex h-[5.5rem] items-end justify-between gap-2"
         onMouseLeave={() => setHovered(null)}
       >

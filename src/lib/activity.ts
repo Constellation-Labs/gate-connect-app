@@ -118,8 +118,6 @@ export interface ActivityView {
   buckets: MessagesBucket[];
   policies: Policy[];
   savings: Saving[];
-  /** Rendered as the pane's period label, e.g. "Last 24 hours · 14:03". */
-  period: string;
   /** When the gateway computed this reading, as a local clock time - with the
    *  date in front of it when that is not today.
    *
@@ -348,7 +346,6 @@ export function adapt(raw: RawOverview): ActivityView {
       action: r.action ?? null,
     })),
     savings: toRows<Saving>(raw.tokenSavings.rows, SAVINGS_ICONS, "layers", () => ({})),
-    period: `Last 24 hours · updated ${takenAt}`,
     takenAt,
     takenAtMs: generatedAt.getTime(),
     gaps,

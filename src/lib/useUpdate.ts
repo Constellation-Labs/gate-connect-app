@@ -22,6 +22,13 @@ import { track, trackError } from "./analytics";
 
 export type CheckOutcome = "idle" | "up-to-date" | "found" | "failed";
 
+/**
+ * The updater sets no request timeout unless asked, so a stalled request never
+ * settles and the Settings row reads "Checking for updates..." forever. Applies
+ * to the manifest request only: the plugin does not carry it into `download()`.
+ */
+const CHECK_TIMEOUT_MS = 30_000;
+
 export interface UpdateState {
   /** The pending update, or null. Only the version is needed to render. */
   available: { version: string } | null;
@@ -72,7 +79,7 @@ export function useUpdate(): UpdateState {
     setChecking(true);
     if (explicit) setOutcome("idle");
     try {
-      const found = await check();
+      const found = await check({ timeout: CHECK_TIMEOUT_MS });
       handle.current = found ?? null;
       setAvailable(found ? { version: found.version } : null);
       if (explicit) setOutcome(found ? "found" : "up-to-date");

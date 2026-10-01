@@ -46,10 +46,6 @@ describe("classifyError", () => {
     });
 
     it("names the button the user actually pressed", () => {
-      // "Trust", the label both certificate buttons actually carry (Home's card
-      // and the family panel's banner). It used to say "Trust certificate",
-      // which was the label when this branch was written.
-      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Trust");
       expect(classifyError("User canceled (-128)", "forget").hint).toContain("Reset");
     });
 
@@ -145,15 +141,18 @@ describe("backendErrorContext", () => {
 });
 
 describe("cancelled prompt names the control the user actually touched", () => {
-  // These two contexts fire from a role=switch, not a button, and they are the
-  // paths users actually hit: the enable path prompts for admin every time the
-  // system proxy changes. They used to fall through to "Click Connect again",
-  // and there is no Connect button on Home.
-  it("names the Routing switch for the master toggle", () => {
-    const hint = classifyError("User canceled (-128)", "proxy_toggle").hint;
-    expect(hint).toContain("the Routing switch");
-    expect(hint).not.toContain("Connect");
-    expect(hint).not.toContain("Click");
+  // Starting the engine and trusting the certificate are each reached from a
+  // switch, a button and a dialog, so neither may name one of them. Both used
+  // to name controls the window does not have: "the Routing switch", and a
+  // "Trust" button, with "Click Connect again" before that.
+  it("says what to do again for the engine and the certificate", () => {
+    for (const context of ["proxy_toggle", "trust_ca"] as const) {
+      const hint = classifyError("User canceled (-128)", context).hint;
+      expect(hint).toContain("again");
+      expect(hint).not.toContain("Connect");
+      expect(hint).not.toContain("Click");
+      expect(hint).not.toContain("Routing switch");
+    }
   });
 
   it("names a switch for a member toggle", () => {
@@ -163,7 +162,6 @@ describe("cancelled prompt names the control the user actually touched", () => {
   });
 
   it("still says Click for the paths that really are buttons", () => {
-    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Click Trust");
     expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
   });
 });
@@ -331,5 +329,51 @@ describe("classifyError: a loopback port held by another process (AG-960)", () =
 
   it("does not claim an unrelated failure", () => {
     expect(classifyError("connection refused", "connect").title).toBe("Couldn’t reach the gateway");
+  });
+});
+
+describe("a connect an integration refused for a reason the user can fix", () => {
+  it("keeps the title and says what to do, in the window's words", () => {
+    const raw =
+      "No supported OpenCode providers found to route through Gate. Run `opencode auth login anthropic|openai|openrouter|opencode|opencode-go` first, then re-run connect.";
+    const c = classifyError(raw, "connect");
+    expect(c.title).toBe("Couldn’t connect this tool");
+    expect(c.hint).toMatch(/opencode auth login/);
+    expect(c.hint).not.toMatch(/re-run connect/);
+    expect(c.raw).toBe(raw);
+  });
+
+  it("carries the providers an off-catalogue refusal names", () => {
+    const c = classifyError(
+      "None of the configured OpenCode providers can route through Gate yet (llamacpp, ollama). Gate has no upstream domain for them.",
+      "connect",
+    );
+    expect(c.hint).toMatch(/\(llamacpp, ollama\)/);
+  });
+
+  it("names the tool a not-installed refusal names", () => {
+    const c = classifyError(
+      "OpenClaw is not installed on this machine -- install it from https://docs.openclaw.ai first",
+      "connect",
+    );
+    expect(c.hint).toMatch(/^OpenClaw isn’t installed/);
+  });
+
+  it("keeps Try again for anything not on the list", () => {
+    for (const raw of [
+      "failed to write ~/.codex/config.toml",
+      "writing /Users/x/.codex/config.toml: Permission denied (os error 13)",
+      "expected value at line 1 column 1",
+      "error sending request for url (https://gw.example/v1)",
+    ]) {
+      expect(classifyError(raw, "connect").hint).toMatch(/^Try again\./);
+    }
+  });
+
+  it("leaves every other action's copy alone", () => {
+    expect(
+      classifyError("No supported OpenCode providers found to route through Gate.", "sign_out")
+        .hint,
+    ).toMatch(/^Try again\./);
   });
 });

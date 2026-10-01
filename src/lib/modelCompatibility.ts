@@ -73,10 +73,17 @@ export interface ToolNeeds {
  * would have worked.
  */
 const NEEDS: Record<string, ToolNeeds> = {
-  // Codex sends its shell tool as a freeform tool on every request.
-  codex: { tools: true, freeformTools: true },
+  // Codex's own toolset is freeform (code mode's `exec`, `apply_patch`), but
+  // not what it sends a Gate model: Gate writes a model that has not been seen to take
+  // freeform tools into Codex's catalog without code mode or the freeform
+  // `apply_patch` (`integrations/codex.rs`), so Codex sends it function tools
+  // only. The rule below stays for a tool that cannot adapt that way.
+  codex: { tools: true, freeformTools: false },
   // Claude Code sends ordinary tool definitions.
   "claude-code": { tools: true, freeformTools: false },
+  // Hermes is an agent and sends ordinary tool definitions on its turns, so a
+  // model with no tool use cannot drive it.
+  hermes: { tools: true, freeformTools: false },
 };
 
 export function needsOf(slug: string | null | undefined): ToolNeeds {

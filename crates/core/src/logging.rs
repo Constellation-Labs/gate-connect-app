@@ -178,10 +178,3 @@ fn rotate_if_large(path: &std::path::Path) {
     // smaller problem than a failed write on a path the user is waiting on.
     let _ = std::fs::rename(path, path.with_extension("log.1"));
 }
-
-/// The log's location, for the diagnostics report and for telling someone which
-/// file to send. `None` when logging is off, so a production build offers no
-/// path to a file it never writes.
-pub fn path_for_report() -> Option<PathBuf> {
-    enabled().then(log_path).flatten()
-}

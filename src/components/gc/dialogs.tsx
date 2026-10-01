@@ -13,6 +13,7 @@ import {
 } from "../../lib/modelCompatibility";
 import { brandMarkFor } from "./BrandMark";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
+import { MAX_GATE_MODELS } from "../../lib/toolModels";
 import type { ReopenTool } from "../../lib/reopen";
 import { REOPEN_STAGE_DETAIL, WHY_REOPEN } from "../../lib/reopen";
 import {
@@ -489,7 +490,7 @@ export function ApplyChangesDialog({
       tone="warning"
       icon="triangleAlert"
       title="Apply changes to running apps?"
-      subtitle="Your configuration is saved. One final step makes the new route active"
+      subtitle="Your configuration is saved. One final step makes the change active"
       // `destructive` on the SECONDARY changes nothing about how it looks -
       // it moves initial focus onto the primary, which is the safe choice
       // here. Without it the trap fell to the first focusable and that is
@@ -599,60 +600,9 @@ export function CloseAppsDialog({
             <>
               You reopen {joinNames(yours.map((t) => t.name))} yourself
               {mine.length > 0 ? "" : ` - Gate Connect cannot start ${label} for you`}
-              . The new Gate route is active on launch.
+              . The change takes effect on launch.
             </>
           )}
-        </p>
-      </ModalNote>
-    </Modal>
-  );
-}
-
-/**
- * The all-clear, drawn at `134:61659`.
- *
- * **The copy deviates from the frame, and AG-880 is why.** The frame's subtitle
- * ("Codex closed successfully") and its body ("Open Codex whenever you are
- * ready to continue") describe the moment straight after the SIGTERM, which is
- * where this dialog used to fire - `stage.kind === "done"`, out of `closeApps`.
- * AG-566 moved the tail behind `allVerified`, and `bucketOf` returns `verified`
- * only for `routing` and `not_routed`, both of which mean the tool came back up
- * and Gate took a reading on it. So no state is left in which this dialog draws
- * and the user still has an app to open, and the drawn instruction asked for a
- * step they had already finished.
- *
- * "the new route" rather than "the new Gate route": `not_routed` lands in the
- * same bucket, and that is the verdict when the change being applied was
- * routing *off*. Naming Gate there would claim a path the tool is not on.
- */
-export function ChangeReadyDialog({
-  app,
-  plural = false,
-  onDone,
-}: {
-  app: DialogApp;
-  /** Whether `app.name` stands for several apps ("The affected apps"), so the
-   *  subtitle agrees with its subject. Both call sites close a set. */
-  plural?: boolean;
-  onDone: () => void;
-}) {
-  return (
-    <Modal
-      tone="success"
-      icon="circleCheck"
-      title="Change is ready"
-      subtitle={`${app.name} ${plural ? "are" : "is"} back on the new route`}
-      primary={{ label: "Done", onClick: onDone }}
-      onDismiss={onDone}
-      width={512}
-    >
-      <ModalNote>
-        <p className="font-medium text-base-foreground">
-          The new route is active and in use.
-        </p>
-        <p className="mt-1">
-          Gate verified the route after the restart, so there is nothing left to
-          do.
         </p>
       </ModalNote>
     </Modal>
@@ -894,7 +844,7 @@ export function ModelPickerDialog({
    * catalogue had dropped. AG-590's compatibility filter added a second: a model
    * still in the catalogue that this app cannot be served with is filtered out
    * of `usable`, so it is equally unreachable while it stays in the draft,
-   * counted by "Unselect all" and written straight back on Save. That is the
+   * counted by the selection counter and written straight back on Save. That is the
    * same trap, reintroduced through a different door, so both take the same
    * exit.
    *
@@ -961,14 +911,19 @@ export function ModelPickerDialog({
    */
   const renderRow = (model: (typeof models)[number]) => {
     const selected = chosen.includes(model.id);
+    // At the limit, a row not already chosen cannot be added: drawn faded
+    // (`1420:34662`) and refusing the click, so the set cannot pass what the
+    // backend accepts. Clearing any chosen row frees a slot.
+    const blocked = multiple && !selected && atLimit;
     return (
       <button
         key={model.id}
         type="button"
         role={multiple ? "checkbox" : "radio"}
         aria-checked={selected}
+        disabled={blocked}
         onClick={() => choose(model.id)}
-        className={`flex h-10 shrink-0 items-center gap-2 rounded-control border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+        className={`flex h-10 shrink-0 items-center gap-2 rounded-control border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50 ${
           // The frame marks the chosen row with the muted ground and a real
           // border rather than a primary outline. It also drew the unchosen rows
           // at a looser radius; design's card rule of 2026-09-04 overrides that,
@@ -976,7 +931,7 @@ export function ModelPickerDialog({
           // and the border still carry the selection on their own.
           selected
             ? "border-base-border bg-gray-50"
-            : "border-transparent hover:bg-gray-50"
+            : "border-transparent enabled:hover:bg-gray-50"
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
@@ -997,7 +952,7 @@ export function ModelPickerDialog({
    * row.
    *
    * The row used to refuse to clear when it was the last one. That cannot coexist
-   * with the frame's "Unselect all", which exists precisely to empty the set, and
+   * with the frame's "Clear selections", which exists precisely to empty the set, and
    * the two ways out the ticket names - choose another, or return to App default -
    * are both still reachable from an empty draft.
    *
@@ -1008,6 +963,8 @@ export function ModelPickerDialog({
    * refuse the click that led there. Cancel still leaves the stored set untouched.
    */
   const emptyDraft = draft.length === 0;
+  /** The draft holds as many models as an app can use. */
+  const atLimit = draft.length >= MAX_GATE_MODELS;
 
   /**
    * Whether the draft is a different set from the one already applied.
@@ -1031,7 +988,13 @@ export function ModelPickerDialog({
       onSave([id]);
       return;
     }
-    setDraft((d) => (d.includes(id) ? d.filter((x) => x !== id) : [...d, id]));
+    setDraft((d) =>
+      d.includes(id)
+        ? d.filter((x) => x !== id)
+        : d.length >= MAX_GATE_MODELS
+          ? d
+          : [...d, id],
+    );
   };
 
   return (
@@ -1062,9 +1025,27 @@ export function ModelPickerDialog({
               // a saveable state. This is where AG-590's "the final model cannot
               // be removed" is enforced - see `emptyDraft`. `changed` is the
               // other half: an untouched dialog has nothing to apply.
-              disabled: emptyDraft || !changed,
+              // A set stored before the limit existed can open over it; it
+              // has to come down to the limit before it can be applied, and
+              // the counter says by how much.
+              disabled: emptyDraft || !changed || draft.length > MAX_GATE_MODELS,
             }
           : undefined
+      }
+      footerStart={
+        multiple && !loading && !failure && models.length > 0 ? (
+          // `1410:31315`: a text link across from Cancel. Empties the draft
+          // only; nothing is written until Apply, and an empty draft cannot be
+          // applied, so this cannot leave the app with no model.
+          <button
+            type="button"
+            onClick={() => setDraft([])}
+            disabled={emptyDraft}
+            className="rounded-control text-sm font-medium leading-5 text-base-primary underline-offset-2 enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            Clear selections
+          </button>
+        ) : undefined
       }
       onDismiss={onDismiss}
       initialFocus={searchRef}
@@ -1153,30 +1134,15 @@ export function ModelPickerDialog({
             </div>
           </div>
 
-          {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
-           *  clause distinguishes what this tool may use from everything Gate
-           *  offers, and it was held back while nothing filtered per tool: the
-           *  two numbers would have been the same, and saying it twice would
-           *  imply a filter that was not running. AG-590's compatibility filter
-           *  is that filter, so it says something now - and it is the honest
-           *  frame for the count beside it, which is about this app rather than
-           *  about Gate.
-           *
-           *  Dropped again under "Show anyway", where the list IS the catalogue
-           *  and the clause would restate the number it sits next to. */}
-          <div className="flex items-start justify-between text-base-xs leading-4">
-            <p className="text-base-muted-foreground">
-              Showing {shown.length} of {showAll ? models.length : usable.length} models
-              {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
+          {/* How much of the limit the draft uses (`1410:31315`: "2 of 4 models
+            * selected"). It replaced "Showing N of M models", a count of the
+            * catalogue that said nothing about the choice being made; the
+            * set-aside line below still says what the list leaves out. */}
+          {multiple && (
+            <p className="text-base-xs leading-4 text-base-muted-foreground">
+              {draft.length} of {MAX_GATE_MODELS} models selected
             </p>
-            {/* `Unselect all` used to sit here (Figma 682:20043). Design
-             *  removed it on 2026-09-04: there is no select-all to mirror it, the
-             *  list is short enough that clearing by hand is not a chore, and
-             *  Cancel already starts the selection over because nothing is
-             *  written until the primary. The count it carried is not lost - the
-             *  checked rows state the set, and the footer states the
-             *  consequence. */}
-          </div>
+          )}
 
           {/* What a set of several actually does, said only once there is one
             * (AG-888).
@@ -1184,30 +1150,31 @@ export function ModelPickerDialog({
             * The dialog offered a checkbox per model and never explained the
             * rule, so the reasonable reading was the one the ticket reached:
             * "the app takes one model, so anything past the first is
-            * ignored". It is not. The set is an ALLOW-LIST (AG-746,
-            * `gateway-proxy`'s `applyUserModelChoice`): a request for a model
-            * in it is served as the model the tool asked for, and only a
-            * request for something outside it is rewritten, onto the first
-            * entry. That is what makes several Codex sessions on several
+            * ignored". It is not. The set is written into the tool's own
+            * config (`tool_models.rs`): it becomes the list the tool's own
+            * model picker offers, and the first entry is the model the tool
+            * starts on. That is what lets several Codex sessions on several
             * models keep their own choices instead of collapsing onto one.
             *
-            * So this sentence carries the two facts the checkboxes cannot: the
-            * tool's own choice survives, and there is a fallback for everything
-            * else.
+            * So this sentence carries the two facts the checkboxes cannot:
+            * where the set shows up, and which model the app starts on. It
+            * also says what happens to anything outside the set, because the
+            * answer changed: the Gate route (`gate_served.rs`) refuses it
+            * rather than rewriting it onto the first entry.
             *
-            * It does **not** call the fallback "the first in the list". `draft`
-            * is selection order - `choose` appends - and the rows render in
-            * catalogue order inside their vendor groups, so `draft[0]` is
-            * routinely not the first row on screen: check GPT-5 and then a
-            * Claude model and the list draws Claude on top while the fallback
-            * is GPT-5. The value is right, the phrase pointed at an ordering
-            * this dialog never shows and offers no way to change, so it names
-            * the model and stops. */}
+            * It does **not** call the starting model "the first in the list".
+            * `draft` is selection order - `choose` appends - and the rows
+            * render in catalogue order inside their vendor groups, so
+            * `draft[0]` is routinely not the first row on screen: check GPT-5
+            * and then a Claude model and the list draws Claude on top while
+            * the app starts on GPT-5. The value is right, the phrase pointed at
+            * an ordering this dialog never shows and offers no way to change,
+            * so it names the model and stops. */}
           {multiple && draft.length > 1 && (
             <p className="text-base-xs leading-4 text-base-muted-foreground">
-              {appName} keeps its own model whenever it asks for one of these.
-              Anything else it asks for is served as{" "}
+              {appName}&apos;s own model picker lists exactly these, starting on{" "}
               <span className="font-medium text-base-foreground">{draft[0]}</span>.
+              Gate refuses a request for any other model.
             </p>
           )}
 
@@ -1313,13 +1280,13 @@ export function ModelPickerDialog({
 
           {/* AG-590 asks that the set be stated before confirmation, and that the
            *  cost consequence be stated with it. The set is stated above - the
-           *  checked rows, and the count on "Unselect all" - so this carries the
+           *  checked rows, and the counter above them - so this carries the
            *  consequence alone. It said the number a third time until the count
            *  row gained one, and a figure repeated three ways reads as three
            *  facts to reconcile rather than one.
            *
            *  An empty draft is the exception, and says what is needed instead:
-           *  it became reachable when "Unselect all" arrived, and a disabled Save
+           *  it became reachable when "Clear selections" arrived, and a disabled Save
            *  with no sentence beside it is a dead end. */}
           {multiple && (
             <ModalNote>
@@ -1333,7 +1300,7 @@ export function ModelPickerDialog({
                 </>
               ) : (
                 <p>
-                  Eligible requests may use any model enabled here and consume Gate credits.
+                  Requests for the models enabled here consume Gate credits.
                   Gate never uses a model you have not enabled.
                 </p>
               )}
@@ -1379,7 +1346,10 @@ export function UseGateModelDialog({
       icon="layers"
       tile="lg"
       title={`Use a Gate model for ${app.name}?`}
-      subtitle="Your next requests will use Constellation Gate PAYG credits"
+      // Drawn as "Your next requests will use..." (130:48278). The write lands
+      // in the app's config, which it reads when it starts, so the requests
+      // that spend are its next session's rather than the next ones.
+      subtitle={`${app.name}'s next session will use Constellation Gate PAYG credits`}
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
@@ -1438,8 +1408,8 @@ export function UseGateModelDialog({
           </p>
         </div>
         <p className="mt-3 text-sm leading-5 text-neutral-600">
-          {app.name}&apos;s own model preference is not changed. You can return
-          to App default at any time.
+          Gate sets {app.name}&apos;s model to these in its own config. Return to
+          App default at any time to restore your previous model.
         </p>
       </div>
     </Modal>

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
+import { BADGE_STYLES, BaseSwitch, Card, CardHeader, EmptyNote, OutlineButton, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { providerMarkFor } from "./ProviderMark";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -30,29 +30,30 @@ export type {
 import type { ActivityEntry } from "../../lib/toolEventRow";
 
 export interface GateModel {
-  /** Model vendor, e.g. "anthropic". */
-  vendor: string;
   /**
-   * Every enabled model, in the user's order.
+   * Every enabled model, in display order: the one the app's config starts on
+   * first.
    *
-   * The whole set, not the first of it. Figma 228:89517 draws this card with a
-   * single model row, and following that drew a heading reading "Current Gate
-   * models" over exactly one id - which reads as the card having lost five of
-   * them, because that is indistinguishable from what it would look like if it
-   * had. A count in the heading is not worth a list the user cannot see.
+   * The whole set, not the first of it. Figma 228:89517 drew this card with a
+   * single model row, and following that drew a heading over exactly one id
+   * while five more were enabled, which reads as the card having lost them.
+   * The 2026-09-29 redraw (`1410:31957`) draws the set as a grid, one cell per
+   * model with its own vendor and mark, which is what this renders. A choice
+   * made now is at most `MAX_GATE_MODELS`, so two rows; a set stored before
+   * the limit existed can still draw more until it is trimmed.
    *
-   * Supersedes the earlier `alsoEnabled` count, which drove only the heading's
-   * plural: a number that says "and five others" without naming them answers
-   * the wrong half of the question.
-   *
-   * Listed the way the confirmation dialog lists a set (130:48278): stacked, and
-   * with no vendor mark once there is more than one, since a single glyph cannot
-   * stand for several vendors and repeating it per line would claim each id
-   * belongs to the first one's.
+   * Each model's vendor is read off its id's namespace rather than carried
+   * here: the catalogue is loaded only while the picker is open.
    */
   ids: string[];
 }
 
+
+/** A card's action button: base's geometry from the Figma audit (h-8,
+ *  rounded-control, the moulded shadow). Shared by `InfoRow`'s actions and the
+ *  Gate models grid's "Choose models", so the two cannot drift. */
+const CARD_ACTION_BUTTON =
+  "flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary";
 
 /** Anchor for the Tokens saved counter's jump target on this pane. */
 const RECENT_ACTIVITY_SECTION_ID = "recent-activity";
@@ -74,6 +75,8 @@ export function AppPane({
   onChangeModel,
   modelBusy,
   modelAttention,
+  modelNotice,
+  onDismissModelNotice,
   modelPending,
   credits,
   plan,
@@ -132,13 +135,13 @@ export function AppPane({
    *  So null disables the choice and says why.
    *
    *  Omitting it and `onChooseModel` together is a third thing again: the card
-   *  is withheld entirely. A multi-provider tool gets that. OpenCode, OpenClaw
-   *  and Hermes route whichever of their configured providers Gate covers -
-   *  `lib/groups.ts` calls them "tools that talk to several providers, not one
-   *  model family" - so "what does this app use on Gate model" has no single
-   *  answer for them, and `main` never poses the question at all. Per the house
-   *  rule the Settings pane states: an omitted handler omits its control. No
-   *  `onChooseModel`, no card. */
+   *  is withheld entirely. A tool whose config Gate cannot write a model into
+   *  gets that - OpenCode, OpenClaw, the environment channel and the chat
+   *  domains; `GATE_MODEL_TOOLS` in `lib/toolModels` is the list that does get
+   *  it. Hermes is multi-provider on the rail and still gets the card, because
+   *  its config holds a provider entry Gate writes the chosen set into. Per the
+   *  house rule the Settings pane states: an omitted handler omits its control.
+   *  No `onChooseModel`, no card. */
   modelChoice?: ModelChoice | null;
   onChooseModel?: (choice: ModelChoice) => void;
   /** The remembered model, or `null` when none has been chosen.
@@ -157,6 +160,12 @@ export function AppPane({
    *  nothing to say - which is not the same as "all clear", since an unread
    *  catalogue or balance also yields null. See `modelAttention`. */
   modelAttention?: string | null;
+  /** Something that already happened to this app's model setting, said once:
+   *  today, that the user moved the app off its Gate models from inside the
+   *  app, so the card is back on App default. Unlike `modelAttention` it is not
+   *  re-derived on every render, so it carries its own dismiss. */
+  modelNotice?: string | null;
+  onDismissModelNotice?: () => void;
   /** The model *preference* read has not landed.
    *
    *  Its own flag rather than the pane's `pending`, which tracks the activity
@@ -314,6 +323,8 @@ export function AppPane({
           pending={modelPending}
           busy={modelBusy}
           attention={modelAttention}
+          notice={modelNotice}
+          onDismissNotice={onDismissModelNotice}
           onChoose={onChooseModel}
           gateModel={gateModel ?? null}
           onChangeModel={onChangeModel}
@@ -437,8 +448,9 @@ function VendorMark({
  * routing: the control renders one way, and clicking it turns off the setting the
  * user was trying to turn on.
  *
- * **It does not imply that a remembered model is a live one.** "Current Gate
- * model" is drawn only while Gate is the source. It once stayed visible under App
+ * **It does not imply that a remembered model is a live one.** The row naming
+ * what the app's config holds ("Gate model in Codex's config", once "Current
+ * Gate model") is drawn only while Gate is the source. It once stayed visible under App
  * default, dimmed and labelled "not in use", so the user could see what they would
  * be switching to - but a section headed "Current" that describes nothing current
  * has to be read twice to learn it does not apply, and it sat directly under the
@@ -459,6 +471,8 @@ function ModelSelection({
   pending,
   busy,
   attention,
+  notice,
+  onDismissNotice,
   onChoose,
   gateModel,
   onChangeModel,
@@ -490,6 +504,8 @@ function ModelSelection({
   pending?: boolean;
   busy?: boolean;
   attention?: string | null;
+  notice?: string | null;
+  onDismissNotice?: () => void;
   onChoose: (choice: ModelChoice) => void;
   gateModel: GateModel | null;
   onChangeModel: () => void;
@@ -510,15 +526,16 @@ function ModelSelection({
 
   return (
     <Card className="p-4">
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
+      {/* `heading/18` (`1410:28124`) since the 2026-09-29 redraw. */}
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">
         Model selection
       </h2>
       <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
-        Choose whether {appName} or Gate selects the AI model for requests
+        Choose whether {appName} uses its own model or Gate models you enable
       </p>
 
       {pending ? (
-        <div className="mt-4 grid grid-cols-2 gap-4">
+        <div className="mt-4 grid grid-cols-2 gap-2">
           <Skeleton className="h-[3.75rem]" />
           <Skeleton className="h-[3.75rem]" />
         </div>
@@ -527,13 +544,16 @@ function ModelSelection({
           <div
             role="radiogroup"
             aria-label="Model selection"
-            className="mt-4 grid grid-cols-2 gap-4"
+            // 8px between the two options (`1410:28126`), and the glyphs the
+            // frame draws on them: `Icon / Box` for App default, `Icon / Boxes`
+            // (`cube`) for Gate model (`1410:28130`, `1410:28138`).
+            className="mt-4 grid grid-cols-2 gap-2"
           >
             <ModelOption
               selected={choice === "app"}
               disabled={choice === null || busy}
               onSelect={() => onChoose("app")}
-              icon={<Icon name="cube" size={20} />}
+              icon={<Icon name="box" size={20} />}
               title="App default"
               description="Use the model configured in your app"
             />
@@ -541,7 +561,7 @@ function ModelSelection({
               selected={gateActive}
               disabled={choice === null || busy}
               onSelect={() => onChoose("gate")}
-              icon={<Icon name="layers" size={20} />}
+              icon={<Icon name="cube" size={20} />}
               title="Gate model"
               // Names the chosen model once there is one, rather than the
               // generic line the frame draws.
@@ -581,6 +601,30 @@ function ModelSelection({
         >
           <Icon name="triangleAlert" size={16} className="mt-0.5 shrink-0" />
           <span>{attention}</span>
+        </p>
+      )}
+
+      {notice && (
+        // The same in-card highlight, for a change the app made rather than one
+        // it needs: the radios above already moved, and this is the only
+        // account of why. Dismissible, with the control `NoteBanner` draws,
+        // because the user is the only one who knows when they have read it.
+        <p
+          role="status"
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-5 text-amber-900"
+        >
+          <Icon name="info" size={16} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">{notice}</span>
+          {onDismissNotice && (
+            <button
+              type="button"
+              onClick={onDismissNotice}
+              aria-label="Dismiss"
+              className="shrink-0 text-amber-900 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          )}
         </p>
       )}
 
@@ -633,44 +677,63 @@ function ModelSelection({
        * picker when no model is enabled yet. */}
       {gateActive && (
         <>
-          <p className="mt-4 text-base-xs text-base-muted-foreground">
-            {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
+          {/* `heading/14` in `base/muted-foreground` (`1410:28145`); was
+            * `label/12`. The frame's words are "Current Gate models"; this
+            * says where the models went and when they take effect, by the
+            * user's decision (2026-09-30), and is owed to design. */}
+          <p className="mt-4 text-sm font-medium leading-5 tracking-heading-14 text-base-muted-foreground">
+            {(gateModel?.ids.length ?? 0) > 1
+              ? `Gate models in ${appName}'s config, from its next session`
+              : `Gate model in ${appName}'s config, from its next session`}
           </p>
 
           <div className="mt-2">
             {gateModel === null ? (
               <EmptyNote icon="cube">
-                No Gate model chosen yet. Choose one to see what Gate would serve.
+                No Gate model chosen yet. Choose one to write it into {appName}&apos;s config.
               </EmptyNote>
             ) : (
-              <InfoRow
-                // No mark for a set: see `GateModel.ids`.
-                icon={
-                  gateModel.ids.length === 1
-                    ? (providerMarkFor(gateModel.vendor) ?? <Icon name="cube" size={16} />)
-                    : undefined
-                }
-                actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
-              >
-                {gateModel.ids.length === 1 ? (
-                  <>
-                    <p className="text-base-2xs leading-4 text-base-muted-foreground">
-                      {gateModel.vendor}
-                    </p>
-                    <p className="text-sm leading-5 text-base-foreground">
-                      {gateModel.ids[0]}
-                    </p>
-                  </>
-                ) : (
-                  <ul className="flex flex-col gap-1">
-                    {gateModel.ids.map((id) => (
-                      <li key={id} className="truncate text-sm leading-5 text-base-foreground">
-                        {id}
+              // `1410:31957`: the set as a two-column grid, each cell a
+              // vendor mark over vendor and id, and one footer under a rule
+              // with the card's only action. The count the footer used to
+              // carry ("N of M models enabled") went with the redraw: the
+              // cells state the set, and the picker states the limit.
+              <div className="rounded-control border border-base-border">
+                <ul
+                  aria-label={`Gate models for ${appName}`}
+                  className="grid grid-cols-2 gap-x-4 gap-y-3 p-3"
+                >
+                  {gateModel.ids.map((id) => {
+                    const vendor = id.split("/")[0];
+                    return (
+                      <li key={id} className="flex min-w-0 items-center gap-3">
+                        <span
+                          aria-hidden
+                          className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
+                        >
+                          {providerMarkFor(vendor) ?? <Icon name="cube" size={16} />}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-base-2xs leading-4 text-base-muted-foreground">
+                            {vendor}
+                          </p>
+                          <p className="truncate text-sm leading-5 text-base-foreground">{id}</p>
+                        </div>
                       </li>
-                    ))}
-                  </ul>
-                )}
-              </InfoRow>
+                    );
+                  })}
+                </ul>
+                <div className="flex justify-end border-t border-base-border p-3">
+                  <button
+                    type="button"
+                    onClick={onChangeModel}
+                    disabled={busy}
+                    className={CARD_ACTION_BUTTON}
+                  >
+                    Choose models
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -704,8 +767,11 @@ function ModelSelection({
                   {plan} plan
                 </p>
               )}
+              {/* "Gate credits:" is `heading/14` in `base/foreground`
+                * (`1410:28162`) and the balance `copy/14` beside it; the label
+                * was `neutral-600`. */}
               <p className="text-sm leading-5 text-base-foreground">
-                <span className="text-neutral-600">Gate credits: </span>
+                <span className="font-medium tracking-heading-14">Gate credits: </span>
                 {credits ?? "N/A"}
               </p>
             </InfoRow>
@@ -812,7 +878,7 @@ function InfoRow({
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className={CARD_ACTION_BUTTON}
         >
           {action.label}
           {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
@@ -865,10 +931,13 @@ function RecentActivity({
   return (
     // `scroll-mt-6` so the jump from the Tokens saved counter leaves the pane's
     // own gutter above the heading, as the Overview's savings card does.
-    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
-      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
-        Recent activity
-      </h2>
+    // No padding on the card: the header's rule and every row divider span it
+    // edge to edge since the 2026-09-29 redraw (`table/recent-activity`
+    // 1410:28165), and the 16px lives on the cells. The frame's header also
+    // carries a "View activity" button (`1410:28168`); the dashboard has no
+    // activity URL to send it to, so the header draws without one.
+    <Card id={RECENT_ACTIVITY_SECTION_ID} className="scroll-mt-6" busy={pending}>
+      <CardHeader title="Recent activity" />
 
       {pending ? (
         <PendingRows />
@@ -887,9 +956,9 @@ function RecentActivity({
         // AG-889, and the same sentence the chart one over now gives: name
         // where these requests are counted rather than only where they are
         // not.
-        <EmptyNote>Shows in the Overview, not per app</EmptyNote>
+        <EmptyNote className="px-4 pb-4">Shows in the Overview, not per app</EmptyNote>
       ) : unavailable ? (
-        <EmptyNote>Recent activity couldn&apos;t be read</EmptyNote>
+        <EmptyNote className="px-4 pb-4">Recent activity couldn&apos;t be read</EmptyNote>
       ) : activity.length === 0 ? (
         // Deliberately NOT the chart's "in the last 24hrs". The entries outlive
         // the window they were sent in - the feed keeps the last messages even
@@ -897,11 +966,14 @@ function RecentActivity({
         // what this app last did - so borrowing the chart's sentence would state a
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
-        <EmptyNote>No recent messages</EmptyNote>
+        <EmptyNote className="px-4 pb-4">No recent messages</EmptyNote>
       ) : (
-        <table className="mt-5 w-full">
+        <table className="w-full">
           <thead>
-            <tr className="text-base-xs text-base-muted-foreground">
+            {/* `label/12` Medium on a 16/12 row (`1410:28173`). The Overview's
+              * tables draw their header at `label/14`; the two frames disagree
+              * and each surface follows its own. */}
+            <tr className="text-base-xs font-medium leading-4 text-base-muted-foreground">
               {/* Four columns since 2026-09-28, redrawn by design: Time,
                 Status, Model, Action. The guardrail-category column headed
                 "Type" is gone, and "Security" is now "Status" - the same
@@ -912,27 +984,27 @@ function RecentActivity({
                 wide once each 16px gutter is counted in, which is the
                 26/25/35.5/13.5 below. Shares rather than pixel counts, so they
                 hold at both window sizes. */}
-              <th scope="col" className="w-[26%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[26%] py-3 pl-4 text-left">
                 Time
               </th>
-              <th scope="col" className="w-[25%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[25%] py-3 pl-4 text-left">
                 Status
               </th>
-              <th scope="col" className="w-[35.5%] pb-3 text-left font-normal">
+              <th scope="col" className="w-[35.5%] py-3 pl-4 text-left">
                 Model
               </th>
-              <th scope="col" className="w-[13.5%] pb-3 text-right font-normal">
+              <th scope="col" className="w-[13.5%] py-3 pl-4 pr-4 text-right">
                 Action
               </th>
             </tr>
           </thead>
           <tbody>
             {rows.map((entry) => (
-              <tr key={entry.id} className="border-t border-base-border">
-                <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
+              <tr key={entry.id} className="h-14 border-t border-base-border">
+                <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                <td className="py-[1.125rem] pr-4">
+                <td className="pl-4">
                   {/* Error outranks the guardrail verdict, which is the design's
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
@@ -973,7 +1045,7 @@ function RecentActivity({
                     </span>
                   )}
                 </td>
-                <td className="min-w-0 py-[1.125rem] pr-4">
+                <td className="min-w-0 pl-4">
                   {/* Truncated, not `nowrap`. A model id is unbounded - the
                     canonical ones run to `anthropic/claude-opus-4-5-20260514` -
                     and an un-truncated cell makes that string the table's minimum
@@ -992,16 +1064,12 @@ function RecentActivity({
                     </span>
                   </span>
                 </td>
-                <td className="py-[1.125rem] text-right">
+                <td className="pl-4 pr-4 text-right">
                   {entry.onView ? (
-                    <button
-                      type="button"
-                      onClick={entry.onView}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                    >
+                    // The `xs` Outline variant (`1410:28190`); it was `sm`.
+                    <OutlineButton size="xs" onClick={entry.onView} external>
                       View
-                      <Icon name="squareArrowOutUpRight" size={16} />
-                    </button>
+                    </OutlineButton>
                   ) : null}
                 </td>
               </tr>
@@ -1011,9 +1079,9 @@ function RecentActivity({
       )}
 
       {more && (
-        <div className="mt-4 flex justify-center">
-          <button
-            type="button"
+        <div className="flex justify-center border-t border-base-border px-4 py-4">
+          <OutlineButton
+            size="sm"
             onClick={() => {
               // Reveal first, fetch only when the reveal has run out of held
               // rows. Fetching on every click would pull pages the person
@@ -1021,10 +1089,9 @@ function RecentActivity({
               setVisible((n) => n + PAGE);
               if (activity.length <= visible + PAGE) onLoadMore?.();
             }}
-            className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
-          </button>
+          </OutlineButton>
         </div>
       )}
     </Card>
@@ -1040,11 +1107,11 @@ function RecentActivity({
  */
 function PendingRows() {
   return (
-    <div className="mt-4 flex flex-col gap-3">
+    <div className="flex flex-col">
       {[0, 1, 2, 3, 4].map((i) => (
         <div
           key={i}
-          className="flex items-center justify-between gap-3 border-t border-base-border pt-3"
+          className={`flex h-14 items-center justify-between gap-3 px-4 ${i === 0 ? "" : "border-t border-base-border"}`}
         >
           <Skeleton className="h-4 w-16" />
           <Skeleton className="h-4 w-14" />

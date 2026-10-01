@@ -672,6 +672,16 @@ async fn proxy(
     // mode doesn't make the relay an open proxy.
     let route = if *state.intercept.borrow() {
         routed.route
+    } else if routed.route == Route::Serve {
+        // There is no provider behind the served route to fall back to: the
+        // tool's config names Gate and nothing else. Say so, rather than
+        // forwarding somewhere the user never chose.
+        return Ok(served_refusal(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "gate_not_routing",
+            "Gate Connect is not routing right now, so Gate models are unavailable. \
+             Turn routing on in Gate Connect, or switch this app back to its own model.",
+        ));
     } else {
         Route::Passthrough
     };
@@ -679,99 +689,118 @@ async fn proxy(
     let mut headers = req.headers().clone();
     strip_hop_by_hop(&mut headers);
     headers.remove(HOST);
-    let target = match route {
+    // The credential and the upstream hint go on per attempt: a 401 for our
+    // bearer is retried once under the token the session re-check mints, and
+    // the retry needs these headers as they were before the first credential
+    // went on. Watch the token from before it is read, so a replacement that
+    // lands while this request is out is seen by the wait in
+    // `recovered_token` rather than missed: `borrow_and_update` marks the
+    // value this request carries as seen, and only a later push wakes the
+    // wait.
+    let mut token_rx = state.token.clone();
+    let mut retry = None;
+    let (target, mut attempt) = match route {
         Route::Rewrite => {
+            let token: Arc<str> = token_rx.borrow_and_update().clone();
+            // Refused before anything is sent: see `lacks_gate_credential`.
+            // The relay's other errors are bare sentences; this one is the
+            // body a tool is meant to parse and search, so it is typed.
+            // Read once and carried into both rewrites, so the refusal check
+            // and the injection judge the same key.
+            let api_key: Arc<str> = state.api_key.borrow().clone();
+            if super::lacks_gate_credential(&headers, &api_key, &token) {
+                return Ok(signed_out_response());
+            }
             let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
-            inject_credential(&mut headers, state, mode, &routed.slug, routed.tool).map_err(
-                |e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("injecting Gate credential: {e:#}"),
-                    )
-                },
-            )?;
-            // Forwarded: we set the upstream hint, overwriting anything the
-            // caller sent. The value comes from the catalog entry we resolved,
-            // so a local process can't aim the gateway at a host of its
-            // choosing.
-            //
-            // Served: the hint's ABSENCE is the whole switch, so it is removed
-            // instead - including anything the caller sent, which would
-            // otherwise be a way for a local process to force a forward and
-            // spend the tool's own credential.
-            //
-            // Two independent things ask Gate to serve, and either is enough.
-            // The org routes this domain pay-as-you-go, so the gateway resolves
-            // a provider and debits its balance. Or the user put this tool on a
-            // Gate model, which is why a chosen model had no effect until this
-            // branch existed: with the hint present the gateway forwards to the
-            // tool's own provider and never reaches the override. That half is
-            // read back from the header `inject_credential` has just stamped
-            // rather than derived a second time - two computations of "is this
-            // served?" could disagree, and the disagreement would be a request
-            // billed one way and routed the other.
-            //
-            // The Gate-model half also turns on the PATH: Gate can only answer
-            // on a route it implements, and withholding the hint on any other
-            // leaves the gateway with nothing to do and the caller waiting. PAYG
-            // is not gated that way - the org routes that domain and its
-            // forwarded path is already a shape the gateway serves. See
-            // `serve_path`.
-            let (req_path, req_query) = routed
+            let mut attempt = headers.clone();
+            let (sent_ours, target) =
+                rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &token)?;
+            retry = sent_ours.then_some((token, api_key, mode));
+            (target, attempt)
+        }
+        Route::Serve => {
+            // The user put this tool on Gate models, and the tool's own config
+            // sent it here: Gate serves it on the org's credits, whatever the
+            // account's billing mode. Payg is forced for that reason - the
+            // helper then strips the tool's own key, which would otherwise read
+            // as a passthrough token and force BYOK.
+            let path = routed
                 .path_and_query
                 .split_once('?')
-                .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
-                    (p, Some(q))
-                });
-            let model_serve_path = if super::serves_gate_model(&headers) {
-                super::serve_path(req_path)
-            } else {
-                None
-            };
-            if mode == BillingMode::Byok && model_serve_path.is_none() {
-                set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                    )
-                })?;
-                // The model header goes too. It is not a label: its own contract says it
-                // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
-                // this tool on a Gate model. Leaving it on a forwarded request states
-                // both "Gate serves this, bill the org" and "send this to my own
-                // provider under my own key" at once, and the body's model would be
-                // rewritten to a Gate id the tool's own provider has never heard of.
-                // Unreachable before the serve rewrite existed, because the request hung
-                // instead of falling back; reachable now on any path Gate does not
-                // serve, such as `count_tokens`.
-                headers.remove(GATE_MODEL_HEADER);
-                format!("{}{}", state.gateway_base, routed.path_and_query)
-            } else {
-                headers.remove(UPSTREAM_URL_HEADER);
-                // The tool's own key goes with it - on a served request the
-                // model, the provider and the bill are all Gate's.
-                // `inject_credential` has already done this for PAYG; this
-                // covers the Gate-model case, where the org is still BYOK.
-                super::strip_client_auth(&mut headers);
-                // Onto the path that can answer, which is not always the one the
-                // tool asked on: Codex's `/codex/responses` is served at
-                // `/v1/responses`, the same wire format under a route the
-                // gateway implements. A PAYG request with no model override
-                // keeps the path it arrived on.
-                match model_serve_path {
-                    Some(gateway_path) => match req_query {
-                        Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
-                        None => format!("{}{gateway_path}", state.gateway_base),
-                    },
-                    None => format!("{}{}", state.gateway_base, routed.path_and_query),
-                }
+                .map_or(routed.path_and_query.as_str(), |(p, _)| p);
+            if !super::gate_served::serves(&method, path) {
+                return Ok(served_refusal(
+                    StatusCode::NOT_FOUND,
+                    "gate_path_not_served",
+                    &format!("Gate does not serve {method} {path} on this route"),
+                ));
             }
+            // Only a tool Gate writes Gate models for, and only once this install
+            // has accepted paid use: a set stored some other way (an older build,
+            // a hand edit) is not a licence to spend the org's credits.
+            let tool_id = routed.tool.and_then(crate::registry::ToolId::from_slug);
+            let supported = tool_id
+                .and_then(crate::registry::find)
+                .is_some_and(|i| i.supports_gate_models());
+            let enabled = routed
+                .tool
+                .filter(|_| supported)
+                .and_then(crate::preferences::gate_models_served_for);
+            if enabled.is_none() {
+                let display = tool_id
+                    .and_then(crate::registry::find)
+                    .map(|i| i.display_name())
+                    .unwrap_or("This app");
+                let refusal = super::gate_served::check_model(
+                    routed.tool.unwrap_or("this app"),
+                    display,
+                    None,
+                    b"",
+                )
+                .expect_err("no set is always a refusal");
+                return Ok(served_refusal(
+                    StatusCode::BAD_REQUEST,
+                    refusal.code,
+                    &refusal.message,
+                ));
+            }
+            // Every caller-set `x-gate-*` goes before ours are injected: the
+            // provider pin (which org account pays), and anything else of
+            // Gate's a local process could set to steer the gateway (review on
+            // #382). The credential and attribution below are the only Gate
+            // headers this request carries.
+            let gate_headers: Vec<_> = headers
+                .keys()
+                .filter(|k| k.as_str().starts_with("x-gate-"))
+                .cloned()
+                .collect();
+            for name in gate_headers {
+                headers.remove(name);
+            }
+            let token: Arc<str> = token_rx.borrow_and_update().clone();
+            let api_key: Arc<str> = state.api_key.borrow().clone();
+            if super::lacks_gate_credential(&headers, &api_key, &token) {
+                return Ok(signed_out_response());
+            }
+            // `routed.slug` is `gate_served::SLUG` on this route, so the
+            // rewrite attributes it there, strips the tool's own key and
+            // leaves the upstream hint off. A refused bearer retries the same
+            // way as on the rewrite arm.
+            let mode = BillingMode::Payg;
+            let mut attempt = headers.clone();
+            let (sent_ours, target) =
+                rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &token)?;
+            retry = sent_ours.then_some((token, api_key, mode));
+            (target, attempt)
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
             // `Authorization`; never inject the Gate credential here.
             strip_gate_headers(&mut headers);
-            format!("{}{}", routed.upstream_url, routed.path_and_query)
+            (
+                format!("{}{}", routed.upstream_url, routed.path_and_query),
+                std::mem::take(&mut headers),
+            )
         }
     };
     // The route above was chosen by reading `path_and_query` as a string; what
@@ -781,11 +810,14 @@ async fn proxy(
     // decided for, carrying a credential chosen for somewhere else. Refused
     // rather than trusted to the checks in `resolve_route`, which name the
     // spellings known today; this one does not need to know them.
-    if !path_survives_parsing(&target) {
-        return Err((
+    let unparseable = || {
+        (
             StatusCode::BAD_REQUEST,
             "request path does not survive URL parsing unchanged".to_string(),
-        ));
+        )
+    };
+    if !path_survives_parsing(&target) {
+        return Err(unparseable());
     }
 
     let body = req
@@ -799,20 +831,83 @@ async fn proxy(
             )
         })?
         .to_bytes();
+    let mut body = body;
 
-    let upstream_resp = state
-        .client
-        .request(method, &target)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("forwarding to gateway: {e}"),
+    // The served route's one rule: the model must be one the user enabled for
+    // this tool. Checked on the body the tool actually sent, after routing has
+    // settled, and answered in the tool's own error shape. The model list a tool
+    // fetches for its picker carries no body and needs no check.
+    if route == Route::Serve && method == hyper::Method::POST {
+        let tool = routed.tool.unwrap_or("this app");
+        let display = routed
+            .tool
+            .and_then(crate::registry::ToolId::from_slug)
+            .and_then(crate::registry::find)
+            .map(|i| i.display_name())
+            .unwrap_or(tool);
+        let enabled = routed
+            .tool
+            .and_then(crate::preferences::gate_models_served_for);
+        if let Err(refusal) =
+            super::gate_served::check_model(tool, display, enabled.as_deref(), &body)
+        {
+            return Ok(served_refusal(
+                StatusCode::BAD_REQUEST,
+                refusal.code,
+                &refusal.message,
+            ));
+        }
+        // Nor any routing override in the body; see `without_routing_overrides`.
+        // The length changes with it, so the caller's `content-length` goes and
+        // the client computes its own.
+        if let Some(stripped) = super::gate_served::without_routing_overrides(&body) {
+            body = Bytes::from(stripped);
+            headers.remove(hyper::header::CONTENT_LENGTH);
+            attempt.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
+
+    let send = |target: &str, headers: HeaderMap| {
+        state
+            .client
+            .request(method.clone(), target)
+            .headers(headers)
+            .body(body.clone())
+            .send()
+    };
+    let forwarding_failed = |e: reqwest::Error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("forwarding to gateway: {e}"),
+        )
+    };
+    let resp = send(&target, attempt).await.map_err(forwarding_failed)?;
+    let upstream_resp = match retry {
+        Some((token, api_key, mode)) if resp.status() == StatusCode::UNAUTHORIZED => {
+            let recovered = recovered_token(
+                &mut token_rx,
+                &token,
+                super::notify_gate_auth_observer,
+                &super::GATE_AUTH_CHECK_DONE,
             )
-        })?;
+            .await;
+            match recovered {
+                None => resp,
+                Some(fresh) => {
+                    // Rebuilt from the headers as they were before the
+                    // first credential went on.
+                    let mut attempt = headers;
+                    let (_, target) =
+                        rewrite_headers(&mut attempt, state, &routed, mode, &api_key, &fresh)?;
+                    if !path_survives_parsing(&target) {
+                        return Err(unparseable());
+                    }
+                    send(&target, attempt).await.map_err(forwarding_failed)?
+                }
+            }
+        }
+        _ => resp,
+    };
 
     let mut builder = Response::builder().status(upstream_resp.status());
     if let Some(dst) = builder.headers_mut() {
@@ -837,35 +932,160 @@ async fn proxy(
     })
 }
 
-/// Inject the live Gate credential, via the rule shared with the MITM engine
+/// Put the Gate credential and the upstream hint on a rewrite, and return
+/// whether the bearer that went on was ours, with the URL to send it to.
+///
+/// `token` is the bearer: the value read off the watch before the send, so the
+/// gateway's answer can be compared against exactly what went out. `api_key` is
+/// the one the caller tested `lacks_gate_credential` against, for the same
+/// reason. The credential follows the rule shared with the MITM engine
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
-/// same helper also strips the tool's own upstream credential.
-fn inject_credential(
+/// untouched, otherwise an OAuth token wins over the legacy key, and in `Payg`
+/// the tool's own upstream credential is stripped. The bool is `false` for
+/// either of those other cases, which a refusal must not retry - a refused key
+/// is a different problem with a different fix, and a caller's own credential
+/// is not ours to recover.
+///
+/// The caller has already refused a request with no credential at all
+/// (`lacks_gate_credential`), so the error from [`inject_gate_credential`] on
+/// that state is a guard, not a path.
+fn rewrite_headers(
     headers: &mut HeaderMap,
     state: &RelayState,
+    routed: &Routed,
     mode: BillingMode,
-    domain: &str,
-    tool: Option<&'static str>,
-) -> Result<()> {
-    // Clone the values out of the watch guards so no lock is held.
-    let token: Arc<str> = state.token.borrow().clone();
-    let api_key: Arc<str> = state.api_key.borrow().clone();
+    api_key: &str,
+    token: &str,
+) -> Result<(bool, String), (StatusCode, String)> {
+    // Clone the value out of the watch guard so no lock is held.
     let org: Arc<str> = state.org.borrow().clone();
-    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+    let oauth_token = (!token.is_empty()).then_some(token);
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    // The relay has no response hook to feed, so what was injected is not
-    // news here.
-    inject_gate_credential(
+    // The relay has no response hook to feed, so what was injected is only
+    // news to the retry.
+    let injected = inject_gate_credential(
         headers,
-        &api_key,
+        api_key,
         oauth_token,
         org_id,
         mode,
-        Some(domain),
-        tool,
+        Some(&routed.slug),
+        routed.tool,
     )
-    .map(|_| ())
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("injecting Gate credential: {e:#}"),
+        )
+    })?;
+    // Forwarded: we set the upstream hint, overwriting anything the
+    // caller sent. The value comes from the catalog entry we resolved,
+    // so a local process can't aim the gateway at a host of its
+    // choosing.
+    //
+    // Served (the org routes this domain pay-as-you-go, or this is the Gate
+    // models route, which is always Payg): the hint's ABSENCE is the whole
+    // switch, so it is removed instead - including anything the caller sent,
+    // which would otherwise be a way for a local process to force a forward
+    // and spend the tool's own credential.
+    let target = if mode == BillingMode::Byok {
+        set_upstream_header(headers, &routed.upstream_url).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+            )
+        })?;
+        format!("{}{}", state.gateway_base, routed.path_and_query)
+    } else {
+        headers.remove(UPSTREAM_URL_HEADER);
+        format!("{}{}", state.gateway_base, routed.path_and_query)
+    };
+    Ok((injected, target))
+}
+
+/// How long a refused request waits for the session re-check's verdict before
+/// the 401 goes back to the tool unchanged. The re-check is one Cognito round
+/// trip and one gateway probe, normally a second or two, and the wait ends as
+/// soon as the check does: at its verdict on the token watch (a recovered
+/// token, or the empty token the shell pushes for a dead session), or at its
+/// end without one. So this bounds only a check that is itself slow - an
+/// identity provider or gateway that neither answers nor fails.
+const RECOVERED_TOKEN_WAIT: Duration = Duration::from_secs(10);
+
+/// A replacement for `sent`, the bearer the gateway has just refused, if the
+/// session re-check produces one in time.
+///
+/// The refusal goes to the same observer the MITM engine's response hook
+/// feeds (`notify`, which is [`super::notify_gate_auth_observer`] outside
+/// tests), so a 401 seen here recovers the session the way one seen there
+/// does. It did not, before this: the relay's gateway hop is its own reqwest
+/// client and never crosses that hook, so a Claude Code turn refused after a
+/// sleep was left to the 30s tick. The verdict arrives on the token watch,
+/// which is what the shell pushes it through
+/// ([`RunningEngine::update_token`](super::engine::RunningEngine::update_token)):
+/// a non-empty value other than `sent` is a token worth retrying under; the
+/// empty string is a dead session, and the 401 stands.
+///
+/// The watch is read before the observer is asked: the previous refusal's
+/// re-check, or the 30s tick, may already have replaced the bearer between
+/// this request's read and the gateway's answer, and a re-check is not owed
+/// twice. The wait then loops rather than taking the first wake-up, because a
+/// push bumps the watch whether or not the value moved and the 30s tick
+/// re-pushes an unchanged token every tick: a tick inside the re-check window
+/// must not hand the 401 to the tool moments before the recovered token lands.
+///
+/// It also ends when the check does (`check_done`, which is
+/// [`super::GATE_AUTH_CHECK_DONE`] outside tests). The check pushes its verdict
+/// before it ends, so a waiter still holding the refused token at that point
+/// has none coming: the check reached no verdict, or already delivered one this
+/// request was sent under, or was the Linux daemon's, which only counts. The
+/// wakeup is registered before the observer is asked, so an end that lands in
+/// between is not missed.
+///
+/// No wait at all when `notify` says no verdict is coming: the Linux helper
+/// daemon's observer answers so, since the GUI's re-check reaches its relay one
+/// or two ticks later.
+async fn recovered_token(
+    token_rx: &mut watch::Receiver<Arc<str>>,
+    sent: &str,
+    notify: impl FnOnce() -> bool,
+    check_done: &tokio::sync::Notify,
+) -> Option<Arc<str>> {
+    let check_over = check_done.notified();
+    tokio::pin!(check_over);
+    check_over.as_mut().enable();
+    let mut notify = Some(notify);
+    let mut ended = false;
+    let deadline = tokio::time::Instant::now() + RECOVERED_TOKEN_WAIT;
+    loop {
+        let now: Arc<str> = token_rx.borrow_and_update().clone();
+        if now.is_empty() {
+            // A dead session: the 401 stands.
+            return None;
+        }
+        if now.as_ref() != sent {
+            return Some(now);
+        }
+        // Still the refused token.
+        if ended {
+            return None;
+        }
+        if let Some(notify) = notify.take() {
+            if !notify() {
+                return None;
+            }
+        }
+        tokio::select! {
+            changed = tokio::time::timeout_at(deadline, token_rx.changed()) => {
+                // `Err` is the deadline, or a sender that is gone because the
+                // engine is stopping; either way the 401 stands.
+                if !matches!(changed, Ok(Ok(()))) {
+                    return None;
+                }
+            }
+            () = &mut check_over => ended = true,
+        }
+    }
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -878,6 +1098,9 @@ enum Route {
     /// Account/metadata path: forward to the real upstream under the tool's own
     /// credential.
     Passthrough,
+    /// The Gate-models route ([`super::gate_served`]): served by Gate on the
+    /// org's credits, never forwarded to a provider of the tool's own.
+    Serve,
 }
 
 /// A resolved relay request: which upstream owns it, the path to forward, and
@@ -978,6 +1201,23 @@ fn resolve_route(
     let (tool, path_and_query) = split_tool_segment(path_and_query);
     let path_and_query = path_and_query.as_ref();
     if let Some((segment, inner)) = split_leading_segment(path_and_query) {
+        if segment == super::gate_served::SLUG {
+            // The tool is how the enabled set is found, so this route will not
+            // guess one: a URL without the marker did not come from Gate.
+            if tool.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{original:?} is the Gate models route but names no tool"),
+                ));
+            }
+            return Ok(Routed {
+                upstream_url: String::new(),
+                slug: super::gate_served::SLUG.to_string(),
+                route: Route::Serve,
+                path_and_query: inner,
+                tool,
+            });
+        }
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
@@ -1152,11 +1392,9 @@ pub const HEALTH_PATH: &str = "/__gate/health";
 /// interface can call any path, exactly as it can send any `User-Agent`. What it
 /// buys is that the honest case stops depending on a string nobody here owns.
 ///
-/// Worth knowing before treating this as cosmetic: attribution authorizes
-/// nothing, but it is not inert either. `client_tool`'s result also gates
-/// `inject_model_choice`, so naming a tool correctly can start applying a
-/// Gate-model choice the user stored and the tool was too anonymous to receive.
-/// That is the intent; `client_tool`'s doc has the full note.
+/// On the Gate models route the marker is more than a label: it is how the
+/// enabled set is looked up (`gate_served`), which is why that route requires
+/// it. Everywhere else it only names the tool in the activity view.
 ///
 /// **Rolling back is a hard break, not a soft one.** A build that predates this
 /// prefix reads `__gate` as a leading catalog slug, finds no domain and no
@@ -1178,6 +1416,41 @@ fn health_response() -> Response<BoxBody<Bytes, std::io::Error>> {
         .status(StatusCode::NO_CONTENT)
         .body(body)
         .expect("building relay health response")
+}
+
+/// A refusal on the Gate models route, as JSON the tool will show.
+fn served_refusal(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+) -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::from(super::gate_served::error_body(code, message)))
+        .map_err(|never| match never {})
+        .boxed();
+    let mut builder = Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json");
+    // A 503 here is "Gate is not routing" or "Gate Connect is closed", which a
+    // retry does not fix. Without this the Anthropic and OpenAI SDKs back off
+    // and retry for a while before the user sees the message; both honour it.
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        builder = builder.header("x-should-retry", "false");
+    }
+    builder.body(body).expect("building relay refusal response")
+}
+
+/// A local answer with a JSON body, for the one refusal a tool is meant to
+/// parse and search ([`signed_out_body`](super::signed_out_body)). Every other
+/// relay error is a bare sentence from [`error_response`].
+/// The relay's 401 when `lacks_gate_credential` holds: the engine's
+/// `signed_out_response`, body and headers alike.
+fn signed_out_response() -> Response<BoxBody<Bytes, std::io::Error>> {
+    let mut resp = error_response(StatusCode::UNAUTHORIZED, super::signed_out_body());
+    for (name, value) in super::SIGNED_OUT_HEADERS {
+        resp.headers_mut()
+            .insert(name, hyper::header::HeaderValue::from_static(value));
+    }
+    resp
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {
@@ -1507,5 +1780,117 @@ mod tests {
         let (_listener, bound) = bind_relay_behind(Some(taken)).expect("a fresh port");
         assert_ne!(bound, taken);
         assert!(bind_relay(Some(taken)).is_err());
+    }
+
+    /// A watch holding the refused token, as the relay leaves it: the request
+    /// read it with `borrow_and_update`, so only a later push is news.
+    fn refused_watch() -> (watch::Sender<Arc<str>>, watch::Receiver<Arc<str>>) {
+        let (tx, mut rx) = watch::channel::<Arc<str>>(Arc::from("stale"));
+        rx.borrow_and_update();
+        (tx, rx)
+    }
+
+    /// The 30s tick re-pushes an unchanged token, and a push bumps the watch
+    /// whether or not the value moved. One landing inside the re-check window
+    /// must not end the wait: the token the check pushes after it is the one
+    /// to retry under.
+    #[tokio::test]
+    async fn a_same_value_push_does_not_end_the_wait() {
+        let (tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let pusher = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(Arc::from("stale")).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(Arc::from("fresh")).unwrap();
+            tx
+        });
+        let got = recovered_token(&mut rx, "stale", || true, &check_done).await;
+        assert_eq!(got.as_deref(), Some("fresh"));
+        drop(pusher.await.unwrap());
+    }
+
+    /// A check that ends without moving the watch has no verdict for this
+    /// request: it reached none, or it delivered one before this request was
+    /// sent under it. The wait ends with the check, not at the deadline.
+    #[tokio::test]
+    async fn the_wait_ends_when_the_check_does() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = Arc::new(tokio::sync::Notify::new());
+        let ender = Arc::clone(&check_done);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            ender.notify_waiters();
+        });
+        let started = std::time::Instant::now();
+        let got = recovered_token(&mut rx, "stale", || true, &check_done).await;
+        assert_eq!(got, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the check's end, not the deadline, ends the wait"
+        );
+    }
+
+    /// The Linux daemon's check starts and ends inside one observer call, so
+    /// a request that sees its latch set can be told a verdict is coming by a
+    /// check that has already ended. That end was registered before the ask,
+    /// so it is not missed.
+    #[tokio::test]
+    async fn a_check_that_ends_before_the_wait_starts_is_not_missed() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let started = std::time::Instant::now();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || {
+                check_done.notify_waiters();
+                true
+            },
+            &check_done,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// An observer that says no verdict is coming - no observer, the
+    /// cooldown, the daemon's counter - means the 401 is passed on at once.
+    #[tokio::test]
+    async fn no_wait_when_no_verdict_is_coming() {
+        let (_tx, mut rx) = refused_watch();
+        let check_done = tokio::sync::Notify::new();
+        let asked = std::cell::Cell::new(false);
+        let started = std::time::Instant::now();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || {
+                asked.set(true);
+                false
+            },
+            &check_done,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(asked.get(), "the refusal is still reported");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A token replaced between this request's read and the gateway's answer
+    /// is retried under at once, and no second re-check is asked for.
+    #[tokio::test]
+    async fn a_token_already_replaced_is_used_without_asking() {
+        let (tx, mut rx) = refused_watch();
+        tx.send(Arc::from("fresh")).unwrap();
+        let check_done = tokio::sync::Notify::new();
+        let got = recovered_token(
+            &mut rx,
+            "stale",
+            || panic!("a re-check is not owed twice"),
+            &check_done,
+        )
+        .await;
+        assert_eq!(got.as_deref(), Some("fresh"));
     }
 }

@@ -2,8 +2,8 @@
  * The fake Rust side, and the state it serves.
  *
  * These e2e tests run the real frontend bundle in a real browser: real
- * `App.tsx` orchestration, real `src/lib/api.ts`, real CSS at 360px, real
- * focus and keyboard behaviour. The one thing that isn't real is the Tauri
+ * `NewUiApp.tsx` orchestration, real `src/lib/api.ts`, real CSS, real focus
+ * and keyboard behaviour. The one thing that isn't real is the Tauri
  * process, and this file is what stands in for it - a stateful in-page
  * backend that answers the same command names over the same IPC entry point
  * (`window.__TAURI_INTERNALS__.invoke`).
@@ -299,6 +299,14 @@ export interface BackendState {
       lowBalanceThresholdCents: number | null;
       autoTopupArmed: boolean;
     };
+    /** Tools the user moved off Gate models from inside the tool, with the
+     *  model each moved to (null when its config names none). Consumed by the
+     *  next `tool_model_preferences`, which is what the backend does: it puts
+     *  the tool back on App default on the read that finds it, and says so once. */
+    left?: Record<string, string | null>;
+    /** The model a tool's config starts on, when not the first of its set - the
+     *  user picked another model of the set in the tool's own picker. */
+    configuredModel?: Record<string, string>;
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
-use gate_connect_core::preferences::{load, set_tool_model, ModelSource};
+use gate_connect_core::preferences::{gate_models_for, load, set_tool_model, ModelSource};
 
 /// The override is process-global even here, so these take turns.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -60,6 +60,7 @@ fn the_paid_acknowledgement_is_stamped_once_and_never_moved() {
         ModelSource::Gate,
         vec!["anthropic/claude-opus-5".into()],
         true,
+        vec![],
     )
     .expect("first save");
     let first = load().gate_model_paid_ack_unix.expect("stamped");
@@ -69,6 +70,7 @@ fn the_paid_acknowledgement_is_stamped_once_and_never_moved() {
         ModelSource::Gate,
         vec!["openai/gpt-5".into()],
         true,
+        vec![],
     )
     .expect("second save");
     assert_eq!(load().gate_model_paid_ack_unix, Some(first));
@@ -87,6 +89,7 @@ fn choosing_the_tools_own_default_never_records_consent() {
         ModelSource::Tool,
         vec!["anthropic/claude-opus-5".into()],
         true,
+        vec![],
     )
     .expect("save");
 
@@ -107,8 +110,15 @@ fn setting_one_tool_leaves_the_others_alone() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
 
-    set_tool_model("claude-code", ModelSource::Gate, vec!["a/b".into()], true).expect("first");
-    set_tool_model("codex", ModelSource::Tool, vec![], false).expect("second");
+    set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["a/b".into()],
+        true,
+        vec![],
+    )
+    .expect("first");
+    set_tool_model("codex", ModelSource::Tool, vec![], false, vec![]).expect("second");
 
     let prefs = load();
     assert_eq!(prefs.tool_models["claude-code"].source, ModelSource::Gate);
@@ -125,6 +135,108 @@ fn an_untouched_tool_has_no_entry() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
 
-    set_tool_model("codex", ModelSource::Gate, vec!["a/b".into()], true).expect("save");
+    set_tool_model("codex", ModelSource::Gate, vec!["a/b".into()], true, vec![]).expect("save");
     assert!(!load().tool_models.contains_key("claude-code"));
+}
+
+/// Overlapping saves for different keys keep every one (review on #382).
+/// Each thread writes a key no other thread touches, so any load-modify-save
+/// that saved what it loaded before another landed loses a whole key - which
+/// the unlocked version did routinely at this width, and which a lock rules out.
+#[test]
+fn concurrent_saves_for_different_tools_keep_every_one() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    const WRITERS: usize = 48;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+    let threads: Vec<_> = (0..WRITERS)
+        .map(|i| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                set_tool_model(
+                    &format!("tool-{i}"),
+                    ModelSource::Gate,
+                    vec![format!("a/m{i}")],
+                    true,
+                    vec![],
+                )
+                .expect("save");
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let prefs = gate_connect_core::preferences::load();
+    let missing: Vec<usize> = (0..WRITERS)
+        .filter(|i| !prefs.tool_models.contains_key(&format!("tool-{i}")))
+        .collect();
+    assert!(missing.is_empty(), "lost writes for {missing:?}");
+}
+
+/// A choice written by another process (the CLI) is served without a restart:
+/// the cache is stamped by the file, not only refreshed by this process's saves.
+#[test]
+fn a_change_written_by_another_process_is_picked_up() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    set_tool_model(
+        "codex",
+        ModelSource::Gate,
+        vec!["a/first".into()],
+        true,
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(gate_models_for("codex"), Some(vec!["a/first".to_string()]));
+
+    // Rewrite the file behind the cache's back, as a second process would.
+    let path = gate_connect_core::env::app_support_dir()
+        .unwrap()
+        .join("preferences.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["tool_models"]["codex"]["model_ids"] = serde_json::json!(["b/second", "c/third"]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+
+    assert_eq!(
+        gate_models_for("codex"),
+        Some(vec!["b/second".to_string(), "c/third".to_string()])
+    );
+}
+
+/// A Gate choice stops at four models, before anything is stored; App default
+/// keeps whatever set it remembers, so a longer set stored by an older build
+/// can still be put back on the tool's own model.
+#[test]
+fn a_gate_choice_is_limited_to_four_models() {
+    use gate_connect_core::registry::ToolId;
+    use gate_connect_core::tool_models::{choose, MAX_GATE_MODELS};
+
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    // OpenCode stores a choice but has no Gate models config to write, so this
+    // exercises the limit without touching a tool's files.
+    let tool = ToolId::from_slug("opencode").expect("opencode is a tool");
+    let ids = |n: usize| {
+        (0..n)
+            .map(|i| format!("vendor/model-{i}"))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(MAX_GATE_MODELS, 4);
+    let err = choose(tool, ModelSource::Gate, ids(5), true, vec![])
+        .expect_err("five Gate models are refused");
+    assert!(err.to_string().contains("at most 4"), "{err:#}");
+    assert!(
+        !load().tool_models.contains_key("opencode"),
+        "a refused choice stores nothing"
+    );
+
+    choose(tool, ModelSource::Gate, ids(4), true, vec![]).expect("four are accepted");
+    assert_eq!(gate_models_for("opencode").map(|s| s.len()), Some(4));
+
+    choose(tool, ModelSource::Tool, ids(6), false, vec![])
+        .expect("App default is not held to the limit");
 }

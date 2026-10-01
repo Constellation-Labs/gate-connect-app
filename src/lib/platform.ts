@@ -158,17 +158,6 @@ export function browserScopeNote(p: Platform, browserChannel: boolean): string {
   }
 }
 
-/** The platform's own name for the accelerator modifier, for copy that teaches a
- *  shortcut. "Cmd" on macOS and "Ctrl" everywhere else, spelled the way each
- *  platform's own settings windows spell it, because a Windows user told to
- *  press Cmd has been told to press a key their keyboard does not have.
- *
- *  Lives here with the other platform-named strings for the reason given above
- *  `secretStoreName`: naming the wrong thing undoes the instruction. */
-export function modKeyLabel(p: Platform): string {
-  return p === "macos" ? "Cmd" : "Ctrl";
-}
-
 /** Where the local proxy's CA has to be trusted. A bare noun: callers supply
  *  the determiner, since this one is a common noun everywhere.
  *
@@ -191,9 +180,7 @@ export function trustStoreName(p: Platform): string {
  *
  *  Windows gets the reassurance rather than the detail: its dialog is a red
  *  "Security Warning" written to make you hesitate, so what the user needs
- *  before clicking is that it's expected and which button ends it. The
- *  certificate's own name belongs in `trustPromptWaiting`, where it can be
- *  matched against the name the dialog is quoting back. */
+ *  before clicking is that it's expected and which button ends it. */
 export function trustPromptHint(p: Platform): string {
   switch (p) {
     case "windows":
@@ -207,31 +194,3 @@ export function trustPromptHint(p: Platform): string {
   }
 }
 
-/** The same handoff, said *while* the OS dialog is up and we're blocked on it.
- *
- *  Present tense and an instruction, because at this point the dialog is on
- *  screen and the only thing left is which button to press. Without it the
- *  popover just sits there with a disabled button while a scary-looking system
- *  warning waits somewhere on screen, possibly behind the window.
- *
- *  Windows quotes the CA's common name back at the user ("claiming to
- *  represent: Gate Connect Local CA"), so naming it here is what lets them
- *  match the dialog in front of them to the app that raised it. Must match
- *  `cert_authority.rs`'s CA_COMMON_NAME exactly.
- *
- *  macOS names nothing of ours at all: its prompt is titled `security`, the
- *  binary `ca::ensure_trusted` shells out to. A user told to expect a prompt
- *  from Gate Connect would be hunting for a name that is not on the screen,
- *  so both strings name `security` instead. */
-export function trustPromptWaiting(p: Platform): string {
-  switch (p) {
-    case "windows":
-      return "Windows is asking you to confirm “Gate Connect Local CA”. Choose Yes to finish.";
-    case "macos":
-      return "macOS is asking for your login password, in a prompt named “security”. Enter it to finish.";
-    case "linux":
-      return "Enter your administrator password to finish.";
-    default:
-      return "Your system is asking you to confirm. Approve it to finish.";
-  }
-}

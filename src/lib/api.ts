@@ -180,11 +180,6 @@ export const readAccount = (): Promise<AccountReading> =>
  * Returns null when no key is stored. */
 export const getAccountKeyPrefix = () => invoke<string | null>("get_account_key_prefix");
 
-/** Fallback reveal for accounts saved before the prefix was recorded on disk:
- * reads the key from the keychain (may prompt), backfills the prefix into the
- * config, and returns it. Call only after the user confirms the reveal. */
-export const backfillAccountKeyPrefix = () => invoke<string | null>("backfill_account_key_prefix");
-
 export const saveAccount = (baseUrl: string, apiKey: string | null) =>
   invoke<void>("save_account", { baseUrl, apiKey });
 
@@ -213,15 +208,6 @@ export const oauthStatus = () => invoke<OAuthStatus>("oauth_status");
 /** Forget the stored OAuth tokens. Leaves auth mode at OAuth so the popover
  * shows the sign-in prompt again rather than the legacy key form. */
 export const oauthSignOut = () => invoke<void>("oauth_sign_out");
-
-/** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
- * from the sign-in screen; OAuth sign-in sets it implicitly. */
-export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
-
-/** Switch who pays the upstream provider. The relay and the MITM engine read
- * the mode per request, so routing follows immediately; a connected Codex is
- * re-applied on the Rust side, since its provider block encodes the mode. */
-export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
 
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
@@ -293,6 +279,25 @@ export interface ToolModelChoice {
   model_ids: string[];
 }
 
+/** What one tool's own config says about Gate models. The config, not the
+ *  stored choice, is what the tool will actually run. */
+export interface ConfiguredModel {
+  /** `"drifted"` means the config left the Gate models Gate wrote and putting
+   *  the tool back on its own model failed; a drift that was put right reads as
+   *  `"not_applied"` with `left_gate_models` set. */
+  state: "applied" | "not_applied" | "drifted";
+  /** The model the config starts the tool on, when it is on Gate models. */
+  model: string | null;
+  /** This read found the tool moved off Gate models from inside itself, and put
+   *  it back on its own model. Reported once, on the read that found it. */
+  left_gate_models: boolean;
+  /** With `left_gate_models`: the model the tool's config names now, if any. */
+  left_to_model: string | null;
+  /** Why this reading cannot be trusted: the config was unreadable, or the
+   *  tool could not be put back on its own model. Null when all is well. */
+  problem?: string | null;
+}
+
 export interface ToolModels {
   /** Keyed by tool slug. A tool with no entry is on its own default; an absent
    *  key is the answer, not a gap. */
@@ -300,6 +305,9 @@ export interface ToolModels {
   /** Unix seconds when this install first accepted paid Gate model use, or null
    *  if it never has. */
   paid_ack_unix: number | null;
+  /** Keyed by tool slug, for the tools whose config can hold Gate models.
+   *  Optional on the type because an older binary does not send it. */
+  configured?: Record<string, ConfiguredModel>;
 }
 
 /** This install's per-tool model choices (AG-588).
@@ -318,13 +326,18 @@ export const toolModelPreferences = () => invoke<ToolModels>("tool_model_prefere
  *
  * `acknowledgePaidUse` is honoured only when moving to `"gate"` - remembering a
  * model under the tool's own default spends nothing, so it must not record
- * consent to spend. */
+ * consent to spend.
+ *
+ * Resolves `true` when the choice was written into the tool's own config, which
+ * the tool reads on its next session - the cue to offer the restart notice.
+ * `false` is not a failure: Gate does not manage that tool's config right now,
+ * so the choice is stored and applied on its next connect. */
 export const setToolModel = (
   tool: string,
   source: "tool" | "gate",
   modelIds: string[],
   acknowledgePaidUse = false,
-) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
+) => invoke<boolean>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
 
 /** This organization's Gate credit balance and plan, as raw JSON text
  * (AG-588/590/592).
@@ -499,14 +512,6 @@ export const proxyEnable = () => invoke<ProxyState>("proxy_enable");
  * removing it is the separate, explicit proxyUntrustCa. */
 export const proxyDisable = () => invoke<ProxyState>("proxy_disable");
 
-/** The tools Gate Connect currently manages, by display name.
- *
- * For copy that has to name what a disconnect interrupts. Deliberately not a
- * complete answer to "what needs restarting": the proxy variables are exported
- * machine-wide, so anything opened while routing was on holds them too, and the
- * copy says that part in words. */
-export const routedAppNames = () => invoke<string[]>("routed_app_names");
-
 /** Toggle a provider. Applied live when the engine is running - no restart,
  * no prompt. */
 export const proxySetDomain = (slug: string, enabled: boolean) =>
@@ -630,18 +635,6 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * backend emits `proxy-state-changed` when it settles, either way. */
 export const routingStartupPending = () => invoke<boolean>("routing_startup_pending");
 
-/** Count running AI tools (same process set as {@link closeRunningAgents})
- * without touching them. Used to skip the routing-change takeover when there
- * is nothing to close. */
-export const runningAgentsCount = () => invoke<number>("running_agents_count");
-
-/** Running agent processes started *before* routing last came up - the ones
- * that genuinely need a restart to route. Drives the startup hint, so a
- * healthy restored session (agents launched after routing) stays quiet.
- * `since` (Unix seconds) counts only changes Gate made at or after it. */
-export const staleAgentsCount = (since?: number) =>
-  invoke<number>("stale_agents_count", { since });
-
 /** Why a tool is not verifiably routing. Closed set, mirroring
  * `routing_health::Reason` - a seventh value would need a next action and a
  * recovery path to go with it. */
@@ -728,8 +721,7 @@ export interface RunningAgent {
   /** Process start, Unix seconds. 0 when the platform wouldn't say. */
   started_at_unix: number;
   /** Started before the last change to its own configuration or to Gate's
-   * certificate, so it is still using what it loaded and needs a restart.
-   * Same rule as {@link staleAgentsCount}. */
+   * certificate, so it is still using what it loaded and needs a restart. */
   needs_reopen: boolean;
 }
 
@@ -782,28 +774,6 @@ export const closeRunningAgents = (only?: string[]) =>
  * filter the close took. */
 export const reopenRunningAgents = (only?: string[]) =>
   invoke<number>("reopen_running_agents", { only: only ?? null });
-
-/** What a restart of the running AI tools did. */
-export interface ClosedAgents {
-  /** Processes closed, the restarted ones included. 0 means none were
-   * running. */
-  closed: number;
-  /** Desktop apps that quit and were opened again, by app name ("Claude"). */
-  restarted: string[];
-  /** Closed and not opened again, by tool name: terminal tools, which belong
-   * to the terminal they ran in, and any app that quit but could not be
-   * reopened. The user opens these again. */
-  reopen_yourself: string[];
-  /** Asked to quit and still running when Gate stopped waiting, by name. Not
-   * counted in `closed`; the user quits these themselves. */
-  still_running: string[];
-}
-
-/** Restart every running AI tool (agent CLIs and the desktop apps sharing their
- * binary name, e.g. Claude Desktop's `Claude`) so they pick up the routing
- * change: each is asked to quit, desktop apps are opened again once they
- * have, and terminal tools are left for the user to reopen. */
-export const restartRunningAgents = () => invoke<ClosedAgents>("restart_running_agents");
 
 /** Quit: every tool goes back on its own settings first (macOS and Windows),
  * and a notification says so. On Linux the daemon keeps routing. */

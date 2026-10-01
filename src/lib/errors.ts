@@ -66,35 +66,6 @@ export interface ClassifiedError {
   raw: string;
 }
 
-/** The user pressed Not now on the certificate pre-flight (`CertificateNotice`).
- *
- * Thrown rather than returned because it has to abort the caller from inside
- * `ensureCaTrusted`, exactly as a failed trust does - but it must never reach
- * `classifyError`. A refused OS dialog is a surprise worth explaining; declining
- * our own screen is a choice the user made on purpose, one second ago, and
- * answering it with a red note explaining what they just decided is the app
- * arguing with them. Callers guard their catch on this and abort silently. */
-export class TrustDeclined extends Error {
-  constructor() {
-    super("certificate trust declined by the user");
-    this.name = "TrustDeclined";
-  }
-}
-
-/** The user pressed Cancel on the Hermes provider gate
- * (`HermesProviderNotice`), which leaves Hermes switched off.
- *
- * Its own sentinel rather than [`TrustDeclined`] because the two abort for
- * different reasons and a caller may one day want to tell them apart; what they
- * share is the rule that makes both sentinels exist - a choice the user made on
- * purpose is not an error, and must never reach `classifyError`. */
-export class ProviderDeclined extends Error {
-  constructor() {
-    super("provider interception declined by the user");
-    this.name = "ProviderDeclined";
-  }
-}
-
 /**
  * Normalize an unknown error payload into a searchable string. Errors come
  * across the Tauri boundary as plain strings, but JS-side throws and
@@ -298,7 +269,7 @@ export function classifyError(
   // un-routed. Without this branch the generic fallback answers "try again",
   // which is precisely wrong - retrying cannot help until routing is on, and
   // the one sentence that says so is buried in the details disclosure.
-  if (lc.includes("proxy is not running")) {
+  if (isRoutingOffRefusal(raw)) {
     return {
       title: "Turn on “Route through Gate” first",
       hint: "This tool sends all of its traffic through Gate’s local proxy, so routing has to be on before it can be connected.",
@@ -348,16 +319,23 @@ export function classifyError(
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
-    // The verb has to name the button the user actually pressed. A cancelled
+    // The verb has to name the control the user actually touched. A cancelled
     // certificate prompt used to say "Click Connect again" next to a button
-    // labelled Trust certificate.
-    // The two toggle contexts fire from a role=switch, not a button, and they
-    // are the paths a user actually hits: the enable path prompts for admin
-    // every time the system proxy changes. They fell through to "Connect",
-    // which names no control on Home. Switches get "Flip", buttons get
-    // "Click".
+    // labelled Trust certificate. Switches get "Flip", buttons get "Click".
+    //
+    // Starting the engine and trusting the certificate are each reached from
+    // more than one control - a notice's switch, setup's button, the dialog in
+    // front of a connect - so those two say what to do again rather than name
+    // one control and be wrong about the others.
+    const retryHints: Partial<Record<ErrorContext, string>> = {
+      proxy_toggle: "Turn routing on again and approve your system password prompt.",
+      trust_ca: "Try again and approve your system password prompt.",
+    };
+    const retryHint = retryHints[context];
+    if (retryHint) {
+      return { title: "The system prompt was cancelled", hint: retryHint, raw };
+    }
     const switchNames: Partial<Record<ErrorContext, string>> = {
-      proxy_toggle: "the Routing switch",
       provider_toggle: "that switch",
     };
     const switchName = switchNames[context];
@@ -373,17 +351,11 @@ export function classifyError(
         ? "Reset"
         : context === "sign_out"
           ? "Sign out"
-          : context === "trust_ca"
-            ? // "Trust", not "Trust certificate": both buttons that raise this
-              // prompt (Home's certificate card, the family panel's banner) are
-              // labelled Trust, and this hint's whole job is naming the control
-              // the user pressed.
-              "Trust"
-            : context === "untrust_ca"
-              ? "Remove"
-              : context === "close_agents"
-                ? "Close everything"
-                : "Connect";
+          : context === "untrust_ca"
+            ? "Remove"
+            : context === "close_agents"
+              ? "Close everything"
+              : "Connect";
     return {
       title: "The system prompt was cancelled",
       hint: `Click ${verb} again and approve your system password prompt.`,
@@ -472,6 +444,15 @@ export function classifyError(
     };
   }
 
+  // A tool write an integration refused for a reason the user can fix: "No
+  // supported OpenCode providers found to route through Gate. Run ...". The
+  // body says what to do rather than "Try again", which hid the instruction
+  // behind Details (staging QA, 2026-09-30). The title stays the generic one.
+  if (context === "connect") {
+    const hint = connectRefusalHint(raw);
+    if (hint) return { title: "Couldn’t connect this tool", hint, raw };
+  }
+
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     // The write already succeeded; only the re-read of it failed, so this says
@@ -509,4 +490,60 @@ export function classifyError(
     hint: "Try again. If it keeps failing, the details below help when reporting it.",
     raw,
   };
+}
+
+/**
+ * The window's copy for a connect an integration refused, by the refusal's
+ * own wording. `null` for anything not listed, which keeps "Try again".
+ *
+ * A list, not a test of the message's shape: a backend message reaches the
+ * body only once someone has written copy for it. Reading any one-sentence
+ * error as an instruction also let through paths ("failed to write
+ * ~/.codex/config.toml"), parser output and network errors. And the backend's
+ * own sentences are written for the CLI ("then re-run connect"), so the window
+ * says it in its own words. The patterns follow the `bail!`s in
+ * `crates/core/src/integrations/`; a reworded refusal falls back to "Try
+ * again", with the full text still under Details.
+ */
+const CONNECT_REFUSALS: readonly [RegExp, (m: RegExpMatchArray) => string][] = [
+  [
+    /^No supported OpenCode providers found to route through Gate\b/,
+    () =>
+      "OpenCode isn’t signed in to a provider Gate can route. Run opencode auth login, then turn OpenCode on again.",
+  ],
+  [
+    /^None of the configured OpenCode providers can route through Gate yet \(([^)]*)\)/,
+    (m) => `None of OpenCode’s providers can route through Gate yet (${m[1]}).`,
+  ],
+  [
+    /^Codex isn't logged in yet\b/,
+    () => "Codex isn’t signed in yet. Run codex login, then turn it on again.",
+  ],
+  [
+    /^Hermes already has its own proxy settings in ~\/\.hermes\/\.env\b/,
+    () =>
+      "Hermes already has its own proxy settings in ~/.hermes/.env, and Gate left them alone. Remove them to route Hermes through Gate.",
+  ],
+  [
+    /^(Claude Code|Codex|OpenCode|OpenClaw|Hermes) is not installed\b/,
+    (m) => `${m[1]} isn’t installed on this machine. Install it, then turn it on again.`,
+  ],
+];
+
+export function connectRefusalHint(raw: string): string | null {
+  const text = raw.trim();
+  for (const [pattern, hint] of CONNECT_REFUSALS) {
+    const m = text.match(pattern);
+    if (m) return hint(m);
+  }
+  return null;
+}
+
+/**
+ * A tool's connect refused because routing is off. The fix is the whole
+ * install's ("Turn on Route through Gate first"), so the window says it rather
+ * than one app's pane (review on #390).
+ */
+export function isRoutingOffRefusal(raw: string): boolean {
+  return raw.toLowerCase().includes("proxy is not running");
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { adaptEvents, categoryTone } from "./toolEvents";
+import { adaptEvents } from "./toolEvents";
 
 /**
  * What a row in the tool feed is allowed to say.
@@ -260,32 +260,13 @@ describe("adaptEvents", () => {
 });
 
 /**
- * The Type column's ink and its glyph, both keyed on the gateway's own
- * spellings.
+ * The Type column's glyph, keyed on the gateway's own spellings.
  *
- * Found on the functional-review build: the column drew one ink for every
- * category where `661:16450` colours each, and two of the five spellings the
- * gateway can send matched nothing in the glyph table, so Credential and PHI
- * rows fell through to the generic shield.
+ * Found on the functional-review build: two of the five spellings the gateway
+ * can send matched nothing in the glyph table, so Credential and PHI rows fell
+ * through to the generic shield.
  */
 describe("the Type column's categories", () => {
-  it("colours each category the way the frame draws it", () => {
-    // Measured off `661:16450` and matched to the variables it resolves:
-    // red/600, green/600, purple/600.
-    expect(categoryTone("injection")).toContain("red-600");
-    expect(categoryTone("pii")).toContain("green-600");
-    expect(categoryTone("credential")).toContain("purple-600");
-  });
-
-  it("leaves the ink alone where no guardrail fired", () => {
-    // A colour is what a guardrail firing looks like. "Regular" is the case
-    // where one ran and matched nothing, and `other` is a category the frame
-    // never drew.
-    expect(categoryTone("Regular")).toBe("text-base-foreground");
-    expect(categoryTone("other")).toBe("text-base-foreground");
-    expect(categoryTone(null)).toBe("text-base-foreground");
-  });
-
   it("knows every spelling the gateway can actually send", () => {
     // `toCategory` in `activity.controller.ts` narrows to exactly these five.
     // `credential` and `phi` used to match nothing here - the table was keyed
@@ -301,12 +282,6 @@ describe("the Type column's categories", () => {
     // `other` has no glyph of its own and keeps the fallback, which is what
     // the frame's "a glyph in every Type cell" asks for.
     expect(iconFor("other")).toBe("shieldCheck");
-  });
-
-  it("still answers for the policy-row spellings, which are a second vocabulary", () => {
-    expect(categoryTone("pii-phi")).toContain("green-600");
-    expect(categoryTone("prompt-injection")).toContain("red-600");
-    expect(categoryTone("credentials")).toContain("purple-600");
   });
 });
 
@@ -361,23 +336,19 @@ describe("the model row's provider", () => {
   });
 });
 
-describe("the category tables' shared lookup", () => {
-  it("does not hand a prototype member to the class attribute", () => {
+describe("the category table's lookup", () => {
+  it("does not hand back a prototype member", () => {
     // `constructor` and `__proto__` both survive `toLowerCase()` and come back
-    // truthy off `Object.prototype`, so a bare index made `??` unreachable and
-    // `className` received a function. Guarded in `ProviderMark` and, until
-    // now, not here - in the same change.
+    // truthy off `Object.prototype`, so a bare index made `??` unreachable.
     for (const key of ["constructor", "__proto__", "valueOf"]) {
-      expect(categoryTone(key)).toBe("text-base-foreground");
+      const row = adaptEvents(envelope([raw({ securityCategory: key })])).entries[0];
+      expect(row.categoryIcon).toBe("shieldCheck");
     }
   });
 
-  it("matches a spelling whatever its case, in both tables at once", () => {
-    // The glyph and its ink have to agree. One lookup lowercased and the other
-    // did not, so `PII` took the fallback shield in PII green.
+  it("matches a spelling whatever its case", () => {
     const row = adaptEvents(envelope([raw({ securityCategory: "PII" })])).entries[0];
 
     expect(row.categoryIcon).toBe("userRound");
-    expect(categoryTone(row.category!)).toContain("green-600");
   });
 });

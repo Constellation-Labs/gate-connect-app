@@ -12,11 +12,6 @@ import type { Config } from "tailwindcss";
  *
  * The `brand` indigo palette is kept ONLY to back the existing logo tile.
  * Do not introduce new indigo surfaces - use ink-900 for primary instead.
- *
- * EXCEPTION: the `gc` group below is the Gate Connect menu-bar popover palette
- * from the Claude Design handoff (the indigo-forward "Gate Connect - Prototype").
- * It is namespaced so it backs ONLY the Connect popover redesign and never
- * leaks into the shared cg ink/brand ramps above.
  */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
@@ -138,9 +133,8 @@ export default {
         // neutral-900 #171717, neutral-500 #737373, amber-600 #d97706,
         // green-600 #16a34a, gray-100 #f3f4f6).
         //
-        // This supersedes the `gc` group below and the ink-primary rule in the
-        // header note: the design makes blue-ribbon the primary. `gc` stays
-        // until the popover screens are migrated off it.
+        // This supersedes the ink-primary rule in the header note: the design
+        // makes blue-ribbon the primary.
         base: {
           card: "#ffffff",
           background: "#f9fafb",
@@ -185,6 +179,18 @@ export default {
           950: "#101738",
         },
 
+        // The three guardrail inks the redrawn Overview draws on its Policies
+        // rows and the feed's Category cell (sampled off `1390:13599`,
+        // 2026-09-30): Tailwind's red-700, green-700 and blue-700. Named for the
+        // guardrail, not the hue, because `blue` is REDEFINED as an OKLCH ramp
+        // further up this file and `text-blue-700` would render the wrong
+        // colour; `GUARDRAIL_INK` in `gc/base.tsx` is the one map onto them.
+        guardrail: {
+          injection: "#b91c1c", // tailwind red/700, Icon / ShieldAlert
+          pii: "#15803d", // tailwind green/700, Icon / UserRound
+          credential: "#1d4ed8", // tailwind blue/700, Icon / KeyRound
+        },
+
         // Messages chart series (Figma legend swatches, sampled individually).
         // Named for the series rather than the hue for two reasons: the meaning
         // is what call sites care about, and three of the four are Tailwind
@@ -215,55 +221,6 @@ export default {
           // warns against flipping this by eye, so it is raised with design
           // instead. See `docs/figma-questions-for-design.md`.
         },
-
-        // ── Gate Connect popover palette (Claude Design handoff). ──
-        // Indigo-forward; scoped to the Connect popover only. See header note.
-        gc: {
-          accent: "#3e4fea",
-          "accent-ink": "#2a38cb",
-          "accent-wash": "rgba(62,79,234,0.08)",
-          "accent-wash-2": "rgba(62,79,234,0.14)",
-          page: "#f4f5f9",
-          surface: "#ffffff",
-          subtle: "#f8f9fc",
-          sunken: "#eef0f6",
-          highlight: "#f6ffe3",
-          line: "#e8eaef",
-          "line-strong": "#d4d7e3",
-          // The switch's off track. SC 1.4.11 wants 3:1 for a component state
-          // indicator, and it has to clear that on every surface the switch
-          // lands on - not just white. #8b91a6 measured 3.13:1 on white but
-          // 2.98:1 on `subtle`, which is what an expanded or hovered member row
-          // uses, so the most-used control in the app failed exactly where the
-          // user was interacting with it. #868c9e is 3.36:1 on white and
-          // 3.19:1 on subtle.
-          "switch-off": "#868c9e",
-          ink: "#0f1222",
-          "ink-2": "#2a2d3f",
-          "ink-3": "#55596f",
-          "ink-4": "#7a7f93",
-          "ink-5": "#a1a6bb",
-          navy: "#002a5f",
-          success: "#2ecc71",
-          // Text-on-wash partners for the status colors: dark enough to hold
-          // WCAG AA (4.5:1) at pill size on their washes over white.
-          "success-deep": "#177a42",
-          "success-wash": "rgba(46,204,113,0.14)",
-          warning: "#f39c12",
-          // Same role as success-deep / error-deep: dark enough to carry meaning
-          // on its own wash. The status dots use the deep variants so the dot
-          // clears SC 1.4.11's 3:1 instead of relying on the label beside it.
-          "warning-deep": "#a25f02",
-          "warning-wash": "rgba(243,156,18,0.12)",
-          error: "#e74c3c",
-          // Text-weight red, mirroring success-deep: #e74c3c is 3.8:1 on
-          // white, which is fine for a dot or an icon and short of AA for the
-          // words next to it. Dots and washes keep `error`; anything the user
-          // reads uses this.
-          "error-deep": "#c0392b",
-          "error-wash": "rgba(231,76,60,0.12)",
-          menubar: "#181a30",
-        },
       },
       boxShadow: {
         // Shadow-as-border - cards never get a solid 1px border per
@@ -279,12 +236,8 @@ export default {
           "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent), 0 4px 16px -2px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent)",
         popover:
           "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 12px 32px -8px color-mix(in oklch, oklch(0.165 0 0) 22%, transparent), 0 4px 12px -2px color-mix(in oklch, oklch(0.165 0 0) 10%, transparent)",
-        // Gate Connect popover card drop (prototype --shadow-md).
-        "gc-md": "0 2px 4px rgba(10,10,10,0.04), 0 8px 24px rgba(10,10,10,0.06)",
-
         // New app UI (Figma `shadow/2xs`, `shadow/xs`, `shadow/lg`). Namespaced
-        // rather than overriding Tailwind's `shadow-lg`, which the popover
-        // screens still use.
+        // rather than overriding Tailwind's `shadow-lg`.
         // The design names these on Tailwind v4's scale, where everything
         // shifted one step down (v4 `shadow-xs` is v3 `shadow-sm`). This repo is
         // on v3.4, so Figma `shadow/sm` is v3's DEFAULT `shadow`, not `shadow-sm`.
@@ -345,12 +298,9 @@ export default {
           "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
       borderRadius: {
-        // The popover's own radii. `DEFAULT` is cg-sm (6px); it is what a bare
-        // `rounded` renders, and the popover screens still rely on it.
+        // `DEFAULT` is cg-sm (6px); it is what a bare `rounded` renders. The
+        // popover relied on it; nothing in the app draws a bare `rounded` now.
         DEFAULT: "0.375rem",
-        // Gate Connect popover radii (prototype --r-lg / --r-pill).
-        "gc-lg": "12px",
-        "gc-pill": "48px",
 
         // New app UI, from the token export (`docs/new_ui_design`). This is a
         // shadcn scale derived from `--radius: 10px`, hence sm/md/lg/xl at
@@ -439,43 +389,8 @@ export default {
         "heading-16": "-0.16px",
       },
       fontSize: {
-        // The popover's type ramp, in rem against a 16px root.
-        //
-        // These were 138 `text-[Npx]` literals and zero rem, which is why
-        // nothing in the app could be made larger: px is absolute, so a user
-        // who raises their text size saw no change at all (measured: root
-        // 16px -> 32px left a 13.5px heading at 13.5px). Expressed in rem, the
-        // whole ramp scales from one variable, which is what `useTextScale`
-        // drives.
-        //
-        // Eleven steps, not the six DESIGN.md names, because eleven is what the
-        // code actually uses and this pass must not change how anything looks at
-        // 100%. The six canonical names keep their DESIGN.md meaning; the five
-        // in-between steps are named for their role and marked here as the
-        // consolidation candidates they are. Collapsing 11 onto 6 changes
-        // appearance and belongs to a typesetting pass, not to this one.
-        //
-        // Divide by 16 to read the px value back: 0.84375rem * 16 = 13.5px.
-        //
-        // Font size only, deliberately no line-height tuple. Tailwind would emit
-        // `line-height` alongside `font-size` for each of these, which would
-        // change computed leading at every call site that does not already carry
-        // a `leading-*` utility. The existing leading is correct and this pass is
-        // a units change, not a typesetting one.
-        "gc-label": "0.65625rem", // 10.5px - mono section labels, identifiers
-        "gc-micro": "0.6875rem", // 11px   - row exception lines
-        "gc-caption": "0.71875rem", // 11.5px - captions, hints, banner copy
-        "gc-caption-lg": "0.75rem", // 12px   - inline banner actions
-        "gc-body-sm": "0.78125rem", // 12.5px - takeover body, inline links
-        "gc-body-md": "0.8125rem", // 13px   - row titles, member names
-        "gc-body": "0.84375rem", // 13.5px - buttons, inputs, sentence copy
-        "gc-title-sm": "0.875rem", // 14px   - secondary headings
-        "gc-title": "0.90625rem", // 14.5px - panel titles, wordmark
-        "gc-panel-title": "1.0625rem", // 17px   - takeover headings
-        "gc-display": "1.6875rem", // 27px   - onboarding window only
-
-        // New app UI. In rem for the same reason as the ramp above: px would
-        // opt these out of `useTextScale` entirely.
+        // New app UI. In rem, never px: px would opt these out of any
+        // root-level text scaling entirely.
         //
         // These three carry their tracking in the tuple, because the design's
         // `label/N` and `copy/N` are *text styles*: size and tracking are one
@@ -510,11 +425,8 @@ export default {
         // line-height, so nothing about existing leading moves; the only new
         // declaration is `letter-spacing`.
         //
-        // Safe to redefine because neither class reaches the popover: the
-        // popover screens (`App.tsx`, `screens/Home.tsx`, `gc/ui.tsx`) size
-        // themselves entirely off the `gc-*` ramp above, and `text-sm` /
-        // `text-base` appear only in the new window UI, the new tray and
-        // onboarding. Verified by grep on 2026-09-04.
+        // Redefined for the whole app: the popover's `gc-*` ramp, which never
+        // used these two, went with the popover on 2026-09-30.
         sm: ["0.875rem", { lineHeight: "1.25rem", letterSpacing: "-0.14px" }],
         base: ["1rem", { lineHeight: "1.5rem", letterSpacing: "-0.32px" }],
       },

@@ -1106,8 +1106,10 @@ fn opencode_changes_are_recorded_too() {
 }
 
 /// A leftover `~/.config/opencode` is not an install: OpenCode leaves it
-/// behind, empty, and so does Gate's own disconnect. A config file or a login
-/// is, because those are what `connect` routes.
+/// behind, empty, and so does Gate's own disconnect. Nor is a config file or a
+/// login that names nothing `connect` could route: those outlive an install
+/// too, and the row they drew had a switch that could only fail. A config or a
+/// login naming a provider Gate routes is an install.
 #[test]
 fn an_empty_opencode_config_dir_is_not_an_install() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1136,11 +1138,30 @@ fn an_empty_opencode_config_dir_is_not_an_install() {
     let auth = env::opencode_auth_path().unwrap();
     fs::create_dir_all(auth.parent().unwrap()).unwrap();
     fs::write(&auth, "{}").unwrap();
-    assert!(integ.detect().unwrap(), "a login is");
+    assert!(!integ.detect().unwrap(), "an empty login store is not");
+    assert!(matches!(integ.status().unwrap(), Status::NotInstalled));
+    fs::write(&auth, r#"{"llamacpp":{"type":"api","key":"x"}}"#).unwrap();
+    assert!(
+        !integ.detect().unwrap(),
+        "a login for a provider Gate does not route is not"
+    );
+    fs::write(&auth, r#"{"anthropic":{"type":"api","key":"x"}}"#).unwrap();
+    assert!(integ.detect().unwrap(), "a login Gate can route is");
     fs::remove_file(&auth).unwrap();
 
-    fs::write(env::opencode_config_path().unwrap(), "{}").unwrap();
-    assert!(integ.detect().unwrap(), "a config file is");
+    let cfg = env::opencode_config_path().unwrap();
+    fs::write(&cfg, "{}").unwrap();
+    assert!(!integ.detect().unwrap(), "an empty config file is not");
+    fs::write(&cfg, r#"{"provider":{"openrouter":{}}}"#).unwrap();
+    assert!(
+        integ.detect().unwrap(),
+        "a config naming a routable provider is"
+    );
+    fs::write(&cfg, "{\n  // OpenCode reads JSONC\n}").unwrap();
+    assert!(
+        integ.detect().unwrap(),
+        "a config Gate cannot parse is evidence, not absence"
+    );
 }
 
 /// The `opencode.ai` domain an older build turned on goes off once OpenCode is
@@ -1164,7 +1185,11 @@ fn the_opencode_domain_is_switched_off_once_without_opencode() {
     };
 
     fs::create_dir_all(env::opencode_config_dir().unwrap()).unwrap();
-    fs::write(env::opencode_config_path().unwrap(), "{}").unwrap();
+    fs::write(
+        env::opencode_config_path().unwrap(),
+        r#"{"provider":{"opencode":{}}}"#,
+    )
+    .unwrap();
     config::set_enabled("opencode", true).unwrap();
     assert!(!switch_off_orphaned_domain().unwrap());
     assert!(enabled(), "installed, so the domain is the user's to keep");

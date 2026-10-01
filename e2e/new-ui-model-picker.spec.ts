@@ -17,8 +17,6 @@ import type { Page } from "@playwright/test";
  * real setter does, so a flow that stopped asking would fail here rather than
  * quietly start billing.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 const tools = [
   {
     slug: "claude-code",
@@ -48,6 +46,12 @@ const catalogue = [
 
 const base = { proxy: { running: true, ca_trusted: true }, tools };
 
+/** The card's heading over what the app's config holds. It said "Current Gate
+ *  model" while the gateway rewrote each request; the choice is written into
+ *  the app's own config now, which the app reads when it next starts. */
+const GATE_MODEL_HEADING = /^Gate models? in .+ config, from its next session$/;
+const GATE_MODELS_HEADING = /^Gate models in .+ config, from its next session$/;
+
 /**
  * Open one app's pane, which is where model selection lives.
  *
@@ -76,10 +80,6 @@ async function switchToGateModel(app: { page: import("@playwright/test").Page })
 }
 
 test.describe("new UI model picker", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("says no model is chosen before one is", async ({ boot }) => {
     const app = await boot(base);
     await openApp(app);
@@ -87,8 +87,8 @@ test.describe("new UI model picker", () => {
     // Under App default there is no current Gate model to report, so the section
     // is absent rather than empty - and with it the control that would change a
     // model this app is not using.
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
-    await expect(app.page.getByRole("button", { name: "Change model" })).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Choose models" })).toHaveCount(0);
   });
 
   test("the picker says it has nothing to offer rather than inventing models", async ({ boot }) => {
@@ -141,7 +141,7 @@ test.describe("new UI model picker", () => {
       "true",
     );
     // Served, so the section reports it.
-    await expect(app.page.getByText("Current Gate model")).toBeVisible();
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toBeVisible();
     await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
   });
 
@@ -164,7 +164,7 @@ test.describe("new UI model picker", () => {
     // Kept, and named by the radio that would put it to use. The "Current Gate
     // model" section stays away: nothing about it is current under App default.
     await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
   });
 
   test("does not re-ask once this install has accepted", async ({ boot }) => {
@@ -190,7 +190,7 @@ test.describe("new UI model picker", () => {
     );
   });
 
-  test("Change model swaps the served model directly once Gate is serving", async ({ boot }) => {
+  test("Choose models swaps the served model directly once Gate is serving", async ({ boot }) => {
     const app = await boot({
       ...base,
       toolModels: {
@@ -201,7 +201,7 @@ test.describe("new UI model picker", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Change model" }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
     const swap = app.page.getByRole("dialog");
     await swap.getByRole("checkbox", { name: catalogue[1].id }).click();
     await swap.getByRole("checkbox", { name: catalogue[0].id }).click();
@@ -238,7 +238,7 @@ test.describe("new UI model picker", () => {
     // Remembered, and still named - by the radio, not by a section claiming it is
     // current.
     await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
-    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
+    await expect(app.page.getByText(GATE_MODEL_HEADING)).toHaveCount(0);
   });
 
   test("offers no choice at all when the setting could not be read", async ({ boot }) => {
@@ -270,33 +270,27 @@ test.describe("new UI model picker", () => {
  * unusable without them.
  */
 test.describe("new UI model picker search and set", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const many = [
     ...catalogue,
     { id: "openai/gpt-5", owned_by: "openai", name: "GPT-5", tags: ["tool-use"] },
     { id: "deepseek/deepseek-v3", owned_by: "deepseek", name: "DeepSeek V3", tags: ["tool-use"] },
   ];
 
-  test("search narrows the list and says how many are showing", async ({ boot }) => {
+  test("search narrows the list", async ({ boot }) => {
     const app = await boot({ ...base, toolModels: { catalogue: many } });
     await openApp(app);
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("Showing 4 of 4 models")).toBeVisible();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(4);
 
     await dialog.getByRole("searchbox").fill("opus");
-    await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
     await expect(dialog.getByRole("checkbox")).toHaveCount(1);
   });
 
-  test("counts the set as it is picked, beside the count of what is shown", async ({ boot }) => {
-    // The two numbers answer different questions - how much of the catalogue is
-    // on screen, and how much of it you have chosen - so the frame puts them at
-    // either end of the same line and this checks they move independently.
+  test("counts the set as it is picked, against the limit", async ({ boot }) => {
+    // `1410:31315`: "2 of 4 models selected". The count is of the choice, not
+    // of the catalogue, so narrowing the list must not move it.
     const app = await boot({ ...base, toolModels: { catalogue: many } });
     await openApp(app);
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
@@ -307,17 +301,20 @@ test.describe("new UI model picker search and set", () => {
     // select-all to mirror it, and Cancel already starts the selection over.
     const checked = dialog.locator('[role="checkbox"][aria-checked="true"]');
     await expect(checked).toHaveCount(0);
+    await expect(dialog.getByText("0 of 4 models selected")).toBeVisible();
 
     await dialog.getByRole("checkbox", { name: many[0].id }).click();
     await expect(checked).toHaveCount(1);
 
     await dialog.getByRole("checkbox", { name: many[1].id }).click();
     await expect(checked).toHaveCount(2);
+    await expect(dialog.getByText("2 of 4 models selected")).toBeVisible();
     // Narrowing what is shown does not change what is chosen. One of the two is
     // filtered out of the list, so the *visible* checked count drops while the
-    // draft does not - which the footer's own state confirms.
+    // draft does not.
     await dialog.getByRole("searchbox").fill("opus");
-    await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+    await expect(dialog.getByText("2 of 4 models selected")).toBeVisible();
     await expect(dialog.getByText("No models enabled")).toHaveCount(0);
   });
 
@@ -343,10 +340,71 @@ test.describe("new UI model picker search and set", () => {
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("combobox").selectOption("openai");
 
-    await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
   });
 
-  test("Change model enables several models at once and states the count", async ({ boot }) => {
+  test("App default with a remembered set over the limit opens the picker to trim it", async ({
+    boot,
+  }) => {
+    // Review on #388: the Gate radio used to save the remembered set as it was,
+    // and the backend refused anything over four.
+    const five = [
+      ...many,
+      { id: "moonshot/kimi-k3", owned_by: "moonshot", name: "Kimi K3", tags: ["tool-use"] },
+    ];
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: five,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "tool", model_ids: five.map((m) => m.id) } },
+      },
+    });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("5 of 4 models selected")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeDisabled();
+    expect(await app.lastCall("set_tool_model")).toBeNull();
+
+    await dialog.getByRole("checkbox", { name: five[4].id }).click();
+    await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeEnabled();
+
+    // Trimmed, Apply hands the app to Gate: the picker was opened to activate,
+    // and billing was already accepted, so the four go straight through.
+    await dialog.getByRole("button", { name: "Apply selections" }).click();
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "claude-code",
+      source: "gate",
+      modelIds: many.map((m) => m.id),
+    });
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("stops at four models, and Clear selections starts over", async ({ boot }) => {
+    const five = [
+      ...many,
+      { id: "moonshot/kimi-k3", owned_by: "moonshot", name: "Kimi K3", tags: ["tool-use"] },
+    ];
+    const app = await boot({ ...base, toolModels: { catalogue: five } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    for (const m of five.slice(0, 4)) {
+      await dialog.getByRole("checkbox", { name: m.id }).click();
+    }
+    await expect(dialog.getByText("4 of 4 models selected")).toBeVisible();
+    await expect(dialog.getByRole("checkbox", { name: five[4].id })).toBeDisabled();
+
+    await dialog.getByRole("button", { name: "Clear selections" }).click();
+    await expect(dialog.getByText("0 of 4 models selected")).toBeVisible();
+    await expect(dialog.getByRole("checkbox", { name: five[4].id })).toBeEnabled();
+    await expect(dialog.getByRole("button", { name: "Apply selections" })).toBeDisabled();
+  });
+
+  test("Choose models enables several models at once and states the count", async ({ boot }) => {
     const app = await boot({
       ...base,
       toolModels: {
@@ -357,17 +415,18 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Change model" }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
 
     await dialog.getByRole("button", { name: "Apply selections" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    // The card keeps the single row Figma 228:89517 draws; only the heading
-    // turns plural, which is the minimum that stops it naming one model when
-    // two are enabled.
-    await expect(app.page.getByText("Current Gate models")).toBeVisible();
+    // The card lists the set as a grid (`1410:31957`), under the plural heading.
+    await expect(app.page.getByText(GATE_MODELS_HEADING)).toBeVisible();
+    const grid = app.page.getByRole("list", { name: /^Gate models for / });
+    await expect(grid.getByRole("listitem")).toHaveCount(2);
+    await expect(grid.getByText("openai/gpt-5", { exact: true })).toBeVisible();
   });
 
   test("refuses to save an empty set, which is where the last model is held", async ({ boot }) => {
@@ -385,7 +444,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Change model" }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
     const dialog = app.page.getByRole("dialog");
     const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
 
@@ -417,7 +476,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Change model" }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
 
@@ -440,10 +499,6 @@ test.describe("new UI model picker search and set", () => {
  * reported, and PAYG being switched off entirely.
  */
 test.describe("new UI model card credits", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("shows the balance the way the design words it", async ({ boot }) => {
     const app = await boot({
       ...base,
@@ -544,10 +599,6 @@ test.describe("new UI model card credits", () => {
  * commitment - not the first model with the rest summarised somewhere else.
  */
 test.describe("new UI Gate model confirmation", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("names the single model with its vendor, as the frame draws it", async ({ boot }) => {
     const app = await boot({ ...base, toolModels: { catalogue } });
     await openApp(app);
@@ -583,7 +634,7 @@ test.describe("new UI Gate model confirmation", () => {
     await expect(confirm.getByText(/Also enabled/)).toHaveCount(0);
   });
 
-  test("says the tool's own preference is untouched", async ({ boot }) => {
+  test("says Gate writes the models into the tool's own config", async ({ boot }) => {
     const app = await boot({ ...base, toolModels: { catalogue } });
     await openApp(app);
 
@@ -592,8 +643,14 @@ test.describe("new UI Gate model confirmation", () => {
     await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
     await dialog.getByRole("button", { name: "Apply selections" }).click();
 
+    // It said the app's own model preference was not changed, which stopped
+    // being true once the choice was written into the app's config.
+    await expect(app.page.getByText(/own model preference is not changed/)).toHaveCount(0);
     await expect(
-      app.page.getByText(/own model preference is not changed/),
+      app.page.getByText(/Gate sets CLI's model to these in its own config/),
+    ).toBeVisible();
+    await expect(
+      app.page.getByText(/restore your previous model/),
     ).toBeVisible();
   });
 });
@@ -606,10 +663,6 @@ test.describe("new UI Gate model confirmation", () => {
  * precisely a model Gate can no longer serve.
  */
 test.describe("new UI model needs attention", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const funded = {
     plan: "pro",
     paygEnabled: true,
@@ -698,7 +751,7 @@ test.describe("new UI model needs attention", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Change model" }).click();
+    await app.page.getByRole("button", { name: "Choose models" }).click();
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText("Unavailable")).toBeVisible();
 
@@ -716,10 +769,6 @@ test.describe("new UI model needs attention", () => {
  * be served with simply broke the tool with nothing on screen.
  */
 test.describe("new UI model feedback", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const funded = {
     plan: "pro",
     paygEnabled: true,
@@ -755,10 +804,11 @@ test.describe("new UI model feedback", () => {
  * Only the models this app can actually be served with (AG-590, AG-729).
  *
  * The case that cost a real prompt on staging: Codex was offered `gpt-4o`, which
- * carries the `tool-use` tag and still cannot serve it, because Codex sends
- * freeform tools. The provider's refusal - `Missing required parameter:
- * 'tools[0].custom'` - is not something a user can act on, so the picker
- * answers first.
+ * carries the `tool-use` tag and still could not serve it, because Codex sent
+ * freeform tools. That one is fixed at the source now - Gate writes a model
+ * that has not been seen to take freeform tools into Codex's catalog without
+ * them (`integrations/codex.rs`) - so a freeform refusal no longer holds a
+ * model back from Codex. A model with no tool use at all still is.
  *
  * AG-729 split the answer into three. Only a model MEASURED failing is held
  * back; a model nobody ever tried is offered below an "Unverified" divider,
@@ -803,10 +853,6 @@ test.describe("new UI model picker compatibility", () => {
     { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
   ];
 
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   /** Open Codex's picker. Four tests below need the same three clicks. */
   const openPicker = async (app: { page: Page }) => {
     await app.page.getByRole("button", { name: "Codex" }).first().click();
@@ -824,22 +870,22 @@ test.describe("new UI model picker compatibility", () => {
     });
     const dialog = await openPicker(app);
 
-    await expect(dialog.getByText(/2 models are not shown/)).toBeVisible();
+    // Only the model with no tool use: the freeform refusal no longer counts.
+    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
   });
 
-  test("names the reason when every held-back model shares one", async ({ boot }) => {
+  test("offers a model that refuses freeform tools, since Codex is sent function tools", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
-      // Only the freeform refusal remains, so there is one sentence worth saying.
       toolModels: { catalogue: mixed.filter((m) => m.id !== "openai/gpt-3-5-turbo-instruct") },
     });
     const dialog = await openPicker(app);
 
-    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
-    // The copy no longer names a family, which stops being true the moment the
-    // verdict table grows. It states what was measured.
-    await expect(dialog.getByText(/verified to reject/)).toBeVisible();
+    await expect(dialog.getByText("GPT-4o")).toBeVisible();
+    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
   });
 
   test("treats an older gateway's silence as offered, not as a refusal", async ({ boot }) => {
@@ -888,3 +934,149 @@ test.describe("new UI model picker compatibility", () => {
   });
 
     });
+
+/**
+ * Gate models live in the tool's own config now (Codex's `config.toml`,
+ * Hermes's `config.yaml`), not on each request. Three consequences the card
+ * has to get right: a write that changed a running tool's config offers the
+ * same restart notice a routing write does; a tool moved off its Gate models
+ * from inside itself is put back on App default, and the card says why; and
+ * Hermes, multi-provider on the rail, gets the card because its config can
+ * hold the set.
+ */
+test.describe("new UI Gate models in the tool's config", () => {
+  const CODEX = {
+    slug: "codex",
+    name: "Codex",
+    upstream_provider_name: "OpenAI",
+    default_upstream_url: "https://gw.example/codex",
+    requires_upstream_credential: false,
+    status: { kind: "connected" as const },
+  };
+  const set = ["openai/gpt-5.6-terra", "mistralai/mistral-large"];
+  const codexCatalogue = [
+    { id: set[0], owned_by: "openai", name: "GPT-5.6 Terra", tags: ["tool-use"] },
+    { id: set[1], owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
+  ];
+  const onGate = {
+    catalogue: codexCatalogue,
+    paidAckUnix: 1787740800,
+    choices: { codex: { source: "gate" as const, model_ids: set } },
+  };
+
+  test("the card leads with the model the tool's config starts on, and saves keep the stored order", async ({
+    boot,
+  }) => {
+    // The user picked the SECOND model of the set in Codex's own picker. The card
+    // shows that one first, but the stored order is the user's and every save
+    // keeps it: reordering would move the default model, rewrite the config and
+    // restart Codex's daemon with no choice made (review on #382).
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: { ...onGate, configuredModel: { codex: set[1] } },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await expect(app.page.getByText(set[1]).first()).toBeVisible();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "codex",
+      source: "tool",
+      modelIds: set,
+    });
+  });
+
+  test("App default keeps the whole set, not only its first model", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect.poll(() => app.lastCall("set_tool_model")).toMatchObject({
+      tool: "codex",
+      source: "tool",
+      modelIds: set,
+    });
+    await expect(app.page.getByText("Use any of 2 Gate models")).toBeVisible();
+  });
+
+  test("offers to restart a running app after a model change rewrites its config", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+      runningAgentNames: ["codex"],
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+    // Worded for any change, since a model write raises it too.
+    await expect(
+      app.page.getByText("Your configuration is saved. One final step makes the change active"),
+    ).toBeVisible();
+  });
+
+  test("stays silent after a model change when the app is not running", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: onGate,
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    await app.page.getByRole("radio", { name: /App default/ }).click();
+
+    await expect.poll(() => app.lastCall("set_tool_model")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("says so when the app was moved off its Gate models from inside it", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      toolModels: { ...onGate, left: { codex: "gpt-6-sol" } },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+
+    const notice = app.page
+      .getByRole("status")
+      .filter({ hasText: "You switched Codex to gpt-6-sol in Codex, so it is back on App default." });
+    await expect(notice).toBeVisible();
+    await expect(app.page.getByRole("radio", { name: /App default/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test("draws the model card for Hermes", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          slug: "hermes",
+          name: "Hermes",
+          upstream_provider_name: "Hermes",
+          default_upstream_url: "https://gw.example/hermes",
+          status: { kind: "connected" as const },
+        },
+      ],
+    });
+    await app.page.getByRole("button", { name: /^Hermes/ }).first().click();
+
+    await expect(app.page.getByRole("heading", { name: "Model selection" })).toBeVisible();
+  });
+});

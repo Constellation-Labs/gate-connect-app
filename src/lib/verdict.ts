@@ -1,4 +1,4 @@
-import type { UpstreamCoverage, Verdict, VerdictNextAction, VerdictReason } from "./api";
+import type { UpstreamCoverage, Verdict, VerdictReason } from "./api";
 import { governingMembers } from "./groups";
 import type { Group, GroupMember } from "./groups";
 import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
@@ -34,7 +34,7 @@ import type { AppStatus, SidebarApp } from "../components/gc/Sidebar";
  * AG-564 and AG-568 both name this state; AG-562's list of five does not include
  * it. Raised on those tickets rather than smuggled into the enum.
  */
-const WRITE_FAILED_DETAIL = "Configuration update failed";
+export const WRITE_FAILED_DETAIL = "Configuration update failed";
 
 /** The reason on a row that has no verdict yet. Not a fault, so the pane draws
  *  no card for it; see `statusNote` in `NewUiApp`. */
@@ -56,18 +56,6 @@ export const REASON_DETAIL: Record<VerdictReason, string> = {
   verification_failed: "Verification failed",
 };
 
-/** Button label for the one action a reason offers. Straight from AG-562's list
- * ("Reopen tool, Apply Gate configuration, Retry check, Sign in, Reconnect"), so
- * the control and the ticket say the same thing. */
-export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
-  apply_gate_configuration: "Apply Gate configuration",
-  show_conflicting_config: "Show conflicting file",
-  reopen_tool: "Reopen tool",
-  reconnect: "Reconnect",
-  sign_in: "Sign in",
-  retry_check: "Retry check",
-};
-
 /**
  * The status line for one app.
  *
@@ -84,7 +72,8 @@ export function verdictStatus(
   // Outranks the sweep. The sweep describes the state on disk, which after a
   // failed write is the state from *before* the user acted - true, and not the
   // thing they need to know. What they need to know is that their click did not
-  // land.
+  // land. Callers pass it only for a failed turn-off: a tool whose turn-on
+  // failed was never routed, and "Not protected" would claim it had been.
   if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
   if (!verdict) return { kind: "not-protected", detail: CHECKING_DETAIL };
   switch (verdict.state) {

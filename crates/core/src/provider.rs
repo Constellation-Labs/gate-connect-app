@@ -1593,6 +1593,61 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
     }
 }
 
+/// Take Gate models back out of one tool's config, leaving its routing alone.
+/// See [`crate::registry::Integration::leave_gate_models`].
+///
+/// No engine address in the input: nothing Gate models write names it, and
+/// asking for one can start the forwarder.
+pub fn leave_gate_models(slug: &str) -> Result<()> {
+    let _guard = master_flow_guard();
+    let Some(integ) = crate::registry::ToolId::from_slug(slug).and_then(crate::registry::find)
+    else {
+        anyhow::bail!("unknown tool {slug:?}");
+    };
+    let billing_mode = account::load()?.map(|a| a.billing_mode).unwrap_or_default();
+    let input = ConnectInput {
+        gateway_base_url: String::new(),
+        billing_mode,
+        relay_base_url: crate::proxy::relay_base_url(),
+        engine_proxy_url: None,
+    };
+    integ.leave_gate_models(&input)
+}
+
+/// Rewrite one tool's config from the stored choices, if Gate manages it.
+///
+/// For a change that only the tool's own config can carry - the Gate models it
+/// runs on - made while it is connected. `connect` reads the stored choice and
+/// writes it, so re-running it is the whole apply; a tool Gate does not manage
+/// right now is left alone and picks the choice up on its next connect.
+///
+/// Returns whether the config was rewritten. Held under the master-flow lock so
+/// a model change cannot interleave with a quit or a master-off that is
+/// reverting the same file.
+pub fn reapply_tool_config(slug: &str) -> Result<bool> {
+    let _guard = master_flow_guard();
+    let Some(integ) = crate::registry::ToolId::from_slug(slug).and_then(crate::registry::find)
+    else {
+        anyhow::bail!("unknown tool {slug:?}");
+    };
+    if !integ.config_is_managed()? {
+        return Ok(false);
+    }
+    let Some(account) = account::load()? else {
+        return Ok(false);
+    };
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url.clone(),
+        billing_mode: account.billing_mode,
+        relay_base_url: crate::proxy::relay_base_url(),
+        engine_proxy_url: crate::proxy::tool_proxy_url(),
+    };
+    integ
+        .connect(&input)
+        .with_context(|| format!("configuring {}", integ.display_name()))?;
+    Ok(true)
+}
+
 /// Retry exactly one recorded entry, leaving every other entry's recorded work
 /// alone.
 ///

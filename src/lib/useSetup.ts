@@ -24,8 +24,9 @@ import { noteOrgChoices, noteSetupFailure, track, trackError } from "./analytics
  * account is enough to send the window back to sign-in, with no separate
  * "now show first run" flag that could disagree with what is on disk.
  *
- * `screens/FirstRun.tsx` and `screens/OrgPicker.tsx` are the popover's versions.
- * The call sequences here match theirs deliberately - saving the gateway before
+ * The popover's `screens/FirstRun.tsx` and `screens/OrgPicker.tsx` (removed
+ * 2026-09-30) were the first versions. The call sequences here match theirs
+ * deliberately - saving the gateway before
  * `oauthBeginLogin` so the account exists on disk, marking the OAuth offer seen
  * when the user picks the key path - because those orderings encode decisions
  * that are not obvious from the API surface.

@@ -358,15 +358,6 @@ fn get_account_key_prefix() -> Result<Option<String>, String> {
     account::api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
-/// Fallback for accounts saved before the prefix was recorded on disk: read the
-/// key from the keychain (may prompt), backfill the prefix into `account.json`,
-/// and return it. The UI calls this only after the user confirms the reveal,
-/// since it touches the keychain.
-#[tauri::command]
-fn backfill_account_key_prefix() -> Result<Option<String>, String> {
-    account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
-}
-
 /// Is this gateway base URL's scheme acceptable?
 ///
 /// This is the IPC boundary, so the check is deliberately defensive: a
@@ -624,6 +615,9 @@ async fn oauth_begin_login<R: tauri::Runtime>(
         // Record that this account authenticates via OAuth so load() stops
         // requiring a pasted key, and push the fresh token into a running
         // engine so routing switches to it without waiting for a restart.
+        // The engine's key goes with it: an account that pasted one before
+        // this sign-in would otherwise keep it there, and a later dead session
+        // would be served under it rather than refused (`lacks_gate_credential`).
         gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
             .map_err(|e| format!("{e:#}"))?;
         // Whatever ended the last session, this one is live - so the flag stops
@@ -633,7 +627,10 @@ async fn oauth_begin_login<R: tauri::Runtime>(
         // the user is no longer looking at.
         let _ = gate_connect_core::preferences::set_signed_out_deliberately(false);
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+            gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        }
         Ok(OAuthStatusDto::from(&tokens))
     })
     .await
@@ -686,8 +683,9 @@ async fn oauth_sign_out() -> Result<(), String> {
         // reasoning as there: a cache that will not delete must not be the reason
         // a sign-out reports failure.
         let _ = gate_connect_core::activity_cache::clear();
-        // Revert a running engine to the legacy header immediately (empty
-        // token == fall back to the API key, if one is present).
+        // Take the token out of a running engine now. The account stays in
+        // OAuth mode and holds no key, so routed requests are refused as
+        // signed out rather than sent under anything.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_token("");
         Ok::<(), String>(())
@@ -713,7 +711,14 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
         } else {
             gate_connect_core::account::AuthMode::ApiKey
         };
-        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
+        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))?;
+        // An OAuth account holds no key (`account::load`), so neither may a
+        // running engine: see `oauth_begin_login`.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if oauth {
+            gate_connect_core::proxy::manager().refresh_api_key("");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?;
@@ -913,6 +918,10 @@ async fn activity_installations() -> Result<String, String> {
 #[tauri::command]
 async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
     tauri::async_runtime::spawn_blocking(|| {
+        // Configs first: a tool moved off Gate models from inside itself is put
+        // back on its own model here, and the stored choices read below must
+        // already say so.
+        let configured = gate_connect_core::tool_models::states();
         let prefs = gate_connect_core::preferences::load();
         ToolModelsDto {
             tools: prefs
@@ -921,10 +930,52 @@ async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
                 .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
                 .collect(),
             paid_ack_unix: prefs.gate_model_paid_ack_unix,
+            configured: configured
+                .into_iter()
+                .map(|(slug, view)| (slug.to_string(), ConfiguredModelDto::from(view)))
+                .collect(),
         }
     })
     .await
     .map_err(|e| format!("tool model preferences join error: {e}"))
+}
+
+/// What one tool's own config says about Gate models (R3: the config, not the
+/// stored choice, is what the tool will run).
+#[derive(Serialize)]
+struct ConfiguredModelDto {
+    /// `"applied"`, `"not_applied"` or `"drifted"`. Drift has normally been
+    /// resolved by the time this is read, so `"drifted"` means the resolution
+    /// itself failed.
+    state: &'static str,
+    /// The model the config starts the tool on, when it is on Gate models.
+    model: Option<String>,
+    /// True when this read found the tool moved off Gate models from inside the
+    /// tool, and put it back on its own model. The window says so once.
+    left_gate_models: bool,
+    /// With `left_gate_models`: the model the tool's config names now, if any.
+    left_to_model: Option<String>,
+    /// Why the card cannot trust this reading: the config was unreadable, or
+    /// the tool could not be put back on its own model. Null when all is well.
+    problem: Option<String>,
+}
+
+impl From<gate_connect_core::tool_models::ToolModelView> for ConfiguredModelDto {
+    fn from(v: gate_connect_core::tool_models::ToolModelView) -> Self {
+        use gate_connect_core::registry::GateModelState;
+        let (state, model) = match v.state {
+            GateModelState::Applied { model } => ("applied", Some(model)),
+            GateModelState::Drifted { model } => ("drifted", model),
+            GateModelState::NotApplied | GateModelState::Unsupported => ("not_applied", None),
+        };
+        Self {
+            state,
+            model,
+            left_gate_models: v.left_gate_models.is_some(),
+            left_to_model: v.left_gate_models.flatten(),
+            problem: v.problem,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -934,6 +985,8 @@ struct ToolModelsDto {
     tools: std::collections::BTreeMap<String, ToolModelChoiceDto>,
     /// Unix seconds, or null when this install has never accepted paid use.
     paid_ack_unix: Option<i64>,
+    /// Keyed by tool slug, for the tools that support Gate models.
+    configured: std::collections::BTreeMap<String, ConfiguredModelDto>,
 }
 
 #[derive(Serialize)]
@@ -968,13 +1021,18 @@ impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDt
 /// `acknowledge_paid_use` records that the person accepted billing, and is
 /// honoured only when moving to `"gate"` - remembering a model under the tool's
 /// own default spends nothing and must not record consent to spend.
+///
+/// The choice is written into the tool's own config when Gate manages it, and
+/// the answer says whether it was: `true` means the file changed and the tool
+/// picks it up on its next session, which is the window's cue to offer the
+/// restart notice.
 #[tauri::command]
 async fn set_tool_model(
     tool: String,
     source: String,
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     // Parsed, not trusted: the slug has to be one this app actually configures,
     // or the pane would store a choice under a key nothing reads.
     let Some(tool) = parse_tool(Some(tool))? else {
@@ -986,13 +1044,35 @@ async fn set_tool_model(
         other => return Err(format!("unknown model source {other:?}")),
     };
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::preferences::set_tool_model(
-            tool.slug(),
+        // The names and context windows the tool's own picker will show, read
+        // now because the connect that writes them may run offline later. A
+        // catalogue that cannot be read costs the picker its labels, not the
+        // choice.
+        let meta = match source {
+            gate_connect_core::preferences::ModelSource::Gate => {
+                gate_connect_core::gate_models::catalogue_json()
+                    .map(|json| {
+                        gate_connect_core::tool_models::meta_from_catalogue(&json, &model_ids)
+                    })
+                    .unwrap_or_default()
+            }
+            gate_connect_core::preferences::ModelSource::Tool => Vec::new(),
+        };
+        let applied = gate_connect_core::tool_models::choose(
+            tool,
             source,
             model_ids,
             acknowledge_paid_use,
+            meta,
         )
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| format!("{e:#}"))?;
+        // Codex's app-server daemon reads its config and model catalog only
+        // when it starts; see `refresh_codex_daemon_when_idle`.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if applied && tool == gate_connect_core::registry::ToolId::Codex {
+            refresh_codex_daemon_when_idle("set model");
+        }
+        Ok(applied)
     })
     .await
     .map_err(|e| format!("set tool model join error: {e}"))?
@@ -1040,16 +1120,6 @@ fn log_message(level: String, message: String) {
         gate_connect_core::logging::Level::from_wire(&level),
         &message,
     );
-}
-
-/// Where the diagnostic log lives, or `None` when logging is off.
-///
-/// Lets Settings and the diagnostics report name the file to send instead of
-/// asking someone to find it, and returns nothing in a production build so the
-/// UI cannot offer a path to a file that is never written.
-#[tauri::command]
-fn log_file_path() -> Option<String> {
-    gate_connect_core::logging::path_for_report().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Serialize an activity failure for the IPC boundary.
@@ -1247,6 +1317,8 @@ async fn proxy_enable<R: tauri::Runtime>(
         // selection around the engine start, and surface best-effort hiccups
         // without blocking the proxy from coming up.
         let (_, warnings) = gate_connect_core::routing::enable().map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        refresh_codex_daemon_when_idle("routing on");
         for w in warnings {
             eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
             report_backend_failure(w.component, &w.error);
@@ -2158,10 +2230,16 @@ fn drain_backend_errors<R: tauri::Runtime>(window: tauri::Window<R>) -> Vec<Back
 /// Naming them beside the process is the only place that cannot drift from the
 /// row it names.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESSES: [(&str, &str, &str, Surface); 5] = [
+const AGENT_PROCESSES: [(&str, &str, &str, Surface); 6] = [
     ("claude-code", "claude", "Claude Code", Surface::Cli),
     ("codex", "codex", "Codex", Surface::Cli),
     ("opencode", "opencode", "OpenCode", Surface::Cli),
+    // Hermes is a Python program: its launcher execs the venv's `python` with
+    // the `hermes` script, so no process is *named* `hermes`. `agent_name_of`
+    // resolves it from the command line (see `is_hermes_command`). It needs a
+    // row now that Gate writes its model into `config.yaml`, which Hermes reads
+    // at startup - the restart notice after a model change has to find it.
+    ("hermes", "hermes", "Hermes", Surface::Cli),
     // The desktop apps. Their slugs are proxy-domain keys rather than registry
     // tool ids, because that is what these are: Gate routes them through the
     // system proxy, not by rewriting a config file. `agent_names_for`'s doc
@@ -2227,7 +2305,7 @@ enum Surface {
 /// The process names to scan for. `None` means every tool - the master toggle,
 /// the popover's routing takeover and the diagnostics listing all genuinely
 /// mean all of them. `Some(slugs)` narrows to the tools whose configs were
-/// just rewritten; slugs with no process of their own (`hermes`, `openclaw`,
+/// just rewritten; slugs with no process of their own (`openclaw`,
 /// `env-proxy`, a proxy domain key) drop out, and `Some(&[])` scans nothing.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
@@ -2276,10 +2354,14 @@ fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) 
         .iter()
         .filter(|(pid, process)| {
             let name = agent_name_of(process);
+            // An interpreter is a candidate only when Hermes is asked about:
+            // this pass has no command lines, and the one below reads them for
+            // candidates alone, which is what tells Hermes from other Python.
             Some(**pid) != own_pid
-                && AGENT_PROCESSES
+                && (AGENT_PROCESSES
                     .iter()
                     .any(|(_, n, _, _)| n.eq_ignore_ascii_case(&name))
+                    || (names.contains(&"hermes") && is_python_name(&name)))
         })
         .map(|(pid, _)| *pid)
         .collect();
@@ -2326,9 +2408,16 @@ fn walk_yields(
     names: &[&str],
 ) -> bool {
     agent_row_for(name, exe).is_some_and(|row| {
-        names.contains(&row.1)
-            && !is_chrome_native_host(cmd)
-            && !(row.1 == "Claude" && is_electron_child(cmd))
+        if !names.contains(&row.1) || is_chrome_native_host(cmd) {
+            return false;
+        }
+        if row.1 == "Claude" && is_electron_child(cmd) {
+            return false;
+        }
+        // Codex's app-server daemon outlives every session and is not one
+        // (`codex::is_app_server_command`); counting it put "Close tool" on
+        // screen with nothing open.
+        !(row.1 == "codex" && gate_connect_core::integrations::codex::is_app_server_command(cmd))
     })
 }
 
@@ -2363,7 +2452,31 @@ fn is_chrome_native_host(cmd: &[std::ffi::OsString]) -> bool {
 /// itself is left alone.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_name_of(process: &sysinfo::Process) -> String {
-    normalise_agent_name(&process.name().to_string_lossy())
+    let name = normalise_agent_name(&process.name().to_string_lossy());
+    if is_python_name(&name) && is_hermes_command(process.cmd()) {
+        return "hermes".to_string();
+    }
+    name
+}
+
+/// Whether a process name is a Python interpreter (`python`, `python3.11`,
+/// macOS's `Python`). Only these can be Hermes.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_python_name(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("python")
+}
+
+/// Whether an interpreter's command line runs Hermes: the script right after
+/// the interpreter (or after one flag) is a file called `hermes` - the
+/// launcher's `hermes-agent/hermes` and the venv's `bin/hermes` both are. The
+/// basename rather than the path, since `HERMES_HOME` moves the install.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn is_hermes_command(cmd: &[std::ffi::OsString]) -> bool {
+    cmd.iter().skip(1).take(2).any(|arg| {
+        std::path::Path::new(arg)
+            .file_name()
+            .is_some_and(|n| n == "hermes")
+    })
 }
 
 /// The half of [`agent_name_of`] that is testable without a live process table.
@@ -2608,22 +2721,6 @@ fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
     agent_row_of(process).map(|(slug, _, _, _)| *slug)
 }
 
-/// Count running agent processes without touching them. Lets the frontend
-/// skip the "close running agents" routing takeover when there is nothing to
-/// close.
-///
-/// `(async)`, like every probe here that walks the process table: sync would
-/// put the walk on the main thread, which on Linux is the GTK loop. This one
-/// runs on the boot path, where a blocked loop is a window that looks like it
-/// never opened.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn running_agents_count() -> u32 {
-    let mut count = 0u32;
-    for_each_agent_process(&agent_names_for(None), |_| count += 1);
-    count
-}
-
 /// Did this agent start before the last change to something it reads once at
 /// launch, and so is still using what it loaded then?
 ///
@@ -2677,27 +2774,6 @@ fn agent_needs_reopen(process: &sysinfo::Process, since: Option<u64>) -> bool {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn at_or_after(changed_at: Option<u64>, since: Option<u64>) -> Option<u64> {
     changed_at.filter(|&changed_at| since.is_none_or(|since| changed_at >= since))
-}
-
-/// Count running agent processes that missed a change to what they read at
-/// launch ([`agent_needs_reopen`]), i.e. the ones that genuinely need a
-/// restart. Same process set as `running_agents_count`.
-///
-/// `(async)` for the reason on [`running_agents_count`]: this is the probe the
-/// boot path and the `proxy-state-changed` handler both call.
-///
-/// `since` (Unix seconds) counts only changes made at or after it; see
-/// [`agent_needs_reopen`].
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn stale_agents_count(since: Option<u64>) -> u32 {
-    let mut count = 0u32;
-    for_each_agent_process(&agent_names_for(None), |process| {
-        if agent_needs_reopen(process, since) {
-            count += 1;
-        }
-    });
-    count
 }
 
 /// The user's Settings choices. Never fails: a missing or mangled file loads as
@@ -3102,10 +3178,9 @@ fn ca_cert_changed_at_unix() -> Option<u64> {
 /// Is a process for this one tool running that predates the last change to that
 /// tool's configuration, and is therefore still using whatever it loaded then?
 ///
-/// This is `stale_agents_count` narrowed to one tool *and* given a durable
-/// bound, which is what a per-tool verdict needs: the count answers "does
-/// anything need restarting" about the current session, and cannot say which
-/// row to mark, nor survive a restart of Gate.
+/// Narrowed to one tool *and* given a durable bound, which is what a per-tool
+/// verdict needs: it has to say which row to mark, and survive a restart of
+/// Gate.
 ///
 /// The decision itself is [`gate_connect_core::reopen::reopen_pending`], which
 /// is pure and carries the reasoning. This function is only the three readings
@@ -3173,7 +3248,7 @@ struct VerdictDto {
 /// per-tool calls would be the same answer at N times the cost, and would let
 /// two rows in one refresh disagree about whether the session is alive.
 ///
-/// Off the main thread for the reason on [`running_agents_count`] - but as a
+/// Off the main thread for the reason on [`running_agents`] - but as a
 /// real `async fn` handing the work to `spawn_blocking`, not as
 /// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
 /// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
@@ -3466,7 +3541,7 @@ struct RunningAgent {
     started_at_unix: u64,
     /// Started before the last change to its own configuration or to Gate's
     /// certificate, so it is still using what it loaded and needs a restart.
-    /// Same rule as [`stale_agents_count`], via [`agent_needs_reopen`].
+    /// Decided by [`agent_needs_reopen`].
     needs_reopen: bool,
 }
 
@@ -3568,25 +3643,6 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
     }
 }
 
-/// What [`restart_running_agents`] did, for the popover to report back.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[derive(Serialize)]
-struct ClosedAgentsDto {
-    /// Processes that were closed, the restarted ones included. 0 means none
-    /// were running.
-    closed: u32,
-    /// Desktop apps that quit and were opened again, by name ("Claude").
-    restarted: Vec<String>,
-    /// Closed and not opened again, by tool name: a terminal tool belongs to
-    /// the terminal it ran in, so a copy Gate started would not be the user's;
-    /// and an app that quit but could not be relaunched. The user opens these
-    /// again.
-    reopen_yourself: Vec<String>,
-    /// Asked to quit and still running once Gate stopped waiting, by name.
-    /// Not counted in `closed`: the user has to quit these themselves.
-    still_running: Vec<String>,
-}
-
 /// How long an agent gets to quit on its own before Gate stops waiting. A
 /// restart has to see the app gone before it relaunches it, or the launch just
 /// brings the old one forward. Claude Desktop's quit cleanup, Cowork's VM
@@ -3605,7 +3661,7 @@ struct CloseTarget {
     started: u64,
     /// The [`AGENT_PROCESSES`] row's slug, which the reopen queue is keyed by.
     slug: Option<&'static str>,
-    /// The row's product name, for the popover.
+    /// The row's product name.
     name: String,
     surface: Option<Surface>,
     /// `None` for a CLI, which is the whole point of `Surface` - see
@@ -3614,8 +3670,7 @@ struct CloseTarget {
 }
 
 /// Close running agents (CLIs and desktop apps, see [`AGENT_PROCESSES`]) and
-/// wait for them to go. Shared by [`close_running_agents`] and
-/// [`restart_running_agents`], which differ only in what happens after.
+/// wait for them to go, for [`close_running_agents`].
 ///
 /// Asking first matters most on Windows, where the only step used to be the
 /// hard kill. Claude Desktop never ran its quit cleanup, so Cowork's VM was
@@ -3745,6 +3800,34 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
     (closed, still_running)
 }
 
+/// Refresh Codex's app-server daemon, if it is stale and no Codex session is
+/// open. The one rule for it, shared by every path that changes what Codex
+/// should load: a model save, the restart notice's Close, and routing coming
+/// up (startup or the toggle), which reconnects Codex and can rewrite its
+/// config (review on #382).
+///
+/// Stale is `codex::refresh_app_server_daemon`'s test: the daemon started
+/// before Gate last changed Codex's config. An open session is left alone,
+/// because the restart would end it; the restart notice asks the user to close
+/// it, and its Close comes back here. A session that outlived that close still
+/// counts as open, so it is not cut off either.
+///
+/// On a thread of its own: the restart can take seconds, and the callers are a
+/// save the user is watching, a close, and the startup thread.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn refresh_codex_daemon_when_idle(why: &'static str) {
+    std::thread::spawn(move || {
+        let mut open_sessions = 0u32;
+        for_each_agent_process(&["codex"], |_| open_sessions += 1);
+        if open_sessions > 0 {
+            return;
+        }
+        if let Err(e) = gate_connect_core::integrations::codex::refresh_app_server_daemon() {
+            eprintln!("[gate] {why}: could not refresh the Codex app server: {e:#}");
+        }
+    });
+}
+
 /// Close running agents so their next launch picks up the routing change, and
 /// queue the apps among them for [`reopen_running_agents`]. Returns how many
 /// processes closed - 0 means none were running. One still running when Gate
@@ -3756,6 +3839,12 @@ fn close_agents(only: Option<&[String]>) -> (Vec<CloseTarget>, Vec<String>) {
 #[tauri::command(async)]
 fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     let (closed, _) = close_agents(only.as_deref());
+    if only
+        .as_deref()
+        .is_none_or(|slugs| slugs.iter().any(|s| s == "codex"))
+    {
+        refresh_codex_daemon_when_idle("close agents");
+    }
     let mut reopen: Vec<(String, Relaunch)> = Vec::new();
     for target in &closed {
         if let (Some(slug), Some(relaunch)) = (target.slug, &target.relaunch) {
@@ -3773,54 +3862,6 @@ fn close_running_agents(only: Option<Vec<String>>) -> u32 {
         guard.extend(reopen);
     }
     closed.len() as u32
-}
-
-/// Restart every running agent in one step, for the Home banner: close them
-/// all ([`close_agents`]), open the desktop apps again once they have quit,
-/// and name the terminal tools for the user to start again, since they belong
-/// to a terminal Gate cannot start them in.
-///
-/// `(async)` for the same reason as [`close_running_agents`].
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn restart_running_agents() -> ClosedAgentsDto {
-    let (closed, still_running) = close_agents(None);
-    let mut dto = ClosedAgentsDto {
-        closed: closed.len() as u32,
-        restarted: Vec::new(),
-        reopen_yourself: Vec::new(),
-        still_running,
-    };
-    let mut launched: Vec<&'static str> = Vec::new();
-    for target in closed {
-        match (&target.relaunch, target.slug) {
-            // Already launched for another of this app's processes.
-            (Some(_), Some(slug)) if launched.contains(&slug) => {}
-            (Some(relaunch), slug) => {
-                if relaunch.spawn() {
-                    launched.extend(slug);
-                    dto.restarted.push(target.name);
-                } else {
-                    eprintln!("[gate] close agents: could not reopen {}", target.name);
-                    dto.reopen_yourself.push(target.name);
-                }
-            }
-            (None, _) => dto.reopen_yourself.push(target.name),
-        }
-    }
-    // The ChatGPT app's bundled `codex` has no relaunch of its own and shares
-    // the app's name; relaunching the app is what brings it back.
-    dto.reopen_yourself
-        .retain(|name| !dto.restarted.contains(name));
-    for names in [
-        &mut dto.restarted,
-        &mut dto.reopen_yourself,
-        &mut dto.still_running,
-    ] {
-        names.sort();
-        names.dedup();
-    }
-    dto
 }
 
 /// Was `pid` started under another agent, at any depth? `parent_of` and
@@ -4244,6 +4285,16 @@ fn recheck_gate_session(
             SessionHealth::Valid
         }
         gate_connect_core::startup::Recheck::Dead => {
+            // A sign-in that finished since the verdict cleared it
+            // (`oauth::store`) and pushed its own token, which this stale
+            // verdict must not replace.
+            if !gate_connect_core::oauth::session_rejected() {
+                return SessionHealth::Unknown;
+            }
+            // Push the empty token now rather than on the next tick: the
+            // engine then refuses routed requests as signed out at once, and
+            // a relay request waiting on this verdict stops waiting.
+            gate_connect_core::proxy::manager().refresh_token("");
             signal_session_dead(app);
             SessionHealth::Rejected
         }
@@ -5175,15 +5226,6 @@ fn join_names(names: &[String]) -> String {
     }
 }
 
-/// The tools Gate Connect currently manages, for copy that has to name what a
-/// disconnect will interrupt.
-#[tauri::command]
-async fn routed_app_names() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::registry::managed_tool_names)
-        .await
-        .map_err(|e| format!("join error: {e}"))
-}
-
 /// The command table, shared by the app and by `examples/ui-harness.rs`.
 ///
 /// Generic over the runtime so the harness can register this identical list
@@ -5206,7 +5248,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             disconnect_tool,
             get_account,
             get_account_key_prefix,
-            backfill_account_key_prefix,
             save_account,
             clear_account,
             switch_gateway,
@@ -5227,7 +5268,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             gate_model_catalogue,
             gate_credits,
             log_message,
-            log_file_path,
             set_org,
             app_platform,
             os_name,
@@ -5248,7 +5288,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             proxy_set_env_export,
             proxy_trust_ca,
             proxy_untrust_ca,
-            routed_app_names,
             launch_at_login_status,
             set_launch_at_login,
             get_preferences,
@@ -5268,12 +5307,9 @@ pub fn invoke_handler<R: tauri::Runtime>(
             routing_startup_pending,
             routing_verdicts,
             teardown_report,
-            running_agents_count,
-            stale_agents_count,
             running_agents,
             close_running_agents,
             reopen_running_agents,
-            restart_running_agents,
             drain_backend_errors,
             security_feed_state,
             security_feed_history_ok,
@@ -5292,7 +5328,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             disconnect_tool,
             get_account,
             get_account_key_prefix,
-            backfill_account_key_prefix,
             save_account,
             clear_account,
             switch_gateway,
@@ -5311,7 +5346,6 @@ pub fn invoke_handler<R: tauri::Runtime>(
             gate_model_catalogue,
             gate_credits,
             log_message,
-            log_file_path,
             set_org,
             app_platform,
             os_name,
@@ -5628,6 +5662,11 @@ pub fn run() {
                     let _release = gate_connect_core::proxy::GateAuthCheck;
                     recheck_gate_session(&handle);
                 });
+                // Both verdicts reach the token watch: `Recovered` pushes the
+                // new token, `Dead` pushes the empty one. `Unchanged` pushes
+                // nothing, and a relay request waiting on it stops when the
+                // guard above drops.
+                true
             });
 
             // Routed traffic left for the gateway, from these tools. The
@@ -5853,6 +5892,9 @@ pub fn run() {
                     // loaded is a harmless no-op.
                     match gate_connect_core::routing::enable() {
                         Ok((state, warnings)) => {
+                            // Reconnecting can rewrite Codex's config; the
+                            // daemon picks it up only if refreshed.
+                            refresh_codex_daemon_when_idle("startup");
                             for w in warnings {
                                 eprintln!(
                                     "[gate] startup auto-enable: {} failed: {:#}",
@@ -6109,8 +6151,10 @@ pub fn run() {
                     // `live_session` silently refreshes a stale token (persisting
                     // it) and yields None when the session is dead; push the
                     // result into the running engine (a no-op when routing is
-                    // off). "" reverts to the API-key fallback, matching the
-                    // signed-out state the UI derives from oauth_status.
+                    // off). "" is a dead session: the engine then refuses
+                    // routed requests as signed out - an OAuth account holds
+                    // no key to fall back to - matching the signed-out state
+                    // the UI derives from oauth_status.
                     let token = gate_connect_core::oauth::live_session()
                         .map(|t| t.access_token)
                         .unwrap_or_default();
@@ -6756,6 +6800,88 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn codexs_app_server_daemon_is_not_a_running_codex() {
+        use std::ffi::OsString;
+        let cmd = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        let daemon_exe = std::path::Path::new(
+            "/Users/me/.codex/packages/app-server-daemon/releases/0.159.2/bin/codex",
+        );
+        // Both of the daemon's processes, as `ps` shows them on macOS.
+        for args in [
+            cmd(&[
+                daemon_exe.to_str().unwrap(),
+                "app-server",
+                "daemon",
+                "pid-update-loop",
+            ]),
+            cmd(&[
+                daemon_exe.to_str().unwrap(),
+                "app-server",
+                "--listen",
+                "unix://",
+                "--managed-daemon",
+            ]),
+        ] {
+            assert!(
+                !walk_yields("codex", Some(daemon_exe), &args, &["codex"]),
+                "{args:?} is the app server, not a session"
+            );
+        }
+        // A real session still counts, including one whose prompt says app-server.
+        assert!(walk_yields(
+            "codex",
+            Some(daemon_exe),
+            &cmd(&["codex"]),
+            &["codex"]
+        ));
+        assert!(walk_yields(
+            "codex",
+            Some(daemon_exe),
+            &cmd(&["codex", "exec", "explain the app-server flag"]),
+            &["codex"]
+        ));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn hermes_is_found_by_its_script_not_its_interpreter() {
+        use std::ffi::OsString;
+        let cmd = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(is_python_name("python"));
+        assert!(is_python_name("Python"));
+        assert!(is_python_name("python3.11"));
+        assert!(!is_python_name("hermes"));
+        // The launcher's exec, and the venv entry point.
+        assert!(is_hermes_command(&cmd(&[
+            "/Users/me/.hermes/hermes-agent/venv/bin/python",
+            "/Users/me/.hermes/hermes-agent/hermes",
+            "chat",
+        ])));
+        assert!(is_hermes_command(&cmd(&["python3", "/venv/bin/hermes"])));
+        assert!(is_hermes_command(&cmd(&[
+            "python",
+            "-u",
+            "/opt/hermes-agent/hermes"
+        ])));
+        // Other Python, including one that merely mentions hermes later on.
+        assert!(!is_hermes_command(&cmd(&[
+            "python",
+            "manage.py",
+            "runserver"
+        ])));
+        assert!(!is_hermes_command(&cmd(&[
+            "python",
+            "-m",
+            "http.server",
+            "hermes"
+        ])));
+        assert!(AGENT_PROCESSES
+            .iter()
+            .any(|(slug, name, _, _)| *slug == "hermes" && *name == "hermes"));
+    }
     use super::*;
 
     /// The reopen bound must stat the file the covered tools actually read.
@@ -6971,7 +7097,9 @@ mod tests {
             );
         }
         assert_eq!(agent_process_names("anthropic"), vec!["Claude"]);
-        assert!(agent_process_names("hermes").is_empty());
+        // Found by its script, not its interpreter - see `is_hermes_command`.
+        assert_eq!(agent_process_names("hermes"), vec!["hermes"]);
+        assert!(agent_process_names("openclaw").is_empty());
     }
 
     /// Every row can be named, and only the registry rows can be verified.
@@ -6987,7 +7115,7 @@ mod tests {
             assert!(!product.is_empty(), "{slug} has no product name");
             assert_eq!(
                 ToolId::from_slug(slug).is_some(),
-                matches!(slug, "claude-code" | "codex" | "opencode"),
+                matches!(slug, "claude-code" | "codex" | "opencode" | "hermes"),
                 "{slug} disagrees with the registry about whether it can be swept"
             );
         }
@@ -7003,7 +7131,7 @@ mod tests {
     fn only_apps_are_relaunchable() {
         for (slug, _, _, surface) in AGENT_PROCESSES {
             let expected = match slug {
-                "claude-code" | "codex" | "opencode" => Surface::Cli,
+                "claude-code" | "codex" | "opencode" | "hermes" => Surface::Cli,
                 _ => Surface::App,
             };
             assert!(

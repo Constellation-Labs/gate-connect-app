@@ -22,8 +22,8 @@ const served = (
 ): GateModel => ({ ...model(id, tags), toolShapes });
 
 describe("what each app needs", () => {
-  it("knows Codex sends freeform tools and Claude Code does not", () => {
-    expect(needsOf("codex")).toEqual({ tools: true, freeformTools: true });
+  it("knows no supported app needs freeform tools once Gate writes its catalog", () => {
+    expect(needsOf("codex")).toEqual({ tools: true, freeformTools: false });
     expect(needsOf("claude-code")).toEqual({ tools: true, freeformTools: false });
   });
 
@@ -59,7 +59,9 @@ describe("tool support, which the catalogue does report", () => {
 });
 
 describe("freeform tools, answered by the served verdict when there is one", () => {
-  const needs = needsOf("codex");
+  // A tool that sends freeform tools and cannot be told not to. Codex used to
+  // be one; Gate now writes its catalog so it does not have to be.
+  const needs = { tools: true, freeformTools: true };
 
   it("accepts a model the gateway verified", () => {
     const m = served("vendor/anything", { freeform: { verdict: "works", checked: "2026-08-28" } });
@@ -89,7 +91,9 @@ describe("freeform tools, answered by the served verdict when there is one", () 
 });
 
 describe("verdict precedence: the gateway outranks the built-in table", () => {
-  const needs = needsOf("codex");
+  // A tool that sends freeform tools and cannot be told not to. Codex used to
+  // be one; Gate now writes its catalog so it does not have to be.
+  const needs = { tools: true, freeformTools: true };
 
   it("lets a served verdict overturn the local fallback", () => {
     // The case the fallback exists to survive: gpt-4o is hard-coded as failing
@@ -106,7 +110,9 @@ describe("verdict precedence: the gateway outranks the built-in table", () => {
 });
 
 describe("the fallback, for a gateway that predates tool_shapes", () => {
-  const needs = needsOf("codex");
+  // A tool that sends freeform tools and cannot be told not to. Codex used to
+  // be one; Gate now writes its catalog so it does not have to be.
+  const needs = { tools: true, freeformTools: true };
 
   it("accepts the GPT-5 family, which is what served Codex", () => {
     for (const id of [

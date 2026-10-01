@@ -6,8 +6,7 @@ import { Icon } from "./Icon";
 /**
  * Shared primitives for the new app UI (Figma "Gate Connect"). Named for the
  * `base.*` token group in `tailwind.config.ts`, which mirrors the design's own
- * variable names. Distinct from `gc/ui.tsx`, which is the menu-bar popover's
- * primitive set and stays until those screens migrate.
+ * variable names.
  */
 
 /**
@@ -15,6 +14,92 @@ import { Icon } from "./Icon";
  * siblings): white, 8px radius, a 1px `base/border` hairline and `shadow/sm`.
  * Shared with the Settings pane, which uses the same shape per section.
  */
+/**
+ * The guardrail glyphs' inks, keyed by the glyph the row draws so the Policies
+ * table (`Overview.tsx`) and the feed's Category cell (`SecurityEvents.tsx`)
+ * cannot colour the same guardrail two ways. Sampled off the render of
+ * `Overview/none-routed` (1390:13599) on 2026-09-30; the values are the
+ * `guardrail.*` tokens in `tailwind.config.ts`. A glyph outside the three (the
+ * `shieldCheck` fallback in `lib/activity.ts`, the savings rows) is not here,
+ * and stays `base/muted-foreground`.
+ */
+export const GUARDRAIL_INK: Partial<Record<IconName, string>> = {
+  shieldAlert: "text-guardrail-injection",
+  userRound: "text-guardrail-pii",
+  key: "text-guardrail-credential",
+};
+
+/**
+ * The Outline button in its two pane sizes, from the `Button` set's instances
+ * (`sm` `1402:17919`: h32, 12/8, 16px glyph; `xs` `1402:18021`: h24, 10/4,
+ * 14px glyph). Both 4px on `base.border` in `base.primary`, each with its own
+ * moulded elevation - `sm` and `xs` do NOT share one, see CLAUDE.md. A literal
+ * class string per size, because Tailwind's scanner cannot see an
+ * interpolated one. Dialog buttons are `Modal`'s and are not this.
+ */
+const OUTLINE = {
+  sm: "h-8 gap-1.5 px-3 shadow-base-btn-sm",
+  xs: "h-6 gap-1.5 px-2.5 shadow-base-btn-xs",
+} as const;
+
+export function OutlineButton({
+  size,
+  onClick,
+  external,
+  className = "",
+  children,
+}: {
+  size: keyof typeof OUTLINE;
+  onClick: () => void;
+  /** Opens outside the app, so the label carries the external-link glyph. */
+  external?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center rounded-control border border-base-border bg-base-card text-base-xs font-medium leading-4 tracking-button-xs text-base-primary transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${OUTLINE[size]} ${className}`}
+    >
+      {children}
+      {external && <Icon name="squareArrowOutUpRight" size={size === "sm" ? 16 : 14} />}
+    </button>
+  );
+}
+
+/**
+ * A card's header row: `heading/18` title at left, an optional Outline `sm`
+ * action at right, 16/12 padding, and a `base/border` rule spanning the card.
+ *
+ * The frames still call the layer `card/footer`, but since the 2026-09-29
+ * redraw it sits at the TOP of every table card (`1402:17917`, `1402:18268`,
+ * `1402:17988`, `1410:28166`). It replaces the footer link the older
+ * `card/policies` (116:26707) drew under the rows, so the card it sits in
+ * carries no padding of its own and the rows below reach the border.
+ */
+export function CardHeader({
+  title,
+  action,
+}: {
+  title: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-base-border px-4 py-3">
+      <h2 className="text-lg font-medium leading-6 tracking-heading-18 text-base-foreground">
+        {title}
+      </h2>
+      {/* Both destinations today open the web dashboard, hence the glyph. */}
+      {action && (
+        <OutlineButton size="sm" onClick={action.onClick} external>
+          {action.label}
+        </OutlineButton>
+      )}
+    </div>
+  );
+}
+
 export function Card({
   children,
   className = "",
@@ -61,6 +146,9 @@ export function Card({
 const TILE_TONES = {
   green: "from-green-50 to-green-200 border-green-300 text-green-700",
   amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
+  // The none state, drawn since the 2026-09-29 redraw (`1390:14026`): gray/50
+  // to gray/200 over a gray/300 line, the `CircleOff` glyph sampled gray/600.
+  grey: "from-gray-50 to-gray-200 border-gray-300 text-gray-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
   // gradient, 300 border, 600 icon pattern as the two that are.
   red: "from-red-50 to-red-200 border-red-300 text-red-600",
@@ -92,9 +180,8 @@ export function StatusTile({
 
 /**
  * 36x20 track, 16px thumb (`Switch` component set, `408:14253`). Geometry
- * differs from the popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so
- * the two coexist until the popover screens migrate; the accessibility
- * contract is carried over unchanged, including the `before:` hit-area
+ * differs from the old popover's Switch (38x22 with a check glyph); its
+ * accessibility contract is carried over unchanged, including the `before:` hit-area
  * expansion that takes the target past 24px without moving the visible track.
  */
 export function BaseSwitch({

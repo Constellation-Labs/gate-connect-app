@@ -99,13 +99,18 @@ pub fn service() -> String {
 /// Load the account if it's usable. The gateway URL (on disk) is always
 /// required. The key requirement depends on the auth mode: in the legacy
 /// `ApiKey` mode a Gate key in the keychain is required; in `OAuth` mode the
-/// Cognito token is the credential, so a missing key is expected and loads as
-/// an empty string . Missing what's required returns None.
+/// Cognito token is the credential, and `api_key` is **always empty**, whether
+/// or not a key is still in the keychain. Missing what's required returns None.
+///
+/// The key is not read in `OAuth` mode, and this is deliberate. A key pasted
+/// before the switch to OAuth stays in the keychain, because switching back
+/// ([`set_auth_mode`]) must find it; but it is not this account's credential,
+/// and a dead session must not fall back to it. Why, and what a routed
+/// request gets instead, is on `proxy::lacks_gate_credential`.
 pub fn load() -> Result<Option<Account>> {
     let Some((file, raw)) = read_account_file_raw()? else {
         return Ok(None);
     };
-    let user = env::current_user()?;
     // Witnessed by `account.json` rather than read outright: on Linux the
     // proxy manager calls this every 30 seconds to re-push the intercept
     // config, and a plain read there costs the secret-store daemon ~8 KB a
@@ -117,11 +122,15 @@ pub fn load() -> Result<Option<Account>> {
     // else would go unseen until the next in-process write. Pick a stronger
     // witness if you reuse this pattern on a value whose file records less.
     // See `keychain::get_cached`.
-    let stored_key = keychain::get_cached(&service(), &user, &raw)?;
-    let api_key = match (file.auth_mode, stored_key) {
-        (_, Some(key)) => key,
-        (AuthMode::OAuth, None) => String::new(),
-        (AuthMode::ApiKey, None) => return Ok(None),
+    let api_key = match file.auth_mode {
+        AuthMode::OAuth => String::new(),
+        AuthMode::ApiKey => {
+            let user = env::current_user()?;
+            match keychain::get_cached(&service(), &user, &raw)? {
+                Some(key) => key,
+                None => return Ok(None),
+            }
+        }
     };
     Ok(Some(Account {
         gateway_base_url: file.gateway_base_url,
@@ -464,9 +473,8 @@ pub fn has_api_key() -> Result<bool> {
 
 /// The stored Gate key, read straight from the keychain.
 ///
-/// Distinct from [`backfill_api_key_prefix`], which is gated behind an explicit
-/// confirmation: that one *reveals* the secret to the user, while this hands it
-/// to code that is about to authenticate with it. This is the same read [`load`]
+/// It hands the secret to code that is about to authenticate with it, never to
+/// the user. This is the same read [`load`]
 /// already performs on every proxy enable, provider enable, and startup
 /// reconcile, against an item this app created in [`save`] - so on macOS the
 /// per-(item, application) ACL already covers it, and no caller pays a dialog
@@ -484,24 +492,6 @@ pub fn stored_api_key() -> Result<Option<String>> {
 /// the stored-prefix field .
 pub fn api_key_prefix() -> Result<Option<String>> {
     Ok(read_account_file()?.and_then(|f| f.api_key_prefix))
-}
-
-/// Fallback reveal for accounts saved before the prefix was recorded on disk:
-/// read the key from the keychain (which may trigger an OS authorization
-/// prompt), record its prefix in `account.json` so later reveals are free, and
-/// return it. Gated behind an explicit user confirmation in the UI because of
-/// the keychain read. Returns `None` when no key is stored.
-pub fn backfill_api_key_prefix() -> Result<Option<String>> {
-    let user = env::current_user()?;
-    let Some(key) = keychain::get(&service(), &user)? else {
-        return Ok(None);
-    };
-    let prefix: String = key.chars().take(12).collect();
-    if let Some(mut file) = read_account_file()? {
-        file.api_key_prefix = Some(prefix.clone());
-        write_account_file(&file)?;
-    }
-    Ok(Some(prefix))
 }
 
 pub fn clear() -> Result<()> {

@@ -99,7 +99,7 @@ describe("AppPane model card", () => {
   it("omits it entirely when there is no single model family", () => {
     render(pane({ onChooseModel: undefined }));
     expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
-    expect(screen.queryByText("Change model")).toBeNull();
+    expect(screen.queryByText("Choose models")).toBeNull();
     expect(screen.queryByText("App default")).toBeNull();
     // The rest of the pane is untouched: it still routes, and still reports.
     expect(screen.getByRole("heading", { name: "Recent activity" })).toBeTruthy();
@@ -466,7 +466,7 @@ describe("AppPane counters and chart", () => {
  * produces a control that lies about what it does.
  */
 describe("AppPane model selection", () => {
-  const model = { vendor: "anthropic", ids: ["anthropic/claude-opus-5"] };
+  const model = { ids: ["anthropic/claude-opus-5"] };
 
   it("selects neither option when no reading landed", () => {
     // Principle 2, in its purest form: an org that HAD switched to a Gate model
@@ -494,14 +494,14 @@ describe("AppPane model selection", () => {
   });
 
   it("does not report a current Gate model under App default", () => {
-    // A section headed "Current Gate model" while the app runs its own is a
-    // sentence about nothing current. The remembered model is still named - by
+    // A section headed "Gate model in Claude Code's config" while the app runs
+    // its own is a sentence about nothing current. The remembered model is still named - by
     // the radio, which is the control that would put it to use.
     render(pane({ modelChoice: "app", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).queryByText(/Current Gate model/i)).toBeNull();
-    expect(within(card_).queryByRole("button", { name: "Change model" })).toBeNull();
+    expect(within(card_).queryByText(/^Gate models? in .*config/)).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Choose models" })).toBeNull();
     expect(within(card_).getByText(`Use ${model.ids[0]}`)).toBeTruthy();
   });
 
@@ -509,29 +509,78 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "gate", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).getByText(/Current Gate model/i)).toBeTruthy();
+    // What the app's own config holds, and when that takes effect: the write
+    // lands in the config, which the app reads when it starts.
+    expect(
+      within(card_).getByText("Gate model in Claude Code's config, from its next session"),
+    ).toBeTruthy();
     expect(within(card_).getByText(model.ids[0])).toBeTruthy();
   });
 
   it("lists every enabled model, not the first of them", () => {
     // Reported from the running app: six models chosen, one drawn, and a heading
-    // reading "Current Gate models" above it. A plural heading over a single row
+    // reading "Current Gate models" (as it was then) above it. A plural heading over a single row
     // is indistinguishable from the card having lost the other five.
     const ids = [
-      "openai/gpt-5-6-terra",
-      "openai/gpt-5-6-sol",
-      "openai/gpt-5-6-luna",
-      "openai/gpt-5-3-codex",
-      "openai/gpt-5-2",
-      "openai/gpt-5-1",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-sonnet-5",
+      "deepseek/deepseek-v4-flash",
+      "moonshot/kimi-k3",
     ];
-    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids } }));
+    render(pane({ modelChoice: "gate", gateModel: { ids } }));
     const card_ = card("Model selection");
 
     for (const id of ids) expect(within(card_).getByText(id)).toBeTruthy();
-    expect(within(card_).getByText("Current Gate models")).toBeTruthy();
+    expect(
+      within(card_).getByText("Gate models in Claude Code's config, from its next session"),
+    ).toBeTruthy();
     // One action for the set, not one per row.
-    expect(within(card_).getAllByRole("button", { name: "Change model" })).toHaveLength(1);
+    expect(within(card_).getAllByRole("button", { name: "Choose models" })).toHaveLength(1);
+  });
+
+  it("draws the set as a grid, each model under its own vendor", () => {
+    // `1410:31957`: one cell per model, vendor over id, and no "N of M models
+    // enabled" count beside the action.
+    const ids = ["anthropic/claude-opus-5", "moonshot/kimi-k3"];
+    render(pane({ modelChoice: "gate", gateModel: { ids } }));
+    const list = within(card("Model selection")).getByRole("list", {
+      name: "Gate models for Claude Code",
+    });
+    const cells = within(list).getAllByRole("listitem");
+    expect(cells).toHaveLength(2);
+    expect(cells[0].textContent).toBe("anthropicanthropic/claude-opus-5");
+    expect(cells[1].textContent).toBe("moonshotmoonshot/kimi-k3");
+    expect(list.className).toContain("grid-cols-2");
+    expect(within(card("Model selection")).queryByText(/models enabled/)).toBeNull();
+  });
+
+  it("says why the card moved to App default when the app left its Gate models", () => {
+    // R3: the user picked another model inside the app, so its config no longer
+    // holds a Gate model and the radio moved without anyone touching it here.
+    // The notice is the only account of why.
+    const onDismissModelNotice = vi.fn();
+    render(
+      pane({
+        modelChoice: "app",
+        modelNotice: "You switched Codex to gpt-6-sol in Codex, so it is back on App default.",
+        onDismissModelNotice,
+      }),
+    );
+    const card_ = card("Model selection");
+
+    const status = within(card_)
+      .getAllByRole("status")
+      .find((el) => /gpt-6-sol/.test(el.textContent ?? ""));
+    expect(status).toBeTruthy();
+    expect(status?.textContent).toContain("so it is back on App default.");
+
+    fireEvent.click(within(status!).getByRole("button", { name: "Dismiss" }));
+    expect(onDismissModelNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws no notice when there is nothing to report", () => {
+    render(pane({ modelChoice: "app", modelNotice: null }));
+    expect(within(card("Model selection")).queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 
   it("names the size of the set on the radio rather than one of its members", () => {
@@ -540,7 +589,7 @@ describe("AppPane model selection", () => {
     render(
       pane({
         modelChoice: "app",
-        gateModel: { vendor: "openai", ids: ["openai/gpt-5-2", "openai/gpt-5-1"] },
+        gateModel: { ids: ["openai/gpt-5-2", "openai/gpt-5-1"] },
       }),
     );
     expect(within(card("Model selection")).getByText("Use any of 2 Gate models")).toBeTruthy();
@@ -551,7 +600,7 @@ describe("AppPane model selection", () => {
     // gateway's `paid` through `formatPlan`, so this pane prints what the
     // dashboard prints. It used to title-case the raw value here and say
     // "Paid", which is the same account named two ways by two products.
-    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "Pro" }));
+    render(pane({ modelChoice: "gate", gateModel: { ids: ["openai/gpt-5"] }, plan: "Pro" }));
     expect(within(card("Model selection")).getByText("Pro plan")).toBeTruthy();
   });
 
@@ -559,7 +608,7 @@ describe("AppPane model selection", () => {
     // It used to default to "free". A plan is what a reader acts on, by going to
     // upgrade - and "Free" would send them to change something they may already
     // have changed. Principle 6: no figure without a reading behind it.
-    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: null }));
+    render(pane({ modelChoice: "gate", gateModel: { ids: ["openai/gpt-5"] }, plan: null }));
     expect(within(card("Model selection")).queryByText(/plan/i)).toBeNull();
   });
 
@@ -575,7 +624,7 @@ describe("AppPane model selection", () => {
     const card_ = card("Model selection");
 
     for (const radio of within(card_).getAllByRole("radio")) expect((radio as HTMLButtonElement).disabled).toBe(true);
-    expect((within(card_).getByRole("button", { name: "Change model" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card_).getByRole("button", { name: "Choose models" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("reads N/A for a credit balance nothing reports", () => {
@@ -652,7 +701,7 @@ describe("AppPane model selection", () => {
     // sao10k and thirteen others publish none; a cube is the `Icon / Boxes` the
     // frames draw in the same slot.
     const { container } = render(
-      pane({ modelChoice: "gate", gateModel: { vendor: "sao10k", ids: ["sao10k/l3-euryale"] } }),
+      pane({ modelChoice: "gate", gateModel: { ids: ["sao10k/l3-euryale"] } }),
     );
     expect(container.querySelector('svg path[fill="#E8704E"]')).toBeNull();
     expect(within(card("Model selection")).getByText("sao10k")).toBeTruthy();

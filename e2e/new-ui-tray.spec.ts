@@ -7,8 +7,7 @@ import { OPENCLAW } from "./backend";
  * the full window.
  *
  * Reached by pointing the fake `getCurrentWindow()` label at "tray" - the
- * surface is picked per window, not by the `gc.newUi` shell flag, so no
- * localStorage opt-in is involved. What these pin is the seam the component
+ * surface is picked per window. What these pin is the seam the component
  * tests cannot see: whether the controls are connected to the backend at all.
  */
 test.describe("tray popover", () => {

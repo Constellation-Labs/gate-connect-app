@@ -35,10 +35,9 @@ import { track, trackError } from "./analytics";
  * run in) and none of it can be exercised through a component without a Tauri
  * runtime. A hook can be driven against a mocked `lib/api`.
  *
- * Not extracted from `screens/Settings.tsx`. That one keeps every flow inline
- * as a confirm *panel*, which is the popover's shape - 380px, one thing at a
- * time. The design uses centred dialogs, so the state a container has to hold
- * is different, and the popover's copy dies with the popover.
+ * Not extracted from the popover's `screens/Settings.tsx` (removed 2026-09-30),
+ * which kept every flow inline as a 380px confirm *panel*. The design uses
+ * centred dialogs, so the state a container has to hold is different.
  */
 
 /**

@@ -663,6 +663,7 @@ export function ConnectedPane({
   workspace,
   offerRouting,
   busy,
+  error,
   onTurnOnRouting,
   onDone,
 }: {
@@ -670,6 +671,9 @@ export function ConnectedPane({
   /** Routing is available but off, so finishing here would leave it unrouted. */
   offerRouting: boolean;
   busy?: boolean;
+  /** A failed Turn on routing. Without it the button stopped spinning and
+   *  nothing said why, on the one screen that promises routing. */
+  error?: ReactNode;
   onTurnOnRouting: () => void;
   onDone: () => void;
 }) {
@@ -680,6 +684,8 @@ export function ConnectedPane({
         subtitle={`Gate Connect is signed in to ${workspace}.`}
         mark={<Icon name="circleCheck" size={24} className="text-green-600" />}
       />
+
+      {error && <SetupError>{error}</SetupError>}
 
       <div className="flex flex-col gap-3">
         {offerRouting ? (

@@ -244,24 +244,27 @@ describe("ModelPickerDialog vendor marks", () => {
 describe("what a set of several means", () => {
   /**
    * AG-888 was filed as "the picker lets you pick more than the app can use".
-   * It cannot be fixed as written - `applyUserModelChoice` in `gateway-proxy`
-   * treats the set as an ALLOW-LIST (AG-746), so the second and later entries
-   * are what let several sessions keep their own models - but the dialog never
-   * said so, which is why that reading was available at all.
+   * It cannot be fixed as written - the set is written into the tool's own
+   * config as the list its model picker offers, so the second and later
+   * entries are what let several sessions keep their own models - but the
+   * dialog never said so, which is why that reading was available at all.
    */
   it("says nothing extra while one model is chosen", () => {
-    // One model is the unambiguous case: the tool either asks for it or is
-    // rewritten onto it, and there is no order to explain.
+    // One model is the unambiguous case: the tool's picker holds only it, and
+    // there is no order to explain.
     renderPicker({ selectedIds: [CATALOGUE[0].id] });
 
-    expect(screen.queryByText(/keeps its own model/)).toBeNull();
+    expect(screen.queryByText(/own model picker lists/)).toBeNull();
   });
 
-  it("explains the rule, and names the fallback, once there are several", () => {
+  it("explains the rule, and names the starting model, once there are several", () => {
     renderPicker({ selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id] });
 
-    expect(screen.getByText(/keeps its own model whenever it asks for one of these/)).toBeTruthy();
-    // The fallback is named rather than left to be inferred from the list.
+    expect(screen.getByText(/own model picker lists exactly these/)).toBeTruthy();
+    // Outside the set is a refusal now, never a substitution onto the first.
+    expect(screen.getByText(/Gate refuses a request for any other model/)).toBeTruthy();
+    expect(screen.queryByText(/served as/)).toBeNull();
+    // The starting model is named rather than left to be inferred from the list.
     expect(screen.getByText(CATALOGUE[0].id, { selector: "span.font-medium" })).toBeTruthy();
   });
 
@@ -274,7 +277,7 @@ describe("what a set of several means", () => {
     fireEvent.click(box(CATALOGUE[1].id));
     fireEvent.click(box(CATALOGUE[0].id));
 
-    // The fallback is what was checked first, not what sits at the top.
+    // The starting model is what was checked first, not what sits at the top.
     expect(screen.getByText(CATALOGUE[1].id, { selector: "span.font-medium" })).toBeTruthy();
     expect(screen.queryByText(/first in the list/)).toBeNull();
   });
@@ -285,7 +288,7 @@ describe("what a set of several means", () => {
     renderPicker({ selectedIds: [CATALOGUE[0].id] });
     fireEvent.click(box(CATALOGUE[1].id));
 
-    expect(screen.getByText(/keeps its own model/)).toBeTruthy();
+    expect(screen.getByText(/own model picker lists/)).toBeTruthy();
   });
 
   it("stays out of the single-select mode", () => {
@@ -295,6 +298,75 @@ describe("what a set of several means", () => {
       selectedIds: [CATALOGUE[0].id, CATALOGUE[1].id],
     });
 
-    expect(screen.queryByText(/keeps its own model/)).toBeNull();
+    expect(screen.queryByText(/own model picker lists/)).toBeNull();
+  });
+});
+
+describe("the model picker, at the limit", () => {
+  const FIVE = [
+    ...CATALOGUE,
+    { id: "deepseek/deepseek-v4", vendor: "deepseek", tags: [] },
+    { id: "qwen/qwen3-6", vendor: "qwen", tags: [] },
+  ];
+
+  it("counts the draft against the limit, not the catalogue", () => {
+    renderPicker({ models: FIVE });
+    expect(screen.getByText("1 of 4 models selected")).toBeTruthy();
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+    fireEvent.click(box("openai/gpt-5"));
+    expect(screen.getByText("2 of 4 models selected")).toBeTruthy();
+  });
+
+  it("stops at four, and a cleared row frees a slot", () => {
+    const onSave = vi.fn();
+    renderPicker({ models: FIVE, onSave });
+    for (const id of ["openai/gpt-5", "moonshot/kimi-k3", "deepseek/deepseek-v4"]) {
+      fireEvent.click(box(id));
+    }
+    expect(screen.getByText("4 of 4 models selected")).toBeTruthy();
+    const fifth = box("qwen/qwen3-6") as HTMLButtonElement;
+    expect(fifth.disabled).toBe(true);
+    fireEvent.click(fifth);
+    expect(fifth.getAttribute("aria-checked")).toBe("false");
+    // A chosen row stays live, so the set can still be changed.
+    expect((box("openai/gpt-5") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(box("openai/gpt-5"));
+    expect(fifth.disabled).toBe(false);
+    fireEvent.click(fifth);
+    fireEvent.click(apply());
+    expect(onSave).toHaveBeenCalledWith([
+      "anthropic/claude-opus-5",
+      "moonshot/kimi-k3",
+      "deepseek/deepseek-v4",
+      "qwen/qwen3-6",
+    ]);
+  });
+
+  it("will not apply a set stored over the limit until it comes down", () => {
+    renderPicker({ models: FIVE, selectedIds: FIVE.map((m) => m.id) });
+    expect(screen.getByText("5 of 4 models selected")).toBeTruthy();
+    expect(apply().getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(box("qwen/qwen3-6"));
+    expect(apply().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("clears every selection without writing anything", () => {
+    const onSave = vi.fn();
+    renderPicker({ models: FIVE, selectedIds: [FIVE[0].id, FIVE[1].id], onSave });
+    fireEvent.click(screen.getByRole("button", { name: "Clear selections" }));
+    expect(screen.getByText("0 of 4 models selected")).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+    // An empty set cannot be applied, so clearing cannot leave the app with none.
+    expect(apply().getAttribute("aria-disabled")).toBe("true");
+    expect(
+      (screen.getByRole("button", { name: "Clear selections" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("draws no Clear selections when choosing one", () => {
+    renderPicker({ multiple: false });
+    expect(screen.queryByRole("button", { name: "Clear selections" })).toBeNull();
+    expect(screen.queryByText(/models selected/)).toBeNull();
   });
 });

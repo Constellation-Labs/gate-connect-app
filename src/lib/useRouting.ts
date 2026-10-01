@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { noteToolConnected, track, trackError } from "./analytics";
 import { describe, logInfo, logWarn } from "./log";
+import { isRoutingOffRefusal } from "./errors";
 import { TOOL_MANAGED_DOMAINS, cascadeTargets } from "./groups";
 import type { Group } from "./groups";
 
@@ -94,21 +95,6 @@ export interface RoutingSnapshot {
   proxy: ProxyState | null;
 }
 
-/**
- * One provider row the popover's Hermes notice asks about.
- *
- * The new shell no longer asks: its OpenRouter row is not drawn and Hermes'
- * switch owns the domain (`TOOL_MANAGED_DOMAINS`, AG-934's sibling decision on
- * 2026-09-23). The popover keeps its own `HermesProviderNotice` until it is
- * retired, which is why this type outlived `HermesProviderDialog`.
- *
- * Its answer is deliberately NOT recorded in `auto_enabled_domains`: somebody
- * who said yes to a question turned the domain on themselves, and the record
- * is for what Gate turned on without being asked. So a later Hermes-off in the
- * new shell leaves it alone, which is the rule working rather than a gap.
- */
-export type HermesProviderChoice = { name: string; slug: string; tools: string[] };
-
 /** The one tool whose switch also flips the shell-environment channel. Named
  *  once rather than spelled inline, because the dialog copy and the action have
  *  to be talking about the same row. */
@@ -116,16 +102,21 @@ const OPENCODE_SLUG = "opencode";
 
 /** The tool whose provider lives in another section, so its switch alone
  *  routes it without inspecting anything. OpenClaw has the same shape and the
- *  same CLI-only coverage note; it is not wired here yet.
- *
- *  Exported because the popover connects tools through `App.tsx` rather than
- *  through this hook and has to gate the same row. One name, so the two shells
- *  cannot come to disagree about which row this is. */
-export const HERMES_SLUG = "hermes";
+ *  same CLI-only coverage note; it is not wired here yet. */
+const HERMES_SLUG = "hermes";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
 class Declined extends Error {}
+
+/** A certificate install that failed inside one tool's connect. Reported under
+ *  `trust_ca` and with no slug: the certificate is the whole install's, so
+ *  its failure is not that one app's (review on #390). */
+class TrustFailed extends Error {
+  constructor(readonly cause: unknown) {
+    super("certificate install failed during a connect");
+  }
+}
 
 /**
  * Some members of a family switch failed. Carries their names, because the
@@ -154,12 +145,15 @@ export function useRouting({
   proxy: ProxyState | null;
   /** Fresh backend truth after any action, successful or not. */
   onSnapshot: (next: RoutingSnapshot) => void;
-  /** A failure the user should see, already classified by the caller. */
-  onError?: (error: unknown, context: string) => void;
+  /** A failure the user should see, already classified by the caller.
+   *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
+   *  caller can draw it on that tool's pane rather than across the window. */
+  onError?: (error: unknown, context: string, slug?: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   /**
-   * Slugs whose last config write failed.
+   * Slugs whose last config write failed, each with the direction that was
+   * asked for (`true` for a connect).
    *
    * Without this, a failed write left the row asserting whatever it said before:
    * the error went to a transient banner, and the status line - which is the
@@ -172,7 +166,9 @@ export function useRouting({
    * succeeds. Not persisted: a failure that survived a restart would outlive
    * whatever caused it.
    */
-  const [writeFailures, setWriteFailures] = useState<ReadonlySet<string>>(new Set());
+  const [writeFailures, setWriteFailures] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
   const [prompt, setPrompt] = useState<RoutingPrompt | null>(null);
   // The pending gate's resolver. A promise the dialog completes, so the action
   // reads as a straight sequence rather than a callback chain.
@@ -509,7 +505,11 @@ export function useRouting({
               existingConfig: tool.status.reason,
             });
           }
-          await ensureCaTrusted();
+          try {
+            await ensureCaTrusted();
+          } catch (e) {
+            throw e instanceof Declined ? e : new TrustFailed(e);
+          }
           await connectTool(slug);
           // After the connect, which is what starts the engine. The channel
           // exports the engine's address, so switching it on ahead of a bound
@@ -537,7 +537,7 @@ export function useRouting({
         changed = true;
         setWriteFailures((prev) => {
           if (!prev.has(slug)) return prev;
-          const next = new Set(prev);
+          const next = new Map(prev);
           next.delete(slug);
           return next;
         });
@@ -547,9 +547,22 @@ export function useRouting({
         // there is nothing to report - and in particular the row must not be
         // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
-          trackError(e, "connect", { tool: slug, routed });
-          onError?.(e, routed ? "connect" : "disconnect");
-          setWriteFailures((prev) => new Set(prev).add(slug));
+          // Unwrapped for telemetry too: `trackError` classifies the error it is
+          // given, and the wrapper's own message matches no branch.
+          if (e instanceof TrustFailed) {
+            trackError(e.cause, "trust_ca", { tool: slug, routed });
+            onError?.(e.cause, "trust_ca");
+          } else {
+            trackError(e, "connect", { tool: slug, routed });
+            onError?.(e, routed ? "connect" : "disconnect", slug);
+          }
+          // Only a fault in this tool's config marks its row. A certificate that
+          // would not install, or an engine that is not running, is the whole
+          // install's: the window banner names it, and "Configuration update
+          // failed" on the row would blame a write that was never the problem
+          // (for the certificate, one never attempted).
+          if (!(e instanceof TrustFailed) && !isRoutingOffRefusal(describe(e)))
+            setWriteFailures((prev) => new Map(prev).set(slug, routed));
         }
       } finally {
         await settle();

@@ -2,25 +2,13 @@ import { test, expect } from "./fixtures";
 import { OPENCLAW } from "./backend";
 
 /**
- * The new window UI's routing actions, against the same fake backend the
- * popover suite uses.
- *
- * The rest of this suite is pinned to the popover (`VITE_NEW_UI=0` in
- * playwright.config.ts) because those tests assert on popover flows. This spec
- * opts back in per-test: `newUiEnabled()` reads localStorage before the
- * build-time default, so an init script is enough and nothing global changes.
+ * The new window UI's routing actions, against the suite's fake backend.
  *
  * What this covers that `lib/useRouting.test.tsx` cannot: that the gate is
  * actually wired to the switch, that the dialog the design specifies is the one
  * that opens, and that approving it reaches the backend.
  */
-const useNewUi = { gc: "gc.newUi" };
-
 test.describe("new UI routing", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const driftedCodex = {
     proxy: { running: true, ca_trusted: true },
     tools: [
@@ -196,7 +184,60 @@ test.describe("new UI routing", () => {
 
     await app.routeApp("Claude");
 
-    await expect(app.page.getByRole("alert")).toBeVisible();
+    // On the app's pane, as the single-app alert (`1426:35788`), and not in
+    // the window-wide banner: the fault is one app's config.
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
+    await expect(app.page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("a connect refused because routing is off is the window's, not the app's", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: {
+        connect_tool: "configuring Claude Code: the Gate proxy is not running -- turn routing on",
+      },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+    await expect(app.page.getByRole("alert")).toContainText("Turn on “Route through Gate” first");
+    await app.page.getByRole("button", { name: "Claude" }).first().click();
+    await expect(app.page.getByRole("button", { name: "Dismiss alert" })).toHaveCount(0);
+    // Nor the row's failed-write card: the config was never the problem.
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
+  });
+
+  test("a failed write stays off Overview", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      failures: { connect_tool: "gateway rejected the key" },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "CLI",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.routeApp("Claude");
+    await app.page.getByRole("button", { name: "Overview" }).click();
+
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+    await expect(app.page.getByRole("alert")).toHaveCount(0);
   });
 });
 
@@ -221,10 +262,6 @@ async function callsFor(page: import("@playwright/test").Page, cmd: string) {
  * shows what it would write before asking for approval.
  */
 test.describe("new UI drift repair", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const codex = {
     slug: "codex",
     name: "CLI",
@@ -280,7 +317,7 @@ test.describe("new UI drift repair", () => {
     await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
   });
 
-  test("a failed write says so in the pane, not only in a banner", async ({ boot }) => {
+  test("a failed write says so in the pane, not in a window banner", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -293,15 +330,91 @@ test.describe("new UI drift repair", () => {
     await app.routeApp("ChatGPT / Codex");
 
     // The rail row and the pane header print the phrase alone. The pane's
-    // status card carries the reason, and it outlives the banner - which is
-    // the half of this that still matters.
+    // alert carries the failure and the retry, so the quieter status card
+    // that would say "Configuration update failed" stands down for it.
     //
     // Opened by the section's name: the row is the app, and Codex is inside it.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    // The status card, not the action banner, which can say the same words.
-    const note = app.page.getByRole("status").filter({ hasText: /isn’t protected/ });
-    await expect(note).toContainText("ChatGPT / Codex isn’t protected");
-    await expect(note).toContainText("Configuration update failed");
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
+    await expect(
+      app.page.getByText("failed to write ~/.codex/config.toml", { exact: true }),
+    ).toBeAttached();
+    await expect(
+      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
+    ).toHaveCount(0);
+  });
+
+  test("the pane alert's switch is the retry", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+    });
+    await app.routeApp("ChatGPT / Codex");
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+
+    const retry = app.page.getByRole("switch", { name: "Try Codex again" });
+    await expect(retry).toBeVisible();
+    await app.page.evaluate(() => {
+      window.__GATE_E2E__.state.failures = {};
+    });
+    await retry.click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+  });
+
+  test("a failed turn-on leaves the app Not routed, before and after dismissing", async ({
+    boot,
+  }) => {
+    // Staging QA, 2026-09-30: a switch flipped on for an app that could not be
+    // routed left its row on "Not protected" - a claim about an app that was
+    // never routed - until Gate Connect was restarted.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: {
+        connect_tool:
+          "Codex isn't logged in yet - run `codex login` first, then retry the Gate Connect connect",
+      },
+    });
+    await app.routeApp("ChatGPT / Codex");
+    const row = app.page.getByRole("button", { name: "ChatGPT / Codex Not routed" });
+    await expect(row).toBeVisible();
+
+    await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
+    // A refusal the window has copy for says what to do, not "Try again".
+    await expect(
+      app.page.getByText("Codex isn’t signed in yet. Run codex login, then turn it on again."),
+    ).toBeVisible();
+    await app.page.getByRole("button", { name: "Dismiss alert" }).click();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
+  });
+
+  test("a failed turn-off leaves the app Not protected, and says why once dismissed", async ({
+    boot,
+  }) => {
+    // The other direction: the tool is still routed and the click did not
+    // land, so the row must not keep claiming the sweep's reading.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "connected" as const } }],
+      failures: { disconnect_tool: "failed to write ~/.codex/config.toml" },
+    });
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Protected" }),
+    ).toBeVisible();
+    await (await app.appSwitch("ChatGPT / Codex")).click();
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT / Codex Not protected" }),
+    ).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Dismiss alert" }).click();
+    await expect(
+      app.page.getByRole("status").filter({ hasText: /isn’t protected/ }),
+    ).toContainText("Configuration update failed");
   });
 
   test("a retry that succeeds clears the failure from the pane", async ({ boot }) => {
@@ -320,7 +433,7 @@ test.describe("new UI drift repair", () => {
     // nowhere on the page and the count below would pass without the retry ever
     // having cleared anything.
     await app.page.getByRole("button", { name: "ChatGPT / Codex" }).first().click();
-    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+    await expect(app.page.getByText("Couldn’t connect this tool")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.
     // `app.patch` merges objects one level deep, so it cannot *remove* a key;
@@ -330,6 +443,7 @@ test.describe("new UI drift repair", () => {
     });
     await (await app.appSwitch("ChatGPT / Codex")).click();
 
+    await expect(app.page.getByText("Couldn’t connect this tool")).toHaveCount(0);
     await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
   });
 });
@@ -347,10 +461,6 @@ test.describe("new UI drift repair", () => {
  * stayed gone.
  */
 test.describe("new UI: refreshing the inventory", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const countOf = async (app: { calls: () => Promise<{ cmd: string }[]> }, cmd: string) =>
     (await app.calls()).filter((c) => c.cmd === cmd).length;
 
@@ -438,10 +548,6 @@ test.describe("new UI: refreshing the inventory", () => {
  * apps on it - with a "0/0" count that reads like a clean answer.
  */
 test.describe("new UI: an empty inventory", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("a completed scan with nothing on the device says so, with a time", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
@@ -507,10 +613,6 @@ test.describe("new UI: an empty inventory", () => {
  * back, and the window said nothing.
  */
 test.describe("new UI: buffered backend failures", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("a failed restore that predates the window is shown, not just logged", async ({
     boot,
   }) => {
@@ -586,10 +688,6 @@ test.describe("new UI: buffered backend failures", () => {
  * any sentence about what Gate does and does not touch.
  */
 test.describe("new UI: the review names the file it will change", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   const driftedWithPath = {
     proxy: { running: true, ca_trusted: true },
     tools: [
@@ -643,10 +741,6 @@ test.describe("new UI: the review names the file it will change", () => {
  * the first of these pins.
  */
 test.describe("new UI sidebar rail", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("apps detection did not find are listed under Not installed, and counted nowhere", async ({
     boot,
   }) => {
@@ -678,7 +772,7 @@ test.describe("new UI sidebar rail", () => {
 
     // The topbar's denominator is every app on the rail, and these are not.
     // Claude, ChatGPT / Codex and OpenClaw: the three rows drawn above.
-    await expect(app.page.getByText("0 of 3 Apps on", { exact: true })).toBeVisible();
+    await expect(app.page.getByText("0 of 3 Apps", { exact: true })).toBeVisible();
   });
 
   test("an app switch routes every surface that app uses", async ({ boot }) => {
@@ -1015,10 +1109,6 @@ test.describe("new UI sidebar rail", () => {
  * Reported from a build log on 2026-09-28.
  */
 test.describe("new UI: a pane whose row disappears", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
-  });
-
   test("returns to Overview, and never routes by the section id", async ({ boot }) => {
     const app = await boot({
       proxy: {
