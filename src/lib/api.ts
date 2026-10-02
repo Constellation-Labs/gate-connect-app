@@ -423,7 +423,8 @@ export interface ProxyState {
   /** Loopback port serving the PAC script (macOS/Windows; null on Linux). */
   pac_port: number | null;
   ca_trusted: boolean;
-  /** Linux only: what the store Chromium reads holds, from the last time Gate
+  /** Linux only: what the browser stores hold - Chromium's and each Firefox
+   * profile's - from the last time Gate
    * wrote it on this machine. Null elsewhere, and on Linux until such a write
    * has been recorded for the current CA - which is not a negative reading
    * (principle 6).
@@ -446,6 +447,14 @@ export interface ProxyState {
    * writing the store and the window drawing the copy about it are the same
    * reading. Null still means nobody has looked - see `proxyBrowserStore`. */
   ca_nss_trust: "trusted" | "tools_missing" | "write_failed" | "not_written" | null;
+  /** Linux only: when this app process last added the CA to a browser store,
+   * in milliseconds since the epoch, 0 if never. The window raises its "quit
+   * and reopen" note when this rises, which catches a store written on an
+   * enable where `ca_trusted` was already true - a Chromium database just
+   * created, a Firefox profile seen for the first time. A time rather than a
+   * count, so the window can remember the last one it showed across reloads
+   * and app restarts. Always 0 elsewhere. */
+  ca_nss_written_at: number;
   /** Whether the system proxy Gate writes is one a running browser reads, and
    * so whether a host-matched row covers the same site in a browser.
    *
@@ -485,7 +494,7 @@ export interface ProxyState {
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
 
-/** Read the store Chromium reads, once, for the moment `proxyStatus` cannot
+/** Read the browser stores, once, for the moment `proxyStatus` cannot
  * answer for.
  *
  * `ca_nss_trust` is a record of a write, and the write does not always happen
@@ -1174,9 +1183,10 @@ export interface Diagnostics {
   /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
    * a real state and otherwise invisible. */
   ca_cert_present: boolean;
-  /** Linux only: what a live read of the per-user NSS stores Chromium reads
-   * found. Chromium never reads the system store, so `absent` beside a
-   * `ca_trusted` of true is the whole of "Firefox works, Chrome doesn't".
+  /** Linux only: what a live read of the browser NSS stores found - Chromium's
+   * and each Firefox profile's. Neither reads the system store (Firefox only
+   * does on the p11-kit distros, not Ubuntu), so `absent` beside a
+   * `ca_trusted` of true is the whole of "curl works, the browsers don't".
    * `null` where the question does not apply (not Linux, or no such browser
    * here).
    *
@@ -1200,6 +1210,10 @@ export interface Diagnostics {
      *  words, so it is drawn as machine output. */
     refusals: { store: string; reason: string }[];
   } | null;
+  /** Linux only: one line per browser store and what it holds right now
+   *  ("<path>: trusted", "…: removed in the browser"), Chromium's and each
+   *  Firefox profile's. Empty elsewhere. */
+  ca_nss_stores: string[];
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;

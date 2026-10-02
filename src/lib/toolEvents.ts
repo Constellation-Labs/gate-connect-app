@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { activityToolEvents } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
 import type { ActivityEntry } from "./toolEventRow";
+import type { ModelLabels } from "./toolModels";
 import type { IconName } from "../components/gc/Icon";
 
 /**
@@ -90,8 +91,8 @@ const NO_REFERENCE = "-";
 const NO_MODEL = "Unknown model";
 
 /**
- * The vendor namespace of a canonical model id, for a row the gateway named no
- * provider on.
+ * The vendor namespace of a canonical model id - the mark's fallback for a row
+ * whose provider the gateway did not name, or named with no mark of its own.
  *
  * `provider` is null far more often than it looks: the column holds the
  * pipeline's `unknown` sentinel on a substantial share of rows - the gateway's
@@ -101,20 +102,37 @@ const NO_MODEL = "Unknown model";
  * no vendor icon" turned out to be: not a missing mark, a missing reading.
  *
  * But the vendor is right there in the id. Model ids are canonical
- * `provider/model` (`anthropic/claude-opus-5`), and `NewUiApp` already splits
- * them this way in two places for the same reason. Deriving it is not guessing:
+ * `provider/model` (`anthropic/claude-opus-5`), and the model card and the
+ * Gate-model confirmation read their vendor through this too. Deriving it is not guessing:
  * `providerMarkFor` returns undefined for a namespace it has no mark for, so a
  * spelling this does not recognise falls back to the cube exactly as before.
  *
  * Only the namespace of a *namespaced* id. A bare `gpt-5` names no vendor, and
  * inventing one from the model family is the kind of guess principle 6 forbids.
  */
-function vendorFromModelId(model: string | null | undefined): string | null {
+export function vendorFromModelId(model: string | null | undefined): string | null {
   if (!model) return null;
   const slash = model.indexOf("/");
   if (slash <= 0) return null;
   return model.slice(0, slash);
 }
+
+/**
+ * The pipeline's sentinel for a column nobody filled. `gateway_requests` holds
+ * the literal `unknown` for a model that could not be read off the request and
+ * for a provider the request never reached, and both reach a client: the
+ * tool-events endpoint maps them to null before they leave the gateway, the
+ * security bus passes the columns through raw. Read on both feeds here, so
+ * neither table can print "unknown" where a name goes or announce it as an
+ * upstream in a tooltip, whichever side forgets.
+ */
+export const UNATTRIBUTED_SENTINEL = "unknown";
+
+/** The value as a reading: null when absent, and null when it is the sentinel. */
+export function attributed(value: string | null | undefined): string | null {
+  return value === undefined || value === null || value === UNATTRIBUTED_SENTINEL ? null : value;
+}
+
 
 /**
  * The gateway's action verbs, in the pane's own vocabulary.
@@ -208,6 +226,8 @@ const REGULAR_TITLE = "Gate examined this request and no guardrail matched";
 
 /** One row, formatted. */
 function toEntry(raw: RawEvent): ActivityEntry {
+  const model = attributed(raw.model);
+  const provider = attributed(raw.provider);
   return {
     id: raw.requestId,
     time: eventTime(raw.at),
@@ -238,10 +258,12 @@ function toEntry(raw: RawEvent): ActivityEntry {
       !raw.securityCategory && raw.securityAction === "allow" ? REGULAR_TITLE : null,
     // The gateway's label when it sends one, the id when it does not. Never a
     // label this side invented - see `RawEvent.modelName`.
-    model: raw.modelName ?? raw.model ?? NO_MODEL,
-    modelId: raw.model,
-    provider: raw.provider,
-    vendor: raw.provider ?? vendorFromModelId(raw.model),
+    model: raw.modelName ?? model ?? NO_MODEL,
+    modelId: model,
+    provider,
+    // The namespace alone; `VendorMark` tries `provider` first. See
+    // `ActivityEntry.vendor` for why the two are carried separately.
+    vendor: vendorFromModelId(model),
     title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };
@@ -258,6 +280,37 @@ export function adaptEvents(raw: RawToolEvents): ToolEventsView {
     entries: (raw.events ?? []).map(toEntry),
     nextCursor: raw.nextCursor ?? null,
   };
+}
+
+/**
+ * Name each row's model from the catalogue, where the gateway did not.
+ *
+ * Applied at render rather than in {@link adaptEvents}, because the two reads
+ * race: the feed can land before the catalogue, and rows adapted once would
+ * keep their ids until the next page. Mapping the held entries against whatever
+ * the catalogue says now means the names appear the moment it lands.
+ *
+ * The gateway's own label still wins. A row whose `model` differs from its
+ * `modelId` was labelled upstream (`RawEvent.modelName`), and this does not
+ * second-guess it; a row still printing its id takes the catalogue's name for
+ * that id, and keeps the id when the catalogue has no row for it - a retired
+ * model, or one served before the catalogue knew it. "Unknown model" has no id
+ * and is left alone. A row whose id named no vendor takes the catalogue's, so
+ * the mark can be drawn for a bare native id too.
+ *
+ * The Overview's Security events table does the same lookup per row inside its
+ * Model cell rather than through this: its rows are the wire type, unadapted,
+ * and `modelLabelsFor` explains how the ids the two tables carry differ.
+ */
+export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): ActivityEntry[] {
+  return entries.map((e) => {
+    if (e.modelId === null) return e;
+    const label = labels(e.modelId);
+    if (!label) return e;
+    const model = e.model === e.modelId ? label.name : e.model;
+    const vendor = e.vendor ?? label.vendor;
+    return model === e.model && vendor === e.vendor ? e : { ...e, model, vendor };
+  });
 }
 
 /**

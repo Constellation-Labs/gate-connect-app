@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { adaptEvents } from "./toolEvents";
+import { adaptEvents, labelEntries } from "./toolEvents";
 
 /**
  * What a row in the tool feed is allowed to say.
@@ -102,6 +102,82 @@ describe("adaptEvents", () => {
 
     expect(withNothing.entries[0].model).toBe("openai/gpt-6-luna");
     expect(withNull.entries[0].model).toBe("openai/gpt-6-luna");
+  });
+
+  /**
+   * The catalogue is where the dashboard's labels come from, and this app
+   * already holds it for the picker. Naming rows from it is what makes the two
+   * agree; the rules below are about not overriding anything more authoritative.
+   */
+  describe("labelEntries", () => {
+    const table: Record<string, { name: string; vendor: string }> = {
+      "anthropic/claude-opus-4-5": { name: "Claude Opus 4.5", vendor: "anthropic" },
+      "openai/gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
+      "gpt-6-luna": { name: "GPT-6 Luna", vendor: "openai" },
+    };
+    const catalogue = (id: string) => table[id];
+    const entries = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries;
+
+    it("names a row from the catalogue when the gateway sent only the id", () => {
+      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), catalogue);
+      expect(row.model).toBe("Claude Opus 4.5");
+      // The id is still the hover, and still what the reader can search for.
+      expect(row.modelId).toBe("anthropic/claude-opus-4-5");
+    });
+
+    it("keeps the gateway's own label when it sent one", () => {
+      const [row] = labelEntries(
+        entries({ model: "anthropic/claude-opus-4-5", modelName: "Claude Opus 4 5" }),
+        catalogue,
+      );
+      expect(row.model).toBe("Claude Opus 4 5");
+    });
+
+    it("keeps the id for a model the catalogue does not list", () => {
+      const [row] = labelEntries(entries({ model: "aion-labs/aion-2-0" }), catalogue);
+      expect(row.model).toBe("aion-labs/aion-2-0");
+    });
+
+    it("leaves an unattributed row alone", () => {
+      const [row] = labelEntries(entries({ model: null }), catalogue);
+      expect(row.model).toBe("Unknown model");
+      expect(row.modelId).toBeNull();
+    });
+
+    it("changes nothing while the catalogue is unread", () => {
+      const before = entries({ model: "openai/gpt-6-luna" });
+      expect(labelEntries(before, () => undefined)).toEqual(before);
+    });
+
+    it("takes the catalogue's vendor for a bare id, so the mark can be drawn", () => {
+      const [row] = labelEntries(entries({ provider: null, model: "gpt-6-luna" }), catalogue);
+      expect(row.model).toBe("GPT-6 Luna");
+      expect(row.vendor).toBe("openai");
+      // Still not a claim about who served it.
+      expect(row.provider).toBeNull();
+    });
+
+    it("does not override a vendor the id already named", () => {
+      const [row] = labelEntries(entries({ model: "anthropic/claude-opus-4-5" }), catalogue);
+      expect(row.vendor).toBe("anthropic");
+    });
+
+    it("fills the vendor on a row the gateway labelled, without touching the label", () => {
+      const [row] = labelEntries(
+        entries({ provider: null, model: "gpt-6-luna", modelName: "GPT-6 (Luna)" }),
+        catalogue,
+      );
+      expect(row.model).toBe("GPT-6 (Luna)");
+      expect(row.vendor).toBe("openai");
+    });
+
+    it("returns the same entry when the catalogue has nothing to add", () => {
+      // Listed, so the lookup answers; but the gateway labelled it and the id
+      // already names its vendor, so neither field changes. A memoised
+      // consumer must see no change where there was none.
+      const before = entries({ model: "anthropic/claude-opus-4-5", modelName: "Claude Opus 4 5" });
+      expect(labelEntries(before, catalogue)[0]).toBe(before[0]);
+    });
   });
 
   it("says a model was not attributed rather than naming one", () => {
@@ -298,11 +374,28 @@ describe("the Type column's categories", () => {
 describe("the model row's provider", () => {
   const rowFor = (o: Record<string, unknown>) => adaptEvents(envelope([raw(o)])).entries[0];
 
-  it("prefers what the gateway said", () => {
-    const row = rowFor({ provider: "openai", model: "anthropic/claude-opus-5" });
+  it("keeps the namespace beside the provider, for the mark's fallback", () => {
+    // Carried separately so `VendorMark` can try the provider first and fall
+    // through to the model's own vendor - see `ActivityEntry.vendor`.
+    const row = rowFor({
+      provider: "openai_compatible:Marcus OpenRouter",
+      model: "anthropic/claude-opus-5",
+    });
 
-    expect(row.vendor).toBe("openai");
-    expect(row.provider).toBe("openai");
+    expect(row.vendor).toBe("anthropic");
+    expect(row.provider).toBe("openai_compatible:Marcus OpenRouter");
+  });
+
+  it("reads the pipeline's unknown sentinel as nothing, on either column", () => {
+    // The tool-events endpoint maps both to null itself; this is the net under
+    // it, so a gateway that stopped could not make the row announce "unknown"
+    // as the upstream or print it where a model name goes.
+    const row = rowFor({ provider: "unknown", model: "unknown" });
+
+    expect(row.provider).toBeNull();
+    expect(row.model).toBe("Unknown model");
+    expect(row.modelId).toBeNull();
+    expect(row.vendor).toBeNull();
   });
 
   it("falls back to the model id's own namespace for the mark", () => {

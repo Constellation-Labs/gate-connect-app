@@ -1,6 +1,11 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SecurityEvent } from "../../lib/api";
+import { attributed, vendorFromModelId } from "../../lib/toolEvents";
+import type { ModelLabels } from "../../lib/toolModels";
+import { ToolMark, clientNameFor } from "./BrandMark";
+import { MARK_SLOT } from "./markSize";
+import { VendorMark } from "./ProviderMark";
 import { BADGE_STYLES, Card, CardHeader, EmptyNote, GUARDRAIL_INK, OutlineButton, Pill, Skeleton } from "./base";
 import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
@@ -176,6 +181,24 @@ export interface SecurityEventsProps {
    *  whole of what a row leads to since 2026-09-23 - see the note on the
    *  button. */
   onOpenInDashboard: (event: SecurityEvent) => void;
+  /** The catalogue as a lookup (`modelLabelsFor`), for the Model cell's name
+   *  and, where the id names no vendor, its mark - the labels the dashboard's
+   *  Messages list draws. A prop rather than a field on `SecurityEvent`, which
+   *  is the wire contract and must not grow a client-side value; the app pane's
+   *  rows are adapted, and take theirs in `labelEntries` instead.
+   *
+   *  The rows here carry `resolved_model`, the provider's own spelling of the
+   *  id, which is why the lookup is a function and not the catalogue's map:
+   *  `modelLabelsFor` says which of those spellings it can answer and which
+   *  keep the id. Absent, or finding nothing, the cell keeps the id; either way
+   *  the id stays on hover. */
+  modelLabels?: ModelLabels;
+  /** Product names by tool slug ("Claude Code" for `claude-code`), from the
+   *  registry's `Tool.product_name`, for the Tool cell. The event's `tool` is
+   *  the `x-gate-client` id this app stamps (`taxonomy::Client`); the three of
+   *  those with no registry row take `clientNameFor`, and anything else prints
+   *  as its id. */
+  toolNames?: ReadonlyMap<string, string>;
 }
 
 export function SecurityEvents({
@@ -185,6 +208,8 @@ export function SecurityEvents({
   historyUnavailable,
   onRetry,
   onOpenInDashboard,
+  modelLabels,
+  toolNames,
 }: SecurityEventsProps) {
   // Newest first on screen: a feed is read from the top, and the event a user
   // scrolled down here for is the one that just happened.
@@ -314,15 +339,22 @@ export function SecurityEvents({
             ) : (
               rows.map((e) => {
                 const action = ACTION_LABEL[e.action];
+                // The security bus passes the pipeline's `unknown` sentinel
+                // through on both columns, where the tool-events endpoint maps
+                // it to null; `attributed` makes the same reading here.
+                const provider = attributed(e.provider);
+                const model = attributed(e.model);
+                const label = model === null ? undefined : modelLabels?.(model);
                 return (
                   // 56px rows with a full-width divider, 16px cells, `copy/14`
                   // sans throughout (`1402:18003`). The time was mono 12px until
                   // the 2026-09-29 redraw; a timestamp is a value, not machine
                   // output, and CLAUDE.md's sans rule for identifier values
-                  // already said so. The frame also draws a coloured tool logo
-                  // and a provider mark beside the model (`1402:18014`,
-                  // `1402:18017`); the feed carries neither a tool id the
-                  // brand marks are keyed on nor a vendor, so both stay text.
+                  // already said so. The frame draws a coloured tool logo
+                  // beside the tool (`1402:18014`, 20px) and the provider mark
+                  // beside the model (`1402:18017`, 20px); both are drawn, the
+                  // first by `ToolMark`, the second by `VendorMark` from the
+                  // provider, the id's namespace or the catalogue.
                   <tr key={e.id} className="h-14 border-t border-base-border">
                     <td className="whitespace-nowrap pl-4 text-sm leading-5 text-base-foreground">
                       {eventTime(e.at)}
@@ -333,11 +365,43 @@ export function SecurityEvents({
                     <td className="pl-4 text-sm leading-5 text-base-foreground">
                       {e.category ? <Category value={e.category} /> : UNATTRIBUTED}
                     </td>
-                    <td className="pl-4 text-sm leading-5 text-base-foreground">
-                      {e.tool ?? UNATTRIBUTED}
+                    <td className="max-w-0 pl-4">
+                      <span className="flex items-center gap-2">
+                        {/* An unattributed row keeps the slot too, so its dash
+                            sits where the model cell's does. */}
+                        {e.tool === null ? (
+                          <span aria-hidden className={`shrink-0 ${MARK_SLOT[20]}`} />
+                        ) : (
+                          <ToolMark slug={e.tool} size={20} />
+                        )}
+                        {/* The slug on hover, as the model cell keeps its id. */}
+                        <span
+                          className="truncate text-sm leading-5 text-base-foreground"
+                          title={e.tool ?? undefined}
+                        >
+                          {e.tool === null
+                            ? UNATTRIBUTED
+                            : (toolNames?.get(e.tool) ?? clientNameFor(e.tool) ?? e.tool)}
+                        </span>
+                      </span>
                     </td>
-                    <td className="max-w-0 truncate pl-4 text-sm leading-5 text-base-foreground">
-                      {e.model ?? UNATTRIBUTED}
+                    <td className="max-w-0 pl-4">
+                      <span className="flex items-center gap-2">
+                        <VendorMark
+                          provider={provider}
+                          vendor={vendorFromModelId(model) ?? label?.vendor ?? null}
+                          size={20}
+                        />
+                        {/* Truncated inside the cell rather than on it, so the
+                            mark keeps its 20px while the name gives way. The id
+                            on hover: the text may be the catalogue's label. */}
+                        <span
+                          className="truncate text-sm leading-5 text-base-foreground"
+                          title={model ?? undefined}
+                        >
+                          {model === null ? UNATTRIBUTED : (label?.name ?? model)}
+                        </span>
+                      </span>
                     </td>
                     <td className="pl-4 pr-4 text-right">
                       {/* Straight to the dashboard. This opened

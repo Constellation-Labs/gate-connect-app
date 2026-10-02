@@ -73,6 +73,7 @@ const proxyState = (over: Partial<ProxyState> = {}): ProxyState => ({
   pac_port: null,
   ca_trusted: true,
   ca_nss_trust: null,
+  ca_nss_written_at: 0,
   browser_proxy_channel: false,
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: false,
@@ -116,6 +117,57 @@ beforeEach(() => {
   (readAutoEnabledDomains as Mock).mockResolvedValue([]);
 });
 afterEach(cleanup);
+
+describe("useRouting: one certificate question per cascade", () => {
+  it("does not ask again for members run from the render that asked", async () => {
+    // A section cascade runs its members through callbacks built in the render
+    // where `ca_trusted` was false. The harness never re-renders with a new
+    // `proxy`, so every call below is on that stale render - which is exactly
+    // the window a cascade runs in. Each member used to read the stale flag,
+    // raise the trust dialog again, and stall the cascade on it.
+    (proxyTrustCa as Mock).mockResolvedValue(proxyState({ ca_trusted: true }));
+    const { api } = harness([], proxyState({ ca_trusted: false }));
+    const routing = api.current!;
+
+    let confirmed: Promise<boolean> | undefined;
+    await act(async () => {
+      confirmed = routing.confirmCaTrusted();
+    });
+    expect(api.current!.prompt).toEqual({ kind: "trust" });
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+    });
+    expect(await confirmed).toBe(true);
+
+    let moved: boolean[] = [];
+    await act(async () => {
+      moved = [
+        await routing.setDomainRouted("anthropic", true),
+        await routing.setDomainRouted("claude-web", true),
+      ];
+    });
+
+    expect(api.current!.prompt).toBeNull();
+    expect(proxyTrustCa).toHaveBeenCalledTimes(1);
+    expect(proxySetDomain).toHaveBeenCalledWith("anthropic", true);
+    expect(proxySetDomain).toHaveBeenCalledWith("claude-web", true);
+    expect(moved).toEqual([true, true]);
+  });
+
+  it("still asks when the certificate is not trusted", async () => {
+    // The reading is fresher, not a belief: a CA that is still untrusted after
+    // the last read is asked about, as before.
+    (proxyStatus as Mock).mockResolvedValue(proxyState({ ca_trusted: false }));
+    const { api } = harness([], proxyState({ ca_trusted: false }));
+
+    await act(async () => {
+      void api.current!.setDomainRouted("anthropic", true);
+    });
+
+    expect(api.current!.prompt).toEqual({ kind: "trust" });
+    expect(proxySetDomain).not.toHaveBeenCalled();
+  });
+});
 
 describe("useRouting: the drift gate", () => {
   it("will not adopt a drifted config without asking", async () => {

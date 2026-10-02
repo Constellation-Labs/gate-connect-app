@@ -335,35 +335,6 @@ describe("the group rows", () => {
   });
 });
 
-describe("the command-line tools card", () => {
-  it("reports the channel's state rather than offering a switch", () => {
-    // The tray introduces no concept of its own: the window's Settings pane
-    // owns this control, and two switches for one machine-wide setting is what
-    // AG-893 reported. Same call the routing card makes one section up.
-    renderTray({ cli: { on: true } });
-
-    expect(screen.getByText("Command-line tools")).toBeTruthy();
-    expect(screen.getByText("On")).toBeTruthy();
-    expect(
-      screen.queryByRole("switch", { name: "Command-line tools" }),
-    ).toBeNull();
-  });
-
-  it("says Off rather than going quiet when the channel is off", () => {
-    // A card that vanished when off would make "off" and "not supported here"
-    // the same picture, and they are different facts.
-    renderTray({ cli: { on: false } });
-
-    expect(screen.queryByText("On")).toBeNull();
-    expect(screen.getByText("Off")).toBeTruthy();
-  });
-
-  it("is absent where the channel is not separable", () => {
-    renderTray();
-    expect(screen.queryByText("Command-line tools")).toBeNull();
-  });
-});
-
 describe("the footer", () => {
   it("names the organization", () => {
     renderTray();

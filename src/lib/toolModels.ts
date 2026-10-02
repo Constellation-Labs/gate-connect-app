@@ -335,6 +335,87 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
   return models;
 }
 
+/** What the catalogue says about a model a request row names. */
+export interface ModelLabel {
+  /** The catalogue's `display_name`, "Claude Opus 4.5". */
+  name: string;
+  /** The vendor namespace, `anthropic`, for the mark. */
+  vendor: string;
+}
+
+/** The catalogue as a lookup, from an id a request row carries. */
+export type ModelLabels = (id: string) => ModelLabel | undefined;
+
+/** The `owned_by` of the free catalogue's alias rows (`constellation/<name>`). */
+const FREE_ALIAS_VENDOR = "constellation";
+
+/**
+ * The catalogue, indexed for the request tables.
+ *
+ * What lets a row say "Claude Opus 4.5" where the gateway sent an id. The
+ * dashboard's Messages list and this app disagree on no spelling because
+ * neither invents one: `name` is the catalogue's own `display_name`, read once
+ * per account by {@link useGateModels} and looked up here rather than asked for
+ * again per row.
+ *
+ * Two ids reach the tables, and the lookup answers both. The tool-events feed
+ * carries the canonical id, `anthropic/claude-opus-4-5`, which is the
+ * catalogue's own key. The security feed carries `resolved_model`, the id the
+ * upstream was actually called with, which canonical resolution has rewritten
+ * to the provider's spelling - `claude-opus-4-5` on Anthropic Direct, `gpt-5`
+ * on OpenAI. That is the canonical id with its vendor taken off, so a bare id
+ * is matched against the catalogue's ids by their part after the slash.
+ * Matching the catalogue is not inferring a vendor from a model family: the
+ * row is named only when exactly one catalogue entry has that native spelling,
+ * and an ambiguous one - two vendors publishing the same model - stays an id.
+ *
+ * Two refinements to that rule. The free catalogue lists every free model a
+ * second time as `constellation/<name>`, the same native spelling under the
+ * gateway's own namespace, which would make every model with a free alias
+ * ambiguous - the Anthropic Direct row this exists for among them. Those rows
+ * do not count towards ambiguity, since they are the gateway's name for
+ * another vendor's model rather than a vendor. And Anthropic dates some of its
+ * ids (`claude-opus-4-5-20260514`), so a bare id that matches nothing is tried
+ * again with a trailing `-YYYYMMDD` taken off; only the row's id is stripped,
+ * never the catalogue's, and an ambiguous spelling stays ambiguous under
+ * either form. No other provider's suffix is undone: OpenAI's `-YYYY-MM-DD`
+ * snapshots, Gemini's `-001` builds and Vertex's `@` versions all keep the id.
+ *
+ * Not answered either: Bedrock's `us.anthropic.claude-...-v1:0` and any other
+ * id with region and version wrapped around it. Those keep the id until the
+ * gateway sends the canonical one on the security event, which is the real
+ * fix for every case this does not cover.
+ *
+ * An unread catalogue gives a lookup that finds nothing, so every row keeps its
+ * id. A function that is always there rather than a nullable map: every caller
+ * wants exactly that fallback, and it is one branch fewer at each.
+ */
+export function modelLabelsFor(catalogue: GateModel[] | null): ModelLabels {
+  const byId = new Map<string, ModelLabel>();
+  /** Null marks a native spelling two catalogue entries share. */
+  const byNative = new Map<string, ModelLabel | null>();
+  for (const m of catalogue ?? []) {
+    const label = { name: m.name, vendor: m.vendor };
+    byId.set(m.id, label);
+    if (m.vendor === FREE_ALIAS_VENDOR) continue;
+    const slash = m.id.indexOf("/");
+    if (slash <= 0) continue;
+    const native = m.id.slice(slash + 1);
+    byNative.set(native, byNative.has(native) ? null : label);
+  }
+  return (id) => {
+    const exact = byId.get(id);
+    if (exact) return exact;
+    // A namespaced id the catalogue does not list is not a native spelling of
+    // anything; only a bare id is.
+    if (id.includes("/")) return undefined;
+    // `has`, not `??`: an ambiguous spelling is stored as null and must stay the
+    // answer, rather than fall through to the undated lookup.
+    if (byNative.has(id)) return byNative.get(id) ?? undefined;
+    return byNative.get(id.replace(/-\d{8}$/, "")) ?? undefined;
+  };
+}
+
 /**
  * This install's model choices, plus a writer.
  *
@@ -500,16 +581,27 @@ export function useToolModels(
 }
 
 /**
- * The catalogue, read once the picker needs it.
+ * The catalogue, read once per account.
  *
- * Its own hook rather than part of {@link useToolModels}: the list is large,
- * unchanging within a session, and only the picker wants it, so loading it with
- * the preferences would make every pane open pay for a dialog that is usually
- * never raised.
+ * Its own hook rather than part of {@link useToolModels}: the list is large and
+ * unchanging within a session, so it is read once and held, where the
+ * preferences are re-read after every write.
  *
- * `enabled` is what defers it. Pass the picker's own visibility.
+ * `enabled` is what defers it. It was the picker's own visibility, and is now
+ * whether the account can be read at all, since the request tables name their
+ * rows from the catalogue too. That makes `enabled` constant for a signed-in
+ * session, so two things the toggling used to do are explicit now. A failed
+ * read is not retried here - `models` stays null, the effect below does not
+ * re-run, and the caller retries through `reload` at the moment it has a
+ * reason to (the picker opening, in `NewUiApp`). And `credential` identifies
+ * the account: when it changes the held catalogue is dropped and read again,
+ * because a different gateway, or a different org on one, has a different
+ * catalogue and the rows of the new account must not be labelled from the old.
  */
-export function useGateModels(enabled: boolean): {
+export function useGateModels(
+  enabled: boolean,
+  credential = "",
+): {
   models: GateModel[] | null;
   failure: ActivityFailure | null;
   loading: boolean;
@@ -539,12 +631,24 @@ export function useGateModels(enabled: boolean): {
       });
   }, [enabled]);
 
-  // Once per session, not once per opening: the catalogue is large and
+  // Once per account, not once per opening: the catalogue is large and
   // unchanging within a session (see the doc above), so re-fetching 300+ models
   // every time the picker is raised buys nothing.
+  //
+  // One effect for the forgetting and the reading, keyed on the account. A new
+  // credential drops the held catalogue, disowns a read of the old one still in
+  // flight - so a late answer for the previous gateway cannot land under the new
+  // one's name - and reads again. The two were separate effects, the second
+  // keyed on `models` being null, and a credential change during the first read
+  // left `models` null and unchanged, so the second never ran. A failure changes
+  // nothing this depends on, so it does not retry itself.
   useEffect(() => {
-    if (enabled && models === null) reload();
-  }, [enabled, models, reload]);
+    attempt.current += 1;
+    setModels(null);
+    setFailure(null);
+    setLoading(false);
+    if (enabled) reload();
+  }, [enabled, credential, reload]);
   return { models, failure, loading, reload };
 }
 

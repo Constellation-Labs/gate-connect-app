@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { HermesCoverageEntry, ProxyState, Tool } from "./api";
 import {
   connectTool,
@@ -140,6 +140,7 @@ export function useRouting({
   proxy,
   onSnapshot,
   onError,
+  onUntrusted,
 }: {
   tools: Tool[];
   proxy: ProxyState | null;
@@ -149,8 +150,36 @@ export function useRouting({
    *  `slug` names the one tool a failed `connect`/`disconnect` was for, so the
    *  caller can draw it on that tool's pane rather than across the window. */
   onError?: (error: unknown, context: string, slug?: string) => void;
+  /** The certificate was removed, with the state the removal returned - whose
+   *  `ca_nss_trust` says whether every browser store let go of it. */
+  onUntrusted?: (state: ProxyState) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  /**
+   * The newest proxy state this hook knows of, for the gates below.
+   *
+   * The `proxy` prop is a snapshot from the render that built these callbacks,
+   * and a section cascade calls them in sequence from one click: the gate is
+   * answered, the CA installed, and then each member's writer runs - still
+   * closed over the render where `ca_trusted` was false. So every member asked
+   * the certificate question again, and the cascade stalled on a second dialog
+   * for a certificate the person had just trusted. The e2e fake hid it for
+   * months by handing back one object it mutated in place, which flipped
+   * `ca_trusted` inside the stale snapshot too; the real backend returns a
+   * fresh object on every read.
+   *
+   * Taken from the prop when the prop changes - a new snapshot from the
+   * caller - and, before the next one arrives, from every state this hook
+   * reads itself: the trust install and each resync. Only on a change: a
+   * re-render carrying the same old prop (the dialog closing, `busy` flipping)
+   * would otherwise put the stale reading back over the newer one.
+   */
+  const latestProxy = useRef(proxy);
+  const propSeen = useRef(proxy);
+  if (propSeen.current !== proxy) {
+    propSeen.current = proxy;
+    latestProxy.current = proxy;
+  }
   /**
    * Slugs whose last config write failed, each with the direction that was
    * asked for (`true` for a connect).
@@ -197,8 +226,9 @@ export function useRouting({
   const resync = useCallback(async () => {
     const [freshTools, freshProxy] = await Promise.all([
       listTools().catch(() => tools),
-      proxyStatus().catch(() => proxy),
+      proxyStatus().catch(() => latestProxy.current),
     ]);
+    latestProxy.current = freshProxy;
     onSnapshot({ tools: freshTools, proxy: freshProxy });
     return freshProxy;
   }, [tools, proxy, onSnapshot]);
@@ -229,17 +259,19 @@ export function useRouting({
 
   /** Trust the CA if it is not trusted yet, asking first.
    *
-   * The state it reads is `proxy.ca_trusted` and nothing else. A session-long
+   * The state it reads is `ca_trusted` and nothing else - the newest one this
+   * hook has seen (`latestProxy`), not the render's. A session-long
    * memo of "we installed it" was tried here, to stop a cascade's later members
    * re-asking before the prop caught up, and it turned out to guard nothing the
    * cascade's own single gate does not already handle - while being able to
    * outlive the certificate itself, since a CA can go away by a reset, a
-   * `certutil -D` or another window. If a repeated prompt ever does appear, the
-   * fix is the gate in `useSectionRouting`, not a belief cached here. */
+   * `certutil -D` or another window. That is still true of `latestProxy`: it is
+   * a reading, refreshed from the backend, not a belief. */
   const ensureCaTrusted = useCallback(async () => {
     // Null on a platform with no proxy subsystem: nothing to trust, and nothing
     // to interrupt the user with.
-    if (!proxy || proxy.ca_trusted) return;
+    const current = latestProxy.current;
+    if (!current || current.ca_trusted) return;
     // Logged on both sides of the gate. The await between them is an in-app
     // modal, and a promise that never settles there leaves `busy` stuck on with
     // no error anywhere - a pair of lines is what distinguishes "the user never
@@ -248,9 +280,9 @@ export function useRouting({
     logInfo("routing: asking to trust the CA");
     await ask({ kind: "trust" });
     logInfo("routing: trust accepted, installing the CA");
-    await proxyTrustCa();
+    latestProxy.current = await proxyTrustCa();
     logInfo("routing: CA installed");
-  }, [proxy, ask]);
+  }, [ask]);
 
   /**
    * The same gate, asked once for a whole cascade and answered with whether to
@@ -294,9 +326,12 @@ export function useRouting({
    */
   const ensureEngineRunning = useCallback(async () => {
     // Null on a platform with no proxy subsystem: there is no engine to start.
-    if (!proxy || proxy.running) return;
-    await proxyEnable();
-  }, [proxy]);
+    // The newest state, for the reason `latestProxy` gives: the member before
+    // this one in a cascade may have started it.
+    const current = latestProxy.current;
+    if (!current || current.running) return;
+    latestProxy.current = await proxyEnable();
+  }, []);
 
   /**
    * Ask about the provider Hermes talks to, when Gate knows it and has it off.
@@ -761,8 +796,9 @@ export function useRouting({
     setBusy(true);
     try {
       await ask({ kind: "untrust" });
-      await proxyUntrustCa();
+      const state = await proxyUntrustCa();
       track("ca_untrusted");
+      onUntrusted?.(state);
     } catch (e) {
       if (!(e instanceof Declined)) {
         trackError(e, "untrust_ca");
@@ -771,7 +807,7 @@ export function useRouting({
     } finally {
       await settle();
     }
-  }, [busy, ask, settle, onError]);
+  }, [busy, ask, settle, onError, onUntrusted]);
 
   return {
     busy,

@@ -1,4 +1,6 @@
 import { useId, type JSX } from "react";
+import { Icon } from "./Icon";
+import { MARK_SLOT, type MarkSize } from "./markSize";
 
 /**
  * Full-colour provider marks, drawn beside a model id (Figma
@@ -443,4 +445,66 @@ export function appProviderMarkFor(
 export function providerNameFor(vendor: string): ProviderName | undefined {
   const key = vendor.toLowerCase();
   return Object.hasOwn(PROVIDER_BY_VENDOR, key) ? PROVIDER_BY_VENDOR[key] : undefined;
+}
+
+/**
+ * The upstream's mark beside a model, on a request row (Figma 272:3282 on the
+ * app pane, 1402:18017 on the Overview's Security events).
+ *
+ * Shared by both tables since the second one took it, and the fallback runs in
+ * one order for both: the provider the gateway named, then the model id's own
+ * namespace, then the cube, then an empty slot. A provider with no mark of its
+ * own - a marketplace account like `openai_compatible:Marcus OpenRouter`, or the
+ * pipeline's `unknown` - is the common case, not the odd one, and a cube there
+ * would hide a vendor the row already names in its model id. The cube is the
+ * `Icon / Boxes` the frames draw for a vendor with no published mark; the slot
+ * stays empty only when neither field names a vendor, so the model text beside
+ * it keeps its column.
+ *
+ * The glyph is decorative, so it is `aria-hidden` and the provider is carried
+ * by an `sr-only` sibling rather than by `title` alone. A `title` on an
+ * `aria-hidden` element is reachable by mouse and by nothing else, which would
+ * make the provider the one thing on the row a screen reader could not get at.
+ * The tooltip stays for pointer users, and only where the gateway named it: a
+ * mark drawn from the model id identifies the model, and a tooltip on it would
+ * be asserting who served a request that may never have reached anyone.
+ */
+export function VendorMark({
+  provider,
+  vendor,
+  size = 16,
+}: {
+  /** What the gateway said served the request, and the only thing this row is
+   *  allowed to put into words. Null when it named none. */
+  provider: string | null;
+  /** The namespace to fall back to for the mark where the provider has no
+   *  mark or was not named: the model id's own, or the catalogue's for an id
+   *  that carries none. See `ActivityEntry.vendor`. */
+  vendor: string | null;
+  /** 16 on the app pane's rows, 20 on the Security events table. */
+  size?: MarkSize;
+}) {
+  const slot = MARK_SLOT[size];
+  if (!provider && !vendor) return <span aria-hidden className={`shrink-0 ${slot}`} />;
+  const mark =
+    (provider ? providerMarkFor(provider, size) : undefined) ??
+    (vendor ? providerMarkFor(vendor, size) : undefined) ?? <Icon name="cube" size={size} />;
+  return (
+    <>
+      <span
+        aria-hidden
+        title={provider ?? undefined}
+        // `base.foreground`, not the muted grey the Overview's row glyphs take.
+        // A brand mark is not a glyph: the colour ones carry their own fills and
+        // ignore this, and the monochrome ones (openai, grok, ibm, ai21,
+        // inception, relace) inherit it - so muting the wrapper rendered OpenAI
+        // grey here and inked in the picker, while Moonshot, which hard-codes
+        // black, stayed black in both. Same ink as `dialogs.tsx`'s row.
+        className={`flex shrink-0 items-center justify-center text-base-foreground ${slot}`}
+      >
+        {mark}
+      </span>
+      {provider && <span className="sr-only">{provider}</span>}
+    </>
+  );
 }

@@ -40,12 +40,13 @@ pub struct Diagnostics {
     /// mint leaves from.
     pub ca_cert_path: Option<String>,
     pub ca_cert_present: bool,
-    /// Linux only: what every per-user NSS database found holds, **probed
-    /// now**. Chromium-based browsers read that store and never the system one,
-    /// so `Absent` next to a `ca_trusted` of true is exactly the "Firefox
-    /// works, Chrome doesn't" report, and it is invisible from the popover.
-    /// `None` where the question does not apply: not Linux, or no Chromium
-    /// browser has ever run for this user.
+    /// Linux only: what every browser NSS database found holds, Chromium's and
+    /// each Firefox profile's, **probed now**. Neither reads the system store
+    /// (Firefox only does on the p11-kit distros, not Ubuntu), so `Absent` next
+    /// to a `ca_trusted` of true is exactly the "curl works, the browsers
+    /// don't" report, and nothing else on screen shows it. `None` where the
+    /// question does not apply: not Linux, or no browser keeps a store here and
+    /// no Chromium is waiting for one.
     ///
     /// [`crate::proxy::NssProbe`] rather than a bool because a store that could
     /// not be opened - locked by another NSS client, on a stalled mount, or
@@ -74,6 +75,12 @@ pub struct Diagnostics {
     /// keyed by the certificate's fingerprint, so a regenerated root retires
     /// the reading that described the old one rather than carrying it forward.
     pub ca_nss_write: Option<crate::proxy::NssReading>,
+    /// Linux only: one line per browser store and what it holds right now -
+    /// Chromium's databases and each Firefox profile. The two fields above are
+    /// folds and a record; this is the itemisation, and the only place a store
+    /// the user changed in the browser shows, since no reading counts that as a
+    /// fault. Empty elsewhere.
+    pub ca_nss_stores: Vec<String>,
     /// The persisted "routing should be on" intent. Compared against the live
     /// `running` flag it answers the commonest report we get: routing was on
     /// yesterday and the app came back with it off.
@@ -113,6 +120,7 @@ pub fn collect() -> Diagnostics {
         ca_cert_path: ca_cert_path.map(|p| p.display().to_string()),
         ca_nss_trusted: ca_nss_trusted(),
         ca_nss_write: ca_nss_write(),
+        ca_nss_stores: ca_nss_stores(),
         routing_intent: crate::proxy::intent::load_intent(),
         persisted_engine_proxy_url: crate::proxy::persisted_engine_proxy_url(),
         relay_base_url: crate::proxy::relay_base_url(),
@@ -121,7 +129,7 @@ pub fn collect() -> Diagnostics {
     }
 }
 
-/// A live read of the store Chromium reads. Three answers rather than a bool -
+/// A live read of the browser stores. Three answers rather than a bool -
 /// see [`crate::proxy::NssProbe`]: a database that could not be opened is not a
 /// database that does not hold the CA, and this line is printed as a fact.
 #[cfg(target_os = "linux")]
@@ -149,6 +157,16 @@ fn ca_nss_write() -> Option<crate::proxy::NssReading> {
 #[cfg(not(target_os = "linux"))]
 fn ca_nss_write() -> Option<crate::proxy::NssReading> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn ca_nss_stores() -> Vec<String> {
+    crate::proxy::ca::nss_store_report()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ca_nss_stores() -> Vec<String> {
+    Vec::new()
 }
 
 /// The OS marketing name and version, on its own.

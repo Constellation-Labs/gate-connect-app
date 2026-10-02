@@ -850,12 +850,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 println!(
                     "Installing the proxy CA machine-wide. It becomes a trusted TLS root for every user on this host, and nothing will ask for confirmation."
                 );
-                mgr.trust_ca_system()?;
+                let state = mgr.trust_ca_system()?;
                 println!("Proxy CA trusted machine-wide.");
+                print_browser_restart(&state);
                 println!("Remove it with `gate-connect proxy untrust-ca --system-trust`.");
             } else {
-                mgr.trust_ca()?;
+                let state = mgr.trust_ca()?;
                 println!("Proxy CA trusted.");
+                print_browser_restart(&state);
             }
         }
         ProxyCmd::UntrustCa { system_trust } => {
@@ -863,13 +865,16 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             // say so: nothing else on this path would tell the user their
             // traffic stopped going through Gate.
             let was_routing = gate_connect_core::proxy::engine_likely_running();
-            if system_trust {
-                mgr.untrust_ca_system()?;
+            let state = if system_trust {
+                let state = mgr.untrust_ca_system()?;
                 println!("Machine-wide proxy CA trust removed.");
+                state
             } else {
-                mgr.untrust_ca()?;
+                let state = mgr.untrust_ca()?;
                 println!("Proxy CA trust removed.");
-            }
+                state
+            };
+            print_browser_removal(&state);
             if was_routing {
                 println!(
                     "Routing was on and has been stopped: the engine signs with this CA, so it \
@@ -911,6 +916,60 @@ fn print_proxy_state(state: &proxy::ProxyState) {
         }
     );
     print_proxy_domains(&state.domains);
+    print_browser_restart(state);
+}
+
+/// The CLI's counterpart of the window's "quit and reopen" note: a browser only
+/// reads a newly added root at launch, and a write made in this process never
+/// reaches an open window's counter. Silent when nothing was written (always,
+/// off Linux).
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn print_browser_restart(state: &proxy::ProxyState) {
+    if state.ca_nss_written_at > 0 {
+        println!("Certificate added to your browsers. {BROWSER_RESTART}");
+    }
+}
+
+/// The sentence every certificate note ends on - `BROWSER_RESTART` in
+/// `src/lib/groups.ts` - so the CLI and the window say the same thing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const BROWSER_RESTART: &str = "Quit and reopen any open browser so it trusts the certificate.";
+
+/// The removal's counterpart, `BROWSER_REMOVED_RESTART` in `src/lib/groups.ts`.
+#[cfg(target_os = "linux")]
+const BROWSER_REMOVED_RESTART: &str =
+    "Quit and reopen any open browser so it stops trusting the certificate.";
+
+/// What a removal did to the browser stores, on Linux, where a running browser
+/// keeps the stores it read at launch: one still open goes on trusting a root
+/// just taken out of them. Says so only where a store actually lost it, and
+/// says plainly when one would not let go - the warnings above name which.
+/// Silent off Linux, where a running process re-evaluates trust.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn print_browser_removal(state: &proxy::ProxyState) {
+    #[cfg(target_os = "linux")]
+    {
+        use gate_connect_core::proxy::NssTrust;
+        match state.ca_nss_trust {
+            Some(NssTrust::ToolsMissing) => println!(
+                "A browser may still trust the certificate: certutil is not installed, so Gate \
+                 could not remove it from the browsers' own stores. Remove the Gate Connect \
+                 certificate in each browser's certificate settings."
+            ),
+            Some(NssTrust::WriteFailed | NssTrust::NotWritten) => println!(
+                "A browser still trusts the certificate: one of the browsers' own stores would \
+                 not let go of it (see the warnings above). Remove the Gate Connect certificate \
+                 in that browser's certificate settings."
+            ),
+            Some(NssTrust::Trusted) | None => {
+                if proxy::ca::nss_removals() > 0 {
+                    println!("Certificate removed from your browsers. {BROWSER_REMOVED_RESTART}");
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = state;
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

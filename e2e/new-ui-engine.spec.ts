@@ -197,6 +197,72 @@ test.describe("new UI certificate and diagnostics", () => {
     await expect.poll(() => app.lastCall("proxy_untrust_ca")).not.toBeNull();
   });
 
+  test("on Linux, a browser-store write says to quit and reopen browsers", async ({ boot }) => {
+    // The system anchor already trusted, and a store written on this enable -
+    // Chrome's database just created, a Firefox profile seen for the first
+    // time. `ca_trusted` never flips, so only the write count can raise this.
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true, ca_nss_trust: "trusted", ca_nss_written_at: 1_700_000_000_000 },
+    });
+
+    await expect(app.page.getByText("Browsers already open need reopening")).toBeVisible();
+    await expect(
+      app.page.getByText("Quit and reopen any open browser so it trusts the certificate."),
+    ).toBeVisible();
+  });
+
+  test("on Linux, removing the certificate says to quit and reopen browsers", async ({ boot }) => {
+    const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: true } });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).last().click();
+
+    await expect(app.page.getByText("Certificate removed", { exact: true })).toBeVisible();
+    await expect(
+      app.page.getByText("Quit and reopen any open browser so it stops trusting the certificate.", {
+        exact: false,
+      }),
+    ).toBeVisible();
+  });
+
+  test("on Linux, a removal a browser refused says so instead of claiming success", async ({
+    boot,
+  }) => {
+    // The removal's own reading decides the note. A browser store that kept
+    // the root is the one outcome with a security edge, so it must not get
+    // "Certificate removed".
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true, ca_nss_trust: "write_failed" },
+    });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).click();
+    await app.page.getByRole("button", { name: "Remove certificate" }).last().click();
+
+    await expect(app.page.getByText("A browser still trusts Gate’s certificate")).toBeVisible();
+    await expect(app.page.getByText("Certificate removed", { exact: true })).toHaveCount(0);
+  });
+
+  test("on Linux, fixing a failed browser write leaves the reopen note up", async ({ boot }) => {
+    // The repair flow: the failure note asks for certutil, the user installs
+    // it and toggles routing, and the next snapshot both leaves the failure
+    // and records a write. Clearing the failure note must not take the reopen
+    // note the write calls for with it.
+    const app = await boot({ platform: "linux", proxy: { running: true, ca_trusted: false } });
+    await app.patch({ proxy: { ca_trusted: true, ca_nss_trust: "tools_missing" } });
+    await app.emit("proxy-state-changed");
+    await expect(app.page.getByText("Your browsers can’t see the certificate")).toBeVisible();
+
+    await app.patch({ proxy: { ca_nss_trust: "trusted", ca_nss_written_at: 1_700_000_000_000 } });
+    await app.emit("proxy-state-changed");
+
+    await expect(app.page.getByText("Browsers already open need reopening")).toBeVisible();
+    await expect(app.page.getByText("Your browsers can’t see the certificate")).toHaveCount(0);
+  });
+
   test("an untrusted certificate is not offered for removal", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: false } });
 

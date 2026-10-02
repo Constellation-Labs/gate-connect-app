@@ -59,6 +59,7 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import {
   BAND_LABELS,
+  browserTrustRemovedAdvice,
   browserTrustRestartAdvice,
   buildGroups,
   hintForMember,
@@ -97,6 +98,7 @@ import {
   GATE_MODEL_TOOLS,
   formatCredits,
   leftGateModelsNotice,
+  modelLabelsFor,
   stepForChoice,
   formatPlan,
   useCredits,
@@ -104,7 +106,7 @@ import {
   useToolModels,
 } from "./lib/toolModels";
 import { modelAttention } from "./lib/modelAttention";
-import { useToolEvents } from "./lib/toolEvents";
+import { labelEntries, useToolEvents, vendorFromModelId } from "./lib/toolEvents";
 import { machineNotices, memberNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
@@ -185,6 +187,7 @@ import {
   trackError,
 } from "./lib/analytics";
 import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
+import { useNssWriteRise } from "./lib/useNssWriteRise";
 
 /** A whole reading, for deciding whether a re-read changed anything. Compared by
  * value because the identity never matches: every read builds fresh objects. */
@@ -600,17 +603,46 @@ export function NewUiApp() {
    *  is not a gap but the true default: the tool picks its own model. */
   const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
   /**
-   * The catalogue, read when the picker needs it OR when a tool is running on a
-   * Gate model.
+   * The catalogue, read as soon as the account can be.
    *
-   * The second case is AG-592: the catalogue is the definition of "available",
-   * so checking whether a chosen model still exists means having it. It is a few
-   * hundred rows, which is why this is not read on every pane - only where a
-   * selection could have gone stale.
+   * It used to wait for the picker, or for a tool running on a Gate model
+   * (AG-592: the catalogue is the definition of "available", so checking whether
+   * a chosen model still exists means having it). Both still hold, but every
+   * table that prints a model now reads it too - the app pane's Recent activity
+   * and the Overview's Security events name their rows from it, the way the
+   * dashboard's Messages list does - and the Overview is drawn with no tool
+   * open. So the deferral has no pane left to spare; it is one read of a few
+   * hundred rows per account either way. (The security table's rows carry the
+   * provider's own id; `modelLabelsFor` says which of those it can answer.)
+   *
+   * `canRead` alone, not `canRead` or the picker: the picker opens from an app
+   * pane, which needs an account, so the second condition added nothing.
    */
-  const gateModels = useGateModels(
-    modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
+  const gateModels = useGateModels(canRead, credential);
+  /** The catalogue as a lookup, for the two tables above. Finds nothing until
+   *  the catalogue lands, which leaves every row on its id. */
+  const modelLabels = useMemo(() => modelLabelsFor(gateModels.models), [gateModels.models]);
+  /** Product names by slug, for the Security events table's Tool cell. */
+  const toolNames = useMemo(
+    () => new Map(tools.map((t) => [t.slug, t.product_name])),
+    [tools],
   );
+  /**
+   * Opening the picker retries a catalogue read that failed.
+   *
+   * The picker's failure note says "Close this and try again", and that used to
+   * work because its visibility was the hook's `enabled`: closing and reopening
+   * toggled it, and the toggle re-read. `enabled` is constant now, so the retry
+   * is the opening itself. Keyed on the open edge and on *whether* the read
+   * failed, not on the failure value: a retry that fails again replaces the
+   * failure object but not the boolean, so it does not retry itself.
+   */
+  const pickerOpen = modelOverlay?.kind === "picker";
+  const catalogueFailed = gateModels.failure !== null;
+  const reloadCatalogue = gateModels.reload;
+  useEffect(() => {
+    if (pickerOpen && catalogueFailed) reloadCatalogue();
+  }, [pickerOpen, catalogueFailed, reloadCatalogue]);
   /** The org's Gate credit balance, for the card and the billing confirmation.
    *  Read whenever the account can be read at all, not only while an app pane
    *  is open. It was gated on `openTool !== null`, which was right when the
@@ -811,7 +843,7 @@ export function NewUiApp() {
    */
   const toolEventRows = useMemo(
     () =>
-      (toolEvents.view?.entries ?? []).map((e) => ({
+      labelEntries(toolEvents.view?.entries ?? [], modelLabels).map((e) => ({
         ...e,
         onView: () => {
           // `openDashboard` is declared below this memo, so the guard is inlined
@@ -823,7 +855,7 @@ export function NewUiApp() {
           openLink(dash.message(e.id));
         },
       })),
-    [toolEvents.view, dash, openLink],
+    [toolEvents.view, modelLabels, dash, openLink],
   );
 
   const loadLaunchAtLogin = useCallback(async () => {
@@ -1229,6 +1261,14 @@ export function NewUiApp() {
       // A write landed, so the verdicts are stale: the tool may now need a
       // reopen, and the relay may have been auto-enabled by the connect.
       void refreshVerdicts();
+    },
+    // The removal's own note, from what it recorded about the browser stores:
+    // "removed, reopen your browsers" or "a browser kept it, here is how to
+    // remove it". `ca_trusted` going false cannot say which, and also flips
+    // on changes Gate did not make.
+    onUntrusted: (state) => {
+      const note = browserTrustRemovedAdvice(platform, state.ca_nss_trust);
+      setBrowserRestart(note ? { ...note, removed: true } : null);
     },
     onError: (e, context, slug) => {
       // `connect` covers both directions of a tool write: the remedy copy is the
@@ -2107,26 +2147,6 @@ export function NewUiApp() {
         plan: credits.credits ? formatPlan(credits.credits.plan) : undefined,
         planUnreadable: credits.failure !== null,
         onRetryPlan: credits.reload,
-        // The machine-wide shell proxy, which used to be a card in the rail
-        // and a row in the app list. Absent on Linux, where these variables are
-        // the system proxy and cannot be declined without turning routing off -
-        // the same condition the rail card carried.
-        shellProxy:
-          proxy?.env_export_separable
-            ? {
-                on: proxy.env_export_opted_in,
-                // The same flag the rail's switches carry. `setEnvExport`
-                // returns early while any other routing call is in flight, so
-                // without it a click lands on nothing and the switch does not
-                // move - and this is a machine-wide write someone plausibly
-                // makes right after flipping an app.
-                busy: routingBusy,
-                onToggle: () => {
-                  setActionError(null);
-                  void routing.setEnvExport(!proxy.env_export_opted_in);
-                },
-              }
-            : undefined,
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         // Decides whether the key row is drawn at all: an upgraded account still
@@ -2391,7 +2411,11 @@ export function NewUiApp() {
   );
 
   /**
-   * The one-off note that follows the certificate landing, on Linux.
+   * The note about browsers and Gate's certificate, on Linux: the reopen note
+   * that follows the certificate landing (here, and on a later browser-store
+   * write - see `useNssWriteRise` below), the failure notes, and the note that
+   * follows a removal (raised from the removal's own result, through
+   * `useRouting`'s `onUntrusted`).
    *
    * Driven off `ca_trusted` going false to true rather than off the action that
    * did it, because four paths reach the same place - the master switch, a row's
@@ -2403,12 +2427,13 @@ export function NewUiApp() {
    *
    * Cleared by the user alone, for the reopen sentence: nothing Gate can read
    * afterwards says whether they reopened anything, so a dismissal is the only
-   * thing that can retire it, and it does not come back until trust is removed
-   * and granted again. The *failure* sentences do have something that retires
-   * them - see the effect below.
+   * thing that can retire it. It comes back only on a new trust or a new
+   * browser-store write - each of which leaves another browser to reopen. The
+   * *failure* sentences do have something that retires them - see the effect
+   * below - and a removal retires every note about the certificate landing.
    *
    * `ca_nss_trust` rides along from the same snapshot, and it decides which note
-   * this is: what the store Chromium reads did with the CA is a reading, and it
+   * this is: what the browser stores did with the CA is a reading, and it
    * separates "reopen your browser" from "install certutil" from "a store
    * refused, and the report says which". Read off the *incoming* state rather
    * than a later poll, so the sentence describes the trust change that just
@@ -2417,6 +2442,8 @@ export function NewUiApp() {
   const [browserRestart, setBrowserRestart] = useState<{
     title: string;
     body: string;
+    /** Raised by a removal, which the `ca_trusted` edge must not clear. */
+    removed?: boolean;
   } | null>(null);
   const caTrustedSeen = useRef<boolean | null>(null);
   const nssSeen = useRef<ProxyState["ca_nss_trust"]>(null);
@@ -2424,6 +2451,16 @@ export function NewUiApp() {
     const trusted = proxy?.ca_trusted ?? null;
     const seen = caTrustedSeen.current;
     caTrustedSeen.current = trusted;
+    // The other direction. Any note about the certificate being added is now
+    // the opposite of true, so it goes - but nothing is said here about the
+    // browsers: `ca_trusted` also goes false on a regenerated CA or an anchor
+    // removed outside Gate, with nothing taken out of any browser. A removal
+    // Gate made raises its own note from its own result (`onUntrusted`), and
+    // that one is kept.
+    if (seen === true && trusted === false) {
+      setBrowserRestart((current) => (current?.removed ? current : null));
+      return;
+    }
     if (seen !== false || trusted !== true) return;
     const nss = proxy?.ca_nss_trust ?? null;
     if (nss !== null) {
@@ -2461,7 +2498,12 @@ export function NewUiApp() {
         // A probe that will not run is no reading either, and the note it
         // would have refined is already on screen.
       });
-  }, [proxy, platform]);
+    // `ca_trusted` beside `proxy`, because this effect is about that value and
+    // not about the snapshot's identity. The real backend returns a fresh
+    // object on every read, so for it the two are the same; the e2e fake
+    // returns one object it mutates in place, and some of the suite depends
+    // on that, so keying on the value is what keeps both honest.
+  }, [proxy, proxy?.ca_trusted, platform]);
 
   /**
    * ...and what retires it when the user does what it asked.
@@ -2485,6 +2527,39 @@ export function NewUiApp() {
       was === "tools_missing" || was === "write_failed" || was === "not_written";
     if (wasFailing && nss === "trusted") setBrowserRestart(null);
   }, [proxy]);
+
+  /**
+   * A browser store written while the certificate was already trusted.
+   *
+   * The trust effect above only fires on `ca_trusted` going true, and that
+   * missed the machine this was found on: the system anchor trusted weeks
+   * before, and on a later enable Gate created Chrome's missing database and
+   * wrote a Firefox profile for the first time - two browsers that would go on
+   * refusing every intercepted host until reopened, with nothing on screen
+   * saying so. The note is the one the reading picks, so a write that partly
+   * failed still says which way. Skipped while the certificate is not trusted,
+   * where the trust effect owns the note.
+   *
+   * **Declared after the retire effect on purpose.** React runs effects in
+   * declaration order, and the repair flow - install certutil, turn routing
+   * off and on - lands one snapshot where the reading leaves a failure *and*
+   * a store was written. The retire effect clears the failure note; this then
+   * raises the reopen note the write calls for. The other way round, the
+   * reopen note was raised and wiped in the same commit.
+   *
+   * An equal note already up (the trust effect above raises the same one on a
+   * snapshot that is also a write) is kept as it is, so the identity the
+   * probe's refinement compares against survives.
+   */
+  useNssWriteRise(proxy ? proxy.ca_nss_written_at : null, () => {
+    if (!proxy?.ca_trusted) return;
+    const next = browserTrustRestartAdvice(platform, proxy.ca_nss_trust) ?? null;
+    setBrowserRestart((current) =>
+      current && next && current.title === next.title && current.body === next.body
+        ? current
+        : next,
+    );
+  });
 
   /**
    * The standing note a proxy-routed row carries on Linux.
@@ -2813,14 +2888,17 @@ export function NewUiApp() {
         onDismiss={() => setDismissedInstallsFailure(installsFailure)}
       />
     ) : browserRestart ? (
-      // Bottom of the chain, and neutral where the two above are amber or
-      // red: each of those names something still to be fixed in Gate's own
-      // routing, while this is a step outside the app that the user may
-      // already have taken. It must never displace one of them.
+      // Bottom of the chain, so it never displaces the two above, which name
+      // something still to be fixed in Gate's own routing. Amber, though, not
+      // neutral: a browser left open across the trust change rejects every
+      // host Gate intercepts - the same failure `ReopenAlert` warns about for
+      // a tool - and the failure variants are faults outright. See
+      // `NoteBanner`'s `tone`.
       <NoteBanner
         title={browserRestart.title}
         body={browserRestart.body}
         onDismiss={() => setBrowserRestart(null)}
+        tone="warning"
       />
     ) : undefined;
 
@@ -3041,7 +3119,7 @@ export function NewUiApp() {
             app={{ name: appFor(apps, openTool ?? "")?.name ?? "this app" }}
             // Only meaningful when there is one model to attribute; the dialog
             // drops it for a set.
-            vendor={modelOverlay.modelIds[0].split("/")[0]}
+            vendor={vendorFromModelId(modelOverlay.modelIds[0]) ?? modelOverlay.modelIds[0]}
             // The whole set, so the dialog can list what the charge covers.
             // AG-590 requires the enabled models be stated before it is accepted.
             modelIds={modelOverlay.modelIds}
@@ -3309,8 +3387,8 @@ export function NewUiApp() {
                 },
                 gateModel: openModelId
                   ? // The whole set, configured-first, for display only. The
-                    // card reads each vendor off the id: the catalogue is only
-                    // loaded while the picker is open.
+                    // card reads each vendor off the id, which is all the mark
+                    // needs and is there before the catalogue lands.
                     { ids: cardModelIds }
                   : null,
                 onChangeModel: () =>
@@ -3520,6 +3598,8 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
+            modelLabels,
+            toolNames,
           }}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we

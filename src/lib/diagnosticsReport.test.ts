@@ -22,6 +22,7 @@ const backend: Diagnostics = {
   ca_cert_present: true,
   ca_nss_trusted: "holds",
   ca_nss_write: { outcome: "trusted", refusals: [] },
+  ca_nss_stores: [],
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -50,6 +51,7 @@ const proxy: ProxyState = {
   pac_port: null,
   ca_trusted: true,
   ca_nss_trust: null,
+  ca_nss_written_at: 0,
   browser_proxy_channel: false,
   relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: true,
@@ -271,10 +273,10 @@ describe("buildDiagnosticsReport", () => {
 
   it("flags a CA the browser's own store is missing", () => {
     // The certificate line still says trusted, because the OS store holds it.
-    // Only this line explains why Chrome rejects what Firefox accepts.
+    // Only this line explains why the browsers reject what curl accepts.
     const text = report({ backend: { ...backend, ca_nss_trusted: "absent" } });
     expect(text).toContain("certificate     trusted");
-    expect(text).toContain("browser store   CA MISSING (chromium)");
+    expect(text).toContain("browser store   CA MISSING");
   });
 
   /** A store Gate could not open is not a store without the CA, and this line
@@ -284,7 +286,7 @@ describe("buildDiagnosticsReport", () => {
    *  way to happen, in the shape of a call killed at its deadline. */
   it("does not report a store it could not read as a store missing the CA", () => {
     const text = report({ backend: { ...backend, ca_nss_trusted: "unreadable" } });
-    expect(text).toContain("browser store   could not be read (chromium)");
+    expect(text).toContain("browser store   could not be read");
     expect(text).not.toContain("CA MISSING");
   });
 

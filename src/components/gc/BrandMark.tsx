@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { MARK_SLOT, type MarkSize } from "./markSize";
 
 /**
  * Brand marks for the rail's app tiles and the app pane's header tile (Figma
@@ -161,4 +162,78 @@ export function brandMarkForSection(
   if (named) return <BrandMark name={named} size={size} />;
   const key = [...memberKeys, id].find((k) => BRAND_BY_SLUG[k]);
   return key ? brandMarkFor(key, size) : undefined;
+}
+
+/**
+ * Client ids that are not registry slugs, onto the slug whose mark they take.
+ *
+ * `SecurityEvent.tool` is the `x-gate-client` header this app stamps on the
+ * traffic it routes, so its vocabulary is `taxonomy::Client` on the Rust side
+ * (`claude-code`, `claude-desktop`, `codex`, `chatgpt`, `opencode`, `openclaw`,
+ * `hermes`, `any-app`), not the gateway's wider platform registry: a Cursor or
+ * Aider request never arrives on this install-scoped feed. Every one of those
+ * but `claude-desktop` is already a `BRAND_BY_SLUG` key, and `claude-desktop`
+ * takes the Claude starburst the `anthropic` domain draws. `hermes` and
+ * `any-app` have no mark and keep their slot empty, as in the rail.
+ */
+const TOOL_ALIASES: Record<string, string> = {
+  "claude-desktop": "anthropic",
+};
+
+/**
+ * Product names for the client ids that have no registry row, so the Tool cell
+ * names them beside their mark rather than printing the slug. Every other id
+ * `taxonomy::Client` can send is a registry slug and takes `Tool.product_name`.
+ */
+const CLIENT_NAMES: Record<string, string> = {
+  "claude-desktop": "Claude Desktop",
+  chatgpt: "ChatGPT",
+  "any-app": "Any app",
+};
+
+/** A client id's product name when the registry has none, guarded as `ToolMark` is. */
+export function clientNameFor(slug: string): string | undefined {
+  return Object.hasOwn(CLIENT_NAMES, slug) ? CLIENT_NAMES[slug] : undefined;
+}
+
+/**
+ * Ink for a mark drawn on a light row rather than the rail's dark tile.
+ *
+ * `BrandMark`'s paths take `currentColor` so the tile can ink them `#F9FAFB`,
+ * and on white they would come out `base.foreground`. The Security events
+ * frame draws the Claude Code logo in colour instead - `#E8704E`, sampled off
+ * `1402:18014`, the Anthropic colour `ProviderMark` carries - so the two
+ * Claude marks take it. Every other mark is drawn by no frame on a light row
+ * and keeps the ink until one does.
+ */
+const TOOL_INK: Partial<Record<BrandName, string>> = {
+  claude: "#E8704E",
+  claudeCode: "#E8704E",
+};
+
+/**
+ * A tool's mark on a light row, in a slot that stays whether or not there is a
+ * mark to fill it, so the names in the column line up.
+ *
+ * The counterpart of `VendorMark` for the Tool cell (`1402:18014` draws the
+ * logo at 20px). Decorative: the product name beside it is the text, so the
+ * slot is `aria-hidden` and carries no title.
+ *
+ * `Object.hasOwn` rather than a bare index, for the reason `providerNameFor`
+ * gives: the slug is a string off the wire, and a row naming its tool
+ * `constructor` must not reach a prototype member.
+ */
+export function ToolMark({ slug, size }: { slug: string; size: MarkSize }) {
+  const key = Object.hasOwn(TOOL_ALIASES, slug) ? TOOL_ALIASES[slug] : slug;
+  const name = Object.hasOwn(BRAND_BY_SLUG, key) ? BRAND_BY_SLUG[key] : undefined;
+  const ink = name ? TOOL_INK[name] : undefined;
+  return (
+    <span
+      aria-hidden
+      className={`flex shrink-0 items-center justify-center text-base-foreground ${MARK_SLOT[size]}`}
+      style={ink ? { color: ink } : undefined}
+    >
+      {name && <BrandMark name={name} size={size} />}
+    </span>
+  );
 }
