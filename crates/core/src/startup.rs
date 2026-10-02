@@ -16,17 +16,23 @@ pub enum SessionVerdict {
     /// accepted; a stored org that dropped out of the membership list has
     /// been cleared so the UI routes to the org picker.
     Healthy,
-    /// The stored session could not refresh, or the gateway rejected it:
-    /// the user must sign in again.
+    /// The identity provider refused the refresh, or the gateway rejected the
+    /// session: the user must sign in again.
     NeedsSignIn,
+    /// The refresh could not reach the identity provider, or the secret store
+    /// could not be read. Says nothing about the session, so the caller leaves
+    /// its sign-in signal untouched: an offline launch must not ask anyone to
+    /// sign in.
+    Unavailable,
 }
 
 /// Refresh a stale Cognito access token before the engine seeds itself, so
 /// re-honor / auto-enable inject a live token (`enable()` re-reads the stored
 /// token via `access_token_for_injection`). Never opens the browser - a
-/// failed refresh just yields [`SessionVerdict::NeedsSignIn`] and the UI's
-/// "sign in" state. Best-effort and offline-safe: a gateway that cannot be
-/// reached gives no verdict and changes nothing.
+/// refused refresh just yields [`SessionVerdict::NeedsSignIn`] and the UI's
+/// "sign in" state. Best-effort and offline-safe: an identity provider or a
+/// gateway that cannot be reached gives no verdict and changes nothing
+/// ([`SessionVerdict::Unavailable`]).
 pub fn refresh_session() -> SessionVerdict {
     if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
         return SessionVerdict::NotOauth;
@@ -34,14 +40,18 @@ pub fn refresh_session() -> SessionVerdict {
     let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
         return SessionVerdict::NotOauth;
     };
-    // Only a refresh *failure* (Err: a stored session that can't refresh) is
-    // an alarm; `Ok(None)` is a signed-out / never-signed-in state and must
-    // stay quiet.
-    let session = match oauth::ensure_fresh(&cfg) {
+    // Only a refused refresh is an alarm. `Ok(None)` is a signed-out /
+    // never-signed-in state and must stay quiet, and a refresh that never got
+    // an answer is no verdict at all.
+    let session = match oauth::ensure_fresh_classified(&cfg) {
         Ok(session) => session,
-        Err(e) => {
-            eprintln!("[gate] startup OAuth token refresh failed: {e}");
+        Err(e) if e.is_refusal() => {
+            eprintln!("[gate] startup OAuth token refresh was refused: {e}");
             return SessionVerdict::NeedsSignIn;
+        }
+        Err(e) => {
+            eprintln!("[gate] startup OAuth token refresh got no answer: {e}");
+            return SessionVerdict::Unavailable;
         }
     };
     // A locally-fresh session can still be dead at the gateway (upgrade /
