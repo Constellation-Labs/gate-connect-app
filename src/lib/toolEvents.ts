@@ -271,14 +271,11 @@ function toEntry(raw: RawEvent): ActivityEntry {
 
 export interface ToolEventsView {
   entries: ActivityEntry[];
-  /** Pass to `loadMore`. Null when this is the last page. */
-  nextCursor: string | null;
 }
 
 export function adaptEvents(raw: RawToolEvents): ToolEventsView {
   return {
     entries: (raw.events ?? []).map(toEntry),
-    nextCursor: raw.nextCursor ?? null,
   };
 }
 
@@ -314,13 +311,12 @@ export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): Act
 }
 
 /**
- * Load one tool's feed, and pages of it on demand.
+ * Load the first page of one tool's feed.
  *
- * Separate from `useActivity` rather than folded into it, which is the opposite
- * call to the one made for the tool *scope*: that shared a request shape and a
- * race, this does not. A feed pages and accumulates; an overview replaces itself
- * wholesale. Sharing the generation guard between them would mean a "load more"
- * and a scope change fighting over the same ref.
+ * Separate from `useActivity` rather than folded into it: the two are different
+ * reads with their own failure and loading states, and the card draws this one
+ * beside the counters rather than as part of them. Paging went with the card's
+ * "Load more" on 2026-10-02; the rest of the list is the dashboard's.
  *
  * No disk cache, deliberately: the held reading is one slot and belongs to the
  * Overview. See `activity_cache.rs`.
@@ -334,47 +330,30 @@ export function useToolEvents(
   view: ToolEventsView | null;
   failure: ActivityFailure | null;
   loading: boolean;
-  loadMore: () => void;
   reload: () => void;
-  /** Whether `loadMore` has extended the list past page one. A `reload` puts
-   *  page one back in its place, so a caller refreshing on its own initiative
-   *  rather than the user's checks this first: pulling pages out from under
-   *  someone reading them is worse than a stale first page. Set when the
-   *  further page lands, not when it is asked for: a refused page extended
-   *  nothing, and must not stop the list following traffic. */
-  paged: boolean;
 } {
   const [view, setView] = useState<ToolEventsView | null>(null);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
   const [loading, setLoading] = useState(false);
-  const [paged, setPaged] = useState(false);
   /** Which scope is current, so a page that arrives after the user has moved on
-   *  is dropped rather than appended to a different tool's feed. */
+   *  is dropped rather than shown under a different tool's name. */
   const attempt = useRef(0);
 
   const fetchPage = useCallback(
-    (cursor: string | null) => {
+    () => {
       if (!enabled || !tool) return;
       const mine = ++attempt.current;
       setLoading(true);
       setFailure(null);
-      activityToolEvents(tool, installId ?? undefined, cursor ?? undefined)
+      activityToolEvents(tool, installId ?? undefined)
         .then((text) => {
           if (mine !== attempt.current) return;
-          const page = adaptEvents(JSON.parse(text) as RawToolEvents);
-          // Append when paging, replace when starting over. `cursor` is what
-          // distinguishes the two, so "load more" cannot silently reset the list.
-          setView((prev) =>
-            cursor && prev
-              ? { entries: [...prev.entries, ...page.entries], nextCursor: page.nextCursor }
-              : page,
-          );
-          if (cursor) setPaged(true);
+          setView(adaptEvents(JSON.parse(text) as RawToolEvents));
         })
         .catch((e) => {
           if (mine !== attempt.current) return;
-          // The pages already loaded stay: they are a real reading of this same
-          // scope, and dropping them because the *next* page failed loses what
+          // The rows already on screen stay: they are a real reading of this
+          // same scope, and dropping them because a refresh failed loses what
           // the user was reading.
           setFailure(toFailure(e));
         })
@@ -395,29 +374,16 @@ export function useToolEvents(
   useEffect(() => {
     setView(null);
     setFailure(null);
-    setPaged(false);
   }, [credential, installId, tool]);
 
   useEffect(() => {
-    fetchPage(null);
+    fetchPage();
   }, [fetchPage]);
 
   return {
     view,
     failure,
     loading,
-    // Guarded here rather than at the call site. With no cursor `fetchPage`
-    // re-reads page one and *replaces* the list, so a `loadMore` on the last page
-    // would silently discard every page already loaded. The pane happens to hide
-    // the control when `nextCursor` is null, but that is the pane being careful
-    // about a hazard the hook should not have.
-    loadMore: () => {
-      if (view?.nextCursor) fetchPage(view.nextCursor);
-    },
-    reload: () => {
-      setPaged(false);
-      fetchPage(null);
-    },
-    paged,
+    reload: fetchPage,
   };
 }

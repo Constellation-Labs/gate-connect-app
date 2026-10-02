@@ -323,11 +323,6 @@ describe("adaptEvents", () => {
     expect(time).toMatch(/\d{2}:\d{2}:\d{2}/);
   });
 
-  it("carries the cursor through, and reports its absence", () => {
-    expect(adaptEvents(envelope([raw()], "b3Vy")).nextCursor).toBe("b3Vy");
-    expect(adaptEvents(envelope([raw()])).nextCursor).toBeNull();
-  });
-
   it("reads an absent events array as an empty feed", () => {
     const view = adaptEvents({ ...envelope([]), events: undefined });
 

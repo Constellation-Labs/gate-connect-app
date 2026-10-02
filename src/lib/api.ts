@@ -256,17 +256,17 @@ export const activityCachedToolOverviews = (installId?: string) =>
  * Derived from traffic, so it is empty until something has been attributed. */
 export const activityInstallations = () => invoke<string>("activity_installations");
 
-/** One page of a tool's recent requests, as raw JSON text (AG-574).
+/** The first page of a tool's recent requests, as raw JSON text (AG-574).
  *
  * `tool` is required: the feed is always about one tool, and the gateway refuses a
- * request that names none. `cursor` is the previous page's `nextCursor`, passed
- * back unchanged - it is opaque, and the gateway owns its shape.
+ * request that names none. Only the first page is read: the rest of the list is
+ * the dashboard's, behind the card's "View activity".
  *
  * Deliberately not paired with a cached read the way the overview is. The held
  * reading is a single slot and belongs to the Overview; see `activity_cache.rs`. */
-export const activityToolEvents = (tool: string, installId?: string, cursor?: string) =>
+export const activityToolEvents = (tool: string, installId?: string) =>
   slowNetworkRead().then(() =>
-    invoke<string>("activity_tool_events", { installId, tool, cursor }),
+    invoke<string>("activity_tool_events", { installId, tool }),
   );
 
 /** One tool's stored model choice, as this install holds it. */

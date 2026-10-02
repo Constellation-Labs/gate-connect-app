@@ -10,10 +10,9 @@ import { activityToolEvents } from "./api";
  *
  * `adaptEvents` is pure and covered next door. What is risky here is the state
  * machine around it: a generation ref that has to drop a reply from a scope the
- * user has already left, append-versus-replace deciding whether "load more"
- * extends the list or silently resets it, and a failed page having to leave the
- * pages already read on screen. All three are the kind of thing that looks right
- * and misbehaves only under a race.
+ * user has already left, and a scope change having to blank the feed rather than
+ * show one tool's requests under another's name. Both are the kind of thing
+ * that looks right and misbehaves only under a race.
  */
 const mockCall = activityToolEvents as unknown as ReturnType<typeof vi.fn>;
 
@@ -57,56 +56,8 @@ describe("useToolEvents", () => {
     const { seen } = harness({ tool: "claude-code", installId: "m-1" });
     await flush();
 
-    expect(mockCall).toHaveBeenCalledWith("claude-code", "m-1", undefined);
+    expect(mockCall).toHaveBeenCalledWith("claude-code", "m-1");
     expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b"]);
-  });
-
-  it("appends a further page rather than replacing the list", async () => {
-    mockCall.mockResolvedValueOnce(page(["a", "b"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
-    await flush();
-
-    mockCall.mockResolvedValueOnce(page(["c"], null));
-    await act(async () => {
-      seen.at(-1)?.loadMore();
-      await Promise.resolve();
-    });
-
-    expect(mockCall).toHaveBeenLastCalledWith("claude-code", undefined, "cursor-1");
-    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b", "c"]);
-  });
-
-  it("ignores loadMore on the last page instead of re-reading page one", async () => {
-    mockCall.mockResolvedValue(page(["a"], null));
-    const { seen } = harness({ tool: "claude-code" });
-    await flush();
-    expect(mockCall).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      seen.at(-1)?.loadMore();
-      await Promise.resolve();
-    });
-
-    // Without the guard this refetches page one and replaces the list, throwing
-    // away everything already read.
-    expect(mockCall).toHaveBeenCalledTimes(1);
-    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a"]);
-  });
-
-  it("keeps the pages it has when the next one fails", async () => {
-    mockCall.mockResolvedValueOnce(page(["a", "b"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
-    await flush();
-
-    mockCall.mockRejectedValueOnce(new Error("offline"));
-    await act(async () => {
-      seen.at(-1)?.loadMore();
-      await Promise.resolve();
-    });
-
-    // A failed *next* page must not discard what the user was reading.
-    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a", "b"]);
-    expect(seen.at(-1)?.failure).not.toBeNull();
   });
 
   it("drops a reply for a tool the user has already left", async () => {
@@ -147,41 +98,5 @@ describe("useToolEvents", () => {
     await flush();
 
     expect(mockCall).not.toHaveBeenCalled();
-  });
-
-  it("reports paged once load more has run, and clears it on reload", async () => {
-    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
-    await flush();
-    expect(seen.at(-1)?.paged).toBe(false);
-
-    mockCall.mockResolvedValueOnce(page(["b"], null));
-    await act(async () => {
-      seen.at(-1)?.loadMore();
-      await Promise.resolve();
-    });
-    expect(seen.at(-1)?.paged).toBe(true);
-
-    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
-    await act(async () => {
-      seen.at(-1)?.reload();
-      await Promise.resolve();
-    });
-    expect(seen.at(-1)?.paged).toBe(false);
-    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a"]);
-  });
-
-  it("does not count a refused further page as paged", async () => {
-    mockCall.mockResolvedValueOnce(page(["a"], "cursor-1"));
-    const { seen } = harness({ tool: "claude-code" });
-    await flush();
-
-    mockCall.mockRejectedValueOnce(new Error("429"));
-    await act(async () => {
-      seen.at(-1)?.loadMore();
-      await Promise.resolve();
-    });
-    expect(seen.at(-1)?.paged).toBe(false);
-    expect(seen.at(-1)?.view?.entries.map((e) => e.id)).toEqual(["a"]);
   });
 });

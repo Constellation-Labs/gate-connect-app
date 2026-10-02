@@ -724,9 +724,7 @@ export function NewUiApp() {
    * `tools` is who sent it, or null for "anyone" - the focus edge, which has no
    * better information. The Overview's org-wide read refreshes on any of it;
    * the open pane's per-tool reads only when its tool is among the senders, so
-   * Codex traffic does not re-read the Claude pane. The feed is left alone
-   * once the user has paged into it: `reload` puts page one back, and taking
-   * pages away from someone reading them is worse than a stale first page.
+   * Codex traffic does not re-read the Claude pane.
    * Each hook's `reload` is a no-op while that hook is disabled.
    */
   const refreshActivity = (tools: (string | null)[] | null) => {
@@ -739,7 +737,7 @@ export function NewUiApp() {
     if (installsFailure !== null || unattributedMachine) reloadInstalls();
     if (openTool !== null && (tools === null || tools.includes(openTool))) {
       toolActivity.reload();
-      if (!toolEvents.paged) toolEvents.reload();
+      toolEvents.reload();
     }
   };
   // Latest-callback ref so the listener registers once: the hooks hand back a
