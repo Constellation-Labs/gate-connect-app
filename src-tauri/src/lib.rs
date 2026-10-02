@@ -4272,6 +4272,29 @@ fn set_updater_relaunching(relaunching: bool) {
 /// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 
+/// Whether the refresh loop should consider the session dead after a tick's
+/// [`session_reading`](gate_connect_core::oauth::session_reading).
+///
+/// A refused or rejected session is dead only while a bundle is still stored:
+/// a deliberate sign-out clears the bundle (`oauth::clear`) and must stay quiet
+/// even though `auth_mode` is still OAuth. An unavailable reading - the
+/// identity provider could not be reached, or the secret store could not be
+/// read - is no verdict, so the tick keeps whatever it believed before. Calling
+/// it dead put "session expired" on every machine that woke offline with an
+/// expired access token.
+fn session_dead_after_tick(
+    reading: &gate_connect_core::oauth::SessionReading,
+    has_stored_bundle: impl FnOnce() -> bool,
+    was_dead: bool,
+) -> bool {
+    use gate_connect_core::oauth::SessionReading;
+    match reading {
+        SessionReading::Live(_) => false,
+        SessionReading::SignedOut => has_stored_bundle(),
+        SessionReading::Unavailable => was_dead,
+    }
+}
+
 /// How far the wall clock may drift from elapsed monotonic time across one
 /// refresh tick before the background loop treats it as a jump rather than
 /// drift. Ordinary NTP slew across 30s is milliseconds; a resume or a stepped
@@ -5813,7 +5836,8 @@ pub fn run() {
                         gate_connect_core::startup::SessionVerdict::NeedsSignIn => {
                             SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
                         }
-                        gate_connect_core::startup::SessionVerdict::NotOauth => {}
+                        gate_connect_core::startup::SessionVerdict::NotOauth
+                        | gate_connect_core::startup::SessionVerdict::Unavailable => {}
                     }
 
                     // An `opencode.ai` domain an older build turned on, left
@@ -6184,16 +6208,20 @@ pub fn run() {
                             }
                         }
                     }
-                    // `live_session` silently refreshes a stale token (persisting
-                    // it) and yields None when the session is dead; push the
-                    // result into the running engine (a no-op when routing is
-                    // off). "" is a dead session: the engine then refuses
+                    // `session_reading` silently refreshes a stale token
+                    // (persisting it) and is `Live` only for a usable session;
+                    // push its token into the running engine (a no-op when
+                    // routing is off). "" is a dead session: the engine then refuses
                     // routed requests as signed out - an OAuth account holds
                     // no key to fall back to - matching the signed-out state
                     // the UI derives from oauth_status.
-                    let token = gate_connect_core::oauth::live_session()
-                        .map(|t| t.access_token)
-                        .unwrap_or_default();
+                    let reading = gate_connect_core::oauth::session_reading();
+                    let token = match &reading {
+                        gate_connect_core::oauth::SessionReading::Live(t) => {
+                            t.access_token.clone()
+                        }
+                        _ => String::new(),
+                    };
                     gate_connect_core::proxy::manager().refresh_token(&token);
 
                     // Raise (or clear) the tray attention signal on the
@@ -6203,11 +6231,11 @@ pub fn run() {
                     // (`oauth::clear`) and so must stay quiet even though
                     // auth_mode is still OAuth. Redraw only on a change so the
                     // tray isn't rewritten every 30s.
-                    let dead = token.is_empty()
-                        && gate_connect_core::oauth::current()
-                            .ok()
-                            .flatten()
-                            .is_some();
+                    let dead = session_dead_after_tick(
+                        &reading,
+                        || gate_connect_core::oauth::current().ok().flatten().is_some(),
+                        SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed),
+                    );
                     if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
                         let running = gate_connect_core::proxy::manager()
                             .status()
@@ -6842,6 +6870,44 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// An offline tick is no verdict: it keeps the flag where it was, so a
+    /// machine that wakes without a network is not told its session expired,
+    /// and one already known dead stays dead until a real answer comes.
+    #[test]
+    fn only_a_refused_session_with_a_stored_bundle_is_dead() {
+        use super::session_dead_after_tick;
+        use gate_connect_core::oauth::{OAuthTokens, SessionReading};
+        let live = SessionReading::Live(OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        });
+        assert!(!session_dead_after_tick(&live, || true, true));
+        assert!(session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || true,
+            false
+        ));
+        // A deliberate sign-out cleared the bundle.
+        assert!(!session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || false,
+            true
+        ));
+        assert!(!session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            false
+        ));
+        assert!(session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            true
+        ));
+    }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]

@@ -16,9 +16,14 @@ pub enum SessionVerdict {
     /// accepted; a stored org that dropped out of the membership list has
     /// been cleared so the UI routes to the org picker.
     Healthy,
-    /// The stored session could not refresh, or the gateway rejected it:
-    /// the user must sign in again.
+    /// The identity provider refused the refresh, or the gateway rejected the
+    /// session: the user must sign in again.
     NeedsSignIn,
+    /// The refresh could not reach the identity provider, or the secret store
+    /// could not be read. Says nothing about the session, so the caller leaves
+    /// its sign-in signal untouched: an offline launch must not ask anyone to
+    /// sign in.
+    Unavailable,
 }
 
 /// Refresh a stale Cognito access token before the engine seeds itself, so
@@ -34,17 +39,23 @@ pub fn refresh_session() -> SessionVerdict {
     let Some(cfg) = oauth::OAuthConfig::from_build_env() else {
         return SessionVerdict::NotOauth;
     };
-    // Only a refresh *failure* (Err: a stored session that can't refresh) is
-    // an alarm; `Ok(None)` is a signed-out / never-signed-in state and must
-    // stay quiet.
-    let session = match oauth::ensure_fresh(&cfg) {
+    // Only a refused refresh is an alarm. `Ok(None)` is a signed-out /
+    // never-signed-in state and must stay quiet, and a refresh that never got
+    // an answer is no verdict at all.
+    let session = match oauth::ensure_fresh_classified(&cfg) {
         Ok(session) => session,
-        Err(e) => {
-            // To the log file as well as stderr: a shipped build has no
-            // terminal, and this line was the only record of why a restart
-            // came up signed out.
-            crate::logging::failure(&format!("startup OAuth token refresh failed: {e}"));
+        // To the log file as well as stderr: a shipped build has no terminal,
+        // and these lines were the only record of why a restart came up
+        // signed out, or did not.
+        Err(e) if e.is_refusal() => {
+            crate::logging::failure(&format!("startup OAuth token refresh was refused: {e}"));
             return SessionVerdict::NeedsSignIn;
+        }
+        Err(e) => {
+            crate::logging::failure(&format!(
+                "startup OAuth token refresh could not be reached: {e}"
+            ));
+            return SessionVerdict::Unavailable;
         }
     };
     // A locally-fresh session can still be dead at the gateway (upgrade /
