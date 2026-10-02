@@ -3361,18 +3361,31 @@ pub fn run() {
                     // `session_reading` silently refreshes a stale token
                     // (persisting it) and is `Live` only for a usable session;
                     // push its token into the running engine (a no-op when
-                    // routing is off). "" means no usable session: the engine
-                    // then refuses routed requests as signed out - an OAuth
-                    // account holds no key to fall back to - matching the
-                    // signed-out state the UI derives from oauth_status.
+                    // routing is off). `SignedOut` pushes "": the engine then
+                    // refuses routed requests as signed out - an OAuth account
+                    // holds no key to fall back to - matching the signed-out
+                    // state the UI derives from oauth_status.
+                    //
+                    // `Unavailable` pushes nothing. It says nothing about the
+                    // session, and "" would say it is dead: the engine would
+                    // refuse every request as signed out until a later tick
+                    // read `Live`, and a request would not wait for the
+                    // re-check either, since an empty bearer is the signed-out
+                    // case. The bearer it keeps may be expired by now; the
+                    // engine does not send one of those without first waiting
+                    // for the re-check's renewed token (`bearer_needs_recovery`),
+                    // which is what recovers a machine whose network comes
+                    // back between ticks.
                     let reading = gate_connect_core::oauth::session_reading();
-                    let token = match &reading {
+                    match &reading {
                         gate_connect_core::oauth::SessionReading::Live(t) => {
-                            t.access_token.clone()
+                            gate_connect_core::proxy::manager().refresh_token(&t.access_token)
                         }
-                        _ => String::new(),
-                    };
-                    gate_connect_core::proxy::manager().refresh_token(&token);
+                        gate_connect_core::oauth::SessionReading::SignedOut => {
+                            gate_connect_core::proxy::manager().refresh_token("")
+                        }
+                        gate_connect_core::oauth::SessionReading::Unavailable => {}
+                    }
 
                     // Raise (or clear) the tray attention signal on the
                     // signed-in↔dead edge. "Dead" means a stored session was

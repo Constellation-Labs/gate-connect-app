@@ -2020,6 +2020,31 @@ mod tests {
         assert!(mgr.ops.0.lock().unwrap().persisted_snapshot.is_none());
     }
 
+    /// An account that left OAuth needs the engine on its key, not only rid
+    /// of the bearer: an engine started under OAuth holds no key, and with
+    /// neither it refuses every routed request as signed out.
+    #[test]
+    fn use_api_key_sets_the_key_and_drops_the_bearer() {
+        let _home = TestHome::set();
+        let mgr = leak(FakeOps::new());
+        mgr.enable().expect("enable");
+        mgr.refresh_api_key("");
+        mgr.refresh_token("oauth-bearer");
+
+        mgr.use_api_key("sk-gw-pasted");
+
+        let (key, token) = mgr
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("engine running")
+            .credentials();
+        assert_eq!(key.as_ref(), "sk-gw-pasted");
+        assert_eq!(token.as_ref(), "", "the bearer would outrank the key");
+        mgr.shutdown_engine().expect("shutdown");
+    }
+
     /// The remaining surface, exercised once so its wiring can't silently rot:
     /// these paths are thin (lock, delegate, status) and their platform side
     /// is covered by the OS wiring, but nothing else on a non-desktop test

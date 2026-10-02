@@ -221,6 +221,12 @@ impl RunningEngine {
         let _ = self.key_tx.send(Arc::from(api_key));
     }
 
+    /// The key and the bearer the engine would inject right now, for tests.
+    #[cfg(test)]
+    pub(crate) fn credentials(&self) -> (Arc<str>, Arc<str>) {
+        (self.key_tx.borrow().clone(), self.token_tx.borrow().clone())
+    }
+
     /// Push a refreshed OAuth access token to the live engine. Empty string
     /// clears it (reverting to the API key). Cheap - no restart; this is how
     /// a silent token refresh reaches in-flight routing.
