@@ -4304,6 +4304,16 @@ fn recheck_gate_session(
     app: &tauri::AppHandle,
 ) -> gate_connect_core::routing_health::SessionHealth {
     use gate_connect_core::routing_health::SessionHealth;
+    // A 401 under a mode that is not OAuth means the engine is holding a
+    // bearer the account no longer stands behind (see the refresh loop for
+    // how that happens). Drop it now rather than on the loop's next tick, so
+    // the request the tool is about to retry goes out under the key.
+    if gate_connect_core::account::auth_mode().unwrap_or_default()
+        != gate_connect_core::account::AuthMode::OAuth
+    {
+        gate_connect_core::proxy::manager().refresh_token("");
+        return SessionHealth::Unknown;
+    }
     match gate_connect_core::startup::reverify_session() {
         // The session was alive and the local clock was simply wrong about it.
         // The forced refresh minted a token that works; push it into the
@@ -6155,6 +6165,16 @@ pub fn run() {
                         // Not an OAuth account (e.g. the user switched a dead
                         // session to a pasted key): clear any stale attention
                         // signal so the tray doesn't strand a red dot, then idle.
+                        //
+                        // And make sure the engine holds no bearer. The paste
+                        // path clears it for its own process, but the mode can
+                        // change under a running engine from outside it - the
+                        // CLI's `login --api-key`, another Gate Connect process
+                        // writing `account.json` - and the bearer it kept would
+                        // then outrank the key until it expired, and 401 on
+                        // every request after. A no-op when routing is off,
+                        // and when the engine already holds none.
+                        gate_connect_core::proxy::manager().refresh_token("");
                         if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                             let running = gate_connect_core::proxy::manager()
                                 .status()
