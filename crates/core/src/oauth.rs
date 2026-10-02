@@ -542,7 +542,7 @@ pub fn live_session() -> Option<OAuthTokens> {
 }
 
 /// What a status read can say about the stored session, keeping apart the two
-/// things [`live_session`]'s `None` conflates (AG-960): the credential is gone
+/// things [`live_session`]'s `None` conflates: the credential is gone
 /// or refused, versus nobody could tell - the identity provider was
 /// unreachable, or the secret store could not be read. The second says nothing
 /// about who is signed in, so a caller deciding "did this person sign out" must
@@ -624,8 +624,8 @@ pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
 /// refresh that could not reach the identity provider, or a secret store that
 /// could not be read, says nothing about the credential, and [`live_session`]'s
 /// `None` cannot tell those apart from a revoked refresh token. Reporting all of
-/// them as refused is what put "Access problem / Sign in" on a machine that was
-/// only offline.
+/// them as refused is what told a machine that was only offline that its session
+/// had expired.
 pub fn ensure_fresh_classified(
     cfg: &OAuthConfig,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
@@ -661,7 +661,7 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    let Some(tokens) = current().map_err(RefreshError::Unavailable)? else {
+    let Some(tokens) = current().map_err(classify_read_error)? else {
         return Ok(None);
     };
     if tokens.client_id != cfg.client_id {
@@ -697,6 +697,30 @@ fn refresh_stored(
     // hand is good, it just will not survive a restart.
     store(&refreshed).map_err(RefreshError::Unavailable)?;
     Ok(Some(refreshed))
+}
+
+/// Classify a failure to read the stored bundle.
+///
+/// A bundle that is there but does not parse is ours and broken, and stays
+/// broken: no retry repairs it, and only a sign-in replaces it. That is a
+/// refusal. Anything else - the secret store could not be reached, a chunk is
+/// missing, the keychain is locked or a prompt was declined - may clear on its
+/// own and says nothing about the credential.
+fn classify_read_error(e: anyhow::Error) -> RefreshError {
+    if is_corrupt_bundle(&e) {
+        RefreshError::Refused(e)
+    } else {
+        RefreshError::Unavailable(e)
+    }
+}
+
+/// Whether a [`current`] error means a stored bundle that does not parse.
+///
+/// The refresh loop asks this as well as [`refresh_stored`]: a broken bundle is
+/// still a stored one, so a sign-out (which deletes it) and a corruption (which
+/// does not) stay apart.
+pub fn is_corrupt_bundle(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<serde_json::Error>().is_some()
 }
 
 /// Loopback ports the app tries, in order, for the OAuth redirect. Cognito
@@ -1025,5 +1049,22 @@ mod tests {
             classify_session(true, || Ok(Some(tokens()))),
             SessionReading::SignedOut
         ));
+    }
+
+    /// A bundle that does not parse is a refusal; a store that could not be
+    /// read is not.
+    #[test]
+    fn only_an_unparseable_bundle_is_a_refused_read() {
+        let corrupt = serde_json::from_str::<OAuthTokens>("{not json")
+            .map_err(anyhow::Error::from)
+            .map(|_| ())
+            .context("parsing stored oauth tokens")
+            .unwrap_err();
+        assert!(is_corrupt_bundle(&corrupt));
+        assert!(classify_read_error(corrupt).is_refusal());
+
+        let unreadable = anyhow::anyhow!("secret store is locked");
+        assert!(!is_corrupt_bundle(&unreadable));
+        assert!(!classify_read_error(unreadable).is_refusal());
     }
 }
