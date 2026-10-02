@@ -277,11 +277,34 @@ impl OAuthTokens {
     /// no signature check (the gateway verifies). `None` if absent/unparseable.
     pub fn email(&self) -> Option<String> {
         let id = self.id_token.as_deref()?;
-        let payload_b64 = id.split('.').nth(1)?;
-        let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
-        let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-        claims.get("email")?.as_str().map(str::to_string)
+        jwt_payload(id)?.get("email")?.as_str().map(str::to_string)
     }
+}
+
+/// The unverified payload of a JWT, for reading claims the gateway will
+/// verify for itself. `None` when the string is not three dot-separated parts
+/// of base64url JSON.
+fn jwt_payload(jwt: &str) -> Option<serde_json::Value> {
+    let payload_b64 = jwt.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+/// When an access token's own `exp` claim says it ends, as a Unix timestamp.
+///
+/// Read without a signature check: this is a local hint that the gateway is
+/// about to refuse the bearer, used to renew it *before* a request goes out
+/// under it, never a reason to trust it. `None` for a token that carries no
+/// readable `exp`, which the caller treats as "not known to be expired".
+pub fn bearer_expires_at(access_token: &str) -> Option<i64> {
+    jwt_payload(access_token)?.get("exp")?.as_i64()
+}
+
+/// Whether a bearer is past its own `exp`, under the same skew margin as
+/// [`OAuthTokens::is_expired`], so a token the loop would already be renewing
+/// is also one a request should not leave under.
+pub fn bearer_is_expired(access_token: &str, now_unix: i64) -> bool {
+    bearer_expires_at(access_token).is_some_and(|exp| now_unix + EXPIRY_SKEW_SECS >= exp)
 }
 
 /// Shape of Cognito's `/oauth2/token` JSON response.
@@ -916,6 +939,24 @@ mod tests {
         assert!(!t.is_expired(900)); // 900 + 60 < 1000
         assert!(t.is_expired(950)); // 950 + 60 >= 1000, within skew
         assert!(t.is_expired(1_000));
+    }
+
+    #[test]
+    fn exp_read_from_an_access_token_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"u","exp":1700000000}"#);
+        let jwt = format!("h.{payload}.s");
+        assert_eq!(bearer_expires_at(&jwt), Some(1_700_000_000));
+        // Expired once `now` is within the skew of `exp`, not only past it.
+        assert!(bearer_is_expired(&jwt, 1_700_000_000 - EXPIRY_SKEW_SECS));
+        assert!(!bearer_is_expired(
+            &jwt,
+            1_700_000_000 - EXPIRY_SKEW_SECS - 1
+        ));
+        // Not a JWT, or no `exp`: never "known expired".
+        assert_eq!(bearer_expires_at("opaque"), None);
+        assert!(!bearer_is_expired("opaque", i64::MAX));
+        let bare = format!("h.{}.s", URL_SAFE_NO_PAD.encode(br#"{"sub":"u"}"#));
+        assert!(!bearer_is_expired(&bare, i64::MAX));
     }
 
     #[test]

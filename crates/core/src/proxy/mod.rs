@@ -759,6 +759,57 @@ pub fn gate_auth_check_finished() {
 /// then has nothing more to wait for.
 pub(crate) static GATE_AUTH_CHECK_DONE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+/// The last bearer the gateway refused with a 401, so the next request does
+/// not leave under it (see [`bearer_needs_recovery`]). One per process: the
+/// token watch is one per engine, and whichever handler saw the refusal, every
+/// other one is holding the same token.
+static REFUSED_BEARER: std::sync::Mutex<Option<std::sync::Arc<str>>> = std::sync::Mutex::new(None);
+
+/// Remember that the gateway refused `token`. Returns whether that is news -
+/// the first refusal of a given bearer, which is the one worth a log line;
+/// the rest of the retries carry the same token and say nothing new.
+pub(crate) fn record_refused_bearer(token: &std::sync::Arc<str>) -> bool {
+    let Ok(mut refused) = REFUSED_BEARER.lock() else {
+        return false;
+    };
+    if refused.as_deref() == Some(token.as_ref()) {
+        return false;
+    }
+    *refused = Some(std::sync::Arc::clone(token));
+    true
+}
+
+/// Whether a request must wait for a renewed bearer rather than leave under
+/// `token`: the gateway already refused this exact token, or its own `exp`
+/// says it is past (or within the skew of) expiry at `now_unix`.
+///
+/// Both are the sleep-wake shape of failure. The 30s refresh loop has not
+/// ticked yet, or Cognito was unreachable when it did, so the engine still
+/// holds a token the gateway will refuse. Sending it anyway hands the tool a
+/// 401 it cannot do anything about; the tool's own retries then race the
+/// refresh and can run out first. Waiting for the re-check instead (bounded,
+/// see `relay::recovered_token`) lets the request go out under the renewed
+/// token, which is the retry the tool was going to make anyway.
+pub(crate) fn bearer_needs_recovery(token: &str, now_unix: i64) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if crate::oauth::bearer_is_expired(token, now_unix) {
+        return true;
+    }
+    REFUSED_BEARER
+        .lock()
+        .ok()
+        .is_some_and(|refused| refused.as_deref() == Some(token))
+}
+
+#[cfg(test)]
+pub(crate) fn forget_refused_bearer() {
+    if let Ok(mut refused) = REFUSED_BEARER.lock() {
+        *refused = None;
+    }
+}
+
 /// The last `cf_clearance` a solve captured, kept for the life of the
 /// process so an engine restart does not throw it away.
 ///
@@ -2471,6 +2522,56 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 
 #[cfg(test)]
 mod tests {
+    /// What makes a request wait for a renewed bearer before it leaves: the
+    /// token's own `exp`, or a refusal the gateway already gave this token.
+    /// Neither applies to a fresh token the gateway has not refused.
+    #[test]
+    fn a_refused_or_expired_bearer_waits_for_recovery() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let jwt = |exp: i64| -> std::sync::Arc<str> {
+            let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+            std::sync::Arc::from(format!("h.{payload}.s"))
+        };
+        super::forget_refused_bearer();
+        let now = 1_700_000_000;
+        let live = jwt(now + 3600);
+        let aged = jwt(now - 1);
+        assert!(
+            !super::bearer_needs_recovery(&live, now),
+            "a live token leaves as it is"
+        );
+        assert!(
+            super::bearer_needs_recovery(&aged, now),
+            "a token past its exp waits"
+        );
+        assert!(
+            !super::bearer_needs_recovery("", now),
+            "no token is the signed-out case, not this one"
+        );
+        assert!(
+            !super::bearer_needs_recovery("opaque", now),
+            "no readable exp is not known-expired"
+        );
+
+        // The gateway refused the live one: from now on it waits too, and
+        // the first refusal is the only one that is news.
+        assert!(super::record_refused_bearer(&live));
+        assert!(
+            !super::record_refused_bearer(&live),
+            "the same token's retries say nothing new"
+        );
+        assert!(super::bearer_needs_recovery(&live, now));
+        // A renewed token is not the refused one.
+        let renewed = jwt(now + 7200);
+        assert!(!super::bearer_needs_recovery(&renewed, now));
+        assert!(
+            super::record_refused_bearer(&renewed),
+            "a different token's refusal is news again"
+        );
+        super::forget_refused_bearer();
+    }
+
     use super::SolveOutcome;
 
     /// Only a capture takes the short grace. Every failure is a failure for
