@@ -98,7 +98,7 @@ import {
   GATE_MODEL_TOOLS,
   formatCredits,
   leftGateModelsNotice,
-  modelNamesById,
+  modelLabelsFor,
   stepForChoice,
   formatPlan,
   useCredits,
@@ -613,16 +613,20 @@ export function NewUiApp() {
    * dashboard's Messages list does - and the Overview is drawn with no tool
    * open. So the deferral has no pane left to spare; it is one read of a few
    * hundred rows per account either way. (The security table's rows carry the
-   * provider's own id and find a name less often; `SecurityEventsProps.modelNames`
-   * says why.)
+   * provider's own id; `modelLabelsFor` says which of those it can answer.)
    *
    * `canRead` alone, not `canRead` or the picker: the picker opens from an app
    * pane, which needs an account, so the second condition added nothing.
    */
   const gateModels = useGateModels(canRead, credential);
-  /** Catalogue display names by id, for the two tables above. Empty until the
-   *  catalogue lands, which leaves every row on its id. */
-  const modelNames = useMemo(() => modelNamesById(gateModels.models), [gateModels.models]);
+  /** The catalogue as a lookup, for the two tables above. Finds nothing until
+   *  the catalogue lands, which leaves every row on its id. */
+  const modelLabels = useMemo(() => modelLabelsFor(gateModels.models), [gateModels.models]);
+  /** Product names by slug, for the Security events table's Tool cell. */
+  const toolNames = useMemo(
+    () => new Map(tools.map((t) => [t.slug, t.product_name])),
+    [tools],
+  );
   /**
    * Opening the picker retries a catalogue read that failed.
    *
@@ -839,7 +843,7 @@ export function NewUiApp() {
    */
   const toolEventRows = useMemo(
     () =>
-      labelEntries(toolEvents.view?.entries ?? [], modelNames).map((e) => ({
+      labelEntries(toolEvents.view?.entries ?? [], modelLabels).map((e) => ({
         ...e,
         onView: () => {
           // `openDashboard` is declared below this memo, so the guard is inlined
@@ -851,7 +855,7 @@ export function NewUiApp() {
           openLink(dash.message(e.id));
         },
       })),
-    [toolEvents.view, modelNames, dash, openLink],
+    [toolEvents.view, modelLabels, dash, openLink],
   );
 
   const loadLaunchAtLogin = useCallback(async () => {
@@ -3594,7 +3598,8 @@ export function NewUiApp() {
             // helper already reports both failures the same way.
             onOpenInDashboard: (event) =>
               openDashboard((d) => d.message(event.requestId)),
-            modelNames,
+            modelLabels,
+            toolNames,
           }}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we

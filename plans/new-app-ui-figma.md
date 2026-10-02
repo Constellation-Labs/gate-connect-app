@@ -3541,9 +3541,10 @@ Applied, because both sections draw it the same way or only one draws it:
   `TriangleAlert` tile and a primary-blue button.
 - KPI cell dividers at `rgba(0,0,0,0.12)`.
 
-Not applied. The frames also draw a coloured tool logo and a provider mark in
-the Overview feed, for which the event carries no key. Everything else left is
-a question for design:
+Applied since 2026-10-01: the coloured tool logo and the provider mark in the
+Overview feed (`ToolMark`, `VendorMark`), keyed on the event's `tool` and on
+its model id through the catalogue. Everything else left is a question for
+design:
 
 1. **"No apps are routed" covers which state?** The code has two: nothing
    switched on, and switched on but routing did not start (a declined

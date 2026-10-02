@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { activityToolEvents } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
 import type { ActivityEntry } from "./toolEventRow";
+import type { ModelLabels } from "./toolModels";
 import type { IconName } from "../components/gc/Icon";
 
 /**
@@ -294,21 +295,21 @@ export function adaptEvents(raw: RawToolEvents): ToolEventsView {
  * second-guess it; a row still printing its id takes the catalogue's name for
  * that id, and keeps the id when the catalogue has no row for it - a retired
  * model, or one served before the catalogue knew it. "Unknown model" has no id
- * and is left alone.
+ * and is left alone. A row whose id named no vendor takes the catalogue's, so
+ * the mark can be drawn for a bare native id too.
  *
  * The Overview's Security events table does the same lookup per row inside its
  * Model cell rather than through this: its rows are the wire type, unadapted,
- * and `SecurityEventsProps.modelNames` explains the other difference between
- * the two tables.
+ * and `modelLabelsFor` explains how the ids the two tables carry differ.
  */
-export function labelEntries(
-  entries: ActivityEntry[],
-  names: ReadonlyMap<string, string>,
-): ActivityEntry[] {
+export function labelEntries(entries: ActivityEntry[], labels: ModelLabels): ActivityEntry[] {
   return entries.map((e) => {
-    if (e.modelId === null || e.model !== e.modelId) return e;
-    const name = names.get(e.modelId);
-    return name === undefined ? e : { ...e, model: name };
+    if (e.modelId === null) return e;
+    const label = labels(e.modelId);
+    if (!label) return e;
+    const model = e.model === e.modelId ? label.name : e.model;
+    const vendor = e.vendor ?? label.vendor;
+    return model === e.model && vendor === e.vendor ? e : { ...e, model, vendor };
   });
 }
 

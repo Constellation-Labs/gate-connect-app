@@ -1,5 +1,6 @@
 import { useId, type JSX } from "react";
 import { Icon } from "./Icon";
+import { MARK_SLOT, type MarkSize } from "./markSize";
 
 /**
  * Full-colour provider marks, drawn beside a model id (Figma
@@ -471,18 +472,23 @@ export function providerNameFor(vendor: string): ProviderName | undefined {
 export function VendorMark({
   provider,
   vendor,
+  size = 16,
 }: {
   /** What the gateway said served the request, and the only thing this row is
    *  allowed to put into words. Null when it named none. */
   provider: string | null;
-  /** The namespace to fall back to for the mark - the model id's own, where the
-   *  provider has no mark or was not named. See `ToolEventRow.vendor`. */
+  /** The namespace to fall back to for the mark where the provider has no
+   *  mark or was not named: the model id's own, or the catalogue's for an id
+   *  that carries none. See `ActivityEntry.vendor`. */
   vendor: string | null;
+  /** 16 on the app pane's rows, 20 on the Security events table. */
+  size?: MarkSize;
 }) {
-  if (!provider && !vendor) return <span aria-hidden className="size-4 shrink-0" />;
+  const slot = MARK_SLOT[size];
+  if (!provider && !vendor) return <span aria-hidden className={`shrink-0 ${slot}`} />;
   const mark =
-    (provider ? providerMarkFor(provider) : undefined) ??
-    (vendor ? providerMarkFor(vendor) : undefined) ?? <Icon name="cube" size={16} />;
+    (provider ? providerMarkFor(provider, size) : undefined) ??
+    (vendor ? providerMarkFor(vendor, size) : undefined) ?? <Icon name="cube" size={size} />;
   return (
     <>
       <span
@@ -494,7 +500,7 @@ export function VendorMark({
         // inception, relace) inherit it - so muting the wrapper rendered OpenAI
         // grey here and inked in the picker, while Moonshot, which hard-codes
         // black, stayed black in both. Same ink as `dialogs.tsx`'s row.
-        className="flex size-4 shrink-0 items-center justify-center text-base-foreground"
+        className={`flex shrink-0 items-center justify-center text-base-foreground ${slot}`}
       >
         {mark}
       </span>

@@ -121,7 +121,9 @@ test.describe("new UI security feed", () => {
 
     await expect(feed(app.page).getByText("Blocked")).toBeVisible();
     await expect(feed(app.page).getByText("credential")).toBeVisible();
-    await expect(feed(app.page).getByText("claude-code")).toBeVisible();
+    // The Tool cell names the product and keeps the client id on hover.
+    await expect(feed(app.page).getByText("Claude Code")).toBeVisible();
+    await expect(feed(app.page).getByTitle("claude-code")).toBeVisible();
     await expect(feed(app.page).getByText("No security events")).toHaveCount(0);
   });
 
