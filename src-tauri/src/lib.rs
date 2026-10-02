@@ -4363,20 +4363,32 @@ fn signal_session_dead(app: &tauri::AppHandle) {
         .unwrap_or(false);
     update_tray_status(app, running);
     let _ = app.emit("session-signin-required", ());
-    // Gated on the notifications preference like the refresh loop's copy of
-    // this notice: whichever path consumes the `SESSION_NEEDS_SIGNIN` edge is
-    // the only one that notifies, so both have to honour the switch. The tray
-    // and the emit above are in-app state and stay unconditional.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if gate_connect_core::preferences::load().notifications {
-        use tauri_plugin_notification::NotificationExt;
-        let _ = app
-            .notification()
-            .builder()
-            .title("Gate Connect")
-            .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
-            .show();
+    // Whichever path consumes the `SESSION_NEEDS_SIGNIN` edge is the only one
+    // that notifies. The tray and the emit above are in-app state and stay
+    // unconditional; the notice honours the notifications switch.
+    notify_session_expired(app);
+}
+
+/// Tell the user their session died, under the notifications switch.
+///
+/// Shared by the two places that can see a death first: the refresh loop's
+/// edge and [`signal_session_dead`]. Both sit behind the `SESSION_NEEDS_SIGNIN`
+/// edge guard, so only one of them calls this per death.
+///
+/// On every desktop platform, as security events are. It used to skip Windows,
+/// so a Windows user had only the tray dot, which is the signal least likely to
+/// be in view while they sit watching a tool fail.
+fn notify_session_expired(app: &tauri::AppHandle) {
+    if !gate_connect_core::preferences::load().notifications {
+        return;
     }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title("Gate Connect")
+        .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
+        .show();
 }
 
 /// Stop pinning the popover open. The frontend calls this on the user's
@@ -5441,10 +5453,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        // Desktop notifications. Registered on all desktop platforms (harmless);
-        // fired on macOS + Linux when a dead OAuth session is detected (Windows
-        // relies on the tray tooltip). See the refresh loop in `setup` and
-        // `signal_session_dead`.
+        // Desktop notifications, on every desktop platform: security events,
+        // the quit notice, and a dead OAuth session (`notify_session_expired`).
         .plugin(tauri_plugin_notification::init())
         // Login item, controlled by the standalone "Launch at login" setting
         // (see `set_launch_at_login`). It is no longer armed/disarmed by the
@@ -6221,24 +6231,14 @@ pub fn run() {
                             let _ = refresh_handle.emit("session-signin-required", ());
                         }
                         // First tick that finds the session dead: nudge the user
-                        // with a system notification on macOS + Linux, so the
-                        // dead session is noticed even when the popover is closed
-                        // and the menu-bar/tray dot is out of the user's eyeline.
-                        // Fired once per death by the edge guard above - or not
-                        // here at all, when `signal_session_dead` took the edge
-                        // first after a refused call; it notifies under the same
-                        // switch.
-                        #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        if dead
-                            && gate_connect_core::preferences::load().notifications
-                        {
-                            use tauri_plugin_notification::NotificationExt;
-                            let _ = refresh_handle
-                                .notification()
-                                .builder()
-                                .title("Gate Connect")
-                                .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
-                                .show();
+                        // with a system notification, so the dead session is
+                        // noticed even when the popover is closed and the
+                        // menu-bar/tray dot is out of the user's eyeline. Fired
+                        // once per death by the edge guard above - or not here at
+                        // all, when `signal_session_dead` took the edge first
+                        // after a refused call.
+                        if dead {
+                            notify_session_expired(&refresh_handle);
                         }
                     }
 
@@ -6348,6 +6348,18 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
+                        // A dead session goes straight to the main window, which
+                        // is the only surface that can sign in: the popover would
+                        // show app rows the user cannot do anything about. On the
+                        // click rather than on the death itself, so the window
+                        // never takes focus from whatever the user was doing.
+                        if SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
+                            if let Some(window) = app.get_webview_window("tray") {
+                                let _ = window.hide();
+                            }
+                            reveal_popover_window(app);
+                            return;
+                        }
                         // The click toggles the compact tray popover (Figma
                         // `Flows / Tray`), not the main window - the menu's
                         // "Open Gate Connect" still reveals that one. Plain
