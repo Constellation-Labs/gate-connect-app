@@ -761,6 +761,13 @@ pub fn gate_auth_check_finished() {
     if let Ok(mut next) = GATE_AUTH_NEXT_ALLOWED.lock() {
         *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
     }
+    // The check answered for the refused bearer, whatever it said. Recovered
+    // or Dead moved the watch, so the token here is no longer the one in it;
+    // Unchanged means the 401 was not about our session (the client's own
+    // upstream credential, say), and holding the token here would send every
+    // later request under it through a wait and a re-check for the rest of
+    // its lifetime.
+    forget_refused_bearer();
     GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
     // Last, so a waiter woken here finds the cooldown already running.
     GATE_AUTH_CHECK_DONE.notify_waiters();
@@ -1051,8 +1058,9 @@ pub(crate) fn bearer_needs_recovery(token: &str, now_unix: i64) -> bool {
         .is_some_and(|refused| refused.as_deref() == Some(token))
 }
 
-#[cfg(test)]
-pub(crate) fn forget_refused_bearer() {
+/// Drop the refused-bearer memory: a check answered for it (see
+/// [`gate_auth_check_finished`]).
+fn forget_refused_bearer() {
     if let Ok(mut refused) = REFUSED_BEARER.lock() {
         *refused = None;
     }
@@ -3576,7 +3584,7 @@ mod tests {
         super::forget_refused_bearer();
         let now = 1_700_000_000;
         let live = jwt(now + 3600);
-        let aged = jwt(now - 1);
+        let aged = jwt(now - 3600);
         assert!(
             !super::bearer_needs_recovery(&live, now),
             "a live token leaves as it is"
@@ -3608,6 +3616,15 @@ mod tests {
         assert!(
             super::record_refused_bearer(&renewed),
             "a different token's refusal is news again"
+        );
+        // A check that ended answered for it, whatever it said. (The clear
+        // itself, not `gate_auth_check_finished`: that also starts the
+        // cooldown, which the cooldown test beside this one reads.)
+        super::forget_refused_bearer();
+        assert!(!super::bearer_needs_recovery(&renewed, now));
+        assert!(
+            super::record_refused_bearer(&renewed),
+            "and a refusal after that is news"
         );
         super::forget_refused_bearer();
     }

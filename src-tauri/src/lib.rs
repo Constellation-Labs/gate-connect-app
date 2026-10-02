@@ -6172,8 +6172,11 @@ pub fn run() {
                         // CLI's `login --api-key`, another Gate Connect process
                         // writing `account.json` - and the bearer it kept would
                         // then outrank the key until it expired, and 401 on
-                        // every request after. A no-op when routing is off,
-                        // and when the engine already holds none.
+                        // every request after. Nothing happens when routing
+                        // is off. On macOS and Windows an engine already
+                        // holding none sees one `watch` send; on Linux this
+                        // re-sends the whole intercept state to the daemon
+                        // every tick, as the OAuth branch below already does.
                         gate_connect_core::proxy::manager().refresh_token("");
                         if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                             let running = gate_connect_core::proxy::manager()

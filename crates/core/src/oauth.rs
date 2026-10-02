@@ -318,11 +318,48 @@ pub fn bearer_expires_at(access_token: &str) -> Option<i64> {
     jwt_payload(access_token)?.get("exp")?.as_i64()
 }
 
-/// Whether a bearer is past its own `exp`, under the same skew margin as
-/// [`OAuthTokens::is_expired`], so a token the loop would already be renewing
-/// is also one a request should not leave under.
+/// The access token this process last read as live, with the expiry stamped
+/// locally when it was minted or refreshed (`expires_at_unix`). Recorded by
+/// [`refresh_stored`], which every live read goes through, so the engine's
+/// bearer is nearly always the one here.
+static LAST_LIVE_BEARER: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
+
+fn note_live_bearer(tokens: &OAuthTokens) {
+    if let Ok(mut last) = LAST_LIVE_BEARER.lock() {
+        *last = Some((tokens.access_token.clone(), tokens.expires_at_unix));
+    }
+}
+
+/// How far past its own `exp` a bearer must be before that claim alone makes
+/// it expired. The claim is the server's clock and `now_unix` is ours, so a
+/// clock running ahead makes a fresh token look expired here; `is_expired`
+/// avoids that by comparing a locally stamped expiry, which cancels the skew
+/// out. This margin is for the bearer that has no local stamp (it reached the
+/// engine without passing through [`refresh_stored`] in this process). A
+/// sleep long enough to matter is hours, not minutes, so the margin can be
+/// generous without missing the case it is for.
+const BEARER_EXP_FALLBACK_MARGIN_SECS: i64 = 15 * 60;
+
+/// Whether a bearer is expired at `now_unix`, so a request should not leave
+/// under it.
+///
+/// For the bearer this process last read as live, the locally stamped expiry
+/// decides, under the same skew margin as [`OAuthTokens::is_expired`]: the
+/// token the loop would already be renewing is also one a request should wait
+/// for. Any other bearer is judged on its own `exp`, and only once it is past
+/// by [`BEARER_EXP_FALLBACK_MARGIN_SECS`], so a skewed clock does not send
+/// every request through recovery.
 pub fn bearer_is_expired(access_token: &str, now_unix: i64) -> bool {
-    bearer_expires_at(access_token).is_some_and(|exp| now_unix + EXPIRY_SKEW_SECS >= exp)
+    let stamped = LAST_LIVE_BEARER.lock().ok().and_then(|last| {
+        last.as_ref()
+            .filter(|(t, _)| t == access_token)
+            .map(|(_, at)| *at)
+    });
+    match stamped {
+        Some(expires_at) => now_unix + EXPIRY_SKEW_SECS >= expires_at,
+        None => bearer_expires_at(access_token)
+            .is_some_and(|exp| now_unix >= exp + BEARER_EXP_FALLBACK_MARGIN_SECS),
+    }
 }
 
 /// Shape of Cognito's `/oauth2/token` JSON response.
@@ -705,6 +742,17 @@ pub fn force_refresh(cfg: &OAuthConfig) -> std::result::Result<Option<OAuthToken
 /// expiry test, never the client-id check (a bundle from another Cognito pool
 /// is not refreshable here at any freshness).
 fn refresh_stored(
+    cfg: &OAuthConfig,
+    force: bool,
+) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    let read = refresh_stored_unrecorded(cfg, force);
+    if let Ok(Some(tokens)) = &read {
+        note_live_bearer(tokens);
+    }
+    read
+}
+
+fn refresh_stored_unrecorded(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
@@ -1263,18 +1311,54 @@ mod tests {
     fn exp_read_from_an_access_token_payload() {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"u","exp":1700000000}"#);
         let jwt = format!("h.{payload}.s");
-        assert_eq!(bearer_expires_at(&jwt), Some(1_700_000_000));
-        // Expired once `now` is within the skew of `exp`, not only past it.
-        assert!(bearer_is_expired(&jwt, 1_700_000_000 - EXPIRY_SKEW_SECS));
+        let exp = 1_700_000_000;
+        assert_eq!(bearer_expires_at(&jwt), Some(exp));
+        // No local stamp: the token's own `exp` decides, and only once it is
+        // well past, so a clock running ahead does not read a fresh token as
+        // expired.
+        assert!(!bearer_is_expired(&jwt, exp));
         assert!(!bearer_is_expired(
             &jwt,
-            1_700_000_000 - EXPIRY_SKEW_SECS - 1
+            exp + BEARER_EXP_FALLBACK_MARGIN_SECS - 1
+        ));
+        assert!(bearer_is_expired(
+            &jwt,
+            exp + BEARER_EXP_FALLBACK_MARGIN_SECS
         ));
         // Not a JWT, or no `exp`: never "known expired".
         assert_eq!(bearer_expires_at("opaque"), None);
         assert!(!bearer_is_expired("opaque", i64::MAX));
         let bare = format!("h.{}.s", URL_SAFE_NO_PAD.encode(br#"{"sub":"u"}"#));
         assert!(!bearer_is_expired(&bare, i64::MAX));
+    }
+
+    /// The bearer this process read as live is judged on its locally stamped
+    /// expiry, the way the refresh loop judges it, so the two agree on when a
+    /// request should wait for the renewal. The `exp` claim is ignored for it.
+    #[test]
+    fn a_live_bearer_is_judged_on_its_local_stamp() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":1700000000}"#);
+        let jwt = format!("h.{payload}.s");
+        let local_expiry = 1_800_000_000;
+        note_live_bearer(&OAuthTokens {
+            access_token: jwt.clone(),
+            refresh_token: String::new(),
+            id_token: None,
+            expires_at_unix: local_expiry,
+            client_id: String::new(),
+        });
+        assert!(
+            !bearer_is_expired(&jwt, 1_700_000_000 + 3600),
+            "the claim does not decide"
+        );
+        assert!(!bearer_is_expired(
+            &jwt,
+            local_expiry - EXPIRY_SKEW_SECS - 1
+        ));
+        assert!(bearer_is_expired(&jwt, local_expiry - EXPIRY_SKEW_SECS));
+        if let Ok(mut last) = LAST_LIVE_BEARER.lock() {
+            *last = None;
+        }
     }
 
     #[test]

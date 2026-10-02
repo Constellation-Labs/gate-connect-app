@@ -1080,6 +1080,12 @@ impl HttpHandler for GateHandler {
                     // session empties the watch, and the signed-out check
                     // below then answers; no verdict within the wait sends
                     // the token as it is, which is what happened before.
+                    //
+                    // macOS and Windows only, in effect. On Linux this engine
+                    // runs in the helper daemon, whose observer answers that
+                    // no verdict is coming, so the wait ends at once and the
+                    // request leaves as before; the GUI's poll of the refusal
+                    // counter is the recovery path there.
                     if super::bearer_needs_recovery(&token, now_unix()) {
                         let mut rx = self.token.clone();
                         if let Some(fresh) = super::relay::recovered_token(
