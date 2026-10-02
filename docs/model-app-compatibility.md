@@ -43,8 +43,8 @@ to escalate. Two are still worth raising with the gateway team: the OpenAI
 models fail silently (an empty answer, not an error), and one gateway change
 would fix both them and Muse Spark (below).
 
-The working test list, rerun with the live replay below. Each model answers
-and calls the Bash tool, with the same result direct and through Gate Connect:
+The working test list, rerun with the live replay below. Each model gets the
+same result direct and through Gate Connect:
 
 | Model | Result |
 |---|---|
