@@ -640,6 +640,16 @@ async fn oauth_begin_login<R: tauri::Runtime>(
             gate_connect_core::proxy::manager().refresh_api_key("");
             gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
         }
+        // The session is live again, so the tray stops asking for a sign-in
+        // now rather than on the next refresh tick: until then the red dot
+        // would stay up and a tray click would keep opening this window.
+        if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+            let running = gate_connect_core::proxy::manager()
+                .status()
+                .map(|s| s.running)
+                .unwrap_or(false);
+            update_tray_status(&app, running);
+        }
         Ok(OAuthStatusDto::from(&tokens))
     })
     .await
@@ -4264,12 +4274,21 @@ fn reopen_running_agents(only: Option<Vec<String>>) -> u32 {
 fn set_updater_relaunching(relaunching: bool) {
     UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
 }
-/// Whether the OAuth session has died and the user must sign in again. Set by
-/// the background refresh loop on the signed-in→dead edge (a `live_session()`
-/// that can no longer refresh) and read by the tray-drawing functions to raise
-/// an attention signal - a red dot on the glyph and a "sign in required"
-/// tooltip - that outranks the routing-on/off color. Relaxed ordering: it only
-/// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
+/// Whether the OAuth session has died and the user must sign in again.
+///
+/// Set by the startup session probe, by the background refresh loop on the
+/// signed-in→dead edge (a `live_session()` that can no longer refresh), and by
+/// [`signal_session_dead`] when the gateway refuses a real call. Cleared by the
+/// refresh loop, a recovered re-check, and a completed sign-in
+/// ([`oauth_begin_login`]).
+///
+/// Read for two things: the tray-drawing functions raise an attention signal
+/// from it (a red dot on the glyph and a "sign in required" tooltip) that
+/// outranks the routing-on/off color, and [`open_tray_entry`] sends the tray
+/// to the main window instead of the popover while it is set. Relaxed
+/// ordering: neither reader needs it ordered against other memory, and a read
+/// one tick stale costs one tray click landing on the other window. Starts
+/// false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 
 /// How far the wall clock may drift from elapsed monotonic time across one
@@ -4347,12 +4366,11 @@ fn recheck_gate_session(
 ///
 /// Edge-guarded on the same flag the loop swaps, so the two can't both react
 /// to one death - whichever gets there first does the work and the other sees
-/// the flag already set. Repaints the tray, nudges a mounted popover (which
+/// the flag already set. Repaints the tray, nudges a mounted window (which
 /// re-reads `oauth_status` and routes to sign-in; the frontend has no status
-/// poll by design), and posts the same notification the refresh loop would
-/// have, on the same platforms and under the same notifications switch - the
-/// tray dot alone is out of the user's eyeline while they sit watching a tool
-/// fail.
+/// poll by design), and posts the session-expired notification
+/// ([`notify_session_expired`]) - the tray dot alone is out of the user's
+/// eyeline while they sit watching a tool fail.
 fn signal_session_dead(app: &tauri::AppHandle) {
     if SESSION_NEEDS_SIGNIN.swap(true, Ordering::Relaxed) {
         return;
@@ -4363,9 +4381,6 @@ fn signal_session_dead(app: &tauri::AppHandle) {
         .unwrap_or(false);
     update_tray_status(app, running);
     let _ = app.emit("session-signin-required", ());
-    // Whichever path consumes the `SESSION_NEEDS_SIGNIN` edge is the only one
-    // that notifies. The tray and the emit above are in-app state and stay
-    // unconditional; the notice honours the notifications switch.
     notify_session_expired(app);
 }
 
@@ -4375,9 +4390,8 @@ fn signal_session_dead(app: &tauri::AppHandle) {
 /// edge and [`signal_session_dead`]. Both sit behind the `SESSION_NEEDS_SIGNIN`
 /// edge guard, so only one of them calls this per death.
 ///
-/// On every desktop platform, as security events are. It used to skip Windows,
-/// so a Windows user had only the tray dot, which is the signal least likely to
-/// be in view while they sit watching a tool fail.
+/// On every desktop platform, as security events are: the tray dot is the
+/// signal least likely to be in view while the user sits watching a tool fail.
 fn notify_session_expired(app: &tauri::AppHandle) {
     if !gate_connect_core::preferences::load().notifications {
         return;
@@ -4951,6 +4965,49 @@ fn now_millis() -> u64 {
 /// the main window's reveal, which deliberately stopped repositioning
 /// (c63e1880): this window is a popover again, and a popover that opens
 /// wherever it was last left reads as detached from the icon that summoned it.
+/// Which window a tray entry (the icon's left click, or the "Quick status" menu
+/// item) opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayEntry {
+    /// The compact popover.
+    Popover,
+    /// The main window, which shows sign-in for a dead session.
+    MainWindow,
+}
+
+/// A dead session goes to the main window, which is the only surface that can
+/// sign in: the popover would show app rows the user cannot do anything about.
+/// Decided when the user reaches for the tray rather than when the session
+/// dies, so the window never takes focus from whatever they were doing.
+fn tray_entry(session_needs_signin: bool) -> TrayEntry {
+    if session_needs_signin {
+        TrayEntry::MainWindow
+    } else {
+        TrayEntry::Popover
+    }
+}
+
+/// Open what a tray entry should open right now ([`tray_entry`]).
+///
+/// The click handler and the "Quick status" menu item both come here. The menu
+/// item is the only way into the tray on Linux, where SNI/AppIndicator trays
+/// never deliver the click, so routing only the click would leave Linux on the
+/// popover.
+///
+/// The main-window branch is the same hand-over [`request_switch_org`] does:
+/// reveal the window, then get the popover out of the way.
+fn open_tray_entry(app: &tauri::AppHandle) {
+    match tray_entry(SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed)) {
+        TrayEntry::Popover => reveal_tray_window(app),
+        TrayEntry::MainWindow => {
+            reveal_popover_window(app);
+            if let Some(tray) = app.get_webview_window("tray") {
+                let _ = tray.hide();
+            }
+        }
+    }
+}
+
 fn reveal_tray_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("tray") else {
         return;
@@ -6322,7 +6379,7 @@ pub fn run() {
                     // raise this menu, so without an entry the tray flow
                     // would be unreachable there. Onboarding calls the same
                     // surface "the compact popover for a quick status check".
-                    "tray" => reveal_tray_window(app),
+                    "tray" => open_tray_entry(app),
                     "show" => {
                         // On Linux the SNI/AppIndicator tray hands us no click
                         // rect and GNOME often never fires the left-click path,
@@ -6348,16 +6405,13 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        // A dead session goes straight to the main window, which
-                        // is the only surface that can sign in: the popover would
-                        // show app rows the user cannot do anything about. On the
-                        // click rather than on the death itself, so the window
-                        // never takes focus from whatever the user was doing.
-                        if SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
-                            if let Some(window) = app.get_webview_window("tray") {
-                                let _ = window.hide();
-                            }
-                            reveal_popover_window(app);
+                        // A dead session goes to the main window; see
+                        // `open_tray_entry`, which the "Quick status" menu item
+                        // shares.
+                        if tray_entry(SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed))
+                            == TrayEntry::MainWindow
+                        {
+                            open_tray_entry(app);
                             return;
                         }
                         // The click toggles the compact tray popover (Figma
@@ -6854,6 +6908,13 @@ fn order_front_regardless<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_dead_session_sends_the_tray_to_the_main_window() {
+        use super::{tray_entry, TrayEntry};
+        assert_eq!(tray_entry(true), TrayEntry::MainWindow);
+        assert_eq!(tray_entry(false), TrayEntry::Popover);
+    }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
