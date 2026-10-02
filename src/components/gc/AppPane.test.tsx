@@ -528,8 +528,8 @@ describe("AppPane model selection", () => {
     render(pane({ modelChoice: "gate", gateModel: model }));
     const card_ = card("Model selection");
 
-    // What the app's own config holds, and when that takes effect: the write
-    // lands in the config, which the app reads when it starts.
+    // The frame's heading (`1410:28145`), singular over a single row. The
+    // "from its next session" wording it replaced is in the PR history.
     expect(
       within(card_).getByText("Current Gate model"),
     ).toBeTruthy();

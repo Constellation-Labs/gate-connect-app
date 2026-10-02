@@ -926,7 +926,9 @@ export function ModelPickerDialog({
         className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50 ${
           // The frame marks the chosen row with the muted ground and a real
           // border rather than a primary outline, at 4px; the unchosen rows
-          // draw at 8px (`1410:31859`, matched 2026-10-02).
+          // draw at 8px (`1410:31859`). That contradicts the 2026-09-04 card
+          // rule (inner cards are 4px); the frame is enforced as drawn
+          // (2026-10-02), and the rule is the question for design.
           selected
             ? "rounded-control border-base-border bg-gray-50"
             : "rounded-md border-transparent enabled:hover:bg-gray-50"
@@ -1001,8 +1003,11 @@ export function ModelPickerDialog({
       // option on the App pane's card (2026-10-02).
       icon="boxes"
       tile="lg"
-      // Plural in the multiple mode, which `1410:31859` draws; the single mode
-      // keeps the singular (2026-10-02).
+      // Plural in the multiple mode, which the current picker frame
+      // (`1410:31859`) draws. Design pointed at the singular `665:18405` on
+      // 2026-09-16, when the control was a single choice; the frame has
+      // since been redrawn around the multi-select and is enforced as drawn
+      // (2026-10-02). The single mode keeps the singular.
       title={multiple ? "Choose Gate models" : "Choose a Gate model"}
       subtitle={`${appName} will be able to use these models`}
       closeButton

@@ -625,8 +625,13 @@ function ModelSelection({
       {gateActive && (
         <>
           {/* `heading/16` in `base/foreground`, with the frame's words
-            * (`1410:28145`, matched 2026-10-02). Singular over a single row,
-            * since a plural heading there reads as rows gone missing. */}
+            * (`1410:28145`), enforced as drawn (2026-10-02) over the
+            * 2026-09-30 "in {app}'s config, from its next session" wording.
+            * That wording carried a fact the frame does not - the choice
+            * lands in the tool's config and takes effect in its next session
+            * - which now has no home on the card; it is owed a design answer.
+            * One local deviation: singular over a single row, since a plural
+            * heading there reads as rows gone missing. */}
           <p className="mt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
             {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
           </p>
