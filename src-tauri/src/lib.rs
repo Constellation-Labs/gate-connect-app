@@ -1835,12 +1835,37 @@ fn set_updater_relaunching(relaunching: bool) {
     UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
 }
 /// Whether the OAuth session has died and the user must sign in again. Set by
-/// the background refresh loop on the signed-in→dead edge (a `live_session()`
-/// that can no longer refresh) and read by the tray-drawing functions to raise
+/// the background refresh loop on the signed-in→dead edge (a session the
+/// identity provider or the gateway refused, never one it could not reach; see
+/// [`session_dead_after_tick`]) and read by the tray-drawing functions to raise
 /// an attention signal - a red dot on the glyph and a "sign in required"
 /// tooltip - that outranks the routing-on/off color. Relaxed ordering: it only
 /// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the refresh loop should consider the session dead after a tick's
+/// [`session_reading`](gate_connect_core::oauth::session_reading).
+///
+/// A refused or rejected session is dead only while a bundle is still stored:
+/// a deliberate sign-out clears the bundle (`oauth::clear`) and must stay quiet
+/// even though `auth_mode` is still OAuth. A bundle that no longer parses is
+/// still stored ([`has_stored_bundle`](gate_connect_core::oauth::has_stored_bundle)). An unavailable reading - the
+/// identity provider could not be reached, or the secret store could not be
+/// read - is no verdict, so the tick keeps whatever it believed before. Calling
+/// it dead put "session expired" on every machine that woke offline with an
+/// expired access token.
+fn session_dead_after_tick(
+    reading: &gate_connect_core::oauth::SessionReading,
+    has_stored_bundle: impl FnOnce() -> bool,
+    was_dead: bool,
+) -> bool {
+    use gate_connect_core::oauth::SessionReading;
+    match reading {
+        SessionReading::Live(_) => false,
+        SessionReading::SignedOut => has_stored_bundle(),
+        SessionReading::Unavailable => was_dead,
+    }
+}
 
 /// How far the wall clock may drift from elapsed monotonic time across one
 /// refresh tick before the background loop treats it as a jump rather than
@@ -3042,7 +3067,8 @@ pub fn run() {
                         gate_connect_core::startup::SessionVerdict::NeedsSignIn => {
                             SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
                         }
-                        gate_connect_core::startup::SessionVerdict::NotOauth => {}
+                        gate_connect_core::startup::SessionVerdict::NotOauth
+                        | gate_connect_core::startup::SessionVerdict::Unavailable => {}
                     }
 
                     // If a previous session left the system proxy on (unclean
@@ -3285,30 +3311,34 @@ pub fn run() {
                             }
                         }
                     }
-                    // `live_session` silently refreshes a stale token (persisting
-                    // it) and yields None when the session is dead; push the
-                    // result into the running engine (a no-op when routing is
-                    // off). "" is a dead session: the engine then refuses
-                    // routed requests as signed out - an OAuth account holds
-                    // no key to fall back to - matching the signed-out state
-                    // the UI derives from oauth_status.
-                    let token = gate_connect_core::oauth::live_session()
-                        .map(|t| t.access_token)
-                        .unwrap_or_default();
+                    // `session_reading` silently refreshes a stale token
+                    // (persisting it) and is `Live` only for a usable session;
+                    // push its token into the running engine (a no-op when
+                    // routing is off). "" means no usable session: the engine
+                    // then refuses routed requests as signed out - an OAuth
+                    // account holds no key to fall back to - matching the
+                    // signed-out state the UI derives from oauth_status.
+                    let reading = gate_connect_core::oauth::session_reading();
+                    let token = match &reading {
+                        gate_connect_core::oauth::SessionReading::Live(t) => {
+                            t.access_token.clone()
+                        }
+                        _ => String::new(),
+                    };
                     gate_connect_core::proxy::manager().refresh_token(&token);
 
                     // Raise (or clear) the tray attention signal on the
-                    // signed-in↔dead edge. "Dead" means a stored session exists
-                    // but can no longer refresh (expired / revoked) - NOT a
-                    // deliberate sign-out, which clears the stored tokens
-                    // (`oauth::clear`) and so must stay quiet even though
-                    // auth_mode is still OAuth. Redraw only on a change so the
-                    // tray isn't rewritten every 30s.
-                    let dead = token.is_empty()
-                        && gate_connect_core::oauth::current()
-                            .ok()
-                            .flatten()
-                            .is_some();
+                    // signed-in↔dead edge. "Dead" means a stored session was
+                    // refused (revoked, expired refresh token, rejected by the
+                    // gateway) - NOT a deliberate sign-out, and not a refresh
+                    // that got no answer; see `session_dead_after_tick`.
+                    // Redraw only on a change so the tray isn't rewritten
+                    // every 30s.
+                    let dead = session_dead_after_tick(
+                        &reading,
+                        gate_connect_core::oauth::has_stored_bundle,
+                        SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed),
+                    );
                     if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
                         let running = gate_connect_core::proxy::manager()
                             .status()
@@ -4304,6 +4334,43 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An offline tick is no verdict: it keeps the flag where it was, so a
+    /// machine that wakes without a network is not told its session expired,
+    /// and one already known dead stays dead until a real answer comes.
+    #[test]
+    fn a_refused_session_is_dead_and_no_answer_keeps_the_flag() {
+        use gate_connect_core::oauth::{OAuthTokens, SessionReading};
+        let live = SessionReading::Live(OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        });
+        assert!(!session_dead_after_tick(&live, || true, true));
+        assert!(session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || true,
+            false
+        ));
+        // A deliberate sign-out cleared the bundle.
+        assert!(!session_dead_after_tick(
+            &SessionReading::SignedOut,
+            || false,
+            true
+        ));
+        assert!(!session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            false
+        ));
+        assert!(session_dead_after_tick(
+            &SessionReading::Unavailable,
+            || true,
+            true
+        ));
+    }
 
     /// The toggle's bound. An agent behind an old change stays stale with no
     /// bound, and drops out once the toggle asks only about its own changes -

@@ -500,9 +500,7 @@ pub fn current() -> Result<Option<OAuthTokens>> {
     // copy still works.
     let witness = crate::account::file_witness()?;
     match keychain::get_cached(&service(), &user, &witness)? {
-        Some(raw) => Ok(Some(
-            serde_json::from_str(&raw).context("parsing stored oauth tokens")?,
-        )),
+        Some(raw) => Ok(Some(parse_bundle(&raw)?)),
         None => Ok(None),
     }
 }
@@ -541,6 +539,49 @@ pub fn live_session() -> Option<OAuthTokens> {
     ensure_fresh(&cfg).ok().flatten()
 }
 
+/// What a status read can say about the stored session, keeping apart the two
+/// things [`live_session`]'s `None` conflates: the credential is gone
+/// or refused, versus nobody could tell - the identity provider was
+/// unreachable, or the secret store could not be read. The second says nothing
+/// about who is signed in, so a caller deciding "did this person sign out" must
+/// not read it as a sign-out.
+#[derive(Debug)]
+pub enum SessionReading {
+    Live(OAuthTokens),
+    /// No session, or one the identity provider or the gateway refused.
+    SignedOut,
+    /// The session's fate is unknown right now.
+    Unavailable,
+}
+
+/// [`live_session`], classified. See [`SessionReading`].
+pub fn session_reading() -> SessionReading {
+    let Some(cfg) = OAuthConfig::from_build_env() else {
+        return SessionReading::SignedOut;
+    };
+    classify_session(SESSION_REJECTED_BY_GATEWAY.load(Ordering::Relaxed), || {
+        ensure_fresh_classified(&cfg)
+    })
+}
+
+/// The pure half of [`session_reading`]: a gateway rejection is a refusal
+/// whatever the local token says, and only a refusal or an absent bundle is a
+/// sign-out.
+pub fn classify_session(
+    rejected_by_gateway: bool,
+    refresh: impl FnOnce() -> std::result::Result<Option<OAuthTokens>, RefreshError>,
+) -> SessionReading {
+    if rejected_by_gateway {
+        return SessionReading::SignedOut;
+    }
+    match refresh() {
+        Ok(Some(t)) => SessionReading::Live(t),
+        Ok(None) => SessionReading::SignedOut,
+        Err(e) if e.is_refusal() => SessionReading::SignedOut,
+        Err(_) => SessionReading::Unavailable,
+    }
+}
+
 /// The access token to inject into gateway requests right now: the live session's
 /// access token (refreshed if it had expired), else an empty string (meaning
 /// "fall back to the legacy API key"). This is the single source of truth the
@@ -572,7 +613,21 @@ pub fn access_token_for_injection() -> String {
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
-    refresh_stored(cfg, false).map_err(RefreshError::into_error)
+    ensure_fresh_classified(cfg).map_err(RefreshError::into_error)
+}
+
+/// [`ensure_fresh`], keeping whether a failure was a refusal.
+///
+/// For a caller that reports on the session rather than just using it. A
+/// refresh that could not reach the identity provider, or a secret store that
+/// could not be read, says nothing about the credential, and [`live_session`]'s
+/// `None` cannot tell those apart from a revoked refresh token. Reporting all of
+/// them as refused is what told a machine that was only offline that its session
+/// had expired.
+pub fn ensure_fresh_classified(
+    cfg: &OAuthConfig,
+) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    refresh_stored(cfg, false)
 }
 
 /// Refresh the stored bundle **whatever the local clock says** about its
@@ -604,7 +659,7 @@ fn refresh_stored(
     cfg: &OAuthConfig,
     force: bool,
 ) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
-    let Some(tokens) = current().map_err(RefreshError::Unavailable)? else {
+    let Some(tokens) = current().map_err(classify_read_error)? else {
         return Ok(None);
     };
     if tokens.client_id != cfg.client_id {
@@ -640,6 +695,63 @@ fn refresh_stored(
     // hand is good, it just will not survive a restart.
     store(&refreshed).map_err(RefreshError::Unavailable)?;
     Ok(Some(refreshed))
+}
+
+/// Classify a failure to read the stored bundle.
+///
+/// A bundle that is there but does not parse is ours and broken, and stays
+/// broken: no retry repairs it, and only a sign-in replaces it. That is a
+/// refusal. Anything else - the secret store could not be reached, a chunk is
+/// missing, the keychain is locked or a prompt was declined - may clear on its
+/// own and says nothing about the credential.
+fn classify_read_error(e: anyhow::Error) -> RefreshError {
+    if is_corrupt_bundle(&e) {
+        RefreshError::Refused(e)
+    } else {
+        RefreshError::Unavailable(e)
+    }
+}
+
+/// A stored bundle that is there and does not parse. Its own type, not a bare
+/// `serde_json::Error`, because [`current`] parses `account.json` too (through
+/// its witness), and a broken account file is not a broken session: a sign-in
+/// cannot repair it, since saving the account reads the same file first.
+#[derive(Debug)]
+struct CorruptBundle(serde_json::Error);
+
+impl std::fmt::Display for CorruptBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for CorruptBundle {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Parse a stored bundle, marking a failure as [`CorruptBundle`].
+fn parse_bundle(raw: &str) -> Result<OAuthTokens> {
+    serde_json::from_str(raw)
+        .map_err(CorruptBundle)
+        .context("parsing stored oauth tokens")
+}
+
+/// Whether a [`current`] error means a stored bundle that does not parse.
+///
+/// The refresh loop asks this as well as [`refresh_stored`]: a broken bundle is
+/// still a stored one, so a sign-out (which deletes it) and a corruption (which
+/// does not) stay apart.
+pub fn is_corrupt_bundle(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<CorruptBundle>().is_some()
+}
+
+/// Whether a bundle is stored, broken or not: what separates a refused session
+/// from a deliberate sign-out, which deletes the bundle (`clear`). A read that
+/// failed for any other reason is not evidence of a bundle.
+pub fn has_stored_bundle() -> bool {
+    current().map_or_else(|e| is_corrupt_bundle(&e), |bundle| bundle.is_some())
 }
 
 /// Loopback ports the app tries, in order, for the OAuth redirect. Cognito
@@ -930,5 +1042,65 @@ mod tests {
             client_id: String::new(),
         };
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
+    }
+
+    /// Only a refused or absent credential is a sign-out. An unreachable
+    /// identity provider or an unreadable secret store is not, or every
+    /// offline wake would ask the user to sign in again.
+    #[test]
+    fn only_a_refusal_or_no_bundle_reads_as_signed_out() {
+        let tokens = || OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        };
+        assert!(matches!(
+            classify_session(false, || Ok(Some(tokens()))),
+            SessionReading::Live(_)
+        ));
+        assert!(matches!(
+            classify_session(false, || Ok(None)),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Refused(anyhow::anyhow!(
+                "invalid_grant"
+            )))),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Unavailable(anyhow::anyhow!(
+                "dns"
+            )))),
+            SessionReading::Unavailable
+        ));
+        assert!(matches!(
+            classify_session(true, || Ok(Some(tokens()))),
+            SessionReading::SignedOut
+        ));
+    }
+
+    /// A bundle that does not parse is a refusal; a store that could not be
+    /// read is not.
+    #[test]
+    fn only_an_unparseable_bundle_is_a_refused_read() {
+        let corrupt = parse_bundle("{not json").unwrap_err();
+        assert!(is_corrupt_bundle(&corrupt));
+        assert!(classify_read_error(corrupt).is_refusal());
+
+        // `current` also parses `account.json`, through its witness. A broken
+        // account file is not a broken session, and a sign-in cannot repair it.
+        let account_file = serde_json::from_str::<serde_json::Value>("{not json")
+            .map_err(anyhow::Error::from)
+            .context("parsing account.json as JSON")
+            .unwrap_err();
+        assert!(!is_corrupt_bundle(&account_file));
+        assert!(!classify_read_error(account_file).is_refusal());
+
+        let unreadable = anyhow::anyhow!("secret store is locked");
+        assert!(!is_corrupt_bundle(&unreadable));
+        assert!(!classify_read_error(unreadable).is_refusal());
     }
 }
