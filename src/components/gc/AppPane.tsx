@@ -193,10 +193,11 @@ export function AppPane({
    *  the counters and the feed are two reads: one can be drawn while the other
    *  is still coming. */
   eventsPending?: boolean;
-  /** Open the dashboard's Messages list with the feed's own filters, for the
-   *  Recent activity header's "View activity" (`1410:28168`). Absent when the
-   *  card has no feed behind it, which removes the button rather than sending
-   *  someone to a list this card could not have shown them. */
+  /** Open the dashboard's Messages list for this app on this machine, for the
+   *  Recent activity header's "View activity" (`1410:28168`): the feed's own
+   *  filters on a tool pane, the section's hosts on a domain pane, whose card
+   *  has no feed. Absent while the gateway does not know this machine, which
+   *  removes the button rather than opening a list scoped to nothing. */
   onViewActivity?: () => void;
   /** Which sections have no reading behind them.
    *

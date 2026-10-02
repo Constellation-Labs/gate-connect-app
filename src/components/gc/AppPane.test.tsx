@@ -347,9 +347,19 @@ describe("AppPane recent activity", () => {
     expect(onViewActivity).toHaveBeenCalledOnce();
   });
 
-  it("offers View activity only when the card has a feed behind it", () => {
+  it("offers View activity only when it has somewhere to go", () => {
     render(pane({ activity: [entry] }));
     expect(screen.queryByRole("button", { name: "View activity" })).toBeNull();
+  });
+
+  it("offers View activity on a domain pane, whose card has no feed", () => {
+    // Its rows are in the dashboard under the hosts it routes, even though the
+    // card itself can only say they show in the Overview.
+    const onViewActivity = vi.fn();
+    render(pane({ activity: [], unattributed: true, onViewActivity }));
+    expect(screen.getAllByText("Shows in the Overview, not per app").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "View activity" }));
+    expect(onViewActivity).toHaveBeenCalledOnce();
   });
 });
 

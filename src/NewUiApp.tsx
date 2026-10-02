@@ -3437,13 +3437,31 @@ export function NewUiApp() {
           // machine, the last 24h. Absent wherever the feed is not read (a
           // domain pane, an unattributed machine), as the card then has no
           // rows for the list to continue.
+          // A domain pane has no feed, but its traffic is still in the
+          // dashboard: the gateway records an intercepted request's provider as
+          // the bare host it was sent to, which is the catalog's `hosts`. So it
+          // links to those hosts on this machine instead.
           onViewActivity={
-            openTool !== null && machineKnown
-              ? () =>
-                  openDashboard((d) =>
-                    d.messages({ apps: [openTool], device: currentInstallId }),
-                  )
-              : undefined
+            !machineKnown || view.kind !== "app"
+              ? undefined
+              : openTool !== null
+                ? () =>
+                    openDashboard((d) =>
+                      d.messages({ apps: [openTool], device: currentInstallId }),
+                    )
+                : () => {
+                    const members = sectionMemberKeys(view.slug);
+                    const websites = [
+                      ...new Set(
+                        (proxy?.domains ?? [])
+                          .filter((dom) => members.includes(dom.slug))
+                          .flatMap((dom) => dom.hosts),
+                      ),
+                    ];
+                    openDashboard((d) =>
+                      d.messages({ websites, device: currentInstallId }),
+                    );
+                  }
           }
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
