@@ -1062,7 +1062,15 @@ impl HttpHandler for GateHandler {
                     // session empties the watch, and the signed-out check
                     // below then answers; no verdict within the wait sends
                     // the token as it is, which is what happened before.
-                    if super::bearer_needs_recovery(&token, now_unix()) {
+                    //
+                    // Not in the Linux helper daemon: its observer only counts
+                    // refusals for the GUI to poll, so no verdict would come,
+                    // and asking would count a refusal for a request the
+                    // gateway has not seen. The GUI renews on its own tick
+                    // there, or on the 401 this request may get.
+                    if super::gate_auth_verdict_can_arrive()
+                        && super::bearer_needs_recovery(&token, now_unix())
+                    {
                         let mut rx = self.token.clone();
                         if let Some(fresh) = super::relay::recovered_token(
                             &mut rx,

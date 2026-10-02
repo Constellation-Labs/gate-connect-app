@@ -684,6 +684,34 @@ pub fn set_gate_auth_observer(observer: impl Fn() -> bool + Send + Sync + 'stati
     let _ = GATE_AUTH_OBSERVER.set(Box::new(observer));
 }
 
+/// Set when the registered observer only counts refusals (the Linux helper
+/// daemon's), so no verdict ever reaches this process's token watch.
+static GATE_AUTH_COUNT_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// [`set_gate_auth_observer`] for an observer that only counts refusals and
+/// never pushes a verdict. Recorded so a caller can tell, without running it,
+/// that asking would bring nothing: see [`gate_auth_verdict_can_arrive`].
+/// Linux only, where the helper daemon is the one counter.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_gate_auth_counter(counter: impl Fn() -> bool + Send + Sync + 'static) {
+    if GATE_AUTH_OBSERVER.set(Box::new(counter)).is_ok() {
+        GATE_AUTH_COUNT_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Whether asking the observer could put a verdict on the token watch: one is
+/// registered, and it is not a counter.
+///
+/// For the engine's pre-send ask, which has to know before it asks. The
+/// observer's own answer comes too late there: running the daemon's counter
+/// records a refusal, and before the send there has been none, so the GUI
+/// would read a request the gateway never saw as one it refused.
+pub(crate) fn gate_auth_verdict_can_arrive() -> bool {
+    GATE_AUTH_OBSERVER.get().is_some()
+        && !GATE_AUTH_COUNT_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Invoke the registered gateway-auth observer, if any, unless a check is
 /// already in flight or the last one's cooldown is still running. Called by
 /// the engine's `handle_response` on a 401 to a request we authenticated.
