@@ -541,6 +541,49 @@ pub fn live_session() -> Option<OAuthTokens> {
     ensure_fresh(&cfg).ok().flatten()
 }
 
+/// What a status read can say about the stored session, keeping apart the two
+/// things [`live_session`]'s `None` conflates (AG-960): the credential is gone
+/// or refused, versus nobody could tell - the identity provider was
+/// unreachable, or the secret store could not be read. The second says nothing
+/// about who is signed in, so a caller deciding "did this person sign out" must
+/// not read it as a sign-out.
+#[derive(Debug)]
+pub enum SessionReading {
+    Live(OAuthTokens),
+    /// No session, or one the identity provider or the gateway refused.
+    SignedOut,
+    /// The session's fate is unknown right now.
+    Unavailable,
+}
+
+/// [`live_session`], classified. See [`SessionReading`].
+pub fn session_reading() -> SessionReading {
+    let Some(cfg) = OAuthConfig::from_build_env() else {
+        return SessionReading::SignedOut;
+    };
+    classify_session(SESSION_REJECTED_BY_GATEWAY.load(Ordering::Relaxed), || {
+        ensure_fresh_classified(&cfg)
+    })
+}
+
+/// The pure half of [`session_reading`]: a gateway rejection is a refusal
+/// whatever the local token says, and only a refusal or an absent bundle is a
+/// sign-out.
+pub fn classify_session(
+    rejected_by_gateway: bool,
+    refresh: impl FnOnce() -> std::result::Result<Option<OAuthTokens>, RefreshError>,
+) -> SessionReading {
+    if rejected_by_gateway {
+        return SessionReading::SignedOut;
+    }
+    match refresh() {
+        Ok(Some(t)) => SessionReading::Live(t),
+        Ok(None) => SessionReading::SignedOut,
+        Err(e) if e.is_refusal() => SessionReading::SignedOut,
+        Err(_) => SessionReading::Unavailable,
+    }
+}
+
 /// The access token to inject into gateway requests right now: the live session's
 /// access token (refreshed if it had expired), else an empty string (meaning
 /// "fall back to the legacy API key"). This is the single source of truth the
@@ -572,7 +615,21 @@ pub fn access_token_for_injection() -> String {
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
-    refresh_stored(cfg, false).map_err(RefreshError::into_error)
+    ensure_fresh_classified(cfg).map_err(RefreshError::into_error)
+}
+
+/// [`ensure_fresh`], keeping whether a failure was a refusal.
+///
+/// For a caller that reports on the session rather than just using it. A
+/// refresh that could not reach the identity provider, or a secret store that
+/// could not be read, says nothing about the credential, and [`live_session`]'s
+/// `None` cannot tell those apart from a revoked refresh token. Reporting all of
+/// them as refused is what put "Access problem / Sign in" on a machine that was
+/// only offline.
+pub fn ensure_fresh_classified(
+    cfg: &OAuthConfig,
+) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    refresh_stored(cfg, false)
 }
 
 /// Refresh the stored bundle **whatever the local clock says** about its
@@ -930,5 +987,43 @@ mod tests {
             client_id: String::new(),
         };
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
+    }
+
+    /// Only a refused or absent credential is a sign-out. An unreachable
+    /// identity provider or an unreadable secret store is not, or every
+    /// offline wake would ask the user to sign in again.
+    #[test]
+    fn only_a_refusal_or_no_bundle_reads_as_signed_out() {
+        let tokens = || OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            id_token: None,
+            expires_at_unix: 0,
+            client_id: String::new(),
+        };
+        assert!(matches!(
+            classify_session(false, || Ok(Some(tokens()))),
+            SessionReading::Live(_)
+        ));
+        assert!(matches!(
+            classify_session(false, || Ok(None)),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Refused(anyhow::anyhow!(
+                "invalid_grant"
+            )))),
+            SessionReading::SignedOut
+        ));
+        assert!(matches!(
+            classify_session(false, || Err(RefreshError::Unavailable(anyhow::anyhow!(
+                "dns"
+            )))),
+            SessionReading::Unavailable
+        ));
+        assert!(matches!(
+            classify_session(true, || Ok(Some(tokens()))),
+            SessionReading::SignedOut
+        ));
     }
 }
