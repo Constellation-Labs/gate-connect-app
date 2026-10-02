@@ -29,9 +29,10 @@ pub enum SessionVerdict {
 /// Refresh a stale Cognito access token before the engine seeds itself, so
 /// re-honor / auto-enable inject a live token (`enable()` re-reads the stored
 /// token via `access_token_for_injection`). Never opens the browser - a
-/// failed refresh just yields [`SessionVerdict::NeedsSignIn`] and the UI's
-/// "sign in" state. Best-effort and offline-safe: a gateway that cannot be
-/// reached gives no verdict and changes nothing.
+/// refused refresh just yields [`SessionVerdict::NeedsSignIn`] and the UI's
+/// "sign in" state. Best-effort and offline-safe: an identity provider or a
+/// gateway that cannot be reached gives no verdict and changes nothing
+/// ([`SessionVerdict::Unavailable`]).
 pub fn refresh_session() -> SessionVerdict {
     if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
         return SessionVerdict::NotOauth;
@@ -52,9 +53,7 @@ pub fn refresh_session() -> SessionVerdict {
             return SessionVerdict::NeedsSignIn;
         }
         Err(e) => {
-            crate::logging::failure(&format!(
-                "startup OAuth token refresh could not be reached: {e}"
-            ));
+            crate::logging::failure(&format!("startup OAuth token refresh got no answer: {e}"));
             return SessionVerdict::Unavailable;
         }
     };
