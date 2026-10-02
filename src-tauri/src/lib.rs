@@ -1850,6 +1850,28 @@ static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 /// lifetime.
 const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Put the engine on the account's API key, with no OAuth bearer: what an
+/// account that left OAuth needs (see `ProxyManager::use_api_key`).
+///
+/// Only with a key actually read from an API-key account. A read that failed
+/// (a locked keychain), an account with no key, or one back in OAuth by now
+/// would hand the engine an empty key and wipe the one it holds; those clear
+/// the bearer alone, as before. Read through `keychain::get_cached`, so a 30s
+/// tick costs no secret-store session.
+fn use_stored_api_key() {
+    let manager = gate_connect_core::proxy::manager();
+    gate_connect_core::account::load()
+        .ok()
+        .flatten()
+        .filter(|account| account.auth_mode == gate_connect_core::account::AuthMode::ApiKey)
+        .map(|account| account.api_key)
+        .filter(|key| !key.is_empty())
+        .map_or_else(
+            || manager.refresh_token(""),
+            |key| manager.use_api_key(&key),
+        );
+}
+
 /// Raise the dead-session signal from somewhere other than the refresh loop:
 /// the gateway-auth observer, which learns from a refused request that the
 /// session is gone without waiting up to 30s for the next tick.
@@ -1884,7 +1906,7 @@ fn recheck_gate_session(app: &tauri::AppHandle) {
     if gate_connect_core::account::auth_mode().unwrap_or_default()
         != gate_connect_core::account::AuthMode::OAuth
     {
-        gate_connect_core::proxy::manager().refresh_token("");
+        use_stored_api_key();
         return;
     }
     match gate_connect_core::startup::reverify_session() {
@@ -3267,18 +3289,20 @@ pub fn run() {
                         // session to a pasted key): clear any stale attention
                         // signal so the tray doesn't strand a red dot, then idle.
                         //
-                        // And make sure the engine holds no bearer. The paste
-                        // path clears it for its own process, but the mode can
-                        // change under a running engine from outside it - the
-                        // CLI's `login --api-key`, another Gate Connect process
-                        // writing `account.json` - and the bearer it kept would
-                        // then outrank the key until it expired, and 401 on
-                        // every request after. A no-op when routing is off.
+                        // And put the engine on the account's key, with no
+                        // bearer. The paste path does this for its own process,
+                        // but the mode can change under a running engine from
+                        // outside it - the CLI's `login --api-key` - and the
+                        // bearer it kept would then outrank the key until it
+                        // expired, and 401 on every request after. Clearing the
+                        // bearer alone is not enough: an engine started under
+                        // OAuth holds no key, and would then refuse every
+                        // request as signed out. A no-op when routing is off.
                         // On Linux each call re-sends the intercept config to
                         // the daemon, as the OAuth branch already does every
                         // tick; the account and CA reads behind it are cached
                         // (`keychain::get_cached`), so no secret-store session.
-                        gate_connect_core::proxy::manager().refresh_token("");
+                        use_stored_api_key();
                         if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
                             let running = gate_connect_core::proxy::manager()
                                 .status()

@@ -407,6 +407,38 @@ impl ProxyManager {
         }
     }
 
+    /// Put the running daemon, if any, on `api_key` and drop any OAuth bearer:
+    /// what an account that left OAuth needs. One push carrying both, rather
+    /// than [`Self::refresh_api_key`] and [`Self::refresh_token`], since each of
+    /// those re-sends the whole intercept config.
+    pub fn use_api_key(&self, api_key: &str) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    api_key,
+                    "",
+                    &crate::account::org_id_for_injection(),
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    self.detached.load(Ordering::SeqCst),
+                    system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
+                );
+            }
+        }
+    }
+
     /// How many times the daemon's engine has seen the gateway refuse a request
     /// carrying our OAuth bearer, or `None` when there is no reading: this
     /// process holds no control connection, or the round trip failed.

@@ -853,6 +853,24 @@ impl<O: DesktopOps> DesktopManager<O> {
         }
     }
 
+    /// Put the running engine, if any, on `api_key` and drop any OAuth bearer:
+    /// what an account that left OAuth needs. Clearing the bearer alone is not
+    /// enough, because an engine started under OAuth holds no key
+    /// (`account::load` gives an OAuth account none), and with neither it
+    /// refuses every routed request as signed out. The key goes first, so no
+    /// request lands between the two with neither.
+    pub fn use_api_key(&self, api_key: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_api_key(api_key);
+            running.update_token("");
+        }
+    }
+
     /// Push a refreshed OAuth access token into the running engine, if any.
     /// Empty string means no live session: the engine falls back to the API
     /// key in legacy mode, and refuses routed requests as signed out on an
@@ -2023,6 +2041,7 @@ mod tests {
         mgr.set_domain("anthropic", true).expect("set_domain");
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
+        mgr.use_api_key("sk-gw-pasted");
         mgr.refresh_org("org-uuid-2");
         mgr.refresh_cf_clearance("cf-clearance-cookie");
         assert!(mgr.status().expect("status").running);
